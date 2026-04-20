@@ -6,7 +6,7 @@ use crate::crypto;
 use crate::envelope::{build_envelope, parse_envelope, parse_error_body, parse_node_ack};
 use crate::error::{format_device_address, PairingError};
 use crate::rng::RngProvider;
-use crate::transport::{enforce_lesc, BleTransport};
+use crate::transport::BleTransport;
 use crate::types::*;
 use crate::validation::{compute_key_hint, validate_node_id};
 use tracing::{debug, info, trace};
@@ -88,8 +88,19 @@ pub async fn provision_node(
     let encrypted_frame = crypto::encrypt_pairing_request(&artifacts.phone_psk, &cbor)?;
 
     // Step 6: Connect to node
+    // Defer createBond() until after the GATT connect latch.  The node
+    // calls ble_gap_security_initiate() in its on_connect callback;
+    // calling createBond() before the latch causes a dual-initiation race
+    // that confuses NimBLE's SMP state machine.  Deferring createBond()
+    // to after the latch is the standard Android BLE flow and works
+    // correctly with the node's Just Works pairing.
+    transport.set_defer_bonding(true);
     debug!(address = ?device_address, "connecting to node (AEAD provision)");
-    let mtu = transport.connect(device_address).await?;
+    let mtu_result = transport.connect(device_address).await;
+    // Reset defer-bonding hint immediately (one-shot) so any subsequent
+    // connection on the same transport uses the default bonding flow.
+    transport.set_defer_bonding(false);
+    let mtu = mtu_result?;
     if mtu < BLE_MTU_MIN {
         transport.disconnect().await.ok();
         return Err(PairingError::MtuTooLow {
@@ -100,7 +111,13 @@ pub async fn provision_node(
     }
     debug!(address = ?device_address, mtu, "connected to node");
 
-    enforce_lesc(transport).await?;
+    // Note: enforce_lesc() is intentionally NOT called for node connections.
+    // The node uses LESC Just Works (ND-0904) because it has no display or
+    // input for Numeric Comparison.  PT-0904 (LESC Numeric Comparison
+    // enforcement) applies only to the modem connection in Phase 1.
+    // LESC Just Works still provides link-layer encryption but does not
+    // protect against active MITM — this residual risk is accepted for
+    // headless nodes per the protocol spec (ble-pairing-protocol.md §8.2).
 
     // Step 7: Build NODE_PROVISION payload (AEAD format per spec §6.6):
     // node_key_hint(2) || node_psk(32) || rf_channel(1) || payload_len(2) || encrypted_payload

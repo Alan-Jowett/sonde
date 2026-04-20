@@ -61,6 +61,14 @@ pub trait BleTransport {
     /// implementations are forced to make an explicit choice — forgetting
     /// to implement it is a compile error, not a silent security bypass.
     fn pairing_method(&self) -> Option<PairingMethod>;
+
+    /// Hint to the transport that the next `connect()` should call
+    /// `createBond()` after the GATT connect latch instead of before it.
+    ///
+    /// Used for node connections where calling `createBond()` before the
+    /// latch causes a dual-initiation race with NimBLE's SMP state machine.
+    /// Desktop transports can ignore this (default is a no-op).
+    fn set_defer_bonding(&mut self, _defer: bool) {}
 }
 
 /// Mock BLE transport for testing pairing logic without hardware.

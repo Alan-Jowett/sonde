@@ -89,6 +89,12 @@ public class BleHelper {
     private volatile boolean createBondCalled;
     private volatile boolean bondReceiverRegistered;
     private volatile BluetoothDevice bondTarget;
+    // When true, createBond() is called AFTER the GATT connect latch
+    // instead of before it.  Used for node connections where the node
+    // calls ble_gap_security_initiate() in on_connect — calling
+    // createBond() before the latch causes a dual-initiation race that
+    // confuses NimBLE's SMP state machine.
+    private volatile boolean deferBonding;
 
     // --- Pairing method observation (PT-0904) -----------------------------
     // PAIRING_VARIANT_* constants are @SystemApi; use raw int values.
@@ -501,6 +507,18 @@ public class BleHelper {
     // --- Connection --------------------------------------------------------
 
     /**
+     * When set, {@link #connect} calls {@code createBond()} after the GATT
+     * connect latch (the original Android BLE flow) instead of before it.
+     * Used for node connections where the node calls
+     * {@code ble_gap_security_initiate()} in its {@code on_connect} callback;
+     * calling {@code createBond()} before the latch causes a dual-initiation
+     * race that confuses NimBLE's SMP state machine.
+     */
+    public void setDeferBonding(boolean defer) {
+        this.deferBonding = defer;
+    }
+
+    /**
      * Connect to the device, bond, negotiate MTU, and discover services.
      *
      * <p>Blocks until all steps complete or {@code timeoutMs} elapses.
@@ -523,10 +541,17 @@ public class BleHelper {
         requireBlePermissions();
         disconnectInner();
 
+        // Capture and clear the defer-bonding hint so it applies only to
+        // this connection (one-shot).  A subsequent connect() (e.g.,
+        // Phase 1 modem) will use the default bonding flow.
+        boolean deferBondingForThisConnect = this.deferBonding;
+        this.deferBonding = false;
+
         String addrStr = bytesToMac(address);
         BluetoothDevice device = adapter.getRemoteDevice(addrStr);
 
         lastError = null;
+        observedPairingVariant = -1;
         long deadline = System.currentTimeMillis() + timeoutMs;
 
         // Step 0 — remove stale bond (must happen before GATT connect)
@@ -546,28 +571,14 @@ public class BleHelper {
                 BluetoothDevice.TRANSPORT_LE);
         if (gatt == null) throw new Exception("connectGatt returned null");
 
-        // Step 2 — initiate LESC bonding BEFORE waiting for the GATT connect
-        // callback.  connectGatt() is asynchronous: the LE connection has not
-        // been established when it returns, so calling createBond() here races
-        // ahead of the modem's Security Request.
-        //
-        // The modem calls ble_gap_security_initiate() immediately in its
-        // on_connect callback, sending a BLE Security Request to Android.
-        // If createBond() has not been called before that Security Request
-        // arrives, Android handles the incoming SMP as a background pairing
-        // and may advertise NoInputNoOutput IO capabilities, forcing Just
-        // Works instead of LESC Numeric Comparison.
-        //
-        // Calling createBond() here, while the LE link is still being
-        // established, places Android in "bonding mode" with KeyboardDisplay
-        // IO capabilities before the Security Request arrives, which ensures
-        // LESC Numeric Comparison is negotiated (PT-0904).
+        // --- Bonding setup (common to both modes) ---
+        // Register broadcast receivers and prepare bonding state before
+        // calling createBond(), regardless of when createBond() is called.
         {
             bonded = false;
             createBondCalled = false;
             bondTarget = device;
             bondLatch = new CountDownLatch(1);
-            observedPairingVariant = -1;
             // Note: do NOT reset lastError here — it may have been set by
             // onConnectionStateChange() racing with this bonding setup, and we
             // need to preserve any GATT status code captured before checking it
@@ -599,24 +610,26 @@ public class BleHelper {
                             "failed to register bond receiver: " + e.getMessage(), e);
                 }
             }
+        }
 
-            createBondCalled = true;
-            if (!device.createBond()) {
-                // createBond can return false if bonding is already in
-                // progress or if removeBond failed.  Check current state.
-                int bs = device.getBondState();
-                if (bs == BluetoothDevice.BOND_BONDED) {
-                    Log.i("BleHelper", "createBond() returned false but already bonded");
-                    bonded = true;
-                    bondLatch.countDown();
-                } else if (bs == BluetoothDevice.BOND_BONDING) {
-                    Log.i("BleHelper", "createBond() returned false — bonding already in progress");
-                } else {
-                    disconnectInner();
-                    throw new Exception(
-                            "createBond() failed — try unpairing the device manually in Android Bluetooth settings");
-                }
-            }
+        // Step 2 — initiate bonding.
+        //
+        // When deferBondingForThisConnect is FALSE (modem / Phase 1):
+        //   Call createBond() NOW, before waiting for the GATT connect latch.
+        //   connectGatt() is asynchronous so the LE link is not yet established.
+        //   This places Android in "bonding mode" with KeyboardDisplay IO
+        //   capabilities BEFORE the modem's Security Request arrives, ensuring
+        //   LESC Numeric Comparison is negotiated (PT-0904).
+        //
+        // When deferBondingForThisConnect is TRUE (node / Phase 2):
+        //   Wait for the GATT connect latch first, THEN call createBond().
+        //   The node calls ble_gap_security_initiate() in on_connect and
+        //   expects the client to participate in SMP for on_authentication_complete
+        //   to fire.  Calling createBond() before the latch causes dual-initiation
+        //   that confuses NimBLE's SMP state machine.  Calling it after the latch
+        //   is the standard Android BLE flow and works correctly with Just Works.
+        if (!deferBondingForThisConnect) {
+            callCreateBond(device);
         }
 
         // Step 3 — wait for GATT connection.
@@ -630,6 +643,11 @@ public class BleHelper {
             String err = lastError;
             disconnectInner();
             throw new Exception(err != null ? err : "connection failed");
+        }
+
+        // Step 2b — deferred bonding (node connections only).
+        if (deferBondingForThisConnect) {
+            callCreateBond(device);
         }
 
         // Step 4 — wait for bonding to complete (Numeric Comparison requires
@@ -674,6 +692,27 @@ public class BleHelper {
         }
 
         return negotiatedMtu;
+    }
+
+    /** Invoke createBond() and handle the return value. */
+    private void callCreateBond(BluetoothDevice device) throws Exception {
+        createBondCalled = true;
+        if (!device.createBond()) {
+            int bs = device.getBondState();
+            if (bs == BluetoothDevice.BOND_BONDED) {
+                Log.i("BleHelper", "createBond() returned false but already bonded");
+                bonded = true;
+                bondLatch.countDown();
+            } else if (bs == BluetoothDevice.BOND_BONDING) {
+                Log.i("BleHelper",
+                        "createBond() returned false — bonding already in progress");
+            } else {
+                disconnectInner();
+                throw new Exception(
+                        "createBond() failed — try unpairing the device manually "
+                        + "in Android Bluetooth settings");
+            }
+        }
     }
 
     /** Disconnect and release GATT resources. */

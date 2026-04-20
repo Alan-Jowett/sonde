@@ -557,8 +557,11 @@ public class BleHelper {
             bondingStarted = false;
             bondTarget = device;
             bondLatch = new CountDownLatch(1);
-            lastError = null;
             observedPairingVariant = -1;
+            // Note: do NOT reset lastError here — it may have been set by
+            // onConnectionStateChange() racing with this bonding setup, and we
+            // need to preserve any GATT status code captured before checking it
+            // in Step 3.
 
             // Register receivers before calling createBond to avoid races.
             if (!pairingReceiverRegistered) {

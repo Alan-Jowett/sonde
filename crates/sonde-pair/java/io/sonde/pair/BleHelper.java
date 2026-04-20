@@ -57,6 +57,10 @@ public class BleHelper {
     private static final UUID CCCD_UUID =
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
 
+    // Hidden extra key for bond failure reason code (not a public SDK constant).
+    private static final String EXTRA_BOND_REASON =
+            "android.bluetooth.device.extra.REASON";
+
     private final Context context;
     private final BluetoothAdapter adapter;
 
@@ -114,7 +118,7 @@ public class BleHelper {
             int state = intent.getIntExtra(
                     BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE);
             int prevState = intent.getIntExtra(
-                    "android.bluetooth.device.extra.PREVIOUS_BOND_STATE", BluetoothDevice.BOND_NONE);
+                    BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.BOND_NONE);
             Log.i("BleHelper", "bond state changed: " + prevState + " -> " + state);
             if (state == BluetoothDevice.BOND_BONDED) {
                 bonded = true;
@@ -128,8 +132,7 @@ public class BleHelper {
                 // This distinguishes bonding failures from stale BOND_BONDED->BOND_NONE
                 // broadcasts from Step 0's removeBond() cleanup, which transition from
                 // BOND_BONDED (not BOND_BONDING).
-                int reason = intent.getIntExtra(
-                        "android.bluetooth.device.extra.REASON", -1);
+                int reason = intent.getIntExtra(EXTRA_BOND_REASON, -1);
                 lastError = "bonding failed (reason=" + reason + ")";
                 bonded = false;
                 CountDownLatch l = bondLatch;

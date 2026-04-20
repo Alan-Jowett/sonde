@@ -94,7 +94,11 @@ pub async fn provision_node(
     // confuses NimBLE's SMP state machine ("No open connection").
     transport.set_skip_bonding(true);
     debug!(address = ?device_address, "connecting to node (AEAD provision)");
-    let mtu = transport.connect(device_address).await?;
+    let mtu_result = transport.connect(device_address).await;
+    // Reset skip-bonding hint immediately (one-shot) so any subsequent
+    // connection on the same transport uses the default bonding flow.
+    transport.set_skip_bonding(false);
+    let mtu = mtu_result?;
     if mtu < BLE_MTU_MIN {
         transport.disconnect().await.ok();
         return Err(PairingError::MtuTooLow {

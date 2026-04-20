@@ -536,6 +536,12 @@ public class BleHelper {
         requireBlePermissions();
         disconnectInner();
 
+        // Capture and clear the skip-bonding hint so it applies only to
+        // this connection (one-shot).  A subsequent connect() (e.g.,
+        // Phase 1 modem) will use the default bonding flow.
+        boolean skipBondingForThisConnect = this.skipBonding;
+        this.skipBonding = false;
+
         String addrStr = bytesToMac(address);
         BluetoothDevice device = adapter.getRemoteDevice(addrStr);
 
@@ -559,7 +565,7 @@ public class BleHelper {
                 BluetoothDevice.TRANSPORT_LE);
         if (gatt == null) throw new Exception("connectGatt returned null");
 
-        if (!skipBonding) {
+        if (!skipBondingForThisConnect) {
             // Step 2 — initiate LESC bonding BEFORE waiting for the GATT connect
             // callback.  connectGatt() is asynchronous: the LE connection has not
             // been established when it returns, so calling createBond() here races
@@ -651,9 +657,9 @@ public class BleHelper {
 
         // Step 4 — wait for bonding to complete (Numeric Comparison requires
         // gateway confirmation, so this may take several seconds).
-        // When skipBonding is true, the node's server-initiated pairing
-        // completes transparently via NimBLE — no bondLatch wait needed.
-        if (!skipBonding) {
+        // When skipBondingForThisConnect is true, the node's server-initiated
+        // pairing completes transparently via NimBLE — no bondLatch wait needed.
+        if (!skipBondingForThisConnect) {
             remaining = deadline - System.currentTimeMillis();
             if (remaining <= 0
                     || !bondLatch.await(remaining, TimeUnit.MILLISECONDS)) {

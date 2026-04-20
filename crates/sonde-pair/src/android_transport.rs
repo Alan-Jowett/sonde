@@ -210,22 +210,21 @@ impl AndroidBleTransport {
             })
     }
 
-    /// Tell the Java `BleHelper` to skip client-initiated bonding on the
-    /// next `connect()` call.  Used for node connections where the node's
-    /// server-initiated `ble_gap_security_initiate()` drives pairing;
-    /// having both sides initiate simultaneously confuses NimBLE's SMP
-    /// state machine.
-    pub fn set_skip_bonding(&self, skip: bool) -> Result<(), PairingError> {
+    /// Tell the Java `BleHelper` to defer `createBond()` until after the
+    /// GATT connect latch on the next `connect()` call.  Used for node
+    /// connections where calling `createBond()` before the latch causes a
+    /// dual-initiation race with NimBLE's SMP state machine.
+    pub fn set_defer_bonding(&self, defer: bool) -> Result<(), PairingError> {
         self.inner
             .vm
             .attach_current_thread(|env| {
                 env.call_method(
                     self.inner.helper.as_obj(),
-                    jni_str!("setSkipBonding"),
+                    jni_str!("setDeferBonding"),
                     jni_sig!("(Z)V"),
-                    &[JValue::Bool(skip)],
+                    &[JValue::Bool(defer)],
                 )
-                .map_err(|e| jni_exception_or(env, "setSkipBonding", e))?;
+                .map_err(|e| jni_exception_or(env, "setDeferBonding", e))?;
                 Ok(())
             })
             .map_err(|e| match e {
@@ -733,9 +732,9 @@ impl BleTransport for AndroidBleTransport {
         }
     }
 
-    fn set_skip_bonding(&mut self, skip: bool) {
-        if let Err(e) = AndroidBleTransport::set_skip_bonding(self, skip) {
-            tracing::warn!(error = ?e, "failed to set skipBonding on BleHelper");
+    fn set_defer_bonding(&mut self, defer: bool) {
+        if let Err(e) = AndroidBleTransport::set_defer_bonding(self, defer) {
+            tracing::warn!(error = ?e, "failed to set deferBonding on BleHelper");
         }
     }
 }

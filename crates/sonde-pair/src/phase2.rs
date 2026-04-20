@@ -88,16 +88,18 @@ pub async fn provision_node(
     let encrypted_frame = crypto::encrypt_pairing_request(&artifacts.phone_psk, &cbor)?;
 
     // Step 6: Connect to node
-    // Skip client-initiated bonding — the node calls
-    // ble_gap_security_initiate() in its on_connect callback to drive
-    // LESC Just Works pairing.  Having both sides initiate simultaneously
-    // confuses NimBLE's SMP state machine ("No open connection").
-    transport.set_skip_bonding(true);
+    // Defer createBond() until after the GATT connect latch.  The node
+    // calls ble_gap_security_initiate() in its on_connect callback;
+    // calling createBond() before the latch causes a dual-initiation race
+    // that confuses NimBLE's SMP state machine.  Deferring createBond()
+    // to after the latch is the standard Android BLE flow and works
+    // correctly with the node's Just Works pairing.
+    transport.set_defer_bonding(true);
     debug!(address = ?device_address, "connecting to node (AEAD provision)");
     let mtu_result = transport.connect(device_address).await;
-    // Reset skip-bonding hint immediately (one-shot) so any subsequent
+    // Reset defer-bonding hint immediately (one-shot) so any subsequent
     // connection on the same transport uses the default bonding flow.
-    transport.set_skip_bonding(false);
+    transport.set_defer_bonding(false);
     let mtu = mtu_result?;
     if mtu < BLE_MTU_MIN {
         transport.disconnect().await.ok();

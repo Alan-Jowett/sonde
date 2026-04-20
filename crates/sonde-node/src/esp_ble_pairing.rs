@@ -264,7 +264,12 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         }
 
         // Check for a pending GATT write (only process after auth).
+        // Primary path: on_authentication_complete sets `authenticated`.
+        // Fallback: if on_authentication_complete didn't fire (e.g.,
+        // esp32-nimble doesn't dispatch BLE_GAP_EVENT_ENC_CHANGE on this
+        // build), check the connection's encryption status directly.
         let is_auth = authenticated.lock().map(|a| *a).unwrap_or(false);
+        let is_auth = is_auth || check_encryption_fallback(&conn_handle, &authenticated);
         let write_data = if is_auth {
             if let Ok(mut p) = pending_write.lock() {
                 p.take()
@@ -405,4 +410,50 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     }
 
     Ok(())
+}
+
+/// Fallback encryption check for when `on_authentication_complete` doesn't
+/// fire (e.g., esp32-nimble build that doesn't dispatch ENC_CHANGE event 38).
+/// Returns `true` only if the link is encrypted AND MTU is acceptable,
+/// promoting `authenticated` to `true`.  Returns `false` if not encrypted,
+/// not connected, or MTU is too low (disconnects in that case).
+#[cfg(feature = "esp")]
+fn check_encryption_fallback(
+    conn_handle: &Arc<Mutex<Option<u16>>>,
+    authenticated: &Arc<Mutex<bool>>,
+) -> bool {
+    let handle = match conn_handle.lock().ok().and_then(|h| *h) {
+        Some(h) => h,
+        None => return false,
+    };
+    // Use raw NimBLE API — esp32_nimble::utilities::ble_gap_conn_find is
+    // pub(crate) and not accessible from application code.
+    let mut desc: esp_idf_sys::ble_gap_conn_desc = unsafe { core::mem::zeroed() };
+    let rc = unsafe { esp_idf_sys::ble_gap_conn_find(handle, &mut desc) };
+    if rc != 0 {
+        return false;
+    }
+    let encrypted = desc.sec_state.encrypted() != 0;
+    if !encrypted {
+        return false;
+    }
+    let Ok(mut a) = authenticated.lock() else {
+        return false;
+    };
+    if *a {
+        return true;
+    }
+    let mtu = unsafe { esp_idf_sys::ble_att_mtu(handle) };
+    if !is_mtu_acceptable(mtu) {
+        warn!(
+            "BLE: encrypted but MTU too low ({} < {}); disconnecting (ND-0904)",
+            mtu, BLE_MIN_ATT_MTU
+        );
+        let server = BLEDevice::take().get_server();
+        let _ = server.disconnect(handle);
+        return false;
+    }
+    info!("BLE: encryption detected via poll, MTU={}", mtu);
+    *a = true;
+    true
 }

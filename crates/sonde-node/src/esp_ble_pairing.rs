@@ -269,31 +269,35 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         // esp32-nimble doesn't dispatch BLE_GAP_EVENT_ENC_CHANGE on this
         // build), check the connection's encryption status directly.
         let is_auth = authenticated.lock().map(|a| *a).unwrap_or(false);
-        let is_auth = is_auth || {
-            if let Ok(h) = conn_handle.lock() {
-                if let Some(handle) = *h {
-                    let desc = esp32_nimble::utilities::ble_gap_conn_find(handle);
-                    if let Ok(d) = desc {
-                        let encrypted = d.encrypted();
-                        if encrypted {
-                            // Promote to authenticated so we don't re-check every poll.
-                            if let Ok(mut a) = authenticated.lock() {
-                                if !*a {
-                                    let mtu = d.mtu();
-                                    if !is_mtu_acceptable(mtu) {
-                                        warn!(
+        let is_auth = is_auth
+            || {
+                if let Ok(h) = conn_handle.lock() {
+                    if let Some(handle) = *h {
+                        let desc = esp32_nimble::utilities::ble_gap_conn_find(handle);
+                        if let Ok(d) = desc {
+                            let encrypted = d.encrypted();
+                            if encrypted {
+                                // Promote to authenticated so we don't re-check every poll.
+                                if let Ok(mut a) = authenticated.lock() {
+                                    if !*a {
+                                        let mtu = d.mtu();
+                                        if !is_mtu_acceptable(mtu) {
+                                            warn!(
                                             "BLE: encrypted but MTU too low ({} < {}); disconnecting (ND-0904)",
                                             mtu, BLE_MIN_ATT_MTU
                                         );
-                                        let server = BLEDevice::take().get_server();
-                                        let _ = server.disconnect(handle);
-                                    } else {
-                                        info!("BLE: encryption detected via poll, MTU={}", mtu);
-                                        *a = true;
+                                            let server = BLEDevice::take().get_server();
+                                            let _ = server.disconnect(handle);
+                                        } else {
+                                            info!("BLE: encryption detected via poll, MTU={}", mtu);
+                                            *a = true;
+                                        }
                                     }
                                 }
+                                encrypted
+                            } else {
+                                false
                             }
-                            encrypted
                         } else {
                             false
                         }
@@ -303,10 +307,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                 } else {
                     false
                 }
-            } else {
-                false
-            }
-        };
+            };
         let write_data = if is_auth {
             if let Ok(mut p) = pending_write.lock() {
                 p.take()

@@ -546,6 +546,7 @@ public class BleHelper {
         BluetoothDevice device = adapter.getRemoteDevice(addrStr);
 
         lastError = null;
+        observedPairingVariant = -1;
         long deadline = System.currentTimeMillis() + timeoutMs;
 
         // Step 0 — remove stale bond (must happen before GATT connect)

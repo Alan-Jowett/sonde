@@ -83,6 +83,7 @@ public class BleHelper {
     // --- Bonding state -----------------------------------------------------
     private volatile boolean bonded;
     private volatile boolean bondingStarted;
+    private volatile boolean createBondCalled;
     private volatile boolean bondReceiverRegistered;
     private volatile BluetoothDevice bondTarget;
 
@@ -118,9 +119,10 @@ public class BleHelper {
                 bonded = true;
                 CountDownLatch l = bondLatch;
                 if (l != null) l.countDown();
-            } else if (state == BluetoothDevice.BOND_NONE && bondingStarted) {
-                // Only treat BOND_NONE as a failure if we actually started
-                // bonding.  Ignore BOND_NONE from removeBond() cleanup.
+            } else if (state == BluetoothDevice.BOND_NONE && createBondCalled) {
+                // Only treat BOND_NONE as a failure if createBond() has actually
+                // been called (not just queued for async execution).  Ignore
+                // BOND_NONE from removeBond() cleanup in Step 0.
                 int reason = intent.getIntExtra(
                         "android.bluetooth.device.extra.REASON", -1);
                 lastError = "bonding failed (reason=" + reason + ")";
@@ -555,6 +557,7 @@ public class BleHelper {
         {
             bonded = false;
             bondingStarted = false;
+            createBondCalled = false;
             bondTarget = device;
             bondLatch = new CountDownLatch(1);
             observedPairingVariant = -1;
@@ -591,6 +594,7 @@ public class BleHelper {
             }
 
             bondingStarted = true;
+            createBondCalled = true;
             if (!device.createBond()) {
                 // createBond can return false if bonding is already in
                 // progress or if removeBond failed.  Check current state.

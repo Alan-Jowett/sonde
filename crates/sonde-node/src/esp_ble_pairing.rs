@@ -444,6 +444,14 @@ fn check_encryption_fallback(
         return true;
     }
     let mtu = unsafe { esp_idf_sys::ble_att_mtu(handle) };
+    // The ATT default MTU (23) means the MTU exchange hasn't happened yet.
+    // Android negotiates MTU after bonding completes (BleHelper Step 5),
+    // which is after encryption is established.  Don't enforce the MTU
+    // minimum until the exchange has occurred — check again next poll.
+    const ATT_DEFAULT_MTU: u16 = 23;
+    if mtu <= ATT_DEFAULT_MTU {
+        return false;
+    }
     if !is_mtu_acceptable(mtu) {
         warn!(
             "BLE: encrypted but MTU too low ({} < {}); disconnecting (ND-0904)",

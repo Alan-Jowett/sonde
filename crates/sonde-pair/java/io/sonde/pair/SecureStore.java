@@ -50,7 +50,7 @@ public class SecureStore {
 
     /** Store a byte array under {@code key}. */
     public void putBytes(String key, byte[] value) {
-        prefs.edit().putString(key, bytesToHex(value)).apply();
+        prefs.edit().putString(key, bytesToHex(value)).commit();
     }
 
     /**
@@ -67,7 +67,7 @@ public class SecureStore {
     // --- String storage ----------------------------------------------------
 
     public void putString(String key, String value) {
-        prefs.edit().putString(key, value).apply();
+        prefs.edit().putString(key, value).commit();
     }
 
     /** @return the string value, or {@code null} if absent */
@@ -78,7 +78,7 @@ public class SecureStore {
     // --- Integer storage ---------------------------------------------------
 
     public void putInt(String key, int value) {
-        prefs.edit().putInt(key, value).apply();
+        prefs.edit().putInt(key, value).commit();
     }
 
     /**
@@ -92,12 +92,12 @@ public class SecureStore {
 
     /** Remove a single key. */
     public void remove(String key) {
-        prefs.edit().remove(key).apply();
+        prefs.edit().remove(key).commit();
     }
 
     /** Wipe all entries in the store. */
     public void clear() {
-        prefs.edit().clear().apply();
+        prefs.edit().clear().commit();
     }
 
     // --- Hex helpers -------------------------------------------------------

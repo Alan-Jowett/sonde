@@ -804,6 +804,25 @@ TestNode {
 
 ---
 
+### T-PT-607  Android Tauri commands persist via AndroidPairingStore
+
+**Validates:** PT-0800, PT-0801
+**Type:** Manual / platform test (requires Android device)
+
+**Procedure:**
+1. Install the app on an Android device.  Ensure no prior pairing exists (fresh install or clear via Settings → Clear Data).
+2. Complete Phase 1 (pair with a gateway modem).
+3. Force-stop the app (Android Settings → Force Stop, or swipe from recents).
+4. Re-launch the app.
+5. Assert: the app reports "paired" status (pairing artifacts survived the restart via `EncryptedSharedPreferences`).
+6. Navigate to Phase 2 (node provisioning).
+7. Assert: provisioning proceeds without "Not paired" error (artifacts loaded from `AndroidPairingStore`).
+8. Use the "Clear pairing" UI action.
+9. Force-stop and re-launch the app.
+10. Assert: the app reports "unpaired" status (`EncryptedSharedPreferences` were cleared by `AndroidPairingStore::clear()`).
+
+---
+
 ## 9  Security tests
 
 ### T-PT-700  No key material in default logs
@@ -1566,6 +1585,7 @@ TestNode {
 | T-PT-604 | PT-0801 | Android secure storage uses EncryptedSharedPreferences |
 | T-PT-605 | PT-0801 | Windows secure storage uses restricted file permissions |
 | T-PT-606 | PT-0801 | Windows DPAPI PSK protect/unprotect semantics |
+| T-PT-607 | PT-0800, PT-0801 | Android Tauri commands persist via AndroidPairingStore |
 | T-PT-700 | PT-0900 | No key material in default logs |
 | T-PT-701 | PT-0900 | No key material in verbose logs |
 | T-PT-702 | PT-0901 | All randomness from injectable RNG provider |

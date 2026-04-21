@@ -475,10 +475,19 @@ async fn pair_gateway(
         Ok(artifacts) => {
             // Persist to Android secure storage so provisioning works across
             // app restarts (PT-0800, PT-0801).
-            let mut store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
-            store
-                .save_artifacts(&artifacts)
-                .map_err(|e| e.to_string())?;
+            let mut store = match AndroidPairingStore::from_cached_vm() {
+                Ok(s) => s,
+                Err(e) => {
+                    let msg = e.to_string();
+                    *state.phase.lock().unwrap() = format!("Error: {msg}");
+                    return Err(msg);
+                }
+            };
+            if let Err(e) = store.save_artifacts(&artifacts) {
+                let msg = e.to_string();
+                *state.phase.lock().unwrap() = format!("Error: {msg}");
+                return Err(msg);
+            }
             *state.pairing_artifacts.lock().unwrap() = Some(Arc::new(artifacts));
             *state.phase.lock().unwrap() = "Complete".into();
             Ok(())
@@ -585,9 +594,9 @@ fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus
 #[cfg(target_os = "android")]
 #[tauri::command]
 fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    *state.pairing_artifacts.lock().unwrap() = None;
     let mut store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
     store.clear().map_err(|e| e.to_string())?;
+    *state.pairing_artifacts.lock().unwrap() = None;
     *state.phase.lock().unwrap() = "Idle".into();
     Ok(())
 }

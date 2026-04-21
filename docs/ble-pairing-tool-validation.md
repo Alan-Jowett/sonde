@@ -806,7 +806,7 @@ TestNode {
 
 ### T-PT-607  Android Tauri commands persist via AndroidPairingStore
 
-**Validates:** PT-0800, PT-0801
+**Validates:** PT-0800, PT-0801  
 **Type:** Manual / platform test (requires Android device)
 
 **Procedure:**

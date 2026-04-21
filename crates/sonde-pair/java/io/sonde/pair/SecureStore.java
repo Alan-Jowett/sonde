@@ -50,7 +50,9 @@ public class SecureStore {
 
     /** Store a byte array under {@code key}. */
     public void putBytes(String key, byte[] value) {
-        prefs.edit().putString(key, bytesToHex(value)).commit();
+        if (!prefs.edit().putString(key, bytesToHex(value)).commit()) {
+            throw new RuntimeException("SharedPreferences commit failed for key: " + key);
+        }
     }
 
     /**
@@ -67,7 +69,9 @@ public class SecureStore {
     // --- String storage ----------------------------------------------------
 
     public void putString(String key, String value) {
-        prefs.edit().putString(key, value).commit();
+        if (!prefs.edit().putString(key, value).commit()) {
+            throw new RuntimeException("SharedPreferences commit failed for key: " + key);
+        }
     }
 
     /** @return the string value, or {@code null} if absent */
@@ -78,7 +82,9 @@ public class SecureStore {
     // --- Integer storage ---------------------------------------------------
 
     public void putInt(String key, int value) {
-        prefs.edit().putInt(key, value).commit();
+        if (!prefs.edit().putInt(key, value).commit()) {
+            throw new RuntimeException("SharedPreferences commit failed for key: " + key);
+        }
     }
 
     /**
@@ -92,12 +98,16 @@ public class SecureStore {
 
     /** Remove a single key. */
     public void remove(String key) {
-        prefs.edit().remove(key).commit();
+        if (!prefs.edit().remove(key).commit()) {
+            throw new RuntimeException("SharedPreferences commit failed for remove: " + key);
+        }
     }
 
     /** Wipe all entries in the store. */
     public void clear() {
-        prefs.edit().clear().commit();
+        if (!prefs.edit().clear().commit()) {
+            throw new RuntimeException("SharedPreferences commit failed for clear");
+        }
     }
 
     // --- Hex helpers -------------------------------------------------------

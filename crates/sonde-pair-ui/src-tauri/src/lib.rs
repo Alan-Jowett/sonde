@@ -484,6 +484,10 @@ async fn pair_gateway(
                 }
             };
             if let Err(e) = store.save_artifacts(&artifacts) {
+                // Best-effort clear to prevent mixed old+new state (e.g., new
+                // phone_psk committed but old phone_key_hint left from a
+                // previous pairing).
+                let _ = store.clear();
                 let msg = e.to_string();
                 *state.phase.lock().unwrap() = format!("Error: {msg}");
                 return Err(msg);

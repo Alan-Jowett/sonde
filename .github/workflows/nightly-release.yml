@@ -118,6 +118,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Upload arm64 binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gateway-linux-arm64
+          path: |
+            target/release/sonde-gateway
+            target/release/sonde-admin
+          if-no-files-found: error
+          retention-days: 7
+
   installer-windows:
     name: Windows installer (.msi)
     needs: [gateway]

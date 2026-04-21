@@ -21,14 +21,26 @@ permissions:
 jobs:
   # ── Linux .deb ──────────────────────────────────────────────────────────────
   deb:
-    name: Build Linux .deb package
-    runs-on: ubuntu-latest
+    name: Build Linux .deb (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            artifact: sonde-linux-deb-amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: sonde-linux-deb-arm64
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          key: ${{ matrix.arch }}-release
 
       - name: Install system dependencies
         run: |
@@ -49,13 +61,13 @@ jobs:
         run: |
           chmod +x installer/linux/build-deb.sh
           installer/linux/build-deb.sh \
-            --arch amd64 \
+            --arch ${{ matrix.arch }} \
             --version ${{ steps.version.outputs.version }}
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sonde-linux-deb
+          name: ${{ matrix.artifact }}
           path: sonde_*.deb
           if-no-files-found: error
           retention-days: 7

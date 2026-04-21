@@ -16,9 +16,9 @@
 
 set -euo pipefail
 
-ARCH="amd64"
-VERSION="0.1.0"
 WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+VERSION="$(sed -n '/\[workspace\.package\]/,/^\[/{ s/^version *= *"\(.*\)"/\1/p; }' "${WORKSPACE_ROOT}/Cargo.toml" 2>/dev/null || echo 0.1.0)"
 TARGET_DIR="${WORKSPACE_ROOT}/target/release"
 
 while [[ $# -gt 0 ]]; do

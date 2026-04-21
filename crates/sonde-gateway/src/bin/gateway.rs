@@ -673,7 +673,26 @@ async fn run_gateway(
         tokio::select! {
             _ = &mut shutdown => {
                 info!("shutdown signal received, stopping gateway");
+                // Abort all subsystem tasks so the tokio runtime does not
+                // block on orphaned futures during teardown (GW-1400).
+                ble_controller.cancel_and_wait().await;
                 health_cancel.cancel();
+                frame_loop.abort();
+                ble_loop.abort();
+                grpc_handle.abort();
+                if !frame_loop.is_finished() {
+                    let _ = frame_loop.await;
+                }
+                if !ble_loop.is_finished() {
+                    let _ = ble_loop.await;
+                }
+                if !grpc_handle.is_finished() {
+                    let _ = grpc_handle.await;
+                }
+                if !health_handle.is_finished() {
+                    let _ = health_handle.await;
+                }
+                transport.abort_reader_and_wait().await;
                 break; // exit the outer reconnect loop
             }
             _ = &mut frame_loop => {
@@ -684,7 +703,22 @@ async fn run_gateway(
             }
             _ = &mut grpc_handle => {
                 error!("gRPC server exited unexpectedly");
+                // Abort all subsystem tasks so the tokio runtime does not
+                // block on orphaned futures during teardown (GW-1400).
+                ble_controller.cancel_and_wait().await;
                 health_cancel.cancel();
+                frame_loop.abort();
+                ble_loop.abort();
+                if !frame_loop.is_finished() {
+                    let _ = frame_loop.await;
+                }
+                if !ble_loop.is_finished() {
+                    let _ = ble_loop.await;
+                }
+                if !health_handle.is_finished() {
+                    let _ = health_handle.await;
+                }
+                transport.abort_reader_and_wait().await;
                 break; // gRPC failure is not recoverable
             }
             result = &mut health_handle => {

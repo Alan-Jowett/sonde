@@ -7,9 +7,10 @@
 //! On Android, BLE operations use [`AndroidBleTransport`].
 //!
 //! Pairing artifacts (phone PSK) are held in memory during the session
-//! and persisted to `pairing-aead.json` via [`FilePairingStore`] on
-//! desktop. The simplified AEAD flow does not use ECDH or gateway
-//! identity TOFU.
+//! and persisted to platform-appropriate secure storage:
+//! [`FilePairingStore`] on desktop, [`AndroidPairingStore`] (backed by
+//! `EncryptedSharedPreferences`) on Android. The simplified AEAD flow
+//! does not use ECDH or gateway identity TOFU.
 //!
 //! All BLE operations use `spawn_blocking` + `Handle::block_on` so that
 //! non-Send futures from [`sonde_pair::transport::BleTransport`] work on
@@ -472,6 +473,27 @@ async fn pair_gateway(
 
     match result {
         Ok(artifacts) => {
+            // Persist to Android secure storage so provisioning works across
+            // app restarts (PT-0800, PT-0801).
+            let mut store = match AndroidPairingStore::from_cached_vm() {
+                Ok(s) => s,
+                Err(e) => {
+                    let msg = e.to_string();
+                    *state.phase.lock().unwrap() = format!("Error: {msg}");
+                    return Err(msg);
+                }
+            };
+            if let Err(e) = store.save_artifacts(&artifacts) {
+                // Best-effort clear to prevent mixed old+new state (e.g., new
+                // phone_psk committed but old phone_key_hint left from a
+                // previous pairing).  Also clear the in-memory cache so it
+                // stays consistent with the (now-empty) persistent store.
+                let _ = store.clear();
+                *state.pairing_artifacts.lock().unwrap() = None;
+                let msg = e.to_string();
+                *state.phase.lock().unwrap() = format!("Error: {msg}");
+                return Err(msg);
+            }
             *state.pairing_artifacts.lock().unwrap() = Some(Arc::new(artifacts));
             *state.phase.lock().unwrap() = "Complete".into();
             Ok(())
@@ -505,12 +527,23 @@ async fn provision_node(
 
     let pin_config = resolve_pin_config(i2c_sda, i2c_scl)?;
 
-    let artifacts = state
-        .pairing_artifacts
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "Not paired — run pair_gateway first".to_string())?;
+    // Load artifacts from in-memory cache, falling back to Android secure storage.
+    let artifacts = {
+        let mut guard = state.pairing_artifacts.lock().unwrap();
+        if guard.is_none() {
+            let store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
+            match store.load_artifacts() {
+                Ok(Some(loaded)) => {
+                    *guard = Some(Arc::new(loaded));
+                }
+                Ok(None) => {}
+                Err(e) => return Err(format!("failed to load pairing artifacts: {e}")),
+            }
+        }
+        guard
+            .clone()
+            .ok_or_else(|| "Not paired — run pair_gateway first".to_string())?
+    };
 
     *state.phase.lock().unwrap() = "Provisioning".into();
 
@@ -549,7 +582,15 @@ async fn provision_node(
 #[cfg(target_os = "android")]
 #[tauri::command]
 fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus, String> {
-    let paired = state.pairing_artifacts.lock().unwrap().is_some();
+    let mut paired = state.pairing_artifacts.lock().unwrap().is_some();
+    if !paired {
+        let store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
+        match store.load_artifacts() {
+            Ok(Some(_)) => paired = true,
+            Ok(None) => {}
+            Err(e) => return Err(format!("failed to check pairing status: {e}")),
+        }
+    }
     Ok(PairingStatus {
         paired,
         gateway_id: None,
@@ -559,6 +600,8 @@ fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus
 #[cfg(target_os = "android")]
 #[tauri::command]
 fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
+    store.clear().map_err(|e| e.to_string())?;
     *state.pairing_artifacts.lock().unwrap() = None;
     *state.phase.lock().unwrap() = "Idle".into();
     Ok(())

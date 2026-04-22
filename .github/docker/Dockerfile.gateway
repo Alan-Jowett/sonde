@@ -30,6 +30,8 @@ COPY . .
 
 # Build sonde-gateway without the keyring (D-Bus) feature.
 # The container uses --key-provider file or --key-provider env instead.
+ENV RUSTFLAGS="-C target-feature=+crt-static"
+
 RUN cargo build --release -p sonde-gateway --no-default-features \
     && cargo build --release \
        -p sonde-admin \

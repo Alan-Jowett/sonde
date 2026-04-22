@@ -26,6 +26,8 @@ pub mod status;
 #[cfg(feature = "esp")]
 pub mod ble;
 #[cfg(feature = "esp")]
+pub mod display;
+#[cfg(feature = "esp")]
 pub mod espnow;
 #[cfg(feature = "esp")]
 pub mod usb_cdc;

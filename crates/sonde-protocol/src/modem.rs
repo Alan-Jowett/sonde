@@ -21,10 +21,10 @@ use core::fmt;
 pub const SERIAL_LEN_SIZE: usize = 2;
 
 /// Maximum value of the `len` field (covers TYPE + BODY).
-pub const SERIAL_MAX_LEN: u16 = 512;
+pub const SERIAL_MAX_LEN: u16 = 1025;
 
 /// Maximum on-wire frame size including the LEN field.
-pub const SERIAL_MAX_FRAME_SIZE: usize = SERIAL_LEN_SIZE + SERIAL_MAX_LEN as usize; // 514
+pub const SERIAL_MAX_FRAME_SIZE: usize = SERIAL_LEN_SIZE + SERIAL_MAX_LEN as usize; // 1027
 
 /// Maximum bytes the streaming decoder will buffer. Sized for multiple
 /// back-to-back frames in a single read.
@@ -49,6 +49,9 @@ pub const MODEM_MSG_GET_STATUS: u8 = 0x04;
 
 /// Perform a WiFi AP scan; modem responds with `SCAN_RESULT`.
 pub const MODEM_MSG_SCAN_CHANNELS: u8 = 0x05;
+
+/// Render a 128x64 1-bit framebuffer on the modem-attached OLED.
+pub const MODEM_MSG_DISPLAY_FRAME: u8 = 0x09;
 
 // -- BLE relay: Gateway → Modem (commands) --
 
@@ -100,6 +103,9 @@ pub const MODEM_MSG_STATUS: u8 = 0x85;
 /// Per-channel AP survey results (response to `SCAN_CHANNELS`).
 pub const MODEM_MSG_SCAN_RESULT: u8 = 0x86;
 
+/// Recoverable display-path error.
+pub const MODEM_MSG_EVENT_ERROR: u8 = 0x89;
+
 /// Unrecoverable modem error.
 pub const MODEM_MSG_ERROR: u8 = 0x8F;
 
@@ -133,8 +139,11 @@ pub const RECV_FRAME_MAX_BODY_SIZE: usize = MAC_SIZE + 1 + 250; // 257
 /// Maximum ESP-NOW frame payload size.
 pub const ESPNOW_MAX_DATA_SIZE: usize = 250;
 
-/// MaximumBLE_INDICATE / BLE_RECV body size: the serial frame body is at most 511 bytes.
-pub const BLE_DATA_MAX_BODY_SIZE: usize = (SERIAL_MAX_LEN as usize) - 1; // 511
+/// DISPLAY_FRAME body: one full 128x64 1-bit framebuffer.
+pub const DISPLAY_FRAME_BODY_SIZE: usize = 128 * 64 / 8; // 1024
+
+/// Maximum `BLE_INDICATE` / `BLE_RECV` body size.
+pub const BLE_DATA_MAX_BODY_SIZE: usize = 511;
 
 /// BLE_CONNECTED body: peer_addr (6B) + mtu (2B BE).
 pub const BLE_CONNECTED_BODY_SIZE: usize = MAC_SIZE + 2; // 8
@@ -151,11 +160,20 @@ pub const BLE_PAIRING_CONFIRM_REPLY_BODY_SIZE: usize = 1;
 /// EVENT_BUTTON body: button_type (1B).
 pub const EVENT_BUTTON_BODY_SIZE: usize = 1;
 
+/// EVENT_ERROR body: error_code (1B).
+pub const EVENT_ERROR_BODY_SIZE: usize = 1;
+
 /// Maximum valid BLE Numeric Comparison passkey value (6 digits, 0–999 999).
 pub const BLE_PASSKEY_MAX: u32 = 999_999;
 
 /// Minimum negotiated ATT MTU accepted by the codec (spec: always ≥ 247).
 pub const BLE_MTU_MIN: u16 = 247;
+
+/// DISPLAY_FRAME decode/dispatch failed because the body length was invalid.
+pub const EVENT_ERROR_INVALID_FRAME: u8 = 0x01;
+
+/// SSD1306 write failed while flushing a queued framebuffer.
+pub const EVENT_ERROR_DISPLAY_WRITE_FAILED: u8 = 0x02;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -258,6 +276,7 @@ pub enum ModemMessage {
     SetChannel(u8),
     GetStatus,
     ScanChannels,
+    DisplayFrame(DisplayFrame),
 
     // -- Modem → Gateway --
     ModemReady(ModemReady),
@@ -265,6 +284,7 @@ pub enum ModemMessage {
     SetChannelAck(u8),
     Status(ModemStatus),
     ScanResult(ScanResult),
+    EventError(EventError),
     Error(ModemError),
 
     // -- BLE relay: Gateway → Modem --
@@ -336,6 +356,12 @@ pub struct ScanResult {
     pub entries: Vec<ScanEntry>,
 }
 
+/// DISPLAY_FRAME (Gateway → Modem): gateway-supplied 128x64 1-bit framebuffer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayFrame {
+    pub framebuffer: [u8; DISPLAY_FRAME_BODY_SIZE],
+}
+
 /// ERROR (Modem → Gateway): unrecoverable modem error.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModemError {
@@ -396,6 +422,12 @@ pub struct EventButton {
     pub button_type: u8,
 }
 
+/// EVENT_ERROR (Modem → Gateway): recoverable display-path error.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventError {
+    pub error_code: u8,
+}
+
 /// BUTTON_SHORT: press duration < 1 second.
 pub const BUTTON_TYPE_SHORT: u8 = 0x00;
 
@@ -450,6 +482,9 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
         ModemMessage::SetChannel(ch) => Ok((MODEM_MSG_SET_CHANNEL, alloc::vec![*ch])),
         ModemMessage::GetStatus => Ok((MODEM_MSG_GET_STATUS, Vec::new())),
         ModemMessage::ScanChannels => Ok((MODEM_MSG_SCAN_CHANNELS, Vec::new())),
+        ModemMessage::DisplayFrame(frame) => {
+            Ok((MODEM_MSG_DISPLAY_FRAME, frame.framebuffer.to_vec()))
+        }
         ModemMessage::ModemReady(mr) => {
             let mut body = Vec::with_capacity(MODEM_READY_BODY_SIZE);
             body.extend_from_slice(&mr.firmware_version);
@@ -501,6 +536,7 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             }
             Ok((MODEM_MSG_SCAN_RESULT, body))
         }
+        ModemMessage::EventError(err) => Ok((MODEM_MSG_EVENT_ERROR, alloc::vec![err.error_code])),
         ModemMessage::Error(e) => {
             let mut body = Vec::with_capacity(1 + e.message.len());
             body.push(e.error_code);
@@ -603,7 +639,7 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
 /// the first frame, they are not consumed — use the returned byte count
 /// or the streaming `FrameDecoder` for multi-frame input.
 ///
-/// Returns `Err(EmptyFrame)` if `len` = 0, `Err(FrameTooLarge)` if `len` > 512.
+/// Returns `Err(EmptyFrame)` if `len` = 0, `Err(FrameTooLarge)` if `len` > 1025.
 /// Unknown message types are returned as `ModemMessage::Unknown`.
 pub fn decode_modem_frame(data: &[u8]) -> Result<(ModemMessage, usize), ModemCodecError> {
     if data.len() < SERIAL_LEN_SIZE {
@@ -710,6 +746,13 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
             Ok(ModemMessage::ScanChannels)
         }
 
+        MODEM_MSG_DISPLAY_FRAME => {
+            check_exact_body(msg_type, body, DISPLAY_FRAME_BODY_SIZE)?;
+            let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
+            framebuffer.copy_from_slice(body);
+            Ok(ModemMessage::DisplayFrame(DisplayFrame { framebuffer }))
+        }
+
         MODEM_MSG_MODEM_READY => {
             check_exact_body(msg_type, body, MODEM_READY_BODY_SIZE)?;
             let mut firmware_version = [0u8; 4];
@@ -797,6 +840,13 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
                 });
             }
             Ok(ModemMessage::ScanResult(ScanResult { entries }))
+        }
+
+        MODEM_MSG_EVENT_ERROR => {
+            check_exact_body(msg_type, body, EVENT_ERROR_BODY_SIZE)?;
+            Ok(ModemMessage::EventError(EventError {
+                error_code: body[0],
+            }))
         }
 
         MODEM_MSG_ERROR => {
@@ -961,7 +1011,7 @@ impl FrameDecoder {
     /// Returns `Ok(None)` if more data is needed.
     /// Returns `Err(EmptyFrame)` if a zero-length frame was consumed (caller
     /// should call `decode()` again for the next frame).
-    /// Returns `Err(FrameTooLarge)` if `len` > 512 — the caller should
+    /// Returns `Err(FrameTooLarge)` if `len` > 1025 — the caller should
     /// trigger a RESET-based resynchronization.
     pub fn decode(&mut self) -> Result<Option<ModemMessage>, ModemCodecError> {
         if self.buf.len() < SERIAL_LEN_SIZE {
@@ -1197,9 +1247,9 @@ mod tests {
 
     #[test] // T-P085: Decode oversized frame rejected
     fn decode_oversized_frame() {
-        let data = [0x02, 0x01]; // len = 513, exceeds 512
+        let data = [0x04, 0x02]; // len = 1026, exceeds 1025
         let err = decode_modem_frame(&data).unwrap_err();
-        assert_eq!(err, ModemCodecError::FrameTooLarge(513));
+        assert_eq!(err, ModemCodecError::FrameTooLarge(1026));
     }
 
     #[test]
@@ -1410,10 +1460,10 @@ mod tests {
 
     #[test]
     fn encode_oversized_body_returns_error() {
-        // Body of 512 bytes + 1 byte TYPE = 513 > SERIAL_MAX_LEN (512)
+        // Body of 1025 bytes + 1 byte TYPE = 1026 > SERIAL_MAX_LEN (1025)
         let msg = ModemMessage::Unknown {
             msg_type: 0x7F,
-            body: alloc::vec![0u8; 512],
+            body: alloc::vec![0u8; 1025],
         };
         let err = encode_modem_frame(&msg).unwrap_err();
         assert_eq!(err, ModemCodecError::EncodeTooLong);
@@ -1755,6 +1805,7 @@ mod tests {
     #[test]
     fn ble_message_type_constants() {
         // Verify the constants match the spec values
+        assert_eq!(MODEM_MSG_DISPLAY_FRAME, 0x09);
         assert_eq!(MODEM_MSG_BLE_INDICATE, 0x20);
         assert_eq!(MODEM_MSG_BLE_ENABLE, 0x21);
         assert_eq!(MODEM_MSG_BLE_DISABLE, 0x22);
@@ -1763,6 +1814,8 @@ mod tests {
         assert_eq!(MODEM_MSG_BLE_CONNECTED, 0xA1);
         assert_eq!(MODEM_MSG_BLE_DISCONNECTED, 0xA2);
         assert_eq!(MODEM_MSG_BLE_PAIRING_CONFIRM, 0xA3);
+        assert_eq!(MODEM_MSG_EVENT_ERROR, 0x89);
+        assert_eq!(MODEM_MSG_EVENT_BUTTON, 0xB0);
     }
 
     // -- BLE_PAIRING_CONFIRM passkey range tests --
@@ -1868,6 +1921,48 @@ mod tests {
                 value: 100,
             }
         );
+    }
+
+    // -- DISPLAY_FRAME / EVENT_ERROR tests --
+
+    #[test]
+    fn display_frame_round_trip() {
+        let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
+        framebuffer[0] = 0x80;
+        framebuffer[DISPLAY_FRAME_BODY_SIZE - 1] = 0x01;
+        let msg = ModemMessage::DisplayFrame(DisplayFrame { framebuffer });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(consumed, frame.len());
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn display_frame_decode_rejects_short_body() {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(DISPLAY_FRAME_BODY_SIZE as u16).to_be_bytes());
+        frame.push(MODEM_MSG_DISPLAY_FRAME);
+        frame.extend_from_slice(&alloc::vec![0u8; DISPLAY_FRAME_BODY_SIZE - 1]);
+        let err = decode_modem_frame(&frame).unwrap_err();
+        assert_eq!(
+            err,
+            ModemCodecError::BodyTooShort {
+                msg_type: MODEM_MSG_DISPLAY_FRAME,
+                expected_min: DISPLAY_FRAME_BODY_SIZE,
+                actual: DISPLAY_FRAME_BODY_SIZE - 1,
+            }
+        );
+    }
+
+    #[test]
+    fn event_error_round_trip() {
+        let msg = ModemMessage::EventError(EventError {
+            error_code: EVENT_ERROR_DISPLAY_WRITE_FAILED,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(consumed, frame.len());
+        assert_eq!(decoded, msg);
     }
 
     // -- EVENT_BUTTON tests (T-0808) --

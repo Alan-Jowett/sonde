@@ -511,10 +511,12 @@ Implements the length-prefixed framing protocol between the gateway and a USB-at
 
 **Public API:**
 
-- Constants: `SERIAL_LEN_SIZE`, `SERIAL_MAX_LEN`, `SERIAL_MAX_FRAME_SIZE`, `MAC_SIZE`, and message-type constants (`MODEM_MSG_*`).
-- `ModemMessage` — typed enum covering all gateway↔modem serial messages.
+- Constants: `SERIAL_LEN_SIZE`, `SERIAL_MAX_LEN`, `SERIAL_MAX_FRAME_SIZE`, `MAC_SIZE`, and message-type constants (`MODEM_MSG_*`). `SERIAL_MAX_LEN` is 1025 so a full 1024-byte `DISPLAY_FRAME` payload fits in one modem command.
+- `ModemMessage` — typed enum covering all gateway↔modem serial messages, including display-related variants for `DISPLAY_FRAME` and recoverable `EVENT_ERROR`.
 - `encode_modem_frame` / `decode_modem_frame` — functions for encoding and decoding individual modem frames.
 - `FrameDecoder` — streaming decoder that buffers partial reads and yields complete `ModemMessage`s via a `push(&[u8])` + `decode()` API.
+
+The modem codec enforces the fixed-layout constraints defined by `modem-protocol.md`, including the exact 1024-byte body length for `DISPLAY_FRAME` and the 1-byte recoverable error code for `EVENT_ERROR`.
 
 ---
 

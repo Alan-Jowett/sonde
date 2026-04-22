@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `AeadProvider` and `Sha256Provider`. There are 94 test entries with IDs up to `T-P126` across 9 sections: header, frame codec, CBOR messages, program images, integration, modem protocol, BLE envelope, diagnostics, and store-and-forward.
+All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `AeadProvider` and `Sha256Provider`. There are 97 test entries with IDs up to `T-P126` across 9 sections: header, frame codec, CBOR messages, program images, integration, modem protocol, BLE envelope, diagnostics, and store-and-forward.
 
 ### Traceability note
 
@@ -849,7 +849,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Validates:** protocol-crate-design.md §10
 
 **Procedure:**
-1. For each `ModemMessage` variant (`Reset`, `SendFrame`, `SetChannel`, `GetStatus`, `ScanChannels`, `ModemReady`, `RecvFrame`, `SetChannelAck`, `Status`, `ScanResult`, `Error`, `BleIndicate`, `BleEnable`, `BleDisable`, `BlePairingConfirmReply`, `BleRecv`, `BleConnected`, `BleDisconnected`, `BlePairingConfirm`, `Unknown { .. }`), encode and decode.
+1. For each `ModemMessage` variant (`Reset`, `SendFrame`, `SetChannel`, `GetStatus`, `ScanChannels`, `DisplayFrame`, `ModemReady`, `RecvFrame`, `SetChannelAck`, `Status`, `ScanResult`, `EventError`, `Error`, `BleIndicate`, `BleEnable`, `BleDisable`, `BlePairingConfirmReply`, `BleRecv`, `BleConnected`, `BleDisconnected`, `BlePairingConfirm`, `Unknown { .. }`), encode and decode.
 2. Assert: round-trip preserves all fields.
 
 ### T-P083  Frame envelope structure — LEN + TYPE + BODY
@@ -875,7 +875,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Validates:** protocol-crate-design.md §10 (Error handling — `SERIAL_MAX_LEN`)
 
 **Procedure:**
-1. Call `decode_modem_frame` with a frame exceeding `SERIAL_MAX_LEN` (512).
+1. Call `decode_modem_frame` with a frame exceeding `SERIAL_MAX_LEN` (1025).
 2. Assert: returns an error.
 
 ### T-P086  FrameDecoder streaming — byte-by-byte assembly
@@ -921,6 +921,35 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 1. Construct a frame with message type `0x7F` (undefined).
 2. Decode with `decode_modem_frame`.
 3. Assert: result matches `ModemMessage::Unknown { msg_type: 0x7F, body }` (or equivalent), and `body` equals the original payload bytes.
+
+### T-P091  ModemMessage round-trip — DISPLAY_FRAME
+
+**Validates:** protocol-crate-design.md §10
+
+**Procedure:**
+1. Construct `ModemMessage::DisplayFrame` with a known 1024-byte framebuffer.
+2. Encode with `encode_modem_frame`.
+3. Decode with `decode_modem_frame`.
+4. Assert: the decoded framebuffer matches byte-for-byte.
+
+### T-P092  DISPLAY_FRAME wrong length rejected
+
+**Validates:** protocol-crate-design.md §10 (Fixed-layout modem message validation)
+
+**Procedure:**
+1. Construct a raw modem frame with type `DISPLAY_FRAME` and a 1023-byte body.
+2. Decode with `decode_modem_frame`.
+3. Assert: returns a body-length error.
+4. Repeat with a 1025-byte body and assert: returns a body-length error.
+
+### T-P093  EventError round-trip
+
+**Validates:** protocol-crate-design.md §10
+
+**Procedure:**
+1. Encode `ModemMessage::EventError` for both defined codes: `INVALID_FRAME` and `DISPLAY_WRITE_FAILED`.
+2. Decode each frame.
+3. Assert: the decoded error code matches the original.
 
 ---
 

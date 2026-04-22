@@ -35,7 +35,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use pbkdf2::pbkdf2_hmac;
-use sha2::Sha256;
+use pbkdf2::sha2::Sha256 as PbkdfSha256;
 use zeroize::Zeroizing;
 
 use crate::gateway_identity::GatewayIdentity;
@@ -284,7 +284,7 @@ pub fn decrypt_state_full(bundle: &[u8], passphrase: &str) -> Result<FullState, 
 
 fn derive_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
     let mut key = [0u8; 32];
-    pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), salt, PBKDF2_ITERATIONS, &mut key);
+    pbkdf2_hmac::<PbkdfSha256>(passphrase.as_bytes(), salt, PBKDF2_ITERATIONS, &mut key);
     key
 }
 

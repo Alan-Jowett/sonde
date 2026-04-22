@@ -16,9 +16,10 @@ use std::time::{Duration, Instant};
 
 use sonde_protocol::modem::{
     encode_modem_frame, BleConnected, BleDisconnected, BlePairingConfirm, BlePairingConfirmReply,
-    BleRecv, EventButton, FrameDecoder, ModemCodecError, ModemError, ModemMessage, ModemReady,
-    ModemStatus, RecvFrame, ScanEntry, ScanResult, SendFrame, BUTTON_TYPE_LONG, BUTTON_TYPE_SHORT,
-    MAC_SIZE, MODEM_ERR_CHANNEL_SET_FAILED,
+    BleRecv, DisplayFrame, EventButton, EventError, FrameDecoder, ModemCodecError, ModemError,
+    ModemMessage, ModemReady, ModemStatus, RecvFrame, ScanEntry, ScanResult, SendFrame,
+    BUTTON_TYPE_LONG, BUTTON_TYPE_SHORT, DISPLAY_FRAME_BODY_SIZE, EVENT_ERROR_DISPLAY_WRITE_FAILED,
+    EVENT_ERROR_INVALID_FRAME, MAC_SIZE, MODEM_ERR_CHANNEL_SET_FAILED, MODEM_MSG_DISPLAY_FRAME,
 };
 
 use crate::status::ModemCounters;
@@ -74,11 +75,13 @@ fn msg_type_label(msg: &ModemMessage) -> &'static str {
         ModemMessage::SetChannel(_) => "SET_CHANNEL",
         ModemMessage::GetStatus => "GET_STATUS",
         ModemMessage::ScanChannels => "SCAN_CHANNELS",
+        ModemMessage::DisplayFrame(_) => "DISPLAY_FRAME",
         ModemMessage::ModemReady(_) => "MODEM_READY",
         ModemMessage::RecvFrame(_) => "RECV_FRAME",
         ModemMessage::SetChannelAck(_) => "SET_CHANNEL_ACK",
         ModemMessage::Status(_) => "STATUS",
         ModemMessage::ScanResult(_) => "SCAN_RESULT",
+        ModemMessage::EventError(_) => "EVENT_ERROR",
         ModemMessage::Error(_) => "ERROR",
         ModemMessage::BleIndicate(_) => "BLE_INDICATE",
         ModemMessage::BleEnable => "BLE_ENABLE",
@@ -189,6 +192,35 @@ impl Ble for NoBle {
     fn pairing_confirm_reply(&mut self, _accept: bool) {}
     fn drain_event(&self) -> Option<BleEvent> {
         None
+    }
+}
+
+/// Recoverable display-driver failure surfaced to the bridge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayError {
+    WriteFailed,
+}
+
+/// Abstraction over the modem-side OLED renderer.
+pub trait Display {
+    /// Queue a full framebuffer for incremental flushing.
+    fn queue_frame(&mut self, framebuffer: [u8; DISPLAY_FRAME_BODY_SIZE]);
+
+    /// Abort any in-flight flush state during modem reset.
+    fn reset(&mut self) {}
+
+    /// Advance the display by at most one incremental step.
+    fn poll(&mut self) -> Result<(), DisplayError>;
+}
+
+/// No-op display driver for host-side tests and builds without OLED hardware.
+pub struct NoDisplay;
+
+impl Display for NoDisplay {
+    fn queue_frame(&mut self, _framebuffer: [u8; DISPLAY_FRAME_BODY_SIZE]) {}
+
+    fn poll(&mut self) -> Result<(), DisplayError> {
+        Ok(())
     }
 }
 
@@ -339,19 +371,26 @@ impl<F: FnMut() -> bool> ButtonPoll for ButtonScanner<F> {
 }
 
 /// Bridge between a serial port, a radio driver, an optional BLE driver,
-/// and an optional button scanner.
-pub struct Bridge<S: SerialPort, R: Radio, B: Ble = NoBle, Btn: ButtonPoll = NoButton> {
+/// an optional button scanner, and an optional display driver.
+pub struct Bridge<
+    S: SerialPort,
+    R: Radio,
+    B: Ble = NoBle,
+    Btn: ButtonPoll = NoButton,
+    D: Display = NoDisplay,
+> {
     usb: S,
     radio: R,
     ble: B,
     button: Btn,
+    display: D,
     ble_enabled: bool,
     counters: Arc<ModemCounters>,
     decoder: FrameDecoder,
     rx_buf: [u8; 64],
 }
 
-impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle, NoButton> {
+impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle, NoButton, NoDisplay> {
     /// Create a bridge without BLE support (no-op BLE driver).
     pub fn new(usb: S, radio: R, counters: Arc<ModemCounters>) -> Self {
         Self {
@@ -359,6 +398,7 @@ impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle, NoButton> {
             radio,
             ble: NoBle,
             button: NoButton,
+            display: NoDisplay,
             ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
@@ -367,7 +407,7 @@ impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle, NoButton> {
     }
 }
 
-impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B, NoButton> {
+impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B, NoButton, NoDisplay> {
     /// Create a bridge with a BLE driver (BLE starts disabled, no button scanner).
     pub fn with_ble(usb: S, radio: R, mut ble: B, counters: Arc<ModemCounters>) -> Self {
         ble.disable();
@@ -376,6 +416,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B, NoButton> {
             radio,
             ble,
             button: NoButton,
+            display: NoDisplay,
             ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
@@ -384,7 +425,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B, NoButton> {
     }
 }
 
-impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
+impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn, NoDisplay> {
     /// Create a bridge with a BLE driver and a button scanner.
     ///
     /// The BLE driver is explicitly disabled during construction so that
@@ -404,6 +445,7 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
             radio,
             ble,
             button,
+            display: NoDisplay,
             ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
@@ -411,6 +453,31 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
         }
     }
 
+    /// Create a bridge with a BLE driver, button scanner, and display driver.
+    pub fn with_ble_button_and_display<D2: Display>(
+        usb: S,
+        radio: R,
+        mut ble: B,
+        button: Btn,
+        display: D2,
+        counters: Arc<ModemCounters>,
+    ) -> Bridge<S, R, B, Btn, D2> {
+        ble.disable();
+        Bridge {
+            usb,
+            radio,
+            ble,
+            button,
+            display,
+            ble_enabled: false,
+            counters,
+            decoder: FrameDecoder::new(),
+            rx_buf: [0u8; 64],
+        }
+    }
+}
+
+impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll, D: Display> Bridge<S, R, B, Btn, D> {
     /// Encode and write a modem message to the serial port. Returns true
     /// if the write succeeded.
     fn send_msg(&mut self, msg: &ModemMessage) -> bool {
@@ -432,6 +499,13 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
                 warn!("encode error: {}", e);
                 false
             }
+        }
+    }
+
+    fn send_event_error(&mut self, error_code: u8) {
+        let msg = ModemMessage::EventError(EventError { error_code });
+        if !self.send_msg(&msg) {
+            warn!("EVENT_ERROR dropped: error_code=0x{error_code:02X}");
         }
     }
 
@@ -490,6 +564,13 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
                     // only sent in response to a RESET command (§2.3).
                     self.decoder.reset();
                     break;
+                }
+                Err(ModemCodecError::BodyTooShort { msg_type, .. })
+                | Err(ModemCodecError::BodyTooLong { msg_type, .. })
+                    if msg_type == MODEM_MSG_DISPLAY_FRAME =>
+                {
+                    self.send_event_error(EVENT_ERROR_INVALID_FRAME);
+                    continue;
                 }
                 Err(_) => {
                     // Malformed body (too short, too long, etc.) — the frame
@@ -576,6 +657,11 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
                 );
             }
         }
+
+        if let Err(DisplayError::WriteFailed) = self.display.poll() {
+            warn!("DISPLAY_FRAME flush failed");
+            self.send_event_error(EVENT_ERROR_DISPLAY_WRITE_FAILED);
+        }
     }
 
     fn dispatch(&mut self, msg: ModemMessage) {
@@ -586,6 +672,7 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
             ModemMessage::SetChannel(ch) => self.handle_set_channel(ch),
             ModemMessage::GetStatus => self.handle_get_status(),
             ModemMessage::ScanChannels => self.handle_scan_channels(),
+            ModemMessage::DisplayFrame(frame) => self.handle_display_frame(*frame),
             ModemMessage::BleIndicate(ind) => self.handle_ble_indicate(ind.ble_data),
             ModemMessage::BleEnable => self.handle_ble_enable(),
             ModemMessage::BleDisable => self.handle_ble_disable(),
@@ -600,6 +687,7 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
     fn handle_reset(&mut self) {
         info!("RESET received");
         self.radio.reset_state();
+        self.display.reset();
         // BLE advertising is off by default after RESET (MD-0412).
         self.ble.disable();
         // Drain any stale BLE events (including BLE_DISCONNECTED from the
@@ -702,6 +790,10 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
         self.send_msg(&msg);
     }
 
+    fn handle_display_frame(&mut self, frame: DisplayFrame) {
+        self.display.queue_frame(frame.framebuffer);
+    }
+
     fn handle_ble_indicate(&mut self, data: Vec<u8>) {
         self.ble.indicate(&data);
     }
@@ -735,7 +827,9 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
 mod tests {
     use super::*;
     use sonde_protocol::modem::{
-        decode_modem_frame, BleIndicate, ModemMessage, SERIAL_MAX_FRAME_SIZE, SERIAL_MAX_LEN,
+        decode_modem_frame, BleIndicate, DisplayFrame, ModemMessage, DISPLAY_FRAME_BODY_SIZE,
+        EVENT_ERROR_DISPLAY_WRITE_FAILED, EVENT_ERROR_INVALID_FRAME, MODEM_MSG_DISPLAY_FRAME,
+        SERIAL_MAX_FRAME_SIZE, SERIAL_MAX_LEN,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
@@ -863,6 +957,37 @@ mod tests {
             self.sent.clear();
             self.rx_queue.borrow_mut().clear();
             self.peers.clear();
+        }
+    }
+
+    struct MockDisplay {
+        queued_frames: Vec<[u8; DISPLAY_FRAME_BODY_SIZE]>,
+        poll_count: usize,
+        fail_next_poll: bool,
+    }
+
+    impl MockDisplay {
+        fn new() -> Self {
+            Self {
+                queued_frames: Vec::new(),
+                poll_count: 0,
+                fail_next_poll: false,
+            }
+        }
+    }
+
+    impl Display for MockDisplay {
+        fn queue_frame(&mut self, framebuffer: [u8; DISPLAY_FRAME_BODY_SIZE]) {
+            self.queued_frames.push(framebuffer);
+        }
+
+        fn poll(&mut self) -> Result<(), DisplayError> {
+            self.poll_count += 1;
+            if self.fail_next_poll {
+                self.fail_next_poll = false;
+                return Err(DisplayError::WriteFailed);
+            }
+            Ok(())
         }
     }
 
@@ -1006,6 +1131,61 @@ mod tests {
             }
             _ => panic!("expected ScanResult"),
         }
+    }
+
+    #[test]
+    fn display_frame_queued_for_display_driver() {
+        let mut bridge = make_bridge_with_display();
+        let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
+        framebuffer[0] = 0x80;
+        framebuffer[DISPLAY_FRAME_BODY_SIZE - 1] = 0x01;
+        let frame = encode_modem_frame(&ModemMessage::DisplayFrame(Box::new(DisplayFrame {
+            framebuffer,
+        })))
+        .unwrap();
+        feed_and_drain(&mut bridge, &frame);
+        assert_eq!(bridge.display.queued_frames.len(), 1);
+        assert_eq!(bridge.display.queued_frames[0], framebuffer);
+        assert!(bridge.display.poll_count >= 1);
+        assert!(bridge.usb.take_tx().is_empty());
+    }
+
+    #[test]
+    fn malformed_display_frame_emits_event_error() {
+        let mut bridge = make_bridge_with_display();
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&(DISPLAY_FRAME_BODY_SIZE as u16).to_be_bytes());
+        raw.push(MODEM_MSG_DISPLAY_FRAME);
+        raw.extend_from_slice(&vec![0u8; DISPLAY_FRAME_BODY_SIZE - 1]);
+        feed_and_drain(&mut bridge, &raw);
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert_eq!(
+            msg,
+            ModemMessage::EventError(EventError {
+                error_code: EVENT_ERROR_INVALID_FRAME,
+            })
+        );
+        assert!(bridge.display.queued_frames.is_empty());
+    }
+
+    #[test]
+    fn display_write_failure_emits_event_error() {
+        let mut bridge = make_bridge_with_display();
+        bridge.display.fail_next_poll = true;
+        let frame = encode_modem_frame(&ModemMessage::DisplayFrame(Box::new(DisplayFrame {
+            framebuffer: [0x42; DISPLAY_FRAME_BODY_SIZE],
+        })))
+        .unwrap();
+        feed_and_drain(&mut bridge, &frame);
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert_eq!(
+            msg,
+            ModemMessage::EventError(EventError {
+                error_code: EVENT_ERROR_DISPLAY_WRITE_FAILED,
+            })
+        );
     }
 
     // --- Radio → USB forwarding tests ---
@@ -1219,9 +1399,9 @@ mod tests {
     fn framing_error_recovery_via_reset() {
         let mut bridge = make_bridge();
 
-        // Inject corrupt data: a length prefix claiming 600 bytes (> SERIAL_MAX_LEN).
+        // Inject corrupt data: a length prefix larger than SERIAL_MAX_LEN.
         // This triggers FrameTooLarge and decoder reset.
-        let corrupt: [u8; 4] = [0x02, 0x58, 0xFF, 0xFF]; // len=600
+        let corrupt: [u8; 4] = [0x04, 0x02, 0xFF, 0xFF]; // len=1026
         bridge.usb.inject(&corrupt);
         bridge.poll();
         let tx = bridge.usb.take_tx();
@@ -1232,8 +1412,7 @@ mod tests {
 
         // Now send a proper RESET — the decoder should recover.
         let reset = encode_modem_frame(&ModemMessage::Reset).unwrap();
-        bridge.usb.inject(&reset);
-        bridge.poll();
+        feed_and_drain(&mut bridge, &reset);
         let tx = bridge.usb.take_tx();
         let (msg, _) = decode_modem_frame(&tx).unwrap();
         assert!(matches!(msg, ModemMessage::ModemReady(_)));
@@ -1432,6 +1611,17 @@ mod tests {
             MockSerial::new(),
             MockRadio::new(),
             MockBle::new(),
+            ModemCounters::new(),
+        )
+    }
+
+    fn make_bridge_with_display() -> Bridge<MockSerial, MockRadio, MockBle, NoButton, MockDisplay> {
+        Bridge::with_ble_button_and_display(
+            MockSerial::new(),
+            MockRadio::new(),
+            MockBle::new(),
+            NoButton,
+            MockDisplay::new(),
             ModemCounters::new(),
         )
     }
@@ -1735,7 +1925,7 @@ mod tests {
     /// Validates: T-0102
     ///
     /// RESET → MODEM_READY, GET_STATUS → well-formed STATUS, then send a
-    /// max-length frame (len=512, unknown type) and verify silent discard
+    /// max-length frame (len=`SERIAL_MAX_LEN`, unknown type) and verify silent discard
     /// followed by successful GET_STATUS.
     #[test]
     fn serial_framing_valid_frame_and_max_length() {
@@ -1759,7 +1949,7 @@ mod tests {
 
         // 3. Send max-length frame: len=SERIAL_MAX_LEN, type=0x7F (unknown), padding.
         //    The bridge reads 64 bytes per poll, so multiple polls are needed.
-        let max_body = SERIAL_MAX_LEN as usize - 1; // 511 bytes (TYPE takes 1)
+        let max_body = SERIAL_MAX_LEN as usize - 1;
         let mut max_frame = Vec::new();
         max_frame.extend_from_slice(&SERIAL_MAX_LEN.to_be_bytes()); // LEN
         max_frame.push(0x7F); // TYPE = unknown
@@ -1794,8 +1984,8 @@ mod tests {
 
     /// Validates: T-0103
     ///
-    /// Send RESET, then an oversized LEN header (len = SERIAL_MAX_LEN + 1,
-    /// exceeding the 512-byte max), then RESET again to resynchronize.
+    /// Send RESET, then an oversized LEN header (len = SERIAL_MAX_LEN + 1),
+    /// then RESET again to resynchronize.
     /// Assert: modem recovers and sends MODEM_READY.
     #[test]
     fn serial_framing_oversized_len() {
@@ -2725,7 +2915,10 @@ mod tests {
     }
 
     /// Feed `data` into the bridge serial port and poll until fully consumed.
-    fn feed_and_drain<R: Radio, B: Ble>(bridge: &mut Bridge<MockSerial, R, B>, data: &[u8]) {
+    fn feed_and_drain<R: Radio, B: Ble, Btn: ButtonPoll, D: Display>(
+        bridge: &mut Bridge<MockSerial, R, B, Btn, D>,
+        data: &[u8],
+    ) {
         bridge.usb.inject(data);
         let buf_len = bridge.rx_buf.len();
         for _ in 0..(data.len() / buf_len + 2) {

@@ -39,7 +39,7 @@ USB-CDC provides reliable, ordered byte delivery. The protocol uses simple lengt
 
 ### 2.1  Frame envelope
 
-Every serial frame starts with a 2-byte big-endian `LEN` field that gives the combined length of the TYPE byte and BODY in bytes (so the minimum value is 1 and the maximum is 512). The `LEN` field itself is not included in the count. Following `LEN` is a single `TYPE` byte (the message type discriminator), then the variable-length `BODY` (0 to 511 bytes).
+Every serial frame starts with a 2-byte big-endian `LEN` field that gives the combined length of the TYPE byte and BODY in bytes (so the minimum value is 1 and the maximum is 1025). The `LEN` field itself is not included in the count. Following `LEN` is a single `TYPE` byte (the message type discriminator), then the variable-length `BODY` (0 to 1024 bytes).
 
 ```
 ┌───────────┬──────────┬──────────────────────────────┐
@@ -50,16 +50,16 @@ Every serial frame starts with a 2-byte big-endian `LEN` field that gives the co
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| `len` | Unsigned integer | 2 bytes, big-endian | Length of TYPE + BODY in bytes (does not include the LEN field itself). Minimum value: 1. Maximum value: 512. |
+| `len` | Unsigned integer | 2 bytes, big-endian | Length of TYPE + BODY in bytes (does not include the LEN field itself). Minimum value: 1. Maximum value: 1025. |
 | `type` | Unsigned integer | 1 byte | Message type discriminator (see §3). |
-| `body` | Bytes | 0 .. 511 bytes | Type-specific payload. |
+| `body` | Bytes | 0 .. 1024 bytes | Type-specific payload. |
 
-The maximum body size of 511 bytes provides generous headroom above the 250-byte ESP-NOW frame limit plus the 6-byte MAC address overhead.
+The maximum body size of 1024 bytes is chosen to accommodate a single full-frame `DISPLAY_FRAME` command (§4.7a) carrying a raw 128×64 1-bit framebuffer.
 
 ### 2.2  Receiver behavior
 
 - Frames with `len` = 0 MUST be silently discarded.
-- Frames with `len` > 512 MUST be treated as a framing error. The receiver MUST NOT skip `len` bytes (the value is untrusted and could be up to 65,535). Instead, the receiver MUST initiate the `RESET`-based resynchronization procedure (§2.3).
+- Frames with `len` > 1025 MUST be treated as a framing error. The receiver MUST NOT skip `len` bytes (the value is untrusted and could be up to 65,535). Instead, the receiver MUST initiate the `RESET`-based resynchronization procedure (§2.3).
 - Frames with an unknown `type` value MUST be silently discarded (forward compatibility).
 
 ### 2.3  Synchronization recovery
@@ -90,6 +90,7 @@ Message types are partitioned by direction:
 | 0x03 | `SET_CHANNEL` | §4.2 | Set the WiFi/ESP-NOW channel. Modem responds with `SET_CHANNEL_ACK`. |
 | 0x04 | `GET_STATUS` | (empty) | Query modem status and counters. Modem responds with `STATUS`. |
 | 0x05 | `SCAN_CHANNELS` | (empty) | Perform a WiFi AP scan across all channels. Modem responds with `SCAN_RESULT`. |
+| 0x09 | `DISPLAY_FRAME` | §4.7a | Render a full 128×64 1-bit framebuffer to the attached OLED. Fire-and-forget. |
 | 0x20 | `BLE_INDICATE` | §4.9 | Send a BLE indication to the connected phone (gateway response wrapped in BLE envelope). |
 | 0x21 | `BLE_ENABLE` | §4.13 | Enable BLE advertising and accept connections for the Gateway Pairing Service. |
 | 0x22 | `BLE_DISABLE` | §4.14 | Disable BLE advertising and disconnect any active BLE client. |
@@ -104,6 +105,7 @@ Message types are partitioned by direction:
 | 0x84 | `SET_CHANNEL_ACK` | §4.5 | Confirms a channel change. |
 | 0x85 | `STATUS` | §4.6 | Modem status and counters (response to `GET_STATUS`). |
 | 0x86 | `SCAN_RESULT` | §4.7 | Per-channel AP survey results (response to `SCAN_CHANNELS`). |
+| 0x89 | `EVENT_ERROR` | §4.8a | Recoverable display-path error notification. |
 | 0x8F | `ERROR` | §4.8 | Unrecoverable modem error. |
 | 0xA0 | `BLE_RECV` | §4.10 | A BLE GATT write was received from the connected phone. |
 | 0xA1 | `BLE_CONNECTED` | §4.11 | A BLE client connected to the Gateway Pairing Service. |
@@ -239,6 +241,35 @@ Each entry is 3 bytes. For all 14 channels the total body is 1 + (14 × 3) = 43 
 
 **Important:** Channel scanning temporarily takes over the WiFi radio (~2–3 seconds). Inbound ESP-NOW frames may be dropped during a scan. This command should only be used during initial setup or administrator-triggered maintenance, not during normal gateway operation.
 
+### 4.7a  DISPLAY_FRAME (Gateway → Modem)
+
+Send a complete framebuffer to the modem for rendering on the attached SSD1306-compatible OLED. This is a fire-and-forget operation — no per-frame acknowledgement is sent. The modem renders only complete frames; partial updates are not supported.
+
+The `DISPLAY_FRAME` body is exactly 1024 bytes representing a 128×64 monochrome framebuffer in **row-major** order. Rows are transmitted top-to-bottom. Within each row, bytes progress left-to-right, and within each byte the most-significant bit corresponds to the leftmost pixel of the 8-pixel group.
+
+```text
+body_len = 1024 bytes
+row 0: bytes 0..15
+row 1: bytes 16..31
+...
+row 63: bytes 1008..1023
+```
+
+Pixel mapping for byte `framebuffer[(y * 16) + (x / 8)]`:
+
+| Bit | Pixel |
+|-----|-------|
+| 7 (`0x80`) | `x + 0` |
+| 6 (`0x40`) | `x + 1` |
+| 5 (`0x20`) | `x + 2` |
+| 4 (`0x10`) | `x + 3` |
+| 3 (`0x08`) | `x + 4` |
+| 2 (`0x04`) | `x + 5` |
+| 1 (`0x02`) | `x + 6` |
+| 0 (`0x01`) | `x + 7` |
+
+The modem MUST NOT interpret framebuffer content semantically. It treats the payload as opaque pixel data supplied by the gateway.
+
 ### 4.8  ERROR (Modem → Gateway)
 
 Reports an unrecoverable modem error. The gateway should log this and may attempt a `RESET`.
@@ -254,6 +285,21 @@ Reports an unrecoverable modem error. The gateway should log this and may attemp
 | 0x02 | `WIFI_INIT_FAILED` | WiFi stack initialization failed. |
 | 0x03 | `CHANNEL_SET_FAILED` | Failed to set the requested channel. |
 | 0xFF | `UNKNOWN` | Unclassified error. |
+
+### 4.8a  EVENT_ERROR (Modem → Gateway)
+
+Reports a **recoverable** display-path error. Unlike `ERROR` (§4.8), `EVENT_ERROR` does not imply that the modem must be reset or that unrelated radio/BLE/USB functionality has failed.
+
+The `EVENT_ERROR` body is a single 1-byte `error_code` field.
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `error_code` | Unsigned integer | 1 byte | Recoverable display error code (see table below). |
+
+| Error code | Name | Description |
+|------------|------|-------------|
+| 0x01 | `INVALID_FRAME` | `DISPLAY_FRAME` payload was malformed (for example, body length was not exactly 1024 bytes). |
+| 0x02 | `DISPLAY_WRITE_FAILED` | The modem failed to write the accepted framebuffer to the OLED over I²C. |
 
 ### 4.9  BLE_INDICATE (Gateway → Modem)
 
@@ -523,6 +569,21 @@ Gateway                          Modem                            Phone
 
 BLE pairing relay operates concurrently with ESP-NOW frame relay (§5.2). The modem MUST NOT block ESP-NOW operations while a BLE client is connected.
 
+### 5.7  Display update
+
+Display updates are gateway-driven and independent of radio/BLE traffic.
+
+```text
+Gateway                          Modem
+   │                               │
+   │──── DISPLAY_FRAME ───────────►│
+   │                               │── render full framebuffer to OLED
+   │                               │
+   │◄──── EVENT_ERROR? ────────────│  (only on INVALID_FRAME or DISPLAY_WRITE_FAILED)
+```
+
+`DISPLAY_FRAME` is fire-and-forget. Successful renders produce no response.
+
 ---
 
 ## 6  Error handling
@@ -532,10 +593,11 @@ BLE pairing relay operates concurrently with ESP-NOW frame relay (§5.2). The mo
 | Condition | Receiver behavior |
 |-----------|-------------------|
 | `len` = 0 | Silently discard. |
-| `len` > 512 | Framing error. MUST NOT skip `len` bytes (untrusted value). Trigger `RESET`-based resynchronization (§2.3). |
+| `len` > 1025 | Framing error. MUST NOT skip `len` bytes (untrusted value). Trigger `RESET`-based resynchronization (§2.3). |
 | Unknown `type` | Silently discard (forward compatibility). |
 | `SEND_FRAME` body < 7 bytes (no MAC + data) | Modem silently discards. |
 | `SET_CHANNEL` with `channel` = 0 or > 14 | Modem sends `ERROR` with code `CHANNEL_SET_FAILED`. |
+| `DISPLAY_FRAME` body length != 1024 | Modem sends `EVENT_ERROR(INVALID_FRAME)` and leaves the current display contents unchanged. |
 
 ### 6.2  Missing responses
 
@@ -544,7 +606,7 @@ The gateway expects responses for request-response commands. If a response is no
 1. Log the timeout.
 2. Send `RESET` and re-run the startup sequence (§5.1).
 
-`SEND_FRAME` is fire-and-forget and has no expected response — it cannot time out.
+`SEND_FRAME` and `DISPLAY_FRAME` are fire-and-forget and have no expected response — they cannot time out.
 
 ### 6.3  USB disconnection
 
@@ -555,9 +617,10 @@ If the USB-CDC link drops:
 
 ### 6.4  Unsolicited messages
 
-The modem may send `RECV_FRAME`, `ERROR`, or `EVENT_BUTTON` at any time, interleaved with responses to gateway commands. The gateway's serial reader must demultiplex:
+The modem may send `RECV_FRAME`, `EVENT_ERROR`, `ERROR`, or `EVENT_BUTTON` at any time, interleaved with responses to gateway commands. The gateway's serial reader must demultiplex:
 
 - `RECV_FRAME` → deliver to the `Transport::recv()` caller.
+- `EVENT_ERROR` → log the recoverable display fault and continue operating.
 - `ERROR` → log and optionally trigger recovery.
 - `EVENT_BUTTON` → deliver to the button-event handler (e.g., registration window activation). **Note:** gateway-side consumption of `EVENT_BUTTON` is not yet implemented; the message is currently logged and otherwise ignored.
 - Expected response (e.g., `STATUS`, `SET_CHANNEL_ACK`) → deliver to the waiting command.
@@ -573,7 +636,7 @@ The modem may send `RECV_FRAME`, `ERROR`, or `EVENT_BUTTON` at any time, interle
 | `STATUS` after `GET_STATUS` | 2 seconds | Log warning, skip this poll cycle. |
 | `SCAN_RESULT` after `SCAN_CHANNELS` | 10 seconds | Log error (scan may have failed). |
 
-`SEND_FRAME` and `RECV_FRAME` have no timeouts — sends are fire-and-forget, and receives are asynchronous events.
+`SEND_FRAME`, `DISPLAY_FRAME`, and `RECV_FRAME` have no timeouts — sends are fire-and-forget, and receives are asynchronous events.
 
 The gateway does not retry individual commands (other than `RESET`). If a command fails, the recovery path is always: `RESET` → `MODEM_READY` → `SET_CHANNEL` → resume.
 
@@ -593,11 +656,11 @@ The `firmware_version` field in `MODEM_READY` allows the gateway to detect the m
 
 | Range | Purpose |
 |-------|---------|
-| 0x01 – 0x0F | Core modem commands (RESET, SEND_FRAME, SET_CHANNEL, GET_STATUS, SCAN_CHANNELS) |
+| 0x01 – 0x0F | Core modem commands (RESET, SEND_FRAME, SET_CHANNEL, GET_STATUS, SCAN_CHANNELS, DISPLAY_FRAME) |
 | 0x10 – 0x1F | Reserved |
 | 0x20 – 0x2F | BLE relay commands (BLE_INDICATE, BLE_ENABLE, BLE_DISABLE, BLE_PAIRING_CONFIRM_REPLY) |
 | 0x30 – 0x7F | Reserved for future gateway → modem commands |
-| 0x81 – 0x8F | Core modem events/responses |
+| 0x81 – 0x8F | Core modem events/responses (`MODEM_READY`, `RECV_FRAME`, `SET_CHANNEL_ACK`, `STATUS`, `SCAN_RESULT`, `EVENT_ERROR`, `ERROR`) |
 | 0x90 – 0x9F | Reserved |
 | 0xA0 – 0xAF | BLE relay events (BLE_RECV, BLE_CONNECTED, BLE_DISCONNECTED, BLE_PAIRING_CONFIRM) |
 | 0xB0 – 0xBF | GPIO / hardware events (EVENT_BUTTON) |

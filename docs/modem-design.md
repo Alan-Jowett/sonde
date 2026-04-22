@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-The modem firmware is a tri-directional bridge between USB-CDC, ESP-NOW, and BLE GATT. It runs on an ESP32-S3 and has no awareness of the Sonde node–gateway protocol — it relays opaque byte frames, adding only peer MAC address and RSSI metadata. BLE is used exclusively for the Gateway Pairing Service, which relays pairing messages between a phone and the gateway.
+The modem firmware is a tri-directional bridge between USB-CDC, ESP-NOW, and BLE GATT, with an additional gateway-controlled OLED display output path. It runs on an ESP32-S3 and has no awareness of the Sonde node–gateway protocol — it relays opaque byte frames, adding only peer MAC address and RSSI metadata, and renders opaque display framebuffers without interpreting their content. BLE is used exclusively for the Gateway Pairing Service, which relays pairing messages between a phone and the gateway.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -29,7 +29,9 @@ The modem firmware is a tri-directional bridge between USB-CDC, ESP-NOW, and BLE
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The firmware is intentionally minimal — no application- or protocol-layer crypto (all BLE link security is handled inside the BLE stack), no CBOR parsing, no OTA updates. The modem does not interpret message contents on any transport. BLE connection state is managed only for the GATT pairing relay; the modem holds no protocol-level sessions.
+> **Note:** The OLED display path is omitted from the diagram for readability; see §9a for the display driver design.
+
+The firmware is intentionally minimal — no application- or protocol-layer crypto (all BLE link security is handled inside the BLE stack), no CBOR parsing, no OTA updates. The modem does not interpret message contents on any transport. The display path is intentionally dumb: it writes gateway-supplied framebuffers to the OLED but does not generate text, menus, or pairing screens. BLE connection state is managed only for the GATT pairing relay; the modem holds no protocol-level sessions.
 
 ---
 
@@ -61,6 +63,7 @@ The firmware is intentionally minimal — no application- or protocol-layer cryp
 | **BLE lifecycle** | `BLE_ENABLE`/`BLE_DISABLE` handling, connection/disconnection events, `BLE_CONNECTED`/`BLE_DISCONNECTED` notifications, idle timeout | MD-0405, MD-0410, MD-0411, MD-0413, MD-0414, MD-0415 |
 | **Watchdog** *(cross-cutting)* | Task watchdog feed in main loop; hardware reset on stall | MD-0302 |
 | **Button scanner** | GPIO2 polling, debounce, press classification, `EVENT_BUTTON` emission | MD-0600, MD-0601, MD-0602, MD-0603, MD-0604, MD-0605 |
+| **Display driver** | Validate `DISPLAY_FRAME`, convert row-major pixels to SSD1306 page writes, incremental I²C flush, `EVENT_ERROR` emission | MD-0700, MD-0701, MD-0702, MD-0703, MD-0704 |
 
 ---
 
@@ -106,7 +109,7 @@ The frame envelope encoder/decoder and message type constants live in `sonde-pro
 
 1. Read 2 bytes → `len` (big-endian u16).
 2. If `len` = 0 → silently discard (no resync needed).
-3. If `len` > 512 → discard, trigger `RESET`-based resync.
+3. If `len` > 1025 → discard, trigger `RESET`-based resync.
 4. Read `len` bytes → `type` (1 byte) + `body` (remaining).
 5. Dispatch by `type`:
 
@@ -117,6 +120,7 @@ The frame envelope encoder/decoder and message type constants live in `sonde-pro
 | 0x03 `SET_CHANNEL` | → `handle_set_channel(body)` |
 | 0x04 `GET_STATUS` | → `handle_get_status()` |
 | 0x05 `SCAN_CHANNELS` | → `handle_scan_channels()` |
+| 0x09 `DISPLAY_FRAME` | → `handle_display_frame(body)` |
 | Unknown | → silently discard |
 
 ### 5.3  Outbound encoding (modem → gateway)
@@ -233,17 +237,59 @@ loop {
     //   - USB serial decode + dispatch
     //   - BLE event drain
     //   - Button GPIO poll → EVENT_BUTTON on classified release
+    //   - Incremental OLED page flush
     bridge.poll();
 
     feed_watchdog();
 }
 ```
 
-The main loop delegates all I/O to `Bridge::poll()`, which decodes USB serial frames, drains BLE events, and polls the button GPIO. ESP-NOW frames arrive via callback into the ring; the bridge constructs `RECV_FRAME` messages and writes them to USB. Button press/release is detected via non-blocking GPIO reads and classified by duration (see §16).
+The main loop delegates all I/O to `Bridge::poll()`, which decodes USB serial frames, drains BLE events, polls the button GPIO, and advances at most one OLED page flush per iteration. ESP-NOW frames arrive via callback into the ring; the bridge constructs `RECV_FRAME` messages and writes them to USB. Button press/release is detected via non-blocking GPIO reads and classified by duration (see §16).
 
 > **Per-poll processing caps (D9-2):** BLE events are drained up to `MAX_BLE_EVENTS_PER_POLL` (16) per main-loop iteration to prevent sustained BLE traffic from starving serial decode and ESP-NOW radio processing.
 
 > **Queue size limits (D9-3):** The BLE driver uses a bounded event queue (`MAX_BLE_EVENT_QUEUE = 32`). Events arriving when the queue is full are dropped; the firmware emits warnings for some drop conditions (for example, GATT writes rejected when not authenticated or when the event queue is full, and indication queue overflow). Outbound BLE indication fragments are also bounded (`MAX_INDICATION_CHUNKS = 64`); `BLE_INDICATE` messages that would exceed this limit are rejected. These caps prevent unbounded memory growth on the constrained ESP32-S3.
+
+## 9a  Display output
+
+The display path is integrated into `Bridge::poll()` so rendering remains subordinate to USB, ESP-NOW, and BLE work. Display I²C operations are never performed from WiFi, USB, or BLE callbacks.
+
+### 9a.1  Hardware target
+
+The modem drives an SSD1306-compatible 128×64 OLED over I²C on the ESP32-S3 module's D4/D5 pins (`D4` = SDA = GPIO5, `D5` = SCL = GPIO6) at 7-bit address `0x3C`.
+
+### 9a.2  Command handling
+
+On `DISPLAY_FRAME`:
+
+1. Validate that the body length is exactly 1024 bytes.
+2. Treat the body as a row-major, MSB-first framebuffer (`0x80` = leftmost pixel).
+3. Copy the framebuffer into a pending display buffer.
+4. Mark a new flush sequence starting at page 0.
+
+If the body length is not 1024 bytes, the bridge enqueues `EVENT_ERROR(INVALID_FRAME)` and leaves the current display contents unchanged.
+
+### 9a.3  Incremental OLED flush
+
+The SSD1306 display RAM is page-oriented (8 vertical pixels per byte), while `DISPLAY_FRAME` uses row-major pixels. The display driver therefore converts the pending framebuffer into SSD1306 page writes during flush.
+
+To preserve modem responsiveness (MD-0702), `display.poll()` performs at most one SSD1306 page write per main-loop iteration:
+
+1. If the display is not initialized yet, send the SSD1306 init sequence once.
+2. Select the next page/column window.
+3. Convert one 128-byte page from the row-major framebuffer into SSD1306 page bytes.
+4. Issue the I²C write for that page and return to the main loop.
+
+If a newer `DISPLAY_FRAME` arrives while an older one is still flushing, the pending buffer is replaced and the next flush restarts from page 0 so the display converges to the latest gateway-supplied image.
+
+### 9a.4  Failure handling
+
+If any OLED I²C transaction fails during initialization or page flush:
+
+1. Abort the current flush attempt.
+2. Enqueue `EVENT_ERROR(DISPLAY_WRITE_FAILED)`.
+3. Leave all non-display modem state unchanged.
+4. Accept future `DISPLAY_FRAME` commands normally.
 
 ---
 
@@ -299,7 +345,9 @@ The modem extends the shared ESP-NOW driver with channel scanning and USB bridgi
 | WiFi init failure | Panic → automatic reboot |
 | Channel set failure | Send `ERROR(CHANNEL_SET_FAILED)` to gateway |
 | `SEND_FRAME` with body < 7 bytes | Silently discard (codec returns `BodyTooShort`, bridge continues) |
-| Serial frame `len` > 512 | Decoder reset; gateway must send `RESET` to resync (modem-protocol.md §2.3) |
+| `DISPLAY_FRAME` with body length != 1024 | Send `EVENT_ERROR(INVALID_FRAME)`; keep the previous display image |
+| OLED I²C write failure | Send `EVENT_ERROR(DISPLAY_WRITE_FAILED)`; abort the current display flush |
+| Serial frame `len` > 1025 | Decoder reset; gateway must send `RESET` to resync (modem-protocol.md §2.3) |
 | Unknown serial message type | Silently discard |
 
 > **Note:** WiFi and ESP-NOW initialization failures are treated as unrecoverable. The firmware uses `.expect()`, so a failed init call will panic. Early in boot this panic is handled directly by the panic handler (before the task watchdog is configured for the current task); later, if the main loop stalls, the task watchdog (configured with `trigger_panic: true`) will trigger a panic and reset. In both cases the observable behavior is an automatic reboot. Sending `ERROR` messages to the gateway before init completes is not possible because USB-CDC may not be ready.

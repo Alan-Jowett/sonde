@@ -268,9 +268,12 @@ impl<F: FnMut() -> bool> ButtonScanner<F> {
                     // Glitch — return to idle.
                     self.state = ButtonState::Idle;
                 } else if now.duration_since(since) >= debounce {
-                    // Debounce confirmed — record press start as now (MD-0602:
-                    // duration is measured from debounced press to debounced release).
-                    self.state = ButtonState::Pressed { press_start: now };
+                    // Debounce confirmed — record the actual debounced transition
+                    // instant, not `now`, so poll-cadence jitter doesn't inflate
+                    // or deflate the measured press duration (MD-0602).
+                    self.state = ButtonState::Pressed {
+                        press_start: since + debounce,
+                    };
                 }
                 None
             }
@@ -289,9 +292,12 @@ impl<F: FnMut() -> bool> ButtonScanner<F> {
                     self.state = ButtonState::Pressed { press_start };
                     None
                 } else if now.duration_since(since) >= debounce {
-                    // Debounced release — classify.
+                    // Debounced release — classify using the true debounced
+                    // release instant so poll-cadence jitter doesn't skew the
+                    // measured duration.
                     self.state = ButtonState::Idle;
-                    let duration = now.duration_since(press_start);
+                    let debounced_release = since + debounce;
+                    let duration = debounced_release.duration_since(press_start);
                     if duration >= BUTTON_LONG_THRESHOLD {
                         Some(BUTTON_TYPE_LONG)
                     } else {

@@ -62,5 +62,5 @@ tower = "0.5"
 
 [features]
 default = ["keyring"]
-keyring = ["secret-service"]
+keyring = ["dep:secret-service"]
 python-tests = []

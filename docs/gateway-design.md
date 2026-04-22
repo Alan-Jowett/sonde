@@ -1795,7 +1795,7 @@ Each architecture (`linux/amd64`, `linux/arm64`) is built natively on a per-arch
 
 **Multi-stage Dockerfile** (`.github/docker/Dockerfile.gateway`):
 
-1. **Builder stage** (`rust:alpine`): installs `musl-dev` and `protobuf-dev`, builds all four binaries with `--no-default-features` (excludes the `keyring` feature and its `secret-service`/`zbus` dependency tree).
+1. **Builder stage** (`rust:alpine`): installs `musl-dev` and `protobuf`, builds all four binaries with `--no-default-features` (excludes the `keyring` feature and its `secret-service`/`zbus` dependency tree).
 2. **Runtime stage** (`alpine:3.21`): copies only the compiled binaries, creates a non-root `sonde` user, and declares `VOLUME /var/lib/sonde`.
 
 ### 22.3  Feature flag: `keyring` (GW-1803)
@@ -1824,4 +1824,4 @@ Serial device access requires the operator to pass `--device=/dev/ttyACM0` and `
 
 ### 22.6  CI integration
 
-The `gateway-container.yml` workflow is called by `nightly-release.yml` as a parallel job. The nightly release job waits for the container build to complete before publishing the GitHub release. The container workflow is also triggered independently on release tags and `workflow_dispatch`.
+The `gateway-container.yml` workflow is called by `nightly-release.yml` as a parallel job. The nightly release job waits for the container build to complete before publishing the GitHub release. Release-tag container builds are therefore driven indirectly via `nightly-release.yml`, while `gateway-container.yml` itself is also available via `workflow_dispatch`.

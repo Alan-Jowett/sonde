@@ -190,12 +190,12 @@ fn t0603i_secret_service_item_not_found() {
     );
 }
 
-// ── T-0603j: SecretServiceKeyProvider — unavailable on non-Linux ────────────
+// ── T-0603j: SecretServiceKeyProvider — unavailable without keyring ──────────
 
-/// T-0603j  SecretServiceKeyProvider — unavailable on non-Linux.
+/// T-0603j  SecretServiceKeyProvider — unavailable without `keyring` feature.
 #[cfg(not(all(target_os = "linux", feature = "keyring")))]
 #[test]
-fn t0603j_secret_service_unavailable_on_non_linux() {
+fn t0603j_secret_service_unavailable_without_keyring() {
     let err = KeyProviderError::NotAvailable(
         "secret-service backend is only available on Linux with the `keyring` feature".into(),
     );

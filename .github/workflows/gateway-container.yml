@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -80,11 +80,12 @@ jobs:
             'whoami | grep -q sonde && touch /var/lib/sonde/test && rm /var/lib/sonde/test'
 
       # Push the per-arch image with a temporary tag (consumed by the
-      # manifest job). Public user-facing tags are only created after
-      # BOTH architectures pass.
+      # manifest job). Include the workflow run ID so overlapping runs
+      # for the same commit cannot overwrite each other's temporary tags.
+      # Public user-facing tags are only created after BOTH architectures pass.
       - name: Push per-arch image
         run: |
-          ARCH_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${{ github.sha }}-${{ matrix.arch }}"
+          ARCH_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}"
           docker tag "${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }}" "$ARCH_TAG"
           docker push "$ARCH_TAG"
 
@@ -129,8 +130,8 @@ jobs:
         run: |
           set -euo pipefail
           BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          AMD64="${BASE}:build-${{ github.sha }}-amd64"
-          ARM64="${BASE}:build-${{ github.sha }}-arm64"
+          AMD64="${BASE}:build-${{ github.sha }}-${{ github.run_id }}-amd64"
+          ARM64="${BASE}:build-${{ github.sha }}-${{ github.run_id }}-arm64"
 
           IFS=',' read -ra TAG_ARRAY <<< "${{ steps.tags.outputs.tags }}"
           for TAG in "${TAG_ARRAY[@]}"; do

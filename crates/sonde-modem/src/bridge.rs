@@ -334,7 +334,7 @@ impl ButtonPoll for NoButton {
 
 impl<F: FnMut() -> bool> ButtonPoll for ButtonScanner<F> {
     fn poll(&mut self) -> Option<u8> {
-        self.poll()
+        ButtonScanner::poll(self)
     }
 }
 

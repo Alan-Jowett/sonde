@@ -15,8 +15,8 @@ use tracing::{debug, error, info, warn};
 
 use sonde_protocol::modem::{
     encode_modem_frame, BleConnected, BleDisconnected, BleIndicate, BlePairingConfirm,
-    BlePairingConfirmReply, BleRecv, FrameDecoder, ModemMessage, ModemReady, ModemStatus,
-    ScanResult, SendFrame,
+    BlePairingConfirmReply, BleRecv, DisplayFrame, EventError, FrameDecoder, ModemMessage,
+    ModemReady, ModemStatus, ScanResult, SendFrame,
 };
 
 use sonde_protocol::constants::{
@@ -53,6 +53,7 @@ fn modem_msg_label(msg: &ModemMessage) -> &'static str {
         ModemMessage::Reset => "RESET",
         ModemMessage::ModemReady(_) => "MODEM_READY",
         ModemMessage::SendFrame(_) => "SEND_FRAME",
+        ModemMessage::DisplayFrame(_) => "DISPLAY_FRAME",
         ModemMessage::RecvFrame(_) => "RECV_FRAME",
         ModemMessage::SetChannel(_) => "SET_CHANNEL",
         ModemMessage::SetChannelAck(_) => "SET_CHANNEL_ACK",
@@ -69,6 +70,7 @@ fn modem_msg_label(msg: &ModemMessage) -> &'static str {
         ModemMessage::BlePairingConfirmReply(_) => "BLE_PAIRING_CONFIRM_REPLY",
         ModemMessage::ScanChannels => "SCAN_CHANNELS",
         ModemMessage::ScanResult(_) => "SCAN_RESULT",
+        ModemMessage::EventError(_) => "EVENT_ERROR",
         ModemMessage::EventButton(_) => "EVENT_BUTTON",
         ModemMessage::Unknown { .. } | _ => "UNKNOWN",
     }
@@ -372,6 +374,15 @@ impl UsbEspNowTransport {
     /// Send a BLE_PAIRING_CONFIRM_REPLY to the modem (accept/reject Numeric Comparison).
     pub async fn send_ble_pairing_confirm_reply(&self, accept: bool) -> Result<(), TransportError> {
         let msg = ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept });
+        Self::send_encoded(&self.writer, &msg).await
+    }
+
+    /// Send a full display framebuffer to the modem-attached OLED.
+    pub async fn send_display_frame(
+        &self,
+        framebuffer: [u8; sonde_protocol::modem::DISPLAY_FRAME_BODY_SIZE],
+    ) -> Result<(), TransportError> {
+        let msg = ModemMessage::DisplayFrame(Box::new(DisplayFrame { framebuffer }));
         Self::send_encoded(&self.writer, &msg).await
     }
 
@@ -953,6 +964,14 @@ async fn dispatch_message(
                 }
             }
         }
+        ModemMessage::EventError(EventError { error_code }) => {
+            warn!(
+                operation = "modem display event",
+                error_code,
+                guidance = "display update failed but modem transport remains operational",
+                "recoverable modem display fault"
+            );
+        }
         other => {
             debug!(?other, "ignoring modem message");
         }
@@ -967,7 +986,8 @@ async fn dispatch_message(
 mod tests {
     use super::*;
     use sonde_protocol::modem::{
-        encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, ModemStatus, RecvFrame,
+        encode_modem_frame, EventError, FrameDecoder, ModemMessage, ModemReady, ModemStatus,
+        RecvFrame, DISPLAY_FRAME_BODY_SIZE, EVENT_ERROR_DISPLAY_WRITE_FAILED,
     };
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
 
@@ -1083,6 +1103,36 @@ mod tests {
                 assert_eq!(sf.frame_data, vec![0xCA, 0xFE]);
             }
             other => panic!("expected SendFrame, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn t1101a_send_display_frame_produces_display_frame() {
+        let (client, mut server) = duplex(4096);
+
+        let startup = tokio::spawn(async move {
+            do_startup_handshake(&mut server, 6).await;
+            server
+        });
+
+        let transport = UsbEspNowTransport::new(client, 6).await.unwrap();
+        let mut server = startup.await.unwrap();
+
+        let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
+        framebuffer[0] = 0x80;
+        framebuffer[DISPLAY_FRAME_BODY_SIZE - 1] = 0x01;
+        transport.send_display_frame(framebuffer).await.unwrap();
+
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 2048];
+        let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+
+        match msg {
+            ModemMessage::DisplayFrame(frame) => {
+                assert_eq!(frame.framebuffer[0], 0x80);
+                assert_eq!(frame.framebuffer[DISPLAY_FRAME_BODY_SIZE - 1], 0x01);
+            }
+            other => panic!("expected DisplayFrame, got {other:?}"),
         }
     }
 
@@ -1268,5 +1318,40 @@ mod tests {
         assert_eq!(result.entries[0].channel, 1);
         assert_eq!(result.entries[0].ap_count, 3);
         assert_eq!(result.entries[1].strongest_rssi, -127);
+    }
+
+    #[tokio::test]
+    async fn t1107a_event_error_is_nonfatal() {
+        let (client, mut server) = duplex(1024);
+
+        let startup = tokio::spawn(async move {
+            do_startup_handshake(&mut server, 6).await;
+            server
+        });
+
+        let transport = UsbEspNowTransport::new(client, 6).await.unwrap();
+        let mut server = startup.await.unwrap();
+
+        let event = ModemMessage::EventError(EventError {
+            error_code: EVENT_ERROR_DISPLAY_WRITE_FAILED,
+        });
+        server
+            .write_all(&encode_modem_frame(&event).unwrap())
+            .await
+            .unwrap();
+
+        let recv_msg = ModemMessage::RecvFrame(RecvFrame {
+            peer_mac: [1, 2, 3, 4, 5, 6],
+            rssi: -42,
+            frame_data: vec![0xDE, 0xAD],
+        });
+        server
+            .write_all(&encode_modem_frame(&recv_msg).unwrap())
+            .await
+            .unwrap();
+
+        let (data, peer) = transport.recv().await.unwrap();
+        assert_eq!(data, vec![0xDE, 0xAD]);
+        assert_eq!(peer, vec![1, 2, 3, 4, 5, 6]);
     }
 }

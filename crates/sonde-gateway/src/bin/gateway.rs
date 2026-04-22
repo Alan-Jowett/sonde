@@ -12,6 +12,7 @@ use clap::Subcommand;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
+use sonde_gateway::display_banner::send_gateway_version_banner;
 use sonde_gateway::engine::{resolve_espnow_channel, Gateway, PendingCommand};
 use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
 use sonde_gateway::key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeyProviderError};
@@ -483,6 +484,13 @@ async fn run_gateway(
             }
         };
         info!(channel = channel_for_transport, "modem transport ready");
+        if let Err(e) = send_gateway_version_banner(&transport).await {
+            warn!(
+                error = %e,
+                version = env!("CARGO_PKG_VERSION"),
+                "failed to send gateway version banner to modem display"
+            );
+        }
         backoff = Duration::from_secs(1); // reset on success
 
         // Extract warm-reboot signals before moving the transport into tasks.

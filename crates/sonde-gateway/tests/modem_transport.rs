@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use sonde_gateway::display_banner::{render_gateway_version_banner, send_gateway_version_banner};
 use sonde_gateway::modem::{UsbEspNowTransport, DEFAULT_MAX_HEALTH_POLL_FAILURES};
 use sonde_gateway::transport::Transport;
 
@@ -215,6 +216,27 @@ async fn t1103_startup_sequence() {
     let _transport = transport_handle.await.unwrap();
 }
 
+/// T-1103a  Gateway startup banner helper sends DISPLAY_FRAME.
+#[tokio::test]
+async fn t1103a_gateway_banner_sends_display_frame() {
+    let (transport, mut server) = create_transport_and_server(6).await;
+
+    send_gateway_version_banner(&transport).await.unwrap();
+
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 2048];
+    let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+    match msg {
+        ModemMessage::DisplayFrame(frame) => {
+            assert_eq!(
+                frame.framebuffer,
+                render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
+            );
+        }
+        other => panic!("expected DisplayFrame, got {other:?}"),
+    }
+}
+
 // ── T-1104: Startup — MODEM_READY timeout ───────────────────────────────
 
 /// T-1104  Startup — MODEM_READY timeout.
@@ -333,6 +355,37 @@ async fn t1107_modem_error_handling() {
 
     let (data, _) = transport.recv().await.unwrap();
     assert_eq!(data, vec![0xFF], "transport must still work after ERROR");
+}
+
+/// T-1107a  Modem EVENT_ERROR handling.
+#[tokio::test]
+async fn t1107a_modem_event_error_handling() {
+    let (transport, mut server) = create_transport_and_server(6).await;
+
+    let event_error = ModemMessage::EventError(sonde_protocol::modem::EventError {
+        error_code: sonde_protocol::modem::EVENT_ERROR_DISPLAY_WRITE_FAILED,
+    });
+    server
+        .write_all(&encode_modem_frame(&event_error).unwrap())
+        .await
+        .unwrap();
+
+    let frame = ModemMessage::RecvFrame(RecvFrame {
+        peer_mac: [0x11; 6],
+        rssi: -40,
+        frame_data: vec![0xFF],
+    });
+    server
+        .write_all(&encode_modem_frame(&frame).unwrap())
+        .await
+        .unwrap();
+
+    let (data, _) = transport.recv().await.unwrap();
+    assert_eq!(
+        data,
+        vec![0xFF],
+        "transport must still work after EVENT_ERROR"
+    );
 }
 
 // ── T-1108: End-to-end wake cycle over PTY ──────────────────────────────

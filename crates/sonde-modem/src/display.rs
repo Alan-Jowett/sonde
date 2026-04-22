@@ -7,7 +7,7 @@ use crate::bridge::{Display, DisplayError};
 use sonde_protocol::modem::DISPLAY_FRAME_BODY_SIZE;
 
 const I2C0_FREQ_HZ: u32 = 100_000;
-const I2C_TIMEOUT_TICKS: u32 = 1000;
+const I2C_TIMEOUT_MS: u32 = 25;
 const OLED_ADDR: u8 = 0x3C;
 const OLED_SDA_GPIO: i32 = esp_idf_sys::gpio_num_t_GPIO_NUM_5;
 const OLED_SCL_GPIO: i32 = esp_idf_sys::gpio_num_t_GPIO_NUM_6;
@@ -23,6 +23,13 @@ pub struct EspSsd1306Display {
     flush_page: u8,
     flush_pending: bool,
     initialized: bool,
+}
+
+/// Display wrapper that degrades to recoverable write failures if OLED
+/// initialization failed at boot.
+pub struct ModemDisplay {
+    inner: Option<EspSsd1306Display>,
+    pending_error: bool,
 }
 
 impl EspSsd1306Display {
@@ -72,7 +79,7 @@ impl EspSsd1306Display {
             let err = esp_idf_sys::i2c_master_cmd_begin(
                 esp_idf_sys::i2c_port_t_I2C_NUM_0,
                 cmd,
-                I2C_TIMEOUT_TICKS,
+                i2c_timeout_ticks(),
             );
             esp_idf_sys::i2c_cmd_link_delete(cmd);
             if err != esp_idf_sys::ESP_OK as i32 {
@@ -106,6 +113,27 @@ impl EspSsd1306Display {
             self.page_buffer[x] = page_byte;
         }
     }
+}
+
+impl ModemDisplay {
+    pub fn new(inner: EspSsd1306Display) -> Self {
+        Self {
+            inner: Some(inner),
+            pending_error: false,
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            inner: None,
+            pending_error: false,
+        }
+    }
+}
+
+fn i2c_timeout_ticks() -> u32 {
+    let tick_period_ms = (esp_idf_sys::portTICK_PERIOD_MS as u32).max(1);
+    I2C_TIMEOUT_MS.div_ceil(tick_period_ms).max(1)
 }
 
 impl Display for EspSsd1306Display {
@@ -151,6 +179,34 @@ impl Display for EspSsd1306Display {
             self.flush_page += 1;
         }
         Ok(())
+    }
+}
+
+impl Display for ModemDisplay {
+    fn queue_frame(&mut self, framebuffer: [u8; DISPLAY_FRAME_BODY_SIZE]) {
+        match self.inner.as_mut() {
+            Some(inner) => inner.queue_frame(framebuffer),
+            None => self.pending_error = true,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.pending_error = false;
+        if let Some(inner) = self.inner.as_mut() {
+            inner.reset();
+        }
+    }
+
+    fn poll(&mut self) -> Result<(), DisplayError> {
+        if self.pending_error {
+            self.pending_error = false;
+            return Err(DisplayError::WriteFailed);
+        }
+
+        match self.inner.as_mut() {
+            Some(inner) => inner.poll(),
+            None => Ok(()),
+        }
     }
 }
 

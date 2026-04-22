@@ -25,7 +25,7 @@ fn main() {
 
     use sonde_modem::ble::EspBleDriver;
     use sonde_modem::bridge::Bridge;
-    use sonde_modem::display::EspSsd1306Display;
+    use sonde_modem::display::{EspSsd1306Display, ModemDisplay};
     use sonde_modem::status::ModemCounters;
 
     // Link ESP-IDF patches and initialize logging.
@@ -71,11 +71,19 @@ fn main() {
     let ble = EspBleDriver::new();
     info!("BLE GATT server initialized (advertising off by default — MD-0412)");
 
-    let display = EspSsd1306Display::new().unwrap_or_else(|e| {
-        error!("failed to initialize SSD1306 display: {}", e);
-        panic!("fatal: display init failed");
-    });
-    info!("SSD1306 display initialized on I2C0 (addr=0x3C, SDA=GPIO5, SCL=GPIO6)");
+    let display = match EspSsd1306Display::new() {
+        Ok(display) => {
+            info!("SSD1306 display initialized on I2C0 (addr=0x3C, SDA=GPIO5, SCL=GPIO6)");
+            ModemDisplay::new(display)
+        }
+        Err(e) => {
+            error!(
+                "failed to initialize SSD1306 display: {}; continuing with display disabled",
+                e
+            );
+            ModemDisplay::disabled()
+        }
+    };
 
     let espnow = sonde_modem::espnow::EspNowDriver::new(
         peripherals.modem,

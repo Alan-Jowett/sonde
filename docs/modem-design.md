@@ -256,7 +256,7 @@ The display path is integrated into `Bridge::poll()` so rendering remains subord
 
 ### 9a.1  Hardware target
 
-The modem drives an SSD1306-compatible 128×64 OLED over I²C on the ESP32-S3 module's D4/D5 pins at 7-bit address `0x3C`.
+The modem drives an SSD1306-compatible 128×64 OLED over I²C on the ESP32-S3 module's D4/D5 pins (`D4` = SDA = GPIO5, `D5` = SCL = GPIO6) at 7-bit address `0x3C`.
 
 ### 9a.2  Command handling
 

@@ -940,7 +940,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 1. Construct a raw modem frame with type `DISPLAY_FRAME` and a 1023-byte body.
 2. Decode with `decode_modem_frame`.
 3. Assert: returns a body-length error.
-4. Repeat with a 1025-byte body and assert: returns a body-length error.
+4. Repeat with a 1025-byte body and assert: returns `FrameTooLarge`, because the serial frame `len` exceeds the modem framing maximum before body validation runs.
 
 ### T-P093  EventError round-trip
 

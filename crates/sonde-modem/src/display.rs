@@ -3,6 +3,8 @@
 
 //! SSD1306 OLED display driver for the ESP32-S3 modem target.
 
+use esp_idf_hal::delay::TICK_RATE_HZ;
+
 use crate::bridge::{Display, DisplayError};
 use sonde_protocol::modem::DISPLAY_FRAME_BODY_SIZE;
 
@@ -132,8 +134,10 @@ impl ModemDisplay {
 }
 
 fn i2c_timeout_ticks() -> u32 {
-    let tick_period_ms = (esp_idf_sys::portTICK_PERIOD_MS as u32).max(1);
-    I2C_TIMEOUT_MS.div_ceil(tick_period_ms).max(1)
+    I2C_TIMEOUT_MS
+        .saturating_mul(TICK_RATE_HZ.max(1))
+        .div_ceil(1000)
+        .max(1)
 }
 
 impl Display for EspSsd1306Display {

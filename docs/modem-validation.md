@@ -1201,8 +1201,8 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 1. Send `RESET`, wait for `MODEM_READY`.
 2. Send a malformed `DISPLAY_FRAME` with 1023 bytes of body.
 3. Assert: `EVENT_ERROR(INVALID_FRAME)` is received.
-4. Repeat with a 1025-byte body.
-5. Assert: `EVENT_ERROR(INVALID_FRAME)` is received again.
+4. Repeat with an overlong `DISPLAY_FRAME` carrying a 1025-byte body so the serial frame `len` exceeds the on-wire maximum.
+5. Assert: the parser treats the frame as a framing error and resynchronizes; do not expect `EVENT_ERROR(INVALID_FRAME)` for this case.
 
 ---
 

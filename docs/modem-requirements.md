@@ -857,8 +857,9 @@ The modem firmware MUST accept a `DISPLAY_FRAME` serial command carrying exactly
 **Acceptance criteria:**
 
 1. A `DISPLAY_FRAME` body of exactly 1024 bytes is accepted.
-2. A `DISPLAY_FRAME` body of 1023 or 1025 bytes produces `EVENT_ERROR(INVALID_FRAME)`.
-3. The modem does not expose any partial-row, partial-page, or sub-rectangle display update command.
+2. A `DISPLAY_FRAME` body of 1023 bytes produces `EVENT_ERROR(INVALID_FRAME)`.
+3. A `DISPLAY_FRAME` body larger than 1024 bytes exceeds the serial framing limit and is handled as a framing error, not as `EVENT_ERROR(INVALID_FRAME)`.
+4. The modem does not expose any partial-row, partial-page, or sub-rectangle display update command.
 
 ---
 

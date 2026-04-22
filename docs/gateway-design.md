@@ -1795,7 +1795,7 @@ Each architecture (`linux/amd64`, `linux/arm64`) is built natively on a per-arch
 
 **Multi-stage Dockerfile** (`.github/docker/Dockerfile.gateway`):
 
-1. **Builder stage** (`rust:alpine`): installs `musl-dev` and `protobuf`, builds all four binaries with `--no-default-features` (excludes the `keyring` feature and its `secret-service`/`zbus` dependency tree).
+1. **Builder stage** (`rust:alpine`): installs `musl-dev` and `protobuf`, builds all four binaries; the `sonde-gateway` build uses `--no-default-features` to exclude the `keyring` feature and its `secret-service`/`zbus` dependency tree.
 2. **Runtime stage** (`alpine:3.21`): copies only the compiled binaries, creates a non-root `sonde` user, and declares `VOLUME /var/lib/sonde`.
 
 ### 22.3  Feature flag: `keyring` (GW-1803)

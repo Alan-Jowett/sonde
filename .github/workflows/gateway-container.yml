@@ -42,6 +42,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Log in to GitHub Container Registry
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -84,6 +85,7 @@ jobs:
       # for the same commit cannot overwrite each other's temporary tags.
       # Public user-facing tags are only created after BOTH architectures pass.
       - name: Push per-arch image
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         run: |
           ARCH_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}"
           docker tag "${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }}" "$ARCH_TAG"
@@ -93,6 +95,7 @@ jobs:
   manifest:
     name: Publish multi-arch manifest
     needs: [build]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read

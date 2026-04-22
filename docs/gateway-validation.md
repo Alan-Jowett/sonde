@@ -3256,12 +3256,12 @@ A configurable stub handler process (or in-process mock) that:
 **Steps:**
 1. Run `docker run --rm <image> sh -c 'whoami'`.
 2. Run `docker run --rm <image> sh -c 'touch /var/lib/sonde/test && rm /var/lib/sonde/test'`.
-3. Run `docker run --rm -e SONDE_MASTER_KEY=<64-hex> <image> --key-provider env --help`.
+3. Run `docker run --rm <image> --help` and verify `--key-provider env` appears in the output.
 
 **Expected:**
 1. `whoami` outputs `sonde`.
 2. File creation in `/var/lib/sonde` succeeds (writable by `sonde` user).
-3. `--key-provider env` is accepted without D-Bus errors.
+3. `--key-provider env` is accepted by the CLI help path.
 
 ---
 

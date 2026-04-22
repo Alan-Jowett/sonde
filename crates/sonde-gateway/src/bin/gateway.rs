@@ -73,7 +73,7 @@ enum KeyProviderKind {
     Env,
     /// Decrypt a DPAPI-protected blob file given by `--master-key-file` (Windows only).
     Dpapi,
-    /// Retrieve the key from the Linux D-Bus Secret Service keyring (Linux only).
+    /// Retrieve the key from the Linux D-Bus Secret Service keyring (requires `keyring` feature).
     SecretService,
 }
 
@@ -146,7 +146,7 @@ struct Cli {
     /// - `file`           — Read 64 hex chars from `--master-key-file` (default).
     /// - `env`            — Read 64 hex chars from `SONDE_MASTER_KEY` env var.
     /// - `dpapi`          — Decrypt a DPAPI-protected blob at `--master-key-file` (Windows only).
-    /// - `secret-service` — Retrieve from the Linux D-Bus Secret Service keyring (Linux only).
+    /// - `secret-service` — Retrieve from the Linux D-Bus Secret Service keyring (Linux with `keyring` feature).
     #[arg(long, default_value = "file", value_enum)]
     key_provider: KeyProviderKind,
 

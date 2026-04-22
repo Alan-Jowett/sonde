@@ -86,7 +86,7 @@ jobs:
              lines="$(printf "%s\n" "$output" | grep -c .)"; \
              if [ "$lines" -eq 1 ] \
                && ! printf "%s\n" "$output" | grep -q "=>" \
-               && printf "%s\n" "$output" | grep -Eq "^[[:space:]]*/lib/ld-musl-[^[:space:]]+\\.so\\.1 \\(0x[0-9a-f]+\\)$"; then \
+               && printf "%s\n" "$output" | grep -Eq "^[[:space:]]*(/lib/)?ld-musl-[^[:space:]]+\\.so\\.1 \\(0x[0-9a-f]+\\)$"; then \
                exit 0; \
              fi; \
              exit 1'

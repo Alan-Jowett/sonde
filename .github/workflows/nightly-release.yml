@@ -29,6 +29,9 @@ jobs:
   gateway-container:
     name: Gateway container
     uses: ./.github/workflows/gateway-container.yml
+    permissions:
+      contents: read
+      packages: write
 
   node-firmware:
     name: Node firmware

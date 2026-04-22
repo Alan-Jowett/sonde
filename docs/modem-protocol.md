@@ -559,7 +559,7 @@ The modem may send `RECV_FRAME`, `ERROR`, or `EVENT_BUTTON` at any time, interle
 
 - `RECV_FRAME` → deliver to the `Transport::recv()` caller.
 - `ERROR` → log and optionally trigger recovery.
-- `EVENT_BUTTON` → deliver to the button-event handler (e.g., registration window activation).
+- `EVENT_BUTTON` → deliver to the button-event handler (e.g., registration window activation). **Note:** gateway-side consumption of `EVENT_BUTTON` is not yet implemented; the message is currently logged and otherwise ignored.
 - Expected response (e.g., `STATUS`, `SET_CHANNEL_ACK`) → deliver to the waiting command.
 
 ---

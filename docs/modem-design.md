@@ -229,22 +229,17 @@ The firmware runs a single-threaded event loop (no RTOS tasks beyond the WiFi/US
 
 ```
 loop {
-    if usb_has_data() {
-        frame = serial_codec.decode();
-        dispatch(frame);
-    }
-
-    // ESP-NOW receive callback writes RECV_FRAME to USB
-    // asynchronously from the WiFi task — no polling needed.
-
-    // Poll button GPIO; bridge emits EVENT_BUTTON if a press is classified.
-    button_scanner.poll();
+    // bridge.poll() handles:
+    //   - USB serial decode + dispatch
+    //   - BLE event drain
+    //   - Button GPIO poll → EVENT_BUTTON on classified release
+    bridge.poll();
 
     feed_watchdog();
 }
 ```
 
-The main loop polls the USB receive buffer, drains the ESP-NOW RX ring buffer, and polls the button GPIO. ESP-NOW frames arrive via callback into the ring; the main loop constructs `RECV_FRAME` messages and writes them to USB. Button press/release is detected via non-blocking GPIO reads and classified by duration.
+The main loop delegates all I/O to `Bridge::poll()`, which decodes USB serial frames, drains BLE events, and polls the button GPIO. ESP-NOW frames arrive via callback into the ring; the bridge constructs `RECV_FRAME` messages and writes them to USB. Button press/release is detected via non-blocking GPIO reads and classified by duration (see §16).
 
 > **Per-poll processing caps (D9-2):** BLE events are drained up to `MAX_BLE_EVENTS_PER_POLL` (16) per main-loop iteration to prevent sustained BLE traffic from starving serial decode and ESP-NOW radio processing.
 

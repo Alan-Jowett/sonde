@@ -8,13 +8,12 @@ license = "MIT"
 sonde-protocol = { path = "../sonde-protocol" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
-hmac = "0.12"
 sha2 = "0.10"
 async-trait = "0.1"
 getrandom = "0.4"
 ciborium = "0.2"
 aes-gcm = "0.10"
-pbkdf2 = "0.12"
+pbkdf2 = { version = "0.13", features = ["sha2"] }
 tracing = { version = "0.1", features = ["max_level_trace"] }
 tonic = "0.14"
 tonic-prost = "0.14"

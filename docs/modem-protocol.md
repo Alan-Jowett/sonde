@@ -109,6 +109,7 @@ Message types are partitioned by direction:
 | 0xA1 | `BLE_CONNECTED` | §4.11 | A BLE client connected to the Gateway Pairing Service. |
 | 0xA2 | `BLE_DISCONNECTED` | §4.12 | The BLE client disconnected. |
 | 0xA3 | `BLE_PAIRING_CONFIRM` | §4.15 | Numeric Comparison pin display request — gateway must show the pin to the operator. |
+| 0xB0 | `EVENT_BUTTON` | §4.17 | A debounced button press was detected on the 1-Wire data line. |
 
 ---
 
@@ -364,6 +365,22 @@ The `BLE_PAIRING_CONFIRM_REPLY` body is a single 1-byte `accept` field: `0x01` m
 |-------|------|------|-------------|
 | `accept` | Unsigned integer | 1 byte | `0x01` = accept (operator confirmed pin matches), `0x00` = reject (operator rejected or timeout). |
 
+### 4.17  EVENT_BUTTON (Modem → Gateway)
+
+A debounced button press was detected on the 1-Wire data line (GPIO2 / XIAO D1). The modem classifies presses by duration and emits this event on button release. The modem does not interpret button meaning — all semantics (pairing, menus, UX) are handled by the gateway.
+
+The `EVENT_BUTTON` body is a single 1-byte `button_type` field.
+
+```
+┌──────────────────┐
+│  button_type (1B)│
+└──────────────────┘
+```
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `button_type` | Unsigned integer | 1 byte | `0x00` = BUTTON_SHORT (press < 1 s), `0x01` = BUTTON_LONG (press ≥ 1 s). |
+
 ---
 
 ## 5  Message flows
@@ -538,10 +555,11 @@ If the USB-CDC link drops:
 
 ### 6.4  Unsolicited messages
 
-The modem may send `RECV_FRAME` or `ERROR` at any time, interleaved with responses to gateway commands. The gateway's serial reader must demultiplex:
+The modem may send `RECV_FRAME`, `ERROR`, or `EVENT_BUTTON` at any time, interleaved with responses to gateway commands. The gateway's serial reader must demultiplex:
 
 - `RECV_FRAME` → deliver to the `Transport::recv()` caller.
 - `ERROR` → log and optionally trigger recovery.
+- `EVENT_BUTTON` → deliver to the button-event handler (e.g., registration window activation). **Note:** gateway-side consumption of `EVENT_BUTTON` is not yet implemented; the message is currently logged and otherwise ignored.
 - Expected response (e.g., `STATUS`, `SET_CHANNEL_ACK`) → deliver to the waiting command.
 
 ---
@@ -582,4 +600,5 @@ The `firmware_version` field in `MODEM_READY` allows the gateway to detect the m
 | 0x81 – 0x8F | Core modem events/responses |
 | 0x90 – 0x9F | Reserved |
 | 0xA0 – 0xAF | BLE relay events (BLE_RECV, BLE_CONNECTED, BLE_DISCONNECTED, BLE_PAIRING_CONFIRM) |
-| 0xB0 – 0xFF | Reserved for future modem → gateway messages |
+| 0xB0 – 0xBF | GPIO / hardware events (EVENT_BUTTON) |
+| 0xC0 – 0xFF | Reserved for future modem → gateway messages |

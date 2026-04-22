@@ -82,7 +82,32 @@ fn main() {
         panic!("fatal: ESP-NOW init failed");
     });
 
-    let mut bridge = Bridge::with_ble(usb, espnow, ble, counters);
+    use sonde_modem::bridge::ButtonScanner;
+
+    // Configure GPIO2 (XIAO D1 / 1-Wire data line) as input with internal
+    // pull-up for button detection (MD-0600).
+    unsafe {
+        esp_idf_sys::gpio_reset_pin(esp_idf_sys::gpio_num_t_GPIO_NUM_2);
+        esp_idf_sys::esp!(esp_idf_sys::gpio_set_direction(
+            esp_idf_sys::gpio_num_t_GPIO_NUM_2,
+            esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT,
+        ))
+        .expect("failed to configure GPIO2 direction");
+        esp_idf_sys::esp!(esp_idf_sys::gpio_set_pull_mode(
+            esp_idf_sys::gpio_num_t_GPIO_NUM_2,
+            esp_idf_sys::gpio_pull_mode_t_GPIO_PULLUP_ONLY,
+        ))
+        .expect("failed to configure GPIO2 pull-up");
+    }
+    info!("GPIO2 configured as button input (active-low, pull-up — MD-0600)");
+
+    let button_scanner = ButtonScanner::new(|| {
+        // Active-low: GPIO reads 0 when pressed, 1 when idle.
+        // Return true when pressed.
+        unsafe { esp_idf_sys::gpio_get_level(esp_idf_sys::gpio_num_t_GPIO_NUM_2) == 0 }
+    });
+
+    let mut bridge = Bridge::with_ble_and_button(usb, espnow, ble, button_scanner, counters);
 
     // Initialize the task watchdog with a 10-second timeout (MD-0302).
     unsafe {

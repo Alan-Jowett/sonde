@@ -78,6 +78,11 @@ pub const MODEM_MSG_BLE_DISCONNECTED: u8 = 0xA2;
 /// Numeric Comparison pin display request; gateway must show the pin to the operator.
 pub const MODEM_MSG_BLE_PAIRING_CONFIRM: u8 = 0xA3;
 
+// -- GPIO / hardware events: Modem → Gateway --
+
+/// A debounced button press was detected on the 1-Wire data line (MD-0603).
+pub const MODEM_MSG_EVENT_BUTTON: u8 = 0xB0;
+
 // -- Modem → Gateway (events / responses) --
 
 /// Modem initialized and ready (sent on boot and after `RESET`).
@@ -142,6 +147,9 @@ pub const BLE_PAIRING_CONFIRM_BODY_SIZE: usize = 4;
 
 /// BLE_PAIRING_CONFIRM_REPLY body: accept (1B).
 pub const BLE_PAIRING_CONFIRM_REPLY_BODY_SIZE: usize = 1;
+
+/// EVENT_BUTTON body: button_type (1B).
+pub const EVENT_BUTTON_BODY_SIZE: usize = 1;
 
 /// Maximum valid BLE Numeric Comparison passkey value (6 digits, 0–999 999).
 pub const BLE_PASSKEY_MAX: u32 = 999_999;
@@ -271,6 +279,9 @@ pub enum ModemMessage {
     BleDisconnected(BleDisconnected),
     BlePairingConfirm(BlePairingConfirm),
 
+    // -- GPIO / hardware events: Modem → Gateway --
+    EventButton(EventButton),
+
     /// A message with a recognized framing but unknown type code.
     /// Kept for forward compatibility — receivers should silently discard.
     Unknown {
@@ -377,6 +388,19 @@ pub struct BlePairingConfirmReply {
     /// `true` = accept (operator confirmed pin matches), `false` = reject.
     pub accept: bool,
 }
+
+/// EVENT_BUTTON (Modem → Gateway): a debounced button press was detected (MD-0603).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventButton {
+    /// `0x00` = BUTTON_SHORT (press < 1 s), `0x01` = BUTTON_LONG (press ≥ 1 s).
+    pub button_type: u8,
+}
+
+/// BUTTON_SHORT: press duration < 1 second.
+pub const BUTTON_TYPE_SHORT: u8 = 0x00;
+
+/// BUTTON_LONG: press duration ≥ 1 second.
+pub const BUTTON_TYPE_LONG: u8 = 0x01;
 
 // ---------------------------------------------------------------------------
 // Frame encoding
@@ -553,6 +577,16 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             let mut body = Vec::with_capacity(BLE_PAIRING_CONFIRM_BODY_SIZE);
             body.extend_from_slice(&pc.passkey.to_be_bytes());
             Ok((MODEM_MSG_BLE_PAIRING_CONFIRM, body))
+        }
+        ModemMessage::EventButton(eb) => {
+            if eb.button_type > BUTTON_TYPE_LONG {
+                return Err(ModemCodecError::InvalidFieldValue {
+                    msg_type: MODEM_MSG_EVENT_BUTTON,
+                    field: "button_type",
+                    value: eb.button_type as usize,
+                });
+            }
+            Ok((MODEM_MSG_EVENT_BUTTON, alloc::vec![eb.button_type]))
         }
         ModemMessage::Unknown { msg_type, body } => Ok((*msg_type, body.clone())),
     }
@@ -860,6 +894,19 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
             Ok(ModemMessage::BlePairingConfirm(BlePairingConfirm {
                 passkey,
             }))
+        }
+
+        MODEM_MSG_EVENT_BUTTON => {
+            check_exact_body(msg_type, body, EVENT_BUTTON_BODY_SIZE)?;
+            let button_type = body[0];
+            if button_type > BUTTON_TYPE_LONG {
+                return Err(ModemCodecError::InvalidFieldValue {
+                    msg_type,
+                    field: "button_type",
+                    value: button_type as usize,
+                });
+            }
+            Ok(ModemMessage::EventButton(EventButton { button_type }))
         }
 
         _ => Ok(ModemMessage::Unknown {
@@ -1821,5 +1868,70 @@ mod tests {
                 value: 100,
             }
         );
+    }
+
+    // -- EVENT_BUTTON tests (T-0808) --
+
+    #[test]
+    fn event_button_short_roundtrip() {
+        let msg = ModemMessage::EventButton(EventButton {
+            button_type: BUTTON_TYPE_SHORT,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(consumed, frame.len());
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn event_button_long_roundtrip() {
+        let msg = ModemMessage::EventButton(EventButton {
+            button_type: BUTTON_TYPE_LONG,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(consumed, frame.len());
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn event_button_invalid_type_encode_error() {
+        let msg = ModemMessage::EventButton(EventButton { button_type: 0x02 });
+        let err = encode_modem_frame(&msg).unwrap_err();
+        assert_eq!(
+            err,
+            ModemCodecError::InvalidFieldValue {
+                msg_type: MODEM_MSG_EVENT_BUTTON,
+                field: "button_type",
+                value: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn event_button_invalid_type_decode_error() {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&2u16.to_be_bytes()); // len = 2 (TYPE + 1 body)
+        frame.push(MODEM_MSG_EVENT_BUTTON);
+        frame.push(0x02); // invalid button_type
+        let err = decode_modem_frame(&frame).unwrap_err();
+        assert_eq!(
+            err,
+            ModemCodecError::InvalidFieldValue {
+                msg_type: MODEM_MSG_EVENT_BUTTON,
+                field: "button_type",
+                value: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn event_button_wire_format() {
+        let msg = ModemMessage::EventButton(EventButton {
+            button_type: BUTTON_TYPE_SHORT,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        // LEN = 2 (TYPE + 1 body), TYPE = 0xB0, BODY = 0x00
+        assert_eq!(frame, &[0x00, 0x02, 0xB0, 0x00]);
     }
 }

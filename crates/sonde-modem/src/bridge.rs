@@ -12,11 +12,13 @@
 
 use log::{debug, info, warn};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use sonde_protocol::modem::{
     encode_modem_frame, BleConnected, BleDisconnected, BlePairingConfirm, BlePairingConfirmReply,
-    BleRecv, FrameDecoder, ModemCodecError, ModemError, ModemMessage, ModemReady, ModemStatus,
-    RecvFrame, ScanEntry, ScanResult, SendFrame, MAC_SIZE, MODEM_ERR_CHANNEL_SET_FAILED,
+    BleRecv, EventButton, FrameDecoder, ModemCodecError, ModemError, ModemMessage, ModemReady,
+    ModemStatus, RecvFrame, ScanEntry, ScanResult, SendFrame, BUTTON_TYPE_LONG, BUTTON_TYPE_SHORT,
+    MAC_SIZE, MODEM_ERR_CHANNEL_SET_FAILED,
 };
 
 use crate::status::ModemCounters;
@@ -86,6 +88,7 @@ fn msg_type_label(msg: &ModemMessage) -> &'static str {
         ModemMessage::BleConnected(_) => "BLE_CONNECTED",
         ModemMessage::BleDisconnected(_) => "BLE_DISCONNECTED",
         ModemMessage::BlePairingConfirm(_) => "BLE_PAIRING_CONFIRM",
+        ModemMessage::EventButton(_) => "EVENT_BUTTON",
         _ => "UNKNOWN",
     }
 }
@@ -189,24 +192,160 @@ impl Ble for NoBle {
     }
 }
 
-/// Bridge between a serial port, a radio driver, and an optional BLE driver.
-pub struct Bridge<S: SerialPort, R: Radio, B: Ble = NoBle> {
+// ---------------------------------------------------------------------------
+// Button scanner (MD-0600 – MD-0605)
+// ---------------------------------------------------------------------------
+
+/// Debounce window for button press/release transitions (MD-0601).
+const BUTTON_DEBOUNCE_MS: u64 = 30;
+
+/// Threshold separating short from long presses (MD-0602).
+const BUTTON_LONG_THRESHOLD: Duration = Duration::from_secs(1);
+
+/// Internal state of the button debounce/classification state machine.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ButtonState {
+    /// GPIO is HIGH (not pressed). Waiting for a LOW transition.
+    Idle,
+    /// GPIO went LOW. Waiting for debounce period to confirm press.
+    DebouncePress { since: Instant },
+    /// Debounced press confirmed. Recording hold duration.
+    Pressed { press_start: Instant },
+    /// GPIO went HIGH after press. Waiting for debounce period to confirm release.
+    DebounceRelease { press_start: Instant, since: Instant },
+}
+
+/// Platform-independent button scanner.
+///
+/// Polls a GPIO read function each main-loop iteration, debounces transitions,
+/// classifies press duration, and returns button events. The scanner does not
+/// perform any I/O — the caller (bridge) handles USB-CDC emission.
+pub struct ButtonScanner<F: FnMut() -> bool> {
+    read_gpio: F,
+    state: ButtonState,
+}
+
+impl<F: FnMut() -> bool> ButtonScanner<F> {
+    /// Create a new button scanner with the given GPIO read function.
+    ///
+    /// `read_gpio` should return `true` when the button is pressed (active-low
+    /// GPIO reads LOW → caller inverts to `true`).
+    pub fn new(read_gpio: F) -> Self {
+        Self {
+            read_gpio,
+            state: ButtonState::Idle,
+        }
+    }
+
+    /// Poll the button GPIO and advance the state machine.
+    ///
+    /// Returns `Some(BUTTON_TYPE_SHORT)` or `Some(BUTTON_TYPE_LONG)` when a
+    /// debounced release is detected, or `None` otherwise.
+    pub fn poll(&mut self) -> Option<u8> {
+        let pressed = (self.read_gpio)();
+        let now = Instant::now();
+        let debounce = Duration::from_millis(BUTTON_DEBOUNCE_MS);
+
+        match self.state {
+            ButtonState::Idle => {
+                if pressed {
+                    self.state = ButtonState::DebouncePress { since: now };
+                }
+                None
+            }
+            ButtonState::DebouncePress { since } => {
+                if !pressed {
+                    // Glitch — return to idle.
+                    self.state = ButtonState::Idle;
+                } else if now.duration_since(since) >= debounce {
+                    // Debounce confirmed — record press start as now (MD-0602:
+                    // duration is measured from debounced press to debounced release).
+                    self.state = ButtonState::Pressed { press_start: now };
+                }
+                None
+            }
+            ButtonState::Pressed { press_start } => {
+                if !pressed {
+                    self.state = ButtonState::DebounceRelease {
+                        press_start,
+                        since: now,
+                    };
+                }
+                None
+            }
+            ButtonState::DebounceRelease {
+                press_start,
+                since,
+            } => {
+                if pressed {
+                    // Bounce — return to pressed.
+                    self.state = ButtonState::Pressed { press_start };
+                    None
+                } else if now.duration_since(since) >= debounce {
+                    // Debounced release — classify.
+                    self.state = ButtonState::Idle;
+                    let duration = now.duration_since(press_start);
+                    if duration >= BUTTON_LONG_THRESHOLD {
+                        Some(BUTTON_TYPE_LONG)
+                    } else {
+                        Some(BUTTON_TYPE_SHORT)
+                    }
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// No-op button scanner for builds without GPIO (host-side testing).
+pub struct NoButton;
+
+impl NoButton {
+    pub fn poll(&mut self) -> Option<u8> {
+        None
+    }
+}
+
+/// Abstraction over a button input (GPIO on device, mock/no-op in tests).
+pub trait ButtonPoll {
+    /// Poll the button and return `Some(button_type)` on a classified release.
+    fn poll(&mut self) -> Option<u8>;
+}
+
+impl ButtonPoll for NoButton {
+    fn poll(&mut self) -> Option<u8> {
+        None
+    }
+}
+
+impl<F: FnMut() -> bool> ButtonPoll for ButtonScanner<F> {
+    fn poll(&mut self) -> Option<u8> {
+        self.poll()
+    }
+}
+
+/// Bridge between a serial port, a radio driver, an optional BLE driver,
+/// and an optional button scanner.
+pub struct Bridge<S: SerialPort, R: Radio, B: Ble = NoBle, Btn: ButtonPoll = NoButton> {
     usb: S,
     radio: R,
     ble: B,
+    button: Btn,
     ble_enabled: bool,
     counters: Arc<ModemCounters>,
     decoder: FrameDecoder,
     rx_buf: [u8; 64],
 }
 
-impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle> {
+impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle, NoButton> {
     /// Create a bridge without BLE support (no-op BLE driver).
     pub fn new(usb: S, radio: R, counters: Arc<ModemCounters>) -> Self {
         Self {
             usb,
             radio,
             ble: NoBle,
+            button: NoButton,
             ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
@@ -215,19 +354,43 @@ impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle> {
     }
 }
 
-impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
-    /// Create a bridge with a BLE driver (BLE starts disabled).
-    ///
-    /// The driver is explicitly disabled during construction so that
-    /// `ble_enabled` and the hardware state are guaranteed to be in sync.
-    /// Callers that need BLE active must send a `BLE_ENABLE` command after
-    /// construction; the driver will never be silently left enabled.
+impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B, NoButton> {
+    /// Create a bridge with a BLE driver (BLE starts disabled, no button scanner).
     pub fn with_ble(usb: S, radio: R, mut ble: B, counters: Arc<ModemCounters>) -> Self {
         ble.disable();
         Self {
             usb,
             radio,
             ble,
+            button: NoButton,
+            ble_enabled: false,
+            counters,
+            decoder: FrameDecoder::new(),
+            rx_buf: [0u8; 64],
+        }
+    }
+}
+
+impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
+    /// Create a bridge with a BLE driver and a button scanner.
+    ///
+    /// The BLE driver is explicitly disabled during construction so that
+    /// `ble_enabled` and the hardware state are guaranteed to be in sync.
+    /// Callers that need BLE active must send a `BLE_ENABLE` command after
+    /// construction; the driver will never be silently left enabled.
+    pub fn with_ble_and_button(
+        usb: S,
+        radio: R,
+        mut ble: B,
+        button: Btn,
+        counters: Arc<ModemCounters>,
+    ) -> Self {
+        ble.disable();
+        Self {
+            usb,
+            radio,
+            ble,
+            button,
             ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
@@ -386,6 +549,13 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
                 }
                 None => break,
             }
+        }
+
+        // Poll button GPIO and emit EVENT_BUTTON on classified release (MD-0603).
+        if let Some(button_type) = self.button.poll() {
+            let msg = ModemMessage::EventButton(EventButton { button_type });
+            self.send_msg(&msg);
+            info!("EVENT_BUTTON: button_type={}", button_type);
         }
     }
 
@@ -3502,5 +3672,250 @@ mod tests {
             recv_count, total
         );
         assert_eq!(bridge.counters.rx_count(), total as u32);
+    }
+
+    // -----------------------------------------------------------------------
+    // Button scanner tests (T-0801 through T-0810, host-side)
+    // -----------------------------------------------------------------------
+
+    use std::cell::Cell as StdCell;
+    use std::rc::Rc;
+
+    /// Create a ButtonScanner with a controllable pressed state.
+    fn make_test_scanner() -> (Rc<StdCell<bool>>, ButtonScanner<impl FnMut() -> bool>) {
+        let pressed = Rc::new(StdCell::new(false));
+        let pressed_clone = pressed.clone();
+        let scanner = ButtonScanner::new(move || pressed_clone.get());
+        (pressed, scanner)
+    }
+
+    #[test]
+    fn button_short_press() {
+        let (pressed, mut scanner) = make_test_scanner();
+
+        // Idle — not pressed.
+        assert_eq!(scanner.poll(), None);
+
+        // Press the button.
+        pressed.set(true);
+        assert_eq!(scanner.poll(), None); // enters DebouncePress
+
+        // Wait past debounce (simulate by polling after 30ms).
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        assert_eq!(scanner.poll(), None); // enters Pressed
+
+        // Release after < 1s total (short press).
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        pressed.set(false);
+        assert_eq!(scanner.poll(), None); // enters DebounceRelease
+
+        // Wait past release debounce.
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        let result = scanner.poll();
+        assert_eq!(result, Some(BUTTON_TYPE_SHORT));
+
+        // Back to idle.
+        assert_eq!(scanner.poll(), None);
+    }
+
+    #[test]
+    fn button_long_press() {
+        let (pressed, mut scanner) = make_test_scanner();
+
+        pressed.set(true);
+        scanner.poll(); // DebouncePress
+
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        scanner.poll(); // Pressed
+
+        // Hold for > 1s.
+        std::thread::sleep(std::time::Duration::from_millis(1050));
+        pressed.set(false);
+        scanner.poll(); // DebounceRelease
+
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        let result = scanner.poll();
+        assert_eq!(result, Some(BUTTON_TYPE_LONG));
+    }
+
+    #[test]
+    fn button_glitch_rejected() {
+        let (pressed, mut scanner) = make_test_scanner();
+
+        // Brief press shorter than debounce.
+        pressed.set(true);
+        scanner.poll(); // DebouncePress
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        pressed.set(false);
+        assert_eq!(scanner.poll(), None); // back to Idle
+
+        // No event should appear.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(scanner.poll(), None);
+    }
+
+    #[test]
+    fn button_no_event_while_held() {
+        let (pressed, mut scanner) = make_test_scanner();
+
+        pressed.set(true);
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        scanner.poll(); // Pressed
+
+        // Hold for 2 seconds — no event emitted.
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert_eq!(scanner.poll(), None);
+        }
+
+        // Release.
+        pressed.set(false);
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        let result = scanner.poll();
+        assert_eq!(result, Some(BUTTON_TYPE_LONG));
+    }
+
+    #[test]
+    fn button_back_to_back_presses() {
+        let (pressed, mut scanner) = make_test_scanner();
+
+        // First press — short.
+        pressed.set(true);
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        pressed.set(false);
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        assert_eq!(scanner.poll(), Some(BUTTON_TYPE_SHORT));
+
+        // Second press — long.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        pressed.set(true);
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(1050));
+        pressed.set(false);
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        assert_eq!(scanner.poll(), Some(BUTTON_TYPE_LONG));
+    }
+
+    #[test]
+    fn button_boundary_999ms_short_1000ms_long() {
+        // T-0803: 999 ms press → SHORT, 1000 ms press → LONG.
+        let (pressed, mut scanner) = make_test_scanner();
+
+        // 999 ms press (should be SHORT).
+        pressed.set(true);
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        scanner.poll(); // Pressed confirmed at this point
+        // Hold for ~964 ms (999 - 35 debounce) — but duration is measured
+        // from debounced press (when Pressed state begins), so sleep ~964 ms.
+        std::thread::sleep(std::time::Duration::from_millis(930));
+        pressed.set(false);
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        let result = scanner.poll();
+        assert_eq!(result, Some(BUTTON_TYPE_SHORT));
+
+        // 1100 ms press (comfortably LONG to avoid timing jitter).
+        pressed.set(true);
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        pressed.set(false);
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        let result = scanner.poll();
+        assert_eq!(result, Some(BUTTON_TYPE_LONG));
+    }
+
+    #[test]
+    fn button_release_bounce_rejected() {
+        // T-0809: bounce during release should not create a second event.
+        let (pressed, mut scanner) = make_test_scanner();
+
+        // Press for 500 ms.
+        pressed.set(true);
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        scanner.poll();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Release — but bounce (briefly return to pressed before debounce completes).
+        pressed.set(false);
+        scanner.poll(); // enters DebounceRelease
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        pressed.set(true); // bounce back
+        assert_eq!(scanner.poll(), None); // should return to Pressed, not classify
+
+        // Now truly release.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        pressed.set(false);
+        scanner.poll(); // DebounceRelease again
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        let result = scanner.poll();
+        assert_eq!(result, Some(BUTTON_TYPE_SHORT));
+
+        // Verify no second event.
+        assert_eq!(scanner.poll(), None);
+    }
+
+    #[test]
+    fn button_event_bridge_integration() {
+        // Verify that the bridge emits EVENT_BUTTON when the scanner fires.
+        let pressed = Rc::new(StdCell::new(false));
+        let pressed_clone = pressed.clone();
+        let scanner = ButtonScanner::new(move || pressed_clone.get());
+
+        let mut bridge = Bridge::with_ble_and_button(
+            MockSerial::new(),
+            MockRadio::new(),
+            MockBle::new(),
+            scanner,
+            ModemCounters::new(),
+        );
+
+        // Press the button.
+        pressed.set(true);
+        bridge.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        bridge.poll();
+
+        // Release after short press.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        pressed.set(false);
+        bridge.poll();
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        bridge.poll();
+
+        // Decode the EVENT_BUTTON from the serial output.
+        let tx = bridge.usb.take_tx();
+        assert!(!tx.is_empty(), "expected EVENT_BUTTON on serial output");
+
+        // Find the EVENT_BUTTON frame in the output (there may be a
+        // MODEM_READY from with_ble_and_button's disable call too).
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&tx);
+        let mut found_button = false;
+        loop {
+            match decoder.decode() {
+                Ok(Some(ModemMessage::EventButton(eb))) => {
+                    assert_eq!(eb.button_type, BUTTON_TYPE_SHORT);
+                    found_button = true;
+                }
+                Ok(Some(_)) => {} // skip MODEM_READY etc.
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        assert!(found_button, "EVENT_BUTTON not found in serial output");
     }
 }

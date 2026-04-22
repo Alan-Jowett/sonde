@@ -69,6 +69,7 @@ fn modem_msg_label(msg: &ModemMessage) -> &'static str {
         ModemMessage::BlePairingConfirmReply(_) => "BLE_PAIRING_CONFIRM_REPLY",
         ModemMessage::ScanChannels => "SCAN_CHANNELS",
         ModemMessage::ScanResult(_) => "SCAN_RESULT",
+        ModemMessage::EventButton(_) => "EVENT_BUTTON",
         ModemMessage::Unknown { .. } | _ => "UNKNOWN",
     }
 }

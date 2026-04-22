@@ -741,6 +741,109 @@ When the modem encountersan error at an operator-visible boundary (BLE GATT oper
 
 ---
 
+## 9  Button input
+
+### MD-0600  Button GPIO configuration
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.17, Issue #756
+
+**Description:**
+The modem firmware MUST configure GPIO2 (XIAO ESP32-S3 silk label D1, 1-Wire data line) as a GPIO input, active-low. The carrier board provides an external pull-up resistor. The firmware SHOULD enable the ESP32-S3 internal pull-up as a fallback only if the external pull-up is absent.
+
+**Acceptance criteria:**
+
+1. GPIO2 is configured as input at boot.
+2. The pin reads HIGH when the button is not pressed.
+3. The pin reads LOW when the button is pressed.
+
+---
+
+### MD-0601  Button debounce
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.17, Issue #756
+
+**Description:**
+The modem firmware MUST debounce the button input with a 30 ms window. Transitions shorter than 30 ms MUST be ignored.
+
+**Acceptance criteria:**
+
+1. A LOW pulse shorter than 30 ms does not generate an event.
+2. A LOW pulse of 30 ms or longer is recognized as a valid press.
+
+---
+
+### MD-0602  Button press classification
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.17, Issue #756
+
+**Description:**
+The modem firmware MUST classify button presses by their duration, measured from the debounced press to the debounced release:
+
+- **BUTTON_SHORT**: press duration < 1 second.
+- **BUTTON_LONG**: press duration ≥ 1 second.
+
+The classification MUST be determined on release — no event is emitted while the button is held.
+
+**Acceptance criteria:**
+
+1. A 500 ms press emits BUTTON_SHORT.
+2. A 999 ms press emits BUTTON_SHORT.
+3. A 1000 ms press emits BUTTON_LONG.
+4. A 1500 ms press emits BUTTON_LONG.
+5. No event is emitted while the button remains held.
+
+---
+
+### MD-0603  EVENT_BUTTON emission
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.17, Issue #756
+
+**Description:**
+On button release, the modem firmware MUST emit an `EVENT_BUTTON` message (serial type `0xB0`) over USB-CDC. The message body contains a single `button_type` byte: `0x00` for BUTTON_SHORT, `0x01` for BUTTON_LONG. No state is retained between events. No acknowledgement from the gateway is expected.
+
+**Acceptance criteria:**
+
+1. `EVENT_BUTTON` is sent within one main-loop poll cycle of the debounced release.
+2. The `button_type` byte is `0x00` for short presses and `0x01` for long presses.
+3. No state persists between successive button events.
+
+---
+
+### MD-0604  Button non-interference
+
+**Priority:** Must
+**Source:** Issue #756
+
+**Description:**
+Button scanning MUST NOT block or delay ESP-NOW RX/TX, BLE callbacks, or USB-CDC framing. The firmware MUST use non-blocking GPIO polling in the main loop — no dedicated FreeRTOS task, no GPIO interrupts that could preempt radio callbacks.
+
+**Acceptance criteria:**
+
+1. ESP-NOW frame forwarding latency is not measurably increased when button events are occurring.
+2. BLE pairing operations complete successfully during concurrent button presses.
+3. No GPIO interrupt service routines are registered for the button pin.
+
+---
+
+### MD-0605  No button-semantic logic in modem
+
+**Priority:** Must
+**Source:** Issue #756
+
+**Description:**
+The modem MUST NOT interpret button meaning. Specifically, the modem MUST NOT: enter pairing mode based on button presses, update any display, change BLE advertising state, or maintain any button-related state beyond the debounce and classification logic required by MD-0601 and MD-0602. All button semantics are handled by the gateway.
+
+**Acceptance criteria:**
+
+1. No code path in the modem firmware maps button events to pairing, display, BLE, or any other subsystem action.
+2. `EVENT_BUTTON` is a pure, stateless notification.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -788,3 +891,9 @@ When the modem encountersan error at an operator-visible boundary (BLE GATT oper
 | MD-0504 | BLE pairing event logging | Must |
 | MD-0505 | Build-type–aware log levels | Must |
 | MD-0506 | Error diagnostic observability | Must |
+| MD-0600 | Button GPIO configuration | Must |
+| MD-0601 | Button debounce | Must |
+| MD-0602 | Button press classification | Must |
+| MD-0603 | EVENT_BUTTON emission | Must |
+| MD-0604 | Button non-interference | Must |
+| MD-0605 | No button-semantic logic in modem | Must |

@@ -60,6 +60,7 @@ The firmware is intentionally minimal — no application- or protocol-layer cryp
 | **BLE GATT service** | Gateway Pairing Service + Gateway Command characteristic; indication pacing; Write Long reassembly | MD-0400, MD-0401, MD-0403, MD-0408, MD-0409 |
 | **BLE lifecycle** | `BLE_ENABLE`/`BLE_DISABLE` handling, connection/disconnection events, `BLE_CONNECTED`/`BLE_DISCONNECTED` notifications, idle timeout | MD-0405, MD-0410, MD-0411, MD-0413, MD-0414, MD-0415 |
 | **Watchdog** *(cross-cutting)* | Task watchdog feed in main loop; hardware reset on stall | MD-0302 |
+| **Button scanner** | GPIO2 polling, debounce, press classification, `EVENT_BUTTON` emission | MD-0600, MD-0601, MD-0602, MD-0603, MD-0604, MD-0605 |
 
 ---
 
@@ -236,11 +237,14 @@ loop {
     // ESP-NOW receive callback writes RECV_FRAME to USB
     // asynchronously from the WiFi task — no polling needed.
 
+    // Poll button GPIO; bridge emits EVENT_BUTTON if a press is classified.
+    button_scanner.poll();
+
     feed_watchdog();
 }
 ```
 
-The main loop polls the USB receive buffer and drains the ESP-NOW RX ring buffer. ESP-NOW frames arrive via callback into the ring; the main loop constructs `RECV_FRAME` messages and writes them to USB.
+The main loop polls the USB receive buffer, drains the ESP-NOW RX ring buffer, and polls the button GPIO. ESP-NOW frames arrive via callback into the ring; the main loop constructs `RECV_FRAME` messages and writes them to USB. Button press/release is detected via non-blocking GPIO reads and classified by duration.
 
 > **Per-poll processing caps (D9-2):** BLE events are drained up to `MAX_BLE_EVENTS_PER_POLL` (16) per main-loop iteration to prevent sustained BLE traffic from starving serial decode and ESP-NOW radio processing.
 
@@ -509,3 +513,71 @@ On BLE client disconnection (MD-0405, MD-0413, MD-0414):
 On `BLE_DISABLE`, the modem disconnects the active client (if any) and stops advertising. On `RESET`, BLE is disabled as part of the full reinitialisation sequence.
 
 > **`advertise_on_disconnect` interaction (D10-5):** During GATT server initialization the modem calls `ble_server.advertise_on_disconnect(true)` so that advertising resumes automatically after a client disconnect (MD-0407). This is a NimBLE stack-level setting that persists for the lifetime of the BLE server. When `BLE_DISABLE` is received, the modem explicitly stops advertising and clears its internal `advertising` flag, but does *not* clear the stack-level `advertise_on_disconnect` policy. If `disable()` disconnects an active client while `advertise_on_disconnect(true)` is still in effect, NimBLE may restart advertising in response to that disconnect and keep it enabled even though the gateway has issued `BLE_DISABLE`. Implementations **must** provide a mitigation in code (for example, clearing `advertise_on_disconnect` before initiating the disconnect, or ensuring that the post-disconnect path performs a final `ble_advertising.stop()` when BLE is disabled) so that advertising is guaranteed to remain off after `BLE_DISABLE`, as required by MD-0407/MD-0413.
+
+---
+
+## 16  Button scanner
+
+The modem detects button presses on the 1-Wire data line (GPIO2 / XIAO ESP32-S3 silk label D1) and emits `EVENT_BUTTON` messages to the gateway. The modem does not interpret button semantics.
+
+### 16.1  GPIO configuration
+
+At boot, GPIO2 is configured as an input pin with active-low logic. The carrier board provides an external pull-up resistor; the firmware enables the ESP32-S3 internal pull-up as a fallback only if the external pull-up is absent.
+
+### 16.2  Debounce and classification state machine
+
+The button scanner is a polling-based state machine called once per main-loop iteration. It uses `Instant::now()` for timing (ESP-IDF monotonic clock).
+
+```
+         ┌──────────┐
+         │  Idle    │◄──────── GPIO HIGH (not pressed)
+         │          │
+         └────┬─────┘
+              │ GPIO LOW detected
+              ▼
+         ┌──────────┐
+         │ Debounce │  wait 30 ms with GPIO continuously LOW
+         │ Press    │
+         └────┬─────┘
+              │ 30 ms elapsed, still LOW
+              ▼
+         ┌──────────┐
+         │ Pressed  │  record press_start = now()
+         │          │
+         └────┬─────┘
+              │ GPIO HIGH detected (release)
+              ▼
+         ┌──────────┐
+         │ Debounce │  wait 30 ms with GPIO continuously HIGH
+         │ Release  │
+         └────┬─────┘
+              │ 30 ms elapsed, still HIGH
+              ▼
+         ┌──────────┐
+         │ Classify │  duration = now() - press_start
+         │ & Emit   │  < 1 s → BUTTON_SHORT (0x00)
+         │          │  ≥ 1 s → BUTTON_LONG  (0x01)
+         └────┬─────┘
+              │ EVENT_BUTTON emitted
+              ▼
+         ┌──────────┐
+         │  Idle    │
+         └──────────┘
+```
+
+If during the debounce-press phase the GPIO returns HIGH before 30 ms elapse, the state machine resets to Idle (glitch rejected). Similarly, if during debounce-release the GPIO returns LOW before 30 ms elapse, the state machine returns to Pressed (bounce rejected).
+
+### 16.3  Module structure
+
+The button scanner is split into two layers:
+
+- **`ButtonScanner`** (platform-independent, in `bridge.rs` or a new `button.rs` module): Implements the state machine and classification logic. Generic over a GPIO read function. Testable on the host.
+- **ESP GPIO wrapper** (ESP-IDF, in `bin/modem.rs`): Configures GPIO2 via `esp-idf-hal` and provides the read function to `ButtonScanner`.
+
+### 16.4  Integration with Bridge
+
+The `ButtonScanner::poll()` method returns `Option<u8>` — `Some(0x00)` for BUTTON_SHORT, `Some(0x01)` for BUTTON_LONG, or `None` if no event occurred. The bridge calls `poll()` each main-loop iteration and, when `Some(button_type)` is returned, encodes and sends an `EVENT_BUTTON` frame over USB-CDC.
+
+### 16.5  Non-interference
+
+Button polling is a single non-blocking GPIO read per main-loop iteration — no interrupts, no dedicated FreeRTOS task, no blocking waits. The polling cost is negligible compared to the existing USB and ESP-NOW processing in the loop.

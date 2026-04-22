@@ -1033,6 +1033,151 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+## 10  Button input tests
+
+### T-0800  Button GPIO reads HIGH when idle
+
+**Validates:** MD-0600
+
+**Procedure:**
+1. Boot the modem with no button pressed.
+2. Read GPIO2 value.
+3. Assert: GPIO2 reads HIGH.
+
+---
+
+### T-0801  Short press emits BUTTON_SHORT
+
+**Validates:** MD-0601, MD-0602, MD-0603
+
+**Procedure:**
+1. Simulate a 500 ms button press (GPIO LOW for 500 ms, then HIGH).
+2. Wait for `EVENT_BUTTON` on the serial link.
+3. Assert: `EVENT_BUTTON` (type `0xB0`) is received.
+4. Assert: `button_type` = `0x00` (BUTTON_SHORT).
+
+---
+
+### T-0802  Long press emits BUTTON_LONG
+
+**Validates:** MD-0601, MD-0602, MD-0603
+
+**Procedure:**
+1. Simulate a 1500 ms button press (GPIO LOW for 1500 ms, then HIGH).
+2. Wait for `EVENT_BUTTON` on the serial link.
+3. Assert: `EVENT_BUTTON` (type `0xB0`) is received.
+4. Assert: `button_type` = `0x01` (BUTTON_LONG).
+
+---
+
+### T-0803  Boundary — 999 ms press is SHORT, 1000 ms press is LONG
+
+**Validates:** MD-0602
+
+**Procedure:**
+1. Simulate a 999 ms button press, then release.
+2. Assert: `button_type` = `0x00` (BUTTON_SHORT).
+3. Simulate a 1000 ms button press, then release.
+4. Assert: `button_type` = `0x01` (BUTTON_LONG).
+
+---
+
+### T-0804  Debounce rejects glitches shorter than 30 ms
+
+**Validates:** MD-0601
+
+**Procedure:**
+1. Simulate a 20 ms LOW pulse (press), then return HIGH.
+2. Wait 100 ms.
+3. Assert: no `EVENT_BUTTON` is emitted.
+
+---
+
+### T-0805  No event emitted while button is held
+
+**Validates:** MD-0602
+
+**Procedure:**
+1. Simulate button press (GPIO LOW) and hold for 3 seconds without releasing.
+2. Assert: no `EVENT_BUTTON` is emitted during the hold.
+3. Release the button (GPIO HIGH).
+4. Assert: `EVENT_BUTTON` with `button_type` = `0x01` (BUTTON_LONG) is emitted on release.
+
+---
+
+### T-0806  Button events do not interfere with ESP-NOW
+
+**Validates:** MD-0604
+
+**Procedure:**
+1. Establish a baseline ESP-NOW forwarding rate (frames per second) with no button activity.
+2. Repeat the same traffic load while simultaneously simulating rapid button presses (short and long).
+3. Assert: ESP-NOW forwarding rate and latency show no measurable regression attributable to button polling.
+4. Assert: `EVENT_BUTTON` messages are received correctly during the load.
+
+---
+
+### T-0806a  Button events do not interfere with BLE pairing
+
+**Validates:** MD-0604
+
+**Procedure:**
+1. Enable BLE advertising via `BLE_ENABLE`.
+2. Initiate a BLE LESC pairing from a phone while simultaneously simulating rapid button presses.
+3. Assert: BLE pairing completes successfully.
+4. Assert: `BLE_CONNECTED` and `EVENT_BUTTON` messages are both received on USB-CDC.
+
+---
+
+### T-0807  No button-semantic logic in modem
+
+**Validates:** MD-0605
+
+**Procedure:**
+1. Simulate a BUTTON_LONG press (≥ 1 s).
+2. Assert: `EVENT_BUTTON` is emitted.
+3. Assert: BLE advertising state is unchanged.
+4. Assert: no pairing mode is entered.
+5. Assert: no display output is triggered.
+
+---
+
+### T-0808  EVENT_BUTTON round-trip codec
+
+**Validates:** MD-0603
+
+**Procedure:**
+1. Construct an `EVENT_BUTTON` message with `button_type` = `0x00`.
+2. Encode to serial frame.
+3. Decode the frame.
+4. Assert: decoded message matches the original.
+5. Repeat with `button_type` = `0x01`.
+
+---
+
+### T-0809  Release-bounce rejected
+
+**Validates:** MD-0601
+
+**Procedure:**
+1. Simulate a valid button press (GPIO LOW for 500 ms).
+2. On release, bounce: GPIO HIGH for 15 ms, LOW for 10 ms, then HIGH sustained.
+3. Assert: exactly one `EVENT_BUTTON` is emitted (the bounce does not create a second event).
+
+---
+
+### T-0810  Back-to-back presses emit independent events
+
+**Validates:** MD-0603
+
+**Procedure:**
+1. Simulate a short press (300 ms), release, wait 100 ms, then simulate a long press (1200 ms), release.
+2. Assert: two `EVENT_BUTTON` messages are received.
+3. Assert: first `button_type` = `0x00` (SHORT), second `button_type` = `0x01` (LONG).
+4. Assert: no state from the first press leaks into the second.
+
+---
+
 ## Appendix A  Test index
 
 | ID | Title | Validates |
@@ -1112,3 +1257,15 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0709 | Build-type verbose retains INFO and DEBUG | MD-0505 |
 | T-0710 | Error diagnostic — BLE indication failure | MD-0506 |
 | T-0711 | Error diagnostic — ESP-NOW send failure | MD-0506 |
+| T-0800 | Button GPIO reads HIGH when idle | MD-0600 |
+| T-0801 | Short press emits BUTTON_SHORT | MD-0601, MD-0602, MD-0603 |
+| T-0802 | Long press emits BUTTON_LONG | MD-0601, MD-0602, MD-0603 |
+| T-0803 | Boundary — 999 ms SHORT, 1000 ms LONG | MD-0602 |
+| T-0804 | Debounce rejects glitches shorter than 30 ms | MD-0601 |
+| T-0805 | No event emitted while button is held | MD-0602 |
+| T-0806 | Button events do not interfere with ESP-NOW | MD-0604 |
+| T-0806a | Button events do not interfere with BLE pairing | MD-0604 |
+| T-0807 | No button-semantic logic in modem | MD-0605 |
+| T-0808 | EVENT_BUTTON round-trip codec | MD-0603 |
+| T-0809 | Release-bounce rejected | MD-0601 |
+| T-0810 | Back-to-back presses emit independent events | MD-0603 |

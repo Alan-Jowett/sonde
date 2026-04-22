@@ -3310,7 +3310,7 @@ A configurable stub handler process (or in-process mock) that:
 1. Run `docker run --rm --entrypoint sh <image> -c 'ldd /usr/local/bin/sonde-gateway 2>&1'`.
 
 **Expected:**
-1. Output contains one of `statically linked`, `not a dynamic executable`, or `not a valid dynamic program`.
+1. Output contains one of `statically linked`, `not a dynamic executable`, or `not a valid dynamic program`; or, on musl default-PIE toolchains, a single `ld-musl-*.so.1 (0x...)` line with no `=>` dependency entries.
 
 ---
 

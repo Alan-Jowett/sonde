@@ -212,7 +212,10 @@ enum ButtonState {
     /// Debounced press confirmed. Recording hold duration.
     Pressed { press_start: Instant },
     /// GPIO went HIGH after press. Waiting for debounce period to confirm release.
-    DebounceRelease { press_start: Instant, since: Instant },
+    DebounceRelease {
+        press_start: Instant,
+        since: Instant,
+    },
 }
 
 /// Platform-independent button scanner.
@@ -273,10 +276,7 @@ impl<F: FnMut() -> bool> ButtonScanner<F> {
                 }
                 None
             }
-            ButtonState::DebounceRelease {
-                press_start,
-                since,
-            } => {
+            ButtonState::DebounceRelease { press_start, since } => {
                 if pressed {
                     // Bounce — return to pressed.
                     self.state = ButtonState::Pressed { press_start };
@@ -3815,8 +3815,8 @@ mod tests {
         scanner.poll();
         std::thread::sleep(std::time::Duration::from_millis(35));
         scanner.poll(); // Pressed confirmed at this point
-        // Hold for ~964 ms (999 - 35 debounce) — but duration is measured
-        // from debounced press (when Pressed state begins), so sleep ~964 ms.
+                        // Hold for ~964 ms (999 - 35 debounce) — but duration is measured
+                        // from debounced press (when Pressed state begins), so sleep ~964 ms.
         std::thread::sleep(std::time::Duration::from_millis(930));
         pressed.set(false);
         scanner.poll();

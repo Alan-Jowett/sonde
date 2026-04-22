@@ -3254,8 +3254,8 @@ A configurable stub handler process (or in-process mock) that:
 **Preconditions:** Container image built.
 
 **Steps:**
-1. Run `docker run --rm <image> sh -c 'whoami'`.
-2. Run `docker run --rm <image> sh -c 'touch /var/lib/sonde/test && rm /var/lib/sonde/test'`.
+1. Run `docker run --rm --entrypoint sh <image> -c 'whoami'`.
+2. Run `docker run --rm --entrypoint sh <image> -c 'touch /var/lib/sonde/test && rm /var/lib/sonde/test'`.
 3. Run `docker run --rm <image> --help` and verify `--key-provider env` appears in the output.
 
 **Expected:**

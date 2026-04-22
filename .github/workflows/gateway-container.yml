@@ -78,7 +78,18 @@ jobs:
       - name: Smoke test — static musl linkage
         run: |
           docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
-            'ldd /usr/local/bin/sonde-gateway 2>&1 | grep -Eiq "not a dynamic executable|not a valid dynamic program"'
+            'output="$(ldd /usr/local/bin/sonde-gateway 2>&1)"; \
+             printf "%s\n" "$output"; \
+             if printf "%s\n" "$output" | grep -Eiq "statically linked|not a dynamic executable|not a valid dynamic program"; then \
+               exit 0; \
+             fi; \
+             lines="$(printf "%s\n" "$output" | grep -c .)"; \
+             if [ "$lines" -eq 1 ] \
+               && ! printf "%s\n" "$output" | grep -q "=>" \
+               && printf "%s\n" "$output" | grep -Eq "^[[:space:]]*(/lib/)?ld-musl-[^[:space:]]+\\.so\\.1 \\(0x[0-9a-f]+\\)$"; then \
+               exit 0; \
+             fi; \
+             exit 1'
 
       - name: Smoke test — non-root user and writable volume
         run: |

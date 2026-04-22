@@ -30,16 +30,24 @@ COPY . .
 
 # Build sonde-gateway without the keyring (D-Bus) feature.
 # The container uses --key-provider file or --key-provider env instead.
-# Apply `crt-static` only to the final binaries so host-built proc-macros
-# remain dynamically loadable during the build.
-RUN cargo rustc --release -p sonde-gateway --bin sonde-gateway --no-default-features -- \
-       -C target-feature=+crt-static \
-    && cargo rustc --release -p sonde-admin --bin sonde-admin -- \
-       -C target-feature=+crt-static \
-    && cargo rustc --release -p sonde-sht40-handler --bin sonde-sht40-handler -- \
-       -C target-feature=+crt-static \
-    && cargo rustc --release -p sonde-tmp102-handler --bin sonde-tmp102-handler -- \
-       -C target-feature=+crt-static
+# Build with an explicit target triple so Cargo keeps host-side proc-macros
+# separate from target binaries, then apply `crt-static` only at the final
+# binary link step.
+RUN set -euo pipefail; \
+    RUST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"; \
+    cargo rustc --release --target "$RUST_TARGET" -p sonde-gateway --bin sonde-gateway --no-default-features -- \
+       -C target-feature=+crt-static; \
+    cargo rustc --release --target "$RUST_TARGET" -p sonde-admin --bin sonde-admin -- \
+       -C target-feature=+crt-static; \
+    cargo rustc --release --target "$RUST_TARGET" -p sonde-sht40-handler --bin sonde-sht40-handler -- \
+       -C target-feature=+crt-static; \
+    cargo rustc --release --target "$RUST_TARGET" -p sonde-tmp102-handler --bin sonde-tmp102-handler -- \
+       -C target-feature=+crt-static; \
+    mkdir -p /out; \
+    cp "/src/target/$RUST_TARGET/release/sonde-gateway" /out/; \
+    cp "/src/target/$RUST_TARGET/release/sonde-admin" /out/; \
+    cp "/src/target/$RUST_TARGET/release/sonde-sht40-handler" /out/; \
+    cp "/src/target/$RUST_TARGET/release/sonde-tmp102-handler" /out/
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────────
 # alpine:3.21 — pinned by digest for reproducible builds.
@@ -50,10 +58,10 @@ RUN addgroup -S sonde && adduser -S sonde -G sonde \
     && mkdir -p /var/lib/sonde \
     && chown sonde:sonde /var/lib/sonde
 
-COPY --from=builder /src/target/release/sonde-gateway      /usr/local/bin/
-COPY --from=builder /src/target/release/sonde-admin         /usr/local/bin/
-COPY --from=builder /src/target/release/sonde-sht40-handler /usr/local/bin/
-COPY --from=builder /src/target/release/sonde-tmp102-handler /usr/local/bin/
+COPY --from=builder /out/sonde-gateway      /usr/local/bin/
+COPY --from=builder /out/sonde-admin         /usr/local/bin/
+COPY --from=builder /out/sonde-sht40-handler /usr/local/bin/
+COPY --from=builder /out/sonde-tmp102-handler /usr/local/bin/
 
 # Persist the database across container restarts (GW-1802 AC2).
 VOLUME /var/lib/sonde

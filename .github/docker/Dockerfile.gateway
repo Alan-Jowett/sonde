@@ -30,13 +30,16 @@ COPY . .
 
 # Build sonde-gateway without the keyring (D-Bus) feature.
 # The container uses --key-provider file or --key-provider env instead.
-ENV RUSTFLAGS="-C target-feature=+crt-static"
-
-RUN cargo build --release -p sonde-gateway --no-default-features \
-    && cargo build --release \
-       -p sonde-admin \
-       -p sonde-sht40-handler \
-       -p sonde-tmp102-handler
+# Apply `crt-static` only to the final binaries so host-built proc-macros
+# remain dynamically loadable during the build.
+RUN cargo rustc --release -p sonde-gateway --bin sonde-gateway --no-default-features -- \
+       -C target-feature=+crt-static \
+    && cargo rustc --release -p sonde-admin --bin sonde-admin -- \
+       -C target-feature=+crt-static \
+    && cargo rustc --release -p sonde-sht40-handler --bin sonde-sht40-handler -- \
+       -C target-feature=+crt-static \
+    && cargo rustc --release -p sonde-tmp102-handler --bin sonde-tmp102-handler -- \
+       -C target-feature=+crt-static
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────────
 # alpine:3.21 — pinned by digest for reproducible builds.

@@ -26,6 +26,10 @@ jobs:
     name: Gateway
     uses: ./.github/workflows/ci.yml
 
+  gateway-container:
+    name: Gateway container
+    uses: ./.github/workflows/gateway-container.yml
+
   node-firmware:
     name: Node firmware
     uses: ./.github/workflows/esp32.yml
@@ -184,7 +188,7 @@ jobs:
   # ── Publish release ────────────────────────────────────────────────
   release:
     name: Publish nightly
-    needs: [gateway, node-firmware, modem-firmware, desktop, android, installer-linux, installer-linux-arm64, installer-windows]
+    needs: [gateway, gateway-container, node-firmware, modem-firmware, desktop, android, installer-linux, installer-linux-arm64, installer-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -258,6 +262,7 @@ jobs:
           | Installer — Windows | `sonde-x86_64.msi` |
           | Installer — Linux (amd64) | `sonde_*_amd64.deb` |
           | Installer — Linux (arm64) | `sonde_*_arm64.deb` |
+          | Container (multi-arch) | `ghcr.io/alan-jowett/sonde-gateway` |
 
           ### Flashing firmware
 

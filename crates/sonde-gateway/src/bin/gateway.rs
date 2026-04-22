@@ -73,7 +73,7 @@ enum KeyProviderKind {
     Env,
     /// Decrypt a DPAPI-protected blob file given by `--master-key-file` (Windows only).
     Dpapi,
-    /// Retrieve the key from the Linux D-Bus Secret Service keyring (Linux only).
+    /// Retrieve the key from the Linux D-Bus Secret Service keyring (requires `keyring` feature).
     SecretService,
 }
 
@@ -146,7 +146,7 @@ struct Cli {
     /// - `file`           — Read 64 hex chars from `--master-key-file` (default).
     /// - `env`            — Read 64 hex chars from `SONDE_MASTER_KEY` env var.
     /// - `dpapi`          — Decrypt a DPAPI-protected blob at `--master-key-file` (Windows only).
-    /// - `secret-service` — Retrieve from the Linux D-Bus Secret Service keyring (Linux only).
+    /// - `secret-service` — Retrieve from the Linux D-Bus Secret Service keyring (Linux with `keyring` feature).
     #[arg(long, default_value = "file", value_enum)]
     key_provider: KeyProviderKind,
 
@@ -235,17 +235,18 @@ fn build_key_provider(cli: &Cli) -> Result<Box<dyn KeyProvider>, Box<dyn std::er
             }
         }
         KeyProviderKind::SecretService => {
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "keyring"))]
             {
                 use sonde_gateway::key_provider::SecretServiceKeyProvider;
                 Ok(Box::new(SecretServiceKeyProvider::new(
                     cli.key_label.clone(),
                 )))
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(all(target_os = "linux", feature = "keyring")))]
             {
                 Err(KeyProviderError::NotAvailable(
-                    "secret-service backend is only available on Linux".into(),
+                    "secret-service backend is only available on Linux with the `keyring` feature"
+                        .into(),
                 )
                 .into())
             }

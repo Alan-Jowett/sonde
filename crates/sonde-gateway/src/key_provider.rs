@@ -545,7 +545,7 @@ mod dpapi {
 /// example, once during initial deployment or after a key rotation:
 ///
 /// ```no_run
-/// # #[cfg(target_os = "linux")] {
+/// # #[cfg(all(target_os = "linux", feature = "keyring"))] {
 /// use sonde_gateway::key_provider::store_in_secret_service;
 /// let key: [u8; 32] = /* your 32-byte key */
 /// #   [0u8; 32];
@@ -563,12 +563,12 @@ mod dpapi {
 /// For headless servers without an interactive session, configure a
 /// file-backed keyring (e.g. `gnome-keyring-daemon --daemonize --unlock`) or
 /// use `systemd-creds` as an alternative.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keyring"))]
 pub struct SecretServiceKeyProvider {
     label: String,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keyring"))]
 impl SecretServiceKeyProvider {
     /// Create a provider that retrieves the secret with the given `label`.
     ///
@@ -580,14 +580,14 @@ impl SecretServiceKeyProvider {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keyring"))]
 impl Default for SecretServiceKeyProvider {
     fn default() -> Self {
         Self::new("sonde-gateway-master-key")
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keyring"))]
 impl KeyProvider for SecretServiceKeyProvider {
     fn load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
         let label = self.label.clone();
@@ -662,7 +662,7 @@ impl KeyProvider for SecretServiceKeyProvider {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keyring"))]
 async fn ss_load(label: &str) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
     use secret_service::{EncryptionType, SecretService};
     use std::collections::HashMap;
@@ -719,7 +719,7 @@ async fn ss_load(label: &str) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
 ///
 /// Use this during initial deployment or after a key rotation, then switch to
 /// `--key-provider secret-service` on the next gateway start.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keyring"))]
 pub fn store_in_secret_service(key: &[u8; 32], label: &str) -> Result<(), KeyProviderError> {
     // Use Zeroizing<Vec<u8>> so the key copy is cleared on drop.
     let key_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(key.to_vec());
@@ -738,7 +738,7 @@ pub fn store_in_secret_service(key: &[u8; 32], label: &str) -> Result<(), KeyPro
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keyring"))]
 async fn ss_store(key_bytes: &[u8], label: &str) -> Result<(), KeyProviderError> {
     use secret_service::{EncryptionType, SecretService};
     use std::collections::HashMap;
@@ -779,7 +779,7 @@ async fn ss_store(key_bytes: &[u8], label: &str) -> Result<(), KeyProviderError>
 /// Used exclusively by the generation path so that concurrent instances cannot
 /// overwrite each other's newly-generated key.  Callers should load the key
 /// after this call to obtain the canonical stored value.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keyring"))]
 fn store_in_secret_service_if_not_exists(
     key: &[u8; 32],
     label: &str,
@@ -802,7 +802,7 @@ fn store_in_secret_service_if_not_exists(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keyring"))]
 async fn ss_store_if_not_exists(key_bytes: &[u8], label: &str) -> Result<(), KeyProviderError> {
     use secret_service::{EncryptionType, SecretService};
     use std::collections::HashMap;

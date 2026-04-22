@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Multi-stage Dockerfile for the sonde-gateway container image.
+# Produces a minimal Alpine-based image containing sonde-gateway,
+# sonde-admin, and the sensor handler binaries.
+#
+# Published to ghcr.io/alan-jowett/sonde-gateway by the
+# gateway-container.yml CI workflow (GW-1800).
+#
+# Build:
+#   docker build -f .github/docker/Dockerfile.gateway -t sonde-gateway .
+#
+# Run:
+#   docker run -d \
+#     -v sonde-data:/var/lib/sonde \
+#     -e SONDE_MASTER_KEY=<64-hex-chars> \
+#     --device /dev/ttyACM0 \
+#     --group-add <host-dialout-gid> \
+#     sonde-gateway \
+#       --port /dev/ttyACM0 --key-provider env
+
+# ── Stage 1: build ──────────────────────────────────────────────────────────
+# rust:alpine — pinned by digest for reproducible builds.
+FROM rust:alpine@sha256:ef7b340d4201444fa2757dfddfd4c03be9d2bde468de7b7a68b0e9fabb794334 AS builder
+
+RUN apk add --no-cache musl-dev protobuf
+
+WORKDIR /src
+COPY . .
+
+# Build sonde-gateway without the keyring (D-Bus) feature.
+# The container uses --key-provider file or --key-provider env instead.
+RUN cargo build --release -p sonde-gateway --no-default-features \
+    && cargo build --release \
+       -p sonde-admin \
+       -p sonde-sht40-handler \
+       -p sonde-tmp102-handler
+
+# ── Stage 2: runtime ────────────────────────────────────────────────────────
+# alpine:3.21 — pinned by digest for reproducible builds.
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+
+# Non-root user for the gateway process (GW-1802 AC3).
+RUN addgroup -S sonde && adduser -S sonde -G sonde \
+    && mkdir -p /var/lib/sonde \
+    && chown sonde:sonde /var/lib/sonde
+
+COPY --from=builder /src/target/release/sonde-gateway      /usr/local/bin/
+COPY --from=builder /src/target/release/sonde-admin         /usr/local/bin/
+COPY --from=builder /src/target/release/sonde-sht40-handler /usr/local/bin/
+COPY --from=builder /src/target/release/sonde-tmp102-handler /usr/local/bin/
+
+# Persist the database across container restarts (GW-1802 AC2).
+VOLUME /var/lib/sonde
+
+USER sonde
+
+ENTRYPOINT ["sonde-gateway"]
+CMD ["--db", "/var/lib/sonde/sonde.db"]

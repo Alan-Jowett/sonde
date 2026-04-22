@@ -52,7 +52,7 @@ windows-service = "0.8.0"
 tracing-etw = "0.2.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
+secret-service = { version = "5", features = ["rt-tokio-crypto-rust"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
@@ -61,4 +61,6 @@ hyper-util = "0.1"
 tower = "0.5"
 
 [features]
+default = ["keyring"]
+keyring = ["dep:secret-service"]
 python-tests = []

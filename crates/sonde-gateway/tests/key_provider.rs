@@ -152,11 +152,12 @@ fn t0603g_dpapi_unavailable_on_non_windows() {
 // ── T-0603h: SecretServiceKeyProvider — round-trip (Linux only) ─────────────
 
 // T-0603h and T-0603i require a running Secret Service daemon (GNOME Keyring
-// or KWallet). These tests are gated on cfg(target_os = "linux") and marked
-// #[ignore] since they require a D-Bus session bus and running keyring daemon.
+// or KWallet). These tests are gated on
+// cfg(all(target_os = "linux", feature = "keyring")) and marked #[ignore]
+// since they require a D-Bus session bus and running keyring daemon.
 
 /// T-0603h  SecretServiceKeyProvider — round-trip (Linux only).
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keyring"))]
 #[test]
 #[ignore = "requires running Secret Service daemon (D-Bus session bus)"]
 fn t0603h_secret_service_round_trip() {
@@ -173,7 +174,7 @@ fn t0603h_secret_service_round_trip() {
 // ── T-0603i: SecretServiceKeyProvider — item not found ──────────────────────
 
 /// T-0603i  SecretServiceKeyProvider — item not found.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keyring"))]
 #[test]
 #[ignore = "requires running Secret Service daemon (D-Bus session bus)"]
 fn t0603i_secret_service_item_not_found() {
@@ -189,14 +190,15 @@ fn t0603i_secret_service_item_not_found() {
     );
 }
 
-// ── T-0603j: SecretServiceKeyProvider — unavailable on non-Linux ────────────
+// ── T-0603j: SecretServiceKeyProvider — unavailable without keyring ──────────
 
-/// T-0603j  SecretServiceKeyProvider — unavailable on non-Linux.
-#[cfg(not(target_os = "linux"))]
+/// T-0603j  SecretServiceKeyProvider — unavailable without `keyring` feature.
+#[cfg(not(all(target_os = "linux", feature = "keyring")))]
 #[test]
-fn t0603j_secret_service_unavailable_on_non_linux() {
-    let err =
-        KeyProviderError::NotAvailable("secret-service backend is only available on Linux".into());
+fn t0603j_secret_service_unavailable_without_keyring() {
+    let err = KeyProviderError::NotAvailable(
+        "secret-service backend is only available on Linux with the `keyring` feature".into(),
+    );
     assert!(err.to_string().contains("Linux"));
 }
 

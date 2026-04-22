@@ -3197,6 +3197,121 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+## 17  Container image tests
+
+### T-1800  Container image contains expected binaries
+
+**Traces to:** GW-1800 (AC-2, AC-4)
+
+**Preconditions:** Container image built from `Dockerfile.gateway` for the native architecture.
+
+**Steps:**
+1. Run `docker run --rm <image> --version`.
+2. Run `docker run --rm --entrypoint sonde-admin <image> --version`.
+3. Run `docker run --rm --entrypoint sonde-sht40-handler <image> --version`.
+4. Run `docker run --rm --entrypoint sonde-tmp102-handler <image> --version`.
+
+**Expected:**
+1. All four commands exit 0 and print version strings.
+2. No Rust toolchain or source code is present in the image.
+
+---
+
+### T-1801  Container image tagging — nightly
+
+**Traces to:** GW-1801 (AC-1, AC-3)
+
+**Preconditions:** Workflow triggered by schedule or `workflow_dispatch` (not a `v*` tag).
+
+**Steps:**
+1. Inspect the tags created by the manifest job.
+
+**Expected:**
+1. Tags include `nightly`, `nightly-YYYYMMDD`, and `sha-<short>`.
+2. The `latest` tag is NOT created.
+
+---
+
+### T-1801a  Container image tagging — release
+
+**Traces to:** GW-1801 (AC-2, AC-3)
+
+**Preconditions:** Workflow triggered by a `v*` tag push.
+
+**Steps:**
+1. Inspect the tags created by the manifest job.
+
+**Expected:**
+1. Tags include `latest`, the semver version, and `sha-<short>`.
+2. The `nightly` and `nightly-YYYYMMDD` tags are NOT created.
+
+---
+
+### T-1802  Container runs as non-root with writable volume
+
+**Traces to:** GW-1802 (AC-2, AC-3, AC-4)
+
+**Preconditions:** Container image built.
+
+**Steps:**
+1. Run `docker run --rm --entrypoint sh <image> -c 'whoami'`.
+2. Run `docker run --rm --entrypoint sh <image> -c 'touch /var/lib/sonde/test && rm /var/lib/sonde/test'`.
+3. Run `docker run --rm <image> --help` and verify `--key-provider env` appears in the output.
+
+**Expected:**
+1. `whoami` outputs `sonde`.
+2. File creation in `/var/lib/sonde` succeeds (writable by `sonde` user).
+3. `--key-provider env` is accepted by the CLI help path.
+
+---
+
+### T-1803  Build without keyring feature
+
+**Traces to:** GW-1803 (AC-1, AC-2, AC-4, AC-5)
+
+**Preconditions:** `cargo build -p sonde-gateway --no-default-features` succeeds.
+
+**Steps:**
+1. Build `sonde-gateway` with `--no-default-features`.
+2. Run the resulting binary with `--key-provider file --master-key-file <path> --help`.
+3. Run the resulting binary with `--key-provider secret-service`.
+
+**Expected:**
+1. Build succeeds without the `secret-service` / `zbus` dependency.
+2. `--key-provider file` is accepted.
+3. `--key-provider secret-service` returns a `NotAvailable` error mentioning the `keyring` feature.
+
+---
+
+### T-1804  Multi-arch manifest contains both platforms
+
+**Traces to:** GW-1800 (AC-3, AC-5), GW-1801 (AC-4)
+
+**Preconditions:** Both amd64 and arm64 builds have completed and passed smoke tests.
+
+**Steps:**
+1. Run `docker manifest inspect ghcr.io/alan-jowett/sonde-gateway:<tag>`.
+
+**Expected:**
+1. The manifest lists two platforms: `linux/amd64` and `linux/arm64`.
+2. Each platform entry references a distinct image digest.
+
+---
+
+### T-1805  Static musl linkage verified
+
+**Traces to:** GW-1800 (AC-1)
+
+**Preconditions:** Container image built.
+
+**Steps:**
+1. Run `docker run --rm --entrypoint sh <image> -c 'ldd /usr/local/bin/sonde-gateway 2>&1'`.
+
+**Expected:**
+1. Output contains `not a dynamic executable`.
+
+---
+
 | GW-1306 | T-1306a, T-1306b, T-1306c, T-1306d |
 | GW-1307 | T-1307a, T-1307b, T-1307c, T-1307d, T-1307e, T-1307f, T-1307g, T-1307h, T-1307i |
 | GW-1308 | T-1308 |
@@ -3223,3 +3338,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1704 | T-1709, T-1710 |
 | GW-1705 | T-1708, T-1717 |
 | GW-1706 | T-1711 |
+| GW-1800 | T-1800, T-1804, T-1805 |
+| GW-1801 | T-1801, T-1801a, T-1804 |
+| GW-1802 | T-1802 |
+| GW-1803 | T-1803 |

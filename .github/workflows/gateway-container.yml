@@ -1,0 +1,150 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Build and publish the sonde-gateway multi-arch container image to GHCR.
+# Produces linux/amd64 and linux/arm64 images using native GitHub runners,
+# then combines them into a single multi-arch manifest (GW-1800).
+#
+# Triggered by nightly-release.yml (workflow_call) and on release tags.
+# Can also be run manually via workflow_dispatch.
+
+name: Gateway Container
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: alan-jowett/sonde-gateway
+
+jobs:
+  # ── Per-architecture native builds ────────────────────────────────
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Log in to GitHub Container Registry
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3
+
+      - name: Build container image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198e19c816612f # v6
+        with:
+          context: .
+          file: .github/docker/Dockerfile.gateway
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }}
+
+      # Smoke tests: verify binaries exist and basic functionality works
+      # before pushing (GW-1800, matches esp-dev-container pattern).
+      - name: Smoke test — binary versions
+        run: |
+          docker run --rm ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} --version
+          docker run --rm --entrypoint sonde-admin ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} --version
+          docker run --rm --entrypoint sonde-sht40-handler ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} --version
+          docker run --rm --entrypoint sonde-tmp102-handler ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} --version
+
+      - name: Smoke test — static musl linkage
+        run: |
+          docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
+            'ldd /usr/local/bin/sonde-gateway 2>&1 | grep -q "not a dynamic executable"'
+
+      - name: Smoke test — non-root user and writable volume
+        run: |
+          docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
+            'whoami | grep -q sonde && touch /var/lib/sonde/test && rm /var/lib/sonde/test'
+
+      # Push the per-arch image with a temporary tag (consumed by the
+      # manifest job). Include the workflow run ID so overlapping runs
+      # for the same commit cannot overwrite each other's temporary tags.
+      # Public user-facing tags are only created after BOTH architectures pass.
+      - name: Push per-arch image
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          ARCH_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}"
+          docker tag "${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }}" "$ARCH_TAG"
+          docker push "$ARCH_TAG"
+
+  # ── Combine per-arch images into a multi-arch manifest ────────────
+  manifest:
+    name: Publish multi-arch manifest
+    needs: [build]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3
+
+      - name: Determine tags
+        id: tags
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          TAGS="sha-${SHORT_SHA}"
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            TAGS="${TAGS},${VERSION},latest"
+          else
+            DATE=$(date -u +%Y%m%d)
+            TAGS="${TAGS},nightly,nightly-${DATE}"
+          fi
+
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push multi-arch manifest
+        run: |
+          set -euo pipefail
+          BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          AMD64="${BASE}:build-${{ github.sha }}-${{ github.run_id }}-amd64"
+          ARM64="${BASE}:build-${{ github.sha }}-${{ github.run_id }}-arm64"
+
+          IFS=',' read -ra TAG_ARRAY <<< "${{ steps.tags.outputs.tags }}"
+          for TAG in "${TAG_ARRAY[@]}"; do
+            docker buildx imagetools create \
+              --tag "${BASE}:${TAG}" \
+              "${AMD64}" "${ARM64}"
+          done
+
+      - name: Clean up temporary per-arch tags
+        run: |
+          # Per-arch build tags are consumed; they will expire via GHCR
+          # retention policy. No explicit deletion needed.
+          echo "Manifest published successfully."

@@ -1778,3 +1778,50 @@ All diagnostic events are logged at `INFO` level **(GW-1706)**:
 - `DIAG_REPLY` sent: RSSI value, signal quality assessment, target MAC.
 - Decryption failures are logged at `DEBUG` level (consistent with GW-1302).
 - PSK values are never logged (consistent with GW-1307).
+
+---
+
+## 22  Container image
+
+> **Requirements:** GW-1800 (multi-arch image), GW-1801 (tagging), GW-1802 (runtime configuration), GW-1803 (optional secret-service).
+
+### 22.1  Overview
+
+The gateway is distributed as a multi-architecture Docker container image alongside the traditional bare-metal binaries and `.deb` packages. The image targets Alpine Linux (musl libc) for minimal size and contains `sonde-gateway`, `sonde-admin`, `sonde-sht40-handler`, and `sonde-tmp102-handler`.
+
+### 22.2  Build strategy
+
+Each architecture (`linux/amd64`, `linux/arm64`) is built natively on a per-arch GitHub Actions runner — no QEMU cross-compilation. The per-arch images are combined into a single multi-arch manifest using `docker buildx imagetools create`.
+
+**Multi-stage Dockerfile** (`.github/docker/Dockerfile.gateway`):
+
+1. **Builder stage** (`rust:alpine`): installs `musl-dev` and `protobuf`, builds all four binaries; the `sonde-gateway` build uses `--no-default-features` to exclude the `keyring` feature and its `secret-service`/`zbus` dependency tree.
+2. **Runtime stage** (`alpine:3.21`): copies only the compiled binaries, creates a non-root `sonde` user, and declares `VOLUME /var/lib/sonde`.
+
+### 22.3  Feature flag: `keyring` (GW-1803)
+
+The `secret-service` dependency (D-Bus keyring via `zbus`) is gated behind a `keyring` cargo feature, enabled by default. Container builds pass `--no-default-features` to exclude it, since containers use `--key-provider file` or `--key-provider env` instead. All `#[cfg(target_os = "linux")]` gates on secret-service code are extended to `#[cfg(all(target_os = "linux", feature = "keyring"))]`.
+
+### 22.4  Tagging strategy (GW-1801)
+
+| Trigger | Tags |
+|---------|------|
+| Release tag (`v*`) | `latest`, semver (e.g., `0.4.0`), `sha-<short>` |
+| Nightly / schedule / dispatch | `nightly`, `nightly-YYYYMMDD`, `sha-<short>` |
+
+Public tags are created only after both architectures pass smoke tests.
+
+### 22.5  Runtime configuration (GW-1802)
+
+| Property | Value |
+|----------|-------|
+| `ENTRYPOINT` | `sonde-gateway` |
+| `CMD` | `--db /var/lib/sonde/sonde.db` |
+| `VOLUME` | `/var/lib/sonde` |
+| `USER` | `sonde` (non-root) |
+
+Serial device access requires the operator to pass `--device=/dev/ttyACM0` and `--group-add <host-dialout-gid>` at `docker run` time.
+
+### 22.6  CI integration
+
+The `gateway-container.yml` workflow is called by `nightly-release.yml` as a parallel job. The nightly release job waits for the container build to complete before publishing the GitHub release. Release-tag container builds are therefore driven indirectly via `nightly-release.yml`, while `gateway-container.yml` itself is also available via `workflow_dispatch`.

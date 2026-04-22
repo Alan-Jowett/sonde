@@ -1816,11 +1816,11 @@ Public tags are created only after both architectures pass smoke tests.
 | Property | Value |
 |----------|-------|
 | `ENTRYPOINT` | `sonde-gateway` |
-| `CMD` | `--db /var/lib/sonde/sonde.db` |
+| `CMD` | `--db /var/lib/sonde/sonde.db --port /dev/ttyACM0 --key-provider env` |
 | `VOLUME` | `/var/lib/sonde` |
 | `USER` | `sonde` (non-root) |
 
-Serial device access requires the operator to pass `--device=/dev/ttyACM0` and `--group-add <host-dialout-gid>` at `docker run` time.
+Serial device access requires the operator to pass `--device=/dev/ttyACM0` and `--group-add <host-dialout-gid>` at `docker run` time. The container defaults assume `/dev/ttyACM0`; operators using a different modem path must override `--port`.
 
 ### 22.6  CI integration
 

@@ -2097,12 +2097,12 @@ Container images MUST follow a consistent tagging strategy. Release builds (git 
 **Source:** Issue #780
 
 **Description:**  
-The container image MUST be configured for production use. The `ENTRYPOINT` is `sonde-gateway` with a default `CMD` that points the database to the declared volume. A `VOLUME` at `/var/lib/sonde` is declared for database persistence. The gateway runs as a non-root `sonde` user inside the container. The `--key-provider file` and `--key-provider env` backends work without D-Bus.
+The container image MUST be configured for production use. The `ENTRYPOINT` is `sonde-gateway` with a default `CMD` that points the database to the declared volume, selects `/dev/ttyACM0` as the default modem path, and uses the `env` key provider that is suitable for container deployments. A `VOLUME` at `/var/lib/sonde` is declared for database persistence. The gateway runs as a non-root `sonde` user inside the container. The `--key-provider file` and `--key-provider env` backends work without D-Bus.
 
 **Acceptance criteria:**
 
 1. `ENTRYPOINT` is `sonde-gateway`.
-2. `CMD` defaults to `--db /var/lib/sonde/sonde.db`.
+2. `CMD` defaults to `--db /var/lib/sonde/sonde.db --port /dev/ttyACM0 --key-provider env`.
 3. `VOLUME /var/lib/sonde` is declared for database persistence.
 4. The gateway runs as a non-root `sonde` user inside the container.
 5. `--key-provider file` and `--key-provider env` work without D-Bus.

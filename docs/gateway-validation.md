@@ -3247,21 +3247,23 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1802  Container runs as non-root with writable volume
+### T-1802  Container runtime defaults, non-root user, and writable volume
 
 **Traces to:** GW-1802 (AC-2, AC-3, AC-4)
 
 **Preconditions:** Container image built.
 
 **Steps:**
-1. Run `docker run --rm --entrypoint sh <image> -c 'whoami'`.
-2. Run `docker run --rm --entrypoint sh <image> -c 'touch /var/lib/sonde/test && rm /var/lib/sonde/test'`.
-3. Run `docker run --rm <image> --help` and verify `--key-provider env` appears in the output.
+1. Run `docker inspect <image>` and inspect `Config.Entrypoint` and `Config.Cmd`.
+2. Run `docker run --rm --entrypoint sh <image> -c 'whoami'`.
+3. Run `docker run --rm --entrypoint sh <image> -c 'touch /var/lib/sonde/test && rm /var/lib/sonde/test'`.
+4. Run `docker run --rm <image> --help` and verify `--key-provider env` appears in the output.
 
 **Expected:**
-1. `whoami` outputs `sonde`.
-2. File creation in `/var/lib/sonde` succeeds (writable by `sonde` user).
-3. `--key-provider env` is accepted by the CLI help path.
+1. `ENTRYPOINT` is `["sonde-gateway"]` and `CMD` is `["--db", "/var/lib/sonde/sonde.db", "--port", "/dev/ttyACM0", "--key-provider", "env"]`.
+2. `whoami` outputs `sonde`.
+3. File creation in `/var/lib/sonde` succeeds (writable by `sonde` user).
+4. `--key-provider env` is accepted by the CLI help path.
 
 ---
 

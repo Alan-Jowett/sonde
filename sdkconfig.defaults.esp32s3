@@ -33,9 +33,11 @@ CONFIG_ESP_WIFI_ENABLED=y
 
 # --- Flash configuration ---
 # Pin flash parameters so elf2image in CI uses matching values.
+# Default to 8 MB so the merged modem image boots on both 8 MB and 16 MB
+# ESP32-S3 boards, as long as the partition layout stays within the first 8 MB.
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 
 # --- Bluetooth / NimBLE (MD-0400) ---
 # Use NimBLE (BLE-only, lightweight) instead of Bluedroid.

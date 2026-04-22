@@ -146,7 +146,7 @@ jobs:
 
           FLASH_MODE=$(grep -oP '(?<=CONFIG_ESPTOOLPY_FLASHMODE=").*(?=")' "$SDKCONFIG" 2>/dev/null || echo "dio")
           FLASH_FREQ=$(grep -oP '(?<=CONFIG_ESPTOOLPY_FLASHFREQ=").*(?=")' "$SDKCONFIG" 2>/dev/null || echo "80m")
-          FLASH_SIZE=$(grep -oP '(?<=CONFIG_ESPTOOLPY_FLASHSIZE=").*(?=")' "$SDKCONFIG" 2>/dev/null || echo "16MB")
+          FLASH_SIZE=$(grep -oP '(?<=CONFIG_ESPTOOLPY_FLASHSIZE=").*(?=")' "$SDKCONFIG" 2>/dev/null || echo "8MB")
           echo "Flash mode=$FLASH_MODE freq=$FLASH_FREQ size=$FLASH_SIZE"
 
           # Convert ELF → flat binary.

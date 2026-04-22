@@ -17,8 +17,7 @@
 #     -e SONDE_MASTER_KEY=<64-hex-chars> \
 #     --device /dev/ttyACM0 \
 #     --group-add <host-dialout-gid> \
-#     sonde-gateway \
-#       --port /dev/ttyACM0 --key-provider env
+#     sonde-gateway
 
 # ── Stage 1: build ──────────────────────────────────────────────────────────
 # rust:alpine — pinned by digest for reproducible builds.
@@ -57,4 +56,4 @@ VOLUME /var/lib/sonde
 USER sonde
 
 ENTRYPOINT ["sonde-gateway"]
-CMD ["--db", "/var/lib/sonde/sonde.db"]
+CMD ["--db", "/var/lib/sonde/sonde.db", "--port", "/dev/ttyACM0", "--key-provider", "env"]

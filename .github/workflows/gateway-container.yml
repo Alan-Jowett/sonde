@@ -73,7 +73,7 @@ jobs:
       - name: Smoke test — static musl linkage
         run: |
           docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
-            'ldd /usr/local/bin/sonde-gateway 2>&1 | grep -q "not a dynamic executable"'
+            'ldd /usr/local/bin/sonde-gateway 2>&1 | grep -Eiq "not a dynamic executable|not a valid dynamic program"'
 
       - name: Smoke test — non-root user and writable volume
         run: |

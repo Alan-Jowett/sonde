@@ -522,7 +522,7 @@ The modem detects button presses on the 1-Wire data line (GPIO2 / XIAO ESP32-S3 
 
 ### 16.1  GPIO configuration
 
-At boot, GPIO2 is configured as an input pin with active-low logic. The carrier board provides an external pull-up resistor; the firmware enables the ESP32-S3 internal pull-up as a fallback only if the external pull-up is absent.
+At boot, GPIO2 is configured as an input pin with active-low logic. The firmware unconditionally enables the ESP32-S3 internal pull-up; this is safe alongside the carrier board's external pull-up (parallel pull-ups simply lower the effective resistance).
 
 ### 16.2  Debounce and classification state machine
 

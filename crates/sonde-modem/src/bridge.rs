@@ -246,7 +246,14 @@ impl<F: FnMut() -> bool> ButtonScanner<F> {
     /// debounced release is detected, or `None` otherwise.
     pub fn poll(&mut self) -> Option<u8> {
         let pressed = (self.read_gpio)();
-        let now = Instant::now();
+        self.poll_at(Instant::now(), pressed)
+    }
+
+    /// Advance the state machine with an explicit timestamp and GPIO state.
+    ///
+    /// This is the core logic, separated from `poll()` so tests can inject
+    /// a deterministic clock without sleeping.
+    pub fn poll_at(&mut self, now: Instant, pressed: bool) -> Option<u8> {
         let debounce = Duration::from_millis(BUTTON_DEBOUNCE_MS);
 
         match self.state {
@@ -3689,188 +3696,194 @@ mod tests {
         (pressed, scanner)
     }
 
+    /// Deterministic time offsets for button tests.
+    const MS: Duration = Duration::from_millis(1);
+
     #[test]
     fn button_short_press() {
-        let (pressed, mut scanner) = make_test_scanner();
+        let (_, mut scanner) = make_test_scanner();
+        let t0 = Instant::now();
 
         // Idle — not pressed.
-        assert_eq!(scanner.poll(), None);
+        assert_eq!(scanner.poll_at(t0, false), None);
 
         // Press the button.
-        pressed.set(true);
-        assert_eq!(scanner.poll(), None); // enters DebouncePress
+        assert_eq!(scanner.poll_at(t0, true), None); // DebouncePress
 
-        // Wait past debounce (simulate by polling after 30ms).
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        assert_eq!(scanner.poll(), None); // enters Pressed
+        // Before debounce completes — still nothing.
+        assert_eq!(scanner.poll_at(t0 + MS * 20, true), None);
 
-        // Release after < 1s total (short press).
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        pressed.set(false);
-        assert_eq!(scanner.poll(), None); // enters DebounceRelease
+        // Past debounce (30 ms) — enters Pressed.
+        assert_eq!(scanner.poll_at(t0 + MS * 30, true), None);
 
-        // Wait past release debounce.
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        let result = scanner.poll();
-        assert_eq!(result, Some(BUTTON_TYPE_SHORT));
+        // Release at 230 ms (200 ms hold).
+        assert_eq!(scanner.poll_at(t0 + MS * 230, false), None); // DebounceRelease
+
+        // Past release debounce — classify as SHORT.
+        assert_eq!(
+            scanner.poll_at(t0 + MS * 260, false),
+            Some(BUTTON_TYPE_SHORT)
+        );
 
         // Back to idle.
-        assert_eq!(scanner.poll(), None);
+        assert_eq!(scanner.poll_at(t0 + MS * 300, false), None);
     }
 
     #[test]
     fn button_long_press() {
-        let (pressed, mut scanner) = make_test_scanner();
+        let (_, mut scanner) = make_test_scanner();
+        let t0 = Instant::now();
 
-        pressed.set(true);
-        scanner.poll(); // DebouncePress
+        // Press.
+        scanner.poll_at(t0, true);
+        scanner.poll_at(t0 + MS * 30, true); // Pressed
 
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        scanner.poll(); // Pressed
+        // Release at 1200 ms (1170 ms hold).
+        scanner.poll_at(t0 + MS * 1200, false); // DebounceRelease
 
-        // Hold for > 1s.
-        std::thread::sleep(std::time::Duration::from_millis(1050));
-        pressed.set(false);
-        scanner.poll(); // DebounceRelease
-
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        let result = scanner.poll();
-        assert_eq!(result, Some(BUTTON_TYPE_LONG));
+        // Past release debounce.
+        assert_eq!(
+            scanner.poll_at(t0 + MS * 1230, false),
+            Some(BUTTON_TYPE_LONG)
+        );
     }
 
     #[test]
     fn button_glitch_rejected() {
-        let (pressed, mut scanner) = make_test_scanner();
+        let (_, mut scanner) = make_test_scanner();
+        let t0 = Instant::now();
 
         // Brief press shorter than debounce.
-        pressed.set(true);
-        scanner.poll(); // DebouncePress
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        pressed.set(false);
-        assert_eq!(scanner.poll(), None); // back to Idle
+        scanner.poll_at(t0, true); // DebouncePress
+                                   // Release before 30 ms.
+        assert_eq!(scanner.poll_at(t0 + MS * 10, false), None); // back to Idle
 
-        // No event should appear.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert_eq!(scanner.poll(), None);
+        // No event.
+        assert_eq!(scanner.poll_at(t0 + MS * 100, false), None);
     }
 
     #[test]
     fn button_no_event_while_held() {
-        let (pressed, mut scanner) = make_test_scanner();
+        let (_, mut scanner) = make_test_scanner();
+        let t0 = Instant::now();
 
-        pressed.set(true);
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        scanner.poll(); // Pressed
+        scanner.poll_at(t0, true);
+        scanner.poll_at(t0 + MS * 30, true); // Pressed
 
-        // Hold for 2 seconds — no event emitted.
-        for _ in 0..20 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            assert_eq!(scanner.poll(), None);
+        // Hold for 2 seconds — no event.
+        for i in 1..=20 {
+            assert_eq!(scanner.poll_at(t0 + MS * 30 + MS * 100 * i, true), None);
         }
 
-        // Release.
-        pressed.set(false);
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        let result = scanner.poll();
-        assert_eq!(result, Some(BUTTON_TYPE_LONG));
+        // Release at 2030 ms.
+        scanner.poll_at(t0 + MS * 2030, false);
+        assert_eq!(
+            scanner.poll_at(t0 + MS * 2060, false),
+            Some(BUTTON_TYPE_LONG)
+        );
     }
 
     #[test]
     fn button_back_to_back_presses() {
-        let (pressed, mut scanner) = make_test_scanner();
+        let (_, mut scanner) = make_test_scanner();
+        let t0 = Instant::now();
 
-        // First press — short.
-        pressed.set(true);
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        pressed.set(false);
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        assert_eq!(scanner.poll(), Some(BUTTON_TYPE_SHORT));
+        // First press — short (200 ms hold).
+        scanner.poll_at(t0, true);
+        scanner.poll_at(t0 + MS * 30, true); // Pressed
+        scanner.poll_at(t0 + MS * 230, false); // DebounceRelease
+        assert_eq!(
+            scanner.poll_at(t0 + MS * 260, false),
+            Some(BUTTON_TYPE_SHORT)
+        );
 
-        // Second press — long.
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        pressed.set(true);
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(1050));
-        pressed.set(false);
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        assert_eq!(scanner.poll(), Some(BUTTON_TYPE_LONG));
+        // Second press — long (1200 ms hold).
+        scanner.poll_at(t0 + MS * 400, true);
+        scanner.poll_at(t0 + MS * 430, true); // Pressed
+        scanner.poll_at(t0 + MS * 1630, false); // DebounceRelease
+        assert_eq!(
+            scanner.poll_at(t0 + MS * 1660, false),
+            Some(BUTTON_TYPE_LONG)
+        );
     }
 
     #[test]
     fn button_boundary_999ms_short_1000ms_long() {
-        // T-0803: 999 ms press → SHORT, 1000 ms press → LONG.
-        let (pressed, mut scanner) = make_test_scanner();
+        // T-0803: exactly 999 ms → SHORT, exactly 1000 ms → LONG.
+        let (_, mut scanner) = make_test_scanner();
+        let t0 = Instant::now();
 
-        // 999 ms press (should be SHORT).
-        pressed.set(true);
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        scanner.poll(); // Pressed confirmed at this point
-                        // Hold for ~964 ms (999 - 35 debounce) — but duration is measured
-                        // from debounced press (when Pressed state begins), so sleep ~964 ms.
-        std::thread::sleep(std::time::Duration::from_millis(930));
-        pressed.set(false);
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        let result = scanner.poll();
-        assert_eq!(result, Some(BUTTON_TYPE_SHORT));
+        // 999 ms press: debounced press at t0+30, release at t0+30+999=t0+1029,
+        // debounced release at t0+1059. Duration = 1059 - 30 = 1029... no.
+        // Duration is measured from press_start (set to `now` at t0+30) to
+        // the classification `now` (at t0+30+999+30 = t0+1059).
+        // duration = 1059 - 30 = 1029 ms. That's > 1000 ms. Need to be precise.
+        //
+        // press_start = t0+30 (when DebouncePress→Pressed transition fires).
+        // For a 999 ms hold: release GPIO at t0+30+999 = t0+1029.
+        // Debounced release fires at t0+1029+30 = t0+1059.
+        // Duration at classification = t0+1059 - t0+30 = 1029 ms → LONG.
+        // That's because debounce adds to the measured duration.
+        //
+        // The spec says duration is from debounced press to debounced release.
+        // So 999 ms between those two events means:
+        //   press_start = t0+30, classification_now = t0+30+999 = t0+1029.
+        //   release GPIO must happen at t0+1029-30 = t0+999 (so release
+        //   debounce completes at t0+1029).
+        //
+        // Simpler: press at t0, debounce at t0+30 (press_start=t0+30),
+        // release at t0+30+969=t0+999, debounce release at t0+999+30=t0+1029.
+        // classification now=t0+1029, duration=t0+1029 - t0+30 = 999 ms → SHORT. ✓
 
-        // 1100 ms press (comfortably LONG to avoid timing jitter).
-        pressed.set(true);
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        pressed.set(false);
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        let result = scanner.poll();
-        assert_eq!(result, Some(BUTTON_TYPE_LONG));
+        // 999 ms between debounced press and debounced release → SHORT.
+        scanner.poll_at(t0, true); // DebouncePress
+        scanner.poll_at(t0 + MS * 30, true); // Pressed, press_start = t0+30
+        scanner.poll_at(t0 + MS * 999, false); // DebounceRelease
+        assert_eq!(
+            scanner.poll_at(t0 + MS * 1029, false), // duration = 1029-30 = 999 ms
+            Some(BUTTON_TYPE_SHORT)
+        );
+
+        // 1000 ms between debounced press and debounced release → LONG.
+        scanner.poll_at(t0 + MS * 1100, true); // DebouncePress
+        scanner.poll_at(t0 + MS * 1130, true); // Pressed, press_start = t0+1130
+        scanner.poll_at(t0 + MS * 2100, false); // DebounceRelease
+        assert_eq!(
+            scanner.poll_at(t0 + MS * 2130, false), // duration = 2130-1130 = 1000 ms
+            Some(BUTTON_TYPE_LONG)
+        );
     }
 
     #[test]
     fn button_release_bounce_rejected() {
         // T-0809: bounce during release should not create a second event.
-        let (pressed, mut scanner) = make_test_scanner();
+        let (_, mut scanner) = make_test_scanner();
+        let t0 = Instant::now();
 
-        // Press for 500 ms.
-        pressed.set(true);
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        scanner.poll();
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Press for 200 ms.
+        scanner.poll_at(t0, true);
+        scanner.poll_at(t0 + MS * 30, true); // Pressed
 
-        // Release — but bounce (briefly return to pressed before debounce completes).
-        pressed.set(false);
-        scanner.poll(); // enters DebounceRelease
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        pressed.set(true); // bounce back
-        assert_eq!(scanner.poll(), None); // should return to Pressed, not classify
+        // Release — but bounce back within debounce window.
+        scanner.poll_at(t0 + MS * 230, false); // DebounceRelease
+        assert_eq!(scanner.poll_at(t0 + MS * 240, true), None); // bounce → Pressed
 
         // Now truly release.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        pressed.set(false);
-        scanner.poll(); // DebounceRelease again
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        let result = scanner.poll();
-        assert_eq!(result, Some(BUTTON_TYPE_SHORT));
+        scanner.poll_at(t0 + MS * 300, false); // DebounceRelease
+        assert_eq!(
+            scanner.poll_at(t0 + MS * 330, false),
+            Some(BUTTON_TYPE_SHORT)
+        );
 
-        // Verify no second event.
-        assert_eq!(scanner.poll(), None);
+        // No second event.
+        assert_eq!(scanner.poll_at(t0 + MS * 400, false), None);
     }
 
     #[test]
     fn button_event_bridge_integration() {
         // Verify that the bridge emits EVENT_BUTTON when the scanner fires.
+        // This test still uses real timing via bridge.poll() since it tests
+        // the full integration path including USB-CDC emission.
         let pressed = Rc::new(StdCell::new(false));
         let pressed_clone = pressed.clone();
         let scanner = ButtonScanner::new(move || pressed_clone.get());

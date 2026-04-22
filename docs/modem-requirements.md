@@ -749,7 +749,7 @@ When the modem encountersan error at an operator-visible boundary (BLE GATT oper
 **Source:** modem-protocol.md §4.17, Issue #756
 
 **Description:**
-The modem firmware MUST configure GPIO2 (XIAO ESP32-S3 silk label D1, 1-Wire data line) as a GPIO input, active-low. The carrier board provides an external pull-up resistor. The firmware SHOULD enable the ESP32-S3 internal pull-up as a fallback only if the external pull-up is absent.
+The modem firmware MUST configure GPIO2 (XIAO ESP32-S3 silk label D1, 1-Wire data line) as a GPIO input, active-low. The firmware MUST enable the ESP32-S3 internal pull-up unconditionally; this is safe to use alongside the carrier board's external pull-up (parallel pull-ups simply lower the effective resistance).
 
 **Acceptance criteria:**
 

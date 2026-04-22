@@ -27,8 +27,11 @@ pub struct EspSsd1306Display {
     initialized: bool,
 }
 
-/// Display wrapper that degrades to recoverable write failures if OLED
-/// initialization failed at boot.
+/// Display wrapper that degrades to recoverable write failures if the display
+/// path is unavailable.
+///
+/// `EspSsd1306Display::new()` performs the I2C setup at boot. The SSD1306 init
+/// sequence itself is deferred until the first flush in `poll()`.
 pub struct ModemDisplay {
     inner: Option<EspSsd1306Display>,
     pending_error: bool,
@@ -71,18 +74,28 @@ impl EspSsd1306Display {
             if cmd.is_null() {
                 return Err(DisplayError::WriteFailed);
             }
-            esp_idf_sys::i2c_master_start(cmd);
-            esp_idf_sys::i2c_master_write_byte(cmd, OLED_ADDR << 1, true);
-            esp_idf_sys::i2c_master_write_byte(cmd, control, true);
-            if !payload.is_empty() {
-                esp_idf_sys::i2c_master_write(cmd, payload.as_ptr(), payload.len(), true);
+
+            let mut err = esp_idf_sys::i2c_master_start(cmd);
+            if err == esp_idf_sys::ESP_OK as i32 {
+                err = esp_idf_sys::i2c_master_write_byte(cmd, OLED_ADDR << 1, true);
             }
-            esp_idf_sys::i2c_master_stop(cmd);
-            let err = esp_idf_sys::i2c_master_cmd_begin(
-                esp_idf_sys::i2c_port_t_I2C_NUM_0,
-                cmd,
-                i2c_timeout_ticks(),
-            );
+            if err == esp_idf_sys::ESP_OK as i32 {
+                err = esp_idf_sys::i2c_master_write_byte(cmd, control, true);
+            }
+            if err == esp_idf_sys::ESP_OK as i32 && !payload.is_empty() {
+                err = esp_idf_sys::i2c_master_write(cmd, payload.as_ptr(), payload.len(), true);
+            }
+            if err == esp_idf_sys::ESP_OK as i32 {
+                err = esp_idf_sys::i2c_master_stop(cmd);
+            }
+            if err == esp_idf_sys::ESP_OK as i32 {
+                err = esp_idf_sys::i2c_master_cmd_begin(
+                    esp_idf_sys::i2c_port_t_I2C_NUM_0,
+                    cmd,
+                    i2c_timeout_ticks(),
+                );
+            }
+
             esp_idf_sys::i2c_cmd_link_delete(cmd);
             if err != esp_idf_sys::ESP_OK as i32 {
                 return Err(DisplayError::WriteFailed);

@@ -152,9 +152,9 @@ fn t0603g_dpapi_unavailable_on_non_windows() {
 // ── T-0603h: SecretServiceKeyProvider — round-trip (Linux only) ─────────────
 
 // T-0603h and T-0603i require a running Secret Service daemon (GNOME Keyring
-// or KWallet). These tests are gated on cfg(target_os = "linux", feature = "keyring")
-// and marked #[ignore] since they require a D-Bus session bus and running
-// keyring daemon.
+// or KWallet). These tests are gated on
+// cfg(all(target_os = "linux", feature = "keyring")) and marked #[ignore]
+// since they require a D-Bus session bus and running keyring daemon.
 
 /// T-0603h  SecretServiceKeyProvider — round-trip (Linux only).
 #[cfg(all(target_os = "linux", feature = "keyring"))]

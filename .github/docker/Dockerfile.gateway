@@ -21,7 +21,8 @@
 #       --port /dev/ttyACM0 --key-provider env
 
 # ── Stage 1: build ──────────────────────────────────────────────────────────
-FROM rust:alpine AS builder
+# rust:alpine — pinned by digest for reproducible builds.
+FROM rust:alpine@sha256:ef7b340d4201444fa2757dfddfd4c03be9d2bde468de7b7a68b0e9fabb794334 AS builder
 
 RUN apk add --no-cache musl-dev protobuf
 
@@ -37,7 +38,8 @@ RUN cargo build --release -p sonde-gateway --no-default-features \
        -p sonde-tmp102-handler
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────────
-FROM alpine:3.21
+# alpine:3.21 — pinned by digest for reproducible builds.
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 # Non-root user for the gateway process (GW-1802 AC3).
 RUN addgroup -S sonde && adduser -S sonde -G sonde \

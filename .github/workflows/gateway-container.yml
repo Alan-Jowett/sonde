@@ -70,6 +70,11 @@ jobs:
           docker run --rm --entrypoint sonde-sht40-handler ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} --version
           docker run --rm --entrypoint sonde-tmp102-handler ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} --version
 
+      - name: Smoke test — runtime defaults
+        run: |
+          test "$(docker inspect -f '{{json .Config.Entrypoint}}' ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }})" = '["sonde-gateway"]'
+          test "$(docker inspect -f '{{json .Config.Cmd}}' ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }})" = '["--db","/var/lib/sonde/sonde.db","--port","/dev/ttyACM0","--key-provider","env"]'
+
       - name: Smoke test — static musl linkage
         run: |
           docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \

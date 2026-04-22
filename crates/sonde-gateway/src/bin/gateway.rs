@@ -235,17 +235,17 @@ fn build_key_provider(cli: &Cli) -> Result<Box<dyn KeyProvider>, Box<dyn std::er
             }
         }
         KeyProviderKind::SecretService => {
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "keyring"))]
             {
                 use sonde_gateway::key_provider::SecretServiceKeyProvider;
                 Ok(Box::new(SecretServiceKeyProvider::new(
                     cli.key_label.clone(),
                 )))
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(all(target_os = "linux", feature = "keyring")))]
             {
                 Err(KeyProviderError::NotAvailable(
-                    "secret-service backend is only available on Linux".into(),
+                    "secret-service backend is only available on Linux with the `keyring` feature".into(),
                 )
                 .into())
             }

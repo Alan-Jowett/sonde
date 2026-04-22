@@ -2052,6 +2052,82 @@ The gateway MUST log `DIAG_REQUEST` reception and `DIAG_REPLY` transmission at `
 
 ---
 
+## 17  Container image
+
+### GW-1800  Multi-architecture container image
+
+**Priority:** Must  
+**Source:** Issue #780
+
+**Description:**  
+The CI MUST produce a multi-architecture Docker container image (`linux/amd64` + `linux/arm64`) published to `ghcr.io/alan-jowett/sonde-gateway`. The image MUST be based on Alpine Linux (musl libc) for minimal size. A multi-stage build ensures the final image contains no Rust toolchain, build artifacts, or source code. Each architecture MUST be built natively on a per-arch GitHub runner (no QEMU cross-compilation).
+
+**Acceptance criteria:**
+
+1. The image is based on Alpine Linux (musl libc).
+2. The image contains `sonde-gateway`, `sonde-admin`, `sonde-sht40-handler`, and `sonde-tmp102-handler` binaries.
+3. `docker manifest inspect` shows both `linux/amd64` and `linux/arm64` platforms.
+4. The final image contains no Rust toolchain, build artifacts, or source code.
+5. Each architecture is built on a native runner (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`).
+6. Per-arch images pass smoke tests (binary execution, linkage verification) before any public tag is created.
+
+---
+
+### GW-1801  Container image tagging
+
+**Priority:** Must  
+**Source:** Issue #780
+
+**Description:**  
+Container images MUST follow a consistent tagging strategy. Release builds (git tags matching `v*`) receive the `latest` tag and a semver tag. Nightly builds receive `nightly` and `nightly-YYYYMMDD` tags. Every image is also tagged with its git SHA for traceability. Public tags are only created after both architecture builds pass, preventing partial/broken images from being tagged.
+
+**Acceptance criteria:**
+
+1. Nightly builds are tagged `nightly` and `nightly-YYYYMMDD`.
+2. Release builds (tag `v*`) are tagged `latest` and the semver version (e.g., `0.4.0`).
+3. Every image is also tagged `sha-<short-sha>`.
+4. Public tags are created only after both amd64 and arm64 builds succeed.
+5. Pull request builds do not publish images.
+
+---
+
+### GW-1802  Container runtime configuration
+
+**Priority:** Must  
+**Source:** Issue #780
+
+**Description:**  
+The container image MUST be configured for production use. The `ENTRYPOINT` is `sonde-gateway` with a default `CMD` that points the database to the declared volume. A `VOLUME` at `/var/lib/sonde` is declared for database persistence. The gateway runs as a non-root `sonde` user inside the container. The `--key-provider file` and `--key-provider env` backends work without D-Bus.
+
+**Acceptance criteria:**
+
+1. `ENTRYPOINT` is `sonde-gateway`.
+2. `CMD` defaults to `--db /var/lib/sonde/sonde.db`.
+3. `VOLUME /var/lib/sonde` is declared for database persistence.
+4. The gateway runs as a non-root `sonde` user inside the container.
+5. `--key-provider file` and `--key-provider env` work without D-Bus.
+6. Serial device access requires the operator to pass `--device` and `--group-add` at `docker run` time.
+
+---
+
+### GW-1803  Optional secret-service dependency
+
+**Priority:** Must  
+**Source:** Issue #780
+
+**Description:**  
+The `secret-service` (D-Bus keyring) dependency MUST be behind a cargo feature flag so container builds can exclude it, reducing compile time and eliminating the D-Bus runtime dependency. A `keyring` feature flag controls the `secret-service` dependency. The default feature set includes `keyring` so existing builds are unchanged.
+
+**Acceptance criteria:**
+
+1. A `keyring` cargo feature flag controls the `secret-service` dependency.
+2. `--key-provider secret-service` is only available when compiled with the `keyring` feature.
+3. The default feature set includes `keyring` (no behavior change for existing builds).
+4. Container builds use `--no-default-features` to exclude `keyring`.
+5. Building with `--no-default-features` produces a working binary that supports `file` and `env` key providers.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -2167,3 +2243,7 @@ The gateway MUST log `DIAG_REQUEST` reception and `DIAG_REPLY` transmission at `
 | GW-1704 | DIAG_REPLY construction | Must |
 | GW-1705 | Configurable RSSI thresholds | Should |
 | GW-1706 | Diagnostic logging | Must |
+| GW-1800 | Multi-architecture container image | Must |
+| GW-1801 | Container image tagging | Must |
+| GW-1802 | Container runtime configuration | Must |
+| GW-1803 | Optional secret-service dependency | Must |

@@ -10,6 +10,7 @@
 //! (`sonde-gateway`) and the modem firmware (`sonde-modem`) to guarantee
 //! wire-format compatibility.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -276,7 +277,7 @@ pub enum ModemMessage {
     SetChannel(u8),
     GetStatus,
     ScanChannels,
-    DisplayFrame(DisplayFrame),
+    DisplayFrame(Box<DisplayFrame>),
 
     // -- Modem → Gateway --
     ModemReady(ModemReady),
@@ -750,7 +751,9 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
             check_exact_body(msg_type, body, DISPLAY_FRAME_BODY_SIZE)?;
             let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
             framebuffer.copy_from_slice(body);
-            Ok(ModemMessage::DisplayFrame(DisplayFrame { framebuffer }))
+            Ok(ModemMessage::DisplayFrame(Box::new(DisplayFrame {
+                framebuffer,
+            })))
         }
 
         MODEM_MSG_MODEM_READY => {
@@ -1930,7 +1933,7 @@ mod tests {
         let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
         framebuffer[0] = 0x80;
         framebuffer[DISPLAY_FRAME_BODY_SIZE - 1] = 0x01;
-        let msg = ModemMessage::DisplayFrame(DisplayFrame { framebuffer });
+        let msg = ModemMessage::DisplayFrame(Box::new(DisplayFrame { framebuffer }));
         let frame = encode_modem_frame(&msg).unwrap();
         let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
         assert_eq!(consumed, frame.len());

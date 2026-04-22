@@ -672,7 +672,7 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll, D: Display> Bridge<S, R, 
             ModemMessage::SetChannel(ch) => self.handle_set_channel(ch),
             ModemMessage::GetStatus => self.handle_get_status(),
             ModemMessage::ScanChannels => self.handle_scan_channels(),
-            ModemMessage::DisplayFrame(frame) => self.handle_display_frame(frame),
+            ModemMessage::DisplayFrame(frame) => self.handle_display_frame(*frame),
             ModemMessage::BleIndicate(ind) => self.handle_ble_indicate(ind.ble_data),
             ModemMessage::BleEnable => self.handle_ble_enable(),
             ModemMessage::BleDisable => self.handle_ble_disable(),
@@ -1139,8 +1139,10 @@ mod tests {
         let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
         framebuffer[0] = 0x80;
         framebuffer[DISPLAY_FRAME_BODY_SIZE - 1] = 0x01;
-        let frame =
-            encode_modem_frame(&ModemMessage::DisplayFrame(DisplayFrame { framebuffer })).unwrap();
+        let frame = encode_modem_frame(&ModemMessage::DisplayFrame(Box::new(DisplayFrame {
+            framebuffer,
+        })))
+        .unwrap();
         feed_and_drain(&mut bridge, &frame);
         assert_eq!(bridge.display.queued_frames.len(), 1);
         assert_eq!(bridge.display.queued_frames[0], framebuffer);
@@ -1171,9 +1173,9 @@ mod tests {
     fn display_write_failure_emits_event_error() {
         let mut bridge = make_bridge_with_display();
         bridge.display.fail_next_poll = true;
-        let frame = encode_modem_frame(&ModemMessage::DisplayFrame(DisplayFrame {
+        let frame = encode_modem_frame(&ModemMessage::DisplayFrame(Box::new(DisplayFrame {
             framebuffer: [0x42; DISPLAY_FRAME_BODY_SIZE],
-        }))
+        })))
         .unwrap();
         feed_and_drain(&mut bridge, &frame);
         let tx = bridge.usb.take_tx();

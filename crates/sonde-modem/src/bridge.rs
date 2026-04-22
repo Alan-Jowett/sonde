@@ -561,8 +561,14 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn> {
         // Poll button GPIO and emit EVENT_BUTTON on classified release (MD-0603).
         if let Some(button_type) = self.button.poll() {
             let msg = ModemMessage::EventButton(EventButton { button_type });
-            self.send_msg(&msg);
-            info!("EVENT_BUTTON: button_type={}", button_type);
+            if self.send_msg(&msg) {
+                info!("EVENT_BUTTON: button_type={}", button_type);
+            } else {
+                warn!(
+                    "EVENT_BUTTON dropped: button_type={} (USB-CDC not writable)",
+                    button_type
+                );
+            }
         }
     }
 
@@ -3879,34 +3885,46 @@ mod tests {
         assert_eq!(scanner.poll_at(t0 + MS * 400, false), None);
     }
 
+    /// Mock ButtonPoll that fires a single event on a chosen poll count.
+    struct MockButtonPoll {
+        polls: usize,
+        fire_on_poll: usize,
+    }
+
+    impl MockButtonPoll {
+        fn new(fire_on_poll: usize) -> Self {
+            Self {
+                polls: 0,
+                fire_on_poll,
+            }
+        }
+    }
+
+    impl ButtonPoll for MockButtonPoll {
+        fn poll(&mut self) -> Option<u8> {
+            self.polls += 1;
+            if self.polls == self.fire_on_poll {
+                Some(BUTTON_TYPE_SHORT)
+            } else {
+                None
+            }
+        }
+    }
+
     #[test]
     fn button_event_bridge_integration() {
-        // Verify that the bridge emits EVENT_BUTTON when the scanner fires.
-        // This test still uses real timing via bridge.poll() since it tests
-        // the full integration path including USB-CDC emission.
-        let pressed = Rc::new(StdCell::new(false));
-        let pressed_clone = pressed.clone();
-        let scanner = ButtonScanner::new(move || pressed_clone.get());
-
+        // Verify that the bridge emits EVENT_BUTTON when the button poller
+        // fires. Uses a deterministic mock instead of wall-clock sleeps.
         let mut bridge = Bridge::with_ble_and_button(
             MockSerial::new(),
             MockRadio::new(),
             MockBle::new(),
-            scanner,
+            MockButtonPoll::new(2),
             ModemCounters::new(),
         );
 
-        // Press the button.
-        pressed.set(true);
+        // First poll: no event. Second poll: MockButtonPoll fires.
         bridge.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
-        bridge.poll();
-
-        // Release after short press.
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        pressed.set(false);
-        bridge.poll();
-        std::thread::sleep(std::time::Duration::from_millis(35));
         bridge.poll();
 
         // Decode the EVENT_BUTTON from the serial output.

@@ -196,8 +196,9 @@ fn t0603i_secret_service_item_not_found() {
 #[cfg(not(all(target_os = "linux", feature = "keyring")))]
 #[test]
 fn t0603j_secret_service_unavailable_on_non_linux() {
-    let err =
-        KeyProviderError::NotAvailable("secret-service backend is only available on Linux with the `keyring` feature".into());
+    let err = KeyProviderError::NotAvailable(
+        "secret-service backend is only available on Linux with the `keyring` feature".into(),
+    );
     assert!(err.to_string().contains("Linux"));
 }
 

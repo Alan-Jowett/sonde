@@ -245,7 +245,8 @@ fn build_key_provider(cli: &Cli) -> Result<Box<dyn KeyProvider>, Box<dyn std::er
             #[cfg(not(all(target_os = "linux", feature = "keyring")))]
             {
                 Err(KeyProviderError::NotAvailable(
-                    "secret-service backend is only available on Linux with the `keyring` feature".into(),
+                    "secret-service backend is only available on Linux with the `keyring` feature"
+                        .into(),
                 )
                 .into())
             }

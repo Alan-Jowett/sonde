@@ -5,6 +5,7 @@ pub mod admin;
 pub mod aead;
 pub mod ble_pairing;
 pub mod crypto;
+pub mod display_banner;
 pub mod engine;
 pub mod gateway_identity;
 pub mod handler;

@@ -7,13 +7,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use sonde_gateway::display_banner::{render_gateway_version_banner, send_gateway_version_banner};
 use sonde_gateway::modem::{UsbEspNowTransport, DEFAULT_MAX_HEALTH_POLL_FAILURES};
 use sonde_gateway::transport::Transport;
 
 use sonde_protocol::modem::{
-    encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, ModemStatus, RecvFrame,
+    encode_modem_frame, DisplayFrameAck, FrameDecoder, ModemMessage, ModemReady, ModemStatus,
+    RecvFrame, DISPLAY_FRAME_BODY_SIZE, DISPLAY_FRAME_CHUNK_COUNT, DISPLAY_FRAME_CHUNK_SIZE,
 };
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tracing_test::traced_test;
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -77,6 +80,54 @@ async fn create_transport_and_server(channel: u8) -> (UsbEspNowTransport, Duplex
 
     let transport = transport_handle.await.unwrap();
     (transport, server)
+}
+
+async fn receive_display_transfer(server: &mut DuplexStream) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 2048];
+    let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
+
+    let begin = read_next_message(server, &mut decoder, &mut buf).await;
+    let transfer_id = match begin {
+        ModemMessage::DisplayFrameBegin(begin) => begin.transfer_id,
+        other => panic!("expected DisplayFrameBegin, got {other:?}"),
+    };
+    server
+        .write_all(
+            &encode_modem_frame(&ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                transfer_id,
+                next_chunk_index: 0,
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    for expected_chunk_index in 0..DISPLAY_FRAME_CHUNK_COUNT {
+        let msg = read_next_message(server, &mut decoder, &mut buf).await;
+        match msg {
+            ModemMessage::DisplayFrameChunk(chunk) => {
+                assert_eq!(chunk.transfer_id, transfer_id);
+                assert_eq!(chunk.chunk_index, expected_chunk_index);
+                let start = usize::from(expected_chunk_index) * DISPLAY_FRAME_CHUNK_SIZE;
+                let end = start + DISPLAY_FRAME_CHUNK_SIZE;
+                framebuffer[start..end].copy_from_slice(&chunk.chunk_data);
+            }
+            other => panic!("expected DisplayFrameChunk, got {other:?}"),
+        }
+        server
+            .write_all(
+                &encode_modem_frame(&ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                    transfer_id,
+                    next_chunk_index: expected_chunk_index + 1,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    framebuffer
 }
 
 // ── T-1100: recv delivers RECV_FRAME ────────────────────────────────────
@@ -215,6 +266,49 @@ async fn t1103_startup_sequence() {
     let _transport = transport_handle.await.unwrap();
 }
 
+/// T-1103a  Gateway startup banner helper sends reliable display transfer.
+#[tokio::test]
+async fn t1103a_gateway_banner_sends_display_frame() {
+    let (transport, mut server) = create_transport_and_server(6).await;
+    let send_task = tokio::spawn(async move { send_gateway_version_banner(&transport).await });
+
+    let framebuffer = receive_display_transfer(&mut server).await;
+    assert_eq!(
+        framebuffer,
+        render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
+    );
+
+    send_task.await.unwrap().unwrap();
+}
+
+/// T-1107b  Missing DISPLAY_FRAME_ACK retries and then fails the transfer.
+#[tokio::test]
+async fn t1107b_display_ack_timeout_retries_then_fails() {
+    let (transport, mut server) = create_transport_and_server(6).await;
+    let send_task = tokio::spawn(async move { send_gateway_version_banner(&transport).await });
+
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 2048];
+    let mut transfer_id = None;
+    for _ in 0..4 {
+        let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+        match msg {
+            ModemMessage::DisplayFrameBegin(begin) => {
+                if let Some(id) = transfer_id {
+                    assert_eq!(begin.transfer_id, id, "retries must reuse transfer_id");
+                } else {
+                    transfer_id = Some(begin.transfer_id);
+                }
+            }
+            other => panic!("expected DisplayFrameBegin retry, got {other:?}"),
+        }
+    }
+
+    let err = send_task.await.unwrap().unwrap_err();
+    let err_text = err.to_string();
+    assert!(err_text.contains("DISPLAY_FRAME_ACK timeout"));
+}
+
 // ── T-1104: Startup — MODEM_READY timeout ───────────────────────────────
 
 /// T-1104  Startup — MODEM_READY timeout.
@@ -333,6 +427,40 @@ async fn t1107_modem_error_handling() {
 
     let (data, _) = transport.recv().await.unwrap();
     assert_eq!(data, vec![0xFF], "transport must still work after ERROR");
+}
+
+/// T-1107a  Modem EVENT_ERROR handling.
+#[tokio::test]
+#[traced_test]
+async fn t1107a_modem_event_error_handling() {
+    let (transport, mut server) = create_transport_and_server(6).await;
+
+    let event_error = ModemMessage::EventError(sonde_protocol::modem::EventError {
+        error_code: sonde_protocol::modem::EVENT_ERROR_DISPLAY_WRITE_FAILED,
+    });
+    server
+        .write_all(&encode_modem_frame(&event_error).unwrap())
+        .await
+        .unwrap();
+
+    let frame = ModemMessage::RecvFrame(RecvFrame {
+        peer_mac: [0x11; 6],
+        rssi: -40,
+        frame_data: vec![0xFF],
+    });
+    server
+        .write_all(&encode_modem_frame(&frame).unwrap())
+        .await
+        .unwrap();
+
+    let (data, _) = transport.recv().await.unwrap();
+    assert_eq!(
+        data,
+        vec![0xFF],
+        "transport must still work after EVENT_ERROR"
+    );
+    assert!(logs_contain("recoverable modem display fault"));
+    assert!(logs_contain("error_code=2"));
 }
 
 // ── T-1108: End-to-end wake cycle over PTY ──────────────────────────────

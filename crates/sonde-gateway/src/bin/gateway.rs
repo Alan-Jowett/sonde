@@ -12,6 +12,7 @@ use clap::Subcommand;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
+use sonde_gateway::display_banner::send_gateway_version_banner;
 use sonde_gateway::engine::{resolve_espnow_channel, Gateway, PendingCommand};
 use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
 use sonde_gateway::key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeyProviderError};
@@ -483,13 +484,30 @@ async fn run_gateway(
             }
         };
         info!(channel = channel_for_transport, "modem transport ready");
-        backoff = Duration::from_secs(1); // reset on success
-
-        // Extract warm-reboot signals before moving the transport into tasks.
-        // The flag is set (Release) before the notify fires, guarding against
-        // a competing select! arm winning the same poll cycle (GW-1103 AC7).
         let warm_reboot_notify = transport.warm_reboot_notify();
         let warm_reboot_flag = transport.warm_reboot_flag();
+        if let Err(e) = send_gateway_version_banner(&transport).await {
+            error!(
+                error = %e,
+                version = env!("CARGO_PKG_VERSION"),
+                guidance = "reliable display transfer failed; gateway will reconnect to recover modem transport state",
+                "failed to send gateway version banner to modem display"
+            );
+            let immediate_reconnect = warm_reboot_flag.load(std::sync::atomic::Ordering::Acquire);
+            transport.abort_reader_and_wait().await;
+            drop(transport);
+            if immediate_reconnect {
+                info!(
+                    "modem warm reboot detected during banner transfer — reconnecting immediately"
+                );
+                continue;
+            }
+            info!("retrying in {}s…", backoff.as_secs());
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
+            continue;
+        }
+        backoff = Duration::from_secs(1); // reset on success
 
         // Re-create the admin service and spawn a fresh gRPC server on each
         // reconnect iteration to bind to the new transport reference.

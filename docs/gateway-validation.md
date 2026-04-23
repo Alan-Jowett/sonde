@@ -1668,6 +1668,19 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1103a  Gateway startup sends modem display banner via reliable transfer
+
+**Validates:** GW-1101a
+
+**Procedure:**
+1. Start a full gateway instance with a PTY-based `MockModem`.
+2. Complete the modem startup handshake (`RESET` → `MODEM_READY` → `SET_CHANNEL` → `SET_CHANNEL_ACK`).
+3. Assert: the mock modem receives exactly one `DISPLAY_FRAME_BEGIN` followed by eight `DISPLAY_FRAME_CHUNK` messages after the handshake completes.
+4. After each begin/chunk, send the expected `DISPLAY_FRAME_ACK` from the mock modem.
+5. Reassemble the chunk payloads and assert: the framebuffer contains a rendering of `Sonde Gateway v<semver>` using the gateway crate semantic version.
+
+---
+
 ### T-1104a  Serial disconnect — reconnection with backoff
 
 **Validates:** GW-1103 (criteria 3–5)
@@ -1685,14 +1698,15 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1104b  Serial disconnect — frame loop survives reconnection
 
-**Validates:** GW-1103 (criterion 5)
+**Validates:** GW-1103 (criterion 5), GW-1101a
 
 **Procedure:**
 1. Start a full gateway instance with a PTY-based `MockModem`.
 2. Simulate a modem disconnect by closing the PTY slave fd.
 3. Assert: the frame processing loop and BLE event loop do **not** exit.
 4. Reconnect the mock modem (reopen PTY, send `MODEM_READY`).
-5. Assert: the gateway resumes processing frames normally.
+5. Assert: after the modem handshake completes, the gateway re-sends the version banner via the reliable display-transfer subprotocol.
+6. Assert: the gateway resumes processing frames normally.
 
 ---
 
@@ -1724,14 +1738,15 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1104e  Modem warm reboot — gateway re-runs startup with persisted channel, no backoff
 
-**Validates:** GW-1103 (criteria 7–8), GW-0808 (AC 6)
+**Validates:** GW-1103 (criteria 7–8), GW-0808 (AC 6), GW-1101a
 
 **Procedure:**
 1. Start a gateway instance (simulated with a mock modem duplex stream). Persist channel 7 via `SetModemChannel(7)`.
 2. Simulate a modem warm reboot: send an unsolicited `MODEM_READY` from the mock stream.
 3. Assert: the gateway does **not** sleep before starting recovery (no measurable delay between warm reboot detection and the next `RESET` being sent). *(Manual/expected — not yet automated; requires a gateway-level test harness.)*
 4. Assert: the gateway sends `RESET` and then `SET_CHANNEL(7)` — not `SET_CHANNEL(1)` — as part of the re-initialization.
-5. Assert: after successful recovery, a subsequent simulated serial disconnect triggers a reconnect with a 1 s backoff (not a previously accumulated backoff value). *(Manual/expected — not yet automated; requires a gateway-level test harness.)*
+5. Assert: after the handshake completes, the gateway re-sends the version banner via the reliable display-transfer subprotocol.
+6. Assert: after successful recovery, a subsequent simulated serial disconnect triggers a reconnect with a 1 s backoff (not a previously accumulated backoff value). *(Manual/expected — not yet automated; requires a gateway-level test harness.)*
 
 ---
 
@@ -1770,6 +1785,34 @@ A configurable stub handler process (or in-process mock) that:
 2. Complete startup.
 3. Inject an `ERROR(ESPNOW_INIT_FAILED, "test error")` message from the mock modem.
 4. Assert: the error code and message are logged.
+
+---
+
+### T-1107a  Modem EVENT_ERROR handling
+
+**Validates:** GW-1103
+
+**Procedure:**
+1. Create a `UsbEspNowTransport` connected to a PTY-based `MockModem`.
+2. Complete startup.
+3. Inject an `EVENT_ERROR(DISPLAY_WRITE_FAILED)` message from the mock modem.
+4. Assert: the recoverable display fault is logged as a warning.
+5. Inject a `RECV_FRAME` from the mock modem.
+6. Assert: `transport.recv()` still returns the frame; no reset or reconnect was triggered by the display fault.
+
+---
+
+### T-1107b  Reliable display transfer ACK timeout triggers reconnect
+
+**Validates:** GW-1101a, GW-1103
+
+**Procedure:**
+1. Start a full gateway instance with a PTY-based `MockModem`.
+2. Complete the modem startup handshake.
+3. Accept `DISPLAY_FRAME_BEGIN` with `DISPLAY_FRAME_ACK(next_chunk_index = 0)`.
+4. Accept some, but not all, `DISPLAY_FRAME_CHUNK` messages, then stop replying with `DISPLAY_FRAME_ACK`.
+5. Assert: the gateway retransmits the last unacknowledged display chunk up to its retry budget.
+6. Assert: after the retry budget is exhausted, the gateway enters the modem recovery path (`RESET` → `MODEM_READY` → `SET_CHANNEL`) instead of logging a recoverable display warning and continuing.
 
 ---
 

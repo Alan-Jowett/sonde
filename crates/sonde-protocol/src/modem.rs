@@ -51,8 +51,11 @@ pub const MODEM_MSG_GET_STATUS: u8 = 0x04;
 /// Perform a WiFi AP scan; modem responds with `SCAN_RESULT`.
 pub const MODEM_MSG_SCAN_CHANNELS: u8 = 0x05;
 
-/// Render a 128x64 1-bit framebuffer on the modem-attached OLED.
-pub const MODEM_MSG_DISPLAY_FRAME: u8 = 0x09;
+/// Begin a reliable 128x64 1-bit framebuffer transfer to the modem-attached OLED.
+pub const MODEM_MSG_DISPLAY_FRAME_BEGIN: u8 = 0x09;
+
+/// Send one acknowledged chunk of a reliable display transfer.
+pub const MODEM_MSG_DISPLAY_FRAME_CHUNK: u8 = 0x0A;
 
 // -- BLE relay: Gateway → Modem (commands) --
 
@@ -104,6 +107,9 @@ pub const MODEM_MSG_STATUS: u8 = 0x85;
 /// Per-channel AP survey results (response to `SCAN_CHANNELS`).
 pub const MODEM_MSG_SCAN_RESULT: u8 = 0x86;
 
+/// Acknowledges progress on a reliable display transfer.
+pub const MODEM_MSG_DISPLAY_FRAME_ACK: u8 = 0x87;
+
 /// Recoverable display-path error.
 pub const MODEM_MSG_EVENT_ERROR: u8 = 0x89;
 
@@ -140,8 +146,24 @@ pub const RECV_FRAME_MAX_BODY_SIZE: usize = MAC_SIZE + 1 + 250; // 257
 /// Maximum ESP-NOW frame payload size.
 pub const ESPNOW_MAX_DATA_SIZE: usize = 250;
 
-/// DISPLAY_FRAME body: one full 128x64 1-bit framebuffer.
+/// Full 128x64 1-bit framebuffer size in bytes.
 pub const DISPLAY_FRAME_BODY_SIZE: usize = 128 * 64 / 8; // 1024
+
+/// Reliable display transfer chunk size in bytes.
+pub const DISPLAY_FRAME_CHUNK_SIZE: usize = 128;
+
+/// Reliable display transfer chunk count for one full framebuffer.
+pub const DISPLAY_FRAME_CHUNK_COUNT: u8 =
+    (DISPLAY_FRAME_BODY_SIZE / DISPLAY_FRAME_CHUNK_SIZE) as u8;
+
+/// DISPLAY_FRAME_BEGIN body: transfer_id (1B).
+pub const DISPLAY_FRAME_BEGIN_BODY_SIZE: usize = 1;
+
+/// DISPLAY_FRAME_CHUNK body: transfer_id (1B) + chunk_index (1B) + chunk_data (128B).
+pub const DISPLAY_FRAME_CHUNK_BODY_SIZE: usize = 2 + DISPLAY_FRAME_CHUNK_SIZE;
+
+/// DISPLAY_FRAME_ACK body: transfer_id (1B) + next_chunk_index (1B).
+pub const DISPLAY_FRAME_ACK_BODY_SIZE: usize = 2;
 
 /// Maximum `BLE_INDICATE` / `BLE_RECV` body size.
 pub const BLE_DATA_MAX_BODY_SIZE: usize = 511;
@@ -277,7 +299,8 @@ pub enum ModemMessage {
     SetChannel(u8),
     GetStatus,
     ScanChannels,
-    DisplayFrame(Box<DisplayFrame>),
+    DisplayFrameBegin(DisplayFrameBegin),
+    DisplayFrameChunk(Box<DisplayFrameChunk>),
 
     // -- Modem → Gateway --
     ModemReady(ModemReady),
@@ -285,6 +308,7 @@ pub enum ModemMessage {
     SetChannelAck(u8),
     Status(ModemStatus),
     ScanResult(ScanResult),
+    DisplayFrameAck(DisplayFrameAck),
     EventError(EventError),
     Error(ModemError),
 
@@ -357,10 +381,25 @@ pub struct ScanResult {
     pub entries: Vec<ScanEntry>,
 }
 
-/// DISPLAY_FRAME (Gateway → Modem): gateway-supplied 128x64 1-bit framebuffer.
+/// DISPLAY_FRAME_BEGIN (Gateway → Modem): begins a reliable display transfer.
 #[derive(Debug, Clone, PartialEq)]
-pub struct DisplayFrame {
-    pub framebuffer: [u8; DISPLAY_FRAME_BODY_SIZE],
+pub struct DisplayFrameBegin {
+    pub transfer_id: u8,
+}
+
+/// DISPLAY_FRAME_CHUNK (Gateway → Modem): one chunk of a reliable display transfer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayFrameChunk {
+    pub transfer_id: u8,
+    pub chunk_index: u8,
+    pub chunk_data: [u8; DISPLAY_FRAME_CHUNK_SIZE],
+}
+
+/// DISPLAY_FRAME_ACK (Modem → Gateway): acknowledges display-transfer progress.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayFrameAck {
+    pub transfer_id: u8,
+    pub next_chunk_index: u8,
 }
 
 /// ERROR (Modem → Gateway): unrecoverable modem error.
@@ -483,8 +522,23 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
         ModemMessage::SetChannel(ch) => Ok((MODEM_MSG_SET_CHANNEL, alloc::vec![*ch])),
         ModemMessage::GetStatus => Ok((MODEM_MSG_GET_STATUS, Vec::new())),
         ModemMessage::ScanChannels => Ok((MODEM_MSG_SCAN_CHANNELS, Vec::new())),
-        ModemMessage::DisplayFrame(frame) => {
-            Ok((MODEM_MSG_DISPLAY_FRAME, frame.framebuffer.to_vec()))
+        ModemMessage::DisplayFrameBegin(begin) => Ok((
+            MODEM_MSG_DISPLAY_FRAME_BEGIN,
+            alloc::vec![begin.transfer_id],
+        )),
+        ModemMessage::DisplayFrameChunk(chunk) => {
+            if chunk.chunk_index >= DISPLAY_FRAME_CHUNK_COUNT {
+                return Err(ModemCodecError::InvalidFieldValue {
+                    msg_type: MODEM_MSG_DISPLAY_FRAME_CHUNK,
+                    field: "chunk_index",
+                    value: chunk.chunk_index as usize,
+                });
+            }
+            let mut body = Vec::with_capacity(DISPLAY_FRAME_CHUNK_BODY_SIZE);
+            body.push(chunk.transfer_id);
+            body.push(chunk.chunk_index);
+            body.extend_from_slice(&chunk.chunk_data);
+            Ok((MODEM_MSG_DISPLAY_FRAME_CHUNK, body))
         }
         ModemMessage::ModemReady(mr) => {
             let mut body = Vec::with_capacity(MODEM_READY_BODY_SIZE);
@@ -537,6 +591,10 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             }
             Ok((MODEM_MSG_SCAN_RESULT, body))
         }
+        ModemMessage::DisplayFrameAck(ack) => Ok((
+            MODEM_MSG_DISPLAY_FRAME_ACK,
+            alloc::vec![ack.transfer_id, ack.next_chunk_index],
+        )),
         ModemMessage::EventError(err) => Ok((MODEM_MSG_EVENT_ERROR, alloc::vec![err.error_code])),
         ModemMessage::Error(e) => {
             let mut body = Vec::with_capacity(1 + e.message.len());
@@ -747,13 +805,31 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
             Ok(ModemMessage::ScanChannels)
         }
 
-        MODEM_MSG_DISPLAY_FRAME => {
-            check_exact_body(msg_type, body, DISPLAY_FRAME_BODY_SIZE)?;
-            let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
-            framebuffer.copy_from_slice(body);
-            Ok(ModemMessage::DisplayFrame(Box::new(DisplayFrame {
-                framebuffer,
-            })))
+        MODEM_MSG_DISPLAY_FRAME_BEGIN => {
+            check_exact_body(msg_type, body, DISPLAY_FRAME_BEGIN_BODY_SIZE)?;
+            Ok(ModemMessage::DisplayFrameBegin(DisplayFrameBegin {
+                transfer_id: body[0],
+            }))
+        }
+
+        MODEM_MSG_DISPLAY_FRAME_CHUNK => {
+            check_exact_body(msg_type, body, DISPLAY_FRAME_CHUNK_BODY_SIZE)?;
+            if body[1] >= DISPLAY_FRAME_CHUNK_COUNT {
+                return Err(ModemCodecError::InvalidFieldValue {
+                    msg_type,
+                    field: "chunk_index",
+                    value: body[1] as usize,
+                });
+            }
+            let mut chunk_data = [0u8; DISPLAY_FRAME_CHUNK_SIZE];
+            chunk_data.copy_from_slice(&body[2..]);
+            Ok(ModemMessage::DisplayFrameChunk(Box::new(
+                DisplayFrameChunk {
+                    transfer_id: body[0],
+                    chunk_index: body[1],
+                    chunk_data,
+                },
+            )))
         }
 
         MODEM_MSG_MODEM_READY => {
@@ -843,6 +919,14 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
                 });
             }
             Ok(ModemMessage::ScanResult(ScanResult { entries }))
+        }
+
+        MODEM_MSG_DISPLAY_FRAME_ACK => {
+            check_exact_body(msg_type, body, DISPLAY_FRAME_ACK_BODY_SIZE)?;
+            Ok(ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                transfer_id: body[0],
+                next_chunk_index: body[1],
+            }))
         }
 
         MODEM_MSG_EVENT_ERROR => {
@@ -1117,6 +1201,29 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_display_frame_begin() {
+        let msg = ModemMessage::DisplayFrameBegin(DisplayFrameBegin { transfer_id: 7 });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_display_frame_chunk() {
+        let mut chunk_data = [0u8; DISPLAY_FRAME_CHUNK_SIZE];
+        chunk_data[0] = 0xAA;
+        chunk_data[DISPLAY_FRAME_CHUNK_SIZE - 1] = 0x55;
+        let msg = ModemMessage::DisplayFrameChunk(Box::new(DisplayFrameChunk {
+            transfer_id: 7,
+            chunk_index: 3,
+            chunk_data,
+        }));
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
     fn round_trip_modem_ready() {
         let msg = ModemMessage::ModemReady(ModemReady {
             firmware_version: [1, 0, 3, 7],
@@ -1181,6 +1288,17 @@ mod tests {
                     strongest_rssi: 0,
                 },
             ],
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_display_frame_ack() {
+        let msg = ModemMessage::DisplayFrameAck(DisplayFrameAck {
+            transfer_id: 7,
+            next_chunk_index: 4,
         });
         let frame = encode_modem_frame(&msg).unwrap();
         let (decoded, _) = decode_modem_frame(&frame).unwrap();
@@ -1808,7 +1926,8 @@ mod tests {
     #[test]
     fn ble_message_type_constants() {
         // Verify the constants match the spec values
-        assert_eq!(MODEM_MSG_DISPLAY_FRAME, 0x09);
+        assert_eq!(MODEM_MSG_DISPLAY_FRAME_BEGIN, 0x09);
+        assert_eq!(MODEM_MSG_DISPLAY_FRAME_CHUNK, 0x0A);
         assert_eq!(MODEM_MSG_BLE_INDICATE, 0x20);
         assert_eq!(MODEM_MSG_BLE_ENABLE, 0x21);
         assert_eq!(MODEM_MSG_BLE_DISABLE, 0x22);
@@ -1817,6 +1936,7 @@ mod tests {
         assert_eq!(MODEM_MSG_BLE_CONNECTED, 0xA1);
         assert_eq!(MODEM_MSG_BLE_DISCONNECTED, 0xA2);
         assert_eq!(MODEM_MSG_BLE_PAIRING_CONFIRM, 0xA3);
+        assert_eq!(MODEM_MSG_DISPLAY_FRAME_ACK, 0x87);
         assert_eq!(MODEM_MSG_EVENT_ERROR, 0x89);
         assert_eq!(MODEM_MSG_EVENT_BUTTON, 0xB0);
     }
@@ -1926,14 +2046,18 @@ mod tests {
         );
     }
 
-    // -- DISPLAY_FRAME / EVENT_ERROR tests --
+    // -- DISPLAY_FRAME_BEGIN / DISPLAY_FRAME_CHUNK / DISPLAY_FRAME_ACK / EVENT_ERROR tests --
 
     #[test]
-    fn display_frame_round_trip() {
-        let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
-        framebuffer[0] = 0x80;
-        framebuffer[DISPLAY_FRAME_BODY_SIZE - 1] = 0x01;
-        let msg = ModemMessage::DisplayFrame(Box::new(DisplayFrame { framebuffer }));
+    fn display_frame_chunk_round_trip() {
+        let mut chunk_data = [0u8; DISPLAY_FRAME_CHUNK_SIZE];
+        chunk_data[0] = 0x80;
+        chunk_data[DISPLAY_FRAME_CHUNK_SIZE - 1] = 0x01;
+        let msg = ModemMessage::DisplayFrameChunk(Box::new(DisplayFrameChunk {
+            transfer_id: 0x42,
+            chunk_index: DISPLAY_FRAME_CHUNK_COUNT - 1,
+            chunk_data,
+        }));
         let frame = encode_modem_frame(&msg).unwrap();
         let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
         assert_eq!(consumed, frame.len());
@@ -1941,18 +2065,38 @@ mod tests {
     }
 
     #[test]
-    fn display_frame_decode_rejects_short_body() {
+    fn display_frame_chunk_decode_rejects_short_body() {
         let mut frame = Vec::new();
-        frame.extend_from_slice(&(DISPLAY_FRAME_BODY_SIZE as u16).to_be_bytes());
-        frame.push(MODEM_MSG_DISPLAY_FRAME);
-        frame.extend_from_slice(&alloc::vec![0u8; DISPLAY_FRAME_BODY_SIZE - 1]);
+        frame.extend_from_slice(&(DISPLAY_FRAME_CHUNK_BODY_SIZE as u16).to_be_bytes());
+        frame.push(MODEM_MSG_DISPLAY_FRAME_CHUNK);
+        frame.push(0x42);
+        frame.push(3);
+        frame.extend_from_slice(&alloc::vec![0u8; DISPLAY_FRAME_CHUNK_BODY_SIZE - 3]);
         let err = decode_modem_frame(&frame).unwrap_err();
         assert_eq!(
             err,
             ModemCodecError::BodyTooShort {
-                msg_type: MODEM_MSG_DISPLAY_FRAME,
-                expected_min: DISPLAY_FRAME_BODY_SIZE,
-                actual: DISPLAY_FRAME_BODY_SIZE - 1,
+                msg_type: MODEM_MSG_DISPLAY_FRAME_CHUNK,
+                expected_min: DISPLAY_FRAME_CHUNK_BODY_SIZE,
+                actual: DISPLAY_FRAME_CHUNK_BODY_SIZE - 1,
+            }
+        );
+    }
+
+    #[test]
+    fn display_frame_chunk_encode_rejects_invalid_chunk_index() {
+        let msg = ModemMessage::DisplayFrameChunk(Box::new(DisplayFrameChunk {
+            transfer_id: 0x42,
+            chunk_index: DISPLAY_FRAME_CHUNK_COUNT,
+            chunk_data: [0u8; DISPLAY_FRAME_CHUNK_SIZE],
+        }));
+        let err = encode_modem_frame(&msg).unwrap_err();
+        assert_eq!(
+            err,
+            ModemCodecError::InvalidFieldValue {
+                msg_type: MODEM_MSG_DISPLAY_FRAME_CHUNK,
+                field: "chunk_index",
+                value: DISPLAY_FRAME_CHUNK_COUNT as usize,
             }
         );
     }

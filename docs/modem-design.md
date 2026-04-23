@@ -63,7 +63,7 @@ The firmware is intentionally minimal — no application- or protocol-layer cryp
 | **BLE lifecycle** | `BLE_ENABLE`/`BLE_DISABLE` handling, connection/disconnection events, `BLE_CONNECTED`/`BLE_DISCONNECTED` notifications, idle timeout | MD-0405, MD-0410, MD-0411, MD-0413, MD-0414, MD-0415 |
 | **Watchdog** *(cross-cutting)* | Task watchdog feed in main loop; hardware reset on stall | MD-0302 |
 | **Button scanner** | GPIO2 polling, debounce, press classification, `EVENT_BUTTON` emission | MD-0600, MD-0601, MD-0602, MD-0603, MD-0604, MD-0605 |
-| **Display driver** | Validate `DISPLAY_FRAME`, convert row-major pixels to SSD1306 page writes, incremental I²C flush, `EVENT_ERROR` emission | MD-0700, MD-0701, MD-0702, MD-0703, MD-0704 |
+| **Display driver** | Validate reliable display transfers, reassemble framebuffer chunks, convert row-major pixels to SSD1306 page writes, incremental I²C flush, `EVENT_ERROR` emission | MD-0700, MD-0701, MD-0702, MD-0703, MD-0704 |
 
 ---
 
@@ -120,7 +120,8 @@ The frame envelope encoder/decoder and message type constants live in `sonde-pro
 | 0x03 `SET_CHANNEL` | → `handle_set_channel(body)` |
 | 0x04 `GET_STATUS` | → `handle_get_status()` |
 | 0x05 `SCAN_CHANNELS` | → `handle_scan_channels()` |
-| 0x09 `DISPLAY_FRAME` | → `handle_display_frame(body)` |
+| 0x09 `DISPLAY_FRAME_BEGIN` | → `handle_display_frame_begin(body)` |
+| 0x0A `DISPLAY_FRAME_CHUNK` | → `handle_display_frame_chunk(body)` |
 | Unknown | → silently discard |
 
 ### 5.3  Outbound encoding (modem → gateway)
@@ -258,20 +259,28 @@ The display path is integrated into `Bridge::poll()` so rendering remains subord
 
 The modem drives an SSD1306-compatible 128×64 OLED over I²C on the ESP32-S3 module's D4/D5 pins (`D4` = SDA = GPIO5, `D5` = SCL = GPIO6) at 7-bit address `0x3C`.
 
-### 9a.2  Command handling
+### 9a.2  Reliable transfer handling
 
-On `DISPLAY_FRAME`:
+On `DISPLAY_FRAME_BEGIN`:
 
-1. Validate that the body length is exactly 1024 bytes.
-2. Treat the body as a row-major, MSB-first framebuffer (`0x80` = leftmost pixel).
-3. Copy the framebuffer into a pending display buffer.
-4. Mark a new flush sequence starting at page 0.
+1. Validate that the body length is exactly 1 byte (`transfer_id`).
+2. Reset any incomplete display-transfer state.
+3. Record the active `transfer_id` and set `next_chunk_index = 0`.
+4. Send `DISPLAY_FRAME_ACK(transfer_id, 0)`.
 
-If the body length is not 1024 bytes, the bridge enqueues `EVENT_ERROR(INVALID_FRAME)` and leaves the current display contents unchanged.
+On `DISPLAY_FRAME_CHUNK`:
+
+1. Validate that the body length is exactly 130 bytes (`transfer_id`, `chunk_index`, `chunk_data[128]`).
+2. Validate that `chunk_index` is in `0..=7`.
+3. If the `transfer_id` matches the active transfer and `chunk_index == next_chunk_index`, copy the 128-byte chunk into the assembly buffer, increment `next_chunk_index`, and send `DISPLAY_FRAME_ACK(transfer_id, next_chunk_index)`.
+4. If the chunk is a duplicate or arrives out of order for the active transfer, do **not** raise an error; instead re-send `DISPLAY_FRAME_ACK(transfer_id, next_chunk_index)` so the gateway can retry safely after a lost ACK.
+5. When `next_chunk_index` reaches 8, copy the fully reassembled 1024-byte framebuffer into the pending display buffer and mark a new flush sequence starting at page 0.
+
+If begin/chunk metadata is invalid, the bridge enqueues `EVENT_ERROR(INVALID_FRAME)`, aborts any in-flight display transfer, and leaves the current display contents unchanged.
 
 ### 9a.3  Incremental OLED flush
 
-The SSD1306 display RAM is page-oriented (8 vertical pixels per byte), while `DISPLAY_FRAME` uses row-major pixels. The display driver therefore converts the pending framebuffer into SSD1306 page writes during flush.
+The SSD1306 display RAM is page-oriented (8 vertical pixels per byte), while the completed display-transfer buffer uses row-major pixels. The display driver therefore converts the pending framebuffer into SSD1306 page writes during flush.
 
 To preserve modem responsiveness (MD-0702), `display.poll()` performs at most one SSD1306 page write per main-loop iteration:
 
@@ -280,7 +289,7 @@ To preserve modem responsiveness (MD-0702), `display.poll()` performs at most on
 3. Convert one 128-byte page from the row-major framebuffer into SSD1306 page bytes.
 4. Issue the I²C write for that page and return to the main loop.
 
-If a newer `DISPLAY_FRAME` arrives while an older one is still flushing, the pending buffer is replaced and the next flush restarts from page 0 so the display converges to the latest gateway-supplied image.
+If a newer display transfer completes while an older one is still flushing, the pending buffer is replaced and the next flush restarts from page 0 so the display converges to the latest gateway-supplied image.
 
 ### 9a.4  Failure handling
 
@@ -289,7 +298,7 @@ If any OLED I²C transaction fails during initialization or page flush:
 1. Abort the current flush attempt.
 2. Enqueue `EVENT_ERROR(DISPLAY_WRITE_FAILED)`.
 3. Leave all non-display modem state unchanged.
-4. Accept future `DISPLAY_FRAME` commands normally.
+4. Accept future reliable display transfers normally.
 
 ---
 
@@ -345,7 +354,7 @@ The modem extends the shared ESP-NOW driver with channel scanning and USB bridgi
 | WiFi init failure | Panic → automatic reboot |
 | Channel set failure | Send `ERROR(CHANNEL_SET_FAILED)` to gateway |
 | `SEND_FRAME` with body < 7 bytes | Silently discard (codec returns `BodyTooShort`, bridge continues) |
-| `DISPLAY_FRAME` with body length != 1024 | Send `EVENT_ERROR(INVALID_FRAME)`; keep the previous display image |
+| `DISPLAY_FRAME_BEGIN` / `DISPLAY_FRAME_CHUNK` metadata invalid | Send `EVENT_ERROR(INVALID_FRAME)`; abort the in-flight display transfer and keep the previous display image |
 | OLED I²C write failure | Send `EVENT_ERROR(DISPLAY_WRITE_FAILED)`; abort the current display flush |
 | Serial frame `len` > 1025 | Decoder reset; gateway must send `RESET` to resync (modem-protocol.md §2.3) |
 | Unknown serial message type | Silently discard |

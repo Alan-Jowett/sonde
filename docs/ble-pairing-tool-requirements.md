@@ -185,6 +185,23 @@ On Android, the native library MUST cache `GlobalRef` references to app-defined 
 
 ---
 
+### PT-0109  Sonde-branded application icons
+
+**Priority:** Must  
+**Source:** USER-REQUEST (Sonde Pairing Tool branding)
+
+**Description:**  
+Packaged Sonde Pairing Tool builds MUST use Sonde-branded application icon assets rather than framework-default icons. The desktop bundle icons and Android launcher icons MUST be derived from the canonical Sonde logo asset already stored in the repository.
+
+**Acceptance criteria:**
+
+1. Desktop packaged builds use Sonde-branded application icons in launcher/taskbar/dock surfaces rather than default Tauri branding.
+2. Android packaged builds use Sonde-branded launcher icons rather than default Tauri branding.
+3. The platform-specific icon set is derived from the canonical Sonde logo asset in the repository.
+4. The build/package configuration documents where the canonical icon source lives and how platform-specific derived assets are wired into packaged builds.
+
+---
+
 ## 4  Device discovery
 
 ### PT-0200  BLE scanning

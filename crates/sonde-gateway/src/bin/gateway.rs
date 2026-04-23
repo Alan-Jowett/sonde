@@ -103,6 +103,17 @@ fn invalidate_display_restore(display_generation: &Arc<AtomicU64>) {
     display_generation.fetch_add(1, Ordering::SeqCst);
 }
 
+fn try_claim_display_restore(display_generation: &AtomicU64, generation: u64) -> bool {
+    display_generation
+        .compare_exchange(
+            generation,
+            generation.saturating_add(1),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_ok()
+}
+
 async fn reset_status_page_cycle(status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>) {
     status_page_cycle.lock().await.next_page_index = 0;
 }
@@ -249,10 +260,10 @@ fn schedule_button_pairing_banner_restore(
     let display_generation = Arc::clone(display_generation);
     tokio::spawn(async move {
         tokio::time::sleep(BUTTON_EXIT_REASON_DISPLAY_DURATION).await;
-        if display_generation.load(Ordering::SeqCst) != generation {
+        if controller.session_origin().await.is_some() {
             return;
         }
-        if controller.session_origin().await.is_some() {
+        if !try_claim_display_restore(display_generation.as_ref(), generation) {
             return;
         }
         let Some(transport) = transport.upgrade() else {
@@ -287,13 +298,12 @@ fn schedule_status_page_banner_restore(
     let scroll_task = Arc::clone(scroll_task);
     tokio::spawn(async move {
         tokio::time::sleep(STATUS_PAGE_TIMEOUT).await;
-        if display_generation.load(Ordering::SeqCst) != generation {
-            return;
-        }
         if controller.session_origin().await.is_some() {
             return;
         }
-        display_generation.fetch_add(1, Ordering::SeqCst);
+        if !try_claim_display_restore(display_generation.as_ref(), generation) {
+            return;
+        }
         cancel_status_page_scroll(&scroll_task).await;
         reset_status_page_cycle(&status_page_cycle).await;
         let Some(transport) = transport.upgrade() else {
@@ -1882,6 +1892,15 @@ mod tests {
         do_startup_handshake(&mut server, channel).await;
         let transport = Arc::new(transport_handle.await.unwrap());
         (transport, server)
+    }
+
+    #[test]
+    fn try_claim_display_restore_only_succeeds_for_active_generation() {
+        let display_generation = AtomicU64::new(7);
+        assert!(try_claim_display_restore(&display_generation, 7));
+        assert_eq!(display_generation.load(Ordering::SeqCst), 8);
+        assert!(!try_claim_display_restore(&display_generation, 7));
+        assert_eq!(display_generation.load(Ordering::SeqCst), 8);
     }
 
     async fn assert_no_stream_data_while_time_paused(

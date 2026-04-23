@@ -113,7 +113,7 @@ impl TestNode {
             firmware_abi_version,
             program_hash: program_hash.to_vec(),
             battery_mv,
-            firmware_version: "0.4.0".into(),
+            firmware_version: "0.5.0".into(),
             blob: None,
         };
         let cbor = msg.encode().unwrap();
@@ -812,7 +812,7 @@ async fn t1309_wake_blob_no_handler_warn() {
         firmware_abi_version: 1,
         program_hash: program_hash.clone(),
         battery_mv: 3300,
-        firmware_version: "0.4.0".into(),
+        firmware_version: "0.5.0".into(),
         blob: Some(vec![0x01, 0x02, 0x03]),
     };
     let cbor = msg.encode().unwrap();

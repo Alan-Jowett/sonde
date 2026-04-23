@@ -1259,7 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_display_frame_emits_event_error() {
+    fn malformed_display_frame_chunk_emits_event_error() {
         let mut bridge = make_bridge_with_display();
         let mut raw = Vec::new();
         raw.extend_from_slice(&(DISPLAY_FRAME_CHUNK_BODY_SIZE as u16).to_be_bytes());

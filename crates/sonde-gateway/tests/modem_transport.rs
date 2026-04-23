@@ -281,6 +281,34 @@ async fn t1103a_gateway_banner_sends_display_frame() {
     send_task.await.unwrap().unwrap();
 }
 
+/// T-1107b  Missing DISPLAY_FRAME_ACK retries and then fails the transfer.
+#[tokio::test]
+async fn t1107b_display_ack_timeout_retries_then_fails() {
+    let (transport, mut server) = create_transport_and_server(6).await;
+    let send_task = tokio::spawn(async move { send_gateway_version_banner(&transport).await });
+
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 2048];
+    let mut transfer_id = None;
+    for _ in 0..4 {
+        let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+        match msg {
+            ModemMessage::DisplayFrameBegin(begin) => {
+                if let Some(id) = transfer_id {
+                    assert_eq!(begin.transfer_id, id, "retries must reuse transfer_id");
+                } else {
+                    transfer_id = Some(begin.transfer_id);
+                }
+            }
+            other => panic!("expected DisplayFrameBegin retry, got {other:?}"),
+        }
+    }
+
+    let err = send_task.await.unwrap().unwrap_err();
+    let err_text = err.to_string();
+    assert!(err_text.contains("DISPLAY_FRAME_ACK timeout"));
+}
+
 // ── T-1104: Startup — MODEM_READY timeout ───────────────────────────────
 
 /// T-1104  Startup — MODEM_READY timeout.

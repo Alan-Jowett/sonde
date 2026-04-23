@@ -130,7 +130,10 @@ mod tests {
             .iter()
             .rposition(|byte| *byte != 0)
             .expect("banner should render pixels");
-        assert!(first_nonzero > 0, "left/top margin should not be empty");
+        assert!(
+            first_nonzero > 0,
+            "left/top margin should contain at least one empty byte"
+        );
         assert!(
             last_nonzero + 1 < framebuffer.len(),
             "right/bottom margin should not consume the full framebuffer"

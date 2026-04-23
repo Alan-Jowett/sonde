@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use clap::Parser;
@@ -36,6 +36,12 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const BUTTON_PAIRING_DURATION_S: u32 = 120;
 const BUTTON_EXIT_REASON_DISPLAY_DURATION: Duration = Duration::from_secs(2);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ButtonDisplayState {
+    Generic,
+    Passkey,
+}
+
 async fn update_pairing_display(transport: &Arc<UsbEspNowTransport>, lines: &[&str]) {
     if let Err(e) = send_display_message(transport, lines).await {
         warn!(error = %e, ?lines, "failed to update pairing display");
@@ -52,7 +58,7 @@ fn schedule_gateway_version_restore(
     display_generation: &Arc<AtomicU64>,
 ) {
     let generation = display_generation.fetch_add(1, Ordering::SeqCst) + 1;
-    let transport = Arc::clone(transport);
+    let transport: Weak<UsbEspNowTransport> = Arc::downgrade(transport);
     let controller = Arc::clone(controller);
     let display_generation = Arc::clone(display_generation);
     tokio::spawn(async move {
@@ -63,6 +69,9 @@ fn schedule_gateway_version_restore(
         if controller.session_origin().await.is_some() {
             return;
         }
+        let Some(transport) = transport.upgrade() else {
+            return;
+        };
         if let Err(e) = send_gateway_version_banner(&transport).await {
             warn!(error = %e, "failed to restore gateway version banner");
         }
@@ -73,6 +82,7 @@ async fn open_button_pairing_session(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
+    display_state: &mut ButtonDisplayState,
     window: &mut sonde_gateway::ble_pairing::RegistrationWindow,
 ) -> bool {
     use sonde_gateway::ble_pairing::PairingOrigin;
@@ -93,6 +103,7 @@ async fn open_button_pairing_session(
         return false;
     }
     window.open(BUTTON_PAIRING_DURATION_S);
+    *display_state = ButtonDisplayState::Generic;
     info!("button-initiated BLE pairing opened");
     update_pairing_display(transport, &["Pairing"]).await;
     true
@@ -102,11 +113,13 @@ async fn close_button_pairing_session(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
+    display_state: &mut ButtonDisplayState,
     window: &mut sonde_gateway::ble_pairing::RegistrationWindow,
     status_lines: &[&str],
 ) {
     controller.close_window().await;
     window.close();
+    *display_state = ButtonDisplayState::Generic;
     if let Err(e) = transport.send_ble_disable().await {
         error!("BLE_DISABLE send error: {e}");
     }
@@ -118,6 +131,7 @@ async fn handle_button_short_event(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
+    display_state: &mut ButtonDisplayState,
     window: &mut sonde_gateway::ble_pairing::RegistrationWindow,
 ) -> bool {
     if controller.session_origin().await != Some(sonde_gateway::ble_pairing::PairingOrigin::Button)
@@ -128,6 +142,7 @@ async fn handle_button_short_event(
         transport,
         controller,
         display_generation,
+        display_state,
         window,
         &["Cancelled"],
     )
@@ -139,6 +154,7 @@ async fn handle_button_pairing_timeout(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
+    display_state: &mut ButtonDisplayState,
     window: &mut sonde_gateway::ble_pairing::RegistrationWindow,
 ) {
     if controller.session_origin_raw().await
@@ -151,6 +167,7 @@ async fn handle_button_pairing_timeout(
         transport,
         controller,
         display_generation,
+        display_state,
         window,
         &["Timed out"],
     )
@@ -160,8 +177,10 @@ async fn handle_button_pairing_timeout(
 async fn show_button_pairing_connected(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
+    display_state: ButtonDisplayState,
 ) {
     if controller.session_origin().await == Some(sonde_gateway::ble_pairing::PairingOrigin::Button)
+        && display_state != ButtonDisplayState::Passkey
     {
         update_pairing_display(transport, &["Phone connected"]).await;
     }
@@ -170,12 +189,14 @@ async fn show_button_pairing_connected(
 async fn confirm_button_pairing_passkey(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
+    display_state: &mut ButtonDisplayState,
     passkey: u32,
 ) -> bool {
     if controller.session_origin().await != Some(sonde_gateway::ble_pairing::PairingOrigin::Button)
     {
         return false;
     }
+    *display_state = ButtonDisplayState::Passkey;
     let passkey_text = format!("{passkey:06}");
     update_pairing_display(transport, &["Pin", &passkey_text]).await;
     if let Err(e) = transport.send_ble_pairing_confirm_reply(true).await {
@@ -189,11 +210,13 @@ async fn complete_button_pairing_success(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
+    display_state: &mut ButtonDisplayState,
     window: &mut sonde_gateway::ble_pairing::RegistrationWindow,
 ) {
     update_pairing_display(transport, &["Provisioned"]).await;
     controller.close_window().await;
     window.close();
+    *display_state = ButtonDisplayState::Generic;
     if let Err(e) = transport.send_ble_disable().await {
         error!("BLE_DISABLE send error after phone registration: {e}");
     }
@@ -754,6 +777,7 @@ async fn run_gateway(
             let button_timeout = tokio::time::sleep(Duration::from_secs(24 * 60 * 60));
             tokio::pin!(button_timeout);
             let mut button_timeout_armed = false;
+            let mut button_display_state = ButtonDisplayState::Generic;
 
             loop {
                 // Sync the local window state from the controller on each iteration.
@@ -764,6 +788,7 @@ async fn run_gateway(
                 } else if !controller_open && window.is_open() {
                     window.close();
                     button_timeout_armed = false;
+                    button_display_state = ButtonDisplayState::Generic;
                 }
 
                 let recv_ble_event = ble_transport.recv_ble_event();
@@ -776,6 +801,7 @@ async fn run_gateway(
                             &ble_transport,
                             &ble_ctrl,
                             &button_display_generation,
+                            &mut button_display_state,
                             &mut window,
                         )
                         .await;
@@ -820,6 +846,7 @@ async fn run_gateway(
                                     &ble_transport,
                                     &ble_ctrl,
                                     &button_display_generation,
+                                    &mut button_display_state,
                                     &mut window,
                                 )
                                 .await;
@@ -839,7 +866,12 @@ async fn run_gateway(
                                 mtu: bc.mtu,
                             },
                         );
-                        show_button_pairing_connected(&ble_transport, &ble_ctrl).await;
+                        show_button_pairing_connected(
+                            &ble_transport,
+                            &ble_ctrl,
+                            button_display_state,
+                        )
+                        .await;
                     }
                     Some(BleEvent::Disconnected(bd)) => {
                         info!(
@@ -866,8 +898,13 @@ async fn run_gateway(
                                 passkey = pc.passkey,
                                 "BLE Numeric Comparison passkey — auto-accepting button pairing"
                             );
-                            confirm_button_pairing_passkey(&ble_transport, &ble_ctrl, pc.passkey)
-                                .await
+                            confirm_button_pairing_passkey(
+                                &ble_transport,
+                                &ble_ctrl,
+                                &mut button_display_state,
+                                pc.passkey,
+                            )
+                            .await
                         } else {
                             info!(
                                 passkey = pc.passkey,
@@ -900,6 +937,7 @@ async fn run_gateway(
                                 &ble_transport,
                                 &ble_ctrl,
                                 &button_display_generation,
+                                &mut button_display_state,
                                 &mut window,
                             )
                             .await
@@ -920,6 +958,7 @@ async fn run_gateway(
                                     &ble_transport,
                                     &ble_ctrl,
                                     &button_display_generation,
+                                    &mut button_display_state,
                                     &mut window,
                                 )
                                 .await;
@@ -1523,10 +1562,12 @@ mod tests {
             let display_generation = Arc::clone(&display_generation);
             async move {
                 let mut window = RegistrationWindow::new();
+                let mut display_state = ButtonDisplayState::Generic;
                 let opened = open_button_pairing_session(
                     &transport,
                     &controller,
                     &display_generation,
+                    &mut display_state,
                     &mut window,
                 )
                 .await;
@@ -1585,9 +1626,16 @@ mod tests {
         )
         .await;
 
+        let mut display_state = ButtonDisplayState::Generic;
         assert!(
-            !open_button_pairing_session(&transport, &controller, &display_generation, &mut window)
-                .await
+            !open_button_pairing_session(
+                &transport,
+                &controller,
+                &display_generation,
+                &mut display_state,
+                &mut window,
+            )
+            .await
         );
         assert!(
             tokio::time::timeout(Duration::from_millis(200), server.read(&mut buf))
@@ -1621,10 +1669,12 @@ mod tests {
             let display_generation = Arc::clone(&display_generation);
             async move {
                 let mut window = window;
+                let mut display_state = ButtonDisplayState::Generic;
                 let cancelled = handle_button_short_event(
                     &transport,
                     &controller,
                     &display_generation,
+                    &mut display_state,
                     &mut window,
                 )
                 .await;
@@ -1647,9 +1697,16 @@ mod tests {
         );
 
         assert!(controller.open_window(120, PairingOrigin::Admin).await);
+        let mut display_state = ButtonDisplayState::Generic;
         assert!(
-            !handle_button_short_event(&transport, &controller, &display_generation, &mut window)
-                .await
+            !handle_button_short_event(
+                &transport,
+                &controller,
+                &display_generation,
+                &mut display_state,
+                &mut window,
+            )
+            .await
         );
         assert_eq!(
             controller.session_origin().await,
@@ -1681,10 +1738,12 @@ mod tests {
             let display_generation = Arc::clone(&display_generation);
             async move {
                 let mut window = window;
+                let mut display_state = ButtonDisplayState::Generic;
                 close_button_pairing_session(
                     &transport,
                     &controller,
                     &display_generation,
+                    &mut display_state,
                     &mut window,
                     &["Timed out"],
                 )
@@ -1721,11 +1780,13 @@ mod tests {
             let display_generation = Arc::clone(&display_generation);
             async move {
                 let mut window = RegistrationWindow::new();
+                let mut display_state = ButtonDisplayState::Generic;
                 window.open(BUTTON_PAIRING_DURATION_S);
                 handle_button_pairing_timeout(
                     &transport,
                     &controller,
                     &display_generation,
+                    &mut display_state,
                     &mut window,
                 )
                 .await;
@@ -1763,7 +1824,8 @@ mod tests {
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
             async move {
-                show_button_pairing_connected(&transport, &controller).await;
+                show_button_pairing_connected(&transport, &controller, ButtonDisplayState::Generic)
+                    .await;
             }
         });
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
@@ -1773,7 +1835,11 @@ mod tests {
         let confirm_task = tokio::spawn({
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
-            async move { confirm_button_pairing_passkey(&transport, &controller, 123456).await }
+            async move {
+                let mut display_state = ButtonDisplayState::Generic;
+                confirm_button_pairing_passkey(&transport, &controller, &mut display_state, 123456)
+                    .await
+            }
         });
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
         assert_eq!(framebuffer, render_display_message(&["Pin", "123456"]));
@@ -1782,6 +1848,22 @@ mod tests {
             ModemMessage::BlePairingConfirmReply(reply) => assert!(reply.accept),
             other => panic!("expected BLE pairing confirm reply, got {other:?}"),
         }
+        let suppressed_connected = tokio::spawn({
+            let transport = Arc::clone(&transport);
+            let controller = Arc::clone(&controller);
+            async move {
+                show_button_pairing_connected(&transport, &controller, ButtonDisplayState::Passkey)
+                    .await;
+            }
+        });
+        suppressed_connected.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.read(&mut buf))
+                .await
+                .is_err(),
+            "connected updates must not overwrite the passkey screen"
+        );
+
         assert!(confirm_task.await.unwrap());
     }
 
@@ -1810,10 +1892,12 @@ mod tests {
             let display_generation = Arc::clone(&display_generation);
             async move {
                 let mut window = window;
+                let mut display_state = ButtonDisplayState::Passkey;
                 complete_button_pairing_success(
                     &transport,
                     &controller,
                     &display_generation,
+                    &mut display_state,
                     &mut window,
                 )
                 .await;

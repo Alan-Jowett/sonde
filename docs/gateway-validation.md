@@ -2161,8 +2161,8 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-1208, GW-1222a
 
 **Procedure:**
-1. Open a button-initiated BLE pairing session with a short timeout.
-2. Wait for the timeout to expire.
+1. Open a button-initiated BLE pairing session.
+2. Wait for the implementation-defined button-pairing timeout to expire. In the current gateway implementation, this timeout is fixed at 120 seconds rather than shortened specifically for validation.
 3. Assert: the registration window closes.
 4. Assert: the modem receives `BLE_DISABLE`.
 5. Assert: the gateway sends a display update rendering `Timed out`.

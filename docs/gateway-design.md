@@ -148,7 +148,7 @@ pub struct UsbEspNowTransport {
 7. Wait for `SET_CHANNEL_ACK` (timeout: 2 seconds).
 8. Start the health monitor task.
 
-The transport adapter stops at the modem handshake boundary. Gateway-owned display policy lives above the transport: once the handshake completes, the gateway runtime renders `Sonde Gateway v<semver>` into a 128×64 1-bit framebuffer and sends it as `DISPLAY_FRAME` (GW-1101a). This keeps text layout and version-string selection in the gateway while preserving the modem's role as a dumb framebuffer sink.
+The transport adapter stops at the modem handshake boundary. Gateway-owned display policy lives above the transport: once the handshake completes, the gateway runtime renders `Sonde Gateway v<semver>` into a 128×64 1-bit framebuffer and sends it using the reliable display-transfer subprotocol (`DISPLAY_FRAME_BEGIN` plus eight acknowledged `DISPLAY_FRAME_CHUNK` messages) (GW-1101a). This keeps text layout and version-string selection in the gateway while preserving the modem's role as a dumb framebuffer sink.
 
 **Health monitor (GW-1102):**
 
@@ -169,7 +169,7 @@ When the serial reader task encounters an OS I/O error (e.g. USB-CDC disconnect,
 1. The reader task logs a warning and enters a reconnection loop.
 2. The loop attempts to reopen the serial port with exponential backoff (1 s → 2 s → 4 s → … → 30 s cap).
 3. Once the port reopens, the adapter re-executes the startup sequence (`RESET` → `MODEM_READY` → `SET_CHANNEL`), reading the channel from the database (GW-0808) rather than the CLI startup value.
-4. After the handshake completes, the gateway re-sends the version banner via `DISPLAY_FRAME` (GW-1101a).
+4. After the handshake completes, the gateway re-sends the version banner via the reliable display-transfer subprotocol (GW-1101a).
 5. The `recv()` and BLE event channels remain open during reconnection — callers block until the transport recovers.
 6. If the port cannot be reopened (e.g. device permanently removed), the backoff loop continues indefinitely; the operator can shut down the gateway via Ctrl-C or service stop.
 
@@ -187,7 +187,7 @@ The gateway main loop `select!`s on `warm_reboot_notify.notified()` alongside th
 2. The gateway calls `abort_reader_and_wait()`, which aborts the transport reader task and waits for it to release the serial port.
 3. The local `transport` Arc is dropped; once the remaining clones are gone, the transport's remaining resources are freed.
 4. The gateway immediately (no backoff) reopens the serial port and calls `UsbEspNowTransport::new()` with the persisted channel read from the database (GW-0808). All consumer tasks are re-spawned as on first startup.
-5. After the handshake completes, the gateway re-sends the version banner via `DISPLAY_FRAME` (GW-1101a).
+5. After the handshake completes, the gateway re-sends the version banner via the reliable display-transfer subprotocol (GW-1101a).
 6. After successful warm reboot recovery, the exponential backoff counter is reset to its initial value (1 s), so any subsequent serial disconnect starts fresh.
 
 Note: If multiple `MODEM_READY` messages arrive in rapid succession (overlapping warm reboots), `tokio::sync::Notify` coalesces them — at most one notification is delivered. Notifications that arrive while recovery is already in progress are absorbed by the already-pending notify permit and handled in the next reconnect iteration if recovery fails, or discarded if recovery succeeds (the reader task is no longer running and cannot fire further notifications).
@@ -1049,7 +1049,7 @@ The gateway emits the version string in its first `info!()` log line so that ope
 2. Initialize storage backend.
 3. Load node registry and program library from storage.
 4. Initialize transport (e.g., open ESP-NOW interface, or for USB modem: open serial port → `RESET` → `MODEM_READY` → `SET_CHANNEL`; see §4.2). The channel is read from the database (GW-0808); if no value is persisted, the CLI `--channel` flag seeds the database.
-5. If a modem transport is active, render `Sonde Gateway v<semver>` using the gateway crate version string and send it to the modem as a `DISPLAY_FRAME` (GW-1101a). Failures on this path are logged as recoverable display warnings; they do not abort startup.
+5. If a modem transport is active, render `Sonde Gateway v<semver>` using the gateway crate version string and send it to the modem using the reliable display-transfer subprotocol (GW-1101a). Recoverable modem `EVENT_ERROR` faults on this path are logged as warnings; however, exhausting the ACK retry budget for the reliable transfer is treated as a modem transport failure and enters the normal recovery path.
 6. If `--handler-config` is provided, bootstrap handlers from YAML into the database (GW-1405, §19.6).
 7. Load handler configuration from database and build `HandlerRouter` (GW-1401, GW-1407). The router is always built, even if no handlers exist. Wrap in `Arc<tokio::sync::RwLock<HandlerRouter>>` for shared access.
 8. Start gRPC admin API server, passing the shared `HandlerRouter` reference to the `AdminService` for live reload (GW-1404).

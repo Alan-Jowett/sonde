@@ -485,11 +485,16 @@ async fn run_gateway(
         };
         info!(channel = channel_for_transport, "modem transport ready");
         if let Err(e) = send_gateway_version_banner(&transport).await {
-            warn!(
+            error!(
                 error = %e,
                 version = env!("CARGO_PKG_VERSION"),
+                guidance = "reliable display transfer failed; gateway will reconnect to recover modem transport state",
                 "failed to send gateway version banner to modem display"
             );
+            info!("retrying in {}s…", backoff.as_secs());
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
+            continue;
         }
         backoff = Duration::from_secs(1); // reset on success
 

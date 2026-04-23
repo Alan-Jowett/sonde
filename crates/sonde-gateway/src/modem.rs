@@ -6,7 +6,9 @@
 //! Implements the [`Transport`] trait over a serial link to an ESP-NOW radio
 //! modem using the framing protocol defined in `sonde_protocol::modem`.
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -15,8 +17,9 @@ use tracing::{debug, error, info, warn};
 
 use sonde_protocol::modem::{
     encode_modem_frame, BleConnected, BleDisconnected, BleIndicate, BlePairingConfirm,
-    BlePairingConfirmReply, BleRecv, DisplayFrame, EventError, FrameDecoder, ModemMessage,
-    ModemReady, ModemStatus, ScanResult, SendFrame,
+    BlePairingConfirmReply, BleRecv, DisplayFrameAck, DisplayFrameBegin, DisplayFrameChunk,
+    EventError, FrameDecoder, ModemMessage, ModemReady, ModemStatus, ScanResult, SendFrame,
+    DISPLAY_FRAME_BODY_SIZE, DISPLAY_FRAME_CHUNK_COUNT, DISPLAY_FRAME_CHUNK_SIZE,
 };
 
 use sonde_protocol::constants::{
@@ -53,12 +56,14 @@ fn modem_msg_label(msg: &ModemMessage) -> &'static str {
         ModemMessage::Reset => "RESET",
         ModemMessage::ModemReady(_) => "MODEM_READY",
         ModemMessage::SendFrame(_) => "SEND_FRAME",
-        ModemMessage::DisplayFrame(_) => "DISPLAY_FRAME",
+        ModemMessage::DisplayFrameBegin(_) => "DISPLAY_FRAME_BEGIN",
+        ModemMessage::DisplayFrameChunk(_) => "DISPLAY_FRAME_CHUNK",
         ModemMessage::RecvFrame(_) => "RECV_FRAME",
         ModemMessage::SetChannel(_) => "SET_CHANNEL",
         ModemMessage::SetChannelAck(_) => "SET_CHANNEL_ACK",
         ModemMessage::GetStatus => "GET_STATUS",
         ModemMessage::Status(_) => "STATUS",
+        ModemMessage::DisplayFrameAck(_) => "DISPLAY_FRAME_ACK",
         ModemMessage::Error(_) => "ERROR",
         ModemMessage::BleEnable => "BLE_ENABLE",
         ModemMessage::BleDisable => "BLE_DISABLE",
@@ -105,6 +110,8 @@ pub struct UsbEspNowTransport {
     status_slot: Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>>,
     channel_ack_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>>,
     scan_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>>,
+    display_ack_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<DisplayFrameAck>>>>,
+    next_display_transfer_id: AtomicU8,
     modem_mac: [u8; 6],
     reader_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     warm_reboot_notify: Arc<tokio::sync::Notify>,
@@ -146,6 +153,8 @@ impl UsbEspNowTransport {
             Arc::new(std::sync::Mutex::new(None));
         let scan_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>> =
             Arc::new(std::sync::Mutex::new(None));
+        let display_ack_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<DisplayFrameAck>>>> =
+            Arc::new(std::sync::Mutex::new(None));
 
         let warm_reboot_notify: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
         let warm_reboot_flag: Arc<std::sync::atomic::AtomicBool> =
@@ -156,6 +165,7 @@ impl UsbEspNowTransport {
             let status_slot = Arc::clone(&status_slot);
             let channel_ack_slot = Arc::clone(&channel_ack_slot);
             let scan_slot = Arc::clone(&scan_slot);
+            let display_ack_slot = Arc::clone(&display_ack_slot);
             let warm_reboot_notify = Arc::clone(&warm_reboot_notify);
             let warm_reboot_flag = Arc::clone(&warm_reboot_flag);
             let mut read_half = read_half;
@@ -189,6 +199,7 @@ impl UsbEspNowTransport {
                                             &status_slot,
                                             &channel_ack_slot,
                                             &scan_slot,
+                                            &display_ack_slot,
                                             &warm_reboot_notify,
                                             &warm_reboot_flag,
                                         )
@@ -282,6 +293,8 @@ impl UsbEspNowTransport {
                     status_slot,
                     channel_ack_slot,
                     scan_slot,
+                    display_ack_slot,
+                    next_display_transfer_id: AtomicU8::new(0),
                     modem_mac,
                     reader_handle: std::sync::Mutex::new(Some(reader_handle)),
                     warm_reboot_notify,
@@ -380,10 +393,45 @@ impl UsbEspNowTransport {
     /// Send a full display framebuffer to the modem-attached OLED.
     pub async fn send_display_frame(
         &self,
-        framebuffer: [u8; sonde_protocol::modem::DISPLAY_FRAME_BODY_SIZE],
+        framebuffer: [u8; DISPLAY_FRAME_BODY_SIZE],
     ) -> Result<(), TransportError> {
-        let msg = ModemMessage::DisplayFrame(Box::new(DisplayFrame { framebuffer }));
-        Self::send_encoded(&self.writer, &msg).await
+        const DISPLAY_ACK_TIMEOUT: Duration = Duration::from_millis(500);
+        const DISPLAY_ACK_MAX_RETRIES: usize = 3;
+
+        let transfer_id = self
+            .next_display_transfer_id
+            .fetch_add(1, Ordering::Relaxed);
+        self.send_display_message_wait_for_ack(
+            &ModemMessage::DisplayFrameBegin(DisplayFrameBegin { transfer_id }),
+            transfer_id,
+            0,
+            DISPLAY_ACK_TIMEOUT,
+            DISPLAY_ACK_MAX_RETRIES,
+            "DISPLAY_FRAME_BEGIN",
+        )
+        .await?;
+
+        for chunk_index in 0..DISPLAY_FRAME_CHUNK_COUNT {
+            let start = usize::from(chunk_index) * DISPLAY_FRAME_CHUNK_SIZE;
+            let end = start + DISPLAY_FRAME_CHUNK_SIZE;
+            let mut chunk_data = [0u8; DISPLAY_FRAME_CHUNK_SIZE];
+            chunk_data.copy_from_slice(&framebuffer[start..end]);
+            self.send_display_message_wait_for_ack(
+                &ModemMessage::DisplayFrameChunk(Box::new(DisplayFrameChunk {
+                    transfer_id,
+                    chunk_index,
+                    chunk_data,
+                })),
+                transfer_id,
+                chunk_index + 1,
+                DISPLAY_ACK_TIMEOUT,
+                DISPLAY_ACK_MAX_RETRIES,
+                "DISPLAY_FRAME_CHUNK",
+            )
+            .await?;
+        }
+
+        Ok(())
     }
 
     /// Send GET_STATUS and wait for the STATUS response.
@@ -502,6 +550,77 @@ impl UsbEspNowTransport {
     }
 
     // -- internal helpers ---------------------------------------------------
+
+    async fn send_display_message_wait_for_ack(
+        &self,
+        msg: &ModemMessage,
+        transfer_id: u8,
+        expected_next_chunk_index: u8,
+        timeout: Duration,
+        max_retries: usize,
+        step_label: &'static str,
+    ) -> Result<(), TransportError> {
+        for attempt in 0..=max_retries {
+            let rx = {
+                let mut slot = self
+                    .display_ack_slot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if slot.is_some() {
+                    return Err(TransportError::Io(
+                        "display transfer already in progress".into(),
+                    ));
+                }
+                let (tx, rx) = oneshot::channel();
+                *slot = Some(tx);
+                rx
+            };
+            let _guard = SlotGuard(Arc::clone(&self.display_ack_slot));
+
+            Self::send_encoded(&self.writer, msg).await?;
+
+            match tokio::time::timeout(timeout, rx).await {
+                Ok(Ok(ack)) => {
+                    if ack.transfer_id != transfer_id {
+                        return Err(TransportError::Io(format!(
+                            "{step_label}: DISPLAY_FRAME_ACK transfer mismatch: expected {transfer_id}, got {}; modem transport is desynchronized",
+                            ack.transfer_id
+                        )));
+                    }
+                    if ack.next_chunk_index != expected_next_chunk_index {
+                        return Err(TransportError::Io(format!(
+                            "{step_label}: DISPLAY_FRAME_ACK next_chunk_index mismatch: expected {expected_next_chunk_index}, got {}; modem transport is desynchronized",
+                            ack.next_chunk_index
+                        )));
+                    }
+                    return Ok(());
+                }
+                Ok(Err(_)) => {
+                    return Err(TransportError::Io(format!(
+                        "{step_label}: DISPLAY_FRAME_ACK channel closed unexpectedly"
+                    )));
+                }
+                Err(_) if attempt < max_retries => {
+                    warn!(
+                        attempt = attempt + 1,
+                        retries = max_retries,
+                        transfer_id,
+                        expected_next_chunk_index,
+                        step = step_label,
+                        "display transfer ACK timeout, retransmitting"
+                    );
+                }
+                Err(_) => {
+                    return Err(TransportError::Io(format!(
+                        "{step_label}: DISPLAY_FRAME_ACK timeout waiting for transfer {transfer_id} chunk progress {expected_next_chunk_index} after {} attempts",
+                        max_retries + 1
+                    )));
+                }
+            }
+        }
+
+        unreachable!("display transfer ACK loop must return on success or failure")
+    }
 
     async fn send_encoded(writer: &SharedWriter, msg: &ModemMessage) -> Result<(), TransportError> {
         let msg_label = modem_msg_label(msg);
@@ -794,6 +913,7 @@ async fn dispatch_message(
     status_slot: &Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>>,
     channel_ack_slot: &Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>>,
     scan_slot: &Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>>,
+    display_ack_slot: &Arc<std::sync::Mutex<Option<oneshot::Sender<DisplayFrameAck>>>>,
     warm_reboot_notify: &Arc<tokio::sync::Notify>,
     warm_reboot_flag: &Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -890,6 +1010,12 @@ async fn dispatch_message(
                         debug!("cancelling pending SCAN_RESULT waiter due to warm reboot");
                     }
                 }
+                {
+                    let mut slot = display_ack_slot.lock().unwrap_or_else(|e| e.into_inner());
+                    if slot.take().is_some() {
+                        debug!("cancelling pending DISPLAY_FRAME_ACK waiter due to warm reboot");
+                    }
+                }
                 // Set the flag before notifying so the caller can't miss the event.
                 warm_reboot_flag.store(true, std::sync::atomic::Ordering::Release);
                 warm_reboot_notify.notify_one();
@@ -923,6 +1049,18 @@ async fn dispatch_message(
                 let _ = tx.send(sr);
             } else {
                 debug!("SCAN_RESULT received with no pending request");
+            }
+        }
+        ModemMessage::DisplayFrameAck(ack) => {
+            let mut slot = display_ack_slot.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(tx) = slot.take() {
+                let _ = tx.send(ack);
+            } else {
+                debug!(
+                    transfer_id = ack.transfer_id,
+                    next_chunk_index = ack.next_chunk_index,
+                    "DISPLAY_FRAME_ACK received with no pending request"
+                );
             }
         }
         ModemMessage::Error(e) => {
@@ -963,6 +1101,12 @@ async fn dispatch_message(
                     debug!("cancelling pending SCAN_RESULT waiter due to modem error");
                 }
             }
+            {
+                let mut slot = display_ack_slot.lock().unwrap_or_else(|e| e.into_inner());
+                if slot.take().is_some() {
+                    debug!("cancelling pending DISPLAY_FRAME_ACK waiter due to modem error");
+                }
+            }
         }
         ModemMessage::EventError(EventError { error_code }) => {
             warn!(
@@ -986,8 +1130,9 @@ async fn dispatch_message(
 mod tests {
     use super::*;
     use sonde_protocol::modem::{
-        encode_modem_frame, EventError, FrameDecoder, ModemMessage, ModemReady, ModemStatus,
-        RecvFrame, DISPLAY_FRAME_BODY_SIZE, EVENT_ERROR_DISPLAY_WRITE_FAILED,
+        encode_modem_frame, DisplayFrameAck, EventError, FrameDecoder, ModemMessage, ModemReady,
+        ModemStatus, RecvFrame, DISPLAY_FRAME_BODY_SIZE, DISPLAY_FRAME_CHUNK_COUNT,
+        DISPLAY_FRAME_CHUNK_SIZE, EVENT_ERROR_DISPLAY_WRITE_FAILED,
     };
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
 
@@ -1046,6 +1191,54 @@ mod tests {
             assert!(n > 0, "stream closed unexpectedly");
             decoder.push(&buf[..n]);
         }
+    }
+
+    async fn receive_display_transfer(server: &mut DuplexStream) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 2048];
+        let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
+
+        let begin = read_next_message(server, &mut decoder, &mut buf).await;
+        let transfer_id = match begin {
+            ModemMessage::DisplayFrameBegin(begin) => begin.transfer_id,
+            other => panic!("expected DisplayFrameBegin, got {other:?}"),
+        };
+        server
+            .write_all(
+                &encode_modem_frame(&ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                    transfer_id,
+                    next_chunk_index: 0,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        for expected_chunk_index in 0..DISPLAY_FRAME_CHUNK_COUNT {
+            let msg = read_next_message(server, &mut decoder, &mut buf).await;
+            match msg {
+                ModemMessage::DisplayFrameChunk(chunk) => {
+                    assert_eq!(chunk.transfer_id, transfer_id);
+                    assert_eq!(chunk.chunk_index, expected_chunk_index);
+                    let start = usize::from(expected_chunk_index) * DISPLAY_FRAME_CHUNK_SIZE;
+                    let end = start + DISPLAY_FRAME_CHUNK_SIZE;
+                    framebuffer[start..end].copy_from_slice(&chunk.chunk_data);
+                }
+                other => panic!("expected DisplayFrameChunk, got {other:?}"),
+            }
+            server
+                .write_all(
+                    &encode_modem_frame(&ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                        transfer_id,
+                        next_chunk_index: expected_chunk_index + 1,
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+
+        framebuffer
     }
 
     #[tokio::test]
@@ -1121,19 +1314,12 @@ mod tests {
         let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
         framebuffer[0] = 0x80;
         framebuffer[DISPLAY_FRAME_BODY_SIZE - 1] = 0x01;
-        transport.send_display_frame(framebuffer).await.unwrap();
-
-        let mut decoder = FrameDecoder::new();
-        let mut buf = [0u8; 2048];
-        let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
-
-        match msg {
-            ModemMessage::DisplayFrame(frame) => {
-                assert_eq!(frame.framebuffer[0], 0x80);
-                assert_eq!(frame.framebuffer[DISPLAY_FRAME_BODY_SIZE - 1], 0x01);
-            }
-            other => panic!("expected DisplayFrame, got {other:?}"),
-        }
+        let send_task =
+            tokio::spawn(async move { transport.send_display_frame(framebuffer).await });
+        let received = receive_display_transfer(&mut server).await;
+        assert_eq!(received[0], 0x80);
+        assert_eq!(received[DISPLAY_FRAME_BODY_SIZE - 1], 0x01);
+        send_task.await.unwrap().unwrap();
     }
 
     #[tokio::test]

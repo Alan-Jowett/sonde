@@ -846,20 +846,22 @@ The modem MUST NOT interpret button meaning. Specifically, the modem MUST NOT: e
 
 ## 10  Display output
 
-### MD-0700  DISPLAY_FRAME command acceptance
+### MD-0700  Reliable DISPLAY_FRAME transfer acceptance
 
 **Priority:** Must
 **Source:** modem-protocol.md §4.7a, Issue #757
 
 **Description:**
-The modem firmware MUST accept a `DISPLAY_FRAME` serial command carrying exactly 1024 bytes of framebuffer data for a 128×64 monochrome display. The framebuffer format is row-major, top-to-bottom, left-to-right, with the most-significant bit representing the leftmost pixel of each 8-pixel group. The modem MUST support full-frame updates only; partial updates are not supported.
+The modem firmware MUST accept a reliable display-transfer sequence consisting of `DISPLAY_FRAME_BEGIN`, followed by exactly eight acknowledged `DISPLAY_FRAME_CHUNK` messages carrying a total of 1024 bytes of framebuffer data for a 128×64 monochrome display. The framebuffer format is row-major, top-to-bottom, left-to-right, with the most-significant bit representing the leftmost pixel of each 8-pixel group. The modem MUST support full-frame updates only; partial updates are not supported.
 
 **Acceptance criteria:**
 
-1. A `DISPLAY_FRAME` body of exactly 1024 bytes is accepted.
-2. A `DISPLAY_FRAME` body of 1023 bytes produces `EVENT_ERROR(INVALID_FRAME)`.
-3. A `DISPLAY_FRAME` body larger than 1024 bytes exceeds the serial framing limit and is handled as a framing error, not as `EVENT_ERROR(INVALID_FRAME)`.
-4. The modem does not expose any partial-row, partial-page, or sub-rectangle display update command.
+1. A valid `DISPLAY_FRAME_BEGIN` is acknowledged with `DISPLAY_FRAME_ACK(next_chunk_index = 0)`.
+2. Each valid `DISPLAY_FRAME_CHUNK` advances the acknowledged `next_chunk_index` by exactly one.
+3. After chunk index 7 is accepted, the modem sends `DISPLAY_FRAME_ACK(next_chunk_index = 8)` and treats the assembled 1024-byte framebuffer as one accepted display update.
+4. A duplicate or out-of-order chunk for the active transfer does not raise `EVENT_ERROR`; instead, the modem re-sends `DISPLAY_FRAME_ACK` with the current `next_chunk_index`.
+5. A malformed begin/chunk frame produces `EVENT_ERROR(INVALID_FRAME)` and does not partially update the display.
+6. The modem does not expose any partial-row, partial-page, or sub-rectangle display update command.
 
 ---
 
@@ -869,7 +871,7 @@ The modem firmware MUST accept a `DISPLAY_FRAME` serial command carrying exactly
 **Source:** Issue #757
 
 **Description:**
-The modem firmware MUST render each accepted `DISPLAY_FRAME` to an SSD1306-compatible 128×64 I²C OLED connected to the ESP32-S3 module's D4/D5 pins at 7-bit I²C address `0x3C`. The rendered image MUST match the supplied framebuffer orientation and pixel values.
+The modem firmware MUST render each fully acknowledged display transfer to an SSD1306-compatible 128×64 I²C OLED connected to the ESP32-S3 module's D4/D5 pins at 7-bit I²C address `0x3C`. The rendered image MUST match the supplied framebuffer orientation and pixel values.
 
 **Acceptance criteria:**
 
@@ -885,13 +887,13 @@ The modem firmware MUST render each accepted `DISPLAY_FRAME` to an SSD1306-compa
 **Source:** Issue #757
 
 **Description:**
-Display rendering MUST NOT block or materially delay ESP-NOW RX/TX, BLE callbacks, or USB-CDC framing. Display work MUST be scheduled so that modem radio, BLE, and serial duties continue to make progress while frames are being rendered.
+Reliable display transfer and rendering MUST NOT block or materially delay ESP-NOW RX/TX, BLE callbacks, or USB-CDC framing. Display work MUST be scheduled so that modem radio, BLE, and serial duties continue to make progress while transfers are being received and while accepted frames are being rendered.
 
 **Acceptance criteria:**
 
-1. ESP-NOW frame forwarding latency is not measurably increased during repeated `DISPLAY_FRAME` updates.
-2. BLE pairing operations complete successfully while `DISPLAY_FRAME` updates are being rendered.
-3. USB-CDC command processing continues while display updates are in flight.
+1. ESP-NOW frame forwarding latency is not measurably increased during repeated reliable display transfers.
+2. BLE pairing operations complete successfully while reliable display transfers are being received and rendered.
+3. USB-CDC command processing continues while display transfers are in flight.
 
 ---
 
@@ -901,12 +903,12 @@ Display rendering MUST NOT block or materially delay ESP-NOW RX/TX, BLE callback
 **Source:** Issue #757
 
 **Description:**
-The modem firmware MUST NOT generate text, menus, pairing screens, status overlays, or any other display content on its own. The modem MUST NOT interpret framebuffer meaning. Its only display responsibility is to render the exact gateway-supplied framebuffer onto the OLED.
+The modem firmware MUST NOT generate text, menus, pairing screens, status overlays, or any other display content on its own. The modem MUST NOT interpret framebuffer meaning. Its only display responsibility is to render the exact gateway-supplied framebuffer, reassembled from the reliable display-transfer subprotocol, onto the OLED.
 
 **Acceptance criteria:**
 
 1. No code path synthesizes display pixels from button state, BLE state, pairing state, radio state, or any other modem-local state.
-2. The same `DISPLAY_FRAME` payload produces the same rendered output regardless of modem runtime state.
+2. The same completed display transfer produces the same rendered output regardless of modem runtime state.
 3. The modem does not implement text rendering, menu generation, or display-side pairing UX.
 
 ---
@@ -917,13 +919,13 @@ The modem firmware MUST NOT generate text, menus, pairing screens, status overla
 **Source:** modem-protocol.md §4.8a, Issue #757
 
 **Description:**
-Display-related faults MUST be reported via `EVENT_ERROR`, not the unrecoverable `ERROR` message. Invalid `DISPLAY_FRAME` payload size MUST report `EVENT_ERROR(INVALID_FRAME)`. OLED I²C write failure MUST report `EVENT_ERROR(DISPLAY_WRITE_FAILED)`. These errors are recoverable and MUST NOT reset unrelated modem state.
+Display-related faults MUST be reported via `EVENT_ERROR`, not the unrecoverable `ERROR` message. Invalid reliable display-transfer metadata or chunk size MUST report `EVENT_ERROR(INVALID_FRAME)`. OLED I²C write failure after a fully received display transfer MUST report `EVENT_ERROR(DISPLAY_WRITE_FAILED)`. These errors are recoverable and MUST NOT reset unrelated modem state.
 
 **Acceptance criteria:**
 
-1. Invalid `DISPLAY_FRAME` length produces `EVENT_ERROR(INVALID_FRAME)`.
+1. Invalid `DISPLAY_FRAME_BEGIN` or `DISPLAY_FRAME_CHUNK` metadata produces `EVENT_ERROR(INVALID_FRAME)`.
 2. An I²C write failure during display update produces `EVENT_ERROR(DISPLAY_WRITE_FAILED)`.
-3. After either error, the modem remains operational for ESP-NOW, BLE, USB-CDC, and future `DISPLAY_FRAME` commands.
+3. After either error, the modem remains operational for ESP-NOW, BLE, USB-CDC, and future reliable display transfers.
 
 ---
 
@@ -980,7 +982,7 @@ Display-related faults MUST be reported via `EVENT_ERROR`, not the unrecoverable
 | MD-0603 | EVENT_BUTTON emission | Must |
 | MD-0604 | Button non-interference | Must |
 | MD-0605 | No button-semantic logic in modem | Must |
-| MD-0700 | DISPLAY_FRAME command acceptance | Must |
+| MD-0700 | Reliable DISPLAY_FRAME transfer acceptance | Must |
 | MD-0701 | SSD1306 full-frame rendering | Must |
 | MD-0702 | Display-path non-interference | Must |
 | MD-0703 | No firmware-generated display UI | Must |

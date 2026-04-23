@@ -29,7 +29,7 @@ The modem is **protocol-unaware**: it does not perform cryptographic verificatio
 - **Simplicity** — length-prefixed framing on a reliable byte stream. No byte stuffing, no escaping.
 - **Transparency** — the modem does not interpret frame contents; the gateway controls all protocol logic.
 - **Testability** — the protocol works identically over USB-CDC, a Linux PTY pair, or a TCP socket, enabling hardware-free end-to-end testing.
-- **Fire-and-forget sends** — the gateway does not wait for per-frame delivery acknowledgement. The modem tracks failure counters that the gateway polls periodically.
+- **Mostly fire-and-forget sends** — ordinary modem commands remain request/response or fire-and-forget as documented below. Large display transfers use an explicit chunk ACK / retransmit subprotocol because the USB-CDC link must be treated as lossy for long writes.
 
 ---
 
@@ -54,7 +54,7 @@ Every serial frame starts with a 2-byte big-endian `LEN` field that gives the co
 | `type` | Unsigned integer | 1 byte | Message type discriminator (see §3). |
 | `body` | Bytes | 0 .. 1024 bytes | Type-specific payload. |
 
-The maximum body size of 1024 bytes is chosen to accommodate a single full-frame `DISPLAY_FRAME` command (§4.7a) carrying a raw 128×64 1-bit framebuffer.
+The maximum body size of 1024 bytes is retained so protocol extensions can carry large opaque payloads, but normal display updates now use the reliable chunked transfer defined in §4.7a–§4.7c instead of a single 1024-byte serial command.
 
 ### 2.2  Receiver behavior
 
@@ -90,7 +90,8 @@ Message types are partitioned by direction:
 | 0x03 | `SET_CHANNEL` | §4.2 | Set the WiFi/ESP-NOW channel. Modem responds with `SET_CHANNEL_ACK`. |
 | 0x04 | `GET_STATUS` | (empty) | Query modem status and counters. Modem responds with `STATUS`. |
 | 0x05 | `SCAN_CHANNELS` | (empty) | Perform a WiFi AP scan across all channels. Modem responds with `SCAN_RESULT`. |
-| 0x09 | `DISPLAY_FRAME` | §4.7a | Render a full 128×64 1-bit framebuffer to the attached OLED. Fire-and-forget. |
+| 0x09 | `DISPLAY_FRAME_BEGIN` | §4.7a | Begin a reliable framebuffer transfer to the attached OLED. |
+| 0x0A | `DISPLAY_FRAME_CHUNK` | §4.7b | Send one acknowledged chunk of a reliable framebuffer transfer. |
 | 0x20 | `BLE_INDICATE` | §4.9 | Send a BLE indication to the connected phone (gateway response wrapped in BLE envelope). |
 | 0x21 | `BLE_ENABLE` | §4.13 | Enable BLE advertising and accept connections for the Gateway Pairing Service. |
 | 0x22 | `BLE_DISABLE` | §4.14 | Disable BLE advertising and disconnect any active BLE client. |
@@ -105,6 +106,7 @@ Message types are partitioned by direction:
 | 0x84 | `SET_CHANNEL_ACK` | §4.5 | Confirms a channel change. |
 | 0x85 | `STATUS` | §4.6 | Modem status and counters (response to `GET_STATUS`). |
 | 0x86 | `SCAN_RESULT` | §4.7 | Per-channel AP survey results (response to `SCAN_CHANNELS`). |
+| 0x87 | `DISPLAY_FRAME_ACK` | §4.7c | Acknowledges progress on a reliable display transfer. |
 | 0x89 | `EVENT_ERROR` | §4.8a | Recoverable display-path error notification. |
 | 0x8F | `ERROR` | §4.8 | Unrecoverable modem error. |
 | 0xA0 | `BLE_RECV` | §4.10 | A BLE GATT write was received from the connected phone. |
@@ -241,21 +243,43 @@ Each entry is 3 bytes. For all 14 channels the total body is 1 + (14 × 3) = 43 
 
 **Important:** Channel scanning temporarily takes over the WiFi radio (~2–3 seconds). Inbound ESP-NOW frames may be dropped during a scan. This command should only be used during initial setup or administrator-triggered maintenance, not during normal gateway operation.
 
-### 4.7a  DISPLAY_FRAME (Gateway → Modem)
+### 4.7a  DISPLAY_FRAME_BEGIN (Gateway → Modem)
 
-Send a complete framebuffer to the modem for rendering on the attached SSD1306-compatible OLED. This is a fire-and-forget operation — no per-frame acknowledgement is sent. The modem renders only complete frames; partial updates are not supported.
+Begin a **reliable** display transfer for a complete 128×64 monochrome framebuffer. The modem renders only complete frames; partial updates are not supported. The gateway MUST send `DISPLAY_FRAME_BEGIN`, wait for `DISPLAY_FRAME_ACK(next_chunk_index = 0)`, then send exactly eight `DISPLAY_FRAME_CHUNK` messages (§4.7b), waiting for an ACK after each chunk.
 
-The `DISPLAY_FRAME` body is exactly 1024 bytes representing a 128×64 monochrome framebuffer in **row-major** order. Rows are transmitted top-to-bottom. Within each row, bytes progress left-to-right, and within each byte the most-significant bit corresponds to the leftmost pixel of the 8-pixel group.
+The `DISPLAY_FRAME_BEGIN` body contains a single 1-byte `transfer_id` chosen by the gateway. The `transfer_id` scopes ACKs and retries for one display update attempt.
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `transfer_id` | Unsigned integer | 1 byte | Gateway-chosen identifier for this display transfer attempt. |
+
+If a new `DISPLAY_FRAME_BEGIN` arrives while an earlier display transfer is incomplete, the modem aborts the old transfer state and starts the new one.
+
+### 4.7b  DISPLAY_FRAME_CHUNK (Gateway → Modem)
+
+Send one chunk of the reliable display transfer started by `DISPLAY_FRAME_BEGIN`.
+
+Each framebuffer is exactly 1024 bytes representing a 128×64 monochrome framebuffer in **row-major** order. Rows are transmitted top-to-bottom. Within each row, bytes progress left-to-right, and within each byte the most-significant bit corresponds to the leftmost pixel of the 8-pixel group.
+
+The transfer is split into exactly **8 chunks of 128 bytes each**. The gateway MUST send chunk indices in ascending order from 0 through 7. After each accepted chunk, the modem sends `DISPLAY_FRAME_ACK` with the next expected chunk index.
+
+The `DISPLAY_FRAME_CHUNK` body contains three fields:
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `transfer_id` | Unsigned integer | 1 byte | Must match the active transfer begun by `DISPLAY_FRAME_BEGIN`. |
+| `chunk_index` | Unsigned integer | 1 byte | Zero-based chunk index, valid range `0..=7`. |
+| `chunk_data` | Bytes | 128 bytes | Raw framebuffer bytes for this chunk. |
 
 ```text
-body_len = 1024 bytes
-row 0: bytes 0..15
-row 1: bytes 16..31
+framebuffer_len = 1024 bytes
+chunk 0: bytes 0..127
+chunk 1: bytes 128..255
 ...
-row 63: bytes 1008..1023
+chunk 7: bytes 896..1023
 ```
 
-Pixel mapping for byte `framebuffer[(y * 16) + (x / 8)]`:
+Pixel mapping for byte `framebuffer[(y * 16) + (x / 8)]` after reassembly:
 
 | Bit | Pixel |
 |-----|-------|
@@ -269,6 +293,21 @@ Pixel mapping for byte `framebuffer[(y * 16) + (x / 8)]`:
 | 0 (`0x01`) | `x + 7` |
 
 The modem MUST NOT interpret framebuffer content semantically. It treats the payload as opaque pixel data supplied by the gateway.
+
+If the modem receives a duplicate or out-of-order `DISPLAY_FRAME_CHUNK` for the active `transfer_id`, it MUST NOT advance transfer state or emit `EVENT_ERROR`. Instead, it re-sends `DISPLAY_FRAME_ACK` carrying the current `next_chunk_index`, allowing the gateway to retry safely after a lost ACK.
+
+### 4.7c  DISPLAY_FRAME_ACK (Modem → Gateway)
+
+Acknowledges progress on a reliable display transfer.
+
+The `DISPLAY_FRAME_ACK` body contains two fields:
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `transfer_id` | Unsigned integer | 1 byte | The active transfer identifier being acknowledged. |
+| `next_chunk_index` | Unsigned integer | 1 byte | The next chunk index the modem expects. `0` acknowledges `DISPLAY_FRAME_BEGIN`; `8` acknowledges a complete transfer. |
+
+When the modem sends `DISPLAY_FRAME_ACK(transfer_id, 8)`, it has accepted the full 1024-byte framebuffer and queued it for OLED rendering.
 
 ### 4.8  ERROR (Modem → Gateway)
 
@@ -298,7 +337,7 @@ The `EVENT_ERROR` body is a single 1-byte `error_code` field.
 
 | Error code | Name | Description |
 |------------|------|-------------|
-| 0x01 | `INVALID_FRAME` | `DISPLAY_FRAME` payload was malformed (for example, body length was not exactly 1024 bytes). |
+| 0x01 | `INVALID_FRAME` | Reliable display-transfer metadata was malformed (for example, wrong begin/chunk body length or an invalid chunk index). |
 | 0x02 | `DISPLAY_WRITE_FAILED` | The modem failed to write the accepted framebuffer to the OLED over I²C. |
 
 ### 4.9  BLE_INDICATE (Gateway → Modem)
@@ -576,13 +615,17 @@ Display updates are gateway-driven and independent of radio/BLE traffic.
 ```text
 Gateway                          Modem
    │                               │
-   │──── DISPLAY_FRAME ───────────►│
+   │──── DISPLAY_FRAME_BEGIN ─────►│
+   │◄──── DISPLAY_FRAME_ACK(0) ────│
+   │──── DISPLAY_FRAME_CHUNK(0) ──►│
+   │◄──── DISPLAY_FRAME_ACK(1) ────│
+   │            ...                │
+   │──── DISPLAY_FRAME_CHUNK(7) ──►│
+   │◄──── DISPLAY_FRAME_ACK(8) ────│
    │                               │── render full framebuffer to OLED
    │                               │
    │◄──── EVENT_ERROR? ────────────│  (only on INVALID_FRAME or DISPLAY_WRITE_FAILED)
 ```
-
-`DISPLAY_FRAME` is fire-and-forget. Successful renders produce no response.
 
 ---
 
@@ -597,7 +640,9 @@ Gateway                          Modem
 | Unknown `type` | Silently discard (forward compatibility). |
 | `SEND_FRAME` body < 7 bytes (no MAC + data) | Modem silently discards. |
 | `SET_CHANNEL` with `channel` = 0 or > 14 | Modem sends `ERROR` with code `CHANNEL_SET_FAILED`. |
-| `DISPLAY_FRAME` body length != 1024 | Modem sends `EVENT_ERROR(INVALID_FRAME)` and leaves the current display contents unchanged. |
+| `DISPLAY_FRAME_BEGIN` body length != 1 | Modem sends `EVENT_ERROR(INVALID_FRAME)` and leaves the current display contents unchanged. |
+| `DISPLAY_FRAME_CHUNK` body length != 130 | Modem sends `EVENT_ERROR(INVALID_FRAME)` and aborts the active display transfer. |
+| `DISPLAY_FRAME_CHUNK` transfer metadata invalid (unexpected transfer_id before any begin, chunk_index > 7) | Modem sends `EVENT_ERROR(INVALID_FRAME)` and aborts the active display transfer. |
 
 ### 6.2  Missing responses
 
@@ -606,7 +651,7 @@ The gateway expects responses for request-response commands. If a response is no
 1. Log the timeout.
 2. Send `RESET` and re-run the startup sequence (§5.1).
 
-`SEND_FRAME` and `DISPLAY_FRAME` are fire-and-forget and have no expected response — they cannot time out.
+`SEND_FRAME` is fire-and-forget and has no expected response — it cannot time out. `DISPLAY_FRAME_BEGIN` and each `DISPLAY_FRAME_CHUNK` MUST be acknowledged by `DISPLAY_FRAME_ACK`.
 
 ### 6.3  USB disconnection
 
@@ -623,7 +668,7 @@ The modem may send `RECV_FRAME`, `EVENT_ERROR`, `ERROR`, or `EVENT_BUTTON` at an
 - `EVENT_ERROR` → log the recoverable display fault and continue operating.
 - `ERROR` → log and optionally trigger recovery.
 - `EVENT_BUTTON` → deliver to the button-event handler (e.g., registration window activation). **Note:** gateway-side consumption of `EVENT_BUTTON` is not yet implemented; the message is currently logged and otherwise ignored.
-- Expected response (e.g., `STATUS`, `SET_CHANNEL_ACK`) → deliver to the waiting command.
+- Expected response (e.g., `STATUS`, `SET_CHANNEL_ACK`, `DISPLAY_FRAME_ACK`) → deliver to the waiting command.
 
 ---
 
@@ -635,8 +680,9 @@ The modem may send `RECV_FRAME`, `EVENT_ERROR`, `ERROR`, or `EVENT_BUTTON` at an
 | `SET_CHANNEL_ACK` after `SET_CHANNEL` | 2 seconds | Log error, send `RESET`, re-run startup. |
 | `STATUS` after `GET_STATUS` | 2 seconds | Log warning, skip this poll cycle. |
 | `SCAN_RESULT` after `SCAN_CHANNELS` | 10 seconds | Log error (scan may have failed). |
+| `DISPLAY_FRAME_ACK` after `DISPLAY_FRAME_BEGIN` or `DISPLAY_FRAME_CHUNK` | 500 ms | Retransmit the same begin/chunk up to the configured retry budget; on retry exhaustion, treat the modem transport as failed and re-run startup. |
 
-`SEND_FRAME`, `DISPLAY_FRAME`, and `RECV_FRAME` have no timeouts — sends are fire-and-forget, and receives are asynchronous events.
+`SEND_FRAME` and `RECV_FRAME` remain asynchronous fire-and-forget / event traffic. Reliable display transfer is the only command family with per-chunk retransmission semantics.
 
 The gateway does not retry individual commands (other than `RESET`). If a command fails, the recovery path is always: `RESET` → `MODEM_READY` → `SET_CHANNEL` → resume.
 
@@ -646,7 +692,9 @@ The gateway does not retry individual commands (other than `RESET`). If a comman
 
 ### 8.1  Forward compatibility
 
-Both sides MUST silently discard frames with unrecognized `type` values. This allows either side to be upgraded independently — a newer gateway can send new command types to an older modem without breaking it, and vice versa.
+Both sides MUST silently discard frames with unrecognized `type` values. This prevents parser breakage when one side is newer than the other.
+
+However, the reliable display-transfer subprotocol (`DISPLAY_FRAME_BEGIN`, `DISPLAY_FRAME_CHUNK`, `DISPLAY_FRAME_ACK`) requires **matched gateway and modem support**. An older modem will silently discard the new display-transfer commands, and a newer gateway will treat the missing ACKs as a transport failure and reconnect. Deploy this feature only when both sides have been updated together.
 
 ### 8.2  Version detection
 
@@ -656,7 +704,7 @@ The `firmware_version` field in `MODEM_READY` allows the gateway to detect the m
 
 | Range | Purpose |
 |-------|---------|
-| 0x01 – 0x0F | Core modem commands (RESET, SEND_FRAME, SET_CHANNEL, GET_STATUS, SCAN_CHANNELS, DISPLAY_FRAME) |
+| 0x01 – 0x0F | Core modem commands (RESET, SEND_FRAME, SET_CHANNEL, GET_STATUS, SCAN_CHANNELS, DISPLAY_FRAME_BEGIN, DISPLAY_FRAME_CHUNK) |
 | 0x10 – 0x1F | Reserved |
 | 0x20 – 0x2F | BLE relay commands (BLE_INDICATE, BLE_ENABLE, BLE_DISABLE, BLE_PAIRING_CONFIRM_REPLY) |
 | 0x30 – 0x7F | Reserved for future gateway → modem commands |

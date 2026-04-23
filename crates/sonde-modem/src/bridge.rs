@@ -16,10 +16,12 @@ use std::time::{Duration, Instant};
 
 use sonde_protocol::modem::{
     encode_modem_frame, BleConnected, BleDisconnected, BlePairingConfirm, BlePairingConfirmReply,
-    BleRecv, DisplayFrame, EventButton, EventError, FrameDecoder, ModemCodecError, ModemError,
-    ModemMessage, ModemReady, ModemStatus, RecvFrame, ScanEntry, ScanResult, SendFrame,
-    BUTTON_TYPE_LONG, BUTTON_TYPE_SHORT, DISPLAY_FRAME_BODY_SIZE, EVENT_ERROR_DISPLAY_WRITE_FAILED,
-    EVENT_ERROR_INVALID_FRAME, MAC_SIZE, MODEM_ERR_CHANNEL_SET_FAILED, MODEM_MSG_DISPLAY_FRAME,
+    BleRecv, DisplayFrameAck, DisplayFrameBegin, DisplayFrameChunk, EventButton, EventError,
+    FrameDecoder, ModemCodecError, ModemError, ModemMessage, ModemReady, ModemStatus, RecvFrame,
+    ScanEntry, ScanResult, SendFrame, BUTTON_TYPE_LONG, BUTTON_TYPE_SHORT, DISPLAY_FRAME_BODY_SIZE,
+    DISPLAY_FRAME_CHUNK_COUNT, DISPLAY_FRAME_CHUNK_SIZE, EVENT_ERROR_DISPLAY_WRITE_FAILED,
+    EVENT_ERROR_INVALID_FRAME, MAC_SIZE, MODEM_ERR_CHANNEL_SET_FAILED,
+    MODEM_MSG_DISPLAY_FRAME_BEGIN, MODEM_MSG_DISPLAY_FRAME_CHUNK,
 };
 
 use crate::status::ModemCounters;
@@ -75,12 +77,14 @@ fn msg_type_label(msg: &ModemMessage) -> &'static str {
         ModemMessage::SetChannel(_) => "SET_CHANNEL",
         ModemMessage::GetStatus => "GET_STATUS",
         ModemMessage::ScanChannels => "SCAN_CHANNELS",
-        ModemMessage::DisplayFrame(_) => "DISPLAY_FRAME",
+        ModemMessage::DisplayFrameBegin(_) => "DISPLAY_FRAME_BEGIN",
+        ModemMessage::DisplayFrameChunk(_) => "DISPLAY_FRAME_CHUNK",
         ModemMessage::ModemReady(_) => "MODEM_READY",
         ModemMessage::RecvFrame(_) => "RECV_FRAME",
         ModemMessage::SetChannelAck(_) => "SET_CHANNEL_ACK",
         ModemMessage::Status(_) => "STATUS",
         ModemMessage::ScanResult(_) => "SCAN_RESULT",
+        ModemMessage::DisplayFrameAck(_) => "DISPLAY_FRAME_ACK",
         ModemMessage::EventError(_) => "EVENT_ERROR",
         ModemMessage::Error(_) => "ERROR",
         ModemMessage::BleIndicate(_) => "BLE_INDICATE",
@@ -211,6 +215,13 @@ pub trait Display {
 
     /// Advance the display by at most one incremental step.
     fn poll(&mut self) -> Result<(), DisplayError>;
+}
+
+#[derive(Clone)]
+struct DisplayTransferState {
+    transfer_id: u8,
+    next_chunk_index: u8,
+    framebuffer: [u8; DISPLAY_FRAME_BODY_SIZE],
 }
 
 /// No-op display driver for host-side tests and builds without OLED hardware.
@@ -384,6 +395,7 @@ pub struct Bridge<
     ble: B,
     button: Btn,
     display: D,
+    display_transfer: Option<DisplayTransferState>,
     ble_enabled: bool,
     counters: Arc<ModemCounters>,
     decoder: FrameDecoder,
@@ -399,6 +411,7 @@ impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle, NoButton, NoDisplay> {
             ble: NoBle,
             button: NoButton,
             display: NoDisplay,
+            display_transfer: None,
             ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
@@ -417,6 +430,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B, NoButton, NoDisplay> {
             ble,
             button: NoButton,
             display: NoDisplay,
+            display_transfer: None,
             ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
@@ -446,6 +460,7 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn, NoDi
             ble,
             button,
             display: NoDisplay,
+            display_transfer: None,
             ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
@@ -469,6 +484,7 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll> Bridge<S, R, B, Btn, NoDi
             ble,
             button,
             display,
+            display_transfer: None,
             ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
@@ -567,7 +583,10 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll, D: Display> Bridge<S, R, 
                 }
                 Err(ModemCodecError::BodyTooShort { msg_type, .. })
                 | Err(ModemCodecError::BodyTooLong { msg_type, .. })
-                    if msg_type == MODEM_MSG_DISPLAY_FRAME =>
+                    if matches!(
+                        msg_type,
+                        MODEM_MSG_DISPLAY_FRAME_BEGIN | MODEM_MSG_DISPLAY_FRAME_CHUNK
+                    ) =>
                 {
                     self.send_event_error(EVENT_ERROR_INVALID_FRAME);
                     continue;
@@ -672,7 +691,8 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll, D: Display> Bridge<S, R, 
             ModemMessage::SetChannel(ch) => self.handle_set_channel(ch),
             ModemMessage::GetStatus => self.handle_get_status(),
             ModemMessage::ScanChannels => self.handle_scan_channels(),
-            ModemMessage::DisplayFrame(frame) => self.handle_display_frame(*frame),
+            ModemMessage::DisplayFrameBegin(begin) => self.handle_display_frame_begin(begin),
+            ModemMessage::DisplayFrameChunk(chunk) => self.handle_display_frame_chunk(*chunk),
             ModemMessage::BleIndicate(ind) => self.handle_ble_indicate(ind.ble_data),
             ModemMessage::BleEnable => self.handle_ble_enable(),
             ModemMessage::BleDisable => self.handle_ble_disable(),
@@ -688,6 +708,7 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll, D: Display> Bridge<S, R, 
         info!("RESET received");
         self.radio.reset_state();
         self.display.reset();
+        self.display_transfer = None;
         // BLE advertising is off by default after RESET (MD-0412).
         self.ble.disable();
         // Drain any stale BLE events (including BLE_DISCONNECTED from the
@@ -790,8 +811,67 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll, D: Display> Bridge<S, R, 
         self.send_msg(&msg);
     }
 
-    fn handle_display_frame(&mut self, frame: DisplayFrame) {
-        self.display.queue_frame(frame.framebuffer);
+    fn handle_display_frame_begin(&mut self, begin: DisplayFrameBegin) {
+        info!("DISPLAY_FRAME_BEGIN received");
+        self.display_transfer = Some(DisplayTransferState {
+            transfer_id: begin.transfer_id,
+            next_chunk_index: 0,
+            framebuffer: [0u8; DISPLAY_FRAME_BODY_SIZE],
+        });
+        self.send_display_frame_ack(begin.transfer_id, 0);
+    }
+
+    fn handle_display_frame_chunk(&mut self, chunk: DisplayFrameChunk) {
+        let Some(current) = self.display_transfer.as_ref() else {
+            self.send_event_error(EVENT_ERROR_INVALID_FRAME);
+            return;
+        };
+
+        if chunk.transfer_id != current.transfer_id {
+            self.send_event_error(EVENT_ERROR_INVALID_FRAME);
+            return;
+        }
+
+        if chunk.chunk_index != current.next_chunk_index {
+            self.send_display_frame_ack(current.transfer_id, current.next_chunk_index);
+            return;
+        }
+
+        let state = self
+            .display_transfer
+            .as_mut()
+            .expect("display transfer state checked above");
+        let start = usize::from(chunk.chunk_index) * DISPLAY_FRAME_CHUNK_SIZE;
+        let end = start + DISPLAY_FRAME_CHUNK_SIZE;
+        state.framebuffer[start..end].copy_from_slice(&chunk.chunk_data);
+        state.next_chunk_index += 1;
+
+        let transfer_id = state.transfer_id;
+        let next_chunk_index = state.next_chunk_index;
+        let completed_frame = if next_chunk_index == DISPLAY_FRAME_CHUNK_COUNT {
+            Some(state.framebuffer)
+        } else {
+            None
+        };
+
+        self.send_display_frame_ack(transfer_id, next_chunk_index);
+        if let Some(framebuffer) = completed_frame {
+            self.display.queue_frame(framebuffer);
+            self.display_transfer = None;
+        }
+    }
+
+    fn send_display_frame_ack(&mut self, transfer_id: u8, next_chunk_index: u8) {
+        let msg = ModemMessage::DisplayFrameAck(DisplayFrameAck {
+            transfer_id,
+            next_chunk_index,
+        });
+        if !self.send_msg(&msg) {
+            warn!(
+                "DISPLAY_FRAME_ACK dropped: transfer_id={} next_chunk_index={}",
+                transfer_id, next_chunk_index
+            );
+        }
     }
 
     fn handle_ble_indicate(&mut self, data: Vec<u8>) {
@@ -827,9 +907,11 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll, D: Display> Bridge<S, R, 
 mod tests {
     use super::*;
     use sonde_protocol::modem::{
-        decode_modem_frame, BleIndicate, DisplayFrame, ModemMessage, DISPLAY_FRAME_BODY_SIZE,
-        EVENT_ERROR_DISPLAY_WRITE_FAILED, EVENT_ERROR_INVALID_FRAME, MODEM_MSG_DISPLAY_FRAME,
-        SERIAL_MAX_FRAME_SIZE, SERIAL_MAX_LEN,
+        decode_modem_frame, BleIndicate, DisplayFrameAck, DisplayFrameBegin, DisplayFrameChunk,
+        ModemMessage, DISPLAY_FRAME_BODY_SIZE, DISPLAY_FRAME_CHUNK_BODY_SIZE,
+        DISPLAY_FRAME_CHUNK_COUNT, DISPLAY_FRAME_CHUNK_SIZE, EVENT_ERROR_DISPLAY_WRITE_FAILED,
+        EVENT_ERROR_INVALID_FRAME, MODEM_MSG_DISPLAY_FRAME_CHUNK, SERIAL_MAX_FRAME_SIZE,
+        SERIAL_MAX_LEN,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
@@ -1139,24 +1221,41 @@ mod tests {
         let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
         framebuffer[0] = 0x80;
         framebuffer[DISPLAY_FRAME_BODY_SIZE - 1] = 0x01;
-        let frame = encode_modem_frame(&ModemMessage::DisplayFrame(Box::new(DisplayFrame {
-            framebuffer,
-        })))
-        .unwrap();
+        let frame = encode_display_transfer(framebuffer, 0x42);
         feed_and_drain(&mut bridge, &frame);
         assert_eq!(bridge.display.queued_frames.len(), 1);
         assert_eq!(bridge.display.queued_frames[0], framebuffer);
         assert!(bridge.display.poll_count >= 1);
-        assert!(bridge.usb.take_tx().is_empty());
+        let tx = bridge.usb.take_tx();
+        let messages = decode_all_messages(&tx);
+        assert_eq!(messages.len(), 1 + usize::from(DISPLAY_FRAME_CHUNK_COUNT));
+        assert_eq!(
+            messages[0],
+            ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                transfer_id: 0x42,
+                next_chunk_index: 0,
+            })
+        );
+        for (index, msg) in messages[1..].iter().enumerate() {
+            assert_eq!(
+                msg,
+                &ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                    transfer_id: 0x42,
+                    next_chunk_index: (index as u8) + 1,
+                })
+            );
+        }
     }
 
     #[test]
     fn malformed_display_frame_emits_event_error() {
         let mut bridge = make_bridge_with_display();
         let mut raw = Vec::new();
-        raw.extend_from_slice(&(DISPLAY_FRAME_BODY_SIZE as u16).to_be_bytes());
-        raw.push(MODEM_MSG_DISPLAY_FRAME);
-        raw.extend_from_slice(&vec![0u8; DISPLAY_FRAME_BODY_SIZE - 1]);
+        raw.extend_from_slice(&(DISPLAY_FRAME_CHUNK_BODY_SIZE as u16).to_be_bytes());
+        raw.push(MODEM_MSG_DISPLAY_FRAME_CHUNK);
+        raw.push(0x42);
+        raw.push(0);
+        raw.extend_from_slice(&vec![0u8; DISPLAY_FRAME_CHUNK_BODY_SIZE - 3]);
         feed_and_drain(&mut bridge, &raw);
         let tx = bridge.usb.take_tx();
         let (msg, _) = decode_modem_frame(&tx).unwrap();
@@ -1172,19 +1271,60 @@ mod tests {
     #[test]
     fn display_write_failure_emits_event_error() {
         let mut bridge = make_bridge_with_display();
-        bridge.display.fail_next_poll = true;
-        let frame = encode_modem_frame(&ModemMessage::DisplayFrame(Box::new(DisplayFrame {
-            framebuffer: [0x42; DISPLAY_FRAME_BODY_SIZE],
-        })))
-        .unwrap();
+        let frame = encode_display_transfer([0x42; DISPLAY_FRAME_BODY_SIZE], 0x24);
         feed_and_drain(&mut bridge, &frame);
+        bridge.display.fail_next_poll = true;
+        bridge.poll();
         let tx = bridge.usb.take_tx();
-        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        let messages = decode_all_messages(&tx);
         assert_eq!(
-            msg,
+            *messages.last().unwrap(),
             ModemMessage::EventError(EventError {
                 error_code: EVENT_ERROR_DISPLAY_WRITE_FAILED,
             })
+        );
+    }
+
+    #[test]
+    fn duplicate_display_frame_chunk_resends_progress_ack_without_requeueing() {
+        let mut bridge = make_bridge_with_display();
+        let begin = encode_modem_frame(&ModemMessage::DisplayFrameBegin(DisplayFrameBegin {
+            transfer_id: 0x11,
+        }))
+        .unwrap();
+        let mut chunk_data = [0u8; DISPLAY_FRAME_CHUNK_SIZE];
+        chunk_data[0] = 0xAA;
+        let chunk = encode_modem_frame(&ModemMessage::DisplayFrameChunk(Box::new(
+            DisplayFrameChunk {
+                transfer_id: 0x11,
+                chunk_index: 0,
+                chunk_data,
+            },
+        )))
+        .unwrap();
+
+        feed_and_drain(&mut bridge, &begin);
+        feed_and_drain(&mut bridge, &chunk);
+        feed_and_drain(&mut bridge, &chunk);
+
+        assert!(bridge.display.queued_frames.is_empty());
+        let messages = decode_all_messages(&bridge.usb.take_tx());
+        assert_eq!(
+            messages,
+            vec![
+                ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                    transfer_id: 0x11,
+                    next_chunk_index: 0,
+                }),
+                ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                    transfer_id: 0x11,
+                    next_chunk_index: 1,
+                }),
+                ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                    transfer_id: 0x11,
+                    next_chunk_index: 1,
+                }),
+            ]
         );
     }
 
@@ -2924,6 +3064,43 @@ mod tests {
         for _ in 0..(data.len() / buf_len + 2) {
             bridge.poll();
         }
+    }
+
+    fn decode_all_messages(mut frame_bytes: &[u8]) -> Vec<ModemMessage> {
+        let mut messages = Vec::new();
+        while !frame_bytes.is_empty() {
+            let (msg, consumed) = decode_modem_frame(frame_bytes).unwrap();
+            messages.push(msg);
+            frame_bytes = &frame_bytes[consumed..];
+        }
+        messages
+    }
+
+    fn encode_display_transfer(
+        framebuffer: [u8; DISPLAY_FRAME_BODY_SIZE],
+        transfer_id: u8,
+    ) -> Vec<u8> {
+        let mut bytes = encode_modem_frame(&ModemMessage::DisplayFrameBegin(DisplayFrameBegin {
+            transfer_id,
+        }))
+        .unwrap();
+        for chunk_index in 0..DISPLAY_FRAME_CHUNK_COUNT {
+            let start = usize::from(chunk_index) * DISPLAY_FRAME_CHUNK_SIZE;
+            let end = start + DISPLAY_FRAME_CHUNK_SIZE;
+            let mut chunk_data = [0u8; DISPLAY_FRAME_CHUNK_SIZE];
+            chunk_data.copy_from_slice(&framebuffer[start..end]);
+            bytes.extend_from_slice(
+                &encode_modem_frame(&ModemMessage::DisplayFrameChunk(Box::new(
+                    DisplayFrameChunk {
+                        transfer_id,
+                        chunk_index,
+                        chunk_data,
+                    },
+                )))
+                .unwrap(),
+            );
+        }
+        bytes
     }
 
     /// Validates: T-0605 / MD-0403 AC3 — flow control between indication

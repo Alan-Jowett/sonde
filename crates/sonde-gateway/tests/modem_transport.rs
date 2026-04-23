@@ -12,7 +12,8 @@ use sonde_gateway::modem::{UsbEspNowTransport, DEFAULT_MAX_HEALTH_POLL_FAILURES}
 use sonde_gateway::transport::Transport;
 
 use sonde_protocol::modem::{
-    encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, ModemStatus, RecvFrame,
+    encode_modem_frame, DisplayFrameAck, FrameDecoder, ModemMessage, ModemReady, ModemStatus,
+    RecvFrame, DISPLAY_FRAME_BODY_SIZE, DISPLAY_FRAME_CHUNK_COUNT, DISPLAY_FRAME_CHUNK_SIZE,
 };
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
 
@@ -78,6 +79,54 @@ async fn create_transport_and_server(channel: u8) -> (UsbEspNowTransport, Duplex
 
     let transport = transport_handle.await.unwrap();
     (transport, server)
+}
+
+async fn receive_display_transfer(server: &mut DuplexStream) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 2048];
+    let mut framebuffer = [0u8; DISPLAY_FRAME_BODY_SIZE];
+
+    let begin = read_next_message(server, &mut decoder, &mut buf).await;
+    let transfer_id = match begin {
+        ModemMessage::DisplayFrameBegin(begin) => begin.transfer_id,
+        other => panic!("expected DisplayFrameBegin, got {other:?}"),
+    };
+    server
+        .write_all(
+            &encode_modem_frame(&ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                transfer_id,
+                next_chunk_index: 0,
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    for expected_chunk_index in 0..DISPLAY_FRAME_CHUNK_COUNT {
+        let msg = read_next_message(server, &mut decoder, &mut buf).await;
+        match msg {
+            ModemMessage::DisplayFrameChunk(chunk) => {
+                assert_eq!(chunk.transfer_id, transfer_id);
+                assert_eq!(chunk.chunk_index, expected_chunk_index);
+                let start = usize::from(expected_chunk_index) * DISPLAY_FRAME_CHUNK_SIZE;
+                let end = start + DISPLAY_FRAME_CHUNK_SIZE;
+                framebuffer[start..end].copy_from_slice(&chunk.chunk_data);
+            }
+            other => panic!("expected DisplayFrameChunk, got {other:?}"),
+        }
+        server
+            .write_all(
+                &encode_modem_frame(&ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                    transfer_id,
+                    next_chunk_index: expected_chunk_index + 1,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    framebuffer
 }
 
 // ── T-1100: recv delivers RECV_FRAME ────────────────────────────────────
@@ -216,25 +265,19 @@ async fn t1103_startup_sequence() {
     let _transport = transport_handle.await.unwrap();
 }
 
-/// T-1103a  Gateway startup banner helper sends DISPLAY_FRAME.
+/// T-1103a  Gateway startup banner helper sends reliable display transfer.
 #[tokio::test]
 async fn t1103a_gateway_banner_sends_display_frame() {
     let (transport, mut server) = create_transport_and_server(6).await;
+    let send_task = tokio::spawn(async move { send_gateway_version_banner(&transport).await });
 
-    send_gateway_version_banner(&transport).await.unwrap();
+    let framebuffer = receive_display_transfer(&mut server).await;
+    assert_eq!(
+        framebuffer,
+        render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
+    );
 
-    let mut decoder = FrameDecoder::new();
-    let mut buf = [0u8; 2048];
-    let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
-    match msg {
-        ModemMessage::DisplayFrame(frame) => {
-            assert_eq!(
-                frame.framebuffer,
-                render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
-            );
-        }
-        other => panic!("expected DisplayFrame, got {other:?}"),
-    }
+    send_task.await.unwrap().unwrap();
 }
 
 // ── T-1104: Startup — MODEM_READY timeout ───────────────────────────────

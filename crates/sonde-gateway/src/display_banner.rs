@@ -80,22 +80,40 @@ fn centered_text_x(text: &str) -> i32 {
     ((FRAMEBUFFER_WIDTH as i32 - text_width).max(0)) / 2
 }
 
-pub fn render_gateway_version_banner(version: &str) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
-    let line1 = "Sonde Gateway";
-    let line2 = format!("v{version}");
-    let line_height = FONT_8X13_BOLD.character_size.height as i32;
-    let block_height = line_height * 2 + LINE_SPACING;
-    let top = ((FRAMEBUFFER_HEIGHT as i32 - block_height).max(0)) / 2;
-    let line1_y = top + FONT_8X13_BOLD.baseline as i32;
-    let line2_y = top + line_height + LINE_SPACING + FONT_8X13_BOLD.baseline as i32;
+pub fn render_display_message(lines: &[&str]) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
+    if lines.is_empty() {
+        return [0u8; DISPLAY_FRAME_BODY_SIZE];
+    }
 
+    let line_height = FONT_8X13_BOLD.character_size.height as i32;
+    let block_height =
+        line_height * lines.len() as i32 + LINE_SPACING * (lines.len().saturating_sub(1) as i32);
+    let top = ((FRAMEBUFFER_HEIGHT as i32 - block_height).max(0)) / 2;
     let style = MonoTextStyle::new(&FONT_8X13_BOLD, BinaryColor::On);
     let mut framebuffer = Framebuffer::new();
-    let _ =
-        Text::new(line1, Point::new(centered_text_x(line1), line1_y), style).draw(&mut framebuffer);
-    let _ = Text::new(&line2, Point::new(centered_text_x(&line2), line2_y), style)
-        .draw(&mut framebuffer);
+
+    for (index, line) in lines.iter().enumerate() {
+        let baseline =
+            top + index as i32 * (line_height + LINE_SPACING) + FONT_8X13_BOLD.baseline as i32;
+        let _ = Text::new(line, Point::new(centered_text_x(line), baseline), style)
+            .draw(&mut framebuffer);
+    }
+
     framebuffer.into_bytes()
+}
+
+pub fn render_gateway_version_banner(version: &str) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
+    let line2 = format!("v{version}");
+    render_display_message(&["Sonde Gateway", &line2])
+}
+
+pub async fn send_display_message(
+    transport: &UsbEspNowTransport,
+    lines: &[&str],
+) -> Result<(), TransportError> {
+    transport
+        .send_display_frame(render_display_message(lines))
+        .await
 }
 
 pub async fn send_gateway_version_banner(
@@ -143,6 +161,29 @@ mod tests {
     #[test]
     fn gateway_banner_renders_across_two_vertical_regions() {
         let framebuffer = render_gateway_version_banner("0.4.0");
+        let half = framebuffer.len() / 2;
+        assert!(
+            framebuffer[..half].iter().any(|byte| *byte != 0),
+            "top half should contain the first line"
+        );
+        assert!(
+            framebuffer[half..].iter().any(|byte| *byte != 0),
+            "bottom half should contain the second line"
+        );
+    }
+
+    #[test]
+    fn pairing_message_renders_visible_pixels() {
+        let framebuffer = render_display_message(&["Pairing"]);
+        assert!(
+            framebuffer.iter().any(|byte| *byte != 0),
+            "rendered pairing message must set at least one pixel"
+        );
+    }
+
+    #[test]
+    fn passkey_message_renders_across_two_vertical_regions() {
+        let framebuffer = render_display_message(&["Pin", "123456"]);
         let half = framebuffer.len() / 2;
         assert!(
             framebuffer[..half].iter().any(|byte| *byte != 0),

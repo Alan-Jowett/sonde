@@ -1317,16 +1317,19 @@ The gateway MUST reject `REGISTER_PHONE` commands when the registration window i
 **Source:** ble-pairing-protocol.md §5.4.1, modem-protocol.md §4.13
 
 **Description:**  
-The gateway MUST open the registration window via a physical button hold (≥2 s) or the admin API and auto-close it after a configurable duration (default 120 s). When the registration window is opened via admin API, the gateway MUST also send `BLE_ENABLE` to the modem. When the window closes (auto-close or explicit close), the gateway MUST send `BLE_DISABLE` to the modem.
+The gateway MUST open the registration window either via a modem `EVENT_BUTTON(BUTTON_LONG)` event or via the admin API and auto-close it after a configurable duration (default 120 s). The gateway MUST track whether the active BLE pairing session was opened by `BUTTON_LONG` (`button` origin) or by `OpenBlePairing` (`admin` origin). A `BUTTON_LONG` event received while a BLE pairing session is already active MUST be ignored. A `BUTTON_SHORT` event MUST close the registration window only when the active session origin is `button`. When the registration window opens, the gateway MUST send `BLE_ENABLE` to the modem. When the window closes (auto-close, explicit admin close, or button cancel), the gateway MUST send `BLE_DISABLE` to the modem.
 
 **Acceptance criteria:**
 
-1. A button hold of ≥2 s opens the registration window.
-2. The admin API can open the registration window.
-3. The window auto-closes after the configured duration.
-4. The default duration is 120 s.
-5. Opening the window sends `BLE_ENABLE` to the modem.
-6. Closing the window (auto-close or explicit) sends `BLE_DISABLE` to the modem.
+1. A `BUTTON_LONG` event opens the registration window when no BLE pairing session is active.
+2. An `OpenBlePairing` admin API call opens the registration window when no BLE pairing session is active.
+3. A `BUTTON_LONG` event received while a BLE pairing session is already active leaves the existing session unchanged.
+4. A `BUTTON_SHORT` event closes a button-initiated BLE pairing session.
+5. A `BUTTON_SHORT` event received during an admin-initiated BLE pairing session does not close the session.
+6. The window auto-closes after the configured duration.
+7. The default duration is 120 s.
+8. Opening the window sends `BLE_ENABLE` to the modem.
+9. Closing the window (auto-close, explicit admin close, or button cancel) sends `BLE_DISABLE` to the modem.
 
 ---
 
@@ -1528,15 +1531,38 @@ The gateway MUST NOT apply sequence-number anti-replay checks to `msg_type` `0x0
 **Source:** ble-pairing-protocol.md §5.4.1, modem-protocol.md §4.13
 
 **Description:**  
-The admin API MUST expose an `OpenBlePairing` RPC (and corresponding `sonde-admin pairing start` CLI command) that opens the phone registration window AND sends `BLE_ENABLE` to the modem. A corresponding `CloseBlePairing` RPC (`sonde-admin pairing stop`) MUST close the window and send `BLE_DISABLE`. The admin CLI MUST display any Numeric Comparison passkey relayed from the modem via `BLE_PAIRING_CONFIRM` and prompt the operator to confirm.
+The admin API MUST expose an `OpenBlePairing` RPC (and corresponding `sonde-admin pairing start` CLI command) that opens an admin-initiated phone registration window and streams pairing events to the admin client. A corresponding `CloseBlePairing` RPC (`sonde-admin pairing stop`) MUST close the active BLE pairing session. During an admin-initiated session, the admin CLI MUST display any Numeric Comparison passkey relayed from the modem via `BLE_PAIRING_CONFIRM` and prompt the operator to confirm.
 
 **Acceptance criteria:**
 
-1. `sonde-admin pairing start` opens the registration window and enables BLE advertising.
-2. `sonde-admin pairing stop` closes the window and disables BLE advertising.
+1. `sonde-admin pairing start` opens an admin-initiated registration window and enables BLE advertising.
+2. `sonde-admin pairing stop` closes the active BLE pairing session and disables BLE advertising.
 3. Numeric Comparison passkey is displayed to the operator.
 4. Operator can accept or reject the passkey.
 5. Registration window auto-close also sends `BLE_DISABLE`.
+
+---
+
+### GW-1222a  Button-initiated BLE pairing feedback and confirmation
+
+**Priority:** Must  
+**Source:** modem-protocol.md §4.7a, §4.17, User request
+
+**Description:**  
+During a button-initiated BLE pairing session, the gateway MUST keep the modem display updated with pairing progress and MUST automatically accept Numeric Comparison requests. On entry to button-initiated pairing mode, the gateway MUST update the display to `Pairing`. When the modem reports a phone connection, the gateway MUST update the display to `Phone connected`. When the modem relays `BLE_PAIRING_CONFIRM(passkey=P)`, the gateway MUST update the display to show `Pin` and the actual passkey `P`, and MUST send `BLE_PAIRING_CONFIRM_REPLY(accept=true)` without waiting for admin confirmation. When phone registration completes, the gateway MUST update the display to `Provisioned`, followed by `Done` when the pairing session closes normally. If the session is closed by `BUTTON_SHORT`, the gateway MUST update the display to `Cancelled`. If the session auto-closes due to timeout, the gateway MUST update the display to `Timed out`. Each terminal button-pairing state (`Done`, `Cancelled`, `Timed out`) MUST remain on the display for 2 seconds before the gateway restores the normal Sonde Gateway version banner, unless a newer button-pairing session has already replaced it.
+
+**Acceptance criteria:**
+
+1. Entering a button-initiated BLE pairing session triggers a display update showing `Pairing`.
+2. A modem `BLE_CONNECTED` event during a button-initiated session triggers a display update showing `Phone connected`.
+3. A modem `BLE_PAIRING_CONFIRM(passkey=P)` event during a button-initiated session triggers a display update showing the actual passkey `P`.
+4. A modem `BLE_PAIRING_CONFIRM(passkey=P)` event during a button-initiated session causes the gateway to send `BLE_PAIRING_CONFIRM_REPLY(accept=true)` without waiting for `ConfirmBlePairing`.
+5. Successful phone registration during a button-initiated session triggers a display update showing `Provisioned`.
+6. Normal closure of a button-initiated session after successful registration triggers a display update showing `Done`.
+7. `BUTTON_SHORT` cancellation of a button-initiated session triggers a display update showing `Cancelled`.
+8. Auto-close timeout of a button-initiated session triggers a display update showing `Timed out`.
+9. After `Done`, `Cancelled`, or `Timed out`, the gateway restores the normal Sonde Gateway version banner after 2 seconds unless a newer pairing session has already taken over the display.
+10. Admin-initiated sessions continue to require explicit operator confirmation for Numeric Comparison.
 
 ---
 
@@ -2239,6 +2265,7 @@ The `secret-service` (D-Bus keyring) dependency MUST be behind a cargo feature f
 | GW-1220 | Silent-discard error model for PEER_REQUEST | Must |
 | GW-1221 | Random nonces for PEER_REQUEST/PEER_ACK | Must |
 | GW-1222 | Admin API — BLE pairing session | Must |
+| GW-1222a | Button-initiated BLE pairing feedback and confirmation | Must |
 | GW-1223 | Admin API — phone listing | Must |
 | GW-1224 | Admin API — phone revocation | Must |
 | GW-1303 | Build metadata in host binaries | Must |

@@ -18,8 +18,8 @@ use tracing::{debug, error, info, warn};
 use sonde_protocol::modem::{
     encode_modem_frame, BleConnected, BleDisconnected, BleIndicate, BlePairingConfirm,
     BlePairingConfirmReply, BleRecv, DisplayFrameAck, DisplayFrameBegin, DisplayFrameChunk,
-    EventError, FrameDecoder, ModemMessage, ModemReady, ModemStatus, ScanResult, SendFrame,
-    DISPLAY_FRAME_BODY_SIZE, DISPLAY_FRAME_CHUNK_COUNT, DISPLAY_FRAME_CHUNK_SIZE,
+    EventButton, EventError, FrameDecoder, ModemMessage, ModemReady, ModemStatus, ScanResult,
+    SendFrame, DISPLAY_FRAME_BODY_SIZE, DISPLAY_FRAME_CHUNK_COUNT, DISPLAY_FRAME_CHUNK_SIZE,
 };
 
 use sonde_protocol::constants::{
@@ -93,6 +93,8 @@ pub enum BleEvent {
     Disconnected(BleDisconnected),
     /// Numeric Comparison passkey from the modem for operator confirmation.
     PairingConfirm(BlePairingConfirm),
+    /// Debounced button event from the modem.
+    Button(EventButton),
 }
 
 /// Type-erased async writer behind a shared mutex.
@@ -979,6 +981,16 @@ async fn dispatch_message(
                 debug!("BLE event channel full/closed, dropping BLE_PAIRING_CONFIRM");
             }
         }
+        ModemMessage::EventButton(button) => {
+            let send_result = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                ble_tx.send(BleEvent::Button(button)),
+            )
+            .await;
+            if send_result.is_err() || matches!(send_result, Ok(Err(_))) {
+                debug!("BLE event channel full/closed, dropping EVENT_BUTTON");
+            }
+        }
         ModemMessage::ModemReady(mr) => {
             if let Some(tx) = ready_tx.take() {
                 let _ = tx.send(mr);
@@ -1320,6 +1332,34 @@ mod tests {
         assert_eq!(received[0], 0x80);
         assert_eq!(received[DISPLAY_FRAME_BODY_SIZE - 1], 0x01);
         send_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn event_button_is_forwarded_to_ble_event_channel() {
+        let (client, mut server) = duplex(1024);
+
+        let startup = tokio::spawn(async move {
+            do_startup_handshake(&mut server, 6).await;
+            server
+        });
+
+        let transport = UsbEspNowTransport::new(client, 6).await.unwrap();
+        let mut server = startup.await.unwrap();
+
+        let button_msg = ModemMessage::EventButton(sonde_protocol::modem::EventButton {
+            button_type: sonde_protocol::modem::BUTTON_TYPE_LONG,
+        });
+        server
+            .write_all(&encode_modem_frame(&button_msg).unwrap())
+            .await
+            .unwrap();
+
+        match transport.recv_ble_event().await {
+            Some(BleEvent::Button(button)) => {
+                assert_eq!(button.button_type, sonde_protocol::modem::BUTTON_TYPE_LONG);
+            }
+            other => panic!("expected button event, got {other:?}"),
+        }
     }
 
     #[tokio::test]

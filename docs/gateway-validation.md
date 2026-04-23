@@ -2105,14 +2105,72 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Call `OpenBlePairing` via admin API.
 2. Assert: registration window is open.
-3. Assert: `BLE_ENABLE` sent to modem.
-4. Wait for window timeout.
-5. Assert: `BLE_DISABLE` sent to modem.
-6. Assert: registration window is closed.
+3. Assert: session origin is `admin`.
+4. Assert: `BLE_ENABLE` sent to modem.
+5. Inject `EVENT_BUTTON(BUTTON_SHORT)` from the modem.
+6. Assert: the registration window remains open.
+7. Wait for window timeout.
+8. Assert: `BLE_DISABLE` sent to modem.
+9. Assert: registration window is closed.
 
 ---
 
-### T-1222  Numeric Comparison passkey display
+### T-1221a  Button long press opens pairing session
+
+**Validates:** GW-1208, GW-1222a
+
+**Procedure:**
+1. Ensure no BLE pairing session is active.
+2. Inject `EVENT_BUTTON(BUTTON_LONG)` from the mock modem.
+3. Assert: the registration window opens.
+4. Assert: session origin is `button`.
+5. Assert: the modem receives `BLE_ENABLE`.
+6. Assert: the gateway sends a display update rendering `Pairing`.
+
+---
+
+### T-1221b  Long press ignored while pairing active
+
+**Validates:** GW-1208
+
+**Procedure:**
+1. Open a button-initiated BLE pairing session via `EVENT_BUTTON(BUTTON_LONG)`.
+2. Record the session deadline and count of outbound `BLE_ENABLE` messages.
+3. Inject a second `EVENT_BUTTON(BUTTON_LONG)`.
+4. Assert: the existing session remains open with the same origin and deadline.
+5. Assert: no additional `BLE_ENABLE` is sent.
+
+---
+
+### T-1221c  Button short press cancels button pairing
+
+**Validates:** GW-1208, GW-1222a
+
+**Procedure:**
+1. Open a button-initiated BLE pairing session via `EVENT_BUTTON(BUTTON_LONG)`.
+2. Inject `EVENT_BUTTON(BUTTON_SHORT)`.
+3. Assert: the registration window closes.
+4. Assert: the modem receives `BLE_DISABLE`.
+5. Assert: the gateway sends a display update rendering `Cancelled`.
+6. Assert: about 2 seconds later, the gateway restores the normal Sonde Gateway version banner.
+
+---
+
+### T-1221d  Button pairing timeout closes window
+
+**Validates:** GW-1208, GW-1222a
+
+**Procedure:**
+1. Open a button-initiated BLE pairing session with a short timeout.
+2. Wait for the timeout to expire.
+3. Assert: the registration window closes.
+4. Assert: the modem receives `BLE_DISABLE`.
+5. Assert: the gateway sends a display update rendering `Timed out`.
+6. Assert: about 2 seconds later, the gateway restores the normal Sonde Gateway version banner.
+
+---
+
+### T-1222  Admin Numeric Comparison requires explicit confirmation
 
 **Validates:** GW-1222
 
@@ -2120,9 +2178,41 @@ A configurable stub handler process (or in-process mock) that:
 1. Start a BLE pairing session via admin API (`OpenBlePairing`).
 2. Connect phone via BLE. Modem sends `BLE_PAIRING_CONFIRM(passkey=123456)`.
 3. Assert: gateway forwards the passkey to the admin API client (e.g., as a streaming gRPC event or CLI prompt).
-4. Admin client accepts. Assert: gateway sends `BLE_PAIRING_CONFIRM_REPLY(0x01)` to modem.
+4. Assert: no `BLE_PAIRING_CONFIRM_REPLY` is sent until the admin client responds.
+5. Admin client accepts.
+6. Assert: gateway sends `BLE_PAIRING_CONFIRM_REPLY(accept=true)` to the modem.
 
 > **Note:** In automated integration tests, run `sonde-admin pairing start` against a mock modem that injects `BLE_PAIRING_CONFIRM`, capture stdout, and assert the passkey appears. Operator confirmation is simulated by piping `y` to stdin.
+
+---
+
+### T-1222a  Button pairing Numeric Comparison auto-confirms and shows passkey
+
+**Validates:** GW-1222a
+
+**Procedure:**
+1. Open a button-initiated BLE pairing session via `EVENT_BUTTON(BUTTON_LONG)`.
+2. Inject `BLE_CONNECTED`.
+3. Assert: the gateway sends a display update rendering `Phone connected`.
+4. Inject `BLE_PAIRING_CONFIRM(passkey=123456)`.
+5. Assert: the gateway sends a display update rendering `Pin` and `123456`.
+6. Assert: the gateway sends `BLE_PAIRING_CONFIRM_REPLY(accept=true)` without any admin confirmation RPC.
+
+---
+
+### T-1222b  Button pairing success display progression
+
+**Validates:** GW-1222a
+
+**Procedure:**
+1. Open a button-initiated BLE pairing session via `EVENT_BUTTON(BUTTON_LONG)`.
+2. Inject `BLE_CONNECTED`.
+3. Inject `BLE_PAIRING_CONFIRM(passkey=123456)`.
+4. Inject a successful `REGISTER_PHONE` flow and `PHONE_REGISTERED` event.
+5. Assert: the gateway sends a display update rendering `Provisioned`.
+6. Close the session normally after the successful registration path completes.
+7. Assert: the gateway sends a display update rendering `Done`.
+8. Assert: about 2 seconds later, the gateway restores the normal Sonde Gateway version banner.
 
 ---
 

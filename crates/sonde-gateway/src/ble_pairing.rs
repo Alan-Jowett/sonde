@@ -101,13 +101,25 @@ impl RegistrationWindow {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairingOrigin {
+    Admin,
+    Button,
+}
+
+struct PairingSessionState {
+    window: RegistrationWindow,
+    origin: Option<PairingOrigin>,
+    successful_registration: bool,
+}
+
 /// Shared BLE pairing controller accessible from the admin gRPC service.
 ///
 /// Wraps the registration window and provides methods to open/close it.
 /// The actual BLE commands (BLE_ENABLE/BLE_DISABLE) are sent by the caller
 /// through the modem transport.
 pub struct BlePairingController {
-    window: tokio::sync::Mutex<RegistrationWindow>,
+    session: tokio::sync::Mutex<PairingSessionState>,
     /// Channel for forwarding passkey confirmation requests to the admin CLI.
     passkey_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
     /// Cancel token for the auto-close timeout task.
@@ -137,7 +149,11 @@ impl BlePairingController {
     pub fn new() -> Self {
         let (event_tx, _) = tokio::sync::broadcast::channel(64);
         Self {
-            window: tokio::sync::Mutex::new(RegistrationWindow::new()),
+            session: tokio::sync::Mutex::new(PairingSessionState {
+                window: RegistrationWindow::new(),
+                origin: None,
+                successful_registration: false,
+            }),
             passkey_tx: tokio::sync::Mutex::new(None),
             timeout_cancel: tokio::sync::Mutex::new(None),
             event_task: tokio::sync::Mutex::new(None),
@@ -146,18 +162,62 @@ impl BlePairingController {
     }
 
     /// Open the registration window for `duration_s` seconds.
-    pub async fn open_window(&self, duration_s: u32) {
-        self.window.lock().await.open(duration_s);
+    pub async fn open_window(&self, duration_s: u32, origin: PairingOrigin) -> bool {
+        let mut session = self.session.lock().await;
+        if session.window.is_open() {
+            return false;
+        }
+        session.window.open(duration_s);
+        session.origin = Some(origin);
+        session.successful_registration = false;
+        true
     }
 
     /// Close the registration window.
     pub async fn close_window(&self) {
-        self.window.lock().await.close();
+        {
+            let mut session = self.session.lock().await;
+            session.window.close();
+            session.origin = None;
+            session.successful_registration = false;
+        }
+        self.passkey_tx.lock().await.take();
     }
 
     /// Check whether the window is currently open.
     pub async fn is_window_open(&self) -> bool {
-        self.window.lock().await.is_open()
+        self.session.lock().await.window.is_open()
+    }
+
+    pub async fn session_origin(&self) -> Option<PairingOrigin> {
+        let mut session = self.session.lock().await;
+        if !session.window.is_open() {
+            return None;
+        }
+        session.origin
+    }
+
+    /// Return the stored session origin without auto-expiring the window state.
+    ///
+    /// Used by timeout-cleanup paths that must distinguish "expired button session
+    /// that still needs transport/display teardown" from "a newer non-button
+    /// session replaced the old one".
+    pub async fn session_origin_raw(&self) -> Option<PairingOrigin> {
+        self.session.lock().await.origin
+    }
+
+    pub async fn mark_phone_registered(&self) {
+        let mut session = self.session.lock().await;
+        if session.window.is_open() {
+            session.successful_registration = true;
+        }
+    }
+
+    pub async fn take_successful_registration(&self) -> bool {
+        let mut session = self.session.lock().await;
+        let value = session.successful_registration;
+        session.successful_registration = false;
+        value
     }
 
     /// Register a oneshot channel for passkey confirmation from the admin CLI.
@@ -319,7 +379,13 @@ async fn handle_register_phone(
 ) -> Option<Vec<u8>> {
     const ERROR_GENERIC: u8 = 0x01;
 
-    if !window.is_open() {
+    let window_open = if let Some(ctrl) = controller {
+        ctrl.is_window_open().await
+    } else {
+        window.is_open()
+    };
+
+    if !window_open {
         info!("REGISTER_PHONE (AEAD) rejected: registration window closed");
         return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_WINDOW_CLOSED]);
     }
@@ -387,6 +453,7 @@ async fn handle_register_phone(
     );
 
     if let Some(ctrl) = controller {
+        ctrl.mark_phone_registered().await;
         ctrl.broadcast_event(BlePairingEventKind::PhoneRegistered {
             label,
             phone_key_hint,
@@ -410,6 +477,73 @@ mod tests {
 
     fn test_identity() -> GatewayIdentity {
         GatewayIdentity::generate().unwrap()
+    }
+
+    #[tokio::test]
+    async fn pairing_controller_tracks_origin_and_registration_state() {
+        let controller = BlePairingController::new();
+        assert!(controller.open_window(120, PairingOrigin::Button).await);
+        assert_eq!(
+            controller.session_origin().await,
+            Some(PairingOrigin::Button)
+        );
+        controller.mark_phone_registered().await;
+        assert!(controller.take_successful_registration().await);
+        assert!(!controller.take_successful_registration().await);
+        controller.close_window().await;
+        assert_eq!(controller.session_origin().await, None);
+        assert!(!controller.is_window_open().await);
+    }
+
+    #[tokio::test]
+    async fn pairing_controller_preserves_origin_until_explicit_close() {
+        let controller = BlePairingController::new();
+        assert!(controller.open_window(0, PairingOrigin::Button).await);
+        assert_eq!(controller.session_origin().await, None);
+        assert_eq!(
+            controller.session_origin_raw().await,
+            Some(PairingOrigin::Button)
+        );
+        assert!(!controller.is_window_open().await);
+        assert_eq!(
+            controller.session_origin_raw().await,
+            Some(PairingOrigin::Button)
+        );
+        controller.close_window().await;
+        assert_eq!(controller.session_origin_raw().await, None);
+    }
+
+    #[tokio::test]
+    async fn pairing_controller_rejects_second_open_while_active() {
+        let controller = BlePairingController::new();
+        assert!(controller.open_window(120, PairingOrigin::Admin).await);
+        assert!(!controller.open_window(120, PairingOrigin::Button).await);
+        assert_eq!(
+            controller.session_origin().await,
+            Some(PairingOrigin::Admin)
+        );
+    }
+
+    #[tokio::test]
+    async fn register_phone_uses_controller_window_when_available() {
+        let storage: Arc<dyn Storage> = Arc::new(
+            crate::sqlite_storage::SqliteStorage::in_memory(zeroize::Zeroizing::new([0x42u8; 32]))
+                .expect("open in-memory storage"),
+        );
+        let controller = BlePairingController::new();
+        let mut window = RegistrationWindow::new();
+        window.open(120);
+
+        let mut body = vec![0x42u8; 32];
+        body.push(5);
+        body.extend_from_slice(b"phone");
+
+        let response = handle_register_phone(&body, &storage, &mut window, 3, Some(&controller))
+            .await
+            .expect("window-closed response");
+        let (msg_type, payload) = parse_ble_envelope(&response).expect("valid BLE envelope");
+        assert_eq!(msg_type, BLE_MSG_ERROR);
+        assert_eq!(payload, [ERROR_WINDOW_CLOSED]);
     }
 
     // -- T-1203: REQUEST_GW_INFO happy path --

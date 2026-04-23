@@ -76,7 +76,7 @@ The gateway is composed of ten functional modules grouped in two tiers. The uppe
 | **Handler Process** | Manage handler stdin/stdout lifecycle | GW-0502, GW-0503, GW-0506 |
 | **Storage** | Persist node registry, program library, configuration | GW-0700, GW-1000, GW-1001 |
 | **Admin API** | gRPC admin interface, CLI tool | GW-0800, GW-0801, GW-0802, GW-0803, GW-0804, GW-0805, GW-0806 |
-| **BLE Pairing Handler** | BLE pairing protocol logic via modem relay | GW-1200–GW-1222 |
+| **BLE Pairing Handler** | BLE pairing protocol logic via modem relay | GW-1200–GW-1222a |
 
 ---
 
@@ -940,9 +940,9 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 | Modem status | `GetModemStatus` | Returns modem status: radio channel, TX/RX/fail counters, uptime. |
 | Set modem channel | `SetModemChannel` | Sets the ESP-NOW radio channel (1–14). Persists the new channel in the database (GW-0808). |
 | Scan channels | `ScanModemChannels` | Scans all WiFi channels for AP activity, returns AP counts and RSSI per channel. |
-| Open BLE pairing | `OpenBlePairing` | Opens the phone registration window and sends `BLE_ENABLE` to modem. Server-streaming RPC returning events (passkey, phone connected/disconnected/registered, window closed). |
-| Close BLE pairing | `CloseBlePairing` | Closes the registration window and sends `BLE_DISABLE` to modem. |
-| Confirm BLE pairing | `ConfirmBlePairing` | Accepts or rejects a Numeric Comparison passkey during BLE pairing. |
+| Open BLE pairing | `OpenBlePairing` | Opens an admin-initiated phone registration window and sends `BLE_ENABLE` to the modem. Server-streaming RPC returning pairing events (passkey, phone connected/disconnected/registered, window closed). |
+| Close BLE pairing | `CloseBlePairing` | Closes the active BLE pairing session and sends `BLE_DISABLE` to the modem. |
+| Confirm BLE pairing | `ConfirmBlePairing` | Accepts or rejects a Numeric Comparison passkey during an admin-initiated BLE pairing session. |
 | List phones | `ListPhones` | Lists all registered phones with PSK metadata (ID, key hint, label, issue time, status). |
 | Revoke phone | `RevokePhone` | Revokes a phone's PSK by phone ID. |
 | Add handler | `AddHandler` | Registers a handler for a `program_hash` (GW-1402). Validates hash format. Returns `ALREADY_EXISTS` on duplicate. Triggers live reload. |
@@ -1101,7 +1101,7 @@ regardless of serial port state (Issue #551).
 
 ## 17  BLE pairing protocol handler
 
-> **Requirements:** GW-1200–GW-1222.
+> **Requirements:** GW-1200–GW-1222a.
 
 The gateway implements the pairing protocol logic defined in [ble-pairing-protocol.md](ble-pairing-protocol.md). The physical BLE layer (GATT service, advertising, ATT MTU negotiation, indication fragmentation) is hosted by the USB modem (GW-1204, GW-1205); the gateway processes pairing messages relayed over the modem serial protocol: inbound messages arrive as `BLE_RECV` and responses are sent as `BLE_INDICATE` (see §4.2 `UsbEspNowTransport`). `PEER_REQUEST` / `PEER_ACK` frames travel over ESP-NOW, not BLE, and follow the standard transport path.
 
@@ -1111,7 +1111,7 @@ The gateway implements the pairing protocol logic defined in [ble-pairing-protoc
 
 ### 17.2  BLE message relay
 
-The modem hosts the Gateway Pairing Service GATT service (UUID `0000FE60-…`) and controls BLE advertising. The gateway controls advertising lifetime by sending `BLE_ENABLE` / `BLE_DISABLE` to the modem when the registration window opens or closes (GW-1208). When a phone writes to the Gateway Command characteristic, the modem forwards the raw bytes to the gateway as a `BLE_RECV` serial message. The gateway processes the command and sends any response back via `BLE_INDICATE`; the modem handles fragmentation to fit within the negotiated ATT MTU (GW-1205). Numeric Comparison passkeys are relayed from the modem via `BLE_PAIRING_CONFIRM` and surfaced to the operator through the admin API streaming RPC (GW-1222).
+The modem hosts the Gateway Pairing Service GATT service (UUID `0000FE60-…`) and controls BLE advertising. The gateway controls advertising lifetime by sending `BLE_ENABLE` / `BLE_DISABLE` to the modem when the registration window opens or closes (GW-1208). When a phone writes to the Gateway Command characteristic, the modem forwards the raw bytes to the gateway as a `BLE_RECV` serial message. The gateway processes the command and sends any response back via `BLE_INDICATE`; the modem handles fragmentation to fit within the negotiated ATT MTU (GW-1205). Numeric Comparison passkeys are relayed from the modem via `BLE_PAIRING_CONFIRM`. Modem button events are relayed as `EVENT_BUTTON` and interpreted only by the gateway; the modem remains a dumb button classifier and framebuffer sink.
 
 ### 17.3  `REQUEST_GW_INFO` handling — RETIRED
 
@@ -1119,9 +1119,30 @@ The modem hosts the Gateway Pairing Service GATT service (UUID `0000FE60-…`) a
 
 ### 17.4  Registration window and `REGISTER_PHONE`
 
-The registration window is opened by a physical button hold (≥ 2 s) or by the admin API `OpenBlePairing` RPC. Opening sends `BLE_ENABLE` to the modem; closing (explicit or auto-close after a configurable duration, default 120 s) sends `BLE_DISABLE` (GW-1207, GW-1208). `REGISTER_PHONE` commands received while the window is closed are rejected with `ERROR(0x02)` (GW-1207).
+The gateway maintains a single BLE pairing session controller with:
 
-When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x02`), the gateway: receives a phone-generated 256-bit PSK from the phone; derives `phone_key_hint` = `u16::from_be_bytes(SHA-256(psk)[30..32])` (big-endian u16 from the last two bytes of the hash); stores the PSK with its label, issuance timestamp, and active status; and responds with a plaintext `PHONE_REGISTERED` indication containing `status`, `rf_channel`, and `phone_key_hint` via `BLE_INDICATE` (GW-1209). No additional encryption of the BLE response is needed — the BLE LESC link provides confidentiality. Operators can revoke phone PSKs through the admin API; revoked PSKs are excluded from AES-256-GCM decryption (GW-1210).
+- `window_open: bool`
+- `deadline: Option<Instant>`
+- `origin: Option<PairingOrigin>` where `PairingOrigin = Admin | Button`
+- `successful_registration: bool`
+
+The registration window opens either when the admin API calls `OpenBlePairing` or when the modem relays `EVENT_BUTTON(BUTTON_LONG)` while no BLE pairing session is active. In both cases the gateway sends `BLE_ENABLE` to the modem and records the session origin. A `BUTTON_LONG` received while a session is already active is ignored. A `BUTTON_SHORT` closes the session only when `origin == Button`; `BUTTON_SHORT` has no defined effect outside pairing and does not close an admin-initiated session. Auto-close uses the same timeout machinery for both origins (default 120 s). `REGISTER_PHONE` commands received while the window is closed are rejected with `ERROR(0x02)` (GW-1207).
+
+When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x02`), the gateway: receives a phone-generated 256-bit PSK from the phone; derives `phone_key_hint = u16::from_be_bytes(SHA-256(psk)[30..32])`; stores the PSK with its label, issuance timestamp, and active status; and responds with a plaintext `PHONE_REGISTERED` indication containing `status`, `rf_channel`, and `phone_key_hint` via `BLE_INDICATE` (GW-1209). No additional encryption of the BLE response is needed — the BLE LESC link provides confidentiality. Operators can revoke phone PSKs through the admin API; revoked PSKs are excluded from AES-256-GCM decryption (GW-1210).
+
+### 17.4a  Button-initiated display lifecycle
+
+Gateway-owned display policy lives above the modem transport. During a button-initiated BLE pairing session, the gateway renders pairing status into a 128×64 framebuffer and sends it using the same reliable display-transfer protocol as the modem-ready banner (§4.2, GW-1101a). The display state machine is:
+
+1. **Window opened by `BUTTON_LONG`** → display `Pairing`.
+2. **`BLE_CONNECTED`** → display `Phone connected`.
+3. **`BLE_PAIRING_CONFIRM(passkey)`** → display `Pin` plus the actual passkey.
+4. **`PHONE_REGISTERED` / successful `REGISTER_PHONE`** → display `Provisioned`.
+5. **Normal post-success close** → display `Done`.
+6. **`BUTTON_SHORT` cancellation** → display `Cancelled`.
+7. **Timeout close** → display `Timed out`.
+
+The passkey screen has priority over the generic connected state until Numeric Comparison is resolved. `Done`, `Cancelled`, and `Timed out` are terminal status screens: the gateway keeps each one visible for 2 seconds, then restores the normal Sonde Gateway version banner if no newer pairing session has claimed the display. Display updates are driven by state transitions; repeated identical events do not need to re-send the same framebuffer.
 
 ### 17.5  `PEER_REQUEST` processing
 
@@ -1140,9 +1161,11 @@ When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x0
 
 After successful registration **or** duplicate detection with matching PSK, the gateway builds a `PEER_ACK` CBOR message `{1: 0}` (status = success), encrypts the frame with AES-256-GCM using `node_psk` (GCM nonce = `SHA-256(node_psk)[0..3] ‖ msg_type ‖ frame_nonce`, AAD = 11-byte header), and echoes the `nonce` from the `PEER_REQUEST` header (GW-1219).
 
-### 17.7  Admin session
+### 17.7  Admin and button sessions
 
-The admin API exposes `OpenBlePairing` (server-streaming RPC) to open the registration window and enable BLE advertising, `CloseBlePairing` to close it, `ConfirmBlePairing` for Numeric Comparison passkey confirmation, `ListPhones` to enumerate registered phones, and `RevokePhone` to revoke a phone PSK (GW-1222). See §13 for the full gRPC service definition.
+The admin API exposes `OpenBlePairing` (server-streaming RPC) to open an admin-initiated registration window and enable BLE advertising, `CloseBlePairing` to close the active pairing session, `ConfirmBlePairing` for Numeric Comparison confirmation during admin-initiated pairing, `ListPhones` to enumerate registered phones, and `RevokePhone` to revoke a phone PSK (GW-1222).
+
+When Numeric Comparison is requested during an admin-initiated session, the gateway broadcasts the passkey to admin-stream subscribers and waits up to 30 seconds for `ConfirmBlePairing`. When Numeric Comparison is requested during a button-initiated session, the gateway skips the admin confirmation wait, updates the display with the passkey screen, and immediately sends `BLE_PAIRING_CONFIRM_REPLY(accept=true)` (GW-1222a). The existing admin-stream events (`PhoneConnected`, `PhoneDisconnected`, `PasskeyRequest`, `PhoneRegistered`) remain available for both origins; button-initiated mode adds automatic confirmation and display transitions, not a different pairing protocol.
 
 ---
 

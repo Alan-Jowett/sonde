@@ -1203,14 +1203,19 @@ impl GatewayAdmin for AdminService {
         let duration_s = request.into_inner().duration_s;
         let duration_s = if duration_s == 0 { 120 } else { duration_s };
 
-        // Enable BLE advertising first — if this fails, don't open the window.
-        transport
-            .send_ble_enable()
+        if !controller
+            .open_window(duration_s, crate::ble_pairing::PairingOrigin::Admin)
             .await
-            .map_err(|e| Status::internal(format!("failed to enable BLE: {e}")))?;
+        {
+            return Err(Status::failed_precondition(
+                "BLE pairing session already active",
+            ));
+        }
 
-        // Open the registration window only after BLE is enabled.
-        controller.open_window(duration_s).await;
+        if let Err(e) = transport.send_ble_enable().await {
+            controller.close_window().await;
+            return Err(Status::internal(format!("failed to enable BLE: {e}")));
+        }
 
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let _ = tx

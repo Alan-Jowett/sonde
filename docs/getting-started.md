@@ -26,6 +26,15 @@ The Sonde workspace contains several crates with different platform requirements
 | `sonde-e2e` | Host | Standard Rust |
 | `sonde-pair` (planned) | Android / Windows / Linux | Standard Rust + Android NDK ([dev container](#11--android--tauri-development-container)) |
 
+### 1.1  Canonical contributor hardware
+
+Unless a task explicitly calls for alternate dev boards, contributor bring-up should use these reference builds:
+
+| Build | Canonical hardware | Notes |
+|-------|--------------------|-------|
+| `sonde-node` | `hw/carrier-board` + Seeed Studio XIAO ESP32-C3 | Canonical battery-powered node build. The carrier board provides the battery connector and Qwiic/STEMMA QT sensor header. |
+| `sonde-modem` | `hw/carrier-board` + Seeed Studio XIAO ESP32-S3 | Canonical USB modem build. Add a 128×64 SSD1306-compatible OLED on I2C0 (`GPIO5` SDA, `GPIO6` SCL, `0x3C`) and an active-low button on `GPIO2`. |
+
 You only need the Espressif toolchain if you intend to build firmware (`sonde-node` or `sonde-modem`). The remaining crates build with a standard Rust toolchain on any platform.
 
 ---
@@ -304,7 +313,7 @@ espflash monitor -p PORT
 
 ### 5.2  Modem (ESP32-S3) — local build
 
-Connect the ESP32-S3 board via USB, then:
+Connect the canonical modem build (`hw/carrier-board` + Seeed Studio XIAO ESP32-S3) via USB, then:
 
 ```sh
 cargo espflash flash -p sonde-modem --features esp --target xtensa-esp32s3-espidf --monitor
@@ -313,6 +322,8 @@ cargo espflash flash -p sonde-modem --features esp --target xtensa-esp32s3-espid
 The `--monitor` flag opens a serial console after flashing so you can see log output.
 
 ### 5.3  Node (ESP32-C3) — local build
+
+For the canonical node build (`hw/carrier-board` + Seeed Studio XIAO ESP32-C3):
 
 ```sh
 cargo espflash flash -p sonde-node --target riscv32imc-esp-espidf --monitor
@@ -557,6 +568,8 @@ docker build -f .github/docker/Dockerfile.android-dev -t sonde-android-dev .
 
 ## 12  Hardware operations
 
+> **Board-specific note:** The canonical contributor node build is `hw/carrier-board` + Seeed Studio XIAO ESP32-C3. The factory-reset procedure below is a DevKitM-1-specific alternate-board workflow because it relies on that board's BOOT/RESET button behavior and default `GPIO9` mapping.
+
 ### 12.1  Factory reset on ESP32-C3 DevKitM-1
 
 If a node has been previously paired and you need to wipe its credentials and re-provision it, use this procedure:
@@ -597,18 +610,20 @@ The device must be in ROM download mode for this command to work — hold **BOOT
 
 Replace `COM6` with your device's serial port (`/dev/ttyUSB0` on Linux, `/dev/cu.usbmodem*` on macOS). After erasing NVS, flash new firmware and the node will start in pairing mode.
 
-### 12.3  I2C wiring (ESP32-C3 DevKitM-1)
+### 12.3  Canonical node I2C wiring (carrier board + XIAO ESP32-C3)
 
-The node firmware initializes I2C bus 0 on GPIO 0 (SDA) and GPIO 1 (SCL) at 100 kHz standard mode. Use the table below when wiring Qwiic or STEMMA QT sensors.
+The canonical node build routes I2C through the carrier board's Qwiic/STEMMA QT connector. On that carrier board, the canonical wiring is GPIO 6 for SDA and GPIO 7 for SCL at 100 kHz standard mode. Provision or configure the node's `i2c0_sda` and `i2c0_scl` settings to match your actual wiring; for the canonical carrier-board build, set them to `6` and `7`.
 
 | Signal | GPIO | Qwiic/STEMMA QT color | Description   |
 |--------|------|-----------------------|---------------|
-| SDA    | 0    | Blue                  | I2C data      |
-| SCL    | 1    | Yellow                | I2C clock     |
+| SDA    | 6    | Blue                  | I2C data      |
+| SCL    | 7    | Yellow                | I2C clock     |
 | VCC    | —    | Red                   | 3.3 V         |
 | GND    | —    | Black                 | Ground        |
 
 > **Note:** Swapped SDA/SCL wires cause I2C transaction failures — the bus may appear to initialize, but reads return error codes from the HAL. This can look “silent” if your program does not log or check the negative return values, so double-check the color-to-pin mapping before powering the board.
+
+> **Modem note:** The modem OLED uses a separate I2C bus assignment on the XIAO ESP32-S3: `GPIO5` (SDA) and `GPIO6` (SCL), with an active-low button on `GPIO2`.
 
 #### Supported sensors
 

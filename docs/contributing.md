@@ -24,6 +24,17 @@
 3. Browse open issues and pull requests to avoid duplicating work.
 4. For significant changes, open an issue first to discuss the approach.
 
+## Canonical contributor hardware
+
+Contributor docs, repro notes, and hardware assumptions should use these baseline builds unless a task explicitly calls out a different board:
+
+| Build | Canonical hardware | Notes |
+|---|---|---|
+| **Node** | `hw/carrier-board` + Seeed Studio XIAO ESP32-C3 | This is the default node platform for contributor docs and bench bring-up. |
+| **Modem** | `hw/carrier-board` + Seeed Studio XIAO ESP32-S3 | The canonical modem build includes a 128×64 SSD1306-compatible OLED on `GPIO5`/`GPIO6` (`0x3C`) and an active-low button on `GPIO2`. |
+
+If you are building the modem and want the full local UI/input path, wire the display and button as part of the bring-up. Pure radio/USB bridge work can still be tested without them, but contributor-facing hardware guidance should describe the full canonical build.
+
 ---
 
 ## Spec-first development model

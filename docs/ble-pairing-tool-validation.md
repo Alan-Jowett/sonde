@@ -331,6 +331,33 @@ TestNode {
 
 ---
 
+### T-PT-114a  Desktop packaged app shows Sonde-branded icon
+
+**Validates:** PT-0109  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Build or install a packaged desktop Sonde Pairing Tool application.
+2. Launch the application from the platform launcher.
+3. Assert: the launcher/taskbar/dock icon is the Sonde logo rather than the default Tauri icon.
+4. Assert: the window or app switcher surface uses the same Sonde-branded icon family.
+
+---
+
+### T-PT-114b  Android packaged app shows Sonde-branded launcher icon
+
+**Validates:** PT-0109  
+**Type:** Manual / platform test (requires Android device)
+
+**Procedure:**
+1. Build and install the Android Sonde Pairing Tool APK.
+2. Open the Android launcher and locate the installed app.
+3. Assert: the launcher icon is Sonde-branded rather than the default Tauri icon.
+4. Open the app switcher / recents view.
+5. Assert: the app identity shown there uses the same Sonde-branded icon family.
+
+---
+
 ## 4  Phase 1 — Gateway pairing tests
 
 ### T-PT-200  MTU negotiation ≥ 247
@@ -1541,6 +1568,8 @@ TestNode {
 | T-PT-112 | PT-0702 | Verbose diagnostic mode |
 | T-PT-113 | PT-0107 | Android activity lifecycle disconnect |
 | T-PT-114 | PT-0108 | JNI classloader caching on background threads |
+| T-PT-114a | PT-0109 | Desktop packaged app shows Sonde-branded icon |
+| T-PT-114b | PT-0109 | Android packaged app shows Sonde-branded launcher icon |
 | T-PT-200 | PT-0300 | MTU negotiation ≥ 247 |
 | T-PT-201 | PT-0300 | MTU < 247 → disconnect + error |
 | T-PT-202 | ~~PT-0301~~ | ~~Gateway authentication happy path~~ — RETIRED |

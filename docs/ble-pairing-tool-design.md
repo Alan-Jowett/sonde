@@ -707,6 +707,7 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 - **Storage:** `EncryptedSharedPreferences` backed by the Android Keystore for PSK protection.
 - **Lifecycle:** The BLE connection must be managed carefully around Android activity lifecycle events (pause/resume).  The transport implementation should disconnect on pause and reconnect on resume if a pairing flow was in progress (PT-0107).
 - **JNI classloader caching:** App-defined Java classes (`BleHelper`, `SecureStore`) must be resolved and cached as `GlobalRef` from `JNI_OnLoad` or another Java-attached thread that uses the application classloader.  Tokio worker threads use the system classloader, which cannot find app-defined classes via `FindClass` (PT-0108).
+- **Application icons:** The packaged app must use Sonde-branded icon assets rather than Tauri defaults (PT-0109). The canonical source image is `docs/sonde_logo.png`. Platform-specific derived assets are generated into `crates/sonde-pair-ui/src-tauri/icons/` using `cargo tauri icon`, and Android launcher resources are regenerated from that icon set by `cargo tauri android init` before the manifest is patched in CI.
 
 ### 9.3  Cross-platform considerations
 
@@ -1082,7 +1083,7 @@ No log event at any level may include key material: PSKs, ephemeral private keys
 | §6 Cryptographic operations | PT-0301, PT-0304, PT-0402, PT-0408, PT-0900, PT-0901, PT-0902, PT-1100–PT-1103 |
 | §7 Persistence | PT-0800–PT-0804 |
 | §8 Error handling | PT-0500–PT-0502, PT-1000, PT-1003 |
-| §9 Platform-specific | PT-0100, PT-0105, PT-0106, PT-0107, PT-0108, PT-0300, PT-0801, PT-0904 |
+| §9 Platform-specific | PT-0100, PT-0105, PT-0106, PT-0107, PT-0108, PT-0109, PT-0300, PT-0801, PT-0904 |
 | §10 BLE message envelope | PT-0301, PT-0303, PT-0407 |
 | §11 RNG provider | PT-0901, PT-0903 |
 | §12 Input validation | PT-0403, PT-0406, PT-0409 |

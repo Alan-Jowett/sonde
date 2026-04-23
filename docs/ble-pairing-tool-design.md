@@ -707,7 +707,7 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 - **Storage:** `EncryptedSharedPreferences` backed by the Android Keystore for PSK protection.
 - **Lifecycle:** The BLE connection must be managed carefully around Android activity lifecycle events (pause/resume).  The transport implementation should disconnect on pause and reconnect on resume if a pairing flow was in progress (PT-0107).
 - **JNI classloader caching:** App-defined Java classes (`BleHelper`, `SecureStore`) must be resolved and cached as `GlobalRef` from `JNI_OnLoad` or another Java-attached thread that uses the application classloader.  Tokio worker threads use the system classloader, which cannot find app-defined classes via `FindClass` (PT-0108).
-- **Application icons:** The packaged app must use Sonde-branded icon assets rather than Tauri defaults (PT-0109). The canonical source image is `docs/sonde_logo.png`. Platform-specific derived assets are generated into `crates/sonde-pair-ui/src-tauri/icons/` using `cargo tauri icon`, and Android launcher resources are regenerated from that icon set by `cargo tauri android init` before the manifest is patched in CI.
+- **Application icons:** The packaged app must use Sonde-branded icon assets rather than Tauri defaults (PT-0109). The canonical source image is `docs/sonde_logo.png`. Platform-specific derived assets are generated into `crates/sonde-pair-ui/src-tauri/icons/` using `cargo tauri icon`. Because `cargo tauri android init` regenerates `src-tauri/gen/android/` with stock template resources, the Android workflow must copy `src-tauri/icons/android/` into `src-tauri/gen/android/app/src/main/res/` after init and before APK build.
 
 ### 9.3  Cross-platform considerations
 

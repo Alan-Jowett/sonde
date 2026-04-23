@@ -69,13 +69,17 @@ jobs:
 
       - name: Patch Gradle for BLE Java classes
         # Copy sonde-pair Java sources into the generated Android project,
-        # restore our custom AndroidManifest (with BLE permissions), and add
+        # restore our custom AndroidManifest (with BLE permissions), replace
+        # the stock launcher icons with the Sonde-generated icon set, and add
         # the security-crypto dependency. This must run after
         # `tauri android init` regenerates gen/android/.
         working-directory: crates/sonde-pair-ui/src-tauri/gen/android
         run: |
           # Restore custom AndroidManifest.xml with BLE permissions from persistent location.
           cp ../../../../../crates/sonde-pair-ui/android/AndroidManifest.xml app/src/main/AndroidManifest.xml
+
+          # Replace generated stock Android launcher icons with the Sonde-branded set.
+          cp -R ../../../../../crates/sonde-pair-ui/src-tauri/icons/android/* app/src/main/res/
 
           # Copy Java source files into the standard Android source tree
           mkdir -p app/src/main/java/io/sonde/pair

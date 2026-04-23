@@ -83,15 +83,14 @@ impl IdlePowerState {
 
     fn reset(&mut self) {}
 
-    fn poll_at(
-        &mut self,
+    fn desired_command_at(
+        &self,
         now: Instant,
         flush_pending: bool,
         initialized: bool,
     ) -> PanelPowerCommand {
         if flush_pending {
             if initialized && !self.panel_awake {
-                self.panel_awake = true;
                 return PanelPowerCommand::Wake;
             }
             return PanelPowerCommand::None;
@@ -102,11 +101,18 @@ impl IdlePowerState {
                 now.duration_since(last_frame_at) >= DISPLAY_IDLE_TIMEOUT
             })
         {
-            self.panel_awake = false;
             return PanelPowerCommand::Sleep;
         }
 
         PanelPowerCommand::None
+    }
+
+    fn mark_wake_succeeded(&mut self) {
+        self.panel_awake = true;
+    }
+
+    fn mark_sleep_succeeded(&mut self) {
+        self.panel_awake = false;
     }
 }
 
@@ -264,8 +270,13 @@ impl Display for EspSsd1306Display {
         let now = Instant::now();
 
         if !self.flush_pending {
-            if self.idle_power.poll_at(now, false, self.initialized) == PanelPowerCommand::Sleep {
+            if self
+                .idle_power
+                .desired_command_at(now, false, self.initialized)
+                == PanelPowerCommand::Sleep
+            {
                 self.write_commands(&[SSD1306_DISPLAY_OFF])?;
+                self.idle_power.mark_sleep_succeeded();
             }
             return Ok(());
         }
@@ -280,11 +291,16 @@ impl Display for EspSsd1306Display {
             return Ok(());
         }
 
-        if self.idle_power.poll_at(now, true, self.initialized) == PanelPowerCommand::Wake {
+        if self
+            .idle_power
+            .desired_command_at(now, true, self.initialized)
+            == PanelPowerCommand::Wake
+        {
             if let Err(err) = self.write_commands(&[SSD1306_DISPLAY_ON]) {
                 self.flush_pending = false;
                 return Err(err);
             }
+            self.idle_power.mark_wake_succeeded();
             return Ok(());
         }
 
@@ -384,15 +400,20 @@ mod tests {
         idle_power.mark_initialized();
         idle_power.note_frame_accepted_at(t0);
         assert_eq!(
-            idle_power.poll_at(t0 + DISPLAY_IDLE_TIMEOUT, false, true),
+            idle_power.desired_command_at(t0 + DISPLAY_IDLE_TIMEOUT, false, true),
             PanelPowerCommand::Sleep
         );
+        idle_power.mark_sleep_succeeded();
 
         let t1 = t0 + DISPLAY_IDLE_TIMEOUT + Duration::from_secs(5);
         idle_power.note_frame_accepted_at(t1);
-        assert_eq!(idle_power.poll_at(t1, true, true), PanelPowerCommand::Wake);
         assert_eq!(
-            idle_power.poll_at(
+            idle_power.desired_command_at(t1, true, true),
+            PanelPowerCommand::Wake
+        );
+        idle_power.mark_wake_succeeded();
+        assert_eq!(
+            idle_power.desired_command_at(
                 t1 + DISPLAY_IDLE_TIMEOUT - Duration::from_secs(1),
                 false,
                 true
@@ -410,8 +431,38 @@ mod tests {
         idle_power.reset();
 
         assert_eq!(
-            idle_power.poll_at(t0 + DISPLAY_IDLE_TIMEOUT, false, true),
+            idle_power.desired_command_at(t0 + DISPLAY_IDLE_TIMEOUT, false, true),
             PanelPowerCommand::Sleep
+        );
+    }
+
+    #[test]
+    fn idle_power_state_does_not_mark_awake_until_wake_succeeds() {
+        let mut idle_power = IdlePowerState::default();
+        let t0 = Instant::now();
+        idle_power.mark_initialized();
+        idle_power.note_frame_accepted_at(t0);
+        assert_eq!(
+            idle_power.desired_command_at(t0 + DISPLAY_IDLE_TIMEOUT, false, true),
+            PanelPowerCommand::Sleep
+        );
+        idle_power.mark_sleep_succeeded();
+
+        let t1 = t0 + DISPLAY_IDLE_TIMEOUT + Duration::from_secs(5);
+        idle_power.note_frame_accepted_at(t1);
+        assert_eq!(
+            idle_power.desired_command_at(t1, true, true),
+            PanelPowerCommand::Wake
+        );
+        assert_eq!(
+            idle_power.desired_command_at(t1 + Duration::from_secs(1), true, true),
+            PanelPowerCommand::Wake
+        );
+
+        idle_power.mark_wake_succeeded();
+        assert_eq!(
+            idle_power.desired_command_at(t1 + Duration::from_secs(1), true, true),
+            PanelPowerCommand::None
         );
     }
 }

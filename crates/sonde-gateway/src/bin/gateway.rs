@@ -135,6 +135,28 @@ async fn handle_button_short_event(
     true
 }
 
+async fn handle_button_pairing_timeout(
+    transport: &Arc<UsbEspNowTransport>,
+    controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
+    display_generation: &Arc<AtomicU64>,
+    window: &mut sonde_gateway::ble_pairing::RegistrationWindow,
+) {
+    if controller.session_origin_raw().await
+        != Some(sonde_gateway::ble_pairing::PairingOrigin::Button)
+    {
+        return;
+    }
+    info!("button-initiated BLE pairing timed out");
+    close_button_pairing_session(
+        transport,
+        controller,
+        display_generation,
+        window,
+        &["Timed out"],
+    )
+    .await;
+}
+
 async fn show_button_pairing_connected(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
@@ -750,17 +772,13 @@ async fn run_gateway(
                 let event = tokio::select! {
                     _ = &mut button_timeout, if button_timeout_armed => {
                         button_timeout_armed = false;
-                        if ble_ctrl.session_origin().await == Some(PairingOrigin::Button) {
-                            info!("button-initiated BLE pairing timed out");
-                            close_button_pairing_session(
-                                &ble_transport,
-                                &ble_ctrl,
-                                &button_display_generation,
-                                &mut window,
-                                &["Timed out"],
-                            )
-                            .await;
-                        }
+                        handle_button_pairing_timeout(
+                            &ble_transport,
+                            &ble_ctrl,
+                            &button_display_generation,
+                            &mut window,
+                        )
+                        .await;
                         continue;
                     }
                     event = &mut recv_ble_event => event,
@@ -1685,6 +1703,41 @@ mod tests {
             framebuffer,
             render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
         );
+    }
+
+    #[tokio::test]
+    async fn button_timeout_cleanup_still_runs_after_controller_deadline_expires() {
+        let (transport, mut server) = create_transport_and_server(6).await;
+        let controller = Arc::new(BlePairingController::new());
+        let display_generation = Arc::new(AtomicU64::new(0));
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 2048];
+
+        assert!(controller.open_window(0, PairingOrigin::Button).await);
+        let task = tokio::spawn({
+            let transport = Arc::clone(&transport);
+            let controller = Arc::clone(&controller);
+            let display_generation = Arc::clone(&display_generation);
+            async move {
+                let mut window = RegistrationWindow::new();
+                window.open(BUTTON_PAIRING_DURATION_S);
+                handle_button_pairing_timeout(
+                    &transport,
+                    &controller,
+                    &display_generation,
+                    &mut window,
+                )
+                .await;
+                window
+            }
+        });
+
+        let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+        assert!(matches!(msg, ModemMessage::BleDisable));
+        let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+        assert_eq!(framebuffer, render_display_message(&["Timed out"]));
+        let _window = task.await.unwrap();
+        assert_eq!(controller.session_origin_raw().await, None);
     }
 
     #[tokio::test]

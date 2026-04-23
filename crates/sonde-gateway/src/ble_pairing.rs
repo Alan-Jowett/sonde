@@ -205,6 +205,15 @@ impl BlePairingController {
         session.origin
     }
 
+    /// Return the stored session origin without auto-expiring the window state.
+    ///
+    /// Used by timeout-cleanup paths that must distinguish "expired button session
+    /// that still needs transport/display teardown" from "a newer non-button
+    /// session replaced the old one".
+    pub async fn session_origin_raw(&self) -> Option<PairingOrigin> {
+        self.session.lock().await.origin
+    }
+
     pub async fn mark_phone_registered(&self) {
         let mut session = self.session.lock().await;
         if session.window.is_open() {

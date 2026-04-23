@@ -173,7 +173,7 @@ fn build_node_status_lines(nodes: &[NodeRecord]) -> Vec<String> {
         return vec!["No nodes registered.".to_string()];
     }
 
-    let mut sorted_nodes = nodes.to_vec();
+    let mut sorted_nodes: Vec<&NodeRecord> = nodes.iter().collect();
     sorted_nodes.sort_by(|left, right| left.node_id.cmp(&right.node_id));
 
     let mut lines = Vec::new();
@@ -1884,6 +1884,18 @@ mod tests {
         (transport, server)
     }
 
+    async fn assert_no_stream_data_while_time_paused(
+        server: &mut DuplexStream,
+        buf: &mut [u8],
+        duration: Duration,
+        message: &str,
+    ) {
+        let no_data = tokio::time::timeout(duration, server.read(buf));
+        tokio::pin!(no_data);
+        tokio::time::advance(duration).await;
+        assert!(no_data.await.is_err(), "{message}");
+    }
+
     async fn receive_display_transfer(
         server: &mut DuplexStream,
         decoder: &mut FrameDecoder,
@@ -2467,12 +2479,13 @@ mod tests {
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
         assert_eq!(framebuffer, render_display_message(&["Channel", "11"]));
         assert!(first_press.await.unwrap());
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), server.read(&mut buf))
-                .await
-                .is_err(),
-            "short press must not emit BLE control messages"
-        );
+        assert_no_stream_data_while_time_paused(
+            &mut server,
+            &mut buf,
+            Duration::from_millis(50),
+            "short press must not emit BLE control messages",
+        )
+        .await;
 
         tokio::time::advance(Duration::from_secs(30)).await;
         let second_press = tokio::spawn({
@@ -2500,12 +2513,13 @@ mod tests {
             render_status_text_page(&build_node_status_lines(&[] as &[NodeRecord]));
         assert_eq!(framebuffer, expected_nodes_page.visible_window(0));
         assert!(second_press.await.unwrap());
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), server.read(&mut buf))
-                .await
-                .is_err(),
-            "short press must not emit BLE control messages"
-        );
+        assert_no_stream_data_while_time_paused(
+            &mut server,
+            &mut buf,
+            Duration::from_millis(50),
+            "short press must not emit BLE control messages",
+        )
+        .await;
 
         tokio::time::advance(STATUS_PAGE_TIMEOUT + Duration::from_millis(100)).await;
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
@@ -2714,12 +2728,13 @@ mod tests {
         }
 
         tokio::time::advance(Duration::from_millis(120)).await;
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), server.read(&mut buf))
-                .await
-                .is_err(),
-            "static node page must not emit autonomous scroll updates"
-        );
+        assert_no_stream_data_while_time_paused(
+            &mut server,
+            &mut buf,
+            Duration::from_millis(200),
+            "static node page must not emit autonomous scroll updates",
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -2762,12 +2777,13 @@ mod tests {
 
         assert!(controller.open_window(120, PairingOrigin::Admin).await);
         tokio::time::advance(STATUS_PAGE_TIMEOUT + Duration::from_millis(100)).await;
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), server.read(&mut buf))
-                .await
-                .is_err(),
-            "status-page timeout must not restore the banner during admin pairing"
-        );
+        assert_no_stream_data_while_time_paused(
+            &mut server,
+            &mut buf,
+            Duration::from_millis(200),
+            "status-page timeout must not restore the banner during admin pairing",
+        )
+        .await;
         assert_eq!(status_page_cycle.lock().await.next_page_index, 1);
     }
 
@@ -2783,14 +2799,16 @@ mod tests {
 
         tokio::time::pause();
         let stop_requested = Arc::new(AtomicBool::new(false));
-        let stop_requested_for_task = Arc::clone(&stop_requested);
-        let dummy_scroll = tokio::spawn(async move {
-            loop {
-                if stop_requested_for_task.load(Ordering::SeqCst) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+        let stop_requested_for_thread = Arc::clone(&stop_requested);
+        let (dummy_scroll_stopped_tx, dummy_scroll_stopped_rx) = tokio::sync::oneshot::channel();
+        let dummy_scroll_watcher = std::thread::spawn(move || {
+            while !stop_requested_for_thread.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
             }
+            let _ = dummy_scroll_stopped_tx.send(());
+        });
+        let dummy_scroll = tokio::spawn(async move {
+            let _ = dummy_scroll_stopped_rx.await;
         });
         *status_page_scroll_task.lock().await = Some(ActiveStatusPageScroll {
             stop_requested,
@@ -2817,6 +2835,7 @@ mod tests {
             "idle restore must clear the active scroll task"
         );
         assert_eq!(status_page_cycle.lock().await.next_page_index, 0);
+        dummy_scroll_watcher.join().unwrap();
     }
 }
 

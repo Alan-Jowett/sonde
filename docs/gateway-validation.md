@@ -1681,6 +1681,35 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1103b  Short press advances display status page when pairing is inactive
+
+**Validates:** GW-1101b, GW-1208
+
+**Procedure:**
+1. Start a full gateway instance with a mock modem and complete the startup handshake.
+2. Record the framebuffer sent for the default `Sonde Gateway v<semver>` banner.
+3. Inject `EVENT_BUTTON(BUTTON_SHORT)` while no BLE pairing session is active.
+4. Assert: the gateway sends a new reliable display transfer.
+5. Reassemble the new framebuffer and assert: it differs from the default banner framebuffer.
+6. Assert: no `BLE_ENABLE` or `BLE_DISABLE` message is sent as a result of the short press.
+
+---
+
+### T-1103c  Repeated short presses reset the status-page timeout and eventually restore the banner
+
+**Validates:** GW-1101b, GW-1101c
+
+**Procedure:**
+1. Start a gateway instance with a mock modem and complete the startup handshake.
+2. Inject `EVENT_BUTTON(BUTTON_SHORT)` while no BLE pairing session is active and capture the resulting status-page framebuffer.
+3. Before 60 seconds elapse, inject a second `EVENT_BUTTON(BUTTON_SHORT)`.
+4. Assert: the gateway sends another reliable display transfer for the next status page and resets the page timeout.
+5. Advance time by just under 60 seconds from the second short press and assert: the default banner has not yet been restored.
+6. Advance time past the 60-second timeout.
+7. Assert: the gateway sends the default `Sonde Gateway v<semver>` banner again.
+
+---
+
 ### T-1104a  Serial disconnect — reconnection with backoff
 
 **Validates:** GW-1103 (criteria 3–5)
@@ -2153,6 +2182,7 @@ A configurable stub handler process (or in-process mock) that:
 4. Assert: the modem receives `BLE_DISABLE`.
 5. Assert: the gateway sends a display update rendering `Cancelled`.
 6. Assert: about 2 seconds later, the gateway restores the normal Sonde Gateway version banner.
+7. Assert: the short press does not navigate to a status page while the button pairing session is active.
 
 ---
 

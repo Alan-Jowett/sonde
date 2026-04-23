@@ -903,13 +903,14 @@ Reliable display transfer and rendering MUST NOT block or materially delay ESP-N
 **Source:** Issue #757
 
 **Description:**
-The modem firmware MUST NOT generate text, menus, pairing screens, status overlays, or any other display content on its own. The modem MUST NOT interpret framebuffer meaning. Its only display responsibility is to render the exact gateway-supplied framebuffer, reassembled from the reliable display-transfer subprotocol, onto the OLED.
+The modem firmware MUST NOT generate text, menus, pairing screens, status overlays, or any other display content on its own. The modem MUST NOT interpret framebuffer meaning. Its display responsibilities are limited to rendering the exact gateway-supplied framebuffer, reassembled from the reliable display-transfer subprotocol, onto the OLED and controlling panel power state for idle sleep/wake behavior.
 
 **Acceptance criteria:**
 
 1. No code path synthesizes display pixels from button state, BLE state, pairing state, radio state, or any other modem-local state.
 2. The same completed display transfer produces the same rendered output regardless of modem runtime state.
 3. The modem does not implement text rendering, menu generation, or display-side pairing UX.
+4. Any modem-local display behavior is limited to panel power state transitions and does not alter framebuffer contents.
 
 ---
 
@@ -926,6 +927,23 @@ Display-related faults MUST be reported via `EVENT_ERROR`, not the unrecoverable
 1. Invalid `DISPLAY_FRAME_BEGIN` or `DISPLAY_FRAME_CHUNK` metadata produces `EVENT_ERROR(INVALID_FRAME)`.
 2. An I²C write failure during display update produces `EVENT_ERROR(DISPLAY_WRITE_FAILED)`.
 3. After either error, the modem remains operational for ESP-NOW, BLE, USB-CDC, and future reliable display transfers.
+
+---
+
+### MD-0705  OLED idle power management
+
+**Priority:** Should
+**Source:** Issue #798
+
+**Description:**
+The modem firmware SHOULD manage SSD1306 panel power locally. If no new complete display transfer is accepted for 300 seconds, the modem SHOULD switch the OLED panel off using the controller's native display-off command. When the next complete display transfer is accepted, the modem SHOULD wake the panel if necessary, render the new framebuffer, and restart the 300-second idle timer.
+
+**Acceptance criteria:**
+
+1. The idle timeout before the panel is switched off is 300 seconds with no newly accepted complete display transfer.
+2. Idle expiry uses the SSD1306 display-off command rather than only clearing the framebuffer.
+3. The next accepted complete display transfer wakes the panel if it was off, renders the framebuffer, and restarts the 300-second idle timer.
+4. Panel sleep/wake behavior does not emit `EVENT_BUTTON`, change BLE advertising state, or otherwise introduce local display semantics.
 
 ---
 
@@ -987,3 +1005,4 @@ Display-related faults MUST be reported via `EVENT_ERROR`, not the unrecoverable
 | MD-0702 | Display-path non-interference | Must |
 | MD-0703 | No firmware-generated display UI | Must |
 | MD-0704 | Recoverable display error reporting | Must |
+| MD-0705 | OLED idle power management | Should |

@@ -1108,6 +1108,38 @@ Whenever the gateway re-initializes the modem after a serial reconnect or warm r
 
 ---
 
+### GW-1101b  Short-press display page navigation
+
+**Priority:** Should
+**Source:** Issue #798
+
+**Description:**
+While no BLE pairing session is active, the gateway SHOULD interpret `EVENT_BUTTON(BUTTON_SHORT)` as a request to advance the modem display to the next gateway-owned status page. The gateway owns status-page selection and framebuffer rendering; the modem continues to render only the received framebuffer bytes.
+
+**Acceptance criteria:**
+
+1. A `BUTTON_SHORT` event received while no BLE pairing session is active causes the gateway to send a new reliable display transfer for the next status page.
+2. Consecutive short presses advance through the configured status-page sequence in order.
+3. Status-page framebuffer generation remains gateway-owned; the modem receives only opaque framebuffer data.
+
+---
+
+### GW-1101c  Idle return to default display banner
+
+**Priority:** Should
+**Source:** Issue #798
+
+**Description:**
+After the gateway switches the modem display away from the default `Sonde Gateway v<semver>` banner for a short-press status page, it SHOULD restore the default banner after 60 seconds without further short-press navigation activity.
+
+**Acceptance criteria:**
+
+1. The idle timeout for returning from a status page to the default banner is 60 seconds.
+2. A new short press received before the timeout expires resets the 60-second timeout against the newly selected status page.
+3. When the timeout expires, the gateway sends the same default version banner format defined by GW-1101a.
+
+---
+
 ### GW-1102  Modem health monitoring
 
 **Priority:** Should
@@ -1330,6 +1362,7 @@ The gateway MUST open the registration window either via a modem `EVENT_BUTTON(B
 7. The default duration is 120 s.
 8. Opening the window sends `BLE_ENABLE` to the modem.
 9. Closing the window (auto-close, explicit admin close, or button cancel) sends `BLE_DISABLE` to the modem.
+10. A `BUTTON_SHORT` event received while no BLE pairing session is active does not open or close the registration window; display-page navigation is governed separately by GW-1101b / GW-1101c.
 
 ---
 
@@ -2240,6 +2273,9 @@ The `secret-service` (D-Bus keyring) dependency MUST be behind a cargo feature f
 | GW-1003 | Concurrent node handling | Should |
 | GW-1100 | Modem transport trait implementation | Must |
 | GW-1101 | Modem startup sequence | Must |
+| GW-1101a | Modem-ready display banner | Must |
+| GW-1101b | Short-press display page navigation | Should |
+| GW-1101c | Idle return to default display banner | Should |
 | GW-1102 | Modem health monitoring | Should |
 | GW-1103 | Modem error handling | Must |
 | GW-1200 | Ed25519 keypair generation — RETIRED | Must |

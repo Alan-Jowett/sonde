@@ -148,7 +148,7 @@ pub struct UsbEspNowTransport {
 7. Wait for `SET_CHANNEL_ACK` (timeout: 2 seconds).
 8. Start the health monitor task.
 
-The transport adapter stops at the modem handshake boundary. Gateway-owned display policy lives above the transport: once the handshake completes, the gateway runtime renders `Sonde Gateway v<semver>` into a 128×64 1-bit framebuffer and sends it using the reliable display-transfer subprotocol (`DISPLAY_FRAME_BEGIN` plus eight acknowledged `DISPLAY_FRAME_CHUNK` messages) (GW-1101a). This keeps text layout and version-string selection in the gateway while preserving the modem's role as a dumb framebuffer sink.
+The transport adapter stops at the modem handshake boundary. Gateway-owned display policy lives above the transport: once the handshake completes, the gateway runtime renders `Sonde Gateway v<semver>` into a 128×64 1-bit framebuffer and sends it using the reliable display-transfer subprotocol (`DISPLAY_FRAME_BEGIN` plus eight acknowledged `DISPLAY_FRAME_CHUNK` messages) (GW-1101a). The same gateway-owned rendering path also produces the short-press status pages and the timeout-driven return to the default banner (GW-1101b, GW-1101c). This keeps text layout, page selection, and banner policy in the gateway while preserving the modem's role as a dumb framebuffer sink with local panel power management only.
 
 **Health monitor (GW-1102):**
 
@@ -1126,7 +1126,7 @@ The gateway maintains a single BLE pairing session controller with:
 - `origin: Option<PairingOrigin>` where `PairingOrigin = Admin | Button`
 - `successful_registration: bool`
 
-The registration window opens either when the admin API calls `OpenBlePairing` or when the modem relays `EVENT_BUTTON(BUTTON_LONG)` while no BLE pairing session is active. In both cases the gateway sends `BLE_ENABLE` to the modem and records the session origin. A `BUTTON_LONG` received while a session is already active is ignored. A `BUTTON_SHORT` closes the session only when `origin == Button`; `BUTTON_SHORT` has no defined effect outside pairing and does not close an admin-initiated session. Auto-close uses the same timeout machinery for both origins (default 120 s). `REGISTER_PHONE` commands received while the window is closed are rejected with `ERROR(0x02)` (GW-1207).
+The registration window opens either when the admin API calls `OpenBlePairing` or when the modem relays `EVENT_BUTTON(BUTTON_LONG)` while no BLE pairing session is active. In both cases the gateway sends `BLE_ENABLE` to the modem and records the session origin. A `BUTTON_LONG` received while a session is already active is ignored. A `BUTTON_SHORT` closes the session only when `origin == Button`; `BUTTON_SHORT` does not close an admin-initiated session. When no BLE pairing session is active, `BUTTON_SHORT` is routed instead to the display-page navigation policy described below. Auto-close uses the same timeout machinery for both origins (default 120 s). `REGISTER_PHONE` commands received while the window is closed are rejected with `ERROR(0x02)` (GW-1207).
 
 When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x02`), the gateway: receives a phone-generated 256-bit PSK from the phone; derives `phone_key_hint = u16::from_be_bytes(SHA-256(psk)[30..32])`; stores the PSK with its label, issuance timestamp, and active status; and responds with a plaintext `PHONE_REGISTERED` indication containing `status`, `rf_channel`, and `phone_key_hint` via `BLE_INDICATE` (GW-1209). No additional encryption of the BLE response is needed — the BLE LESC link provides confidentiality. Operators can revoke phone PSKs through the admin API; revoked PSKs are excluded from AES-256-GCM decryption (GW-1210).
 
@@ -1143,6 +1143,23 @@ Gateway-owned display policy lives above the modem transport. During a button-in
 7. **Timeout close** → display `Timed out`.
 
 The passkey screen has priority over the generic connected state until Numeric Comparison is resolved. `Done`, `Cancelled`, and `Timed out` are terminal status screens: the gateway keeps each one visible for 2 seconds, then restores the normal Sonde Gateway version banner if no newer pairing session has claimed the display. Display updates are driven by state transitions; repeated identical events do not need to re-send the same framebuffer.
+
+### 17.4b  Short-press status-page navigation
+
+Outside an active BLE pairing session, `EVENT_BUTTON(BUTTON_SHORT)` advances the modem display through a gateway-owned sequence of status pages. The gateway chooses the sequence contents and renders each page into the same 128×64 framebuffer format used for the default banner and pairing screens.
+
+The display controller keeps:
+
+- `current_page: DisplayPage`
+- `page_deadline: Option<Instant>`
+
+Each `BUTTON_SHORT` while no pairing session is active:
+
+1. Advances `current_page` to the next configured status page.
+2. Sends the corresponding framebuffer via the reliable display-transfer path.
+3. Sets `page_deadline = now + 60 s`.
+
+If another `BUTTON_SHORT` arrives before the deadline, the gateway advances again and resets the deadline. If the deadline expires with no further short press, the gateway restores the default `Sonde Gateway v<semver>` banner and clears `current_page` back to the idle banner state.
 
 ### 17.5  `PEER_REQUEST` processing
 

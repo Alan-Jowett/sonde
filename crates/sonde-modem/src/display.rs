@@ -3,6 +3,8 @@
 
 //! SSD1306 OLED display driver for the ESP32-S3 modem target.
 
+use std::time::{Duration, Instant};
+
 use esp_idf_hal::delay::TICK_RATE_HZ;
 
 use crate::bridge::{Display, DisplayError};
@@ -13,11 +15,100 @@ const I2C_TIMEOUT_MS: u32 = 25;
 const OLED_ADDR: u8 = 0x3C;
 const OLED_SDA_GPIO: i32 = esp_idf_sys::gpio_num_t_GPIO_NUM_5;
 const OLED_SCL_GPIO: i32 = esp_idf_sys::gpio_num_t_GPIO_NUM_6;
+const DISPLAY_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+const SSD1306_DISPLAY_OFF: u8 = 0xAE;
+const SSD1306_DISPLAY_ON: u8 = 0xAF;
 
 const SSD1306_INIT: &[u8] = &[
-    0xAE, 0x20, 0x02, 0xB0, 0xC8, 0x00, 0x10, 0x40, 0x81, 0x7F, 0xA1, 0xA6, 0xA8, 0x3F, 0xA4, 0xD3,
-    0x00, 0xD5, 0x80, 0xD9, 0xF1, 0xDA, 0x12, 0xDB, 0x20, 0x8D, 0x14, 0xAF,
+    SSD1306_DISPLAY_OFF,
+    0x20,
+    0x02,
+    0xB0,
+    0xC8,
+    0x00,
+    0x10,
+    0x40,
+    0x81,
+    0x7F,
+    0xA1,
+    0xA6,
+    0xA8,
+    0x3F,
+    0xA4,
+    0xD3,
+    0x00,
+    0xD5,
+    0x80,
+    0xD9,
+    0xF1,
+    0xDA,
+    0x12,
+    0xDB,
+    0x20,
+    0x8D,
+    0x14,
+    SSD1306_DISPLAY_ON,
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanelPowerCommand {
+    None,
+    Wake,
+    Sleep,
+}
+
+#[derive(Debug, Clone)]
+struct IdlePowerState {
+    panel_awake: bool,
+    last_frame_at: Option<Instant>,
+}
+
+impl Default for IdlePowerState {
+    fn default() -> Self {
+        Self {
+            panel_awake: false,
+            last_frame_at: None,
+        }
+    }
+}
+
+impl IdlePowerState {
+    fn note_frame_accepted_at(&mut self, now: Instant) {
+        self.last_frame_at = Some(now);
+    }
+
+    fn mark_initialized(&mut self) {
+        self.panel_awake = true;
+    }
+
+    fn reset(&mut self) {}
+
+    fn poll_at(
+        &mut self,
+        now: Instant,
+        flush_pending: bool,
+        initialized: bool,
+    ) -> PanelPowerCommand {
+        if flush_pending {
+            if initialized && !self.panel_awake {
+                self.panel_awake = true;
+                return PanelPowerCommand::Wake;
+            }
+            return PanelPowerCommand::None;
+        }
+
+        if self.panel_awake
+            && self.last_frame_at.is_some_and(|last_frame_at| {
+                now.duration_since(last_frame_at) >= DISPLAY_IDLE_TIMEOUT
+            })
+        {
+            self.panel_awake = false;
+            return PanelPowerCommand::Sleep;
+        }
+
+        PanelPowerCommand::None
+    }
+}
 
 pub struct EspSsd1306Display {
     framebuffer: [u8; DISPLAY_FRAME_BODY_SIZE],
@@ -25,6 +116,7 @@ pub struct EspSsd1306Display {
     flush_page: u8,
     flush_pending: bool,
     initialized: bool,
+    idle_power: IdlePowerState,
 }
 
 /// Display wrapper that degrades to recoverable write failures if the display
@@ -65,6 +157,7 @@ impl EspSsd1306Display {
             flush_page: 0,
             flush_pending: false,
             initialized: false,
+            idle_power: IdlePowerState::default(),
         })
     }
 
@@ -158,15 +251,22 @@ impl Display for EspSsd1306Display {
         self.framebuffer = framebuffer;
         self.flush_page = 0;
         self.flush_pending = true;
+        self.idle_power.note_frame_accepted_at(Instant::now());
     }
 
     fn reset(&mut self) {
         self.flush_page = 0;
         self.flush_pending = false;
+        self.idle_power.reset();
     }
 
     fn poll(&mut self) -> Result<(), DisplayError> {
+        let now = Instant::now();
+
         if !self.flush_pending {
+            if self.idle_power.poll_at(now, false, self.initialized) == PanelPowerCommand::Sleep {
+                self.write_commands(&[SSD1306_DISPLAY_OFF])?;
+            }
             return Ok(());
         }
 
@@ -176,6 +276,15 @@ impl Display for EspSsd1306Display {
                 return Err(err);
             }
             self.initialized = true;
+            self.idle_power.mark_initialized();
+            return Ok(());
+        }
+
+        if self.idle_power.poll_at(now, true, self.initialized) == PanelPowerCommand::Wake {
+            if let Err(err) = self.write_commands(&[SSD1306_DISPLAY_ON]) {
+                self.flush_pending = false;
+                return Err(err);
+            }
             return Ok(());
         }
 
@@ -232,5 +341,77 @@ impl Drop for EspSsd1306Display {
         unsafe {
             let _ = esp_idf_sys::i2c_driver_delete(esp_idf_sys::i2c_port_t_I2C_NUM_0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_power_state_sleeps_after_timeout() {
+        let mut idle_power = IdlePowerState::default();
+        let t0 = Instant::now();
+        idle_power.mark_initialized();
+        idle_power.note_frame_accepted_at(t0);
+
+        assert_eq!(
+            idle_power.poll_at(
+                t0 + DISPLAY_IDLE_TIMEOUT - Duration::from_secs(1),
+                false,
+                true
+            ),
+            PanelPowerCommand::None
+        );
+        assert_eq!(
+            idle_power.poll_at(t0 + DISPLAY_IDLE_TIMEOUT, false, true),
+            PanelPowerCommand::Sleep
+        );
+        assert_eq!(
+            idle_power.poll_at(
+                t0 + DISPLAY_IDLE_TIMEOUT + Duration::from_secs(1),
+                false,
+                true
+            ),
+            PanelPowerCommand::None
+        );
+    }
+
+    #[test]
+    fn idle_power_state_wakes_on_new_frame_after_sleep() {
+        let mut idle_power = IdlePowerState::default();
+        let t0 = Instant::now();
+        idle_power.mark_initialized();
+        idle_power.note_frame_accepted_at(t0);
+        assert_eq!(
+            idle_power.poll_at(t0 + DISPLAY_IDLE_TIMEOUT, false, true),
+            PanelPowerCommand::Sleep
+        );
+
+        let t1 = t0 + DISPLAY_IDLE_TIMEOUT + Duration::from_secs(5);
+        idle_power.note_frame_accepted_at(t1);
+        assert_eq!(idle_power.poll_at(t1, true, true), PanelPowerCommand::Wake);
+        assert_eq!(
+            idle_power.poll_at(
+                t1 + DISPLAY_IDLE_TIMEOUT - Duration::from_secs(1),
+                false,
+                true
+            ),
+            PanelPowerCommand::None
+        );
+    }
+
+    #[test]
+    fn idle_power_state_reset_preserves_sleep_deadline() {
+        let mut idle_power = IdlePowerState::default();
+        let t0 = Instant::now();
+        idle_power.mark_initialized();
+        idle_power.note_frame_accepted_at(t0);
+        idle_power.reset();
+
+        assert_eq!(
+            idle_power.poll_at(t0 + DISPLAY_IDLE_TIMEOUT, false, true),
+            PanelPowerCommand::Sleep
+        );
     }
 }

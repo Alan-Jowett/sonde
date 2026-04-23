@@ -1268,6 +1268,33 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 1. Configure the display transport to inject an I²C write failure during a completed display update.
 2. Send a valid reliable display transfer.
 3. Assert: `EVENT_ERROR(DISPLAY_WRITE_FAILED)` is received.
+
+---
+
+### T-0906  Idle timeout switches the OLED panel off
+
+**Validates:** MD-0705
+
+**Procedure:**
+1. Send a valid reliable display transfer and allow it to render fully.
+2. Wait 300 seconds with no further accepted display transfer.
+3. Observe the display driver's command stream (or instrument the mock).
+4. Assert: the SSD1306 native display-off command is sent.
+5. Assert: no `EVENT_ERROR` is emitted solely because the panel was idled.
+
+---
+
+### T-0907  New display transfer wakes the panel and restarts the idle timer
+
+**Validates:** MD-0705, MD-0703
+
+**Procedure:**
+1. Render a valid display transfer, then allow the 300-second idle timeout to switch the panel off.
+2. Send a second valid reliable display transfer with different framebuffer contents.
+3. Assert: the display driver sends the SSD1306 display-on command before or as part of rendering the new frame.
+4. Assert: the new framebuffer is rendered correctly.
+5. Wait less than 300 seconds and send a third valid display transfer.
+6. Assert: the panel does not sleep between the second and third updates because the idle timer was restarted by the second accepted transfer.
 4. Send `GET_STATUS` and an ESP-NOW or BLE command afterward.
 5. Assert: the modem remains operational after the display failure.
 
@@ -1371,3 +1398,5 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0903 | Display updates do not interfere with BLE pairing | MD-0702 |
 | T-0904 | No modem-generated display UI | MD-0703, MD-0605 |
 | T-0905 | OLED write failure emits recoverable error | MD-0704 |
+| T-0906 | Idle timeout switches the OLED panel off | MD-0705 |
+| T-0907 | New display transfer wakes the panel and restarts the idle timer | MD-0705, MD-0703 |

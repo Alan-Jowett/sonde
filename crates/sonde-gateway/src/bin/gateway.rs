@@ -35,6 +35,7 @@ const DEFAULT_ADMIN_SOCKET: &str = r"\\.\pipe\sonde-admin";
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const BUTTON_PAIRING_DURATION_S: u32 = 120;
 const BUTTON_EXIT_REASON_DISPLAY_DURATION: Duration = Duration::from_secs(2);
+const STATUS_PAGE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ButtonDisplayState {
@@ -42,17 +43,60 @@ enum ButtonDisplayState {
     Passkey,
 }
 
-async fn update_pairing_display(transport: &Arc<UsbEspNowTransport>, lines: &[&str]) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusPage {
+    Channel,
+    Nodes,
+}
+
+impl StatusPage {
+    const ALL: [StatusPage; 2] = [StatusPage::Channel, StatusPage::Nodes];
+}
+
+#[derive(Debug, Default)]
+struct StatusPageCycle {
+    next_page_index: usize,
+}
+
+async fn update_display_message(transport: &Arc<UsbEspNowTransport>, lines: &[&str]) {
     if let Err(e) = send_display_message(transport, lines).await {
-        warn!(error = %e, ?lines, "failed to update pairing display");
+        warn!(error = %e, ?lines, "failed to update display");
     }
 }
 
-fn invalidate_button_display_restore(display_generation: &Arc<AtomicU64>) {
+fn invalidate_display_restore(display_generation: &Arc<AtomicU64>) {
     display_generation.fetch_add(1, Ordering::SeqCst);
 }
 
-fn schedule_gateway_version_restore(
+async fn reset_status_page_cycle(status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>) {
+    status_page_cycle.lock().await.next_page_index = 0;
+}
+
+async fn render_status_page_lines(
+    storage: &Arc<dyn Storage>,
+    default_channel: u8,
+    page: StatusPage,
+) -> [String; 2] {
+    match page {
+        StatusPage::Channel => match storage.get_config("espnow_channel").await {
+            Ok(Some(channel)) => ["Channel".to_string(), channel],
+            Ok(None) => ["Channel".to_string(), default_channel.to_string()],
+            Err(e) => {
+                warn!(error = %e, "failed to load espnow_channel for status page");
+                ["Channel".to_string(), "Error".to_string()]
+            }
+        },
+        StatusPage::Nodes => match storage.list_nodes().await {
+            Ok(nodes) => ["Nodes".to_string(), nodes.len().to_string()],
+            Err(e) => {
+                warn!(error = %e, "failed to load node count for status page");
+                ["Nodes".to_string(), "Error".to_string()]
+            }
+        },
+    }
+}
+
+fn schedule_button_pairing_banner_restore(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
@@ -78,10 +122,42 @@ fn schedule_gateway_version_restore(
     });
 }
 
+fn schedule_status_page_banner_restore(
+    transport: &Arc<UsbEspNowTransport>,
+    controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
+    display_generation: &Arc<AtomicU64>,
+    status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
+) {
+    let generation = display_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let transport: Weak<UsbEspNowTransport> = Arc::downgrade(transport);
+    let controller = Arc::clone(controller);
+    let display_generation = Arc::clone(display_generation);
+    let status_page_cycle = Arc::clone(status_page_cycle);
+    tokio::spawn(async move {
+        tokio::time::sleep(STATUS_PAGE_TIMEOUT).await;
+        if display_generation.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        if controller.session_origin().await
+            == Some(sonde_gateway::ble_pairing::PairingOrigin::Button)
+        {
+            return;
+        }
+        reset_status_page_cycle(&status_page_cycle).await;
+        let Some(transport) = transport.upgrade() else {
+            return;
+        };
+        if let Err(e) = send_gateway_version_banner(&transport).await {
+            warn!(error = %e, "failed to restore gateway version banner");
+        }
+    });
+}
+
 async fn open_button_pairing_session(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
+    status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
     display_state: &mut ButtonDisplayState,
     window: &mut sonde_gateway::ble_pairing::RegistrationWindow,
 ) -> bool {
@@ -101,11 +177,12 @@ async fn open_button_pairing_session(
         error!("BLE_ENABLE send error for button pairing: {e}");
         return false;
     }
-    invalidate_button_display_restore(display_generation);
+    invalidate_display_restore(display_generation);
+    reset_status_page_cycle(status_page_cycle).await;
     window.open(BUTTON_PAIRING_DURATION_S);
     *display_state = ButtonDisplayState::Generic;
     info!("button-initiated BLE pairing opened");
-    update_pairing_display(transport, &["Pairing"]).await;
+    update_display_message(transport, &["Pairing"]).await;
     true
 }
 
@@ -113,6 +190,7 @@ async fn close_button_pairing_session(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
+    status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
     display_state: &mut ButtonDisplayState,
     window: &mut sonde_gateway::ble_pairing::RegistrationWindow,
     status_lines: &[&str],
@@ -123,14 +201,16 @@ async fn close_button_pairing_session(
     if let Err(e) = transport.send_ble_disable().await {
         error!("BLE_DISABLE send error: {e}");
     }
-    update_pairing_display(transport, status_lines).await;
-    schedule_gateway_version_restore(transport, controller, display_generation);
+    reset_status_page_cycle(status_page_cycle).await;
+    update_display_message(transport, status_lines).await;
+    schedule_button_pairing_banner_restore(transport, controller, display_generation);
 }
 
 async fn handle_button_short_event(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
+    status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
     display_state: &mut ButtonDisplayState,
     window: &mut sonde_gateway::ble_pairing::RegistrationWindow,
 ) -> bool {
@@ -142,6 +222,7 @@ async fn handle_button_short_event(
         transport,
         controller,
         display_generation,
+        status_page_cycle,
         display_state,
         window,
         &["Cancelled"],
@@ -154,6 +235,7 @@ async fn handle_button_pairing_timeout(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
+    status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
     display_state: &mut ButtonDisplayState,
     window: &mut sonde_gateway::ble_pairing::RegistrationWindow,
 ) {
@@ -167,6 +249,7 @@ async fn handle_button_pairing_timeout(
         transport,
         controller,
         display_generation,
+        status_page_cycle,
         display_state,
         window,
         &["Timed out"],
@@ -182,7 +265,7 @@ async fn show_button_pairing_connected(
     if controller.session_origin().await == Some(sonde_gateway::ble_pairing::PairingOrigin::Button)
         && display_state != ButtonDisplayState::Passkey
     {
-        update_pairing_display(transport, &["Phone connected"]).await;
+        update_display_message(transport, &["Phone connected"]).await;
     }
 }
 
@@ -198,7 +281,7 @@ async fn confirm_button_pairing_passkey(
     }
     *display_state = ButtonDisplayState::Passkey;
     let passkey_text = format!("{passkey:06}");
-    update_pairing_display(transport, &["Pin", &passkey_text]).await;
+    update_display_message(transport, &["Pin", &passkey_text]).await;
     if let Err(e) = transport.send_ble_pairing_confirm_reply(true).await {
         error!("BLE_PAIRING_CONFIRM_REPLY send error: {e}");
         return false;
@@ -210,18 +293,51 @@ async fn complete_button_pairing_success(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
+    status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
     display_state: &mut ButtonDisplayState,
     window: &mut sonde_gateway::ble_pairing::RegistrationWindow,
 ) {
-    update_pairing_display(transport, &["Provisioned"]).await;
+    update_display_message(transport, &["Provisioned"]).await;
     controller.close_window().await;
     window.close();
     *display_state = ButtonDisplayState::Generic;
     if let Err(e) = transport.send_ble_disable().await {
         error!("BLE_DISABLE send error after phone registration: {e}");
     }
-    update_pairing_display(transport, &["Done"]).await;
-    schedule_gateway_version_restore(transport, controller, display_generation);
+    reset_status_page_cycle(status_page_cycle).await;
+    update_display_message(transport, &["Done"]).await;
+    schedule_button_pairing_banner_restore(transport, controller, display_generation);
+}
+
+async fn handle_idle_button_short_event(
+    transport: &Arc<UsbEspNowTransport>,
+    controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
+    storage: &Arc<dyn Storage>,
+    default_channel: u8,
+    display_generation: &Arc<AtomicU64>,
+    status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
+) -> bool {
+    if controller.session_origin().await.is_some() {
+        return false;
+    }
+
+    invalidate_display_restore(display_generation);
+    let page = {
+        let mut cycle = status_page_cycle.lock().await;
+        let page = StatusPage::ALL[cycle.next_page_index % StatusPage::ALL.len()];
+        cycle.next_page_index = (cycle.next_page_index + 1) % StatusPage::ALL.len();
+        page
+    };
+    let lines = render_status_page_lines(storage, default_channel, page).await;
+    let line_refs = [lines[0].as_str(), lines[1].as_str()];
+    update_display_message(transport, &line_refs).await;
+    schedule_status_page_banner_restore(
+        transport,
+        controller,
+        display_generation,
+        status_page_cycle,
+    );
+    true
 }
 
 // ── Windows NT service constants ─────────────────────────────────────────────
@@ -754,6 +870,7 @@ async fn run_gateway(
         let ble_channel = channel_for_transport;
         let ble_ctrl = Arc::clone(&ble_controller);
         let button_display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let mut ble_loop = tokio::spawn(async move {
             use sonde_gateway::ble_pairing::{handle_ble_recv, PairingOrigin};
             use sonde_gateway::modem::BleEvent;
@@ -785,6 +902,16 @@ async fn run_gateway(
                 let controller_open = controller_origin.is_some();
                 if controller_open && !window.is_open() {
                     window.open(3600);
+                    if controller_origin == Some(PairingOrigin::Admin) {
+                        invalidate_display_restore(&button_display_generation);
+                        reset_status_page_cycle(&status_page_cycle).await;
+                        if let Err(e) = send_gateway_version_banner(&ble_transport).await {
+                            warn!(
+                                error = %e,
+                                "failed to restore gateway version banner for admin BLE pairing"
+                            );
+                        }
+                    }
                 } else if !controller_open && window.is_open() {
                     window.close();
                     button_timeout_armed = false;
@@ -802,6 +929,7 @@ async fn run_gateway(
                             &ble_transport,
                             &ble_ctrl,
                             &button_display_generation,
+                            &status_page_cycle,
                             &mut button_display_state,
                             &mut window,
                         )
@@ -848,6 +976,7 @@ async fn run_gateway(
                                     &ble_transport,
                                     &ble_ctrl,
                                     &button_display_generation,
+                                    &status_page_cycle,
                                     &mut button_display_state,
                                     &mut window,
                                 )
@@ -939,6 +1068,7 @@ async fn run_gateway(
                                 &ble_transport,
                                 &ble_ctrl,
                                 &button_display_generation,
+                                &status_page_cycle,
                                 &mut button_display_state,
                                 &mut window,
                             )
@@ -960,6 +1090,7 @@ async fn run_gateway(
                                     &ble_transport,
                                     &ble_ctrl,
                                     &button_display_generation,
+                                    &status_page_cycle,
                                     &mut button_display_state,
                                     &mut window,
                                 )
@@ -970,7 +1101,15 @@ async fn run_gateway(
                                 debug!("ignoring BUTTON_SHORT during admin-initiated BLE pairing");
                             }
                             None => {
-                                debug!("ignoring BUTTON_SHORT with no BLE pairing session active");
+                                let _ = handle_idle_button_short_event(
+                                    &ble_transport,
+                                    &ble_ctrl,
+                                    &ble_storage,
+                                    ble_channel,
+                                    &button_display_generation,
+                                    &status_page_cycle,
+                                )
+                                .await;
                             }
                         },
                         other => {
@@ -1436,6 +1575,8 @@ mod tests {
 
     use sonde_gateway::ble_pairing::{BlePairingController, PairingOrigin, RegistrationWindow};
     use sonde_gateway::display_banner::{render_display_message, render_gateway_version_banner};
+    use sonde_gateway::registry::NodeRecord;
+    use sonde_gateway::storage::{InMemoryStorage, Storage};
     use sonde_protocol::modem::{
         encode_modem_frame, DisplayFrameAck, FrameDecoder, ModemMessage, ModemReady,
         DISPLAY_FRAME_BODY_SIZE, DISPLAY_FRAME_CHUNK_COUNT, DISPLAY_FRAME_CHUNK_SIZE,
@@ -1554,6 +1695,7 @@ mod tests {
         transport: Arc<UsbEspNowTransport>,
         controller: Arc<BlePairingController>,
         display_generation: Arc<AtomicU64>,
+        status_page_cycle: Arc<tokio::sync::Mutex<StatusPageCycle>>,
         server: &mut DuplexStream,
         decoder: &mut FrameDecoder,
         buf: &mut [u8],
@@ -1562,6 +1704,7 @@ mod tests {
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
             let display_generation = Arc::clone(&display_generation);
+            let status_page_cycle = Arc::clone(&status_page_cycle);
             async move {
                 let mut window = RegistrationWindow::new();
                 let mut display_state = ButtonDisplayState::Generic;
@@ -1569,6 +1712,7 @@ mod tests {
                     &transport,
                     &controller,
                     &display_generation,
+                    &status_page_cycle,
                     &mut display_state,
                     &mut window,
                 )
@@ -1596,6 +1740,7 @@ mod tests {
         let (transport, mut server) = create_transport_and_server(6).await;
         let controller = Arc::new(BlePairingController::new());
         let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
@@ -1603,6 +1748,7 @@ mod tests {
             Arc::clone(&transport),
             Arc::clone(&controller),
             Arc::clone(&display_generation),
+            Arc::clone(&status_page_cycle),
             &mut server,
             &mut decoder,
             &mut buf,
@@ -1615,6 +1761,7 @@ mod tests {
         let (transport, mut server) = create_transport_and_server(6).await;
         let controller = Arc::new(BlePairingController::new());
         let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
@@ -1622,6 +1769,7 @@ mod tests {
             Arc::clone(&transport),
             Arc::clone(&controller),
             Arc::clone(&display_generation),
+            Arc::clone(&status_page_cycle),
             &mut server,
             &mut decoder,
             &mut buf,
@@ -1634,6 +1782,7 @@ mod tests {
                 &transport,
                 &controller,
                 &display_generation,
+                &status_page_cycle,
                 &mut display_state,
                 &mut window,
             )
@@ -1652,6 +1801,7 @@ mod tests {
         let (transport, mut server) = create_transport_and_server(6).await;
         let controller = Arc::new(BlePairingController::new());
         let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
@@ -1659,6 +1809,7 @@ mod tests {
             Arc::clone(&transport),
             Arc::clone(&controller),
             Arc::clone(&display_generation),
+            Arc::clone(&status_page_cycle),
             &mut server,
             &mut decoder,
             &mut buf,
@@ -1670,6 +1821,7 @@ mod tests {
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
             let display_generation = Arc::clone(&display_generation);
+            let status_page_cycle = Arc::clone(&status_page_cycle);
             async move {
                 let mut window = window;
                 let mut display_state = ButtonDisplayState::Generic;
@@ -1677,6 +1829,7 @@ mod tests {
                     &transport,
                     &controller,
                     &display_generation,
+                    &status_page_cycle,
                     &mut display_state,
                     &mut window,
                 )
@@ -1707,6 +1860,7 @@ mod tests {
                 &transport,
                 &controller,
                 &display_generation,
+                &status_page_cycle,
                 &mut display_state,
                 &mut window,
             )
@@ -1723,6 +1877,7 @@ mod tests {
         let (transport, mut server) = create_transport_and_server(6).await;
         let controller = Arc::new(BlePairingController::new());
         let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
@@ -1730,6 +1885,7 @@ mod tests {
             Arc::clone(&transport),
             Arc::clone(&controller),
             Arc::clone(&display_generation),
+            Arc::clone(&status_page_cycle),
             &mut server,
             &mut decoder,
             &mut buf,
@@ -1741,6 +1897,7 @@ mod tests {
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
             let display_generation = Arc::clone(&display_generation);
+            let status_page_cycle = Arc::clone(&status_page_cycle);
             async move {
                 let mut window = window;
                 let mut display_state = ButtonDisplayState::Generic;
@@ -1748,6 +1905,7 @@ mod tests {
                     &transport,
                     &controller,
                     &display_generation,
+                    &status_page_cycle,
                     &mut display_state,
                     &mut window,
                     &["Timed out"],
@@ -1776,6 +1934,7 @@ mod tests {
         let (transport, mut server) = create_transport_and_server(6).await;
         let controller = Arc::new(BlePairingController::new());
         let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
@@ -1784,6 +1943,7 @@ mod tests {
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
             let display_generation = Arc::clone(&display_generation);
+            let status_page_cycle = Arc::clone(&status_page_cycle);
             async move {
                 let mut window = RegistrationWindow::new();
                 let mut display_state = ButtonDisplayState::Generic;
@@ -1792,6 +1952,7 @@ mod tests {
                     &transport,
                     &controller,
                     &display_generation,
+                    &status_page_cycle,
                     &mut display_state,
                     &mut window,
                 )
@@ -1813,6 +1974,7 @@ mod tests {
         let (transport, mut server) = create_transport_and_server(6).await;
         let controller = Arc::new(BlePairingController::new());
         let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
@@ -1820,6 +1982,7 @@ mod tests {
             Arc::clone(&transport),
             Arc::clone(&controller),
             Arc::clone(&display_generation),
+            Arc::clone(&status_page_cycle),
             &mut server,
             &mut decoder,
             &mut buf,
@@ -1878,6 +2041,7 @@ mod tests {
         let (transport, mut server) = create_transport_and_server(6).await;
         let controller = Arc::new(BlePairingController::new());
         let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
@@ -1885,6 +2049,7 @@ mod tests {
             Arc::clone(&transport),
             Arc::clone(&controller),
             Arc::clone(&display_generation),
+            Arc::clone(&status_page_cycle),
             &mut server,
             &mut decoder,
             &mut buf,
@@ -1897,6 +2062,7 @@ mod tests {
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
             let display_generation = Arc::clone(&display_generation);
+            let status_page_cycle = Arc::clone(&status_page_cycle);
             async move {
                 let mut window = window;
                 let mut display_state = ButtonDisplayState::Passkey;
@@ -1904,6 +2070,7 @@ mod tests {
                     &transport,
                     &controller,
                     &display_generation,
+                    &status_page_cycle,
                     &mut display_state,
                     &mut window,
                 )
@@ -1927,6 +2094,81 @@ mod tests {
             framebuffer,
             render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
         );
+    }
+
+    #[tokio::test]
+    async fn idle_button_short_cycles_status_pages_and_restores_banner() {
+        let (transport, mut server) = create_transport_and_server(6).await;
+        let controller = Arc::new(BlePairingController::new());
+        let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
+        let storage = Arc::new(InMemoryStorage::new());
+        storage.set_config("espnow_channel", "11").await.unwrap();
+        storage
+            .upsert_node(&NodeRecord::new("node-a".to_string(), 0x1001, [0x42; 32]))
+            .await
+            .unwrap();
+        storage
+            .upsert_node(&NodeRecord::new("node-b".to_string(), 0x1002, [0x24; 32]))
+            .await
+            .unwrap();
+        let storage: Arc<dyn Storage> = storage;
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 2048];
+
+        tokio::time::pause();
+        let first_press = tokio::spawn({
+            let transport = Arc::clone(&transport);
+            let controller = Arc::clone(&controller);
+            let storage = Arc::clone(&storage);
+            let display_generation = Arc::clone(&display_generation);
+            let status_page_cycle = Arc::clone(&status_page_cycle);
+            async move {
+                handle_idle_button_short_event(
+                    &transport,
+                    &controller,
+                    &storage,
+                    6,
+                    &display_generation,
+                    &status_page_cycle,
+                )
+                .await
+            }
+        });
+        let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+        assert_eq!(framebuffer, render_display_message(&["Channel", "11"]));
+        assert!(first_press.await.unwrap());
+
+        tokio::time::advance(Duration::from_secs(30)).await;
+        let second_press = tokio::spawn({
+            let transport = Arc::clone(&transport);
+            let controller = Arc::clone(&controller);
+            let storage = Arc::clone(&storage);
+            let display_generation = Arc::clone(&display_generation);
+            let status_page_cycle = Arc::clone(&status_page_cycle);
+            async move {
+                handle_idle_button_short_event(
+                    &transport,
+                    &controller,
+                    &storage,
+                    6,
+                    &display_generation,
+                    &status_page_cycle,
+                )
+                .await
+            }
+        });
+        let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+        assert_eq!(framebuffer, render_display_message(&["Nodes", "2"]));
+        assert!(second_press.await.unwrap());
+
+        tokio::time::advance(STATUS_PAGE_TIMEOUT + Duration::from_millis(100)).await;
+        let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+        assert_eq!(
+            framebuffer,
+            render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(status_page_cycle.lock().await.next_page_index, 0);
     }
 }
 

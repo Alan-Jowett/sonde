@@ -52,7 +52,7 @@ The carrier board routes the canonical node sensor bus to the Qwiic/STEMMA QT he
 | SDA    | 6    | I2C data |
 | SCL    | 7    | I2C clock |
 
-Any 3.3 V I2C sensor with a Qwiic/STEMMA QT connector is supported.
+Any 3.3 V I2C sensor with a Qwiic/STEMMA QT connector is supported. The node firmware reads `i2c0_sda` and `i2c0_scl` from NVS and falls back to compiled-in defaults of `GPIO0`/`GPIO1` if they are not configured, so provision or configure the canonical carrier-board build to use `GPIO6` for SDA and `GPIO7` for SCL.
 
 ---
 

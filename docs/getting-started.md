@@ -610,7 +610,7 @@ Replace `COM6` with your device's serial port (`/dev/ttyUSB0` on Linux, `/dev/cu
 
 ### 12.3  Canonical node I2C wiring (carrier board + XIAO ESP32-C3)
 
-The canonical node build routes I2C through the carrier board's Qwiic/STEMMA QT connector. The node sensor bus uses GPIO 6 (SDA) and GPIO 7 (SCL) at 100 kHz standard mode.
+The canonical node build routes I2C through the carrier board's Qwiic/STEMMA QT connector. On that carrier board, the canonical wiring is GPIO 6 for SDA and GPIO 7 for SCL at 100 kHz standard mode. Provision or configure the node's `i2c0_sda` and `i2c0_scl` settings to match your actual wiring; for the canonical carrier-board build, set them to `6` and `7`.
 
 | Signal | GPIO | Qwiic/STEMMA QT color | Description   |
 |--------|------|-----------------------|---------------|

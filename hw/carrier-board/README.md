@@ -15,13 +15,13 @@ This board is the canonical base PCB for both contributor reference builds:
 - **Modem:** carrier board + Seeed Studio XIAO ESP32-S3, plus an SSD1306-compatible
   128×64 OLED on `GPIO5`/`GPIO6` (`0x3C`) and an active-low button on `GPIO2`
 
-**Carrier board deep sleep current (excluding the XIAO ESP32-C3 module): ~0.01 µA** (essentially zero).
+**Carrier board deep sleep current (excluding the XIAO module): ~0.01 µA** (essentially zero).
 
 ## Prerequisites
 
 - [KiCad 8](https://www.kicad.org/download/) (free, open-source EDA)
 - A [JLCPCB](https://jlcpcb.com/) account (or compatible PCB fab)
-- A Seeed Studio XIAO ESP32-C3 or XIAO ESP32-S3 module (not included in this BOM)
+- A Seeed Studio XIAO ESP32-C3 or Seeed Studio XIAO ESP32-S3 module (not included in this BOM)
 
 ## Directory Contents
 

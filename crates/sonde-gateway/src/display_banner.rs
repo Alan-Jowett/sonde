@@ -120,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn gateway_banner_is_centered_with_margins() {
+    fn gateway_banner_leaves_outer_margins() {
         let framebuffer = render_gateway_version_banner("0.4.0");
         let first_nonzero = framebuffer
             .iter()

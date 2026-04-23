@@ -16,6 +16,7 @@ use sonde_protocol::modem::{
     RecvFrame, DISPLAY_FRAME_BODY_SIZE, DISPLAY_FRAME_CHUNK_COUNT, DISPLAY_FRAME_CHUNK_SIZE,
 };
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tracing_test::traced_test;
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -402,6 +403,7 @@ async fn t1107_modem_error_handling() {
 
 /// T-1107a  Modem EVENT_ERROR handling.
 #[tokio::test]
+#[traced_test]
 async fn t1107a_modem_event_error_handling() {
     let (transport, mut server) = create_transport_and_server(6).await;
 
@@ -429,6 +431,8 @@ async fn t1107a_modem_event_error_handling() {
         vec![0xFF],
         "transport must still work after EVENT_ERROR"
     );
+    assert!(logs_contain("recoverable modem display fault"));
+    assert!(logs_contain("error_code=2"));
 }
 
 // ── T-1108: End-to-end wake cycle over PTY ──────────────────────────────

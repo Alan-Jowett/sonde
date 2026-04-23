@@ -113,6 +113,7 @@ pub struct UsbEspNowTransport {
     channel_ack_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>>,
     scan_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>>,
     display_ack_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<DisplayFrameAck>>>>,
+    display_send_lock: Mutex<()>,
     next_display_transfer_id: AtomicU8,
     modem_mac: [u8; 6],
     reader_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -296,6 +297,7 @@ impl UsbEspNowTransport {
                     channel_ack_slot,
                     scan_slot,
                     display_ack_slot,
+                    display_send_lock: Mutex::new(()),
                     next_display_transfer_id: AtomicU8::new(0),
                     modem_mac,
                     reader_handle: std::sync::Mutex::new(Some(reader_handle)),
@@ -399,6 +401,7 @@ impl UsbEspNowTransport {
     ) -> Result<(), TransportError> {
         const DISPLAY_ACK_TIMEOUT: Duration = Duration::from_millis(500);
         const DISPLAY_ACK_MAX_RETRIES: usize = 3;
+        let _display_send_guard = self.display_send_lock.lock().await;
 
         let transfer_id = self
             .next_display_transfer_id

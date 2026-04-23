@@ -3,7 +3,7 @@
 
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{OriginDimensions, Size};
-use embedded_graphics::mono_font::ascii::FONT_8X13_BOLD;
+use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_8X13_BOLD};
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::{Pixel, Point};
@@ -14,10 +14,13 @@ use sonde_protocol::modem::DISPLAY_FRAME_BODY_SIZE;
 use crate::modem::UsbEspNowTransport;
 use crate::transport::TransportError;
 
-const FRAMEBUFFER_WIDTH: u32 = 128;
-const FRAMEBUFFER_HEIGHT: u32 = 64;
+pub const FRAMEBUFFER_WIDTH: u32 = 128;
+pub const FRAMEBUFFER_HEIGHT: u32 = 64;
 const ROW_BYTES: usize = (FRAMEBUFFER_WIDTH as usize) / 8;
 const LINE_SPACING: i32 = 4;
+const STATUS_LINE_SPACING: i32 = 2;
+pub const STATUS_TEXT_COLUMNS: usize =
+    (FRAMEBUFFER_WIDTH as usize) / (FONT_6X10.character_size.width as usize);
 
 struct Framebuffer {
     bytes: [u8; DISPLAY_FRAME_BODY_SIZE],
@@ -44,6 +47,65 @@ impl Framebuffer {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScrollableFramebuffer {
+    height: u32,
+    bytes: Vec<u8>,
+}
+
+impl ScrollableFramebuffer {
+    fn new(height: u32) -> Self {
+        let height = height.max(FRAMEBUFFER_HEIGHT);
+        Self {
+            height,
+            bytes: vec![0u8; height as usize * ROW_BYTES],
+        }
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    pub fn max_offset(&self) -> u32 {
+        self.height.saturating_sub(FRAMEBUFFER_HEIGHT)
+    }
+
+    pub fn scroll_end_offset(&self) -> u32 {
+        self.height
+    }
+
+    pub fn is_scrollable(&self) -> bool {
+        self.max_offset() > 0
+    }
+
+    pub fn visible_window(&self, offset_y: u32) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
+        let mut window = [0u8; DISPLAY_FRAME_BODY_SIZE];
+
+        for row in 0..FRAMEBUFFER_HEIGHT {
+            let src_row = offset_y + row;
+            if src_row >= self.height {
+                break;
+            }
+
+            let src_start = src_row as usize * ROW_BYTES;
+            let dst_start = row as usize * ROW_BYTES;
+            window[dst_start..dst_start + ROW_BYTES]
+                .copy_from_slice(&self.bytes[src_start..src_start + ROW_BYTES]);
+        }
+
+        window
+    }
+
+    fn set_pixel(&mut self, x: u32, y: u32) {
+        if x >= FRAMEBUFFER_WIDTH || y >= self.height {
+            return;
+        }
+        let index = (y as usize * ROW_BYTES) + (x as usize / 8);
+        let bit = 7 - (x as usize % 8);
+        self.bytes[index] |= 1 << bit;
+    }
+}
+
 impl OriginDimensions for Framebuffer {
     fn size(&self) -> Size {
         Size::new(FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT)
@@ -51,6 +113,36 @@ impl OriginDimensions for Framebuffer {
 }
 
 impl DrawTarget for Framebuffer {
+    type Color = BinaryColor;
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        for Pixel(point, color) in pixels {
+            if color != BinaryColor::On {
+                continue;
+            }
+            let Ok(x) = u32::try_from(point.x) else {
+                continue;
+            };
+            let Ok(y) = u32::try_from(point.y) else {
+                continue;
+            };
+            self.set_pixel(x, y);
+        }
+        Ok(())
+    }
+}
+
+impl OriginDimensions for ScrollableFramebuffer {
+    fn size(&self) -> Size {
+        Size::new(FRAMEBUFFER_WIDTH, self.height)
+    }
+}
+
+impl DrawTarget for ScrollableFramebuffer {
     type Color = BinaryColor;
     type Error = core::convert::Infallible;
 
@@ -105,6 +197,35 @@ pub fn render_display_message(lines: &[&str]) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
 pub fn render_gateway_version_banner(version: &str) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
     let line2 = format!("v{version}");
     render_display_message(&["Sonde Gateway", &line2])
+}
+
+pub fn render_status_text_page(lines: &[String]) -> ScrollableFramebuffer {
+    if lines.is_empty() {
+        return ScrollableFramebuffer::new(FRAMEBUFFER_HEIGHT);
+    }
+
+    let line_height = FONT_6X10.character_size.height as i32;
+    let content_height = line_height * lines.len() as i32
+        + STATUS_LINE_SPACING * (lines.len().saturating_sub(1) as i32);
+    let needs_scroll = content_height > FRAMEBUFFER_HEIGHT as i32;
+    let top_padding = if needs_scroll {
+        FRAMEBUFFER_HEIGHT as i32
+    } else {
+        0
+    };
+    let height = u32::try_from((content_height + top_padding).max(FRAMEBUFFER_HEIGHT as i32))
+        .expect("status page height must fit in u32");
+    let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let mut framebuffer = ScrollableFramebuffer::new(height);
+
+    for (index, line) in lines.iter().enumerate() {
+        let baseline = top_padding
+            + index as i32 * (line_height + STATUS_LINE_SPACING)
+            + FONT_6X10.baseline as i32;
+        let _ = Text::new(line, Point::new(0, baseline), style).draw(&mut framebuffer);
+    }
+
+    framebuffer
 }
 
 pub async fn send_display_message(
@@ -192,6 +313,67 @@ mod tests {
         assert!(
             framebuffer[half..].iter().any(|byte| *byte != 0),
             "bottom half should contain the second line"
+        );
+    }
+
+    #[test]
+    fn status_text_page_grows_taller_than_display() {
+        let lines: Vec<String> = (0..8).map(|i| format!("line {i:02}")).collect();
+        let framebuffer = render_status_text_page(&lines);
+        assert!(
+            framebuffer.height() > FRAMEBUFFER_HEIGHT,
+            "many status lines should require a taller off-screen framebuffer"
+        );
+    }
+
+    #[test]
+    fn status_text_page_visible_window_changes_with_offset() {
+        let lines: Vec<String> = (0..8).map(|i| format!("line {i:02}")).collect();
+        let framebuffer = render_status_text_page(&lines);
+        assert!(framebuffer.is_scrollable(), "test page must be scrollable");
+        assert_ne!(
+            framebuffer.visible_window(FRAMEBUFFER_HEIGHT),
+            framebuffer.visible_window(FRAMEBUFFER_HEIGHT + 2),
+            "different offsets should expose different visible windows"
+        );
+    }
+
+    #[test]
+    fn status_text_page_visible_window_allows_trailing_blank_scroll() {
+        let lines: Vec<String> = (0..8).map(|i| format!("line {i:02}")).collect();
+        let framebuffer = render_status_text_page(&lines);
+        assert!(framebuffer.is_scrollable(), "test page must be scrollable");
+        assert!(
+            framebuffer
+                .visible_window(framebuffer.max_offset())
+                .iter()
+                .any(|byte| *byte != 0),
+            "last fully visible window should still contain pixels"
+        );
+        assert!(
+            framebuffer
+                .visible_window(framebuffer.scroll_end_offset())
+                .iter()
+                .all(|byte| *byte == 0),
+            "scrolling past the content should expose a blank trailing window"
+        );
+    }
+
+    #[test]
+    fn status_text_page_scrollable_pages_start_with_leading_blank_window() {
+        let lines: Vec<String> = (0..8).map(|i| format!("line {i:02}")).collect();
+        let framebuffer = render_status_text_page(&lines);
+        assert!(framebuffer.is_scrollable(), "test page must be scrollable");
+        assert!(
+            framebuffer.visible_window(0).iter().all(|byte| *byte == 0),
+            "scrollable pages should begin with a blank lead-in window"
+        );
+        assert!(
+            framebuffer
+                .visible_window(FRAMEBUFFER_HEIGHT)
+                .iter()
+                .any(|byte| *byte != 0),
+            "content should appear after the leading blank window"
         );
     }
 }

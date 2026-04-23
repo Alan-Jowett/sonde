@@ -3,7 +3,7 @@
 
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{OriginDimensions, Size};
-use embedded_graphics::mono_font::ascii::FONT_5X7;
+use embedded_graphics::mono_font::ascii::FONT_8X13_BOLD;
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::{Pixel, Point};
@@ -17,7 +17,7 @@ use crate::transport::TransportError;
 const FRAMEBUFFER_WIDTH: u32 = 128;
 const FRAMEBUFFER_HEIGHT: u32 = 64;
 const ROW_BYTES: usize = (FRAMEBUFFER_WIDTH as usize) / 8;
-const CHARACTER_ADVANCE: i32 = 6;
+const LINE_SPACING: i32 = 4;
 
 struct Framebuffer {
     bytes: [u8; DISPLAY_FRAME_BODY_SIZE],
@@ -74,20 +74,27 @@ impl DrawTarget for Framebuffer {
     }
 }
 
-fn gateway_banner_text(version: &str) -> String {
-    format!("Sonde Gateway v{version}")
+fn centered_text_x(text: &str) -> i32 {
+    let character_width = FONT_8X13_BOLD.character_size.width as i32;
+    let text_width = (text.chars().count() as i32) * character_width;
+    ((FRAMEBUFFER_WIDTH as i32 - text_width).max(0)) / 2
 }
 
 pub fn render_gateway_version_banner(version: &str) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
-    let text = gateway_banner_text(version);
-    let text_width = (text.chars().count() as i32) * CHARACTER_ADVANCE - 1;
-    let x = ((FRAMEBUFFER_WIDTH as i32 - text_width).max(0)) / 2;
-    let y = ((FRAMEBUFFER_HEIGHT as i32 - FONT_5X7.character_size.height as i32).max(0)) / 2
-        + FONT_5X7.baseline as i32;
+    let line1 = "Sonde Gateway";
+    let line2 = format!("v{version}");
+    let line_height = FONT_8X13_BOLD.character_size.height as i32;
+    let block_height = line_height * 2 + LINE_SPACING;
+    let top = ((FRAMEBUFFER_HEIGHT as i32 - block_height).max(0)) / 2;
+    let line1_y = top + FONT_8X13_BOLD.baseline as i32;
+    let line2_y = top + line_height + LINE_SPACING + FONT_8X13_BOLD.baseline as i32;
 
-    let style = MonoTextStyle::new(&FONT_5X7, BinaryColor::On);
+    let style = MonoTextStyle::new(&FONT_8X13_BOLD, BinaryColor::On);
     let mut framebuffer = Framebuffer::new();
-    let _ = Text::new(&text, Point::new(x, y), style).draw(&mut framebuffer);
+    let _ =
+        Text::new(line1, Point::new(centered_text_x(line1), line1_y), style).draw(&mut framebuffer);
+    let _ = Text::new(&line2, Point::new(centered_text_x(&line2), line2_y), style)
+        .draw(&mut framebuffer);
     framebuffer.into_bytes()
 }
 
@@ -127,6 +134,20 @@ mod tests {
         assert!(
             last_nonzero + 1 < framebuffer.len(),
             "right/bottom margin should not consume the full framebuffer"
+        );
+    }
+
+    #[test]
+    fn gateway_banner_renders_across_two_vertical_regions() {
+        let framebuffer = render_gateway_version_banner("0.4.0");
+        let half = framebuffer.len() / 2;
+        assert!(
+            framebuffer[..half].iter().any(|byte| *byte != 0),
+            "top half should contain the first line"
+        );
+        assert!(
+            framebuffer[half..].iter().any(|byte| *byte != 0),
+            "bottom half should contain the second line"
         );
     }
 }

@@ -1255,7 +1255,7 @@ mod tests {
         raw.push(MODEM_MSG_DISPLAY_FRAME_CHUNK);
         raw.push(0x42);
         raw.push(0);
-        raw.extend_from_slice(&vec![0u8; DISPLAY_FRAME_CHUNK_BODY_SIZE - 3]);
+        raw.extend_from_slice(&[0u8; DISPLAY_FRAME_CHUNK_BODY_SIZE - 3]);
         feed_and_drain(&mut bridge, &raw);
         let tx = bridge.usb.take_tx();
         let (msg, _) = decode_modem_frame(&tx).unwrap();

@@ -1708,10 +1708,11 @@ A configurable stub handler process (or in-process mock) that:
 6. Advance time by just under 60 seconds from the second short press and assert: the default banner has not yet been restored.
 7. Advance time past the 60-second timeout.
 8. Assert: the gateway sends the default `Sonde Gateway v<semver>` banner again even if the `Nodes` page was autonomously scrolling.
+9. Assert: after the banner restore, no further autonomous `Nodes` page scroll updates are emitted without another button press.
 
 ---
 
-### T-1103d  `Nodes` page text matches `sonde-admin node list`
+### T-1103d  `Nodes` page text shows operational node details with property/value display formatting
 
 **Validates:** GW-1101b
 
@@ -1720,11 +1721,11 @@ A configurable stub handler process (or in-process mock) that:
 2. Populate storage with at least two nodes whose metadata exercises optional fields: assigned/current program hashes, battery, last seen, and schedule on one node, and at least one omitted optional field on another.
 3. Inject `EVENT_BUTTON(BUTTON_SHORT)` twice while no BLE pairing session is active so the second page shown is `Nodes`.
 4. Reassemble the first visible `Nodes` page framebuffer.
-5. Assert: the rendered text uses the same field set, omission rules, and node ordering as `sonde-admin node list`.
+5. Assert: the rendered text uses `node_id`, assigned/current program hashes, battery, last seen, and schedule in `node_id` order; omits absent optional fields; excludes `key_hint`; formats `last seen` in local time with locale-style date/time output; and renders each displayed field as a left-aligned property line followed by a left-aligned `- value` line.
 
 ---
 
-### T-1103e  Oversized `Nodes` page scrolls 2 pixels every 40 ms and wraps
+### T-1103e  Oversized `Nodes` page scrolls 3 pixels every 50 ms with leading and trailing blank scroll
 
 **Validates:** GW-1101d
 
@@ -1732,12 +1733,13 @@ A configurable stub handler process (or in-process mock) that:
 1. Start a gateway instance with a mock modem and complete the startup handshake.
 2. Populate storage with enough nodes that the rendered `Nodes` page exceeds 64 pixels in height.
 3. Inject `EVENT_BUTTON(BUTTON_SHORT)` twice while no BLE pairing session is active so the second page shown is `Nodes`.
-4. Independently construct the expected full rendered `Nodes` page image using the `sonde-admin node list` field set and omission rules, and confirm that its height exceeds 64 pixels.
+4. Independently construct the expected full rendered `Nodes` page image using the display-specific field set and omission rules, and confirm that its height exceeds 64 pixels.
 5. Capture the initial `Nodes` page framebuffer and treat it as offset 0.
-6. Advance mocked time by 40 ms.
-7. Assert: the gateway sends a new reliable display transfer whose visible window is shifted by 2 pixels relative to offset 0.
-8. Continue advancing mocked time in 40 ms increments and assert: each emitted framebuffer matches the next 2-pixel window over the independently constructed full rendered image, including a window that exposes the final rendered rows before wraparound.
-9. Assert: the next 40 ms update restarts the visible window at the top of the rendered content.
+6. Assert: offset 0 is the blank lead-in window, so the rendered content begins entering from the bottom of the display on subsequent updates.
+7. Advance mocked time by 50 ms.
+8. Assert: the gateway sends a new reliable display transfer whose visible window is shifted by 3 pixels relative to offset 0.
+9. Continue advancing mocked time in 50 ms increments and assert: each emitted framebuffer matches the next 3-pixel window over the independently constructed full rendered image, including the leading blank region before the text enters from the bottom and trailing windows where the rendered rows move upward and blank space enters from the bottom until the bottom-most rendered text has scrolled off the top of the display.
+10. Assert: the next 50 ms update restarts the visible window at the top of the blank lead-in region.
 
 ---
 
@@ -1751,7 +1753,7 @@ A configurable stub handler process (or in-process mock) that:
 3. Inject `EVENT_BUTTON(BUTTON_SHORT)` twice to enter the `Nodes` page.
 4. Advance mocked time long enough for at least one autonomous scroll update.
 5. Inject another `EVENT_BUTTON(BUTTON_SHORT)` to leave the `Nodes` page, then another `EVENT_BUTTON(BUTTON_SHORT)` to return to it on the next cycle.
-6. Assert: the first framebuffer shown after re-entering `Nodes` matches the top-of-page visible window rather than a previously scrolled offset.
+6. Assert: the first framebuffer shown after re-entering `Nodes` matches the blank lead-in starting window rather than a previously scrolled offset.
 
 ---
 

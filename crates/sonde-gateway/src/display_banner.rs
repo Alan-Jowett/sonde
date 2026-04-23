@@ -70,13 +70,16 @@ impl ScrollableFramebuffer {
         self.height.saturating_sub(FRAMEBUFFER_HEIGHT)
     }
 
+    pub fn scroll_end_offset(&self) -> u32 {
+        self.height
+    }
+
     pub fn is_scrollable(&self) -> bool {
         self.max_offset() > 0
     }
 
     pub fn visible_window(&self, offset_y: u32) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
         let mut window = [0u8; DISPLAY_FRAME_BODY_SIZE];
-        let offset_y = offset_y.min(self.max_offset());
 
         for row in 0..FRAMEBUFFER_HEIGHT {
             let src_row = offset_y + row;
@@ -204,14 +207,21 @@ pub fn render_status_text_page(lines: &[String]) -> ScrollableFramebuffer {
     let line_height = FONT_6X10.character_size.height as i32;
     let content_height = line_height * lines.len() as i32
         + STATUS_LINE_SPACING * (lines.len().saturating_sub(1) as i32);
-    let height = u32::try_from(content_height.max(FRAMEBUFFER_HEIGHT as i32))
+    let needs_scroll = content_height > FRAMEBUFFER_HEIGHT as i32;
+    let top_padding = if needs_scroll {
+        FRAMEBUFFER_HEIGHT as i32
+    } else {
+        0
+    };
+    let height = u32::try_from((content_height + top_padding).max(FRAMEBUFFER_HEIGHT as i32))
         .expect("status page height must fit in u32");
     let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
     let mut framebuffer = ScrollableFramebuffer::new(height);
 
     for (index, line) in lines.iter().enumerate() {
-        let baseline =
-            index as i32 * (line_height + STATUS_LINE_SPACING) + FONT_6X10.baseline as i32;
+        let baseline = top_padding
+            + index as i32 * (line_height + STATUS_LINE_SPACING)
+            + FONT_6X10.baseline as i32;
         let _ = Text::new(line, Point::new(0, baseline), style).draw(&mut framebuffer);
     }
 
@@ -322,9 +332,48 @@ mod tests {
         let framebuffer = render_status_text_page(&lines);
         assert!(framebuffer.is_scrollable(), "test page must be scrollable");
         assert_ne!(
-            framebuffer.visible_window(0),
-            framebuffer.visible_window(2),
+            framebuffer.visible_window(FRAMEBUFFER_HEIGHT),
+            framebuffer.visible_window(FRAMEBUFFER_HEIGHT + 2),
             "different offsets should expose different visible windows"
+        );
+    }
+
+    #[test]
+    fn status_text_page_visible_window_allows_trailing_blank_scroll() {
+        let lines: Vec<String> = (0..8).map(|i| format!("line {i:02}")).collect();
+        let framebuffer = render_status_text_page(&lines);
+        assert!(framebuffer.is_scrollable(), "test page must be scrollable");
+        assert!(
+            framebuffer
+                .visible_window(framebuffer.max_offset())
+                .iter()
+                .any(|byte| *byte != 0),
+            "last fully visible window should still contain pixels"
+        );
+        assert!(
+            framebuffer
+                .visible_window(framebuffer.scroll_end_offset())
+                .iter()
+                .all(|byte| *byte == 0),
+            "scrolling past the content should expose a blank trailing window"
+        );
+    }
+
+    #[test]
+    fn status_text_page_scrollable_pages_start_with_leading_blank_window() {
+        let lines: Vec<String> = (0..8).map(|i| format!("line {i:02}")).collect();
+        let framebuffer = render_status_text_page(&lines);
+        assert!(framebuffer.is_scrollable(), "test page must be scrollable");
+        assert!(
+            framebuffer.visible_window(0).iter().all(|byte| *byte == 0),
+            "scrollable pages should begin with a blank lead-in window"
+        );
+        assert!(
+            framebuffer
+                .visible_window(FRAMEBUFFER_HEIGHT)
+                .iter()
+                .any(|byte| *byte != 0),
+            "content should appear after the leading blank window"
         );
     }
 }

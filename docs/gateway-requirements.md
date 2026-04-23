@@ -1153,7 +1153,7 @@ When the rendered `Nodes` status page is taller than the modem display, the gate
 
 **Acceptance criteria:**
 
-1. The gateway renders the full `Nodes` page text into an off-screen framebuffer tall enough to contain all rendered rows and, for oversized content, a full-display blank lead-in region before the first rendered row before extracting visible windows for display transfer.
+1. The gateway renders the full `Nodes` page text into an off-screen framebuffer tall enough to contain all rendered rows and, for oversized content, a full-display blank lead-in region before the first rendered row, extracting visible windows for display transfer.
 2. While the active `Nodes` page content exceeds 64 pixels in height, the gateway sends a new reliable display transfer every 50 ms whose visible window is shifted by 3 pixels relative to the prior update.
 3. When the bottom of the rendered `Nodes` content has fully scrolled off the top of the display, the next scroll update restarts from the top of the blank lead-in region.
 4. When short-press navigation enters the `Nodes` page, the first visible window starts at the top of the blank lead-in region so the rendered content enters from the bottom of the display.

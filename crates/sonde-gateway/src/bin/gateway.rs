@@ -138,9 +138,7 @@ fn schedule_status_page_banner_restore(
         if display_generation.load(Ordering::SeqCst) != generation {
             return;
         }
-        if controller.session_origin().await
-            == Some(sonde_gateway::ble_pairing::PairingOrigin::Button)
-        {
+        if controller.session_origin().await.is_some() {
             return;
         }
         reset_status_page_cycle(&status_page_cycle).await;
@@ -2169,6 +2167,52 @@ mod tests {
             render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
         );
         assert_eq!(status_page_cycle.lock().await.next_page_index, 0);
+    }
+
+    #[tokio::test]
+    async fn status_page_timeout_does_not_restore_banner_during_admin_pairing() {
+        let (transport, mut server) = create_transport_and_server(6).await;
+        let controller = Arc::new(BlePairingController::new());
+        let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
+        let storage = Arc::new(InMemoryStorage::new());
+        storage.set_config("espnow_channel", "11").await.unwrap();
+        let storage: Arc<dyn Storage> = storage;
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 2048];
+
+        tokio::time::pause();
+        let short_press = tokio::spawn({
+            let transport = Arc::clone(&transport);
+            let controller = Arc::clone(&controller);
+            let storage = Arc::clone(&storage);
+            let display_generation = Arc::clone(&display_generation);
+            let status_page_cycle = Arc::clone(&status_page_cycle);
+            async move {
+                handle_idle_button_short_event(
+                    &transport,
+                    &controller,
+                    &storage,
+                    6,
+                    &display_generation,
+                    &status_page_cycle,
+                )
+                .await
+            }
+        });
+        let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+        assert_eq!(framebuffer, render_display_message(&["Channel", "11"]));
+        assert!(short_press.await.unwrap());
+
+        assert!(controller.open_window(120, PairingOrigin::Admin).await);
+        tokio::time::advance(STATUS_PAGE_TIMEOUT + Duration::from_millis(100)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.read(&mut buf))
+                .await
+                .is_err(),
+            "status-page timeout must not restore the banner during admin pairing"
+        );
+        assert_eq!(status_page_cycle.lock().await.next_page_index, 1);
     }
 }
 

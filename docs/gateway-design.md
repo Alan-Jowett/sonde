@@ -1148,18 +1148,15 @@ The passkey screen has priority over the generic connected state until Numeric C
 
 Outside an active BLE pairing session, `EVENT_BUTTON(BUTTON_SHORT)` advances the modem display through a gateway-owned sequence of status pages. The gateway chooses the sequence contents and renders each page into the same 128×64 framebuffer format used for the default banner and pairing screens.
 
-The display controller keeps:
-
-- `current_page: DisplayPage`
-- `page_deadline: Option<Instant>`
+The gateway tracks the status-page cycle as a cursor over the configured page sequence (`StatusPageCycle { next_page_index }` in `bin/gateway.rs`) together with a monotonically increasing `display_generation` used to invalidate older timeout tasks.
 
 Each `BUTTON_SHORT` while no pairing session is active:
 
-1. Advances `current_page` to the next configured status page.
-2. Sends the corresponding framebuffer via the reliable display-transfer path.
-3. Sets `page_deadline = now + 60 s`.
+1. Selects the page indicated by the current cycle cursor and sends the corresponding framebuffer via the reliable display-transfer path.
+2. Advances `next_page_index` so the next short press shows the following configured status page, wrapping at the end of the sequence.
+3. Increments `display_generation` and spawns a 60 s timeout task associated with that generation.
 
-If another `BUTTON_SHORT` arrives before the deadline, the gateway advances again and resets the deadline. If the deadline expires with no further short press, the gateway restores the default `Sonde Gateway v<semver>` banner and clears `current_page` back to the idle banner state.
+If another `BUTTON_SHORT` arrives before the timeout fires, the gateway advances again, increments `display_generation`, and leaves the older timeout task stale. When a timeout task fires, it restores the default `Sonde Gateway v<semver>` banner only if its captured generation still matches the current `display_generation` and no BLE pairing session is active; otherwise it does nothing because a newer display update or pairing session has already claimed the screen.
 
 ### 17.5  `PEER_REQUEST` processing
 

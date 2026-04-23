@@ -337,6 +337,7 @@ async fn schedule_status_page_scroll(
     let task = tokio::spawn(async move {
         let mut offset_y = 0;
         let mut ticker = tokio::time::interval(NODE_STATUS_SCROLL_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ticker.tick().await;
         loop {
             ticker.tick().await;

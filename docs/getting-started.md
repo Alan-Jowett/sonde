@@ -568,6 +568,8 @@ docker build -f .github/docker/Dockerfile.android-dev -t sonde-android-dev .
 
 ## 12  Hardware operations
 
+> **Board-specific note:** The canonical contributor node build is `hw/carrier-board` + Seeed Studio XIAO ESP32-C3. The factory-reset procedure below is a DevKitM-1-specific alternate-board workflow because it relies on that board's BOOT/RESET button behavior and default `GPIO9` mapping.
+
 ### 12.1  Factory reset on ESP32-C3 DevKitM-1
 
 If a node has been previously paired and you need to wipe its credentials and re-provision it, use this procedure:

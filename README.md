@@ -225,7 +225,7 @@ See [Getting Started](docs/getting-started.md) for full toolchain setup.
 - [Overview](docs/overview.md) — project summary, status, and goals
 - [Getting Started](docs/getting-started.md) — developer environment setup, toolchain installation, build and flash commands
 - [Node BOM](docs/node-bom.md) — canonical carrier-board + XIAO ESP32-C3 node build
-- [Modem BOM](docs/gateway-bom.md) — canonical carrier-board + XIAO ESP32-S3 modem build with local display/button
+- [Modem BOM](docs/modem-bom.md) — canonical carrier-board + XIAO ESP32-S3 modem build with local display/button
 - [Contributing](docs/contributing.md) — contribution guidelines, DCO, SPDX requirements
 - [Why BPF?](docs/why-bpf.md) — rationale for using BPF + Prevail as the execution model
 - [BPF Environment](docs/bpf-environment.md) — program API, memory model, verification, and development workflow

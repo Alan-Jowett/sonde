@@ -148,7 +148,7 @@ pub struct UsbEspNowTransport {
 7. Wait for `SET_CHANNEL_ACK` (timeout: 2 seconds).
 8. Start the health monitor task.
 
-The transport adapter stops at the modem handshake boundary. Gateway-owned display policy lives above the transport: once the handshake completes, the gateway runtime renders `Sonde Gateway v<semver>` into a 128×64 1-bit framebuffer and sends it using the reliable display-transfer subprotocol (`DISPLAY_FRAME_BEGIN` plus eight acknowledged `DISPLAY_FRAME_CHUNK` messages) (GW-1101a). The same gateway-owned rendering path also produces the short-press status pages and the timeout-driven return to the default banner (GW-1101b, GW-1101c). This keeps text layout, page selection, and banner policy in the gateway while preserving the modem's role as a dumb framebuffer sink with local panel power management only.
+The transport adapter stops at the modem handshake boundary. Gateway-owned display policy lives above the transport: once the handshake completes, the gateway runtime renders `Sonde Gateway v<semver>` into a 128×64 1-bit framebuffer and sends it using the reliable display-transfer subprotocol (`DISPLAY_FRAME_BEGIN` plus eight acknowledged `DISPLAY_FRAME_CHUNK` messages) (GW-1101a). The same gateway-owned rendering path also produces the short-press status pages, the scrolling oversized `Nodes` page, and the timeout-driven return to the default banner (GW-1101b, GW-1101c, GW-1101d). This keeps text layout, page selection, and banner policy in the gateway while preserving the modem's role as a dumb framebuffer sink with local panel power management only.
 
 **Health monitor (GW-1102):**
 
@@ -1148,7 +1148,9 @@ The passkey screen has priority over the generic connected state until Numeric C
 
 Outside an active BLE pairing session, `EVENT_BUTTON(BUTTON_SHORT)` advances the modem display through a gateway-owned sequence of status pages. The gateway chooses the sequence contents and renders each page into the same 128×64 framebuffer format used for the default banner and pairing screens.
 
-The gateway tracks the status-page cycle as a cursor over the configured page sequence (`StatusPageCycle { next_page_index }` in `bin/gateway.rs`) together with a monotonically increasing `display_generation` used to invalidate older timeout tasks.
+The default page sequence remains `[Channel, Nodes]`. The `Channel` page uses the existing centered two-line renderer. The `Nodes` page uses a node-status renderer that derives its text content from the same field set and omission rules as `sonde-admin node list`: node ID, key hint, assigned/current program hashes, battery, last seen, and schedule, with nodes ordered by `node_id` and `No nodes registered.` shown when the registry is empty.
+
+The gateway tracks the status-page cycle as a cursor over the configured page sequence (`StatusPageCycle { next_page_index }` in `bin/gateway.rs`) together with a monotonically increasing `display_generation` used to invalidate older timeout tasks. When the active page is `Nodes`, the gateway also tracks node-page-local scroll state: the current vertical window offset and whether an autonomous 40 ms scroll ticker is active for the current display generation.
 
 Each `BUTTON_SHORT` while no pairing session is active:
 
@@ -1156,7 +1158,9 @@ Each `BUTTON_SHORT` while no pairing session is active:
 2. Advances `next_page_index` so the next short press shows the following configured status page, wrapping at the end of the sequence.
 3. Increments `display_generation` and spawns a 60 s timeout task associated with that generation.
 
-If another `BUTTON_SHORT` arrives before the timeout fires, the gateway advances again, increments `display_generation`, and leaves the older timeout task stale. When a timeout task fires, it restores the default `Sonde Gateway v<semver>` banner only if its captured generation still matches the current `display_generation` and no BLE pairing session is active; otherwise it does nothing because a newer display update or pairing session has already claimed the screen.
+If the selected page is `Nodes`, the gateway first renders the complete page into an off-screen 1-bit framebuffer sized to the rendered text height. The initial transfer uses the topmost 128×64 window. If the rendered height exceeds 64 pixels, the gateway starts a 40 ms ticker that advances the visible window downward by 2 pixels per update, producing upward text motion on the OLED. The ticker reuses the same reliable display-transfer path as other display updates. When the final 128×64 window has been sent, the next tick restarts from offset 0. If the operator leaves the `Nodes` page and later returns, the page restarts from offset 0 rather than resuming from the previous offset. If the rendered height is 64 pixels or less, the gateway sends a single static page and does not start the ticker.
+
+If another `BUTTON_SHORT` arrives before the timeout fires, the gateway advances again, increments `display_generation`, and leaves the older timeout task stale. Any existing `Nodes` page scroll ticker observes the generation change and exits without sending further updates. When a timeout task fires, it restores the default `Sonde Gateway v<semver>` banner only if its captured generation still matches the current `display_generation` and no BLE pairing session is active; otherwise it does nothing because a newer display update or pairing session has already claimed the screen. Autonomous `Nodes` page scroll updates do not increment `display_generation` and therefore do not extend the 60 s idle timeout.
 
 ### 17.5  `PEER_REQUEST` processing
 

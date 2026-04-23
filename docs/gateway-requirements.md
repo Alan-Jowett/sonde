@@ -1114,13 +1114,15 @@ Whenever the gateway re-initializes the modem after a serial reconnect or warm r
 **Source:** Issue #798
 
 **Description:**
-While no BLE pairing session is active, the gateway SHOULD interpret `EVENT_BUTTON(BUTTON_SHORT)` as a request to advance the modem display to the next gateway-owned status page. The gateway owns status-page selection and framebuffer rendering; the modem continues to render only the received framebuffer bytes.
+While no BLE pairing session is active, the gateway SHOULD interpret `EVENT_BUTTON(BUTTON_SHORT)` as a request to advance the modem display to the next gateway-owned status page. The gateway owns status-page selection and framebuffer rendering; the modem continues to render only the received framebuffer bytes. The default status-page sequence consists of a `Channel` page and a `Nodes` page. The `Nodes` page text output MUST be equivalent to `sonde-admin node list`: nodes are listed in `node_id` order, each node shows `node_id`, `key_hint`, assigned/current program hashes, battery, last seen, and schedule, and optional fields are omitted when absent. An empty node registry MUST display `No nodes registered.`
 
 **Acceptance criteria:**
 
 1. A `BUTTON_SHORT` event received while no BLE pairing session is active causes the gateway to send a new reliable display transfer for the next status page.
-2. Consecutive short presses advance through the configured status-page sequence in order.
-3. Status-page framebuffer generation remains gateway-owned; the modem receives only opaque framebuffer data.
+2. Consecutive short presses advance through the configured status-page sequence in order; the default sequence remains `Channel` followed by `Nodes`.
+3. The `Nodes` page renders the same field set and omission rules as `sonde-admin node list`.
+4. When the node registry is empty, the `Nodes` page displays `No nodes registered.`
+5. Status-page framebuffer generation remains gateway-owned; the modem receives only opaque framebuffer data.
 
 ---
 
@@ -1130,13 +1132,32 @@ While no BLE pairing session is active, the gateway SHOULD interpret `EVENT_BUTT
 **Source:** Issue #798
 
 **Description:**
-After the gateway switches the modem display away from the default `Sonde Gateway v<semver>` banner for a short-press status page, it SHOULD restore the default banner after 60 seconds without further short-press navigation activity.
+After the gateway switches the modem display away from the default `Sonde Gateway v<semver>` banner for a short-press status page, it SHOULD restore the default banner after 60 seconds without further short-press navigation activity. Autonomous scroll updates on the `Nodes` page do not count as navigation activity and therefore do not extend the idle timeout.
 
 **Acceptance criteria:**
 
 1. The idle timeout for returning from a status page to the default banner is 60 seconds.
 2. A new short press received before the timeout expires resets the 60-second timeout against the newly selected status page.
 3. When the timeout expires, the gateway sends the same default version banner format defined by GW-1101a.
+4. Autonomous `Nodes` page scroll updates do not reset or extend the 60-second timeout.
+
+---
+
+### GW-1101d  Scrolling oversized `Nodes` status page
+
+**Priority:** Should
+**Source:** Issue #798
+
+**Description:**
+When the rendered `Nodes` status page is taller than the modem display, the gateway SHOULD render the complete node-list text into an off-screen 1-bit framebuffer tall enough to contain all rendered rows, then send a scrolling 128×64 visible window while that page remains active. The visible window advances downward through the off-screen framebuffer by 2 pixels every 40 ms, which makes the displayed text scroll upward. After the final window is shown, the next scroll update restarts from the top. Each time the user re-enters the `Nodes` page via short-press navigation, scrolling restarts from the top.
+
+**Acceptance criteria:**
+
+1. The gateway renders the full `Nodes` page text into an off-screen framebuffer tall enough to contain all rendered rows before extracting visible windows for display transfer.
+2. While the active `Nodes` page content exceeds 64 pixels in height, the gateway sends a new reliable display transfer every 40 ms whose visible window is shifted by 2 pixels relative to the prior update.
+3. When the visible window reaches the end of the off-screen framebuffer, the next scroll update restarts from the top of the rendered content.
+4. When short-press navigation enters the `Nodes` page, the first visible window starts at the top of the rendered content.
+5. If the rendered `Nodes` page content fits within 64 pixels, the gateway sends a static page and does not start the autonomous scroll updates.
 
 ---
 
@@ -1362,7 +1383,7 @@ The gateway MUST open the registration window either via a modem `EVENT_BUTTON(B
 7. The default duration is 120 s.
 8. Opening the window sends `BLE_ENABLE` to the modem.
 9. Closing the window (auto-close, explicit admin close, or button cancel) sends `BLE_DISABLE` to the modem.
-10. A `BUTTON_SHORT` event received while no BLE pairing session is active does not open or close the registration window; display-page navigation is governed separately by GW-1101b / GW-1101c.
+10. A `BUTTON_SHORT` event received while no BLE pairing session is active does not open or close the registration window; display-page navigation is governed separately by GW-1101b / GW-1101c / GW-1101d.
 
 ---
 
@@ -2276,6 +2297,7 @@ The `secret-service` (D-Bus keyring) dependency MUST be behind a cargo feature f
 | GW-1101a | Modem-ready display banner | Must |
 | GW-1101b | Short-press display page navigation | Should |
 | GW-1101c | Idle return to default display banner | Should |
+| GW-1101d | Scrolling oversized `Nodes` status page | Should |
 | GW-1102 | Modem health monitoring | Should |
 | GW-1103 | Modem error handling | Must |
 | GW-1200 | Ed25519 keypair generation — RETIRED | Must |

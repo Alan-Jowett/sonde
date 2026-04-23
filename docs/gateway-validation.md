@@ -1690,7 +1690,7 @@ A configurable stub handler process (or in-process mock) that:
 2. Record the framebuffer sent for the default `Sonde Gateway v<semver>` banner.
 3. Inject `EVENT_BUTTON(BUTTON_SHORT)` while no BLE pairing session is active.
 4. Assert: the gateway sends a new reliable display transfer.
-5. Reassemble the new framebuffer and assert: it differs from the default banner framebuffer.
+5. Reassemble the new framebuffer and assert: it renders the `Channel` status page.
 6. Assert: no `BLE_ENABLE` or `BLE_DISABLE` message is sent as a result of the short press.
 
 ---
@@ -1702,11 +1702,71 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Start a gateway instance with a mock modem and complete the startup handshake.
 2. Inject `EVENT_BUTTON(BUTTON_SHORT)` while no BLE pairing session is active and capture the resulting status-page framebuffer.
-3. Before 60 seconds elapse, inject a second `EVENT_BUTTON(BUTTON_SHORT)`.
-4. Assert: the gateway sends another reliable display transfer for the next status page and resets the page timeout.
-5. Advance time by just under 60 seconds from the second short press and assert: the default banner has not yet been restored.
-6. Advance time past the 60-second timeout.
-7. Assert: the gateway sends the default `Sonde Gateway v<semver>` banner again.
+3. Before 60 seconds elapse, inject a second `EVENT_BUTTON(BUTTON_SHORT)` to enter the `Nodes` page.
+4. Assert: the gateway sends another reliable display transfer for the `Nodes` page and resets the page timeout.
+5. If the rendered `Nodes` page is taller than 64 pixels, observe one or more autonomous scroll updates and assert: they occur without any additional button events.
+6. Advance time by just under 60 seconds from the second short press and assert: the default banner has not yet been restored.
+7. Advance time past the 60-second timeout.
+8. Assert: the gateway sends the default `Sonde Gateway v<semver>` banner again even if the `Nodes` page was autonomously scrolling.
+
+---
+
+### T-1103d  `Nodes` page text matches `sonde-admin node list`
+
+**Validates:** GW-1101b
+
+**Procedure:**
+1. Start a gateway instance with a mock modem and complete the startup handshake.
+2. Populate storage with at least two nodes whose metadata exercises optional fields: assigned/current program hashes, battery, last seen, and schedule on one node, and at least one omitted optional field on another.
+3. Inject `EVENT_BUTTON(BUTTON_SHORT)` twice while no BLE pairing session is active so the second page shown is `Nodes`.
+4. Reassemble the first visible `Nodes` page framebuffer.
+5. Assert: the rendered text uses the same field set, omission rules, and node ordering as `sonde-admin node list`.
+
+---
+
+### T-1103e  Oversized `Nodes` page scrolls 2 pixels every 40 ms and wraps
+
+**Validates:** GW-1101d
+
+**Procedure:**
+1. Start a gateway instance with a mock modem and complete the startup handshake.
+2. Populate storage with enough nodes that the rendered `Nodes` page exceeds 64 pixels in height.
+3. Inject `EVENT_BUTTON(BUTTON_SHORT)` twice while no BLE pairing session is active so the second page shown is `Nodes`.
+4. Independently construct the expected full rendered `Nodes` page image using the `sonde-admin node list` field set and omission rules, and confirm that its height exceeds 64 pixels.
+5. Capture the initial `Nodes` page framebuffer and treat it as offset 0.
+6. Advance mocked time by 40 ms.
+7. Assert: the gateway sends a new reliable display transfer whose visible window is shifted by 2 pixels relative to offset 0.
+8. Continue advancing mocked time in 40 ms increments and assert: each emitted framebuffer matches the next 2-pixel window over the independently constructed full rendered image, including a window that exposes the final rendered rows before wraparound.
+9. Assert: the next 40 ms update restarts the visible window at the top of the rendered content.
+
+---
+
+### T-1103f  Re-entering `Nodes` page restarts scroll at the top
+
+**Validates:** GW-1101d
+
+**Procedure:**
+1. Start a gateway instance with a mock modem and complete the startup handshake.
+2. Populate storage with enough nodes that the rendered `Nodes` page exceeds 64 pixels in height.
+3. Inject `EVENT_BUTTON(BUTTON_SHORT)` twice to enter the `Nodes` page.
+4. Advance mocked time long enough for at least one autonomous scroll update.
+5. Inject another `EVENT_BUTTON(BUTTON_SHORT)` to leave the `Nodes` page, then another `EVENT_BUTTON(BUTTON_SHORT)` to return to it on the next cycle.
+6. Assert: the first framebuffer shown after re-entering `Nodes` matches the top-of-page visible window rather than a previously scrolled offset.
+
+---
+
+### T-1103g  Short `Nodes` page is static and shows the empty-registry message
+
+**Validates:** GW-1101b, GW-1101d
+
+**Procedure:**
+1. Start a gateway instance with a mock modem and complete the startup handshake.
+2. Leave the node registry empty.
+3. Inject `EVENT_BUTTON(BUTTON_SHORT)` twice while no BLE pairing session is active so the second page shown is `Nodes`.
+4. Reassemble the `Nodes` page framebuffer.
+5. Assert: the rendered text is `No nodes registered.`
+6. Advance mocked time by at least 120 ms.
+7. Assert: no autonomous scroll update is sent before the normal 60-second idle-return timeout fires.
 
 ---
 

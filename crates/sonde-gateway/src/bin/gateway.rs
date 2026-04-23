@@ -5,20 +5,25 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, Utc};
 use clap::Parser;
 #[cfg(windows)]
 use clap::Subcommand;
-use sonde_protocol::modem::{BUTTON_TYPE_LONG, BUTTON_TYPE_SHORT};
+use sonde_protocol::modem::{BUTTON_TYPE_LONG, BUTTON_TYPE_SHORT, DISPLAY_FRAME_BODY_SIZE};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
-use sonde_gateway::display_banner::{send_display_message, send_gateway_version_banner};
+use sonde_gateway::display_banner::{
+    render_display_message, render_status_text_page, send_display_message,
+    send_gateway_version_banner, ScrollableFramebuffer, STATUS_TEXT_COLUMNS,
+};
 use sonde_gateway::engine::{resolve_espnow_channel, Gateway, PendingCommand};
 use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
 use sonde_gateway::key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeyProviderError};
 use sonde_gateway::modem::UsbEspNowTransport;
+use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::storage::Storage;
@@ -36,6 +41,8 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const BUTTON_PAIRING_DURATION_S: u32 = 120;
 const BUTTON_EXIT_REASON_DISPLAY_DURATION: Duration = Duration::from_secs(2);
 const STATUS_PAGE_TIMEOUT: Duration = Duration::from_secs(60);
+const NODE_STATUS_SCROLL_INTERVAL: Duration = Duration::from_millis(40);
+const NODE_STATUS_SCROLL_STEP_PX: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ButtonDisplayState {
@@ -58,6 +65,27 @@ struct StatusPageCycle {
     next_page_index: usize,
 }
 
+enum RenderedStatusPage {
+    Static(Box<[u8; DISPLAY_FRAME_BODY_SIZE]>),
+    Scrollable(ScrollableFramebuffer),
+}
+
+impl RenderedStatusPage {
+    fn initial_frame(&self) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
+        match self {
+            Self::Static(frame) => **frame,
+            Self::Scrollable(framebuffer) => framebuffer.visible_window(0),
+        }
+    }
+
+    fn scrollable_frame(&self) -> Option<&ScrollableFramebuffer> {
+        match self {
+            Self::Scrollable(framebuffer) if framebuffer.is_scrollable() => Some(framebuffer),
+            _ => None,
+        }
+    }
+}
+
 async fn update_display_message(transport: &Arc<UsbEspNowTransport>, lines: &[&str]) {
     if let Err(e) = send_display_message(transport, lines).await {
         warn!(error = %e, ?lines, "failed to update display");
@@ -72,25 +100,132 @@ async fn reset_status_page_cycle(status_page_cycle: &Arc<tokio::sync::Mutex<Stat
     status_page_cycle.lock().await.next_page_index = 0;
 }
 
-async fn render_status_page_lines(
+fn format_epoch_ms(ms: u64) -> String {
+    let Ok(ms_i64) = i64::try_from(ms) else {
+        return format!("<invalid timestamp: {ms}>");
+    };
+
+    DateTime::<Utc>::from_timestamp_millis(ms_i64)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| format!("<invalid timestamp: {ms}>"))
+}
+
+fn format_system_time_for_display(timestamp: SystemTime) -> String {
+    match timestamp.duration_since(UNIX_EPOCH) {
+        Ok(duration) => {
+            let ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+            format_epoch_ms(ms)
+        }
+        Err(_) => "<invalid timestamp>".to_string(),
+    }
+}
+
+fn split_text_chunks(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let end = (start + width).min(chars.len());
+        chunks.push(chars[start..end].iter().collect());
+        start = end;
+    }
+    chunks
+}
+
+fn push_wrapped_text_line(lines: &mut Vec<String>, text: &str) {
+    lines.extend(split_text_chunks(text, STATUS_TEXT_COLUMNS));
+}
+
+fn push_wrapped_value_line(lines: &mut Vec<String>, prefix: &str, value: &str) {
+    let prefix_len = prefix.chars().count();
+    if prefix_len >= STATUS_TEXT_COLUMNS {
+        push_wrapped_text_line(lines, &format!("{prefix}{value}"));
+        return;
+    }
+
+    let continuation = " ".repeat(prefix_len);
+    let value_chunks = split_text_chunks(value, STATUS_TEXT_COLUMNS.saturating_sub(prefix_len));
+    for (index, chunk) in value_chunks.into_iter().enumerate() {
+        if index == 0 {
+            lines.push(format!("{prefix}{chunk}"));
+        } else {
+            lines.push(format!("{continuation}{chunk}"));
+        }
+    }
+}
+
+fn build_node_status_lines(nodes: &[NodeRecord]) -> Vec<String> {
+    if nodes.is_empty() {
+        return vec!["No nodes registered.".to_string()];
+    }
+
+    let mut sorted_nodes = nodes.to_vec();
+    sorted_nodes.sort_by(|left, right| left.node_id.cmp(&right.node_id));
+
+    let mut lines = Vec::new();
+    for node in sorted_nodes {
+        push_wrapped_text_line(
+            &mut lines,
+            &format!("  {} (key_hint={})", node.node_id, node.key_hint),
+        );
+        if let Some(hash) = node.assigned_program_hash.as_ref() {
+            push_wrapped_value_line(&mut lines, "    assigned: ", &hex::encode(hash));
+        }
+        if let Some(hash) = node.current_program_hash.as_ref() {
+            push_wrapped_value_line(&mut lines, "    current:  ", &hex::encode(hash));
+        }
+        if let Some(mv) = node.last_battery_mv {
+            push_wrapped_value_line(&mut lines, "    battery:  ", &format!("{mv} mV"));
+        }
+        if let Some(last_seen) = node.last_seen {
+            push_wrapped_value_line(
+                &mut lines,
+                "    last seen: ",
+                &format_system_time_for_display(last_seen),
+            );
+        }
+        push_wrapped_value_line(
+            &mut lines,
+            "    schedule: ",
+            &format!("{}s", node.schedule_interval_s),
+        );
+    }
+
+    lines
+}
+
+async fn render_status_page(
     storage: &Arc<dyn Storage>,
     default_channel: u8,
     page: StatusPage,
-) -> [String; 2] {
+) -> RenderedStatusPage {
     match page {
-        StatusPage::Channel => match storage.get_config("espnow_channel").await {
-            Ok(Some(channel)) => ["Channel".to_string(), channel],
-            Ok(None) => ["Channel".to_string(), default_channel.to_string()],
-            Err(e) => {
-                warn!(error = %e, "failed to load espnow_channel for status page");
-                ["Channel".to_string(), "Error".to_string()]
-            }
-        },
+        StatusPage::Channel => {
+            let lines = match storage.get_config("espnow_channel").await {
+                Ok(Some(channel)) => ["Channel".to_string(), channel],
+                Ok(None) => ["Channel".to_string(), default_channel.to_string()],
+                Err(e) => {
+                    warn!(error = %e, "failed to load espnow_channel for status page");
+                    ["Channel".to_string(), "Error".to_string()]
+                }
+            };
+            let line_refs = [lines[0].as_str(), lines[1].as_str()];
+            RenderedStatusPage::Static(Box::new(render_display_message(&line_refs)))
+        }
         StatusPage::Nodes => match storage.list_nodes().await {
-            Ok(nodes) => ["Nodes".to_string(), nodes.len().to_string()],
+            Ok(nodes) => RenderedStatusPage::Scrollable(render_status_text_page(
+                &build_node_status_lines(&nodes),
+            )),
             Err(e) => {
-                warn!(error = %e, "failed to load node count for status page");
-                ["Nodes".to_string(), "Error".to_string()]
+                warn!(error = %e, "failed to load nodes for status page");
+                RenderedStatusPage::Static(Box::new(render_display_message(&["Nodes", "Error"])))
             }
         },
     }
@@ -127,7 +262,7 @@ fn schedule_status_page_banner_restore(
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
     status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
-) {
+) -> u64 {
     let generation = display_generation.fetch_add(1, Ordering::SeqCst) + 1;
     let transport: Weak<UsbEspNowTransport> = Arc::downgrade(transport);
     let controller = Arc::clone(controller);
@@ -147,6 +282,56 @@ fn schedule_status_page_banner_restore(
         };
         if let Err(e) = send_gateway_version_banner(&transport).await {
             warn!(error = %e, "failed to restore gateway version banner");
+        }
+    });
+    generation
+}
+
+fn schedule_status_page_scroll(
+    transport: &Arc<UsbEspNowTransport>,
+    controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
+    display_generation: &Arc<AtomicU64>,
+    generation: u64,
+    framebuffer: &ScrollableFramebuffer,
+) {
+    if !framebuffer.is_scrollable() {
+        return;
+    }
+
+    let transport: Weak<UsbEspNowTransport> = Arc::downgrade(transport);
+    let controller = Arc::clone(controller);
+    let display_generation = Arc::clone(display_generation);
+    let framebuffer = framebuffer.clone();
+    tokio::spawn(async move {
+        let mut offset_y = 0;
+        let mut ticker = tokio::time::interval(NODE_STATUS_SCROLL_INTERVAL);
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            if display_generation.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            if controller.session_origin().await.is_some() {
+                return;
+            }
+            let Some(transport) = transport.upgrade() else {
+                return;
+            };
+
+            let max_offset = framebuffer.max_offset();
+            offset_y = if offset_y >= max_offset {
+                0
+            } else {
+                (offset_y + NODE_STATUS_SCROLL_STEP_PX).min(max_offset)
+            };
+
+            if let Err(e) = transport
+                .send_display_frame(framebuffer.visible_window(offset_y))
+                .await
+            {
+                warn!(error = %e, offset_y, "failed to scroll node status page");
+                return;
+            }
         }
     });
 }
@@ -326,15 +511,32 @@ async fn handle_idle_button_short_event(
         cycle.next_page_index = (cycle.next_page_index + 1) % StatusPage::ALL.len();
         page
     };
-    let lines = render_status_page_lines(storage, default_channel, page).await;
-    let line_refs = [lines[0].as_str(), lines[1].as_str()];
-    update_display_message(transport, &line_refs).await;
-    schedule_status_page_banner_restore(
+    let rendered_page = render_status_page(storage, default_channel, page).await;
+    let initial_frame = rendered_page.initial_frame();
+    let initial_send_ok = match transport.send_display_frame(initial_frame).await {
+        Ok(()) => true,
+        Err(e) => {
+            warn!(error = %e, ?page, "failed to update status page");
+            false
+        }
+    };
+    let generation = schedule_status_page_banner_restore(
         transport,
         controller,
         display_generation,
         status_page_cycle,
     );
+    if initial_send_ok {
+        if let Some(framebuffer) = rendered_page.scrollable_frame() {
+            schedule_status_page_scroll(
+                transport,
+                controller,
+                display_generation,
+                generation,
+                framebuffer,
+            );
+        }
+    }
     true
 }
 
@@ -1689,6 +1891,81 @@ mod tests {
         framebuffer
     }
 
+    fn make_rich_node(node_id: &str, key_hint: u16, fill: u8, last_seen_s: u64) -> NodeRecord {
+        let mut node = NodeRecord::new(node_id.to_string(), key_hint, [fill; 32]);
+        node.assigned_program_hash = Some(vec![fill; 32]);
+        node.current_program_hash = Some(vec![fill.saturating_add(1); 32]);
+        node.last_battery_mv = Some(3200 + u32::from(fill));
+        node.last_seen = Some(UNIX_EPOCH + Duration::from_secs(last_seen_s));
+        node.schedule_interval_s = 60 + u32::from(fill);
+        node
+    }
+
+    #[test]
+    fn node_status_lines_sort_nodes_and_omit_absent_fields() {
+        let node_a = NodeRecord::new("a".to_string(), 1, [0x11; 32]);
+        let node_b = make_rich_node("b", 2, 0x22, 1_700_000_000);
+
+        let lines = build_node_status_lines(&[node_b.clone(), node_a.clone()]);
+        let a_index = lines
+            .iter()
+            .position(|line| line == "  a (key_hint=1)")
+            .expect("node a header missing");
+        let b_index = lines
+            .iter()
+            .position(|line| line == "  b (key_hint=2)")
+            .expect("node b header missing");
+        assert!(a_index < b_index, "nodes must be sorted by node_id");
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("assigned"))
+                .count(),
+            1,
+            "assigned program hash should be omitted when absent"
+        );
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("current")).count(),
+            1,
+            "current program hash should be omitted when absent"
+        );
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("battery")).count(),
+            1,
+            "battery should be omitted when absent"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("last seen"))
+                .count(),
+            1,
+            "last seen should be omitted when absent"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("schedule"))
+                .count(),
+            2,
+            "schedule should be shown for each node"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.chars().count() <= STATUS_TEXT_COLUMNS),
+            "all rendered lines must fit within the status text width"
+        );
+    }
+
+    #[test]
+    fn empty_node_status_lines_show_empty_registry_message() {
+        assert_eq!(
+            build_node_status_lines(&[] as &[NodeRecord]),
+            vec!["No nodes registered.".to_string()]
+        );
+    }
+
     async fn open_button_pairing_for_test(
         transport: Arc<UsbEspNowTransport>,
         controller: Arc<BlePairingController>,
@@ -2102,14 +2379,10 @@ mod tests {
         let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let storage = Arc::new(InMemoryStorage::new());
         storage.set_config("espnow_channel", "11").await.unwrap();
-        storage
-            .upsert_node(&NodeRecord::new("node-a".to_string(), 0x1001, [0x42; 32]))
-            .await
-            .unwrap();
-        storage
-            .upsert_node(&NodeRecord::new("node-b".to_string(), 0x1002, [0x24; 32]))
-            .await
-            .unwrap();
+        let node_a = NodeRecord::new("a".to_string(), 1, [0x42; 32]);
+        let node_b = NodeRecord::new("b".to_string(), 2, [0x24; 32]);
+        storage.upsert_node(&node_a).await.unwrap();
+        storage.upsert_node(&node_b).await.unwrap();
         let storage: Arc<dyn Storage> = storage;
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
@@ -2136,6 +2409,12 @@ mod tests {
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
         assert_eq!(framebuffer, render_display_message(&["Channel", "11"]));
         assert!(first_press.await.unwrap());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), server.read(&mut buf))
+                .await
+                .is_err(),
+            "short press must not emit BLE control messages"
+        );
 
         tokio::time::advance(Duration::from_secs(30)).await;
         let second_press = tokio::spawn({
@@ -2157,8 +2436,16 @@ mod tests {
             }
         });
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
-        assert_eq!(framebuffer, render_display_message(&["Nodes", "2"]));
+        let expected_nodes_page =
+            render_status_text_page(&build_node_status_lines(&[node_a.clone(), node_b.clone()]));
+        assert_eq!(framebuffer, expected_nodes_page.visible_window(0));
         assert!(second_press.await.unwrap());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), server.read(&mut buf))
+                .await
+                .is_err(),
+            "short press must not emit BLE control messages"
+        );
 
         tokio::time::advance(STATUS_PAGE_TIMEOUT + Duration::from_millis(100)).await;
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
@@ -2167,6 +2454,201 @@ mod tests {
             render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
         );
         assert_eq!(status_page_cycle.lock().await.next_page_index, 0);
+    }
+
+    #[tokio::test]
+    async fn idle_button_short_scrolls_nodes_page_and_wraps_to_top() {
+        let (transport, mut server) = create_transport_and_server(6).await;
+        let controller = Arc::new(BlePairingController::new());
+        let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
+        let storage = Arc::new(InMemoryStorage::new());
+        storage.set_config("espnow_channel", "11").await.unwrap();
+        let node_a = make_rich_node("node-a", 0x1001, 0x41, 1_700_000_000);
+        let node_b = make_rich_node("node-b", 0x1002, 0x52, 1_700_000_060);
+        storage.upsert_node(&node_a).await.unwrap();
+        storage.upsert_node(&node_b).await.unwrap();
+        let storage: Arc<dyn Storage> = storage;
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 2048];
+
+        let expected_page =
+            render_status_text_page(&build_node_status_lines(&[node_a.clone(), node_b.clone()]));
+        assert!(expected_page.is_scrollable(), "rich node page must scroll");
+
+        tokio::time::pause();
+        for expected_frame in [
+            render_display_message(&["Channel", "11"]),
+            expected_page.visible_window(0),
+        ] {
+            let press = tokio::spawn({
+                let transport = Arc::clone(&transport);
+                let controller = Arc::clone(&controller);
+                let storage = Arc::clone(&storage);
+                let display_generation = Arc::clone(&display_generation);
+                let status_page_cycle = Arc::clone(&status_page_cycle);
+                async move {
+                    handle_idle_button_short_event(
+                        &transport,
+                        &controller,
+                        &storage,
+                        6,
+                        &display_generation,
+                        &status_page_cycle,
+                    )
+                    .await
+                }
+            });
+            let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+            assert_eq!(framebuffer, expected_frame);
+            assert!(press.await.unwrap());
+        }
+
+        let mut expected_offset = 0;
+        while expected_offset < expected_page.max_offset() {
+            tokio::time::advance(NODE_STATUS_SCROLL_INTERVAL).await;
+            expected_offset =
+                (expected_offset + NODE_STATUS_SCROLL_STEP_PX).min(expected_page.max_offset());
+            let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+            assert_eq!(framebuffer, expected_page.visible_window(expected_offset));
+        }
+
+        tokio::time::advance(NODE_STATUS_SCROLL_INTERVAL).await;
+        let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+        assert_eq!(framebuffer, expected_page.visible_window(0));
+    }
+
+    #[tokio::test]
+    async fn reentering_nodes_page_restarts_scroll_from_top() {
+        let (transport, mut server) = create_transport_and_server(6).await;
+        let controller = Arc::new(BlePairingController::new());
+        let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
+        let storage = Arc::new(InMemoryStorage::new());
+        storage.set_config("espnow_channel", "11").await.unwrap();
+        let node_a = make_rich_node("node-a", 0x1001, 0x41, 1_700_000_000);
+        let node_b = make_rich_node("node-b", 0x1002, 0x52, 1_700_000_060);
+        storage.upsert_node(&node_a).await.unwrap();
+        storage.upsert_node(&node_b).await.unwrap();
+        let storage: Arc<dyn Storage> = storage;
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 2048];
+
+        let expected_nodes_page =
+            render_status_text_page(&build_node_status_lines(&[node_a.clone(), node_b.clone()]));
+
+        tokio::time::pause();
+        for _ in 0..2 {
+            let press = tokio::spawn({
+                let transport = Arc::clone(&transport);
+                let controller = Arc::clone(&controller);
+                let storage = Arc::clone(&storage);
+                let display_generation = Arc::clone(&display_generation);
+                let status_page_cycle = Arc::clone(&status_page_cycle);
+                async move {
+                    handle_idle_button_short_event(
+                        &transport,
+                        &controller,
+                        &storage,
+                        6,
+                        &display_generation,
+                        &status_page_cycle,
+                    )
+                    .await
+                }
+            });
+            let _ = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+            assert!(press.await.unwrap());
+        }
+
+        tokio::time::advance(NODE_STATUS_SCROLL_INTERVAL).await;
+        let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+        assert_eq!(
+            framebuffer,
+            expected_nodes_page.visible_window(NODE_STATUS_SCROLL_STEP_PX)
+        );
+
+        for expected_frame in [
+            render_display_message(&["Channel", "11"]),
+            expected_nodes_page.visible_window(0),
+        ] {
+            let press = tokio::spawn({
+                let transport = Arc::clone(&transport);
+                let controller = Arc::clone(&controller);
+                let storage = Arc::clone(&storage);
+                let display_generation = Arc::clone(&display_generation);
+                let status_page_cycle = Arc::clone(&status_page_cycle);
+                async move {
+                    handle_idle_button_short_event(
+                        &transport,
+                        &controller,
+                        &storage,
+                        6,
+                        &display_generation,
+                        &status_page_cycle,
+                    )
+                    .await
+                }
+            });
+            let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+            assert_eq!(framebuffer, expected_frame);
+            assert!(press.await.unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_nodes_page_is_static() {
+        let (transport, mut server) = create_transport_and_server(6).await;
+        let controller = Arc::new(BlePairingController::new());
+        let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
+        let storage = Arc::new(InMemoryStorage::new());
+        storage.set_config("espnow_channel", "11").await.unwrap();
+        let storage: Arc<dyn Storage> = storage;
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 2048];
+
+        let expected_page = render_status_text_page(&build_node_status_lines(&[] as &[NodeRecord]));
+        assert!(
+            !expected_page.is_scrollable(),
+            "empty state should be static"
+        );
+
+        tokio::time::pause();
+        for expected_frame in [
+            render_display_message(&["Channel", "11"]),
+            expected_page.visible_window(0),
+        ] {
+            let press = tokio::spawn({
+                let transport = Arc::clone(&transport);
+                let controller = Arc::clone(&controller);
+                let storage = Arc::clone(&storage);
+                let display_generation = Arc::clone(&display_generation);
+                let status_page_cycle = Arc::clone(&status_page_cycle);
+                async move {
+                    handle_idle_button_short_event(
+                        &transport,
+                        &controller,
+                        &storage,
+                        6,
+                        &display_generation,
+                        &status_page_cycle,
+                    )
+                    .await
+                }
+            });
+            let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+            assert_eq!(framebuffer, expected_frame);
+            assert!(press.await.unwrap());
+        }
+
+        tokio::time::advance(Duration::from_millis(120)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.read(&mut buf))
+                .await
+                .is_err(),
+            "static node page must not emit autonomous scroll updates"
+        );
     }
 
     #[tokio::test]

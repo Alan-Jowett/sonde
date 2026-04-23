@@ -525,6 +525,11 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll, D: Display> Bridge<S, R, 
         }
     }
 
+    fn abort_display_transfer_invalid_frame(&mut self) {
+        self.display_transfer = None;
+        self.send_event_error(EVENT_ERROR_INVALID_FRAME);
+    }
+
     /// Send MODEM_READY to the gateway.
     pub fn send_modem_ready(&mut self) {
         let mac = self.radio.mac_address();
@@ -588,7 +593,13 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll, D: Display> Bridge<S, R, 
                         MODEM_MSG_DISPLAY_FRAME_BEGIN | MODEM_MSG_DISPLAY_FRAME_CHUNK
                     ) =>
                 {
-                    self.send_event_error(EVENT_ERROR_INVALID_FRAME);
+                    self.abort_display_transfer_invalid_frame();
+                    continue;
+                }
+                Err(ModemCodecError::InvalidFieldValue { msg_type, .. })
+                    if msg_type == MODEM_MSG_DISPLAY_FRAME_CHUNK =>
+                {
+                    self.abort_display_transfer_invalid_frame();
                     continue;
                 }
                 Err(_) => {
@@ -823,12 +834,12 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll, D: Display> Bridge<S, R, 
 
     fn handle_display_frame_chunk(&mut self, chunk: DisplayFrameChunk) {
         let Some(current) = self.display_transfer.as_ref() else {
-            self.send_event_error(EVENT_ERROR_INVALID_FRAME);
+            self.abort_display_transfer_invalid_frame();
             return;
         };
 
         if chunk.transfer_id != current.transfer_id {
-            self.send_event_error(EVENT_ERROR_INVALID_FRAME);
+            self.abort_display_transfer_invalid_frame();
             return;
         }
 
@@ -1269,6 +1280,56 @@ mod tests {
     }
 
     #[test]
+    fn invalid_display_chunk_index_aborts_active_transfer() {
+        let mut bridge = make_bridge_with_display();
+        let begin = encode_modem_frame(&ModemMessage::DisplayFrameBegin(DisplayFrameBegin {
+            transfer_id: 0x31,
+        }))
+        .unwrap();
+        feed_and_drain(&mut bridge, &begin);
+        assert_eq!(
+            decode_all_messages(&bridge.usb.take_tx()),
+            vec![ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                transfer_id: 0x31,
+                next_chunk_index: 0,
+            })]
+        );
+
+        let mut invalid_chunk = Vec::new();
+        invalid_chunk
+            .extend_from_slice(&((1 + DISPLAY_FRAME_CHUNK_BODY_SIZE) as u16).to_be_bytes());
+        invalid_chunk.push(MODEM_MSG_DISPLAY_FRAME_CHUNK);
+        invalid_chunk.push(0x31);
+        invalid_chunk.push(DISPLAY_FRAME_CHUNK_COUNT);
+        invalid_chunk.extend_from_slice(&[0u8; DISPLAY_FRAME_CHUNK_SIZE]);
+        feed_and_drain(&mut bridge, &invalid_chunk);
+        assert_eq!(
+            decode_all_messages(&bridge.usb.take_tx()),
+            vec![ModemMessage::EventError(EventError {
+                error_code: EVENT_ERROR_INVALID_FRAME,
+            })]
+        );
+
+        let valid_old_chunk = encode_modem_frame(&ModemMessage::DisplayFrameChunk(Box::new(
+            DisplayFrameChunk {
+                transfer_id: 0x31,
+                chunk_index: 0,
+                chunk_data: [0u8; DISPLAY_FRAME_CHUNK_SIZE],
+            },
+        )))
+        .unwrap();
+        feed_and_drain(&mut bridge, &valid_old_chunk);
+
+        assert!(bridge.display.queued_frames.is_empty());
+        assert_eq!(
+            decode_all_messages(&bridge.usb.take_tx()),
+            vec![ModemMessage::EventError(EventError {
+                error_code: EVENT_ERROR_INVALID_FRAME,
+            })]
+        );
+    }
+
+    #[test]
     fn display_write_failure_emits_event_error() {
         let mut bridge = make_bridge_with_display();
         let frame = encode_display_transfer([0x42; DISPLAY_FRAME_BODY_SIZE], 0x24);
@@ -1325,6 +1386,57 @@ mod tests {
                     next_chunk_index: 1,
                 }),
             ]
+        );
+    }
+
+    #[test]
+    fn mismatched_display_transfer_id_aborts_active_transfer() {
+        let mut bridge = make_bridge_with_display();
+        let begin = encode_modem_frame(&ModemMessage::DisplayFrameBegin(DisplayFrameBegin {
+            transfer_id: 0x11,
+        }))
+        .unwrap();
+        feed_and_drain(&mut bridge, &begin);
+        assert_eq!(
+            decode_all_messages(&bridge.usb.take_tx()),
+            vec![ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                transfer_id: 0x11,
+                next_chunk_index: 0,
+            })]
+        );
+
+        let mismatched_chunk = encode_modem_frame(&ModemMessage::DisplayFrameChunk(Box::new(
+            DisplayFrameChunk {
+                transfer_id: 0x22,
+                chunk_index: 0,
+                chunk_data: [0u8; DISPLAY_FRAME_CHUNK_SIZE],
+            },
+        )))
+        .unwrap();
+        feed_and_drain(&mut bridge, &mismatched_chunk);
+        assert_eq!(
+            decode_all_messages(&bridge.usb.take_tx()),
+            vec![ModemMessage::EventError(EventError {
+                error_code: EVENT_ERROR_INVALID_FRAME,
+            })]
+        );
+
+        let old_transfer_chunk = encode_modem_frame(&ModemMessage::DisplayFrameChunk(Box::new(
+            DisplayFrameChunk {
+                transfer_id: 0x11,
+                chunk_index: 0,
+                chunk_data: [0u8; DISPLAY_FRAME_CHUNK_SIZE],
+            },
+        )))
+        .unwrap();
+        feed_and_drain(&mut bridge, &old_transfer_chunk);
+
+        assert!(bridge.display.queued_frames.is_empty());
+        assert_eq!(
+            decode_all_messages(&bridge.usb.take_tx()),
+            vec![ModemMessage::EventError(EventError {
+                error_code: EVENT_ERROR_INVALID_FRAME,
+            })]
         );
     }
 

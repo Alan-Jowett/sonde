@@ -96,12 +96,12 @@ async fn open_button_pairing_session(
     {
         return false;
     }
-    invalidate_button_display_restore(display_generation);
     if let Err(e) = transport.send_ble_enable().await {
         controller.close_window().await;
         error!("BLE_ENABLE send error for button pairing: {e}");
         return false;
     }
+    invalidate_button_display_restore(display_generation);
     window.open(BUTTON_PAIRING_DURATION_S);
     *display_state = ButtonDisplayState::Generic;
     info!("button-initiated BLE pairing opened");
@@ -795,6 +795,7 @@ async fn run_gateway(
                 tokio::pin!(recv_ble_event);
 
                 let event = tokio::select! {
+                    biased;
                     _ = &mut button_timeout, if button_timeout_armed => {
                         button_timeout_armed = false;
                         handle_button_pairing_timeout(
@@ -839,7 +840,8 @@ async fn run_gateway(
                                 };
 
                             if sent
-                                && ble_ctrl.session_origin().await == Some(PairingOrigin::Button)
+                                && ble_ctrl.session_origin_raw().await
+                                    == Some(PairingOrigin::Button)
                                 && ble_ctrl.take_successful_registration().await
                             {
                                 complete_button_pairing_success(
@@ -1663,6 +1665,7 @@ mod tests {
         )
         .await;
 
+        tokio::time::pause();
         let task = tokio::spawn({
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
@@ -1689,7 +1692,8 @@ mod tests {
         let (cancelled, mut window) = task.await.unwrap();
         assert!(cancelled);
         assert_eq!(controller.session_origin().await, None);
-        tokio::time::sleep(BUTTON_EXIT_REASON_DISPLAY_DURATION + Duration::from_millis(100)).await;
+        tokio::time::advance(BUTTON_EXIT_REASON_DISPLAY_DURATION + Duration::from_millis(100))
+            .await;
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
         assert_eq!(
             framebuffer,
@@ -1732,6 +1736,7 @@ mod tests {
         )
         .await;
 
+        tokio::time::pause();
         let task = tokio::spawn({
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
@@ -1757,7 +1762,8 @@ mod tests {
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
         assert_eq!(framebuffer, render_display_message(&["Timed out"]));
         let _window = task.await.unwrap();
-        tokio::time::sleep(BUTTON_EXIT_REASON_DISPLAY_DURATION + Duration::from_millis(100)).await;
+        tokio::time::advance(BUTTON_EXIT_REASON_DISPLAY_DURATION + Duration::from_millis(100))
+            .await;
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
         assert_eq!(
             framebuffer,
@@ -1886,6 +1892,7 @@ mod tests {
         .await;
 
         controller.mark_phone_registered().await;
+        tokio::time::pause();
         let task = tokio::spawn({
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
@@ -1913,7 +1920,8 @@ mod tests {
         assert_eq!(framebuffer, render_display_message(&["Done"]));
         let _window = task.await.unwrap();
         assert_eq!(controller.session_origin().await, None);
-        tokio::time::sleep(BUTTON_EXIT_REASON_DISPLAY_DURATION + Duration::from_millis(100)).await;
+        tokio::time::advance(BUTTON_EXIT_REASON_DISPLAY_DURATION + Duration::from_millis(100))
+            .await;
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
         assert_eq!(
             framebuffer,

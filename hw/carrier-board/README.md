@@ -4,10 +4,16 @@
 
 ## Overview
 
-The sonde carrier board is a 2-layer PCB that hosts a Seeed Studio XIAO ESP32-C3
-module and provides connectors for I2C (Qwiic), 1-Wire sensors, and a 2×AA lithium
-battery pack. The board powers the MCU directly from the battery (no LDO) and
-includes a P-FET load switch for gating sensor power during deep sleep.
+The sonde carrier board is a 2-layer PCB that hosts a Seeed Studio XIAO module and
+provides connectors for I2C (Qwiic), 1-Wire sensors, and a 2×AA lithium battery
+pack. The board powers the MCU directly from the battery (no LDO) and includes a
+P-FET load switch for gating sensor power during deep sleep.
+
+This board is the canonical base PCB for both contributor reference builds:
+
+- **Node:** carrier board + Seeed Studio XIAO ESP32-C3
+- **Modem:** carrier board + Seeed Studio XIAO ESP32-S3, plus an SSD1306-compatible
+  128×64 OLED on `GPIO5`/`GPIO6` (`0x3C`) and an active-low button on `GPIO2`
 
 **Carrier board deep sleep current (excluding the XIAO ESP32-C3 module): ~0.01 µA** (essentially zero).
 
@@ -15,7 +21,7 @@ includes a P-FET load switch for gating sensor power during deep sleep.
 
 - [KiCad 8](https://www.kicad.org/download/) (free, open-source EDA)
 - A [JLCPCB](https://jlcpcb.com/) account (or compatible PCB fab)
-- A Seeed Studio XIAO ESP32-C3 module (not included in this BOM)
+- A Seeed Studio XIAO ESP32-C3 or XIAO ESP32-S3 module (not included in this BOM)
 
 ## Directory Contents
 

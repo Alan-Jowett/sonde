@@ -180,6 +180,15 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 | **Max program size** | 4 KB resident, 2 KB ephemeral (recommended) |
 | **Chunked transfer** | 4 KB program ≈ 20 round-trips over ESP-NOW |
 
+### Canonical contributor hardware
+
+Contributor-facing hardware docs and bring-up notes should assume these baseline builds unless a document explicitly says otherwise:
+
+| Build | Base hardware | Notes |
+|---|---|---|
+| **Node** | [`hw/carrier-board`](hw/carrier-board) + Seeed Studio XIAO ESP32-C3 | Canonical battery-powered node build. The carrier board provides the Qwiic/I2C sensor connector and battery input. |
+| **Modem** | [`hw/carrier-board`](hw/carrier-board) + Seeed Studio XIAO ESP32-S3 | Canonical USB modem build. Add a 128×64 SSD1306-compatible OLED on I2C0 (`GPIO5` SDA, `GPIO6` SCL, address `0x3C`) and an active-low button on `GPIO2`. |
+
 ---
 
 ## Building
@@ -215,8 +224,8 @@ See [Getting Started](docs/getting-started.md) for full toolchain setup.
 
 - [Overview](docs/overview.md) — project summary, status, and goals
 - [Getting Started](docs/getting-started.md) — developer environment setup, toolchain installation, build and flash commands
-- [Node BOM](docs/node-bom.md) — off-the-shelf parts list for building a sonde node (no custom PCB required)
-- [Gateway BOM](docs/gateway-bom.md) — off-the-shelf parts list for building a USB-attached ESP-NOW gateway
+- [Node BOM](docs/node-bom.md) — canonical carrier-board + XIAO ESP32-C3 node build
+- [Modem BOM](docs/gateway-bom.md) — canonical carrier-board + XIAO ESP32-S3 modem build with local display/button
 - [Contributing](docs/contributing.md) — contribution guidelines, DCO, SPDX requirements
 - [Why BPF?](docs/why-bpf.md) — rationale for using BPF + Prevail as the execution model
 - [BPF Environment](docs/bpf-environment.md) — program API, memory model, verification, and development workflow

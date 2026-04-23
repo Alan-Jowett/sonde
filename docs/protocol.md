@@ -260,7 +260,7 @@ Sent at the start of each wake cycle (retransmitted up to 3 times if no COMMAND 
 | `firmware_abi_version` | uint | Yes | ABI version of the node firmware (bumped when BPF helper API changes). |
 | `program_hash` | bstr | Yes | Hash of the currently installed resident program. Zero-length if no program installed. |
 | `battery_mv` | uint | Yes | Battery voltage in millivolts. |
-| `firmware_version` | tstr | Yes | Firmware version string (e.g., `"0.4.0"`). ASCII-only, maximum 32 bytes. Derived from `CARGO_PKG_VERSION` at compile time. |
+| `firmware_version` | tstr | Yes | Firmware version string (e.g., `"0.5.0"`). ASCII-only, maximum 32 bytes. Derived from `CARGO_PKG_VERSION` at compile time. |
 | `blob` | bstr | No | Piggybacked uplink data from the previous wake cycle's `send_async()` call. Omitted when no data is queued, when multiple messages are queued, or when the blob would exceed the available payload budget. When present, the gateway routes this to the handler exactly like an APP_DATA blob (see §6.7). |
 
 `key_hint` and `nonce` are in the fixed header and are not duplicated in the payload. Both are already authenticated by the AEAD construction (the header is AAD).

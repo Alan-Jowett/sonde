@@ -2170,7 +2170,7 @@ Container images MUST follow a consistent tagging strategy. Release builds (git 
 **Acceptance criteria:**
 
 1. Nightly builds are tagged `nightly` and `nightly-YYYYMMDD`.
-2. Release builds (tag `v*`) are tagged `latest` and the semver version (e.g., `0.4.0`).
+2. Release builds (tag `v*`) are tagged `latest` and the semver version (e.g., `0.5.0`).
 3. Every image is also tagged `sha-<short-sha>`.
 4. Public tags are created only after both amd64 and arm64 builds succeed.
 5. Pull request builds do not publish images.

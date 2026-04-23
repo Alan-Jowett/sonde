@@ -63,7 +63,7 @@ impl TestNode {
             firmware_abi_version,
             program_hash: program_hash.to_vec(),
             battery_mv,
-            firmware_version: "0.4.0".into(),
+            firmware_version: "0.5.0".into(),
             blob: None,
         };
         let cbor = msg.encode().unwrap();
@@ -87,7 +87,7 @@ impl TestNode {
             firmware_abi_version,
             program_hash: program_hash.to_vec(),
             battery_mv,
-            firmware_version: "0.4.0".into(),
+            firmware_version: "0.5.0".into(),
             blob: Some(blob.to_vec()),
         };
         let cbor = msg.encode().unwrap();

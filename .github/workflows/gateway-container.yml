@@ -144,7 +144,7 @@ jobs:
           verbose_expected="$(sha256sum .artifacts/modem-firmware-verbose/flash_image.bin | awk '{print $1}')"
           read -r default_actual verbose_actual < <(
             docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
-              'sha256sum /usr/local/share/sonde/firmware/modem/default/flash_image.bin /usr/local/share/sonde/firmware/modem/verbose/flash_image.bin | awk "{print \$1}" | tr "\n" " "'
+              'sha256sum /usr/local/share/sonde/firmware/modem/default/flash_image.bin /usr/local/share/sonde/firmware/modem/verbose/flash_image.bin | awk "{print \$1}" | paste -sd" " -'
           )
           test "$default_actual" = "$default_expected"
           test "$verbose_actual" = "$verbose_expected"

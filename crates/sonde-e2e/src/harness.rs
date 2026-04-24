@@ -405,6 +405,7 @@ pub struct MockNodeStorage {
     channel: Option<u8>,
     peer_payload: Option<Vec<u8>>,
     reg_complete: bool,
+    last_battery_mv: Option<u32>,
 }
 
 impl MockNodeStorage {
@@ -418,6 +419,7 @@ impl MockNodeStorage {
             channel: None,
             peer_payload: None,
             reg_complete: false,
+            last_battery_mv: None,
         }
     }
 
@@ -433,6 +435,7 @@ impl MockNodeStorage {
             channel: None,
             peer_payload: None,
             reg_complete: false,
+            last_battery_mv: None,
         }
     }
 
@@ -453,6 +456,7 @@ impl MockNodeStorage {
             channel: Some(channel),
             peer_payload: Some(peer_payload),
             reg_complete: false,
+            last_battery_mv: None,
         }
     }
 }
@@ -550,6 +554,15 @@ impl PlatformStorage for MockNodeStorage {
     }
     fn write_reg_complete(&mut self, complete: bool) -> NodeResult<()> {
         self.reg_complete = complete;
+        Ok(())
+    }
+
+    fn read_last_battery_mv(&self) -> Option<u32> {
+        self.last_battery_mv
+    }
+
+    fn write_last_battery_mv(&mut self, battery_mv: u32) -> NodeResult<()> {
+        self.last_battery_mv = Some(battery_mv);
         Ok(())
     }
 }

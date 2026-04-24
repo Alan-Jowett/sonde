@@ -1859,6 +1859,75 @@ mod tests {
         }
 
         #[test]
+        fn run_wake_cycle_reports_previous_battery_on_next_wake() {
+            let psk = [0x42u8; 32];
+            let sha = crate::crypto::SoftwareSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let clock = MockClock;
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            let mut hal = MockHal;
+            let mut rng = MockRng(0);
+            let mut interp = MockBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+            let mut async_queue = AsyncQueue::new();
+
+            let mut transport_first = MockTransport::new();
+            transport_first.queue_response(Some(make_command(&psk, 1, &CommandPayload::Nop)));
+            let first_outcome = run_wake_cycle(
+                &mut transport_first,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &BoardLayout::LEGACY_COMPAT,
+                &mut interp,
+                &mut map_storage,
+                &sha,
+                &aead,
+                &mut async_queue,
+            );
+            assert_eq!(first_outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+            let first_wake = decode_frame(&transport_first.outbound[0]).unwrap();
+            let first_payload = open_frame(&first_wake, &psk, &aead, &sha).unwrap();
+            let first_battery_mv =
+                match sonde_protocol::NodeMessage::decode(MSG_WAKE, &first_payload).unwrap() {
+                    sonde_protocol::NodeMessage::Wake { battery_mv, .. } => battery_mv,
+                    _ => panic!("expected Wake message"),
+                };
+            assert_eq!(first_battery_mv, 0);
+            assert_eq!(storage.last_battery_mv, Some(BATTERY_FALLBACK_MV));
+
+            let mut transport_second = MockTransport::new();
+            transport_second.queue_response(Some(make_command(&psk, 2, &CommandPayload::Nop)));
+            let second_outcome = run_wake_cycle(
+                &mut transport_second,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &BoardLayout::LEGACY_COMPAT,
+                &mut interp,
+                &mut map_storage,
+                &sha,
+                &aead,
+                &mut async_queue,
+            );
+            assert_eq!(second_outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+            let second_wake = decode_frame(&transport_second.outbound[0]).unwrap();
+            let second_payload = open_frame(&second_wake, &psk, &aead, &sha).unwrap();
+            let second_battery_mv =
+                match sonde_protocol::NodeMessage::decode(MSG_WAKE, &second_payload).unwrap() {
+                    sonde_protocol::NodeMessage::Wake { battery_mv, .. } => battery_mv,
+                    _ => panic!("expected Wake message"),
+                };
+            assert_eq!(second_battery_mv, BATTERY_FALLBACK_MV);
+            assert_eq!(storage.last_battery_mv, Some(BATTERY_FALLBACK_MV));
+        }
+
+        #[test]
         fn run_wake_cycle_update_program() {
             let psk = [0x22u8; 32];
             let sha = crate::crypto::SoftwareSha256;

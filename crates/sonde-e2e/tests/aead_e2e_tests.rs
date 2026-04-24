@@ -103,8 +103,8 @@ async fn t_e2e_001_nop_wake_cycle() {
 /// T-E2E-002b — Consecutive AEAD wake cycles (state persistence).
 ///
 /// Runs two AEAD wake cycles on the same `NodeProxy` to verify that
-/// persistent storage and monotonic RNG state work correctly across
-/// multiple AES-256-GCM exchanges.
+/// persistent storage, battery telemetry propagation, and monotonic RNG
+/// state work correctly across multiple AES-256-GCM exchanges.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_002b_consecutive_wake_cycles() {
     let env = E2eTestEnv::new();
@@ -116,10 +116,14 @@ async fn t_e2e_002b_consecutive_wake_cycles() {
     let stats1 = node.run_wake_cycle(&env);
     assert_eq!(stats1.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats1.response_count > 0);
+    let record_after_first = env.storage.get_node("aead-multi").await.unwrap().unwrap();
+    assert_eq!(record_after_first.last_battery_mv, Some(0));
 
     let stats2 = node.run_wake_cycle(&env);
     assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats2.response_count > 0);
+    let record_after_second = env.storage.get_node("aead-multi").await.unwrap().unwrap();
+    assert_eq!(record_after_second.last_battery_mv, Some(3300));
 
     // Verify nonce uniqueness across cycles.
     assert!(

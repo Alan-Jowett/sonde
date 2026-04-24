@@ -532,13 +532,13 @@ mod tests {
         let (_svc, _chr, data) = &transport.written[0];
         let body = &data[3..];
         let payload_len = u16::from_be_bytes([body[35], body[36]]) as usize;
-        let pin_cbor_start = 37 + payload_len;
+        let board_layout_cbor_start = 37 + payload_len;
         assert!(
-            body.len() > pin_cbor_start,
-            "body should have trailing CBOR"
+            body.len() > board_layout_cbor_start,
+            "body should have trailing board-layout CBOR"
         );
 
-        let trailing = &body[pin_cbor_start..];
+        let trailing = &body[board_layout_cbor_start..];
         let value: ciborium::Value = ciborium::from_reader(trailing).expect("valid CBOR");
         let map = value.as_map().expect("CBOR map");
         let expected = [

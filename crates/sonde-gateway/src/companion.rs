@@ -2,10 +2,12 @@
 // Copyright (c) 2026 sonde contributors
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tokio::sync::{broadcast, mpsc, RwLock};
+use futures::Stream;
+use tokio::sync::{broadcast, RwLock};
 use tonic::{Request, Response, Status};
 
 use crate::admin::{
@@ -26,7 +28,6 @@ use pb::gateway_companion_server::GatewayCompanion;
 use pb::*;
 
 pub const DEFAULT_COMPANION_EVENT_BUFFER: usize = 64;
-const STREAM_QUEUE_CAPACITY: usize = 16;
 
 #[derive(Clone)]
 pub struct CompanionEventHub {
@@ -148,47 +149,37 @@ fn node_status_to_proto(status: NodeStatusSnapshot) -> CompanionNodeStatus {
 #[tonic::async_trait]
 impl GatewayCompanion for CompanionService {
     type StreamEventsStream =
-        tokio_stream::wrappers::ReceiverStream<Result<CompanionEvent, Status>>;
+        Pin<Box<dyn Stream<Item = Result<CompanionEvent, Status>> + Send + 'static>>;
 
     async fn stream_events(
         &self,
         _request: Request<CompanionStreamEventsRequest>,
     ) -> Result<Response<Self::StreamEventsStream>, Status> {
-        let mut event_rx = self.event_hub.subscribe();
-        let (tx, rx) = mpsc::channel(STREAM_QUEUE_CAPACITY);
+        enum StreamState {
+            Active(broadcast::Receiver<CompanionEvent>),
+            Done,
+        }
 
-        tokio::spawn(async move {
-            loop {
-                if tx.is_closed() {
-                    break;
-                }
-
-                match event_rx.recv().await {
-                    Ok(event) => {
-                        if tx.capacity() <= 1 {
-                            let _ = tx.try_send(Err(Status::resource_exhausted(
+        let stream = futures::stream::unfold(
+            StreamState::Active(self.event_hub.subscribe()),
+            |state| async move {
+                match state {
+                    StreamState::Active(mut event_rx) => match event_rx.recv().await {
+                        Ok(event) => Some((Ok(event), StreamState::Active(event_rx))),
+                        Err(broadcast::error::RecvError::Lagged(_)) => Some((
+                            Err(Status::resource_exhausted(
                                 "companion subscriber fell behind the live event stream",
-                            )));
-                            break;
-                        }
-                        if tx.try_send(Ok(event)).is_err() {
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        let _ = tx.try_send(Err(Status::resource_exhausted(
-                            "companion subscriber fell behind the live event stream",
-                        )));
-                        break;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break,
+                            )),
+                            StreamState::Done,
+                        )),
+                        Err(broadcast::error::RecvError::Closed) => None,
+                    },
+                    StreamState::Done => None,
                 }
-            }
-        });
+            },
+        );
 
-        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
-            rx,
-        )))
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn list_nodes(

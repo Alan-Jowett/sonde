@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::Stream;
 use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
 use tonic::Request;
@@ -18,7 +19,9 @@ use sonde_gateway::companion::pb::companion_event::Event;
 use sonde_gateway::companion::pb::gateway_companion_client::GatewayCompanionClient;
 use sonde_gateway::companion::pb::gateway_companion_server::GatewayCompanion;
 use sonde_gateway::companion::pb::*;
-use sonde_gateway::companion::{CompanionEventHub, CompanionService};
+use sonde_gateway::companion::{
+    CompanionEventHub, CompanionService, DEFAULT_COMPANION_EVENT_BUFFER,
+};
 use sonde_gateway::crypto::RustCryptoSha256;
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::handler::HandlerRouter;
@@ -171,7 +174,7 @@ async fn do_wake(
 }
 
 async fn next_stream_item(
-    stream: &mut tokio_stream::wrappers::ReceiverStream<Result<CompanionEvent, tonic::Status>>,
+    stream: &mut (impl Stream<Item = Result<CompanionEvent, tonic::Status>> + Unpin),
 ) -> Result<CompanionEvent, tonic::Status> {
     tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
@@ -180,7 +183,7 @@ async fn next_stream_item(
 }
 
 async fn assert_no_stream_item(
-    stream: &mut tokio_stream::wrappers::ReceiverStream<Result<CompanionEvent, tonic::Status>>,
+    stream: &mut (impl Stream<Item = Result<CompanionEvent, tonic::Status>> + Unpin),
 ) {
     let result = tokio::time::timeout(Duration::from_millis(150), stream.next()).await;
     assert!(result.is_err(), "expected no replayed companion event");
@@ -430,7 +433,8 @@ async fn t0822_lagging_subscriber_is_terminated_without_blocking_active_one() {
         seen
     });
 
-    for i in 0..24u8 {
+    let lag_count = DEFAULT_COMPANION_EVENT_BUFFER as u8 + 24;
+    for i in 0..lag_count {
         h.event_hub.emit_node_checkin(
             format!("node-{i}"),
             vec![i; 32],
@@ -440,10 +444,11 @@ async fn t0822_lagging_subscriber_is_terminated_without_blocking_active_one() {
             "0.5.0".into(),
             i as u64,
         );
+        tokio::task::yield_now().await;
     }
 
     let mut stalled_err = None;
-    for _ in 0..24 {
+    for _ in 0..lag_count {
         match next_stream_item(&mut stalled).await {
             Ok(_) => continue,
             Err(status) => {

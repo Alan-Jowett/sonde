@@ -1262,14 +1262,11 @@ impl Gateway {
             }
         };
 
-        let timestamp = SystemTime::now()
+        let now_duration = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let timestamp_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+            .unwrap_or_default();
+        let timestamp = now_duration.as_secs();
+        let timestamp_ms = now_duration.as_millis() as u64;
 
         self.companion_event_hub.emit_node_payload(
             node.node_id.clone(),

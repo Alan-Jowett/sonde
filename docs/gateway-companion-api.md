@@ -121,8 +121,8 @@ message CompanionNodePayload {
 
 The gateway emits `node_payload` for:
 
-- `APP_DATA { blob }`, with `payload_origin = APP_DATA`
-- `WAKE { blob }`, with `payload_origin = WAKE_BLOB`
+- `APP_DATA { blob }`, with `payload_origin = COMPANION_PAYLOAD_ORIGIN_APP_DATA`
+- `WAKE { blob }`, with `payload_origin = COMPANION_PAYLOAD_ORIGIN_WAKE_BLOB`
 
 For a `WAKE` carrying a blob, the gateway emits `node_checkin` before the corresponding `node_payload`.
 

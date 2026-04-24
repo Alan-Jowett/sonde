@@ -21,6 +21,10 @@ pub mod transport;
 pub mod types;
 pub mod validation;
 
+// Re-export the core storage trait and the in-memory mock so consumers can
+// use them without a fully-qualified path.
+pub use store::{MockPairingStore, PairingStore};
+
 #[cfg(feature = "btleplug")]
 pub mod btleplug_transport;
 

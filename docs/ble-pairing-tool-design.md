@@ -59,7 +59,7 @@ crates/sonde-pair/
     ├── cbor.rs                 # PairingRequest CBOR construction (deterministic encoding)
     ├── validation.rs           # Input validation (node_id, rf_channel, label, payload size)
     ├── transport.rs            # BleTransport trait definition
-    ├── store.rs                # (reserved — persistence is caller-managed, see §7.1)
+    ├── store.rs                # PairingStore trait + MockPairingStore (PT-0802)
     └── rng.rs                  # RngProvider trait (injectable CSPRNG for testing)
 ```
 
@@ -72,7 +72,7 @@ crates/sonde-pair/
 | `sonde-node` | ❌ No node dependency (PT-0103) |
 | `sonde-modem` | ❌ No modem dependency (PT-0103) |
 | Platform BLE APIs | ❌ Not in `sonde-pair` — injected via `BleTransport` trait |
-| Platform storage APIs | ❌ Not in `sonde-pair` — persistence is caller-managed (see §7.1) |
+| Platform storage APIs | ❌ Not in `sonde-pair` — injected via `PairingStore` trait (PT-0802) |
 
 ### 3.2  Cargo.toml dependencies
 
@@ -448,9 +448,27 @@ All values above are wrapped in `Zeroizing<[u8; N]>` to ensure zeroing on drop e
 
 ### 7.1  Pairing artifact persistence
 
-Pairing artifacts are returned as plain data from the core protocol functions (`pair_with_gateway()` and `provision_node()`).  The core crate does **not** define a `PairingStore` trait — persistence is caller-managed.  The Tauri UI layer (or any other consumer) is responsible for saving, loading, and clearing artifacts using whatever secure storage is appropriate for the platform (PT-0802).
+Pairing artifacts are returned as plain data from the core protocol functions (`pair_with_gateway()` and `provision_node()`).  The core crate defines a `PairingStore` trait so that platform-specific secure storage can be injected and tests can use an in-memory implementation (PT-0802).
 
-On Android, `AndroidPairingStore` in `android_store.rs` provides a concrete implementation backed by `EncryptedSharedPreferences` via a JNI bridge to the companion `SecureStore` Java class.
+```rust
+/// Abstraction over persistent pairing-artifact storage (PT-0802).
+pub trait PairingStore: Send + Sync {
+    /// Persist pairing artifacts, overwriting any previously stored value.
+    fn save_artifacts(&self, artifacts: &PairingArtifacts) -> Result<(), PairingError>;
+
+    /// Load previously persisted artifacts, or `None` if nothing has been saved.
+    fn load_artifacts(&self) -> Result<Option<PairingArtifacts>, PairingError>;
+
+    /// Erase all persisted artifacts.  Idempotent.
+    fn clear(&self) -> Result<(), PairingError>;
+}
+```
+
+Concrete implementations:
+
+- `store::MockPairingStore` — in-memory, `Arc<Mutex<…>>`-backed, for tests.
+- `file_store::FilePairingStore` — JSON file, desktop (`file-store` feature), with optional `PskProtector` for at-rest PSK encryption.
+- `android_store::AndroidPairingStore` — `EncryptedSharedPreferences` via JNI (`android` feature).
 
 ```rust
 /// Pairing artifacts returned by Phase 1.

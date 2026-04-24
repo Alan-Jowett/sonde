@@ -372,7 +372,7 @@ mod tests {
         idle_power.note_frame_accepted_at(t0);
 
         assert_eq!(
-            idle_power.poll_at(
+            idle_power.desired_command_at(
                 t0 + DISPLAY_IDLE_TIMEOUT - Duration::from_secs(1),
                 false,
                 true
@@ -380,11 +380,12 @@ mod tests {
             PanelPowerCommand::None
         );
         assert_eq!(
-            idle_power.poll_at(t0 + DISPLAY_IDLE_TIMEOUT, false, true),
+            idle_power.desired_command_at(t0 + DISPLAY_IDLE_TIMEOUT, false, true),
             PanelPowerCommand::Sleep
         );
+        idle_power.mark_sleep_succeeded();
         assert_eq!(
-            idle_power.poll_at(
+            idle_power.desired_command_at(
                 t0 + DISPLAY_IDLE_TIMEOUT + Duration::from_secs(1),
                 false,
                 true

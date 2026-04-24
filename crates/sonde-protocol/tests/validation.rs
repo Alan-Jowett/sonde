@@ -1518,13 +1518,13 @@ fn test_p064() {
 }
 
 // ---------------------------------------------------------------------------
-// T-P090: CommandPayload::command_type() derivation covers all variants
+// T-P091: CommandPayload::command_type() derivation covers all variants
 // ---------------------------------------------------------------------------
 
 /// Verify that `CommandPayload::command_type()` returns the correct wire code
 /// for every variant, and that encode → decode round-trips preserve it.
 #[test]
-fn test_p090_command_type_derived_from_payload() {
+fn test_p091_command_type_derived_from_payload() {
     let variants: Vec<(CommandPayload, u8)> = vec![
         (CommandPayload::Nop, CMD_NOP),
         (
@@ -2574,4 +2574,287 @@ fn test_p019a_decode_frame_too_long() {
         matches!(result, Err(DecodeError::TooLong)),
         "decode_frame must return DecodeError::TooLong for frames exceeding 250 bytes"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 8  Modem serial codec integration tests (T-P080 – T-P090)
+// ---------------------------------------------------------------------------
+
+mod modem_serial_tests {
+    use sonde_protocol::modem::{
+        decode_modem_frame, encode_modem_frame, FrameDecoder, ModemCodecError, ModemMessage,
+        SendFrame, MODEM_MSG_SET_CHANNEL,
+    };
+
+    /// T-P080: ModemMessage round-trip — RESET
+    #[test]
+    fn test_p080_reset_round_trip() {
+        let msg = ModemMessage::Reset;
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+        assert_eq!(consumed, frame.len());
+    }
+
+    /// T-P081: ModemMessage round-trip — SEND_FRAME
+    #[test]
+    fn test_p081_send_frame_round_trip() {
+        let msg = ModemMessage::SendFrame(SendFrame {
+            peer_mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+            frame_data: vec![0x01, 0x02, 0x03, 0x04, 0x05],
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+        assert_eq!(consumed, frame.len());
+    }
+
+    /// T-P082: ModemMessage round-trip — SET_CHANNEL
+    #[test]
+    fn test_p082_set_channel_round_trip() {
+        let msg = ModemMessage::SetChannel(6);
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+        assert_eq!(consumed, frame.len());
+    }
+
+    /// T-P083: Frame envelope structure — LEN (2B BE) || TYPE || BODY
+    #[test]
+    fn test_p083_frame_envelope_structure() {
+        let msg = ModemMessage::SetChannel(6);
+        let frame = encode_modem_frame(&msg).unwrap();
+        // LEN = 2 (1 TYPE byte + 1 BODY byte)
+        let len = u16::from_be_bytes([frame[0], frame[1]]);
+        assert_eq!(len, 2, "LEN must be 2 for SET_CHANNEL with 1-byte body");
+        assert_eq!(
+            frame[2], MODEM_MSG_SET_CHANNEL,
+            "TYPE byte must be SET_CHANNEL"
+        );
+        assert_eq!(frame[3], 6, "BODY must contain the channel value");
+        assert_eq!(
+            frame.len(),
+            4,
+            "total frame must be LEN_FIELD(2) + LEN(2) = 4 bytes"
+        );
+    }
+
+    /// T-P084: Decode frame with len=0 returns EmptyFrame
+    #[test]
+    fn test_p084_decode_empty_frame_rejected() {
+        let data = [0x00u8, 0x00]; // len = 0
+        let err = decode_modem_frame(&data).unwrap_err();
+        assert_eq!(err, ModemCodecError::EmptyFrame);
+    }
+
+    /// T-P085: Decode frame with len > SERIAL_MAX_LEN (1025) returns FrameTooLarge
+    #[test]
+    fn test_p085_decode_oversized_frame_rejected() {
+        // big-endian 1026 → exceeds SERIAL_MAX_LEN (1025)
+        let data = [0x04u8, 0x02];
+        let err = decode_modem_frame(&data).unwrap_err();
+        assert_eq!(err, ModemCodecError::FrameTooLarge(1026));
+    }
+
+    /// T-P086: FrameDecoder — single complete frame is fully consumed
+    #[test]
+    fn test_p086_streaming_decoder_complete_frame() {
+        let mut decoder = FrameDecoder::new();
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        decoder.push(&frame);
+        let msg = decoder.decode().unwrap().unwrap();
+        assert_eq!(msg, ModemMessage::GetStatus);
+        assert_eq!(decoder.buffered(), 0, "all bytes must be consumed");
+    }
+
+    /// T-P087: FrameDecoder — three frames pushed as one buffer, decoded in order
+    #[test]
+    fn test_p087_streaming_decoder_multiple_frames() {
+        let mut decoder = FrameDecoder::new();
+        let f1 = encode_modem_frame(&ModemMessage::Reset).unwrap();
+        let f2 = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        let f3 = encode_modem_frame(&ModemMessage::SetChannel(11)).unwrap();
+
+        let mut combined = Vec::new();
+        combined.extend_from_slice(&f1);
+        combined.extend_from_slice(&f2);
+        combined.extend_from_slice(&f3);
+        decoder.push(&combined);
+
+        assert_eq!(decoder.decode().unwrap().unwrap(), ModemMessage::Reset);
+        assert_eq!(decoder.decode().unwrap().unwrap(), ModemMessage::GetStatus);
+        assert_eq!(
+            decoder.decode().unwrap().unwrap(),
+            ModemMessage::SetChannel(11)
+        );
+        assert_eq!(
+            decoder.decode().unwrap(),
+            None,
+            "buffer must be empty after 3 frames"
+        );
+    }
+
+    /// T-P090: ModemMessage::Unknown preserves msg_type and body bytes verbatim.
+    ///
+    /// Any type code not recognised by the codec must be decoded as
+    /// `ModemMessage::Unknown { msg_type, body }` and round-trip through
+    /// encode_modem_frame / decode_modem_frame without loss.
+    #[test]
+    fn test_p090_modem_unknown_type() {
+        let msg = ModemMessage::Unknown {
+            msg_type: 0x7F,
+            body: vec![0x01, 0x02, 0x03],
+        };
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+        assert_eq!(consumed, frame.len());
+
+        // Wire format: LEN(2B BE) | TYPE(1B) | BODY(3B)
+        // LEN = 1 (TYPE) + 3 (BODY) = 4 → 0x00 0x04
+        assert_eq!(
+            u16::from_be_bytes([frame[0], frame[1]]),
+            4,
+            "LEN must be 4 (1 TYPE + 3 BODY)"
+        );
+        assert_eq!(frame[2], 0x7F, "msg_type must be preserved verbatim");
+        assert_eq!(
+            &frame[3..],
+            &[0x01u8, 0x02, 0x03],
+            "body bytes must be preserved verbatim"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 9  BLE envelope integration tests (T-P100 – T-P104)
+// ---------------------------------------------------------------------------
+
+/// T-P100: BLE envelope encode → parse round-trip preserves type and body
+#[test]
+fn test_p100_ble_envelope_round_trip() {
+    let body = [0x42u8; 10];
+    let encoded = encode_ble_envelope(0x01, &body).unwrap();
+    let (msg_type, decoded_body) = parse_ble_envelope(&encoded).unwrap();
+    assert_eq!(msg_type, 0x01);
+    assert_eq!(decoded_body, &body);
+    // Wire format: TYPE(1B) | LEN(2B BE) | BODY
+    assert_eq!(encoded[0], 0x01, "first byte must be TYPE");
+    assert_eq!(
+        u16::from_be_bytes([encoded[1], encoded[2]]) as usize,
+        body.len(),
+        "LEN field must equal body length"
+    );
+    assert_eq!(
+        encoded.len(),
+        3 + body.len(),
+        "total length must be 3 + body.len()"
+    );
+}
+
+/// T-P101: BLE envelope with empty body round-trips correctly (3-byte frame)
+#[test]
+fn test_p101_ble_envelope_empty_body() {
+    let encoded = encode_ble_envelope(0x81, &[]).unwrap();
+    let (msg_type, body) = parse_ble_envelope(&encoded).unwrap();
+    assert_eq!(msg_type, 0x81);
+    assert!(body.is_empty());
+    assert_eq!(encoded.len(), 3, "empty body frame must be exactly 3 bytes");
+}
+
+/// T-P102: parse_ble_envelope rejects buffers shorter than 3 bytes
+#[test]
+fn test_p102_ble_envelope_too_short_rejected() {
+    assert!(
+        parse_ble_envelope(&[]).is_none(),
+        "0-byte input must be rejected"
+    );
+    assert!(
+        parse_ble_envelope(&[0x01]).is_none(),
+        "1-byte input must be rejected"
+    );
+    assert!(
+        parse_ble_envelope(&[0x01, 0x00]).is_none(),
+        "2-byte input must be rejected"
+    );
+}
+
+/// T-P103: parse_ble_envelope rejects a frame whose LEN exceeds available bytes
+#[test]
+fn test_p103_ble_envelope_truncated_body_rejected() {
+    // LEN=4 but only 2 body bytes follow
+    assert!(parse_ble_envelope(&[0x01, 0x00, 0x04, 0xAA, 0xBB]).is_none());
+}
+
+/// T-P104: parse_ble_envelope rejects a frame with trailing bytes after the body
+#[test]
+fn test_p104_ble_envelope_trailing_bytes_rejected() {
+    // LEN=2 but 3 body bytes follow
+    assert!(parse_ble_envelope(&[0x01, 0x00, 0x02, 0xAA, 0xBB, 0xCC]).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// 10  DIAG relay integration tests (T-P114 – T-P116)
+// ---------------------------------------------------------------------------
+
+/// T-P114: DIAG_RELAY_REQUEST encode → BLE envelope → decode round-trip
+#[test]
+fn test_p114_diag_relay_request_round_trip() {
+    let payload = [0x42u8; 50];
+    let body = encode_diag_relay_request(6, &payload).unwrap();
+    let envelope = encode_ble_envelope(BLE_DIAG_RELAY_REQUEST, &body).unwrap();
+    let (msg_type, decoded_body) = parse_ble_envelope(&envelope).unwrap();
+    assert_eq!(msg_type, BLE_DIAG_RELAY_REQUEST);
+    let (rf_channel, decoded_payload) = decode_diag_relay_request(decoded_body).unwrap();
+    assert_eq!(rf_channel, 6);
+    assert_eq!(decoded_payload, &payload);
+}
+
+/// T-P115: DIAG_RELAY_REQUEST rejects channels outside 1–13 (boundary-inclusive check)
+#[test]
+fn test_p115_diag_relay_request_invalid_channel_rejected() {
+    let payload = [0x42u8; 10];
+    assert!(
+        encode_diag_relay_request(0, &payload).is_err(),
+        "channel 0 must be rejected"
+    );
+    assert!(
+        encode_diag_relay_request(14, &payload).is_err(),
+        "channel 14 must be rejected"
+    );
+    // Boundary values: channels 1 and 13 are the valid extremes
+    assert!(
+        encode_diag_relay_request(1, &payload).is_ok(),
+        "channel 1 (lower boundary) must succeed"
+    );
+    assert!(
+        encode_diag_relay_request(13, &payload).is_ok(),
+        "channel 13 (upper boundary) must succeed"
+    );
+}
+
+/// T-P116: DIAG_RELAY_RESPONSE — OK with payload, non-OK statuses require empty payload
+#[test]
+fn test_p116_diag_relay_response_round_trip() {
+    // status=OK with non-empty payload
+    let payload = [0xABu8; 30];
+    let body = encode_diag_relay_response(DIAG_RELAY_STATUS_OK, &payload).unwrap();
+    let envelope = encode_ble_envelope(BLE_DIAG_RELAY_RESPONSE, &body).unwrap();
+    let (msg_type, decoded_body) = parse_ble_envelope(&envelope).unwrap();
+    assert_eq!(msg_type, BLE_DIAG_RELAY_RESPONSE);
+    let (status, decoded_payload) = decode_diag_relay_response(decoded_body).unwrap();
+    assert_eq!(status, DIAG_RELAY_STATUS_OK);
+    assert_eq!(decoded_payload, &payload);
+
+    // status=TIMEOUT, empty payload
+    let body_timeout = encode_diag_relay_response(DIAG_RELAY_STATUS_TIMEOUT, &[]).unwrap();
+    let (status_t, payload_t) = decode_diag_relay_response(&body_timeout).unwrap();
+    assert_eq!(status_t, DIAG_RELAY_STATUS_TIMEOUT);
+    assert!(payload_t.is_empty());
+
+    // status=CHANNEL_ERROR, empty payload
+    let body_chan = encode_diag_relay_response(DIAG_RELAY_STATUS_CHANNEL_ERROR, &[]).unwrap();
+    let (status_c, payload_c) = decode_diag_relay_response(&body_chan).unwrap();
+    assert_eq!(status_c, DIAG_RELAY_STATUS_CHANNEL_ERROR);
+    assert!(payload_c.is_empty());
 }

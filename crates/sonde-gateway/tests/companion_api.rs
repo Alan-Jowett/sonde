@@ -129,6 +129,32 @@ impl CompanionHarness {
     }
 }
 
+#[tokio::test]
+async fn companion_event_hub_zero_capacity_clamps_to_one() {
+    let hub = CompanionEventHub::new(0);
+    let mut events = hub.subscribe();
+
+    hub.emit_node_checkin(
+        "node-0".into(),
+        vec![0x42; 32],
+        None,
+        3200,
+        1,
+        "0.5.0".into(),
+        1234,
+    );
+
+    let event = events.recv().await.expect("event should be delivered");
+    match event.event {
+        Some(Event::NodeCheckin(checkin)) => {
+            assert_eq!(checkin.node_id, "node-0");
+            assert_eq!(checkin.current_program_hash, vec![0x42; 32]);
+            assert_eq!(checkin.timestamp_ms, 1234);
+        }
+        other => panic!("expected node_checkin, got {other:?}"),
+    }
+}
+
 fn make_cbor_image(bytecode: &[u8]) -> Vec<u8> {
     let image = ProgramImage {
         bytecode: bytecode.to_vec(),

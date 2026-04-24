@@ -12,7 +12,8 @@ use tonic::{Request, Response, Status};
 
 use crate::admin::{
     assign_program_impl, get_node_impl, get_node_status_impl, list_nodes_impl,
-    queue_ephemeral_impl, queue_reboot_impl, set_schedule_impl, NodeStatusSnapshot,
+    queue_ephemeral_impl, queue_reboot_impl, set_schedule_impl, system_time_to_millis,
+    NodeStatusSnapshot,
 };
 use crate::engine::PendingCommand;
 use crate::registry::NodeRecord;
@@ -42,6 +43,7 @@ impl Default for CompanionEventHub {
 
 impl CompanionEventHub {
     pub fn new(capacity: usize) -> Self {
+        let capacity = capacity.max(1);
         let (tx, _) = broadcast::channel(capacity);
         Self { tx }
     }
@@ -115,12 +117,6 @@ impl CompanionService {
             event_hub,
         }
     }
-}
-
-fn system_time_to_millis(t: SystemTime) -> Option<u64> {
-    t.duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d: std::time::Duration| d.as_millis() as u64)
 }
 
 fn node_to_info(node: &NodeRecord, last_seen: Option<SystemTime>) -> CompanionNodeInfo {

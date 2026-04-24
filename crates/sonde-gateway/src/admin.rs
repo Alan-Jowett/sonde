@@ -218,7 +218,7 @@ pub fn handler_record_to_config(r: HandlerRecord) -> Option<HandlerConfig> {
     })
 }
 
-fn system_time_to_millis(t: std::time::SystemTime) -> Option<u64> {
+pub(crate) fn system_time_to_millis(t: std::time::SystemTime) -> Option<u64> {
     t.duration_since(UNIX_EPOCH)
         .ok()
         .map(|d| d.as_millis() as u64)

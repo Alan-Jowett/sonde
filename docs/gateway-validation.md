@@ -3332,9 +3332,9 @@ A configurable stub handler process (or in-process mock) that:
 
 ## 17  Container image tests
 
-### T-1800  Container image contains expected binaries
+### T-1800  Container image contains expected binaries and flashing tool
 
-**Traces to:** GW-1800 (AC-2, AC-4)
+**Traces to:** GW-1800 (AC-2, AC-4), GW-1804 (AC-1)
 
 **Preconditions:** Container image built from `Dockerfile.gateway` for the native architecture.
 
@@ -3343,10 +3343,11 @@ A configurable stub handler process (or in-process mock) that:
 2. Run `docker run --rm --entrypoint sonde-admin <image> --version`.
 3. Run `docker run --rm --entrypoint sonde-sht40-handler <image> --version`.
 4. Run `docker run --rm --entrypoint sonde-tmp102-handler <image> --version`.
+5. Run `docker run --rm --entrypoint espflash <image> --help`.
 
 **Expected:**
-1. All four commands exit 0 and print version strings.
-2. No Rust toolchain or source code is present in the image.
+1. All five commands exit 0; the four Sonde binaries print version strings and `espflash` prints help text.
+2. No Rust toolchain or source code is present in the image; the only non-binary build outputs present are the intentionally bundled modem flash images.
 
 ---
 
@@ -3382,7 +3383,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1802  Container runtime defaults, non-root user, and writable volume
 
-**Traces to:** GW-1802 (AC-2, AC-3, AC-4)
+**Traces to:** GW-1802 (AC-2, AC-3, AC-4), GW-1804 (AC-5)
 
 **Preconditions:** Container image built.
 
@@ -3397,6 +3398,24 @@ A configurable stub handler process (or in-process mock) that:
 2. `whoami` outputs `sonde`.
 3. File creation in `/var/lib/sonde` succeeds (writable by `sonde` user).
 4. `--key-provider env` is accepted by the CLI help path.
+5. The default startup path is the gateway binary, not `espflash`.
+
+---
+
+### T-1802a  Container exposes bundled modem image paths
+
+**Traces to:** GW-1802 (AC-7, AC-8), GW-1804 (AC-2, AC-3)
+
+**Preconditions:** Container image built.
+
+**Steps:**
+1. Run `docker run --rm --entrypoint sh <image> -c 'test -f /usr/local/share/sonde/firmware/modem/default/flash_image.bin'`.
+2. Run `docker run --rm --entrypoint sh <image> -c 'test -f /usr/local/share/sonde/firmware/modem/verbose/flash_image.bin'`.
+3. Run `docker run --rm --entrypoint sh <image> -c 'test -r /usr/local/share/sonde/firmware/modem/default/flash_image.bin && test -r /usr/local/share/sonde/firmware/modem/verbose/flash_image.bin'`.
+
+**Expected:**
+1. Both files exist at the documented stable paths.
+2. Both files are readable by the container's default non-root user.
 
 ---
 
@@ -3447,6 +3466,24 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1806  Bundled modem images match same-run CI artifacts
+
+**Traces to:** GW-1804 (AC-4)
+
+**Preconditions:** A workflow run has produced `modem-firmware`, `modem-firmware-verbose`, and the container image for the same commit/tag. This applies both to nightly/release runs and to standalone `workflow_dispatch` runs, which must include a same-run modem-artifact production step before the image build.
+
+**Steps:**
+1. Download the `modem-firmware` and `modem-firmware-verbose` artifacts from the same workflow run that produced the container image.
+2. Extract `/usr/local/share/sonde/firmware/modem/default/flash_image.bin` and `/usr/local/share/sonde/firmware/modem/verbose/flash_image.bin` from the container image.
+3. Compute SHA-256 hashes for the two downloaded artifacts and the two extracted in-image files.
+
+**Expected:**
+1. The hash of the in-image default file matches the hash of the downloaded `modem-firmware` artifact.
+2. The hash of the in-image verbose file matches the hash of the downloaded `modem-firmware-verbose` artifact.
+3. The compared artifacts and image were all produced by the same workflow run.
+
+---
+
 | GW-1306 | T-1306a, T-1306b, T-1306c, T-1306d |
 | GW-1307 | T-1307a, T-1307b, T-1307c, T-1307d, T-1307e, T-1307f, T-1307g, T-1307h, T-1307i |
 | GW-1308 | T-1308 |
@@ -3475,5 +3512,6 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1706 | T-1711 |
 | GW-1800 | T-1800, T-1804, T-1805 |
 | GW-1801 | T-1801, T-1801a, T-1804 |
-| GW-1802 | T-1802 |
+| GW-1802 | T-1802, T-1802a |
 | GW-1803 | T-1803 |
+| GW-1804 | T-1800, T-1802a, T-1806 |

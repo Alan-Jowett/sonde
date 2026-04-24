@@ -1181,84 +1181,97 @@ TestNode {
 
 ---
 
-### T-PT-1214a  Pin config included in NODE_PROVISION when provided
+### T-PT-1214a  Board layout included in NODE_PROVISION when provided
 
-**Validates:** PT-1214 (AC 1, 2, 4)
+**Validates:** PT-1214 (AC 1, 2, 4, 5)
 
 **Procedure:**
-1. Call `provision_node(...)` with pin config `Some(PinConfig { i2c0_sda: 4, i2c0_scl: 5 })`.
+1. Call `provision_node(...)` with board layout `Some(BoardLayout { i2c0_sda: Some(6), i2c0_scl: Some(7), one_wire_data: Some(3), battery_adc: Some(2), sensor_enable: Some(4) })`.
 2. Capture the NODE_PROVISION message body written to the mock BLE transport.
 3. Assert: the body contains the encrypted payload followed by a deterministic CBOR map.
-4. Decode the trailing CBOR map and assert: integer key 1 = 4 (`i2c0_sda`), integer key 2 = 5 (`i2c0_scl`).
+4. Decode the trailing CBOR map and assert: integer key 1 = 6 (`i2c0_sda`), key 2 = 7 (`i2c0_scl`), key 3 = 3 (`one_wire_data`), key 4 = 2 (`battery_adc`), key 5 = 4 (`sensor_enable`).
 5. Assert: the CBOR map uses deterministic encoding (RFC 8949 §4.2).
 
 ---
 
-### T-PT-1214c  Pin config with out-of-range GPIO rejected
+### T-PT-1214c  Board layout with out-of-range GPIO rejected
 
-**Validates:** PT-1214 (AC 5)
+**Validates:** PT-0409 (AC 1)
 
 **Procedure:**
-1. Call `provision_node(...)` with pin config `Some(PinConfig { i2c0_sda: 22, i2c0_scl: 5 })`.
-2. Assert: the call returns an error indicating GPIO number out of range (0–21).
+1. Call `provision_node(...)` with board layout `Some(BoardLayout { i2c0_sda: Some(6), i2c0_scl: Some(7), one_wire_data: Some(3), battery_adc: Some(22), sensor_enable: Some(4) })`.
+2. Assert: the call returns an error indicating that `battery_adc` is out of range (0–21).
 3. Assert: no NODE_PROVISION message is written to the BLE transport.
 
 ---
 
-### T-PT-1214d  Pin config with SDA equal to SCL rejected
+### T-PT-1214d  Board layout with invalid I2C pairing rejected
 
-**Validates:** PT-1214 (AC 6)
+**Validates:** PT-0409 (AC 2, AC 3)
 
 **Procedure:**
-1. Call `provision_node(...)` with pin config `Some(PinConfig { i2c0_sda: 4, i2c0_scl: 4 })`.
+1. Call `provision_node(...)` with board layout `Some(BoardLayout { i2c0_sda: Some(4), i2c0_scl: Some(4), one_wire_data: None, battery_adc: None, sensor_enable: None })`.
 2. Assert: the call returns an error indicating SDA and SCL must be different pins.
 3. Assert: no NODE_PROVISION message is written to the BLE transport.
 
 ---
 
-### T-PT-1214b  No pin config in NODE_PROVISION — backward compatible
+### T-PT-1214b  No board layout in NODE_PROVISION — backward compatible
 
 **Validates:** PT-1214 (AC 1, 3)
 
 **Procedure:**
-1. Call `provision_node(...)` with pin config `None`.
+1. Call `provision_node(...)` with board layout `None`.
 2. Capture the NODE_PROVISION message body written to the mock BLE transport.
 3. Assert: the body is identical to the existing format (encrypted payload only, no trailing bytes).
 4. Assert: provisioning completes successfully (NODE_ACK received).
 
 ---
 
-### T-PT-1216a  Board preset passes correct pin config
+### T-PT-1214e  Explicitly unassigned functions encoded as CBOR null
+
+**Validates:** PT-1214 (AC 5, 6), PT-0409 (AC 4)
+
+**Procedure:**
+1. Call `provision_node(...)` with board layout `Some(BoardLayout { i2c0_sda: Some(0), i2c0_scl: Some(1), one_wire_data: None, battery_adc: None, sensor_enable: None })`.
+2. Capture the NODE_PROVISION message body written to the mock BLE transport.
+3. Decode the trailing CBOR map.
+4. Assert: keys 3, 4, and 5 are present and encoded as CBOR `null`, not omitted.
+5. Assert: the receiver can distinguish those functions from concrete GPIO assignments.
+
+---
+
+### T-PT-1216a  Board preset passes correct board layout
 
 **Validates:** PT-1216 (AC 1, 3, 6), PT-1214 (AC 1, 2)
 
 **Procedure:**
-1. Call `phase2::provision_node(...)` with `MockBleTransport` and pin config `Some(PinConfig { i2c0_sda: 5, i2c0_scl: 6 })` (SparkFun preset values).
+1. Call `phase2::provision_node(...)` with `MockBleTransport` and board layout `Some(BoardLayout { i2c0_sda: Some(5), i2c0_scl: Some(6), one_wire_data: None, battery_adc: None, sensor_enable: None })` (SparkFun preset values).
 2. Capture the NODE_PROVISION message body written to the mock BLE transport.
-3. Assert: the trailing CBOR map contains integer key 1 = 5 (`i2c0_sda`), integer key 2 = 6 (`i2c0_scl`).
+3. Assert: the trailing CBOR map contains integer key 1 = 5 (`i2c0_sda`), key 2 = 6 (`i2c0_scl`), and keys 3, 4, 5 encoded as `null`.
 
 ---
 
-### T-PT-1216b  Default preset is Espressif DevKitM-1
+### T-PT-1216b  Default preset is Sonde Sensor Node rev_a
 
 **Validates:** PT-1216 (AC 2, 3)
 
 **Procedure:**
-1. Open the provisioning UI and verify the initial board selector value is "Espressif ESP32-C3 DevKitM-1".
-2. Without changing the board selection or manually overriding the I2C pins, trigger provisioning.
+1. Open the provisioning UI and verify the initial board selector value is "Sonde Sensor Node rev_a".
+2. Without changing the board selection, trigger provisioning.
 3. Capture the NODE_PROVISION message body written to the mock BLE transport.
-4. Assert: the trailing CBOR map contains integer key 1 = 0 (`i2c0_sda`), integer key 2 = 1 (`i2c0_scl`).
+4. Assert: the trailing CBOR map contains integer key 1 = 6 (`i2c0_sda`), key 2 = 7 (`i2c0_scl`), key 3 = 3 (`one_wire_data`), key 4 = 2 (`battery_adc`), and key 5 = 4 (`sensor_enable`).
 
 ---
 
-### T-PT-1216c  Custom board with valid GPIOs
+### T-PT-1216c  Custom board with valid layout
 
-**Validates:** PT-1216 (AC 4, 5, 6)
+**Validates:** PT-1216 (AC 4, 5, 6), PT-0409 (AC 4)
 
 **Procedure:**
-1. Call `phase2::provision_node(...)` with `MockBleTransport` and pin config `Some(PinConfig { i2c0_sda: 8, i2c0_scl: 9 })` (custom values).
+1. Call `phase2::provision_node(...)` with `MockBleTransport` and board layout `Some(BoardLayout { i2c0_sda: Some(8), i2c0_scl: Some(9), one_wire_data: Some(10), battery_adc: None, sensor_enable: Some(11) })`.
 2. Capture the NODE_PROVISION message body written to the mock BLE transport.
-3. Assert: the trailing CBOR map contains integer key 1 = 8 (`i2c0_sda`), integer key 2 = 9 (`i2c0_scl`).
+3. Assert: the trailing CBOR map contains integer key 1 = 8 (`i2c0_sda`), key 2 = 9 (`i2c0_scl`), key 3 = 10 (`one_wire_data`), key 4 = `null`, and key 5 = 11 (`sensor_enable`).
 
 ---
 
@@ -1267,19 +1280,43 @@ TestNode {
 **Validates:** PT-1216 (AC 5), PT-0409
 
 **Procedure:**
-1. Call `phase2::provision_node(...)` with `MockBleTransport` and pin config `Some(PinConfig { i2c0_sda: 25, i2c0_scl: 6 })`.
+1. Call `phase2::provision_node(...)` with `MockBleTransport` and board layout `Some(BoardLayout { i2c0_sda: Some(25), i2c0_scl: Some(6), one_wire_data: None, battery_adc: None, sensor_enable: None })`.
 2. Assert: the call returns `Err(PairingError::InvalidPinConfig(_))`.
 3. Assert: no NODE_PROVISION message is written to the mock BLE transport.
 
 ---
 
-### T-PT-1216e  Provision with only one pin parameter rejected
+### T-PT-1216e  Provision with partial I2C layout rejected
+
+**Validates:** PT-1216 (AC 5), PT-0409 (AC 3)
+
+**Procedure:**
+1. Call `resolve_board_layout(BoardLayoutInput { i2c0_sda: Some(5), i2c0_scl: None, one_wire_data: None, battery_adc: None, sensor_enable: None })`.
+2. Assert: the call returns an error indicating that both I2C pins must be provided together.
+
+---
+
+### T-PT-1216g  Tauri provision_node command accepts structured board layout
 
 **Validates:** PT-1216 (AC 7)
 
 **Procedure:**
-1. Call `resolve_pin_config(Some(5), None)`.
-2. Assert: the call returns an error indicating both pins must be provided.
+1. Invoke the Tauri `provision_node` command with a structured `boardLayout` object containing `i2cSda=6`, `i2cScl=7`, `oneWireData=3`, `batteryAdc=2`, and `sensorEnable=4`.
+2. Assert: the backend converts the object into `Some(BoardLayout { ... })` and passes it to `phase2::provision_node()`.
+3. Repeat with `oneWireData=null`, `batteryAdc=null`, and `sensorEnable=null`.
+4. Assert: the backend preserves explicit `null` values as unassigned functions rather than omitting them.
+
+---
+
+### T-PT-1216f  Espressif preset remains available
+
+**Validates:** PT-1216 (AC 1, 3)
+
+**Procedure:**
+1. Open the provisioning UI and select "Espressif ESP32-C3 DevKitM-1".
+2. Trigger provisioning.
+3. Capture the NODE_PROVISION message body written to the mock BLE transport.
+4. Assert: the trailing CBOR map contains integer key 1 = 0 (`i2c0_sda`), key 2 = 1 (`i2c0_scl`), and keys 3, 4, 5 encoded as `null`.
 
 ---
 
@@ -1643,15 +1680,18 @@ TestNode {
 | T-PT-1215c | PT-1215 | Connection dropped includes stale pairing hint |
 | T-PT-1215d | PT-1215 | Indication timeout includes device address |
 | T-PT-1215e | PT-1215 | `format_device_address` produces canonical format |
-| T-PT-1214a | PT-1214 | Pin config included in NODE_PROVISION when provided |
-| T-PT-1214b | PT-1214 | No pin config in NODE_PROVISION — backward compatible |
-| T-PT-1214c | PT-1214 | Pin config with out-of-range GPIO rejected |
-| T-PT-1214d | PT-1214 | Pin config with SDA equal to SCL rejected |
-| T-PT-1216a | PT-1216, PT-1214 | Board preset passes correct pin config |
-| T-PT-1216b | PT-1216 | Default preset is Espressif DevKitM-1 |
-| T-PT-1216c | PT-1216 | Custom board with valid GPIOs |
+| T-PT-1214a | PT-1214 | Board layout included in NODE_PROVISION when provided |
+| T-PT-1214b | PT-1214 | No board layout in NODE_PROVISION — backward compatible |
+| T-PT-1214c | PT-0409 | Board layout with out-of-range GPIO rejected |
+| T-PT-1214d | PT-0409 | Board layout with invalid I2C pairing rejected |
+| T-PT-1214e | PT-1214, PT-0409 | Explicitly unassigned functions encoded as CBOR null |
+| T-PT-1216a | PT-1216, PT-1214 | Board preset passes correct board layout |
+| T-PT-1216b | PT-1216 | Default preset is Sonde Sensor Node rev_a |
+| T-PT-1216c | PT-1216, PT-0409 | Custom board with valid layout |
 | T-PT-1216d | PT-1216, PT-0409 | Custom board with invalid GPIOs rejected |
-| T-PT-1216e | PT-1216 | Provision with only one pin parameter rejected |
+| T-PT-1216e | PT-1216, PT-0409 | Provision with partial I2C layout rejected |
+| T-PT-1216f | PT-1216 | Espressif preset remains available |
+| T-PT-1216g | PT-1216 | Tauri provision_node command accepts structured board layout |
 | T-PT-1217a | PT-1217 | Six pages rendered and only one visible at a time |
 | T-PT-1217b | PT-1217 | Forward navigation through all pages |
 | T-PT-1217c | PT-1217 | Existing functionality works through wizard flow |

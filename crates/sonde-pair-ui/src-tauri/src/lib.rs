@@ -18,11 +18,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
 use sonde_pair::phase1::PairingProgress;
 use sonde_pair::rng::OsRng;
-use sonde_pair::types::{PinConfig, ScannedDevice};
+use sonde_pair::types::{BoardLayout, ScannedDevice};
 use sonde_pair::{phase1, phase2};
 
 #[cfg(not(target_os = "android"))]
@@ -79,6 +79,16 @@ struct PairingStatus {
     gateway_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardLayoutInput {
+    i2c0_sda: Option<u8>,
+    i2c0_scl: Option<u8>,
+    one_wire_data: Option<u8>,
+    battery_adc: Option<u8>,
+    sensor_enable: Option<u8>,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -103,21 +113,44 @@ fn parse_address(s: &str) -> Result<[u8; 6], String> {
     Ok(addr)
 }
 
-/// Resolve optional I2C pin parameters into a `PinConfig` (PT-1216 AC 7).
-///
-/// Both parameters must be present or both absent.  Providing exactly one
-/// is an error.
-fn resolve_pin_config(
+fn resolve_legacy_i2c_layout(
     i2c_sda: Option<u8>,
     i2c_scl: Option<u8>,
-) -> Result<Option<PinConfig>, String> {
+) -> Result<Option<BoardLayout>, String> {
     match (i2c_sda, i2c_scl) {
-        (Some(sda), Some(scl)) => Ok(Some(PinConfig {
-            i2c0_sda: sda,
-            i2c0_scl: scl,
+        (Some(sda), Some(scl)) => Ok(Some(BoardLayout {
+            i2c0_sda: Some(sda),
+            i2c0_scl: Some(scl),
+            one_wire_data: None,
+            battery_adc: None,
+            sensor_enable: None,
         })),
         (None, None) => Ok(None),
         _ => Err("Provide both I2C SDA and I2C SCL pins, or leave both empty.".into()),
+    }
+}
+
+fn resolve_board_layout(
+    board_layout: Option<BoardLayoutInput>,
+    legacy_i2c_sda: Option<u8>,
+    legacy_i2c_scl: Option<u8>,
+) -> Result<Option<BoardLayout>, String> {
+    let layout = match board_layout {
+        Some(layout) => Some(BoardLayout {
+            i2c0_sda: layout.i2c0_sda,
+            i2c0_scl: layout.i2c0_scl,
+            one_wire_data: layout.one_wire_data,
+            battery_adc: layout.battery_adc,
+            sensor_enable: layout.sensor_enable,
+        }),
+        None => resolve_legacy_i2c_layout(legacy_i2c_sda, legacy_i2c_scl)?,
+    };
+
+    if let Some(layout) = layout {
+        layout.validate().map_err(str::to_string)?;
+        Ok(Some(layout))
+    } else {
+        Ok(None)
     }
 }
 
@@ -269,6 +302,7 @@ async fn provision_node(
     state: tauri::State<'_, AppState>,
     address: String,
     node_id: String,
+    board_layout: Option<BoardLayoutInput>,
     i2c_sda: Option<u8>,
     i2c_scl: Option<u8>,
 ) -> Result<String, String> {
@@ -282,7 +316,7 @@ async fn provision_node(
         }
     };
 
-    let pin_config = resolve_pin_config(i2c_sda, i2c_scl)?;
+    let board_layout = resolve_board_layout(board_layout, i2c_sda, i2c_scl)?;
 
     // Load artifacts from in-memory cache, falling back to file store.
     let artifacts = {
@@ -315,7 +349,7 @@ async fn provision_node(
                 &addr,
                 &node_id,
                 &[],
-                pin_config,
+                board_layout,
             )
             .await
         })
@@ -512,6 +546,7 @@ async fn provision_node(
     state: tauri::State<'_, AppState>,
     address: String,
     node_id: String,
+    board_layout: Option<BoardLayoutInput>,
     i2c_sda: Option<u8>,
     i2c_scl: Option<u8>,
 ) -> Result<String, String> {
@@ -525,7 +560,7 @@ async fn provision_node(
         }
     };
 
-    let pin_config = resolve_pin_config(i2c_sda, i2c_scl)?;
+    let board_layout = resolve_board_layout(board_layout, i2c_sda, i2c_scl)?;
 
     // Load artifacts from in-memory cache, falling back to Android secure storage.
     let artifacts = {
@@ -558,7 +593,7 @@ async fn provision_node(
                 &addr,
                 &node_id,
                 &[],
-                pin_config,
+                board_layout,
             )
             .await
         })
@@ -789,38 +824,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_pin_config_both_present() {
-        let result = resolve_pin_config(Some(5), Some(6)).unwrap();
-        let pc = result.unwrap();
-        assert_eq!(pc.i2c0_sda, 5);
-        assert_eq!(pc.i2c0_scl, 6);
+    fn resolve_legacy_i2c_layout_both_present() {
+        let result = resolve_legacy_i2c_layout(Some(5), Some(6)).unwrap();
+        let layout = result.unwrap();
+        assert_eq!(layout.i2c0_sda, Some(5));
+        assert_eq!(layout.i2c0_scl, Some(6));
     }
 
     #[test]
-    fn resolve_pin_config_both_absent() {
-        let result = resolve_pin_config(None, None).unwrap();
+    fn resolve_legacy_i2c_layout_both_absent() {
+        let result = resolve_legacy_i2c_layout(None, None).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
-    fn resolve_pin_config_only_sda_rejected() {
-        let result = resolve_pin_config(Some(5), None);
+    fn resolve_legacy_i2c_layout_only_sda_rejected() {
+        let result = resolve_legacy_i2c_layout(Some(5), None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("both"));
     }
 
     #[test]
-    fn resolve_pin_config_only_scl_rejected() {
-        let result = resolve_pin_config(None, Some(6));
+    fn resolve_legacy_i2c_layout_only_scl_rejected() {
+        let result = resolve_legacy_i2c_layout(None, Some(6));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("both"));
     }
 
     #[test]
-    fn resolve_pin_config_zero_one_values() {
-        let result = resolve_pin_config(Some(0), Some(1)).unwrap();
-        let pc = result.unwrap();
-        assert_eq!(pc.i2c0_sda, 0);
-        assert_eq!(pc.i2c0_scl, 1);
+    fn resolve_board_layout_validates_custom_board() {
+        let result = resolve_board_layout(
+            Some(BoardLayoutInput {
+                i2c0_sda: Some(6),
+                i2c0_scl: Some(7),
+                one_wire_data: Some(3),
+                battery_adc: Some(2),
+                sensor_enable: Some(4),
+            }),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result, BoardLayout::SONDE_SENSOR_NODE_REV_A);
+    }
+
+    #[test]
+    fn resolve_board_layout_rejects_half_i2c_assignment() {
+        let result = resolve_board_layout(
+            Some(BoardLayoutInput {
+                i2c0_sda: Some(5),
+                i2c0_scl: None,
+                one_wire_data: None,
+                battery_adc: None,
+                sensor_enable: None,
+            }),
+            None,
+            None,
+        );
+        assert!(result.is_err());
     }
 }

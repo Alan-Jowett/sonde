@@ -12,7 +12,7 @@
 //! - Programs: `"prog_a"` (blob, ≤4096 B), `"prog_b"` (blob, ≤4096 B)
 //! - WiFi channel: `"channel"` (u32, 1–13)
 //! - BLE pairing (ND-0916): `"peer_payload"` (blob, variable), `"reg_complete"` (u32, 0 or 1)
-//! - I2C pin config (ND-0608): `"i2c0_sda"` (u32, default 0), `"i2c0_scl"` (u32, default 1)
+//! - Board layout (ND-0608): `"board_layout"` (blob, deterministic CBOR)
 //!
 //! The early-wake flag is stored in RTC slow SRAM (`.rtc.data` section)
 //! rather than NVS, so it survives deep sleep without incurring flash wear.
@@ -22,6 +22,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use esp_idf_svc::nvs::{EspNvs, EspNvsPartition, NvsDefault};
+use sonde_protocol::{decode_board_layout_cbor, encode_board_layout_cbor, BoardLayout};
 
 use crate::error::{NodeError, NodeResult};
 
@@ -40,6 +41,12 @@ const DEFAULT_INTERVAL_S: u32 = 300;
 #[link_section = ".rtc.data"]
 static EARLY_WAKE_FLAG: AtomicU32 = AtomicU32::new(0);
 
+#[link_section = ".rtc.data"]
+static LAST_BATTERY_MV: AtomicU32 = AtomicU32::new(0);
+
+#[link_section = ".rtc.data"]
+static LAST_BATTERY_VALID: AtomicU32 = AtomicU32::new(0);
+
 /// NVS-backed implementation of [`crate::traits::PlatformStorage`].
 pub struct NvsStorage {
     nvs: EspNvs<NvsDefault>,
@@ -51,6 +58,35 @@ impl NvsStorage {
         let nvs = EspNvs::new(partition, NVS_NAMESPACE, true)
             .map_err(|_| NodeError::StorageError("NVS open failed"))?;
         Ok(Self { nvs })
+    }
+
+    fn legacy_i2c0_pins(&self) -> (u8, u8) {
+        const MAX_GPIO: u8 = 21;
+        let sda = self
+            .nvs
+            .get_u32("i2c0_sda")
+            .ok()
+            .flatten()
+            .and_then(|v| u8::try_from(v).ok())
+            .filter(|&v| v <= MAX_GPIO)
+            .unwrap_or(0);
+        let scl = self
+            .nvs
+            .get_u32("i2c0_scl")
+            .ok()
+            .flatten()
+            .and_then(|v| u8::try_from(v).ok())
+            .filter(|&v| v <= MAX_GPIO)
+            .unwrap_or(1);
+        if sda == scl {
+            return (0, 1);
+        }
+        (sda, scl)
+    }
+
+    fn has_legacy_i2c0_pins(&self) -> bool {
+        self.nvs.get_u32("i2c0_sda").ok().flatten().is_some()
+            || self.nvs.get_u32("i2c0_scl").ok().flatten().is_some()
     }
 }
 
@@ -293,58 +329,59 @@ impl crate::traits::PlatformStorage for NvsStorage {
             .map_err(|_| NodeError::StorageError("reg_complete write failed"))
     }
 
-    fn read_i2c0_pins(&self) -> (u8, u8) {
-        const MAX_GPIO: u8 = 21;
-        let sda = self
-            .nvs
-            .get_u32("i2c0_sda")
-            .ok()
-            .flatten()
-            .and_then(|v| u8::try_from(v).ok())
-            .filter(|&v| v <= MAX_GPIO)
-            .unwrap_or(0);
-        let scl = self
-            .nvs
-            .get_u32("i2c0_scl")
-            .ok()
-            .flatten()
-            .and_then(|v| u8::try_from(v).ok())
-            .filter(|&v| v <= MAX_GPIO)
-            .unwrap_or(1);
-        // If both decoded to the same pin, fall back to defaults to
-        // avoid initializing I2C with SDA==SCL (ND-0608).
-        if sda == scl {
-            return (0, 1);
+    fn read_board_layout(&self) -> Option<BoardLayout> {
+        let mut buf = [0u8; 32];
+        if let Ok(Some(slice)) = self.nvs.get_blob("board_layout", &mut buf) {
+            if let Ok(layout) = decode_board_layout_cbor(slice) {
+                return Some(layout);
+            }
         }
-        (sda, scl)
+
+        if self.has_legacy_i2c0_pins() {
+            let (i2c0_sda, i2c0_scl) = self.legacy_i2c0_pins();
+            return Some(BoardLayout {
+                i2c0_sda: Some(i2c0_sda),
+                i2c0_scl: Some(i2c0_scl),
+                one_wire_data: None,
+                battery_adc: None,
+                sensor_enable: None,
+            });
+        }
+
+        None
     }
 
-    fn write_i2c0_pins(&mut self, sda: u8, scl: u8) -> NodeResult<()> {
-        // Validate before persisting — an invalid config survives factory
-        // reset (ND-0608 AC#4) and could permanently disable I2C.
-        const MAX_GPIO: u8 = 21;
-        if sda > MAX_GPIO || scl > MAX_GPIO {
-            return Err(NodeError::StorageError("i2c0 pin out of GPIO range"));
-        }
-        if sda == scl {
-            return Err(NodeError::StorageError("i2c0 SDA and SCL must differ"));
-        }
-
-        // Best-effort atomicity: if updating SCL fails after SDA was written,
-        // restore the previous SDA value to avoid leaving a mismatched pair.
-        let (old_sda, _old_scl) = self.read_i2c0_pins();
-
+    fn write_board_layout(&mut self, layout: &BoardLayout) -> NodeResult<()> {
+        let encoded = encode_board_layout_cbor(layout)
+            .map_err(|_| NodeError::StorageError("board_layout encode failed"))?;
         self.nvs
-            .set_u32("i2c0_sda", sda as u32)
-            .map_err(|_| NodeError::StorageError("i2c0_sda write failed"))?;
+            .set_blob("board_layout", &encoded)
+            .map_err(|_| NodeError::StorageError("board_layout write failed"))?;
 
-        if let Err(_e) = self.nvs.set_u32("i2c0_scl", scl as u32) {
-            // Attempt to roll back SDA; ignore rollback failure since we
-            // can't do better than best-effort here.
-            let _ = self.nvs.set_u32("i2c0_sda", old_sda as u32);
-            return Err(NodeError::StorageError("i2c0_scl write failed"));
+        if let Some(i2c0_sda) = layout.i2c0_sda {
+            self.nvs
+                .set_u32("i2c0_sda", i2c0_sda as u32)
+                .map_err(|_| NodeError::StorageError("legacy i2c0_sda write failed"))?;
         }
+        if let Some(i2c0_scl) = layout.i2c0_scl {
+            self.nvs
+                .set_u32("i2c0_scl", i2c0_scl as u32)
+                .map_err(|_| NodeError::StorageError("legacy i2c0_scl write failed"))?;
+        }
+        Ok(())
+    }
 
+    fn read_last_battery_mv(&self) -> Option<u32> {
+        if LAST_BATTERY_VALID.load(Ordering::Relaxed) == 0 {
+            None
+        } else {
+            Some(LAST_BATTERY_MV.load(Ordering::Relaxed))
+        }
+    }
+
+    fn write_last_battery_mv(&mut self, battery_mv: u32) -> NodeResult<()> {
+        LAST_BATTERY_MV.store(battery_mv, Ordering::Relaxed);
+        LAST_BATTERY_VALID.store(1, Ordering::Relaxed);
         Ok(())
     }
 }

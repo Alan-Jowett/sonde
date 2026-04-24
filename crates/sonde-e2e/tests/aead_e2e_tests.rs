@@ -92,7 +92,7 @@ async fn t_e2e_001_nop_wake_cycle() {
 
     // Verify gateway updated node telemetry.
     let record = env.storage.get_node("aead-nop").await.unwrap().unwrap();
-    assert_eq!(record.last_battery_mv, Some(3300));
+    assert_eq!(record.last_battery_mv, Some(0));
     assert!(record.last_seen.is_some());
     assert_eq!(
         record.firmware_abi_version,
@@ -704,7 +704,7 @@ async fn t_e2e_002_aead_authentication_round_trip() {
         "gateway must respond to valid AEAD frame"
     );
     let rec = env.storage.get_node("aead-002").await.unwrap().unwrap();
-    assert_eq!(rec.last_battery_mv, Some(3300));
+    assert_eq!(rec.last_battery_mv, Some(0));
 }
 
 // ---------------------------------------------------------------------------

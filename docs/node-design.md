@@ -69,12 +69,12 @@ The node firmware is divided into twelve functional modules arranged in two tier
 |---|---|---|
 | **Transport** | ESP-NOW send/receive, frame size enforcement | ND-0100, ND-0103 |
 | **Protocol Codec** | Frame serialization/deserialization, CBOR encoding | ND-0101, ND-0102 |
-| **Wake Cycle Engine** | State machine: WAKE → COMMAND → transfer/execute → sleep | ND-0200–0203, ND-0700–0702 |
+| **Wake Cycle Engine** | State machine: WAKE → COMMAND → transfer/execute → sleep | ND-0200–0203, ND-0608a, ND-0700–0702 |
 | **Key Store** | PSK storage in dedicated flash partition, pairing, factory reset | ND-0400, ND-0402 |
 | **Program Store** | A/B flash partitions, program image decoding, LDDW resolution | ND-0500–0503, ND-0501a |
 | **BPF Runtime** | `sonde-bpf` interpreter, helper dispatch, execution constraints | ND-0504–0506, ND-0600–0606 |
 | **Map Storage** | Sleep-persistent maps in RTC slow SRAM | ND-0603, ND-0606 |
-| **HAL** | I2C, SPI, GPIO, ADC bus access for BPF helpers | ND-0601 |
+| **HAL** | I2C, SPI, GPIO, ADC bus access for BPF helpers and provisioned board-layout expansion | ND-0601, ND-0608 |
 | **Sleep Manager** | Deep sleep entry, wake interval, RTC memory management, GPIO sleep preparation | ND-0203, ND-1013 |
 | **node_aead** | AES-256-GCM `AeadProvider` implementation (pure-Rust `aes-gcm` crate, `no_std`-compatible) | ND-0300 |
 | **Auth** | AES-256-GCM AEAD via `node_aead` provider, nonce generation, response verification | ND-0300–0304 |
@@ -132,18 +132,19 @@ The state machine has five main states plus two alternate boot paths. Starting f
 1. **Boot/wake**: Initialize hardware. Determine boot path per ND-0900: (1) no PSK or button held → BLE pairing mode, (2) PSK + no `reg_complete` → PEER_REQUEST registration, (3) PSK + `reg_complete` → proceed to step 2.
 2. **Generate nonce**: Hardware RNG produces a 64-bit random nonce.
 3. **Drain async queue**: Check the async queue (§8.6) from the previous cycle. If exactly 1 message is queued and it fits in the WAKE payload budget, include it as `blob` (CBOR key 10) in the WAKE message. Otherwise, `blob` is omitted and the queue is left intact for overflow drain in step 7 (NOP only).
-4. **Send WAKE**: Construct WAKE frame (`firmware_abi_version`, `program_hash`, `battery_mv`, `firmware_version`, and optionally `blob`). The `firmware_version` string is derived from `CARGO_PKG_VERSION` at compile time. AEAD-encrypt with PSK. Transmit via ESP-NOW.
+4. **Send WAKE**: Construct WAKE frame (`firmware_abi_version`, `program_hash`, `battery_mv`, `firmware_version`, and optionally `blob`). The `firmware_version` string is derived from `CARGO_PKG_VERSION` at compile time. `battery_mv` comes from the RTC-retained reading captured on the previous wake; if no value has been captured yet, it is `0`. AEAD-encrypt with PSK. Transmit via ESP-NOW.
 5. **Await COMMAND**: Wait up to 200 ms for a response. On timeout, back off for 400 ms before retrying, up to 4 total attempts. If all attempts fail, sleep.
 6. **Verify COMMAND**: Decrypt via AES-256-GCM. Verify echoed nonce matches. Decode CBOR. Extract `starting_seq` and `timestamp_ms`.
 6b. **Downlink data extraction**: If the COMMAND is NOP and contains a `blob` field (CBOR key 10), the firmware copies the blob into a RAM buffer and sets `sonde_context.data_start` / `data_end` to point to it. If no `blob` is present, both fields are set to 0.
-7. **Dispatch command**:
+7. **Capture current-cycle battery value**: Using the provisioned board layout (§10.3), optionally assert the active-low `sensor_enable` GPIO, wait for the sensor rail / bus settle time, capture the current-cycle battery value from the provisioned `battery_adc` pin (or use the fallback `3300` mV when no ADC pin is assigned), and store the value in RTC-retained state for the next wake.
+8. **Dispatch command**:
    - `NOP` → drain remaining async queue (previous-cycle blobs not piggybacked on WAKE) as individual APP_DATA frames, then proceed to BPF execution. Blobs queued by BPF in the current cycle remain in the queue for piggybacking on the next WAKE.
    - `UPDATE_PROGRAM` / `RUN_EPHEMERAL` → clear async queue (old program's blobs are invalid), enter chunked transfer.
    - `UPDATE_SCHEDULE` → store new base interval, proceed to BPF execution.
    - `REBOOT` → restart firmware.
    - Unknown → treat as NOP.
-8. **BPF execution**: Execute resident (or newly installed/ephemeral) program.
-9. **Sleep**: Enter deep sleep for `min(set_next_wake_value, base_interval)`.
+9. **BPF execution**: Execute resident (or newly installed/ephemeral) program.
+10. **Sleep**: Enter deep sleep for `min(set_next_wake_value, base_interval)`.
 
 ### 4.3  Chunked transfer sub-state
 
@@ -374,7 +375,7 @@ Before invoking the BPF program, the firmware populates:
 ```rust
 pub struct SondeContext {
     pub timestamp: u64,              // from gateway timestamp_ms + local elapsed
-    pub battery_mv: u16,             // current ADC reading
+    pub battery_mv: u16,             // current-cycle reading or fallback captured after COMMAND
     pub firmware_abi_version: u16,   // firmware ABI
     pub wake_reason: u8,             // 0x00=scheduled, 0x01=early, 0x02=program_update
     pub data_start: u64,             // pointer to downlink blob (0 if none)
@@ -493,22 +494,36 @@ Handles pack bus and address into a single `u32` (matching bpf-environment.md §
 
 All HAL helpers return `0` on success, negative on error. Errors include NACK, bus timeout, invalid pin/channel. The BPF program decides how to handle errors — the firmware does not retry.
 
-### 10.3  Configurable I2C pin assignments (ND-0608)
+### 10.3  Provisioned board layout (ND-0608, ND-0608a)
 
-I2C bus GPIO pin numbers are configurable via NVS to support different ESP32-C3 board layouts with a single firmware binary.
+Board-specific hardware layout is provisioned once and persisted in flash so that the firmware never hard-codes any particular board revision.
 
-**NVS keys** (namespace `"sonde"`):
+**Flash key** (namespace `"sonde"`):
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `"i2c0_sda"` | u32 | 0 | I2C0 SDA GPIO number |
-| `"i2c0_scl"` | u32 | 1 | I2C0 SCL GPIO number |
+| Key | Type | Description |
+|-----|------|-------------|
+| `"board_layout"` | blob | Serialized board-layout record containing `i2c0_sda`, `i2c0_scl`, `one_wire_data`, `battery_adc`, and `sensor_enable` as `Option<u8>`-style values |
 
-**Initialization:** At HAL init time, the firmware reads `i2c0_sda` and `i2c0_scl` from NVS. If either key is absent, the compiled-in default is used (GPIO 0 / GPIO 1, matching DevKitM-1 Qwiic mapping).
+**Boot-time expansion:** On boot, the firmware:
 
-**Provisioning path:** Pin config is included as optional trailing bytes in the NODE_PROVISION BLE message body (see §BLE pairing). When the node receives a NODE_PROVISION with pin config, it writes the values to NVS before rebooting into PEER_REQUEST mode. An older pairing tool that omits pin config produces no NVS writes — the defaults apply.
+1. Reads `board_layout` from flash.
+2. If the key is present and valid, decodes it into an internal `BoardLayout` struct.
+3. If the key is absent, synthesizes a legacy compatibility layout equivalent to the pre-layout implementation (`i2c0_sda=Some(0)`, `i2c0_scl=Some(1)`, all other functions `None`).
+4. Copies the effective `BoardLayout` into RTC-backed runtime state so the HAL, wake-cycle engine, and sleep manager use the same resolved layout during the wake.
 
-**Factory reset:** Pin config keys are NOT erased during factory reset (ND-0917). The board's physical pin mapping does not change when the node is re-provisioned.
+```rust
+pub struct BoardLayout {
+    pub i2c0_sda: Option<u8>,
+    pub i2c0_scl: Option<u8>,
+    pub one_wire_data: Option<u8>,
+    pub battery_adc: Option<u8>,
+    pub sensor_enable: Option<u8>, // active-low when present
+}
+```
+
+**Provisioning path:** Board layout is included as optional trailing bytes in the `NODE_PROVISION` BLE message body (see §15.6). When the node receives a `NODE_PROVISION` with a valid board-layout map, it serializes and writes the decoded layout to the `board_layout` flash key before rebooting into PEER_REQUEST mode. When the layout bytes are malformed, provisioning fails with `NODE_ACK(0x02)` rather than guessing. When an older pairing tool omits layout bytes entirely, the node retains any existing `board_layout` record; if none exists yet, it synthesizes the legacy compatibility layout.
+
+**Factory reset:** The `board_layout` key is NOT erased during factory reset (ND-0917). The board's physical layout does not change when the node is re-provisioned.
 
 ---
 
@@ -538,15 +553,15 @@ The flag for `WAKE_EARLY` is stored in RTC SRAM and cleared after reading.
 
 Before entering deep sleep, `prepare_for_sleep()` is called to eliminate GPIO leakage current (ND-1013).
 
-1. Enumerate the I2C0 bus GPIOs (SDA and SCL for the currently supported I2C bus) and reset them to a disabled/high-impedance state with no pull resistors via `gpio_reset_pin()`. Additional I2C buses may be added in future revisions.
-2. Enumerate any GPIOs that were configured as outputs by BPF helper calls (`gpio_write`) during the current wake cycle and reset them to a disabled state.
+1. Enumerate all assigned GPIOs from the effective `BoardLayout` (`i2c0_sda`, `i2c0_scl`, `one_wire_data`, `battery_adc`, `sensor_enable`) and return them to input mode with output drive disabled and all pull resistors removed.
+2. Enumerate any GPIOs that were configured as outputs by BPF helper calls (`gpio_write`) during the current wake cycle and return them to the same high-impedance input state.
 3. Skip RTC-domain pins required for wake-up sources (e.g., pairing button GPIO) — these must retain their configured state.
 
 **Implementation notes:**
 
 - `prepare_for_sleep()` is called from the node main loop (deep sleep entry in `bin/node.rs`) immediately before step 3 in §11.1.
 - The HAL layer tracks which GPIOs were configured during the wake cycle via a small bitset.
-- `gpio_reset_pin()` restores the ESP-IDF default: input-disabled, output-disabled, no pull-up/pull-down.
+- The sleep preparation path uses explicit "input, no pulls, no output drive" configuration rather than relying on `gpio_reset_pin()`, because ND-1013 requires high-Z input state rather than input-disabled state.
 
 ---
 

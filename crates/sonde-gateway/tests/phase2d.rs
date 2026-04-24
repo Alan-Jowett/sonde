@@ -187,20 +187,22 @@ async fn t1105_poll_status_multiple_calls() {
 // ─── GW-0507: node_timeout EVENT ───────────────────────────────────────
 
 /// Verify check_node_timeouts identifies nodes that have exceeded 3×
-/// their schedule_interval_s since last_seen. Uses an empty handler
+/// their schedule_interval_s since runtime last_seen. Uses an empty handler
 /// router so the scan logic actually executes (no process is spawned).
 #[tokio::test]
 async fn t0507_check_node_timeouts_emits_event() {
     let storage = Arc::new(InMemoryStorage::new());
 
-    // Register a node with a 60s interval and last_seen 200s ago
+    // Register a node with a 60s interval and runtime last_seen 200s ago.
     let mut node = NodeRecord::new("timeout-node".into(), 0x0001, [0xAA; 32]);
     node.schedule_interval_s = 60;
-    node.last_seen = Some(SystemTime::now() - Duration::from_secs(200));
     storage.upsert_node(&node).await.unwrap();
 
     let router = Arc::new(RwLock::new(HandlerRouter::new(vec![])));
     let gw = Gateway::new_with_handler(storage, Duration::from_secs(30), router);
+    gw.session_manager()
+        .record_last_seen("timeout-node", SystemTime::now() - Duration::from_secs(200))
+        .await;
     gw.check_node_timeouts(3).await;
     // No panic = success; the scan logic ran and found the timed-out node,
     // but with an empty router there is no matching handler to deliver to.
@@ -211,19 +213,21 @@ async fn t0507_check_node_timeouts_emits_event() {
 async fn t0507_check_node_timeouts_not_timed_out() {
     let storage = Arc::new(InMemoryStorage::new());
 
-    // Node seen 30s ago with 60s interval — well within 3× window
+    // Node seen 30s ago with 60s interval — well within 3× window.
     let mut node = NodeRecord::new("fresh-node".into(), 0x0002, [0xBB; 32]);
     node.schedule_interval_s = 60;
-    node.last_seen = Some(SystemTime::now() - Duration::from_secs(30));
     storage.upsert_node(&node).await.unwrap();
 
     let router = Arc::new(RwLock::new(HandlerRouter::new(vec![])));
     let gw = Gateway::new_with_handler(storage, Duration::from_secs(30), router);
+    gw.session_manager()
+        .record_last_seen("fresh-node", SystemTime::now() - Duration::from_secs(30))
+        .await;
     gw.check_node_timeouts(3).await;
     // No panic, no timeout detected.
 }
 
-/// Verify that nodes with no last_seen are skipped.
+/// Verify that nodes with no runtime last_seen are skipped.
 #[tokio::test]
 async fn t0507_check_node_timeouts_no_last_seen() {
     let storage = Arc::new(InMemoryStorage::new());
@@ -244,11 +248,16 @@ async fn t0507_check_node_timeouts_zero_interval() {
 
     let mut node = NodeRecord::new("zero-interval".into(), 0x0004, [0xDD; 32]);
     node.schedule_interval_s = 0;
-    node.last_seen = Some(SystemTime::now() - Duration::from_secs(500));
     storage.upsert_node(&node).await.unwrap();
 
     let router = Arc::new(RwLock::new(HandlerRouter::new(vec![])));
     let gw = Gateway::new_with_handler(storage, Duration::from_secs(30), router);
+    gw.session_manager()
+        .record_last_seen(
+            "zero-interval",
+            SystemTime::now() - Duration::from_secs(500),
+        )
+        .await;
     gw.check_node_timeouts(3).await;
     // No panic — zero interval means no timeout check.
 }
@@ -493,13 +502,18 @@ async fn gw0507_node_timeout_event_with_fields() {
     let router = Arc::new(RwLock::new(HandlerRouter::new(vec![config])));
     let storage = Arc::new(InMemoryStorage::new());
 
-    // Register a node that has timed out: 60s interval, last seen 200s ago
+    // Register a node that has timed out: 60s interval, runtime last_seen 200s ago.
     let mut node = NodeRecord::new("timeout-node-ev".into(), 0x0010, [0xAA; 32]);
     node.schedule_interval_s = 60;
-    node.last_seen = Some(SystemTime::now() - Duration::from_secs(200));
     storage.upsert_node(&node).await.unwrap();
 
     let gw = Gateway::new_with_handler(storage, Duration::from_secs(30), router);
+    gw.session_manager()
+        .record_last_seen(
+            "timeout-node-ev",
+            SystemTime::now() - Duration::from_secs(200),
+        )
+        .await;
     gw.check_node_timeouts(3).await;
 
     // Poll for the event file to appear and contain at least one line,
@@ -534,4 +548,88 @@ async fn gw0507_node_timeout_event_with_fields() {
         60,
         "expected_interval_s must equal node's schedule_interval_s"
     );
+}
+
+/// GW-0507 / T-0517a: after a gateway restart, timeout detection does not use
+/// pre-restart runtime state. This test seeds the runtime tracker directly;
+/// separate WAKE-path tests verify that a valid WAKE populates the tracker.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn gw0507_timeout_suppressed_after_restart_until_runtime_last_seen_reseeded() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(
+        tmp.path(),
+        "event_rec_restart.py",
+        EVENT_RECORDING_HANDLER_PY,
+    );
+    let event_file = tmp.path().join("events-restart.jsonl");
+    let event_file_str = event_file.to_string_lossy().into_owned();
+
+    let mut args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();
+    args.push(script);
+    args.push(event_file_str.clone());
+    let config = HandlerConfig {
+        matchers: vec![ProgramMatcher::Any],
+        command: python_cmd().to_string(),
+        args,
+        reply_timeout: None,
+        working_dir: None,
+    };
+
+    let router = Arc::new(RwLock::new(HandlerRouter::new(vec![config])));
+    let storage = Arc::new(InMemoryStorage::new());
+
+    let mut node = NodeRecord::new("timeout-node-restart".into(), 0x0011, [0xAB; 32]);
+    node.schedule_interval_s = 60;
+    storage.upsert_node(&node).await.unwrap();
+
+    let gw_before_restart =
+        Gateway::new_with_handler(storage.clone(), Duration::from_secs(30), router.clone());
+    gw_before_restart
+        .session_manager()
+        .record_last_seen(
+            "timeout-node-restart",
+            SystemTime::now() - Duration::from_secs(200),
+        )
+        .await;
+    drop(gw_before_restart);
+
+    let gw_after_restart =
+        Gateway::new_with_handler(storage.clone(), Duration::from_secs(30), router.clone());
+    gw_after_restart.check_node_timeouts(3).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let pre_reseed = tokio::fs::read_to_string(&event_file)
+        .await
+        .unwrap_or_default();
+    assert!(
+        pre_reseed.trim().is_empty(),
+        "fresh gateway instance must not emit timeout events from pre-restart runtime state"
+    );
+
+    gw_after_restart
+        .session_manager()
+        .record_last_seen(
+            "timeout-node-restart",
+            SystemTime::now() - Duration::from_secs(200),
+        )
+        .await;
+    gw_after_restart.check_node_timeouts(3).await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let contents = loop {
+        if let Ok(text) = tokio::fs::read_to_string(&event_file).await {
+            if text.lines().next().is_some() {
+                break text;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("event file must exist and contain data at {event_file_str} within 5s");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let line = contents.lines().next().expect("at least one event line");
+    let event: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+    assert_eq!(event["node_id"], "timeout-node-restart");
+    assert_eq!(event["event_type"], "node_timeout");
 }

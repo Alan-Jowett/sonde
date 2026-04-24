@@ -497,7 +497,7 @@ The gateway MUST accept `DATA_REPLY` messages from handlers. The `request_id` MU
 **Source:** gateway-api.md §4.3
 
 **Description:**  
-The gateway SHOULD send `EVENT` messages to handlers for node lifecycle events: `node_online` (wake completed), `program_updated` (new program installed), and `node_timeout` (node missed expected wake). No reply is required from the handler.
+The gateway SHOULD send `EVENT` messages to handlers for node lifecycle events: `node_online` (wake completed), `program_updated` (new program installed), and `node_timeout` (node missed expected wake). No reply is required from the handler. The `node_timeout` event uses the node's runtime `last_seen` value from the current gateway process; after a gateway restart, no `node_timeout` event is emitted for a node until that node completes a new `WAKE`.
 
 **Acceptance criteria:**
 
@@ -505,6 +505,7 @@ The gateway SHOULD send `EVENT` messages to handlers for node lifecycle events: 
 2. `program_updated` events include `program_hash`.
 3. `node_timeout` events include `last_seen` and `expected_interval_s`.
 4. The handler is not required to reply to EVENT messages.
+5. After a gateway restart, nodes that have not yet completed a new `WAKE` do not emit `node_timeout`.
 
 ---
 
@@ -822,7 +823,7 @@ The gateway MUST expose a local gRPC API for administrative operations. The API 
 **Source:** GW-0700, GW-0705
 
 **Description:**  
-The admin API MUST support: listing all registered nodes, viewing node details (key_hint, assigned program, schedule, last battery, last ABI version, last seen), registering a node (providing key_hint, PSK, and admin node_id), and removing a node from the registry.
+The admin API MUST support: listing all registered nodes, viewing node details (key_hint, assigned program, schedule, last battery, last ABI version, last seen when known in the current gateway runtime), registering a node (providing key_hint, PSK, and admin node_id), and removing a node from the registry. The `last seen` value is operational runtime state, not durable registry state, and is cleared on gateway restart.
 
 **Acceptance criteria:**
 
@@ -830,6 +831,7 @@ The admin API MUST support: listing all registered nodes, viewing node details (
 2. `GetNode` returns details for a single node.
 3. `RegisterNode` adds a new node to the registry.
 4. `RemoveNode` deletes a node from the registry and discards its PSK.
+5. When a node has not completed a `WAKE` since gateway startup, `last seen` is absent rather than restored from durable storage.
 
 ---
 
@@ -874,12 +876,13 @@ The admin API MUST support: setting a node's wake schedule (queues UPDATE_SCHEDU
 **Source:** GW-0702, GW-0703
 
 **Description:**  
-The admin API SHOULD provide real-time node status including: current program hash, battery voltage, firmware ABI version, last seen timestamp, and whether the node has an active session.
+The admin API SHOULD provide real-time node status including: current program hash, battery voltage, firmware ABI version, runtime `last seen` timestamp, and whether the node has an active session. The `last seen` value is maintained in memory only and is cleared on gateway restart.
 
 **Acceptance criteria:**
 
 1. `GetNodeStatus` returns the latest known state for a node.
 2. Status reflects the most recent WAKE data.
+3. If the node has not completed a `WAKE` since gateway startup, `last_seen` is absent.
 
 ---
 
@@ -889,7 +892,7 @@ The admin API SHOULD provide real-time node status including: current program ha
 **Source:** GW-1001
 
 **Description:**  
-The admin API SHOULD support exporting and importing the gateway's portable state (node registry, PSKs, phone PSKs, program library, schedules, and handler routing configuration) for failover and backup. Because this includes cryptographic material, export/import mechanisms MUST comply with GW-0601a (operator authorization and protection of exported state).
+The admin API SHOULD support exporting and importing the gateway's portable state (node registry, PSKs, phone PSKs, program library, schedules, and handler routing configuration) for failover and backup. Because this includes cryptographic material, export/import mechanisms MUST comply with GW-0601a (operator authorization and protection of exported state). Runtime-only operational state such as `last_seen` is excluded.
 
 **Acceptance criteria:**
 
@@ -897,6 +900,7 @@ The admin API SHOULD support exporting and importing the gateway's portable stat
 2. `ImportState` restores state from a previously exported binary.
 3. Export and import operations require authenticated and authorized administrative access, and exported state is protected (e.g., via encryption) in accordance with GW-0601a.
 4. After import, all state components are restored: nodes, programs, phone PSKs, and handler configs.
+5. Runtime-only status such as `last_seen` is not exported and remains absent after import until the node completes a new `WAKE`.
 
 ---
 

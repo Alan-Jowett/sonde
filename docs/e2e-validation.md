@@ -190,7 +190,7 @@ impl E2eNode {
 - `run_wake_cycle()` returns `Sleep { seconds: 60 }`.
 - Gateway's `NodeRecord.last_battery_mv` updated to 3300.
 - Gateway's `NodeRecord.firmware_abi_version` updated.
-- Gateway's `NodeRecord.last_seen` updated.
+- Gateway runtime `last_seen` updated.
 
 ---
 
@@ -228,7 +228,7 @@ impl E2eNode {
 **Assertions:**
 - Both cycles complete with `Sleep { seconds: 60 }` and receive gateway responses.
 - WAKE nonces differ between the two cycles (RNG state advances).
-- Gateway's `NodeRecord.last_seen` is updated after both cycles.
+- Gateway runtime `last_seen` is updated after both cycles.
 
 ---
 
@@ -627,7 +627,7 @@ impl E2eNode {
 
 **Assertions:**
 - `run_wake_cycle()` returns `Sleep { seconds: 60 }`.
-- Gateway's `NodeRecord.last_seen` is `None` (WAKE was never processed).
+- Gateway runtime `last_seen` is `None` (WAKE was never processed).
 
 ---
 

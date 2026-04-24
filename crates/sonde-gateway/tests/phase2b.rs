@@ -1029,7 +1029,12 @@ async fn t0603_key_hint_collision() {
 
     // Registry must show node A was updated, not node B
     let updated_a = storage.get_node("node-603a").await.unwrap().unwrap();
-    assert!(updated_a.last_seen.is_some());
+    assert!(updated_a.last_battery_mv.is_some());
+    assert!(gw
+        .session_manager()
+        .get_last_seen("node-603a")
+        .await
+        .is_some());
 
     // Send WAKE from node B — also must succeed
     let frame_b = node_b.build_wake(2, 1, &[0u8; 32], 3200);

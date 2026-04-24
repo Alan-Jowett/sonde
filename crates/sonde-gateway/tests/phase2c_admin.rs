@@ -864,6 +864,7 @@ async fn t0808_get_node_status() {
         .into_inner();
     assert_eq!(status.node_id, "status-node");
     assert!(!status.has_active_session);
+    assert_eq!(status.last_seen_ms, None);
 
     // Send WAKE to create a session
     let gw = h.make_gateway();
@@ -1071,6 +1072,7 @@ async fn t0810_import_state_restores_nodes_and_programs() {
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].node_id, "import-node");
     assert_eq!(nodes[0].key_hint, 0x0007);
+    assert_eq!(nodes[0].last_seen_ms, None);
 
     // Verify program was restored.
     let programs = h2

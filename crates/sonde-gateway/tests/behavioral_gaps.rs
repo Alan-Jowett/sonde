@@ -1233,11 +1233,11 @@ async fn t0504_many_to_one_handler_routing() {
 //  Gap 10 — GW-0700: Registry entry field completeness
 // ═══════════════════════════════════════════════════════════════════════
 
-/// After registration + WAKE, the node record must contain all specified
-/// fields with correct values: node_id, key_hint, psk,
+/// After registration + WAKE, the durable node record must contain all
+/// specified persisted fields with correct values: node_id, key_hint, psk,
 /// assigned_program_hash, schedule_interval_s, firmware_abi_version,
-/// last_battery_mv, last_seen, and current_program_hash (None, since
-/// it is only set via PROGRAM_ACK).
+/// last_battery_mv, and current_program_hash (None, since it is only set via
+/// PROGRAM_ACK). Runtime `last_seen` is tracked separately.
 #[tokio::test]
 async fn t0700_registry_entry_all_fields_present() {
     let storage = Arc::new(InMemoryStorage::new());
@@ -1290,8 +1290,11 @@ async fn t0700_registry_entry_all_fields_present() {
         "last_battery_mv must be updated by WAKE"
     );
     assert!(
-        stored.last_seen.is_some(),
-        "last_seen must be set after WAKE"
+        gw.session_manager()
+            .get_last_seen("node-fields")
+            .await
+            .is_some(),
+        "runtime last_seen must be set after WAKE"
     );
     // `current_program_hash` is only set via PROGRAM_ACK, not WAKE.
     assert_eq!(
@@ -1353,7 +1356,7 @@ async fn t0801_get_node_returns_all_fields() {
         .await
         .unwrap();
 
-    // Send WAKE to populate telemetry (battery, ABI, last_seen).
+    // Send WAKE to populate telemetry (battery, ABI, runtime last_seen).
     // First consume the schedule command via a WAKE.
     let gw = h.make_gateway();
     let node = TestNode::new("full-node", 0x0801, psk);

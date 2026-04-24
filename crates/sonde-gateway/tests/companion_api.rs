@@ -446,21 +446,48 @@ async fn t0822_lagging_subscriber_is_terminated_without_blocking_active_one() {
         .unwrap()
         .into_inner();
 
+    let lag_count = DEFAULT_COMPANION_EVENT_BUFFER + 24;
+    let (active_started_tx, active_started_rx) = tokio::sync::oneshot::channel();
     let active_reader = tokio::spawn(async move {
         let mut seen = Vec::new();
-        for _ in 0..8 {
+
+        let first_item = tokio::time::timeout(Duration::from_secs(2), active.next())
+            .await
+            .expect("timed out waiting for active subscriber event")
+            .expect("active stream ended unexpectedly")
+            .expect("active subscriber should keep receiving events");
+        seen.push(first_item);
+        active_started_tx
+            .send(())
+            .expect("active reader should signal startup exactly once");
+
+        for _ in 1..lag_count {
             let item = tokio::time::timeout(Duration::from_secs(2), active.next())
                 .await
                 .expect("timed out waiting for active subscriber event")
                 .expect("active stream ended unexpectedly")
                 .expect("active subscriber should keep receiving events");
-            seen.push(item);
+            if seen.len() < 8 {
+                seen.push(item);
+            }
         }
         seen
     });
 
-    let lag_count = DEFAULT_COMPANION_EVENT_BUFFER + 24;
-    for i in 0..lag_count {
+    h.event_hub.emit_node_checkin(
+        "node-0".into(),
+        vec![0; 32],
+        None,
+        3200,
+        1,
+        "0.5.0".into(),
+        0,
+    );
+    active_started_rx
+        .await
+        .expect("active reader should observe the first event before the burst");
+
+    for i in 1..lag_count {
         let payload_byte = u8::try_from(i).expect("test event index should fit in u8");
         let battery_mv_offset = u32::try_from(i).expect("test event index should fit in u32");
         let timestamp = u64::try_from(i).expect("test event index should fit in u64");

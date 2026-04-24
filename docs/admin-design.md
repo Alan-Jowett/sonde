@@ -135,7 +135,7 @@ sonde-admin
 │   ├── status
 │   ├── set-channel <channel:1-14>
 │   ├── scan
-│   └── display <line> [line...]
+│   └── display <line> [<line> ...]
 ├── pairing
 │   ├── start [--duration-s <seconds>]
 │   ├── stop

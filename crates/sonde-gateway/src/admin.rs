@@ -163,6 +163,22 @@ fn schedule_admin_display_restore(
     });
 }
 
+async fn restore_admin_display_failure(
+    transport: &Arc<UsbEspNowTransport>,
+    display_generation: &Arc<AtomicU64>,
+    generation: u64,
+) {
+    if !try_claim_display_restore(display_generation.as_ref(), generation) {
+        return;
+    }
+    if let Err(e) = send_gateway_version_banner(transport).await {
+        warn!(
+            error = %e,
+            "failed to restore gateway version banner after admin display error"
+        );
+    }
+}
+
 /// Convert a [`HandlerRecord`] into a [`HandlerConfig`].
 ///
 /// Returns `None` for records with invalid `program_hash` values so that
@@ -1275,9 +1291,12 @@ impl GatewayAdmin for AdminService {
         reset_status_page_cycle(status_page_cycle).await;
 
         let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        send_display_message(transport, &line_refs)
-            .await
-            .map_err(|e| Status::internal(format!("show modem display message failed: {e}")))?;
+        if let Err(e) = send_display_message(transport, &line_refs).await {
+            restore_admin_display_failure(transport, display_generation, generation).await;
+            return Err(Status::internal(format!(
+                "show modem display message failed: {e}"
+            )));
+        }
 
         schedule_admin_display_restore(
             transport,

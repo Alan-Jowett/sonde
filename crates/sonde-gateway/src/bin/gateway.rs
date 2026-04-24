@@ -1032,7 +1032,7 @@ async fn run_gateway(
         // Re-create the admin service and spawn a fresh gRPC server on each
         // reconnect iteration to bind to the new transport reference.
         let ble_controller = Arc::new(sonde_gateway::ble_pairing::BlePairingController::new());
-        let button_display_generation = Arc::new(AtomicU64::new(0));
+        let display_generation = Arc::new(AtomicU64::new(0));
         let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let status_page_scroll_task: StatusPageScrollTask = Arc::new(tokio::sync::Mutex::new(None));
         let admin_service = AdminService::new(
@@ -1042,7 +1042,7 @@ async fn run_gateway(
         )
         .with_ble(Arc::clone(&ble_controller), Arc::clone(&transport))
         .with_display_state(
-            Arc::clone(&button_display_generation),
+            Arc::clone(&display_generation),
             Arc::clone(&status_page_cycle),
             Arc::clone(&status_page_scroll_task),
         )
@@ -1122,7 +1122,7 @@ async fn run_gateway(
                     window.open(3600);
                     if controller_origin == Some(PairingOrigin::Admin) {
                         cancel_status_page_scroll(&status_page_scroll_task).await;
-                        invalidate_display_restore(&button_display_generation);
+                        invalidate_display_restore(&display_generation);
                         reset_status_page_cycle(&status_page_cycle).await;
                         if let Err(e) = send_gateway_version_banner(&ble_transport).await {
                             warn!(
@@ -1147,7 +1147,7 @@ async fn run_gateway(
                         handle_button_pairing_timeout(
                             &ble_transport,
                             &ble_ctrl,
-                            &button_display_generation,
+                            &display_generation,
                             &status_page_cycle,
                             &mut button_display_state,
                             &mut window,
@@ -1194,7 +1194,7 @@ async fn run_gateway(
                                 complete_button_pairing_success(
                                     &ble_transport,
                                     &ble_ctrl,
-                                    &button_display_generation,
+                                    &display_generation,
                                     &status_page_cycle,
                                     &mut button_display_state,
                                     &mut window,
@@ -1286,7 +1286,7 @@ async fn run_gateway(
                             if !open_button_pairing_session(
                                 &ble_transport,
                                 &ble_ctrl,
-                                &button_display_generation,
+                                &display_generation,
                                 &status_page_cycle,
                                 &status_page_scroll_task,
                                 &mut button_display_state,
@@ -1309,7 +1309,7 @@ async fn run_gateway(
                                 handle_button_short_event(
                                     &ble_transport,
                                     &ble_ctrl,
-                                    &button_display_generation,
+                                    &display_generation,
                                     &status_page_cycle,
                                     &mut button_display_state,
                                     &mut window,
@@ -1326,7 +1326,7 @@ async fn run_gateway(
                                     &ble_ctrl,
                                     &ble_storage,
                                     ble_channel,
-                                    &button_display_generation,
+                                    &display_generation,
                                     &status_page_cycle,
                                     &status_page_scroll_task,
                                 )

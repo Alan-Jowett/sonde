@@ -91,6 +91,17 @@ async fn assert_no_stream_data_while_time_paused(
     assert!(no_data.await.is_err(), "{message}");
 }
 
+async fn receive_display_begin_transfer_id(
+    server: &mut DuplexStream,
+    decoder: &mut FrameDecoder,
+    buf: &mut [u8],
+) -> u8 {
+    match read_modem_msg(server, decoder, buf).await {
+        ModemMessage::DisplayFrameBegin(begin) => begin.transfer_id,
+        other => panic!("expected DisplayFrameBegin, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn t0815f_transient_modem_display_via_admin_api() {
     tokio::time::pause();
@@ -271,4 +282,47 @@ async fn t0815j_transient_display_without_modem_transport_is_unavailable() {
         .await
         .expect_err("missing modem transport must produce UNAVAILABLE");
     assert_eq!(err.code(), Code::Unavailable);
+}
+
+#[tokio::test]
+async fn admin_display_failure_restores_gateway_banner() {
+    let (admin, mut server, _controller, _storage) = build_admin_with_modem(6).await;
+    let admin = Arc::new(admin);
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 2048];
+
+    let request = tokio::spawn({
+        let admin = Arc::clone(&admin);
+        async move {
+            admin
+                .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
+                    lines: vec!["Device login".to_string()],
+                }))
+                .await
+        }
+    });
+
+    let transfer_id = receive_display_begin_transfer_id(&mut server, &mut decoder, &mut buf).await;
+    server
+        .write_all(
+            &encode_modem_frame(&ModemMessage::DisplayFrameAck(DisplayFrameAck {
+                transfer_id: transfer_id.wrapping_add(1),
+                next_chunk_index: 0,
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+    assert_eq!(
+        framebuffer,
+        render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
+    );
+
+    let err = request
+        .await
+        .unwrap()
+        .expect_err("mismatched ACK must fail the admin display request");
+    assert_eq!(err.code(), Code::Internal);
 }

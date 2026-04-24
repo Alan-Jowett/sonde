@@ -3,13 +3,17 @@
 #
 # Multi-stage Dockerfile for the sonde-gateway container image.
 # Produces a minimal Alpine-based image containing sonde-gateway,
-# sonde-admin, and the sensor handler binaries.
+# sonde-admin, the sensor handler binaries, espflash, and the
+# bundled modem firmware images prepared by gateway-container.yml.
 #
 # Published to ghcr.io/alan-jowett/sonde-gateway by the
 # gateway-container.yml CI workflow (GW-1800).
 #
 # Build:
 #   docker build -f .github/docker/Dockerfile.gateway -t sonde-gateway .
+#   # Requires modem artifacts at:
+#   #   .artifacts/modem-firmware/flash_image.bin
+#   #   .artifacts/modem-firmware-verbose/flash_image.bin
 #
 # Run:
 #   docker run -d \
@@ -23,7 +27,8 @@
 # rust:alpine — pinned by digest for reproducible builds.
 FROM rust:alpine@sha256:ef7b340d4201444fa2757dfddfd4c03be9d2bde468de7b7a68b0e9fabb794334 AS builder
 
-RUN apk add --no-cache musl-dev protobuf
+RUN apk add --no-cache build-base eudev-dev musl-dev pkgconf protobuf \
+    && cargo install --locked espflash@4.4.0 --root /opt/espflash
 
 WORKDIR /src
 COPY . .
@@ -43,12 +48,17 @@ FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d650
 # Non-root user for the gateway process (GW-1802 AC3).
 RUN addgroup -S sonde && adduser -S sonde -G sonde \
     && mkdir -p /var/lib/sonde \
+       /usr/local/share/sonde/firmware/modem/default \
+       /usr/local/share/sonde/firmware/modem/verbose \
     && chown sonde:sonde /var/lib/sonde
 
+COPY --from=builder /opt/espflash/bin/espflash             /usr/local/bin/
 COPY --from=builder /src/target/release/sonde-gateway      /usr/local/bin/
 COPY --from=builder /src/target/release/sonde-admin         /usr/local/bin/
 COPY --from=builder /src/target/release/sonde-sht40-handler /usr/local/bin/
 COPY --from=builder /src/target/release/sonde-tmp102-handler /usr/local/bin/
+COPY .artifacts/modem-firmware/flash_image.bin /usr/local/share/sonde/firmware/modem/default/flash_image.bin
+COPY .artifacts/modem-firmware-verbose/flash_image.bin /usr/local/share/sonde/firmware/modem/verbose/flash_image.bin
 
 # Persist the database across container restarts (GW-1802 AC2).
 VOLUME /var/lib/sonde

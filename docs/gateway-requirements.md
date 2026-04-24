@@ -497,7 +497,7 @@ The gateway MUST accept `DATA_REPLY` messages from handlers. The `request_id` MU
 **Source:** gateway-api.md §4.3
 
 **Description:**  
-The gateway SHOULD send `EVENT` messages to handlers for node lifecycle events: `node_online` (wake completed), `program_updated` (new program installed), and `node_timeout` (node missed expected wake). No reply is required from the handler.
+The gateway SHOULD send `EVENT` messages to handlers for node lifecycle events: `node_online` (wake completed), `program_updated` (new program installed), and `node_timeout` (node missed expected wake). No reply is required from the handler. The `node_timeout` event uses the node's runtime `last_seen` value from the current gateway process; after a gateway restart, no `node_timeout` event is emitted for a node until that node completes a new `WAKE`.
 
 **Acceptance criteria:**
 
@@ -505,6 +505,7 @@ The gateway SHOULD send `EVENT` messages to handlers for node lifecycle events: 
 2. `program_updated` events include `program_hash`.
 3. `node_timeout` events include `last_seen` and `expected_interval_s`.
 4. The handler is not required to reply to EVENT messages.
+5. After a gateway restart, nodes that have not yet completed a new `WAKE` do not emit `node_timeout`.
 
 ---
 
@@ -822,7 +823,7 @@ The gateway MUST expose a local gRPC API for administrative operations. The API 
 **Source:** GW-0700, GW-0705
 
 **Description:**  
-The admin API MUST support: listing all registered nodes, viewing node details (key_hint, assigned program, schedule, last battery, last ABI version, last seen), registering a node (providing key_hint, PSK, and admin node_id), and removing a node from the registry.
+The admin API MUST support: listing all registered nodes, viewing node details (key_hint, assigned program, schedule, last battery, last ABI version, last seen when known in the current gateway runtime), registering a node (providing key_hint, PSK, and admin node_id), and removing a node from the registry. The `last seen` value is operational runtime state, not durable registry state, and is cleared on gateway restart.
 
 **Acceptance criteria:**
 
@@ -830,6 +831,7 @@ The admin API MUST support: listing all registered nodes, viewing node details (
 2. `GetNode` returns details for a single node.
 3. `RegisterNode` adds a new node to the registry.
 4. `RemoveNode` deletes a node from the registry and discards its PSK.
+5. When a node has not completed a `WAKE` since gateway startup, `last seen` is absent rather than restored from durable storage.
 
 ---
 
@@ -874,12 +876,13 @@ The admin API MUST support: setting a node's wake schedule (queues UPDATE_SCHEDU
 **Source:** GW-0702, GW-0703
 
 **Description:**  
-The admin API SHOULD provide real-time node status including: current program hash, battery voltage, firmware ABI version, last seen timestamp, and whether the node has an active session.
+The admin API SHOULD provide real-time node status including: current program hash, battery voltage, firmware ABI version, runtime `last seen` timestamp, and whether the node has an active session. The `last seen` value is maintained in memory only and is cleared on gateway restart.
 
 **Acceptance criteria:**
 
 1. `GetNodeStatus` returns the latest known state for a node.
 2. Status reflects the most recent WAKE data.
+3. If the node has not completed a `WAKE` since gateway startup, `last_seen` is absent.
 
 ---
 
@@ -889,7 +892,7 @@ The admin API SHOULD provide real-time node status including: current program ha
 **Source:** GW-1001
 
 **Description:**  
-The admin API SHOULD support exporting and importing the gateway's portable state (node registry, PSKs, phone PSKs, program library, schedules, and handler routing configuration) for failover and backup. Because this includes cryptographic material, export/import mechanisms MUST comply with GW-0601a (operator authorization and protection of exported state).
+The admin API SHOULD support exporting and importing the gateway's portable state (node registry, PSKs, phone PSKs, program library, schedules, and handler routing configuration) for failover and backup. Because this includes cryptographic material, export/import mechanisms MUST comply with GW-0601a (operator authorization and protection of exported state). Runtime-only operational state such as `last_seen` is excluded.
 
 **Acceptance criteria:**
 
@@ -897,6 +900,7 @@ The admin API SHOULD support exporting and importing the gateway's portable stat
 2. `ImportState` restores state from a previously exported binary.
 3. Export and import operations require authenticated and authorized administrative access, and exported state is protected (e.g., via encryption) in accordance with GW-0601a.
 4. After import, all state components are restored: nodes, programs, phone PSKs, and handler configs.
+5. Runtime-only status such as `last_seen` is not exported and remains absent after import until the node completes a new `WAKE`.
 
 ---
 
@@ -2284,14 +2288,14 @@ The gateway MUST log `DIAG_REQUEST` reception and `DIAG_REPLY` transmission at `
 **Source:** Issue #780
 
 **Description:**  
-The CI MUST produce a multi-architecture Docker container image (`linux/amd64` + `linux/arm64`) published to `ghcr.io/alan-jowett/sonde-gateway`. The image MUST be based on Alpine Linux (musl libc) for minimal size. A multi-stage build ensures the final image contains no Rust toolchain, build artifacts, or source code. Each architecture MUST be built natively on a per-arch GitHub runner (no QEMU cross-compilation).
+The CI MUST produce a multi-architecture Docker container image (`linux/amd64` + `linux/arm64`) published to `ghcr.io/alan-jowett/sonde-gateway`. The image MUST be based on Alpine Linux (musl libc) for minimal size. A multi-stage build ensures the final image contains no Rust toolchain or source code, and no build artifacts other than the intentionally bundled runtime assets described by GW-1804. Each architecture MUST be built natively on a per-arch GitHub runner (no QEMU cross-compilation).
 
 **Acceptance criteria:**
 
 1. The image is based on Alpine Linux (musl libc).
-2. The image contains `sonde-gateway`, `sonde-admin`, `sonde-sht40-handler`, and `sonde-tmp102-handler` binaries.
+2. The image contains `sonde-gateway`, `sonde-admin`, `sonde-sht40-handler`, `sonde-tmp102-handler`, and `espflash`.
 3. `docker manifest inspect` shows both `linux/amd64` and `linux/arm64` platforms.
-4. The final image contains no Rust toolchain, build artifacts, or source code.
+4. The final image contains no Rust toolchain or source code, and no build artifacts other than the intentionally bundled modem flash images required by GW-1804.
 5. Each architecture is built on a native runner (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`).
 6. Per-arch images pass smoke tests (binary execution, linkage verification) before any public tag is created.
 
@@ -2321,7 +2325,7 @@ Container images MUST follow a consistent tagging strategy. Release builds (git 
 **Source:** Issue #780
 
 **Description:**  
-The container image MUST be configured for production use. The `ENTRYPOINT` is `sonde-gateway` with a default `CMD` that points the database to the declared volume, selects `/dev/ttyACM0` as the default modem path, and uses the `env` key provider that is suitable for container deployments. A `VOLUME` at `/var/lib/sonde` is declared for database persistence. The gateway runs as a non-root `sonde` user inside the container. The `--key-provider file` and `--key-provider env` backends work without D-Bus.
+The container image MUST be configured for production use. The `ENTRYPOINT` is `sonde-gateway` with a default `CMD` that points the database to the declared volume, selects `/dev/ttyACM0` as the default modem path, and uses the `env` key provider that is suitable for container deployments. A `VOLUME` at `/var/lib/sonde` is declared for database persistence. The gateway runs as a non-root `sonde` user inside the container. The `--key-provider file` and `--key-provider env` backends work without D-Bus. The image MUST also expose the bundled modem flash images at stable in-image paths so an operator can invoke `espflash` manually from the container when needed.
 
 **Acceptance criteria:**
 
@@ -2331,6 +2335,8 @@ The container image MUST be configured for production use. The `ENTRYPOINT` is `
 4. The gateway runs as a non-root `sonde` user inside the container.
 5. `--key-provider file` and `--key-provider env` work without D-Bus.
 6. Serial device access requires the operator to pass `--device` and `--group-add` at `docker run` time.
+7. The default modem flash image is available at `/usr/local/share/sonde/firmware/modem/default/flash_image.bin`.
+8. The verbose modem flash image is available at `/usr/local/share/sonde/firmware/modem/verbose/flash_image.bin`.
 
 ---
 
@@ -2349,6 +2355,24 @@ The `secret-service` (D-Bus keyring) dependency MUST be behind a cargo feature f
 3. The default feature set includes `keyring` (no behavior change for existing builds).
 4. Container builds use `--no-default-features` to exclude `keyring`.
 5. Building with `--no-default-features` produces a working binary that supports `file` and `env` key providers.
+
+---
+
+### GW-1804  Bundled modem flashing assets
+
+**Priority:** Must
+**Source:** User request
+
+**Description:**
+The gateway container image MUST bundle the modem flashing assets needed for manual/operator flashing. This includes an `espflash` executable plus both merged modem flash images (`default` and `verbose`). The bundled modem flash images MUST be the artifacts produced for the same git revision and workflow run as the container image build. These assets are for operator-invoked flashing only; normal gateway startup continues to run `sonde-gateway` and does not automatically reflash the modem.
+
+**Acceptance criteria:**
+
+1. Running `espflash --help` or `espflash --version` inside the container succeeds.
+2. The image contains the default merged modem flash image.
+3. The image contains the verbose merged modem flash image.
+4. The default and verbose files bundled into the image are byte-identical to the `modem-firmware` and `modem-firmware-verbose` artifacts produced for the same workflow run as the container image build.
+5. The container's default startup path remains `sonde-gateway`; using the bundled flashing assets requires an operator to invoke `espflash` manually.
 
 ---
 
@@ -2482,3 +2506,4 @@ The `secret-service` (D-Bus keyring) dependency MUST be behind a cargo feature f
 | GW-1801 | Container image tagging | Must |
 | GW-1802 | Container runtime configuration | Must |
 | GW-1803 | Optional secret-service dependency | Must |
+| GW-1804 | Bundled modem flashing assets | Must |

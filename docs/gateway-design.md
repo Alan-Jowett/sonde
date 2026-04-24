@@ -305,10 +305,11 @@ recv frame
   │     ├── determine command (check program_hash, pending actions)
   │     ├── if command is NOP and deferred data exists for node:
   │     │     └── include deferred data as `blob` (key 10) in COMMAND, clear store
-  │     ├── encode COMMAND response
-  │     ├── send response (echoing wake nonce)
-  │     ├── update node registry (battery_mv, firmware_abi_version, firmware_version)
-  │     ├── if WAKE contains `blob`:
+   │     ├── encode COMMAND response
+   │     ├── send response (echoing wake nonce)
+   │     ├── update node registry (battery_mv, firmware_abi_version, firmware_version)
+   │     ├── update runtime node observations (`last_seen`)
+   │     ├── if WAKE contains `blob`:
   │     │     ├── route to handler as DATA message (§9.4)
   │     │     └── store handler reply as deferred data (§6.3a)
   │     └── emit EVENT to handler (node_online)
@@ -350,7 +351,7 @@ Only one command is issued per WAKE (GW-0103).
 
 ## 7  Node registry
 
-The node registry persists node metadata through the storage trait.
+The node registry persists durable node metadata through the storage trait. Runtime-only observation data is kept separately in memory.
 
 ### 7.1  Node record
 
@@ -365,10 +366,23 @@ pub struct NodeRecord {
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
     pub last_battery_mv: Option<u32>,
-    pub last_seen: Option<SystemTime>,
     pub admin_node_id: String,  // opaque human-readable ID for handler API
 }
 ```
+
+`NodeRecord` is used primarily for durable registry state. The Rust struct currently retains a `last_seen` field for in-memory compatibility, but it is not storage-backed, is initialized as `None` on reads/imports, and is not used as the source of truth for admin status or timeout detection. The runtime `last_seen` data lives in the separate in-memory observation map below.
+
+### 7.1a  Runtime node observations
+
+The gateway maintains a separate in-memory map for per-node runtime observations:
+
+```rust
+pub struct RuntimeNodeState {
+    pub last_seen: Option<SystemTime>,
+}
+```
+
+The runtime state is keyed by `NodeId` and updated only after a valid `WAKE` is processed. It is cleared on gateway restart and is excluded from SQLite persistence and state export/import. Admin read paths and timeout detection merge durable `NodeRecord` data with this runtime map.
 
 ### 7.2  Key lookup
 
@@ -577,7 +591,7 @@ The session manager emits lifecycle events to handlers (GW-0507):
 |---|---|---|
 | `node_online` | WAKE processed | `battery_mv`, `firmware_abi_version`, `firmware_version` |
 | `program_updated` | PROGRAM_ACK received | `program_hash` |
-| `node_timeout` | Node missed expected wake | `last_seen`, `expected_interval_s` |
+| `node_timeout` | Node missed expected wake | `last_seen`, `expected_interval_s` (`last_seen` comes from runtime node observations) |
 
 Events are sent as EVENT messages (msg_type 0x02) to the handler's stdin. No reply is expected.
 
@@ -936,7 +950,7 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 | Assign program | `AssignProgram` | Sets a node's assigned program. Next WAKE triggers UPDATE_PROGRAM if hash differs. |
 | Queue ephemeral | `QueueEphemeral` | Queues a one-shot diagnostic program for a node's next WAKE. |
 | Set schedule | `SetSchedule` | Queues an UPDATE_SCHEDULE for a node's next WAKE. |
-| Node status | `GetNodeStatus` | Returns latest known state for a node (program hash, battery, ABI version, last seen, active session). |
+| Node status | `GetNodeStatus` | Returns latest known state for a node (program hash, battery, ABI version, runtime last seen, active session). Runtime `last_seen` is cleared on gateway restart. |
 | Export state | `ExportState` | Serializes gateway state (node registry, program library, registered identity/phone PSKs, and handler configuration). Encrypted with AES-256-GCM using an operator-supplied passphrase. |
 | Import state | `ImportState` | Restores node registry, program library, registered identity/phone PSKs, and handler configuration from a previously exported, encrypted bundle. If the bundle lacks handler records (older version), existing handlers are preserved. |
 | Modem status | `GetModemStatus` | Returns modem status: radio channel, TX/RX/fail counters, uptime. |
@@ -1926,11 +1940,11 @@ All diagnostic events are logged at `INFO` level **(GW-1706)**:
 
 ## 22  Container image
 
-> **Requirements:** GW-1800 (multi-arch image), GW-1801 (tagging), GW-1802 (runtime configuration), GW-1803 (optional secret-service).
+> **Requirements:** GW-1800 (multi-arch image), GW-1801 (tagging), GW-1802 (runtime configuration), GW-1803 (optional secret-service), GW-1804 (bundled modem flashing assets).
 
 ### 22.1  Overview
 
-The gateway is distributed as a multi-architecture Docker container image alongside the traditional bare-metal binaries and `.deb` packages. The image targets Alpine Linux (musl libc) for minimal size and contains `sonde-gateway`, `sonde-admin`, `sonde-sht40-handler`, and `sonde-tmp102-handler`.
+The gateway is distributed as a multi-architecture Docker container image alongside the traditional bare-metal binaries and `.deb` packages. The image targets Alpine Linux (musl libc) for minimal size and contains `sonde-gateway`, `sonde-admin`, `sonde-sht40-handler`, `sonde-tmp102-handler`, `espflash`, and two bundled modem merged flash images (default and verbose).
 
 ### 22.2  Build strategy
 
@@ -1938,14 +1952,28 @@ Each architecture (`linux/amd64`, `linux/arm64`) is built natively on a per-arch
 
 **Multi-stage Dockerfile** (`.github/docker/Dockerfile.gateway`):
 
-1. **Builder stage** (`rust:alpine`): installs `musl-dev` and `protobuf`, builds all four binaries; the `sonde-gateway` build uses `--no-default-features` to exclude the `keyring` feature and its `secret-service`/`zbus` dependency tree.
-2. **Runtime stage** (`alpine:3.21`): copies only the compiled binaries, creates a non-root `sonde` user, and declares `VOLUME /var/lib/sonde`.
+1. **Builder stage** (`rust:alpine`): installs `musl-dev`, `protobuf`, and the additional native dependencies required to build `espflash`; installs the pinned `espflash` CLI; builds all four Sonde binaries; and uses `--no-default-features` for `sonde-gateway` to exclude the `keyring` feature and its `secret-service`/`zbus` dependency tree.
+2. **Runtime stage** (`alpine:3.21`): copies only the compiled runtime binaries, the `espflash` executable from the builder stage, and the two merged modem flash images (`modem-firmware` and `modem-firmware-verbose`) supplied in the Docker build context by the same workflow run. It then creates a non-root `sonde` user and declares `VOLUME /var/lib/sonde`.
 
-### 22.3  Feature flag: `keyring` (GW-1803)
+### 22.3  Bundled flashing assets (GW-1804)
+
+The runtime image exposes the bundled modem flashing assets at fixed paths:
+
+| Asset | Path |
+|-------|------|
+| `espflash` | `/usr/local/bin/espflash` |
+| Default modem image | `/usr/local/share/sonde/firmware/modem/default/flash_image.bin` |
+| Verbose modem image | `/usr/local/share/sonde/firmware/modem/verbose/flash_image.bin` |
+
+The container continues to start with `sonde-gateway` as its default entrypoint. Operators who need to reflash a modem run the container with an entrypoint override (for example `--entrypoint espflash` or `--entrypoint sh`) and invoke `espflash write-bin -p PORT 0x0 <image-path>` manually. The gateway process does not invoke `espflash` on startup or during routine operation.
+
+To keep "latest" unambiguous, the bundled modem images are defined as the modem artifacts produced from the same git revision and workflow run as the container image build. The container workflow therefore consumes the `modem-firmware` and `modem-firmware-verbose` artifacts from the same CI execution rather than downloading an arbitrary previously published release.
+
+### 22.4  Feature flag: `keyring` (GW-1803)
 
 The `secret-service` dependency (D-Bus keyring via `zbus`) is gated behind a `keyring` cargo feature, enabled by default. Container builds pass `--no-default-features` to exclude it, since containers use `--key-provider file` or `--key-provider env` instead. All `#[cfg(target_os = "linux")]` gates on secret-service code are extended to `#[cfg(all(target_os = "linux", feature = "keyring"))]`.
 
-### 22.4  Tagging strategy (GW-1801)
+### 22.5  Tagging strategy (GW-1801)
 
 | Trigger | Tags |
 |---------|------|
@@ -1954,7 +1982,7 @@ The `secret-service` dependency (D-Bus keyring via `zbus`) is gated behind a `ke
 
 Public tags are created only after both architectures pass smoke tests.
 
-### 22.5  Runtime configuration (GW-1802)
+### 22.6  Runtime configuration (GW-1802)
 
 | Property | Value |
 |----------|-------|
@@ -1963,8 +1991,10 @@ Public tags are created only after both architectures pass smoke tests.
 | `VOLUME` | `/var/lib/sonde` |
 | `USER` | `sonde` (non-root) |
 
-Serial device access requires the operator to pass `--device=/dev/ttyACM0` and `--group-add <host-dialout-gid>` at `docker run` time. The container defaults assume `/dev/ttyACM0`; operators using a different modem path must override `--port`.
+Serial device access requires the operator to pass `--device=/dev/ttyACM0` and `--group-add <host-dialout-gid>` at `docker run` time. The container defaults assume `/dev/ttyACM0`; operators using a different modem path must override `--port`. The bundled modem images remain readable by the non-root `sonde` user so operators can invoke manual flashing commands without switching users inside the container.
 
-### 22.6  CI integration
+### 22.7  CI integration
 
 The `gateway-container.yml` workflow is called by `nightly-release.yml` as a parallel job. The nightly release job waits for the container build to complete before publishing the GitHub release. Release-tag container builds are therefore driven indirectly via `nightly-release.yml`, while `gateway-container.yml` itself is also available via `workflow_dispatch`.
+
+To satisfy GW-1804's provenance rule, every execution path that publishes or smoke-tests the gateway container must make the modem artifacts available in the same workflow run before the image-build step. In the nightly/release path, those artifacts come from the sibling modem-firmware job in the caller workflow. In the standalone `workflow_dispatch` path, the workflow must first run the modem build (or an equivalent reusable workflow) so the image still consumes same-run `modem-firmware` and `modem-firmware-verbose` artifacts rather than downloading files from a previous run.

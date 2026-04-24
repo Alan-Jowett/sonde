@@ -2,6 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 use crate::error::NodeResult;
+use sonde_protocol::BoardLayout;
 
 /// Radio transport for sending and receiving frames.
 pub trait Transport {
@@ -165,14 +166,23 @@ pub trait PlatformStorage {
         Ok(())
     }
 
-    /// Read I2C0 pin configuration from NVS (ND-0608).
-    /// Returns `(sda_gpio, scl_gpio)`. Defaults to `(0, 1)` if not set.
-    fn read_i2c0_pins(&self) -> (u8, u8) {
-        (0, 1)
+    /// Read the provisioned board layout from flash (ND-0608).
+    fn read_board_layout(&self) -> Option<BoardLayout> {
+        None
     }
 
-    /// Persist I2C0 pin configuration to NVS (ND-0608).
-    fn write_i2c0_pins(&mut self, _sda: u8, _scl: u8) -> NodeResult<()> {
+    /// Persist the provisioned board layout to flash (ND-0608).
+    fn write_board_layout(&mut self, _layout: &BoardLayout) -> NodeResult<()> {
+        Ok(())
+    }
+
+    /// Read the last battery value retained across deep sleep.
+    fn read_last_battery_mv(&self) -> Option<u32> {
+        None
+    }
+
+    /// Persist the current-cycle battery value for the next wake.
+    fn write_last_battery_mv(&mut self, _battery_mv: u32) -> NodeResult<()> {
         Ok(())
     }
 }

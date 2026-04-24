@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use futures::Stream;
 use tokio::sync::{broadcast, RwLock};
@@ -117,12 +117,14 @@ impl CompanionService {
     }
 }
 
-fn node_to_info(node: &NodeRecord) -> CompanionNodeInfo {
-    let last_seen_ms = node.last_seen.and_then(|t: SystemTime| {
-        t.duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|d: std::time::Duration| d.as_millis() as u64)
-    });
+fn system_time_to_millis(t: SystemTime) -> Option<u64> {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d: std::time::Duration| d.as_millis() as u64)
+}
+
+fn node_to_info(node: &NodeRecord, last_seen: Option<SystemTime>) -> CompanionNodeInfo {
+    let last_seen_ms = last_seen.and_then(system_time_to_millis);
     CompanionNodeInfo {
         node_id: node.node_id.clone(),
         key_hint: node.key_hint as u32,
@@ -187,7 +189,11 @@ impl GatewayCompanion for CompanionService {
         _request: Request<CompanionListNodesRequest>,
     ) -> Result<Response<CompanionListNodesResponse>, Status> {
         let nodes_records = list_nodes_impl(&self.storage).await?;
-        let mut nodes: Vec<_> = nodes_records.iter().map(node_to_info).collect();
+        let last_seen = self.session_manager.snapshot_last_seen().await;
+        let mut nodes: Vec<_> = nodes_records
+            .iter()
+            .map(|node| node_to_info(node, last_seen.get(&node.node_id).copied()))
+            .collect();
         nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
         Ok(Response::new(CompanionListNodesResponse { nodes }))
     }
@@ -196,8 +202,10 @@ impl GatewayCompanion for CompanionService {
         &self,
         request: Request<CompanionGetNodeRequest>,
     ) -> Result<Response<CompanionNodeInfo>, Status> {
-        let node = get_node_impl(&self.storage, &request.get_ref().node_id).await?;
-        Ok(Response::new(node_to_info(&node)))
+        let node_id = &request.get_ref().node_id;
+        let node = get_node_impl(&self.storage, node_id).await?;
+        let last_seen = self.session_manager.get_last_seen(node_id).await;
+        Ok(Response::new(node_to_info(&node, last_seen)))
     }
 
     async fn assign_program(

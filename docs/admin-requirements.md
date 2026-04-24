@@ -212,14 +212,15 @@ rather than crashing.
 
 **Description:**
 `sonde-admin node list` MUST list all registered nodes. Text output shows
-node ID, key hint, assigned/current program hashes, battery, last seen, and
-schedule. An empty registry displays "No nodes registered."
+node ID, key hint, assigned/current program hashes, battery, last seen when
+known, and schedule. An empty registry displays "No nodes registered."
 
 **Acceptance criteria:**
 
 1. Lists all nodes with metadata in text mode.
 2. JSON mode returns an array of node objects.
 3. Empty registry prints "No nodes registered." in text mode.
+4. Optional fields such as battery and last seen are omitted from text output when absent.
 
 ---
 
@@ -414,8 +415,9 @@ diagnostic program for a node. The program hash is hex-decoded.
 **Description:**
 `sonde-admin status <node-id>` MUST display the current status of a node
 including: node ID, current program hash, battery voltage (mV), firmware ABI
-version, last seen timestamp (formatted per ADMIN-0107), and active session
-indicator.
+version, runtime last seen timestamp (formatted per ADMIN-0107), and active
+session indicator. `last seen` is absent until the node completes a WAKE in
+the current gateway process.
 
 **Acceptance criteria:**
 

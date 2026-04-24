@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tokio::sync::RwLock;
 use tokio::time::Instant;
@@ -71,6 +71,7 @@ pub struct Session {
 /// Manages active sessions keyed by node ID.
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, Session>>,
+    last_seen: RwLock<HashMap<String, SystemTime>>,
     timeout: Duration,
     /// Held as a write-lock during state import to prevent new sessions
     /// from being created while the storage is being replaced.  Normal
@@ -83,6 +84,7 @@ impl SessionManager {
     pub fn new(timeout: Duration) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
+            last_seen: RwLock::new(HashMap::new()),
             timeout,
             import_lock: RwLock::new(()),
         }
@@ -160,6 +162,31 @@ impl SessionManager {
     pub async fn remove_session(&self, node_id: &str) -> Option<Session> {
         let mut sessions = self.sessions.write().await;
         sessions.remove(node_id)
+    }
+
+    /// Record the most recent successful WAKE processing time for a node.
+    pub async fn record_last_seen(&self, node_id: &str, at: SystemTime) {
+        self.last_seen.write().await.insert(node_id.to_string(), at);
+    }
+
+    /// Get the runtime last-seen timestamp for a node, if any.
+    pub async fn get_last_seen(&self, node_id: &str) -> Option<SystemTime> {
+        self.last_seen.read().await.get(node_id).copied()
+    }
+
+    /// Return a snapshot of runtime last-seen timestamps keyed by node ID.
+    pub async fn snapshot_last_seen(&self) -> HashMap<String, SystemTime> {
+        self.last_seen.read().await.clone()
+    }
+
+    /// Remove the runtime last-seen timestamp for a node.
+    pub async fn clear_last_seen(&self, node_id: &str) {
+        self.last_seen.write().await.remove(node_id);
+    }
+
+    /// Remove all runtime last-seen timestamps.
+    pub async fn clear_all_last_seen(&self) {
+        self.last_seen.write().await.clear();
     }
 
     /// Remove all sessions that have exceeded the configured timeout.

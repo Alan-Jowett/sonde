@@ -10,6 +10,7 @@ compile_error!(
 
 pub mod async_queue;
 pub mod ble_pairing;
+pub mod board_layout;
 pub mod bpf_dispatch;
 pub mod bpf_helpers;
 pub mod bpf_runtime;

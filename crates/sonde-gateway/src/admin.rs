@@ -218,12 +218,14 @@ pub fn handler_record_to_config(r: HandlerRecord) -> Option<HandlerConfig> {
     })
 }
 
-fn node_to_info(n: &NodeRecord) -> NodeInfo {
-    let last_seen_ms = n.last_seen.and_then(|t| {
-        t.duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|d| d.as_millis() as u64)
-    });
+fn system_time_to_millis(t: std::time::SystemTime) -> Option<u64> {
+    t.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as u64)
+}
+
+fn node_to_info(n: &NodeRecord, last_seen: Option<std::time::SystemTime>) -> NodeInfo {
+    let last_seen_ms = last_seen.and_then(system_time_to_millis);
     NodeInfo {
         node_id: n.node_id.clone(),
         key_hint: n.key_hint as u32,
@@ -451,11 +453,10 @@ pub(crate) async fn get_node_status_impl(
         .map_err(storage_err)?
         .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
     let has_active_session = session_manager.get_session(node_id).await.is_some();
-    let last_seen_ms = node.last_seen.and_then(|t| {
-        t.duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|d| d.as_millis() as u64)
-    });
+    let last_seen_ms = session_manager
+        .get_last_seen(node_id)
+        .await
+        .and_then(system_time_to_millis);
     Ok(NodeStatusSnapshot {
         node_id: node.node_id,
         current_program_hash: node.current_program_hash.unwrap_or_default(),
@@ -546,8 +547,12 @@ impl GatewayAdmin for AdminService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ListNodesResponse>, Status> {
-        let nodes = list_nodes_impl(&self.storage).await?;
-        let mut nodes: Vec<_> = nodes.iter().map(node_to_info).collect();
+        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
+        let last_seen = self.session_manager.snapshot_last_seen().await;
+        let mut nodes: Vec<_> = nodes
+            .iter()
+            .map(|node| node_to_info(node, last_seen.get(&node.node_id).copied()))
+            .collect();
         nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
         Ok(Response::new(ListNodesResponse { nodes }))
     }
@@ -556,8 +561,15 @@ impl GatewayAdmin for AdminService {
         &self,
         request: Request<GetNodeRequest>,
     ) -> Result<Response<NodeInfo>, Status> {
-        let node = get_node_impl(&self.storage, &request.get_ref().node_id).await?;
-        Ok(Response::new(node_to_info(&node)))
+        let node_id = &request.get_ref().node_id;
+        let node = self
+            .storage
+            .get_node(node_id)
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+        let last_seen = self.session_manager.get_last_seen(node_id).await;
+        Ok(Response::new(node_to_info(&node, last_seen)))
     }
 
     async fn register_node(
@@ -637,6 +649,7 @@ impl GatewayAdmin for AdminService {
         // Invalidate any active in-memory session so the node cannot
         // continue communicating after removal.
         self.session_manager.remove_session(node_id).await;
+        self.session_manager.clear_last_seen(node_id).await;
 
         Ok(Response::new(Empty {}))
     }
@@ -679,6 +692,7 @@ impl GatewayAdmin for AdminService {
         // Invalidate any active in-memory session so the node is
         // immediately treated as unknown (GW-0705 AC1).
         self.session_manager.remove_session(node_id).await;
+        self.session_manager.clear_last_seen(node_id).await;
 
         // Clear any pending commands for the removed node.
         self.pending_commands.write().await.remove(node_id);
@@ -1108,6 +1122,7 @@ impl GatewayAdmin for AdminService {
 
         // Clear any pending commands queued for the old node set.
         self.pending_commands.write().await.clear();
+        self.session_manager.clear_all_last_seen().await;
 
         Ok(Response::new(Empty {}))
     }

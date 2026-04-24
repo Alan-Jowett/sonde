@@ -9,6 +9,7 @@ use crate::rng::RngProvider;
 use crate::transport::BleTransport;
 use crate::types::*;
 use crate::validation::{compute_key_hint, validate_node_id};
+use sonde_protocol::encode_board_layout_cbor;
 use tracing::{debug, info, trace};
 use zeroize::Zeroizing;
 
@@ -28,6 +29,15 @@ fn msg_type_name(t: u8) -> &'static str {
     }
 }
 
+fn validate_supported_battery_adc(layout: &BoardLayout) -> Result<(), PairingError> {
+    match layout.battery_adc {
+        Some(0..=4) | None => Ok(()),
+        Some(pin) => Err(PairingError::InvalidBoardLayout(format!(
+            "battery_adc GPIO {pin} is not ADC-capable on ESP32-C3; use GPIO 0-4 or leave it unassigned"
+        ))),
+    }
+}
+
 /// Phase 2 (AEAD): Provision a node via BLE using simplified AEAD flow.
 ///
 /// The phone generates the node PSK, builds a PairingRequest CBOR, encrypts
@@ -43,26 +53,17 @@ pub async fn provision_node(
     device_address: &[u8; 6],
     node_id: &str,
     sensors: &[crate::types::SensorDescriptor],
-    pin_config: Option<PinConfig>,
+    board_layout: Option<BoardLayout>,
 ) -> Result<NodeProvisionResult, PairingError> {
     // Step 1: Validate node_id
     validate_node_id(node_id)?;
 
-    // Step 1a: Validate pin config (PT-1214 AC 5, AC 6)
-    if let Some(ref pc) = pin_config {
-        const MAX_GPIO: u8 = 21;
-        if pc.i2c0_sda > MAX_GPIO || pc.i2c0_scl > MAX_GPIO {
-            return Err(PairingError::InvalidPinConfig(format!(
-                "GPIO pin number out of range (0–{}), got sda={}, scl={}",
-                MAX_GPIO, pc.i2c0_sda, pc.i2c0_scl
-            )));
+    // Step 1a: Validate board layout (PT-1214, PT-1216).
+    if let Some(ref layout) = board_layout {
+        if let Err(reason) = layout.validate() {
+            return Err(PairingError::InvalidBoardLayout(reason.into()));
         }
-        if pc.i2c0_sda == pc.i2c0_scl {
-            return Err(PairingError::InvalidPinConfig(format!(
-                "i2c0_sda and i2c0_scl must be different GPIO pins, both are {}",
-                pc.i2c0_sda
-            )));
-        }
+        validate_supported_battery_adc(layout)?;
     }
 
     // Step 2: Generate node PSK
@@ -127,7 +128,7 @@ pub async fn provision_node(
         &node_psk,
         artifacts.rf_channel,
         &encrypted_frame,
-        pin_config,
+        board_layout,
     )
     .await;
 
@@ -142,7 +143,7 @@ async fn do_provision_node(
     node_psk: &[u8; 32],
     rf_channel: u8,
     encrypted_frame: &[u8],
-    pin_config: Option<PinConfig>,
+    board_layout: Option<BoardLayout>,
 ) -> Result<NodeProvisionResult, PairingError> {
     if encrypted_frame.len() > PEER_PAYLOAD_MAX_LEN {
         return Err(PairingError::PayloadTooLarge {
@@ -152,11 +153,16 @@ async fn do_provision_node(
     }
     let payload_len = encrypted_frame.len() as u16;
 
-    // Pin config CBOR {1: u8, 2: u8} is at most 7 bytes (map(2) + 2×(uint,uint)).
-    let pin_cbor_capacity = if pin_config.is_some() { 7 } else { 0 };
+    let board_layout_cbor = match board_layout {
+        Some(layout) => Some(
+            encode_board_layout_cbor(&layout)
+                .map_err(|e| PairingError::InvalidBoardLayout(e.to_string()))?,
+        ),
+        None => None,
+    };
 
     let mut provision_payload = Zeroizing::new(Vec::with_capacity(
-        2 + 32 + 1 + 2 + encrypted_frame.len() + pin_cbor_capacity,
+        2 + 32 + 1 + 2 + encrypted_frame.len() + board_layout_cbor.as_ref().map_or(0, Vec::len),
     ));
     provision_payload.extend_from_slice(&node_key_hint.to_be_bytes());
     provision_payload.extend_from_slice(node_psk);
@@ -164,24 +170,12 @@ async fn do_provision_node(
     provision_payload.extend_from_slice(&payload_len.to_be_bytes());
     provision_payload.extend_from_slice(encrypted_frame);
 
-    // Append optional pin config CBOR (PT-1214, ND-0608)
-    if let Some(pc) = pin_config {
-        let pin_cbor = ciborium::Value::Map(vec![
-            (
-                ciborium::Value::Integer(1.into()),
-                ciborium::Value::Integer(pc.i2c0_sda.into()),
-            ),
-            (
-                ciborium::Value::Integer(2.into()),
-                ciborium::Value::Integer(pc.i2c0_scl.into()),
-            ),
-        ]);
-        ciborium::into_writer(&pin_cbor, &mut *provision_payload)
-            .map_err(|e| PairingError::CborEncodeFailed(format!("pin_config: {e}")))?;
+    // Append optional board layout CBOR (PT-1214, ND-0608).
+    if let Some(board_layout_cbor) = board_layout_cbor {
+        provision_payload.extend_from_slice(&board_layout_cbor);
         trace!(
-            sda = pc.i2c0_sda,
-            scl = pc.i2c0_scl,
-            "appended pin config CBOR to NODE_PROVISION"
+            board_layout_len = board_layout_cbor.len(),
+            "appended board layout CBOR to NODE_PROVISION"
         );
     }
 
@@ -499,7 +493,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provision_node_pin_config_appended() {
+    async fn provision_node_board_layout_appended() {
         use crate::phase1::PairingArtifacts;
 
         let artifacts = PairingArtifacts {
@@ -520,9 +514,12 @@ mod tests {
         let mut transport = MockBleTransport::new(247);
         transport.queue_response(Ok(ack_envelope));
 
-        let pc = PinConfig {
-            i2c0_sda: 4,
-            i2c0_scl: 5,
+        let board_layout = BoardLayout {
+            i2c0_sda: Some(4),
+            i2c0_scl: Some(5),
+            one_wire_data: Some(3),
+            battery_adc: Some(2),
+            sensor_enable: Some(6),
         };
 
         let result = provision_node(
@@ -532,48 +529,54 @@ mod tests {
             &[0xAA; 6],
             "test-node",
             &[],
-            Some(pc),
+            Some(board_layout),
         )
         .await;
 
         assert!(
             result.is_ok(),
-            "provision with pin_config should succeed: {result:?}"
+            "provision with board_layout should succeed: {result:?}"
         );
 
         assert_eq!(transport.written.len(), 1);
         let (_svc, _chr, data) = &transport.written[0];
         let body = &data[3..];
         let payload_len = u16::from_be_bytes([body[35], body[36]]) as usize;
-        let pin_cbor_start = 37 + payload_len;
+        let board_layout_cbor_start = 37 + payload_len;
         assert!(
-            body.len() > pin_cbor_start,
-            "body should have trailing CBOR"
+            body.len() > board_layout_cbor_start,
+            "body should have trailing board-layout CBOR"
         );
 
-        let trailing = &body[pin_cbor_start..];
+        let trailing = &body[board_layout_cbor_start..];
         let value: ciborium::Value = ciborium::from_reader(trailing).expect("valid CBOR");
         let map = value.as_map().expect("CBOR map");
-        let sda = map
-            .iter()
-            .find(|(k, _)| *k == ciborium::Value::Integer(1.into()))
-            .expect("key 1")
-            .1
-            .as_integer()
-            .unwrap();
-        let scl = map
-            .iter()
-            .find(|(k, _)| *k == ciborium::Value::Integer(2.into()))
-            .expect("key 2")
-            .1
-            .as_integer()
-            .unwrap();
-        assert_eq!(i128::from(sda), 4);
-        assert_eq!(i128::from(scl), 5);
+        let expected = [
+            (1, Some(4)),
+            (2, Some(5)),
+            (3, Some(3)),
+            (4, Some(2)),
+            (5, Some(6)),
+        ];
+        for (key, expected_value) in expected {
+            let value = map
+                .iter()
+                .find(|(k, _)| *k == ciborium::Value::Integer(key.into()))
+                .unwrap_or_else(|| panic!("missing key {key}"))
+                .1
+                .clone();
+            match expected_value {
+                Some(expected_value) => {
+                    let actual = value.as_integer().expect("integer value");
+                    assert_eq!(i128::from(actual), expected_value);
+                }
+                None => assert_eq!(value, ciborium::Value::Null),
+            }
+        }
     }
 
     #[tokio::test]
-    async fn provision_node_pin_config_none_no_trailing() {
+    async fn provision_node_board_layout_none_no_trailing() {
         use crate::phase1::PairingArtifacts;
 
         let artifacts = PairingArtifacts {
@@ -607,7 +610,7 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "provision without pin_config should succeed: {result:?}"
+            "provision without board_layout should succeed: {result:?}"
         );
 
         let (_svc, _chr, data) = &transport.written[0];
@@ -616,12 +619,12 @@ mod tests {
         assert_eq!(
             body.len(),
             37 + payload_len,
-            "no trailing bytes when pin_config is None"
+            "no trailing bytes when board_layout is None"
         );
     }
 
     #[tokio::test]
-    async fn provision_node_pin_config_out_of_range() {
+    async fn provision_node_board_layout_out_of_range() {
         use crate::phase1::PairingArtifacts;
 
         let artifacts = PairingArtifacts {
@@ -641,16 +644,19 @@ mod tests {
             &[0xAA; 6],
             "test-node",
             &[],
-            Some(PinConfig {
-                i2c0_sda: 22,
-                i2c0_scl: 5,
+            Some(BoardLayout {
+                i2c0_sda: Some(6),
+                i2c0_scl: Some(7),
+                one_wire_data: None,
+                battery_adc: Some(22),
+                sensor_enable: None,
             }),
         )
         .await;
 
         assert!(
-            matches!(result, Err(PairingError::InvalidPinConfig(_))),
-            "expected InvalidPinConfig, got {result:?}"
+            matches!(result, Err(PairingError::InvalidBoardLayout(_))),
+            "expected InvalidBoardLayout, got {result:?}"
         );
         assert!(
             transport.written.is_empty(),
@@ -659,7 +665,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provision_node_pin_config_sda_equals_scl() {
+    async fn provision_node_board_layout_sda_equals_scl() {
         use crate::phase1::PairingArtifacts;
 
         let artifacts = PairingArtifacts {
@@ -679,16 +685,60 @@ mod tests {
             &[0xAA; 6],
             "test-node",
             &[],
-            Some(PinConfig {
-                i2c0_sda: 4,
-                i2c0_scl: 4,
+            Some(BoardLayout {
+                i2c0_sda: Some(4),
+                i2c0_scl: Some(4),
+                one_wire_data: None,
+                battery_adc: None,
+                sensor_enable: None,
             }),
         )
         .await;
 
         assert!(
-            matches!(result, Err(PairingError::InvalidPinConfig(_))),
-            "expected InvalidPinConfig, got {result:?}"
+            matches!(result, Err(PairingError::InvalidBoardLayout(_))),
+            "expected InvalidBoardLayout, got {result:?}"
+        );
+        assert!(
+            transport.written.is_empty(),
+            "no BLE writes on validation failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn provision_node_board_layout_battery_adc_not_supported() {
+        use crate::phase1::PairingArtifacts;
+
+        let artifacts = PairingArtifacts {
+            phone_psk: Zeroizing::new([0x55u8; 32]),
+            phone_key_hint: compute_key_hint(&[0x55u8; 32]),
+            rf_channel: 6,
+            phone_label: "test".into(),
+        };
+
+        let rng = MockRng::new([0x42u8; 32]);
+        let mut transport = MockBleTransport::new(247);
+
+        let result = provision_node(
+            &mut transport,
+            &artifacts,
+            &rng,
+            &[0xAA; 6],
+            "test-node",
+            &[],
+            Some(BoardLayout {
+                i2c0_sda: Some(6),
+                i2c0_scl: Some(7),
+                one_wire_data: None,
+                battery_adc: Some(7),
+                sensor_enable: None,
+            }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(PairingError::InvalidBoardLayout(_))),
+            "expected InvalidBoardLayout, got {result:?}"
         );
         assert!(
             transport.written.is_empty(),
@@ -754,43 +804,13 @@ mod tests {
         assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
     }
 
-    /// Validates: PT-1214 AC2 — pin config CBOR deterministic encoding.
-    ///
-    /// The pin config CBOR map must use integer keys in ascending order
-    /// (key 1 = i2c0_sda, key 2 = i2c0_scl) with minimal-length encoding.
+    /// Validates: PT-1214 AC2 — board layout CBOR deterministic encoding.
     #[test]
-    fn pin_config_cbor_deterministic() {
-        let pc = PinConfig {
-            i2c0_sda: 5,
-            i2c0_scl: 6,
-        };
-        let pin_cbor = ciborium::Value::Map(vec![
-            (
-                ciborium::Value::Integer(1.into()),
-                ciborium::Value::Integer(pc.i2c0_sda.into()),
-            ),
-            (
-                ciborium::Value::Integer(2.into()),
-                ciborium::Value::Integer(pc.i2c0_scl.into()),
-            ),
-        ]);
-        let mut buf = Vec::new();
-        ciborium::into_writer(&pin_cbor, &mut buf).unwrap();
-
-        // Expected: A2 01 05 02 06
-        // A2 = map(2), 01 = key 1, 05 = value 5, 02 = key 2, 06 = value 6
-        assert_eq!(buf, [0xA2, 0x01, 0x05, 0x02, 0x06]);
-
-        // Verify keys are in ascending order (deterministic CBOR §4.2).
-        let decoded: ciborium::Value = ciborium::from_reader(buf.as_slice()).unwrap();
-        if let ciborium::Value::Map(pairs) = decoded {
-            let keys: Vec<u64> = pairs
-                .iter()
-                .map(|(k, _)| u64::try_from(k.as_integer().unwrap()).unwrap())
-                .collect();
-            assert_eq!(keys, vec![1, 2], "keys must be in ascending order");
-        } else {
-            panic!("expected CBOR map");
-        }
+    fn board_layout_cbor_deterministic() {
+        let buf = encode_board_layout_cbor(&BoardLayout::SONDE_SENSOR_NODE_REV_A).unwrap();
+        assert_eq!(
+            buf,
+            [0xA5, 0x01, 0x06, 0x02, 0x07, 0x03, 0x03, 0x04, 0x02, 0x05, 0x04]
+        );
     }
 }

@@ -355,12 +355,6 @@ fn encode_cbor(
 fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
     use ciborium::value::Value;
 
-    let last_seen_s: Option<i64> = n.last_seen.and_then(|t| {
-        t.duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|d| d.as_secs() as i64)
-    });
-
     Value::Map(vec![
         (
             Value::Integer(NODE_KEY_ID.into()),
@@ -393,10 +387,6 @@ fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
         (
             Value::Integer(NODE_KEY_BATTERY.into()),
             opt_u32_val(n.last_battery_mv),
-        ),
-        (
-            Value::Integer(NODE_KEY_LAST_SEEN.into()),
-            opt_i64_val(last_seen_s),
         ),
         (
             Value::Integer(NODE_KEY_RF_CHANNEL.into()),
@@ -634,13 +624,6 @@ fn opt_u32_val(v: Option<u32>) -> ciborium::value::Value {
     }
 }
 
-fn opt_i64_val(v: Option<i64>) -> ciborium::value::Value {
-    match v {
-        Some(n) => ciborium::value::Value::Integer(n.into()),
-        None => ciborium::value::Value::Null,
-    }
-}
-
 // ── CBOR zeroization ──────────────────────────────────────────────────────────
 
 /// Recursively zeroize all `Bytes` buffers in a ciborium `Value` tree so that
@@ -778,7 +761,6 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
     let mut schedule_interval_s: Option<u32> = None;
     let mut firmware_abi_version: Option<Option<u32>> = None;
     let mut last_battery_mv: Option<Option<u32>> = None;
-    let mut last_seen_epoch_s: Option<Option<i64>> = None;
     let mut rf_channel: Option<u8> = None;
     let mut sensors: Vec<SensorDescriptor> = Vec::new();
     let mut registered_by_phone_id: Option<u32> = None;
@@ -842,7 +824,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                     last_battery_mv = Some(opt_u32_from_cbor(v, "last_battery_mv")?);
                 }
                 Some(NODE_KEY_LAST_SEEN) => {
-                    last_seen_epoch_s = Some(opt_i64_from_cbor(v, "last_seen_epoch_s")?);
+                    let _ = opt_i64_from_cbor(v, "last_seen_epoch_s")?;
                 }
                 Some(NODE_KEY_RF_CHANNEL) => match v {
                     Value::Null => {}
@@ -963,11 +945,6 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
     let psk = psk.ok_or_else(|| BundleError::Decode("missing psk in node entry".into()))?;
     let schedule_interval_s = schedule_interval_s.unwrap_or(60);
 
-    let last_seen = last_seen_epoch_s
-        .flatten()
-        .filter(|&s| s >= 0)
-        .and_then(|s| UNIX_EPOCH.checked_add(Duration::from_secs(s as u64)));
-
     // Validate hash fields if present: must be 32 bytes (SHA-256).
     if let Some(Some(ref h)) = assigned_program_hash {
         if h.len() != 32 {
@@ -996,7 +973,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         firmware_abi_version: firmware_abi_version.flatten(),
         firmware_version,
         last_battery_mv: last_battery_mv.flatten(),
-        last_seen,
+        last_seen: None,
         rf_channel,
         sensors,
         registered_by_phone_id,

@@ -92,8 +92,13 @@ async fn t_e2e_001_nop_wake_cycle() {
 
     // Verify gateway updated node telemetry.
     let record = env.storage.get_node("aead-nop").await.unwrap().unwrap();
-    assert_eq!(record.last_battery_mv, Some(3300));
-    assert!(record.last_seen.is_some());
+    assert_eq!(record.last_battery_mv, Some(0));
+    assert!(env
+        .gateway
+        .session_manager()
+        .get_last_seen("aead-nop")
+        .await
+        .is_some());
     assert_eq!(
         record.firmware_abi_version,
         Some(sonde_node::FIRMWARE_ABI_VERSION)
@@ -103,8 +108,8 @@ async fn t_e2e_001_nop_wake_cycle() {
 /// T-E2E-002b — Consecutive AEAD wake cycles (state persistence).
 ///
 /// Runs two AEAD wake cycles on the same `NodeProxy` to verify that
-/// persistent storage and monotonic RNG state work correctly across
-/// multiple AES-256-GCM exchanges.
+/// persistent storage, battery telemetry propagation, and monotonic RNG
+/// state work correctly across multiple AES-256-GCM exchanges.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_002b_consecutive_wake_cycles() {
     let env = E2eTestEnv::new();
@@ -116,10 +121,14 @@ async fn t_e2e_002b_consecutive_wake_cycles() {
     let stats1 = node.run_wake_cycle(&env);
     assert_eq!(stats1.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats1.response_count > 0);
+    let record_after_first = env.storage.get_node("aead-multi").await.unwrap().unwrap();
+    assert_eq!(record_after_first.last_battery_mv, Some(0));
 
     let stats2 = node.run_wake_cycle(&env);
     assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats2.response_count > 0);
+    let record_after_second = env.storage.get_node("aead-multi").await.unwrap().unwrap();
+    assert_eq!(record_after_second.last_battery_mv, Some(3300));
 
     // Verify nonce uniqueness across cycles.
     assert!(
@@ -192,8 +201,12 @@ async fn t_e2e_003_wrong_psk_rejected() {
     // Gateway must not have updated telemetry.
     let record = env.storage.get_node("aead-wrong").await.unwrap().unwrap();
     assert!(
-        record.last_seen.is_none(),
-        "`last_seen` should be None — gateway silently discarded the WAKE"
+        env.gateway
+            .session_manager()
+            .get_last_seen("aead-wrong")
+            .await
+            .is_none(),
+        "runtime `last_seen` should be None — gateway silently discarded the WAKE"
     );
     assert_eq!(
         record.last_battery_mv, None,
@@ -224,8 +237,12 @@ async fn t_e2e_004_tampered_frame_discarded() {
     // Gateway must not have updated telemetry.
     let record = env.storage.get_node("aead-tamper").await.unwrap().unwrap();
     assert!(
-        record.last_seen.is_none(),
-        "`last_seen` should be None — gateway silently discarded the tampered WAKE"
+        env.gateway
+            .session_manager()
+            .get_last_seen("aead-tamper")
+            .await
+            .is_none(),
+        "runtime `last_seen` should be None — gateway silently discarded the tampered WAKE"
     );
     assert_eq!(
         record.last_battery_mv, None,
@@ -704,7 +721,7 @@ async fn t_e2e_002_aead_authentication_round_trip() {
         "gateway must respond to valid AEAD frame"
     );
     let rec = env.storage.get_node("aead-002").await.unwrap().unwrap();
-    assert_eq!(rec.last_battery_mv, Some(3300));
+    assert_eq!(rec.last_battery_mv, Some(0));
 }
 
 // ---------------------------------------------------------------------------

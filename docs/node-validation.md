@@ -1973,7 +1973,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Provision a board layout with `sensor_enable=4` and `battery_adc=2`.
 2. Configure mock ADC reading to 3125 mV equivalent.
 3. Run a wake cycle through `COMMAND` processing and BPF execution.
-4. Assert: the firmware waits for the configured settle interval before sampling.
+4. Assert: the firmware waits for the fixed `SENSOR_SETTLE_MS` delay (10 ms) before sampling.
 5. Assert: the current-cycle `sonde_context.battery_mv` and `get_battery_mv()` value are 3125.
 6. Assert: 3125 mV is stored in RTC-retained state for the next wake.
 

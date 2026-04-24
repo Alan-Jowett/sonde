@@ -1228,9 +1228,20 @@ TestNode {
 
 ---
 
-### T-PT-1214e  Explicitly unassigned functions encoded as CBOR null
+### T-PT-1214e  Board layout with non-ADC-capable battery GPIO rejected
 
-**Validates:** PT-1214 (AC 5, 6), PT-0409 (AC 4)
+**Validates:** PT-0409 (AC 4)
+
+**Procedure:**
+1. Call `provision_node(...)` with board layout `Some(BoardLayout { i2c0_sda: Some(6), i2c0_scl: Some(7), one_wire_data: None, battery_adc: Some(7), sensor_enable: None })`.
+2. Assert: the call returns an error indicating that `battery_adc` must use an ADC-capable GPIO on ESP32-C3.
+3. Assert: no NODE_PROVISION message is written to the BLE transport.
+
+---
+
+### T-PT-1214f  Explicitly unassigned functions encoded as CBOR null
+
+**Validates:** PT-1214 (AC 5, 6), PT-0409 (AC 5)
 
 **Procedure:**
 1. Call `provision_node(...)` with board layout `Some(BoardLayout { i2c0_sda: Some(0), i2c0_scl: Some(1), one_wire_data: None, battery_adc: None, sensor_enable: None })`.
@@ -1684,7 +1695,8 @@ TestNode {
 | T-PT-1214b | PT-1214 | No board layout in NODE_PROVISION — backward compatible |
 | T-PT-1214c | PT-0409 | Board layout with out-of-range GPIO rejected |
 | T-PT-1214d | PT-0409 | Board layout with invalid I2C pairing rejected |
-| T-PT-1214e | PT-1214, PT-0409 | Explicitly unassigned functions encoded as CBOR null |
+| T-PT-1214e | PT-0409 | Board layout with non-ADC-capable battery GPIO rejected |
+| T-PT-1214f | PT-1214, PT-0409 | Explicitly unassigned functions encoded as CBOR null |
 | T-PT-1216a | PT-1216, PT-1214 | Board preset passes correct board layout |
 | T-PT-1216b | PT-1216 | Default preset is Sonde Sensor Node rev_a |
 | T-PT-1216c | PT-1216, PT-0409 | Custom board with valid layout |

@@ -633,14 +633,14 @@ The firmware MUST support a provisioned board layout so that a single firmware b
 **Source:** issue #134, hw/carrier-board netlists
 
 **Description:**  
-The firmware MUST use the provisioned board layout to control sensor power and capture the current-cycle battery value after the `WAKE` / `COMMAND` exchange. If the provisioned board layout assigns `sensor_enable`, the firmware asserts that GPIO active after a valid `COMMAND` is received, waits for the provisioned buses and battery divider to settle, then captures the battery value for the current cycle. If `battery_adc` is assigned, the firmware samples the configured ADC pin; otherwise it uses the known fallback value (`3300` mV). The captured current-cycle value is stored in RTC-retained state for the next wake and exposed to the current-cycle BPF execution context and helpers.
+The firmware MUST use the provisioned board layout to control sensor power and capture the current-cycle battery value after the `WAKE` / `COMMAND` exchange. If the provisioned board layout assigns `sensor_enable`, the firmware asserts that GPIO active after a valid `COMMAND` is received, waits for the provisioned buses and battery divider to settle, then captures the battery value for the current cycle. If `battery_adc` is assigned to a GPIO that the current ESP32-C3 target can sample, the firmware samples that configured ADC pin; otherwise it uses the known fallback value (`3300` mV). The captured current-cycle value is stored in RTC-retained state for the next wake and exposed to the current-cycle BPF execution context and helpers.
 
 **Acceptance criteria:**
 
 1. When `sensor_enable` is assigned, the firmware asserts the configured GPIO only after a valid `COMMAND` is received and before executing BPF or other post-WAKE command work.
 2. When `sensor_enable` is assigned, the firmware waits for the sensor rail and attached buses to settle before taking a battery measurement or using the provisioned bus helpers.
-3. When `battery_adc` is assigned, the firmware samples the configured ADC pin and stores the resulting battery value in RTC-retained state for the next wake.
-4. When `battery_adc` is unassigned, the firmware stores the known fallback value (`3300` mV) in RTC-retained state for the next wake.
+3. When `battery_adc` is assigned to an ADC-capable GPIO supported on the current ESP32-C3 target, the firmware samples the configured ADC pin and stores the resulting battery value in RTC-retained state for the next wake.
+4. When `battery_adc` is unassigned, or assigned to a GPIO that is not ADC-capable on the current target, the firmware stores the known fallback value (`3300` mV) in RTC-retained state for the next wake.
 5. The same-cycle `sonde_context.battery_mv` value and `get_battery_mv()` helper return the current-cycle value captured after `COMMAND` processing, not the previous wake's stored `WAKE.battery_mv`.
 
 ---

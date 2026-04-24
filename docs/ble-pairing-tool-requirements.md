@@ -459,14 +459,15 @@ After a successful `NODE_PROVISION` write, the tool MUST zero `node_psk` from me
 **Source:** PT-1214 (board layout), phase2.rs implementation
 
 **Description:**  
-Before provisioning, the tool MUST validate any board layout supplied by the operator or selected from a preset. Assigned GPIO pin numbers must be in range 0–21 (valid ESP32-C3 GPIOs). The I2C SDA and SCL functions form a pair: either both are assigned concrete GPIOs or both are explicitly unassigned, and when both are assigned they MUST NOT be identical. Optional functions such as 1-Wire data, battery ADC, and sensor-rail enable may be explicitly unassigned, but the encoding MUST preserve that state unambiguously. Invalid layouts MUST be rejected before any BLE transmission.
+Before provisioning, the tool MUST validate any board layout supplied by the operator or selected from a preset. Assigned GPIO pin numbers must be in range 0–21 (valid ESP32-C3 GPIOs). The I2C SDA and SCL functions form a pair: either both are assigned concrete GPIOs or both are explicitly unassigned, and when both are assigned they MUST NOT be identical. Optional functions such as 1-Wire data and sensor-rail enable may be explicitly unassigned; `battery_adc` may also be explicitly unassigned, but when assigned it MUST target an ADC-capable ESP32-C3 GPIO (currently GPIO0–GPIO4). The encoding MUST preserve unassigned state unambiguously. Invalid layouts MUST be rejected before any BLE transmission.
 
 **Acceptance criteria:**
 
 1. A board layout with any assigned GPIO number outside 0–21 is rejected with an actionable error identifying the out-of-range function.
 2. A board layout where `i2c0_sda == i2c0_scl` is rejected with an actionable error.
 3. A board layout where exactly one of `i2c0_sda` or `i2c0_scl` is assigned is rejected with an actionable error.
-4. A valid board layout with optional functions explicitly marked unassigned is accepted.
+4. A board layout where `battery_adc` is assigned to a non-ADC-capable GPIO is rejected with an actionable error.
+5. A valid board layout with optional functions explicitly marked unassigned is accepted.
 
 ---
 
@@ -1139,7 +1140,7 @@ Board layout is sourced from the board selector UI (see PT-1216). The operator s
 4. The CBOR map uses integer keys: 1 = `i2c0_sda`, 2 = `i2c0_scl`, 3 = `one_wire_data`, 4 = `battery_adc`, 5 = `sensor_enable`.
 5. Each known key in the board-layout map is encoded as either a concrete GPIO number (`uint`) or `null` to indicate "function explicitly unassigned on this board".
 6. The encoding makes "unassigned" unambiguous to the receiver; the receiver never has to guess whether a function is absent, unsupported, or accidentally omitted.
-7. GPIO values MUST be in the range 0–21 (ESP32-C3), and `i2c0_sda` / `i2c0_scl` MUST either both be assigned or both be `null`.
+7. GPIO values MUST be in the range 0–21 (ESP32-C3); when assigned, `battery_adc` MUST use an ADC-capable GPIO (currently GPIO0–GPIO4); and `i2c0_sda` / `i2c0_scl` MUST either both be assigned or both be `null`.
 
 ---
 

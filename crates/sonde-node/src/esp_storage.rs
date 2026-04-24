@@ -13,11 +13,13 @@
 //! - WiFi channel: `"channel"` (u32, 1–13)
 //! - BLE pairing (ND-0916): `"peer_payload"` (blob, variable), `"reg_complete"` (u32, 0 or 1)
 //! - Board layout (ND-0608): `"board_layout"` (blob, deterministic CBOR)
+//! - Legacy board-layout compatibility keys: `"i2c0_sda"` / `"i2c0_scl"` (u32)
 //!
 //! The early-wake flag is stored in RTC slow SRAM (`.rtc.data` section)
 //! rather than NVS, so it survives deep sleep without incurring flash wear.
 //! It is reset on power loss or hardware reset, which is acceptable — a
-//! missed early wake is harmless.
+//! missed early wake is harmless. The retained battery value used for the
+//! next `WAKE.battery_mv` is also stored in RTC slow SRAM via `LAST_BATTERY_*`.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 

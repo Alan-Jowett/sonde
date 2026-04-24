@@ -130,6 +130,15 @@ fn resolve_legacy_i2c_layout(
     }
 }
 
+fn validate_supported_battery_adc(layout: &BoardLayout) -> Result<(), String> {
+    match layout.battery_adc {
+        Some(0..=4) | None => Ok(()),
+        Some(pin) => Err(format!(
+            "battery_adc GPIO {pin} is not ADC-capable on ESP32-C3; use GPIO 0-4 or leave it blank"
+        )),
+    }
+}
+
 fn resolve_board_layout(
     board_layout: Option<BoardLayoutInput>,
     legacy_i2c_sda: Option<u8>,
@@ -148,6 +157,7 @@ fn resolve_board_layout(
 
     if let Some(layout) = layout {
         layout.validate().map_err(str::to_string)?;
+        validate_supported_battery_adc(&layout)?;
         Ok(Some(layout))
     } else {
         Ok(None)
@@ -883,5 +893,22 @@ mod tests {
             None,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_board_layout_rejects_non_adc_battery_pin() {
+        let result = resolve_board_layout(
+            Some(BoardLayoutInput {
+                i2c0_sda: Some(6),
+                i2c0_scl: Some(7),
+                one_wire_data: None,
+                battery_adc: Some(7),
+                sensor_enable: None,
+            }),
+            None,
+            None,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("ADC-capable"));
     }
 }

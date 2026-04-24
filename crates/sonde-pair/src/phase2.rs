@@ -29,6 +29,15 @@ fn msg_type_name(t: u8) -> &'static str {
     }
 }
 
+fn validate_supported_battery_adc(layout: &BoardLayout) -> Result<(), PairingError> {
+    match layout.battery_adc {
+        Some(0..=4) | None => Ok(()),
+        Some(pin) => Err(PairingError::InvalidBoardLayout(format!(
+            "battery_adc GPIO {pin} is not ADC-capable on ESP32-C3; use GPIO 0-4 or leave it unassigned"
+        ))),
+    }
+}
+
 /// Phase 2 (AEAD): Provision a node via BLE using simplified AEAD flow.
 ///
 /// The phone generates the node PSK, builds a PairingRequest CBOR, encrypts
@@ -54,6 +63,7 @@ pub async fn provision_node(
         if let Err(reason) = layout.validate() {
             return Err(PairingError::InvalidBoardLayout(reason.into()));
         }
+        validate_supported_battery_adc(layout)?;
     }
 
     // Step 2: Generate node PSK
@@ -680,6 +690,47 @@ mod tests {
                 i2c0_scl: Some(4),
                 one_wire_data: None,
                 battery_adc: None,
+                sensor_enable: None,
+            }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(PairingError::InvalidBoardLayout(_))),
+            "expected InvalidBoardLayout, got {result:?}"
+        );
+        assert!(
+            transport.written.is_empty(),
+            "no BLE writes on validation failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn provision_node_board_layout_battery_adc_not_supported() {
+        use crate::phase1::PairingArtifacts;
+
+        let artifacts = PairingArtifacts {
+            phone_psk: Zeroizing::new([0x55u8; 32]),
+            phone_key_hint: compute_key_hint(&[0x55u8; 32]),
+            rf_channel: 6,
+            phone_label: "test".into(),
+        };
+
+        let rng = MockRng::new([0x42u8; 32]);
+        let mut transport = MockBleTransport::new(247);
+
+        let result = provision_node(
+            &mut transport,
+            &artifacts,
+            &rng,
+            &[0xAA; 6],
+            "test-node",
+            &[],
+            Some(BoardLayout {
+                i2c0_sda: Some(6),
+                i2c0_scl: Some(7),
+                one_wire_data: None,
+                battery_adc: Some(7),
                 sensor_enable: None,
             }),
         )

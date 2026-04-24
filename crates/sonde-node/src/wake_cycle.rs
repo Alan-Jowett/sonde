@@ -68,10 +68,16 @@ fn hash_hex_prefix(hash: &[u8]) -> HashHexPrefix<'_> {
     HashHexPrefix(hash)
 }
 
+// The ESP32-C3 ADC1 path used by this firmware exposes GPIO0-4 only.
+fn is_supported_battery_adc_gpio(pin: u8) -> bool {
+    matches!(pin, 0..=4)
+}
+
 fn gpio_to_adc_channel(pin: u8) -> Option<u32> {
-    match pin {
-        0..=4 => Some(pin as u32),
-        _ => None,
+    if is_supported_battery_adc_gpio(pin) {
+        Some(pin as u32)
+    } else {
+        None
     }
 }
 
@@ -1339,6 +1345,9 @@ mod tests {
 
     #[test]
     fn gpio_to_adc_channel_only_maps_esp32c3_adc1_pins() {
+        assert!(is_supported_battery_adc_gpio(0));
+        assert!(is_supported_battery_adc_gpio(4));
+        assert!(!is_supported_battery_adc_gpio(5));
         assert_eq!(gpio_to_adc_channel(0), Some(0));
         assert_eq!(gpio_to_adc_channel(4), Some(4));
         assert_eq!(gpio_to_adc_channel(5), None);

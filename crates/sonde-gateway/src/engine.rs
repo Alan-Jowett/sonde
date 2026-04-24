@@ -17,6 +17,7 @@ use sonde_protocol::{
 
 use std::collections::BTreeMap;
 
+use crate::companion::{pb::CompanionPayloadOrigin, CompanionEventHub};
 use crate::crypto::RustCryptoSha256;
 use crate::gateway_identity::GatewayIdentity;
 use crate::handler::HandlerRouter;
@@ -231,6 +232,8 @@ pub struct Gateway {
     rssi_bad_threshold: i8,
     /// Deferred handler replies awaiting delivery on the next WAKE cycle.
     deferred_replies: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    /// Live event publication for companion processes.
+    companion_event_hub: Arc<CompanionEventHub>,
 }
 
 impl Gateway {
@@ -248,6 +251,7 @@ impl Gateway {
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
+            companion_event_hub: Arc::new(CompanionEventHub::default()),
         }
     }
 
@@ -276,6 +280,7 @@ impl Gateway {
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
+            companion_event_hub: Arc::new(CompanionEventHub::default()),
         }
     }
 
@@ -297,6 +302,7 @@ impl Gateway {
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
+            companion_event_hub: Arc::new(CompanionEventHub::default()),
         }
     }
 
@@ -332,6 +338,11 @@ impl Gateway {
     /// Return a clone of the shared handler router reference (GW-1407).
     pub fn handler_router(&self) -> Arc<tokio::sync::RwLock<HandlerRouter>> {
         Arc::clone(&self.handler_router)
+    }
+
+    /// Return a clone of the companion event hub.
+    pub fn companion_event_hub(&self) -> Arc<CompanionEventHub> {
+        Arc::clone(&self.companion_event_hub)
     }
 
     /// Process a raw frame using AES-256-GCM authenticated encryption.
@@ -869,6 +880,16 @@ impl Gateway {
         updated_node.update_telemetry(battery_mv, firmware_abi_version, firmware_version);
         let _ = self.storage.upsert_node(&updated_node).await;
 
+        self.companion_event_hub.emit_node_checkin(
+            node.node_id.clone(),
+            program_hash.clone(),
+            updated_node.assigned_program_hash.clone(),
+            battery_mv,
+            firmware_abi_version,
+            updated_node.firmware_version.clone().unwrap_or_default(),
+            timestamp_ms,
+        );
+
         // 4a. Emit node_online EVENT to handlers (GW-0507)
         {
             let process_refs = self.handler_router.read().await.clone_all_process_refs();
@@ -947,6 +968,13 @@ impl Gateway {
         // Spawned as a background task so it does not block COMMAND delivery.
         if let Some(wake_data) = wake_blob {
             if !wake_data.is_empty() && !program_hash.is_empty() {
+                self.companion_event_hub.emit_node_payload(
+                    node.node_id.clone(),
+                    program_hash.clone(),
+                    wake_data.clone(),
+                    timestamp_ms,
+                    CompanionPayloadOrigin::WakeBlob,
+                );
                 let handler_router = Arc::clone(&self.handler_router);
                 let deferred_replies = Arc::clone(&self.deferred_replies);
                 let node_id = node.node_id.clone();
@@ -1234,6 +1262,23 @@ impl Gateway {
             }
         };
 
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        self.companion_event_hub.emit_node_payload(
+            node.node_id.clone(),
+            program_hash.clone(),
+            blob.clone(),
+            timestamp_ms,
+            CompanionPayloadOrigin::AppData,
+        );
+
         // Find the matching handler under the read lock, then release before I/O.
         let (config, process_arc) = {
             let router = self.handler_router.read().await;
@@ -1272,11 +1317,6 @@ impl Gateway {
                 "handler matched"
             );
         }
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
 
         // GW-1308 AC3: handler invoked with command.
         info!(command = %config.command, "handler invoked");

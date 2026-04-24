@@ -34,13 +34,17 @@ use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::storage::Storage;
 use sonde_gateway::transport::Transport;
-use sonde_gateway::AdminService;
+use sonde_gateway::{AdminService, CompanionService};
 use zeroize::Zeroizing;
 
 #[cfg(unix)]
 const DEFAULT_ADMIN_SOCKET: &str = "/var/run/sonde/admin.sock";
 #[cfg(windows)]
 const DEFAULT_ADMIN_SOCKET: &str = r"\\.\pipe\sonde-admin";
+#[cfg(unix)]
+const DEFAULT_COMPANION_SOCKET: &str = "/var/run/sonde/companion.sock";
+#[cfg(windows)]
+const DEFAULT_COMPANION_SOCKET: &str = r"\\.\pipe\sonde-companion";
 
 /// Maximum time to wait for graceful shutdown before force-exiting (GW-1400).
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -647,6 +651,10 @@ struct Cli {
     #[arg(long, default_value = DEFAULT_ADMIN_SOCKET)]
     admin_socket: String,
 
+    /// gRPC companion API socket path (UDS on Linux/macOS, named pipe on Windows).
+    #[arg(long, default_value = DEFAULT_COMPANION_SOCKET)]
+    companion_socket: String,
+
     /// Session timeout in seconds.
     #[arg(long, default_value_t = 30)]
     session_timeout: u64,
@@ -926,6 +934,20 @@ async fn run_gateway(
         );
         gw.set_rssi_thresholds(cli.rssi_good_threshold, cli.rssi_bad_threshold);
         gw
+    });
+    let companion_service = CompanionService::new(
+        storage.clone(),
+        pending_commands.clone(),
+        session_manager.clone(),
+        gateway.companion_event_hub(),
+    );
+    let companion_socket = cli.companion_socket.clone();
+    let mut companion_handle = tokio::spawn(async move {
+        if let Err(e) =
+            sonde_gateway::companion::serve_companion(companion_service, &companion_socket).await
+        {
+            error!("companion gRPC server error: {}", e);
+        }
     });
 
     // 6–9. Modem transport + processing loops with reconnection (GW-1103).
@@ -1365,6 +1387,7 @@ async fn run_gateway(
                 frame_loop.abort();
                 ble_loop.abort();
                 grpc_handle.abort();
+                companion_handle.abort();
                 if !frame_loop.is_finished() {
                     let _ = frame_loop.await;
                 }
@@ -1373,6 +1396,9 @@ async fn run_gateway(
                 }
                 if !grpc_handle.is_finished() {
                     let _ = grpc_handle.await;
+                }
+                if !companion_handle.is_finished() {
+                    let _ = companion_handle.await;
                 }
                 if !health_handle.is_finished() {
                     let _ = health_handle.await;
@@ -1394,17 +1420,43 @@ async fn run_gateway(
                 health_cancel.cancel();
                 frame_loop.abort();
                 ble_loop.abort();
+                companion_handle.abort();
                 if !frame_loop.is_finished() {
                     let _ = frame_loop.await;
                 }
                 if !ble_loop.is_finished() {
                     let _ = ble_loop.await;
                 }
+                if !companion_handle.is_finished() {
+                    let _ = companion_handle.await;
+                }
                 if !health_handle.is_finished() {
                     let _ = health_handle.await;
                 }
                 transport.abort_reader_and_wait().await;
                 break; // gRPC failure is not recoverable
+            }
+            _ = &mut companion_handle => {
+                error!("companion gRPC server exited unexpectedly");
+                ble_controller.cancel_and_wait().await;
+                health_cancel.cancel();
+                frame_loop.abort();
+                ble_loop.abort();
+                grpc_handle.abort();
+                if !frame_loop.is_finished() {
+                    let _ = frame_loop.await;
+                }
+                if !ble_loop.is_finished() {
+                    let _ = ble_loop.await;
+                }
+                if !grpc_handle.is_finished() {
+                    let _ = grpc_handle.await;
+                }
+                if !health_handle.is_finished() {
+                    let _ = health_handle.await;
+                }
+                transport.abort_reader_and_wait().await;
+                break;
             }
             result = &mut health_handle => {
                 let reconnect = result.unwrap_or(false);

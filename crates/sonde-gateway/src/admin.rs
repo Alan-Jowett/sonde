@@ -236,6 +236,16 @@ fn node_to_info(n: &NodeRecord) -> NodeInfo {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct NodeStatusSnapshot {
+    pub(crate) node_id: String,
+    pub(crate) current_program_hash: Vec<u8>,
+    pub(crate) battery_mv: Option<u32>,
+    pub(crate) firmware_abi_version: Option<u32>,
+    pub(crate) last_seen_ms: Option<u64>,
+    pub(crate) has_active_session: bool,
+}
+
 #[allow(clippy::result_large_err)]
 fn parse_profile(value: i32) -> Result<VerificationProfile, Status> {
     match value {
@@ -279,6 +289,181 @@ fn validate_program_hash_bytes(operation: &str, hash: &[u8]) -> Result<String, S
         )));
     }
     Ok(fmt_hex(hash))
+}
+
+pub(crate) async fn list_nodes_impl(storage: &Arc<dyn Storage>) -> Result<Vec<NodeRecord>, Status> {
+    storage.list_nodes().await.map_err(storage_err)
+}
+
+pub(crate) async fn get_node_impl(
+    storage: &Arc<dyn Storage>,
+    node_id: &str,
+) -> Result<NodeRecord, Status> {
+    storage
+        .get_node(node_id)
+        .await
+        .map_err(storage_err)?
+        .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))
+}
+
+pub(crate) async fn assign_program_impl(
+    storage: &Arc<dyn Storage>,
+    node_id: &str,
+    program_hash: &[u8],
+) -> Result<(), Status> {
+    let program_hash_hex = validate_program_hash_bytes("assign program", program_hash)?;
+    let mut node = storage
+        .get_node(node_id)
+        .await
+        .map_err(|e| {
+            storage_err_with_context(&format!("assign program: look up node `{node_id}`"), e)
+        })?
+        .ok_or_else(|| {
+            Status::not_found(format!(
+                "assign program failed: node `{node_id}` not found; use ListNodes to verify the node_id",
+            ))
+        })?;
+    storage
+        .get_program(program_hash)
+        .await
+        .map_err(|e| {
+            storage_err_with_context(
+                &format!("assign program: look up program `{program_hash_hex}`"),
+                e,
+            )
+        })?
+        .ok_or_else(|| {
+            Status::not_found(format!(
+                "assign program failed: program `{program_hash_hex}` not found; \
+                 use IngestProgram to upload it first, then ListPrograms to verify",
+            ))
+        })?;
+    node.assigned_program_hash = Some(program_hash.to_vec());
+    storage.upsert_node(&node).await.map_err(|e| {
+        storage_err_with_context(
+            &format!("assign program: update node `{node_id}` with program `{program_hash_hex}`"),
+            e,
+        )
+    })?;
+    Ok(())
+}
+
+pub(crate) async fn set_schedule_impl(
+    storage: &Arc<dyn Storage>,
+    pending_commands: &Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
+    node_id: &str,
+    interval_s: u32,
+) -> Result<(), Status> {
+    let mut node = storage
+        .get_node(node_id)
+        .await
+        .map_err(storage_err)?
+        .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+
+    node.schedule_interval_s = interval_s;
+    storage.upsert_node(&node).await.map_err(storage_err)?;
+
+    let mut guard = pending_commands.write().await;
+    let commands = guard.entry(node_id.to_string()).or_default();
+    commands.retain(|cmd| !matches!(cmd, PendingCommand::UpdateSchedule { .. }));
+    commands.push(PendingCommand::UpdateSchedule { interval_s });
+    Ok(())
+}
+
+pub(crate) async fn queue_reboot_impl(
+    storage: &Arc<dyn Storage>,
+    pending_commands: &Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
+    node_id: &str,
+) -> Result<(), Status> {
+    storage
+        .get_node(node_id)
+        .await
+        .map_err(storage_err)?
+        .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+    pending_commands
+        .write()
+        .await
+        .entry(node_id.to_string())
+        .or_default()
+        .push(PendingCommand::Reboot);
+    Ok(())
+}
+
+pub(crate) async fn queue_ephemeral_impl(
+    storage: &Arc<dyn Storage>,
+    pending_commands: &Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
+    node_id: &str,
+    program_hash: &[u8],
+) -> Result<(), Status> {
+    let program_hash_hex = validate_program_hash_bytes("queue ephemeral", program_hash)?;
+    storage
+        .get_node(node_id)
+        .await
+        .map_err(|e| {
+            storage_err_with_context(&format!("queue ephemeral: look up node `{node_id}`"), e)
+        })?
+        .ok_or_else(|| {
+            Status::not_found(format!(
+                "queue ephemeral failed: node `{node_id}` not found; use ListNodes to verify",
+            ))
+        })?;
+    let program = storage
+        .get_program(program_hash)
+        .await
+        .map_err(|e| {
+            storage_err_with_context(
+                &format!("queue ephemeral: look up program `{program_hash_hex}`"),
+                e,
+            )
+        })?
+        .ok_or_else(|| {
+            Status::not_found(format!(
+                "queue ephemeral failed: program `{program_hash_hex}` not found; \
+                 use IngestProgram to upload it first",
+            ))
+        })?;
+    if program.verification_profile != VerificationProfile::Ephemeral {
+        return Err(Status::failed_precondition(format!(
+            "queue ephemeral failed: program `{program_hash_hex}` has {:?} \
+             verification profile, expected Ephemeral",
+            program.verification_profile,
+        )));
+    }
+    pending_commands
+        .write()
+        .await
+        .entry(node_id.to_string())
+        .or_default()
+        .push(PendingCommand::RunEphemeral {
+            program_hash: program_hash.to_vec(),
+        });
+    Ok(())
+}
+
+pub(crate) async fn get_node_status_impl(
+    storage: &Arc<dyn Storage>,
+    session_manager: &Arc<SessionManager>,
+    node_id: &str,
+) -> Result<NodeStatusSnapshot, Status> {
+    let node = storage
+        .get_node(node_id)
+        .await
+        .map_err(storage_err)?
+        .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+    let has_active_session = session_manager.get_session(node_id).await.is_some();
+    let last_seen_ms = node.last_seen.and_then(|t| {
+        t.duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_millis() as u64)
+    });
+    Ok(NodeStatusSnapshot {
+        node_id: node.node_id,
+        current_program_hash: node.current_program_hash.unwrap_or_default(),
+        battery_mv: node.last_battery_mv,
+        firmware_abi_version: node.firmware_abi_version,
+        last_seen_ms,
+        has_active_session,
+    })
 }
 
 fn storage_err_with_context(operation: &str, e: crate::storage::StorageError) -> Status {
@@ -361,7 +546,7 @@ impl GatewayAdmin for AdminService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ListNodesResponse>, Status> {
-        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
+        let nodes = list_nodes_impl(&self.storage).await?;
         let mut nodes: Vec<_> = nodes.iter().map(node_to_info).collect();
         nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
         Ok(Response::new(ListNodesResponse { nodes }))
@@ -371,13 +556,7 @@ impl GatewayAdmin for AdminService {
         &self,
         request: Request<GetNodeRequest>,
     ) -> Result<Response<NodeInfo>, Status> {
-        let node_id = &request.get_ref().node_id;
-        let node = self
-            .storage
-            .get_node(node_id)
-            .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+        let node = get_node_impl(&self.storage, &request.get_ref().node_id).await?;
         Ok(Response::new(node_to_info(&node)))
     }
 
@@ -602,49 +781,8 @@ impl GatewayAdmin for AdminService {
         &self,
         request: Request<AssignProgramRequest>,
     ) -> Result<Response<Empty>, Status> {
-        let req = request.get_ref();
-        let program_hash_hex = validate_program_hash_bytes("assign program", &req.program_hash)?;
-        let mut node = self
-            .storage
-            .get_node(&req.node_id)
-            .await
-            .map_err(|e| {
-                storage_err_with_context(
-                    &format!("assign program: look up node `{}`", req.node_id),
-                    e,
-                )
-            })?
-            .ok_or_else(|| {
-                Status::not_found(format!(
-                    "assign program failed: node `{}` not found; use ListNodes to verify the node_id",
-                    req.node_id
-                ))
-            })?;
-        self.storage
-            .get_program(&req.program_hash)
-            .await
-            .map_err(|e| {
-                storage_err_with_context(
-                    &format!("assign program: look up program `{program_hash_hex}`"),
-                    e,
-                )
-            })?
-            .ok_or_else(|| {
-                Status::not_found(format!(
-                    "assign program failed: program `{program_hash_hex}` not found; \
-                     use IngestProgram to upload it first, then ListPrograms to verify",
-                ))
-            })?;
-        node.assigned_program_hash = Some(req.program_hash.clone());
-        self.storage.upsert_node(&node).await.map_err(|e| {
-            storage_err_with_context(
-                &format!(
-                    "assign program: update node `{}` with program `{program_hash_hex}`",
-                    req.node_id
-                ),
-                e,
-            )
-        })?;
+        let req = request.into_inner();
+        assign_program_impl(&self.storage, &req.node_id, &req.program_hash).await?;
         Ok(Response::new(Empty {}))
     }
 
@@ -705,26 +843,14 @@ impl GatewayAdmin for AdminService {
         &self,
         request: Request<SetScheduleRequest>,
     ) -> Result<Response<Empty>, Status> {
-        let req = request.get_ref();
-        let mut node = self
-            .storage
-            .get_node(&req.node_id)
-            .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found(format!("node `{}` not found", req.node_id)))?;
-
-        // Persist the new schedule in the node record
-        node.schedule_interval_s = req.interval_s;
-        self.storage.upsert_node(&node).await.map_err(storage_err)?;
-
-        // Queue the command for delivery on next WAKE, replacing any
-        // previously-queued schedule update so the node always gets the latest.
-        let mut guard = self.pending_commands.write().await;
-        let commands = guard.entry(req.node_id.clone()).or_default();
-        commands.retain(|cmd| !matches!(cmd, PendingCommand::UpdateSchedule { .. }));
-        commands.push(PendingCommand::UpdateSchedule {
-            interval_s: req.interval_s,
-        });
+        let req = request.into_inner();
+        set_schedule_impl(
+            &self.storage,
+            &self.pending_commands,
+            &req.node_id,
+            req.interval_s,
+        )
+        .await?;
         Ok(Response::new(Empty {}))
     }
 
@@ -732,18 +858,8 @@ impl GatewayAdmin for AdminService {
         &self,
         request: Request<QueueRebootRequest>,
     ) -> Result<Response<Empty>, Status> {
-        let node_id = &request.get_ref().node_id;
-        self.storage
-            .get_node(node_id)
-            .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
-        self.pending_commands
-            .write()
-            .await
-            .entry(node_id.clone())
-            .or_default()
-            .push(PendingCommand::Reboot);
+        let req = request.into_inner();
+        queue_reboot_impl(&self.storage, &self.pending_commands, &req.node_id).await?;
         Ok(Response::new(Empty {}))
     }
 
@@ -751,54 +867,14 @@ impl GatewayAdmin for AdminService {
         &self,
         request: Request<QueueEphemeralRequest>,
     ) -> Result<Response<Empty>, Status> {
-        let req = request.get_ref();
-        let program_hash_hex = validate_program_hash_bytes("queue ephemeral", &req.program_hash)?;
-        self.storage
-            .get_node(&req.node_id)
-            .await
-            .map_err(|e| {
-                storage_err_with_context(
-                    &format!("queue ephemeral: look up node `{}`", req.node_id),
-                    e,
-                )
-            })?
-            .ok_or_else(|| {
-                Status::not_found(format!(
-                    "queue ephemeral failed: node `{}` not found; use ListNodes to verify",
-                    req.node_id,
-                ))
-            })?;
-        let program = self
-            .storage
-            .get_program(&req.program_hash)
-            .await
-            .map_err(|e| {
-                storage_err_with_context(
-                    &format!("queue ephemeral: look up program `{program_hash_hex}`"),
-                    e,
-                )
-            })?
-            .ok_or_else(|| {
-                Status::not_found(format!(
-                    "queue ephemeral failed: program `{program_hash_hex}` not found; \
-                     use IngestProgram to upload it first",
-                ))
-            })?;
-        if program.verification_profile != VerificationProfile::Ephemeral {
-            return Err(Status::failed_precondition(format!(
-                "queue ephemeral failed: program `{program_hash_hex}` has {:?} \
-                 verification profile, expected Ephemeral",
-                program.verification_profile,
-            )));
-        }
-        self.pending_commands
-            .write()
-            .await
-            .entry(req.node_id.clone())
-            .or_default()
-            .push(PendingCommand::RunEphemeral {
-                program_hash: req.program_hash.clone(),
-            });
+        let req = request.into_inner();
+        queue_ephemeral_impl(
+            &self.storage,
+            &self.pending_commands,
+            &req.node_id,
+            &req.program_hash,
+        )
+        .await?;
         Ok(Response::new(Empty {}))
     }
 
@@ -806,26 +882,19 @@ impl GatewayAdmin for AdminService {
         &self,
         request: Request<GetNodeStatusRequest>,
     ) -> Result<Response<NodeStatus>, Status> {
-        let node_id = &request.get_ref().node_id;
-        let node = self
-            .storage
-            .get_node(node_id)
-            .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
-        let has_active_session = self.session_manager.get_session(node_id).await.is_some();
-        let last_seen_ms = node.last_seen.and_then(|t| {
-            t.duration_since(UNIX_EPOCH)
-                .ok()
-                .map(|d| d.as_millis() as u64)
-        });
+        let status = get_node_status_impl(
+            &self.storage,
+            &self.session_manager,
+            &request.get_ref().node_id,
+        )
+        .await?;
         Ok(Response::new(NodeStatus {
-            node_id: node.node_id,
-            current_program_hash: node.current_program_hash.unwrap_or_default(),
-            battery_mv: node.last_battery_mv,
-            firmware_abi_version: node.firmware_abi_version,
-            last_seen_ms,
-            has_active_session,
+            node_id: status.node_id,
+            current_program_hash: status.current_program_hash,
+            battery_mv: status.battery_mv,
+            firmware_abi_version: status.firmware_abi_version,
+            last_seen_ms: status.last_seen_ms,
+            has_active_session: status.has_active_session,
         }))
     }
 

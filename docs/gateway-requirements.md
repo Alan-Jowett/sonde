@@ -5,7 +5,7 @@
 > **Document status:** Draft  
 > **Source:** Derived from [README.md](../README.md) (design-phase specification).  
 > **Scope:** This document covers the Sonde **gateway** component only. Node firmware requirements are out of scope.  
-> **Related:** [protocol.md](protocol.md), [gateway-api.md](gateway-api.md), [security.md](security.md), [node-requirements.md](node-requirements.md)
+> **Related:** [protocol.md](protocol.md), [gateway-api.md](gateway-api.md), [gateway-companion-api.md](gateway-companion-api.md), [security.md](security.md), [node-requirements.md](node-requirements.md)
 
 ---
 
@@ -984,6 +984,93 @@ transport is configured, it MUST fail with `UNAVAILABLE`.
 4. A second successful `ShowModemDisplayMessage` received before the first timeout expires replaces the earlier text and restarts the 60-second timeout window.
 5. While a BLE pairing session owns the display, `ShowModemDisplayMessage` returns `FAILED_PRECONDITION`.
 6. Without a configured modem transport, `ShowModemDisplayMessage` returns `UNAVAILABLE`.
+
+---
+
+## 9B  Companion API
+
+### GW-0810  Companion gRPC API
+
+**Priority:** Must  
+**Source:** `gateway-companion-api.md` §2
+
+**Description:**  
+The gateway MUST expose a separate local gRPC API for companion processes that integrate with the gateway at runtime. This companion API MUST be distinct from `GatewayAdmin`: it uses a separate service definition, companion-specific protobuf message types, and a separate configurable local socket (`/var/run/sonde/companion.sock` on Unix-like hosts; `\\.\pipe\sonde-companion` on Windows by default). The companion API MUST NOT expose a TCP listener in v1.
+
+**Acceptance criteria:**
+
+1. The companion API is available when the gateway is running.
+2. The companion API listens on a local-only transport (Unix domain socket or Windows named pipe) separate from the admin API endpoint.
+3. No TCP listener is opened for the companion API.
+4. The companion API does not require clients to use the `GatewayAdmin` service definition or `GatewayAdmin` protobuf messages.
+
+---
+
+### GW-0811  Companion API — live event subscription
+
+**Priority:** Must  
+**Source:** `gateway-companion-api.md` §2.2, §4
+
+**Description:**  
+The companion API MUST provide a server-streaming event subscription for live gateway events. The stream is best-effort and non-durable: it delivers only events produced after the subscription is established and MUST NOT replay historical events to reconnecting clients. The gateway MUST bound in-memory buffering for this stream; if a subscriber falls behind, the gateway MUST terminate that subscriber's stream with `RESOURCE_EXHAUSTED` and require the client to reconnect.
+
+**Acceptance criteria:**
+
+1. After a client subscribes, newly produced companion events are delivered on the stream.
+2. A client that disconnects and reconnects receives only events produced after the new subscription is established.
+3. If a subscriber falls behind the bounded in-memory event buffer, its stream terminates with `RESOURCE_EXHAUSTED`.
+4. Terminating one lagging subscriber does not interrupt gateway processing or other active companion subscribers.
+
+---
+
+### GW-0812  Companion event — `node_checkin`
+
+**Priority:** Must  
+**Source:** `gateway-companion-api.md` §3.2
+
+**Description:**  
+The gateway MUST emit a `node_checkin` companion event when it accepts and processes an authenticated `WAKE` from a registered node. The event MUST include the admin-assigned `node_id`, the node-reported `current_program_hash`, the assigned resident `program_hash` when one exists, `battery_mv`, `firmware_abi_version`, `firmware_version`, and a reception timestamp in Unix milliseconds.
+
+**Acceptance criteria:**
+
+1. Each valid `WAKE` from a registered node produces exactly one `node_checkin` event.
+2. The event fields reflect the values extracted from that `WAKE` and the gateway's current assignment state for the node.
+3. The event is emitted only after the gateway has accepted the `WAKE` and updated the node's latest-known status.
+
+---
+
+### GW-0813  Companion event — `node_payload`
+
+**Priority:** Must  
+**Source:** `gateway-companion-api.md` §3.3
+
+**Description:**  
+The gateway MUST emit a `node_payload` companion event whenever it accepts node-originated application payload data. This includes both `APP_DATA { blob }` frames and `WAKE` messages carrying a piggybacked `blob`. The event MUST include `node_id`, `program_hash`, the opaque payload bytes, a reception timestamp in Unix milliseconds, and a `payload_origin` value of `app_data` or `wake_blob`. The companion API is informational only: it MUST NOT provide a reply channel for payload events.
+
+**Acceptance criteria:**
+
+1. Accepted `APP_DATA` messages produce a `node_payload` event with `payload_origin = app_data`.
+2. Accepted `WAKE` blobs produce a `node_payload` event with `payload_origin = wake_blob`.
+3. The payload bytes are delivered to the companion stream without modification.
+4. For a `WAKE` carrying a blob, the gateway emits `node_checkin` before the corresponding `node_payload`.
+5. Companion clients do not reply to `node_payload`; node replies continue to use the existing handler flow defined by GW-0501 and GW-0506.
+
+---
+
+### GW-0814  Companion API — command and query operations
+
+**Priority:** Must  
+**Source:** `gateway-companion-api.md` §3.1, §4
+
+**Description:**  
+The companion API MUST expose companion-specific RPCs for the node-targeted control and query operations needed by external automation: listing nodes, getting node metadata, assigning a resident program by `program_hash`, setting schedule, queuing reboot, queuing an ephemeral program by `program_hash`, and fetching node status. These operations MUST affect the same underlying gateway state and pending-command pipeline as the corresponding admin operations; the companion API MUST NOT maintain a separate command queue. Operator-focused workflows such as node registration/removal, program ingestion/removal, state export/import, modem management, BLE pairing, and handler management remain outside the v1 companion API surface.
+
+**Acceptance criteria:**
+
+1. A companion client can list nodes and fetch per-node metadata needed to target a command.
+2. `AssignProgram`, `SetSchedule`, `QueueReboot`, and `QueueEphemeral` via the companion API update the same pending state that the gateway uses for the corresponding admin operations.
+3. `GetNodeStatus` via the companion API returns the latest known gateway state for the target node.
+4. The published companion protobuf contract lists only the companion RPCs described above; operator-only workflows remain available only through `GatewayAdmin`.
 
 ---
 
@@ -2317,6 +2404,12 @@ The `secret-service` (D-Bus keyring) dependency MUST be behind a cargo feature f
 | GW-0806 | Admin CLI tool | Must |
 | GW-0807 | Admin API — modem management | Must |
 | GW-0808 | ESP-NOW channel persistence | Must |
+| GW-0809 | Admin API — transient modem display message | Must |
+| GW-0810 | Companion gRPC API | Must |
+| GW-0811 | Companion API — live event subscription | Must |
+| GW-0812 | Companion event — `node_checkin` | Must |
+| GW-0813 | Companion event — `node_payload` | Must |
+| GW-0814 | Companion API — command and query operations | Must |
 | GW-1000 | Gateway failover / replaceability | Must |
 | GW-1004 | Program hash consistency across failover group | Must |
 | GW-1001 | Exportable / importable state | Should |

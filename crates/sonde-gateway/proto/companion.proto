@@ -1,0 +1,75 @@
+syntax = "proto3";
+package sonde.companion;
+
+service GatewayCompanion {
+    rpc StreamEvents(CompanionStreamEventsRequest) returns (stream CompanionEvent);
+    rpc ListNodes(CompanionListNodesRequest) returns (CompanionListNodesResponse);
+    rpc GetNode(CompanionGetNodeRequest) returns (CompanionNodeInfo);
+    rpc AssignProgram(CompanionAssignProgramRequest) returns (CompanionEmpty);
+    rpc SetSchedule(CompanionSetScheduleRequest) returns (CompanionEmpty);
+    rpc QueueReboot(CompanionQueueRebootRequest) returns (CompanionEmpty);
+    rpc QueueEphemeral(CompanionQueueEphemeralRequest) returns (CompanionEmpty);
+    rpc GetNodeStatus(CompanionGetNodeStatusRequest) returns (CompanionNodeStatus);
+}
+
+message CompanionEmpty {}
+message CompanionStreamEventsRequest {}
+message CompanionListNodesRequest {}
+message CompanionListNodesResponse { repeated CompanionNodeInfo nodes = 1; }
+message CompanionGetNodeRequest { string node_id = 1; }
+message CompanionAssignProgramRequest { string node_id = 1; bytes program_hash = 2; }
+message CompanionSetScheduleRequest { string node_id = 1; uint32 interval_s = 2; }
+message CompanionQueueRebootRequest { string node_id = 1; }
+message CompanionQueueEphemeralRequest { string node_id = 1; bytes program_hash = 2; }
+message CompanionGetNodeStatusRequest { string node_id = 1; }
+
+message CompanionEvent {
+    oneof event {
+        CompanionNodeCheckIn node_checkin = 1;
+        CompanionNodePayload node_payload = 2;
+    }
+}
+
+message CompanionNodeCheckIn {
+    string node_id = 1;
+    bytes current_program_hash = 2;
+    optional bytes assigned_program_hash = 3;
+    uint32 battery_mv = 4;
+    uint32 firmware_abi_version = 5;
+    string firmware_version = 6;
+    uint64 timestamp_ms = 7;
+}
+
+enum CompanionPayloadOrigin {
+    COMPANION_PAYLOAD_ORIGIN_UNSPECIFIED = 0;
+    COMPANION_PAYLOAD_ORIGIN_APP_DATA = 1;
+    COMPANION_PAYLOAD_ORIGIN_WAKE_BLOB = 2;
+}
+
+message CompanionNodePayload {
+    string node_id = 1;
+    bytes program_hash = 2;
+    bytes payload = 3;
+    uint64 timestamp_ms = 4;
+    CompanionPayloadOrigin payload_origin = 5;
+}
+
+message CompanionNodeInfo {
+    string node_id = 1;
+    uint32 key_hint = 2;
+    optional bytes assigned_program_hash = 3;
+    optional bytes current_program_hash = 4;
+    optional uint32 last_battery_mv = 5;
+    optional uint32 last_firmware_abi_version = 6;
+    optional uint64 last_seen_ms = 7;
+    optional uint32 schedule_interval_s = 8;
+}
+
+message CompanionNodeStatus {
+    string node_id = 1;
+    bytes current_program_hash = 2;
+    optional uint32 battery_mv = 3;
+    optional uint32 firmware_abi_version = 4;
+    optional uint64 last_seen_ms = 5;
+    bool has_active_session = 6;
+}

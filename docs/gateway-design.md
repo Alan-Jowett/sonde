@@ -5,7 +5,7 @@
 > **Document status:** Draft  
 > **Scope:** Architecture and internal design of the Sonde gateway service.  
 > **Audience:** Implementers (human or LLM agent) building the gateway.  
-> **Related:** [gateway-requirements.md](gateway-requirements.md), [protocol.md](protocol.md), [protocol-crate-design.md](protocol-crate-design.md), [security.md](security.md), [gateway-api.md](gateway-api.md)
+> **Related:** [gateway-requirements.md](gateway-requirements.md), [protocol.md](protocol.md), [protocol-crate-design.md](protocol-crate-design.md), [security.md](security.md), [gateway-api.md](gateway-api.md), [gateway-companion-api.md](gateway-companion-api.md)
 
 ---
 
@@ -40,7 +40,7 @@ The gateway is **stateless with respect to replay protection** — active sessio
 
 ## 3  Module architecture
 
-The gateway is composed of ten functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), Handler Process (handler stdin/stdout management), Admin API (gRPC interface and CLI tool), and BLE Pairing Handler (pairing protocol logic via modem relay). Node Registry and Program Library share a common Storage trait abstraction at the bottom. The architecture diagram below shows the eight core data-path and infrastructure modules; the Admin API and BLE Pairing Handler are described in §13 and §17 respectively.
+The gateway is composed of eleven functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), Handler Process (handler stdin/stdout management), Admin API (gRPC interface and CLI tool), Companion API (gRPC interface for companion processes), and BLE Pairing Handler (pairing protocol logic via modem relay). Node Registry and Program Library share a common Storage trait abstraction at the bottom. The architecture diagram below shows the eight core data-path and infrastructure modules; the Admin API, Companion API, and BLE Pairing Handler are described in §13, §13A, and §17 respectively.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -76,6 +76,7 @@ The gateway is composed of ten functional modules grouped in two tiers. The uppe
 | **Handler Process** | Manage handler stdin/stdout lifecycle | GW-0502, GW-0503, GW-0506 |
 | **Storage** | Persist node registry, program library, configuration | GW-0700, GW-1000, GW-1001 |
 | **Admin API** | gRPC admin interface, CLI tool | GW-0800, GW-0801, GW-0802, GW-0803, GW-0804, GW-0805, GW-0806 |
+| **Companion API** | gRPC integration interface for companion processes | GW-0810, GW-0811, GW-0812, GW-0813, GW-0814 |
 | **BLE Pairing Handler** | BLE pairing protocol logic via modem relay | GW-1200–GW-1222a |
 
 ---
@@ -996,6 +997,70 @@ All commands support `--format json` for machine-readable output.
 
 ---
 
+## 13A  Companion API
+
+> **Requirements:** GW-0810 (companion API), GW-0811 (live event subscription), GW-0812 (`node_checkin`), GW-0813 (`node_payload`), GW-0814 (command/query operations).
+
+The gateway exposes a second local gRPC API for companion processes that need a stable integration boundary distinct from the operator-focused `GatewayAdmin` surface. The companion API is specified in [gateway-companion-api.md](gateway-companion-api.md). It uses a separate socket, a separate protobuf service, and companion-specific message types so it can evolve independently without forcing `GatewayAdmin` changes.
+
+### 13A.1  Service definition and transport
+
+The companion server is implemented with `tonic` on the same platform-specific local transports used by the admin API:
+
+- **Unix/macOS:** Unix domain socket (default `/var/run/sonde/companion.sock`)
+- **Windows:** Named pipe (default `\\.\pipe\sonde-companion`)
+
+No TCP listener is opened. The companion API is a separate `GatewayCompanion` service, not an extension of `GatewayAdmin`.
+
+The protobuf contract includes:
+
+```protobuf
+service GatewayCompanion {
+    rpc StreamEvents(CompanionStreamEventsRequest) returns (stream CompanionEvent);
+    rpc ListNodes(CompanionListNodesRequest) returns (CompanionListNodesResponse);
+    rpc GetNode(CompanionGetNodeRequest) returns (CompanionNodeInfo);
+    rpc AssignProgram(CompanionAssignProgramRequest) returns (CompanionEmpty);
+    rpc SetSchedule(CompanionSetScheduleRequest) returns (CompanionEmpty);
+    rpc QueueReboot(CompanionQueueRebootRequest) returns (CompanionEmpty);
+    rpc QueueEphemeral(CompanionQueueEphemeralRequest) returns (CompanionEmpty);
+    rpc GetNodeStatus(CompanionGetNodeStatusRequest) returns (CompanionNodeStatus);
+}
+```
+
+The companion service intentionally omits operator-only workflows such as program ingestion, node registration/removal, state export/import, modem control, BLE pairing, and handler management.
+
+### 13A.2  Event publication path
+
+The session manager publishes companion events into a bounded in-memory event hub:
+
+```rust
+pub struct CompanionEventHub {
+    tx: tokio::sync::broadcast::Sender<CompanionEvent>,
+}
+```
+
+- `node_checkin` is published after an authenticated `WAKE` updates the node's latest-known registry state.
+- `node_payload` is published when the gateway accepts node-originated payload data (`APP_DATA` or `WAKE` `blob`).
+- For a `WAKE` carrying a `blob`, the session manager publishes `node_checkin` first, then `node_payload`.
+
+Each `StreamEvents` RPC subscribes to the broadcast hub. The stream is live-only: no replay cursor or durable offset is maintained in the gateway. If a subscriber lags and overruns the bounded broadcast buffer, the server terminates that stream with `RESOURCE_EXHAUSTED`; the client must reconnect and resume from newly produced events only.
+
+### 13A.3  Shared command and query path
+
+The companion service shares the same storage, `pending_commands`, and `SessionManager` used by the admin API and engine. Companion command RPCs call the same internal helpers used by `GatewayAdmin`; they do not maintain a parallel queue or alternate state store.
+
+This sharing is mandatory for:
+
+1. `AssignProgram` — updates the node's assigned resident program.
+2. `SetSchedule` — queues `UPDATE_SCHEDULE` for the next `WAKE`.
+3. `QueueReboot` — queues `REBOOT` for the next `WAKE`.
+4. `QueueEphemeral` — queues `RUN_EPHEMERAL` for the next `WAKE`.
+5. `ListNodes`, `GetNode`, and `GetNodeStatus` — surface the same node metadata/state as the gateway already maintains.
+
+The companion protobuf messages remain distinct from the admin protobuf messages even when fields overlap. This avoids coupling future companion-contract changes to the operator-facing admin contract.
+
+---
+
 ## 14  Configuration
 
 The gateway is configured via a configuration file (format TBD — TOML recommended for Rust ecosystem). Configuration includes:
@@ -1005,6 +1070,7 @@ The gateway is configured via a configuration file (format TBD — TOML recommen
 | `transport` | Transport backend and connection parameters | Required |
 | `storage` | Storage backend and connection parameters | Required |
 | `admin_socket` | gRPC admin API socket path | `/var/run/sonde/admin.sock` (Linux), `\\.\pipe\sonde-admin` (Windows) |
+| `companion_socket` | gRPC companion API socket path | `/var/run/sonde/companion.sock` (Linux), `\\.\pipe\sonde-companion` (Windows) |
 | `handlers` | Handler routing table (program_hash → command) | `[]` |
 | `session_timeout_s` | Session inactivity timeout | `30` |
 | `node_timeout_multiplier` | Multiple of node's schedule interval before `node_timeout` event | `3` |
@@ -1056,10 +1122,11 @@ The gateway emits the version string in its first `info!()` log line so that ope
 6. If `--handler-config` is provided, bootstrap handlers from YAML into the database (GW-1405, §19.6).
 7. Load handler configuration from database and build `HandlerRouter` (GW-1401, GW-1407). The router is always built, even if no handlers exist. Wrap in `Arc<tokio::sync::RwLock<HandlerRouter>>` for shared access.
 8. Start gRPC admin API server, passing the shared `HandlerRouter` reference to the `AdminService` for live reload (GW-1404).
-9. Start handler processes for configured handlers.
-10. Start session reaper background task.
-11. Start node timeout detector background task.
-12. Enter main recv loop.
+9. Start gRPC companion API server, passing shared storage, node state, pending-command state, and companion event hub.
+10. Start handler processes for configured handlers.
+11. Start session reaper background task.
+12. Start node timeout detector background task.
+13. Enter main recv loop.
 
 ---
 

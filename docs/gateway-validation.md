@@ -5,7 +5,7 @@
 > **Document status:** Draft  
 > **Scope:** Integration and system-level test plan for the Sonde gateway.  
 > **Audience:** Implementers (human or LLM agent) writing gateway tests.  
-> **Related:** [gateway-requirements.md](gateway-requirements.md), [gateway-design.md](gateway-design.md), [protocol.md](protocol.md)
+> **Related:** [gateway-requirements.md](gateway-requirements.md), [gateway-design.md](gateway-design.md), [gateway-companion-api.md](gateway-companion-api.md), [protocol.md](protocol.md)
 
 ---
 
@@ -13,7 +13,7 @@
 
 This document defines integration test cases that validate the gateway against the requirements in [gateway-requirements.md](gateway-requirements.md). Each test case is traceable to one or more requirements.
 
-**Scope:** These are integration tests that exercise the gateway through its external interfaces (transport and handler I/O). Unit tests for internal modules are expected but are not specified here.
+**Scope:** These are integration tests that exercise the gateway through its external interfaces (transport, handler I/O, and local gRPC APIs). Unit tests for internal modules are expected but are not specified here.
 
 **Test harness:** All tests use a **mock transport** (in-process implementation of the `Transport` trait) and a **mock storage** backend. The mock transport simulates node frames — no real radio hardware is needed. A mock or stub handler process is used for handler API tests.
 
@@ -1574,6 +1574,114 @@ A configurable stub handler process (or in-process mock) that:
 2. Assert: non-zero exit code and meaningful error message.
 3. Run `sonde-admin program assign <node-id> 0000000000000000000000000000000000000000000000000000000000000000`.
 4. Assert: non-zero exit code indicating program not found.
+
+---
+
+## 9B  Companion API tests
+
+### T-0818  Companion API availability and local-only binding
+
+**Validates:** GW-0810
+
+**Procedure:**
+1. Start the gateway.
+2. Connect to the companion gRPC API on the configured companion socket.
+3. Assert: the connection succeeds and a defined companion RPC (for example, `ListNodes`) can be called successfully.
+4. Using a `GatewayAdmin` client against the companion socket, attempt to call an admin RPC and assert the call fails with `UNIMPLEMENTED`, proving the companion endpoint does not expose the `GatewayAdmin` service definition.
+5. Assert: the companion API is bound to a local-only transport (Unix domain socket or Windows named pipe) distinct from the admin API endpoint.
+6. Assert: no TCP listener is opened for the companion API.
+
+---
+
+### T-0819  `node_checkin` event stream
+
+**Validates:** GW-0811, GW-0812
+
+**Procedure:**
+1. Start the gateway and register a node with an assigned resident program.
+2. Open a companion `StreamEvents` subscription.
+3. Send a valid `WAKE` from the registered node with known `program_hash`, `battery_mv`, `firmware_abi_version`, and `firmware_version`.
+4. Assert: the stream yields exactly one `node_checkin` event for that `WAKE`.
+5. Assert: the event contains the expected `node_id`, current and assigned program hashes, `battery_mv`, `firmware_abi_version`, `firmware_version`, and a recent `timestamp_ms`.
+6. Disconnect and open a new `StreamEvents` subscription without sending another `WAKE`.
+7. Assert: the new subscription does not replay the earlier `node_checkin`.
+
+---
+
+### T-0820  `node_payload` event stream for `APP_DATA`
+
+**Validates:** GW-0811, GW-0813
+
+**Procedure:**
+1. Start the gateway, register a node, and open a companion `StreamEvents` subscription.
+2. Send `APP_DATA { blob = [0xAA, 0xBB] }` from the node.
+3. Assert: the stream yields one `node_payload` event with `payload_origin = app_data`.
+4. Assert: the event contains the expected `node_id`, `program_hash`, payload bytes `[0xAA, 0xBB]`, and a recent `timestamp_ms`.
+5. Assert: the companion stream requires no reply from the subscriber and the gateway continues to use the handler path for any node reply.
+
+---
+
+### T-0821  `node_payload` event stream for WAKE piggybacked blobs
+
+**Validates:** GW-0813
+
+**Procedure:**
+1. Start the gateway, register a node, and open a companion `StreamEvents` subscription.
+2. Send a `WAKE` carrying `blob = [0xCC]`.
+3. Assert: the stream first yields `node_checkin`, then yields `node_payload`.
+4. Assert: the `node_payload` event contains payload `[0xCC]` with `payload_origin = wake_blob`.
+
+---
+
+### T-0822  Slow companion subscriber is disconnected
+
+**Validates:** GW-0811
+
+**Procedure:**
+1. Start the gateway and open two companion `StreamEvents` subscriptions: one backed by a test client that stops reading after the stream is established, and one backed by an active reader.
+2. Generate enough `node_checkin` and/or `node_payload` events to exceed the bounded in-memory stream buffer for the stalled subscriber.
+3. Assert: the stalled stream terminates with gRPC status `RESOURCE_EXHAUSTED`.
+4. Assert: the active subscriber continues receiving events during and after the stalled subscriber's termination.
+5. Open a fresh `StreamEvents` subscription.
+6. Assert: the fresh subscription receives only events produced after it reconnects.
+
+---
+
+### T-0823  Companion command RPCs share gateway pending-command state
+
+**Validates:** GW-0814
+
+**Procedure:**
+1. Start the gateway and register a node.
+2. Call companion `AssignProgram` with a previously ingested resident `program_hash`.
+3. Call companion `SetSchedule`, `QueueReboot`, and `QueueEphemeral` for the same node in separate sub-cases.
+4. For each sub-case, send the node's next `WAKE`.
+5. Assert: the resulting `COMMAND` matches the behavior defined for the corresponding admin operation, proving the companion RPC updated the gateway's normal pending-command path rather than a separate queue.
+
+---
+
+### T-0824  Companion node query RPCs
+
+**Validates:** GW-0814
+
+**Procedure:**
+1. Start the gateway, register a node, and send a `WAKE` with known battery and ABI values.
+2. Call companion `ListNodes`.
+3. Assert: the registered node appears with the expected metadata required for command targeting.
+4. Call companion `GetNode` and `GetNodeStatus`.
+5. Assert: both responses reflect the gateway's latest known state for the node.
+
+---
+
+### T-0825  Companion API surface excludes operator-only workflows
+
+**Validates:** GW-0814
+
+**Procedure:**
+1. Generate or compile a companion client from the published companion protobuf contract.
+2. Assert: the client exposes only the documented companion RPCs (`StreamEvents`, `ListNodes`, `GetNode`, `AssignProgram`, `SetSchedule`, `QueueReboot`, `QueueEphemeral`, `GetNodeStatus`).
+3. Assert: operator-only workflows such as node registration/removal, program ingestion/removal, state export/import, modem management, BLE pairing, and handler management are absent from the companion client surface.
+4. Assert: those operator-only workflows remain available through `GatewayAdmin`.
 
 ---
 

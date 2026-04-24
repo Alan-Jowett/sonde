@@ -4,7 +4,9 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=proto");
     println!("cargo:rerun-if-changed=proto/admin.proto");
-    tonic_prost_build::compile_protos("proto/admin.proto")?;
+    println!("cargo:rerun-if-changed=proto/companion.proto");
+    tonic_prost_build::configure()
+        .compile_protos(&["proto/admin.proto", "proto/companion.proto"], &["proto"])?;
 
     // Inject the git commit SHA so the binary can display it at runtime (GW-1303).
     // Prefer an explicit SONDE_GIT_COMMIT env var (set by CI) over running git.

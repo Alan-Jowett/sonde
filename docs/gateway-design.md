@@ -907,6 +907,7 @@ service GatewayAdmin {
     rpc GetModemStatus(Empty) returns (ModemStatus);
     rpc SetModemChannel(SetModemChannelRequest) returns (Empty);
     rpc ScanModemChannels(Empty) returns (ScanModemChannelsResponse);
+    rpc ShowModemDisplayMessage(ShowModemDisplayMessageRequest) returns (Empty);
 
     // BLE phone pairing
     rpc OpenBlePairing(OpenBlePairingRequest) returns (stream BlePairingEvent);
@@ -940,6 +941,7 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 | Modem status | `GetModemStatus` | Returns modem status: radio channel, TX/RX/fail counters, uptime. |
 | Set modem channel | `SetModemChannel` | Sets the ESP-NOW radio channel (1–14). Persists the new channel in the database (GW-0808). |
 | Scan channels | `ScanModemChannels` | Scans all WiFi channels for AP activity, returns AP counts and RSSI per channel. |
+| Show transient modem display text | `ShowModemDisplayMessage` | Renders 1–4 gateway-supplied text lines on the modem display for 60 s, then restores the normal gateway banner (GW-0809). |
 | Open BLE pairing | `OpenBlePairing` | Opens an admin-initiated phone registration window and sends `BLE_ENABLE` to the modem. Server-streaming RPC returning pairing events (passkey, phone connected/disconnected/registered, window closed). |
 | Close BLE pairing | `CloseBlePairing` | Closes the active BLE pairing session and sends `BLE_DISABLE` to the modem. |
 | Confirm BLE pairing | `ConfirmBlePairing` | Accepts or rejects a Numeric Comparison passkey during an admin-initiated BLE pairing session. |
@@ -978,6 +980,7 @@ sonde-admin status <node-id>
 sonde-admin modem status
 sonde-admin modem set-channel <channel>
 sonde-admin modem scan
+sonde-admin modem display <line> [<line> ...]
 
 sonde-admin pairing start [--duration-s <seconds>]
 sonde-admin pairing stop
@@ -1161,6 +1164,32 @@ Each `BUTTON_SHORT` while no pairing session is active:
 If the selected page is `Nodes`, the gateway first renders the complete page into an off-screen 1-bit framebuffer sized to the rendered text height. For oversized content, the gateway prepends one full display height of blank rows before the first rendered text row, so the initial transfer uses a blank 128×64 window and the text enters from the bottom edge as scrolling begins. If the rendered height exceeds 64 pixels, the gateway starts a 50 ms ticker that advances the visible window downward by 3 pixels per update, producing upward text motion on the OLED. The ticker reuses the same reliable display-transfer path as other display updates. It continues advancing past the last fully populated 128×64 window so the bottom of the rendered content scrolls completely off the top of the display before the next tick restarts from offset 0 at the start of the blank lead-in region. If the operator leaves the `Nodes` page and later returns, the page restarts from offset 0 rather than resuming from the previous offset. If the rendered height is 64 pixels or less, the gateway sends a single static page and does not start the ticker.
 
 If another `BUTTON_SHORT` arrives before the timeout fires, the gateway advances again, increments `display_generation`, and leaves the older timeout task stale. Any existing `Nodes` page scroll ticker observes the generation change or an explicit stop request and exits without sending further updates. When a timeout task fires, it first stops any active `Nodes` page scroll task, then restores the default `Sonde Gateway v<semver>` banner only if its captured generation still matches the current `display_generation` and no BLE pairing session is active; otherwise it does nothing because a newer display update or pairing session has already claimed the screen. Autonomous `Nodes` page scroll updates do not increment `display_generation` and therefore do not extend the 60 s idle timeout.
+
+### 17.4c  Admin-triggered transient display override
+
+The admin API also exposes a gateway-owned transient display override for
+operator prompts such as headless device-login codes. The
+`ShowModemDisplayMessage` RPC accepts 1 to 4 text lines. The gateway validates
+the line count before rendering and rejects the request with
+`FAILED_PRECONDITION` if a BLE pairing session currently owns the display, so
+pairing passkeys and terminal status screens remain visible.
+
+On success, the gateway renders the supplied lines with the same centered
+128×64 text renderer used for the startup banner and button-pairing status
+screens, then sends the resulting framebuffer through the existing reliable
+display-transfer path. The RPC returns after that initial display update
+completes; the caller does not remain connected for the 60-second dwell time.
+
+The transient-display path reuses the same display-ownership machinery as
+button-driven status pages: it cancels any active `Nodes` scroll task, resets
+the status-page cycle to the normal starting position, increments
+`display_generation`, and spawns a 60-second restore task tied to the captured
+generation. When that task fires, it restores the default
+`Sonde Gateway v<semver>` banner only if its generation is still current and no
+BLE pairing session owns the display. A newer transient-display request, a
+button-driven status-page update, or a pairing display transition invalidates
+the older generation, causing the stale restore task to exit without
+overwriting the newer screen.
 
 ### 17.5  `PEER_REQUEST` processing
 

@@ -201,6 +201,17 @@ async fn grpc_revoke_nonexistent_phone() {
     assert!(result.is_err(), "revoking non-existent phone should fail");
 }
 
+/// Test: transient modem display fails cleanly when no modem transport exists.
+#[tokio::test]
+async fn grpc_show_modem_display_message_no_modem() {
+    let mut client = start_server_and_connect("show_modem_display_message_no_modem").await;
+    let result = client
+        .show_modem_display_message(vec!["Device login".to_string()])
+        .await;
+    let status = result.expect_err("missing modem transport should fail");
+    assert_eq!(status.code(), tonic::Code::Unavailable);
+}
+
 // ── State export/import ─────────────────────────────────────────────────────
 
 /// Test: export empty state and import it back.

@@ -21,6 +21,7 @@ service GatewayAdmin {
     rpc GetModemStatus(Empty) returns (ModemStatus);
     rpc SetModemChannel(SetModemChannelRequest) returns (Empty);
     rpc ScanModemChannels(Empty) returns (ScanModemChannelsResponse);
+    rpc ShowModemDisplayMessage(ShowModemDisplayMessageRequest) returns (Empty);
 
     // BLE phone pairing — Phase 1 (GW-1222).
     // OpenBlePairing is server-streaming: it opens the registration window
@@ -122,6 +123,7 @@ message ChannelSurveyEntry {
     int32 strongest_rssi = 3;
 }
 message ScanModemChannelsResponse { repeated ChannelSurveyEntry entries = 1; }
+message ShowModemDisplayMessageRequest { repeated string lines = 1; }
 
 // BLE phone pairing messages (GW-1222).
 message OpenBlePairingRequest {

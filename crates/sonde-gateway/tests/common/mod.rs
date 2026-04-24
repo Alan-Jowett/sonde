@@ -4,6 +4,7 @@
 //! Shared mock-modem helpers for gateway integration tests.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,12 +13,44 @@ use tokio::sync::RwLock;
 
 use sonde_gateway::admin::AdminService;
 use sonde_gateway::ble_pairing::BlePairingController;
+use sonde_gateway::display_control::{StatusPageCycle, StatusPageScrollTask};
 use sonde_gateway::engine::PendingCommand;
 use sonde_gateway::modem::UsbEspNowTransport;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::storage::{InMemoryStorage, Storage};
 
 use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage, ModemReady};
+
+async fn read_with_wall_clock_timeout(
+    stream: &mut DuplexStream,
+    buf: &mut [u8],
+    timeout: Duration,
+) -> usize {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled_bg = Arc::clone(&cancelled);
+    tokio::task::spawn_blocking(move || {
+        let deadline = std::time::Instant::now() + timeout;
+        while !cancelled_bg.load(Ordering::SeqCst) {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                let _ = tx.send(());
+                return;
+            }
+            std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
+        }
+    });
+
+    tokio::select! {
+        read = stream.read(buf) => {
+            cancelled.store(true, Ordering::SeqCst);
+            read.expect("read failed")
+        }
+        _ = async {
+            let _ = rx.await;
+        } => panic!("timed out waiting for modem message"),
+    }
+}
 
 /// Read the next decoded modem message from a mock server stream.
 pub async fn read_modem_msg(
@@ -31,10 +64,9 @@ pub async fn read_modem_msg(
             Ok(None) => {}
             Err(e) => panic!("decode error: {e}"),
         }
-        let n = tokio::time::timeout(Duration::from_secs(10), stream.read(buf))
-            .await
-            .expect("timed out waiting for modem message")
-            .expect("read failed");
+        // Use a wall-clock deadline so paused Tokio time does not turn a
+        // missing modem frame into a hung test.
+        let n = read_with_wall_clock_timeout(stream, buf, Duration::from_secs(10)).await;
         assert!(n > 0, "stream closed unexpectedly");
         decoder.push(&buf[..n]);
     }
@@ -109,9 +141,17 @@ pub async fn build_admin_with_modem(
     let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
     let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
         Arc::new(RwLock::new(HashMap::new()));
+    let display_generation = Arc::new(AtomicU64::new(0));
+    let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
+    let status_page_scroll_task: StatusPageScrollTask = Arc::new(tokio::sync::Mutex::new(None));
 
     let admin = AdminService::new(storage.clone(), pending, session_manager)
-        .with_ble(controller.clone(), transport);
+        .with_ble(controller.clone(), transport)
+        .with_display_state(
+            display_generation,
+            status_page_cycle,
+            status_page_scroll_task,
+        );
 
     (admin, server, controller, storage)
 }

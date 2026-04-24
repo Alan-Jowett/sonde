@@ -1481,6 +1481,75 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0815f  Transient modem display via admin API
+
+**Validates:** GW-0809
+
+**Procedure:**
+1. Start the gateway with a mock or real modem transport that captures display frames.
+2. Call `ShowModemDisplayMessage` with a single-line message.
+3. Assert: the RPC returns successfully before the 60-second timeout expires.
+4. Assert: the modem transport receives a display update corresponding to the requested text.
+5. Call `ShowModemDisplayMessage` with four lines.
+6. Assert: the RPC returns successfully before the 60-second timeout expires.
+7. Assert: the modem transport receives a display update corresponding to all four requested lines.
+8. Wait for the 60-second restore timeout associated with the four-line request (or advance paused test time).
+9. Assert: the modem transport receives the normal `Sonde Gateway v<semver>` banner after the timeout.
+
+---
+
+### T-0815g  New transient display request replaces older one
+
+**Validates:** GW-0809
+
+**Procedure:**
+1. Start the gateway with a mock or real modem transport that captures display frames.
+2. Call `ShowModemDisplayMessage` with an initial message.
+3. Before 60 seconds elapse, call `ShowModemDisplayMessage` again with a different message.
+4. Assert: the second message is rendered to the modem display.
+5. Wait until 60 seconds have elapsed from the first request but not from the second.
+6. Assert: the gateway does not restore the default banner yet.
+7. Wait until 60 seconds have elapsed from the second request.
+8. Assert: the gateway restores the default banner exactly once after the second timeout window.
+
+---
+
+### T-0815h  Transient display rejected during BLE pairing
+
+**Validates:** GW-0809
+
+**Procedure:**
+1. Start the gateway with a modem transport and an active BLE pairing session.
+2. Call `ShowModemDisplayMessage`.
+3. Assert: the RPC returns `FAILED_PRECONDITION`.
+4. Assert: no transient admin display update is sent to the modem.
+
+---
+
+### T-0815i  Transient display rejects invalid line count
+
+**Validates:** GW-0809
+
+**Procedure:**
+1. Start the gateway with a modem transport.
+2. Call `ShowModemDisplayMessage` with zero lines.
+3. Assert: the RPC returns `INVALID_ARGUMENT`.
+4. Call `ShowModemDisplayMessage` with five lines.
+5. Assert: the RPC returns `INVALID_ARGUMENT`.
+
+---
+
+### T-0815j  Transient display without modem transport
+
+**Validates:** GW-0809
+
+**Procedure:**
+1. Start the gateway without a modem transport.
+2. Call `ShowModemDisplayMessage`.
+3. Assert: the RPC returns `UNAVAILABLE`.
+
+---
+
 ### T-0816  Admin CLI JSON output
 
 **Validates:** GW-0806

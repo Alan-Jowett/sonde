@@ -369,7 +369,7 @@ pub struct NodeRecord {
 }
 ```
 
-`NodeRecord` contains durable registry state only. Runtime-only observation data such as `last_seen` is not stored in the record and is never written through the `Storage` trait.
+`NodeRecord` is used primarily for durable registry state. The Rust struct currently retains a `last_seen` field for in-memory compatibility, but it is not storage-backed, is initialized as `None` on reads/imports, and is not used as the source of truth for admin status or timeout detection. The runtime `last_seen` data lives in the separate in-memory observation map below.
 
 ### 7.1a  Runtime node observations
 

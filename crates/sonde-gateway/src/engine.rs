@@ -1544,6 +1544,7 @@ impl Gateway {
         let multiplier = if multiplier == 0 { 3 } else { multiplier };
 
         let nodes = self.storage.list_nodes().await.unwrap_or_default();
+        let last_seen_by_node = self.session_manager.snapshot_last_seen().await;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
@@ -1554,7 +1555,7 @@ impl Gateway {
                 continue;
             }
 
-            let last_seen = match self.session_manager.get_last_seen(&node.node_id).await {
+            let last_seen = match last_seen_by_node.get(&node.node_id).copied() {
                 Some(ts) => match ts.duration_since(UNIX_EPOCH) {
                     Ok(d) => d.as_secs(),
                     Err(_) => continue,

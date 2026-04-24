@@ -95,8 +95,7 @@ impl MockPairingStore {
     ///
     /// The injected error is consumed once; subsequent calls return the stored value.
     pub fn set_load_error(&self, error: PairingError) {
-        self
-            .lock_inner()
+        self.lock_inner()
             .expect("MockPairingStore mutex poisoned during test setup")
             .load_error = Some(error);
     }

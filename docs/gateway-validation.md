@@ -1707,13 +1707,33 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-0825  Companion API surface excludes operator-only workflows
 
-**Validates:** GW-0814
+**Validates:** GW-0814, GW-0815
 
 **Procedure:**
 1. Generate or compile a companion client from the published companion protobuf contract.
-2. Assert: the client exposes only the documented companion RPCs (`StreamEvents`, `ListNodes`, `GetNode`, `AssignProgram`, `SetSchedule`, `QueueReboot`, `QueueEphemeral`, `GetNodeStatus`).
+2. Assert: the client exposes only the documented companion RPCs (`StreamEvents`, `ListNodes`, `GetNode`, `AssignProgram`, `SetSchedule`, `QueueReboot`, `QueueEphemeral`, `GetNodeStatus`, `ShowModemDisplayMessage`).
 3. Assert: operator-only workflows such as node registration/removal, program ingestion/removal, state export/import, modem management, BLE pairing, and handler management are absent from the companion client surface.
 4. Assert: those operator-only workflows remain available through `GatewayAdmin`.
+
+---
+
+### T-0826  Companion transient display RPC reuses gateway display semantics
+
+**Validates:** GW-0815
+
+**Procedure:**
+1. Start the gateway with a modem transport, a BLE pairing controller, an admin client, and a companion client.
+2. Call companion `ShowModemDisplayMessage` with 2 lines.
+3. Assert: the modem display is updated and the RPC returns before the 60-second timeout expires.
+4. Before the timeout fires, call admin `ShowModemDisplayMessage` with different text.
+5. Assert: the later admin request replaces the earlier companion text and becomes the active transient display.
+6. Assert: after 60 seconds from the later successful request, the normal `Sonde Gateway v<semver>` banner is restored if no newer display owner has claimed the screen.
+7. Call companion `ShowModemDisplayMessage` with 0 lines and with 5 lines in separate sub-cases.
+8. Assert: both invalid-line-count sub-cases return `INVALID_ARGUMENT`.
+9. Open a BLE pairing session that owns the display, then call companion `ShowModemDisplayMessage`.
+10. Assert: the companion RPC returns `FAILED_PRECONDITION`.
+11. Start the gateway without a modem transport and call companion `ShowModemDisplayMessage`.
+12. Assert: the companion RPC returns `UNAVAILABLE`.
 
 ---
 

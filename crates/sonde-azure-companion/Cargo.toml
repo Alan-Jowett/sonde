@@ -1,0 +1,18 @@
+[package]
+name = "sonde-azure-companion"
+edition = "2021"
+version.workspace = true
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+hyper-util = "0.1"
+sonde-gateway = { path = "../sonde-gateway", default-features = false }
+tokio = { version = "1", features = ["full"] }
+tonic = "0.14"
+tower = "0.5"
+
+[dev-dependencies]
+futures = "0.3"
+tempfile = "3"
+tokio-stream = "0.1"

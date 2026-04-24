@@ -10,6 +10,7 @@ service GatewayCompanion {
     rpc QueueReboot(CompanionQueueRebootRequest) returns (CompanionEmpty);
     rpc QueueEphemeral(CompanionQueueEphemeralRequest) returns (CompanionEmpty);
     rpc GetNodeStatus(CompanionGetNodeStatusRequest) returns (CompanionNodeStatus);
+    rpc ShowModemDisplayMessage(CompanionShowModemDisplayMessageRequest) returns (CompanionEmpty);
 }
 
 message CompanionEmpty {}
@@ -22,6 +23,7 @@ message CompanionSetScheduleRequest { string node_id = 1; uint32 interval_s = 2;
 message CompanionQueueRebootRequest { string node_id = 1; }
 message CompanionQueueEphemeralRequest { string node_id = 1; bytes program_hash = 2; }
 message CompanionGetNodeStatusRequest { string node_id = 1; }
+message CompanionShowModemDisplayMessageRequest { repeated string lines = 1; }
 
 message CompanionEvent {
     oneof event {

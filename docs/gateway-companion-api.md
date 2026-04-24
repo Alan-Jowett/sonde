@@ -19,7 +19,8 @@ The companion API is a **separate integration surface** from both:
 A companion process uses this API when it needs to:
 
 - subscribe to live gateway events such as node check-ins and payload arrivals, and
-- issue node-targeted commands through the gateway's existing control path.
+- issue node-targeted commands through the gateway's existing control path, and
+- request short gateway-owned modem display messages for headless operator workflows.
 
 Example use case: a bridge process authenticates to Azure, forwards `node_checkin` and `node_payload` events to a Service Bus queue, reads cloud-issued commands, and relays them to the gateway.
 
@@ -73,10 +74,11 @@ service GatewayCompanion {
     rpc QueueReboot(CompanionQueueRebootRequest) returns (CompanionEmpty);
     rpc QueueEphemeral(CompanionQueueEphemeralRequest) returns (CompanionEmpty);
     rpc GetNodeStatus(CompanionGetNodeStatusRequest) returns (CompanionNodeStatus);
+    rpc ShowModemDisplayMessage(CompanionShowModemDisplayMessageRequest) returns (CompanionEmpty);
 }
 ```
 
-The companion service intentionally omits operator-only workflows such as node registration/removal, program ingestion/removal, state export/import, modem control, BLE pairing, and handler configuration.
+The companion service intentionally omits operator-only workflows such as node registration/removal, program ingestion/removal, state export/import, raw modem control, BLE pairing, and handler configuration. It may request gateway-owned transient display text, but it does not upload raw framebuffers or bypass the gateway's display arbitration.
 
 ### 3.2  `node_checkin`
 
@@ -170,6 +172,30 @@ The companion API's command RPCs reuse the gateway's existing command semantics:
 
 These operations act on the same gateway state as the corresponding admin operations; the companion API does not define a separate command pipeline.
 
+### 3.5  Transient modem display RPC
+
+```protobuf
+message CompanionShowModemDisplayMessageRequest {
+    repeated string lines = 1;
+}
+```
+
+`ShowModemDisplayMessage` lets a companion request a short, gateway-owned modem
+display update for headless operator flows such as Azure device login. The
+request accepts 1 to 4 text lines. On success, the gateway renders the supplied
+lines using the same centered text renderer, reliable display-transfer path,
+display-ownership state, and 60-second banner-restore behavior used by the admin
+`ShowModemDisplayMessage` RPC.
+
+The RPC returns after the initial display update succeeds; it does not wait for
+the 60-second dwell timeout. A later successful transient-display request from
+either the admin or companion surface replaces any earlier one and restarts the
+restore timer.
+
+If a BLE pairing session currently owns the display, the RPC fails with
+`FAILED_PRECONDITION`. If no modem transport is configured, the RPC fails with
+`UNAVAILABLE`.
+
 ---
 
 ## 4  Behavioral notes
@@ -177,3 +203,4 @@ These operations act on the same gateway state as the corresponding admin operat
 1. `node_payload` is informational only. Companion clients do not reply to payload events; node replies continue to use the handler flow defined in [gateway-api.md](gateway-api.md).
 2. Message ordering is guaranteed only within a single live stream as produced by the gateway runtime. There is no replay cursor, durable offset, or exactly-once delivery guarantee.
 3. Companion clients are expected to provide their own persistence and retry behavior when forwarding events to external systems.
+4. Companion display requests reuse the same gateway-owned display arbitration and restore rules as admin display requests; companions do not gain raw modem-control privileges.

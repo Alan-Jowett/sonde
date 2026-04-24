@@ -23,9 +23,10 @@ fn main() {
     use esp_idf_svc::nvs::EspDefaultNvsPartition;
     use log::{info, warn};
 
+    use sonde_node::board_layout::stage_runtime_board_layout;
     use sonde_node::crypto::{EspRng, SoftwareSha256};
     use sonde_node::esp_ble_pairing::run_ble_pairing_mode;
-    use sonde_node::esp_hal::{EspBatteryReader, EspClock, EspHal};
+    use sonde_node::esp_hal::{EspClock, EspHal};
     use sonde_node::esp_sleep::EspSleepController;
     use sonde_node::esp_storage::NvsStorage;
     use sonde_node::esp_transport::EspNowTransport;
@@ -187,10 +188,11 @@ fn main() {
     let aead = sonde_node::node_aead::NodeAead;
     let mut rng = EspRng;
     let clock = EspClock;
-    // Read I2C pin config from NVS (ND-0608), falling back to defaults.
-    let (i2c0_sda, i2c0_scl) = storage.read_i2c0_pins();
-    let mut hal = EspHal::new(i2c0_sda, i2c0_scl);
-    let battery = EspBatteryReader;
+    let board_layout = storage
+        .read_board_layout()
+        .unwrap_or(sonde_protocol::BoardLayout::LEGACY_COMPAT);
+    stage_runtime_board_layout(&board_layout);
+    let mut hal = EspHal::new(board_layout);
 
     // Read the stored WiFi channel (falls back to channel 1 if not yet set).
     let channel = storage.read_channel().unwrap_or(1);
@@ -211,7 +213,7 @@ fn main() {
         &mut hal,
         &mut rng,
         &clock,
-        &battery,
+        &board_layout,
         &mut interpreter,
         &mut map_storage,
         &sha,

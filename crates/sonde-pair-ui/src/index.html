@@ -114,12 +114,28 @@
         <div id="custom-pins" class="custom-pins hidden">
           <div class="pin-row">
             <div class="pin-field">
-              <label for="custom-sda">I2C SDA GPIO</label>
-              <input id="custom-sda" type="number" min="0" max="21" placeholder="0" />
+              <label for="custom-i2c-sda">I2C SDA GPIO</label>
+              <input id="custom-i2c-sda" type="number" min="0" max="21" placeholder="leave blank to unassign" />
             </div>
             <div class="pin-field">
-              <label for="custom-scl">I2C SCL GPIO</label>
-              <input id="custom-scl" type="number" min="0" max="21" placeholder="1" />
+              <label for="custom-i2c-scl">I2C SCL GPIO</label>
+              <input id="custom-i2c-scl" type="number" min="0" max="21" placeholder="leave blank to unassign" />
+            </div>
+          </div>
+          <div class="pin-row">
+            <div class="pin-field">
+              <label for="custom-one-wire">1-Wire GPIO</label>
+              <input id="custom-one-wire" type="number" min="0" max="21" placeholder="leave blank to unassign" />
+            </div>
+            <div class="pin-field">
+              <label for="custom-battery-adc">Battery ADC GPIO</label>
+              <input id="custom-battery-adc" type="number" min="0" max="21" placeholder="leave blank to unassign" />
+            </div>
+          </div>
+          <div class="pin-row">
+            <div class="pin-field">
+              <label for="custom-sensor-enable">Sensor Enable GPIO (active low)</label>
+              <input id="custom-sensor-enable" type="number" min="0" max="21" placeholder="leave blank to unassign" />
             </div>
           </div>
         </div>

@@ -145,8 +145,8 @@ pub enum PairingError {
     #[error("invalid node ID: {0}")]
     InvalidNodeId(String),
 
-    #[error("invalid pin config: {0}")]
-    InvalidPinConfig(String),
+    #[error("invalid board layout: {0}")]
+    InvalidBoardLayout(String),
 
     #[error("invalid RF channel {0}: must be 1-13")]
     InvalidRfChannel(u8),

@@ -14,6 +14,7 @@
 
 use crate::hal;
 use log::warn;
+use sonde_protocol::BoardLayout;
 
 const I2C0_FREQ_HZ: u32 = 100_000; // 100 kHz standard mode
 
@@ -61,10 +62,7 @@ impl crate::traits::Clock for EspClock {
 /// ESP-IDF calls with no pre-initialization.
 pub struct EspHal {
     i2c0_initialized: bool,
-    /// I2C0 SDA pin number (stored for sleep cleanup).
-    i2c0_sda: i32,
-    /// I2C0 SCL pin number (stored for sleep cleanup).
-    i2c0_scl: i32,
+    board_layout: BoardLayout,
     adc_width_configured: bool,
     /// Bitmask of GPIO pins already configured as output.
     gpio_output_configured: u64,
@@ -73,18 +71,20 @@ pub struct EspHal {
 }
 
 impl EspHal {
-    /// Create a new HAL with the given I2C0 pin assignments.
-    /// Call with `storage.read_i2c0_pins()` from the platform storage.
-    pub fn new(i2c0_sda: u8, i2c0_scl: u8) -> Self {
+    /// Create a new HAL with the current wake cycle's provisioned board layout.
+    pub fn new(board_layout: BoardLayout) -> Self {
         let mut hal = Self {
             i2c0_initialized: false,
-            i2c0_sda: i2c0_sda as i32,
-            i2c0_scl: i2c0_scl as i32,
+            board_layout,
             adc_width_configured: false,
             gpio_output_configured: 0,
             adc_channels_configured: 0,
         };
-        hal.init_i2c0(hal.i2c0_sda, hal.i2c0_scl);
+        if let (Some(i2c0_sda), Some(i2c0_scl)) =
+            (hal.board_layout.i2c0_sda, hal.board_layout.i2c0_scl)
+        {
+            hal.init_i2c0(i2c0_sda as i32, i2c0_scl as i32);
+        }
         hal
     }
 
@@ -122,6 +122,25 @@ impl EspHal {
         match bus {
             0 if self.i2c0_initialized => Some(esp_idf_sys::i2c_port_t_I2C_NUM_0),
             _ => None,
+        }
+    }
+
+    fn set_high_z_input(pin: i32) {
+        unsafe {
+            esp_idf_sys::gpio_reset_pin(pin);
+            let err =
+                esp_idf_sys::gpio_set_direction(pin, esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_set_direction({pin}, INPUT) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_pullup_dis(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_pullup_dis({pin}) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_pulldown_dis(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_pulldown_dis({pin}) failed: {err}");
+            }
         }
     }
 }
@@ -280,8 +299,9 @@ impl hal::Hal for EspHal {
     }
 
     fn adc_read(&mut self, channel: u32) -> i32 {
-        // ESP32 ADC1 has channels 0-7.
-        if channel > 7 {
+        // ESP32-C3 exposes ADC1 channels 0-4 on GPIO0-4. GPIO5 is ADC2 and
+        // is not handled by this ADC1-only path.
+        if channel > 4 {
             return -1;
         }
         unsafe {
@@ -309,18 +329,6 @@ impl hal::Hal for EspHal {
     }
 
     fn prepare_for_sleep(&mut self) {
-        // GPIO hygiene for low-power deep sleep (issue #517).
-        //
-        // Every peripheral and GPIO touched during this wake cycle is
-        // placed into the lowest-leakage state:
-        //   • I2C driver deleted → SDA/SCL pins released
-        //   • BPF-configured output GPIOs → disabled (no I/O, no pulls)
-        //   • ADC tracking flags → cleared
-        //
-        // Pins are set to GPIO_MODE_DISABLE (input buffer off, output
-        // driver off) with pull-up and pull-down disabled. This is the
-        // lowest-current state for an ESP32 GPIO.
-
         // 1. Delete the I2C driver if it was installed.
         if self.i2c0_initialized {
             let err = unsafe { esp_idf_sys::i2c_driver_delete(esp_idf_sys::i2c_port_t_I2C_NUM_0) };
@@ -331,73 +339,21 @@ impl hal::Hal for EspHal {
             }
         }
 
-        // 2. Always reset I2C SDA/SCL pins regardless of driver state.
-        //    `i2c_param_config` enables internal pull-ups even when the
-        //    subsequent `i2c_driver_install` fails, so these pins must be
-        //    cleaned up unconditionally.
-        for pin in [self.i2c0_sda, self.i2c0_scl] {
-            unsafe {
-                // gpio_reset_pin detaches from the I2C peripheral (IOMUX)
-                // and returns the pin to GPIO function.
-                esp_idf_sys::gpio_reset_pin(pin);
-                let err = esp_idf_sys::gpio_set_direction(
-                    pin,
-                    esp_idf_sys::gpio_mode_t_GPIO_MODE_DISABLE,
-                );
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    warn!("gpio_set_direction({pin}, DISABLE) failed: {err}");
-                }
-                let err = esp_idf_sys::gpio_pullup_dis(pin);
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    warn!("gpio_pullup_dis({pin}) failed: {err}");
-                }
-                let err = esp_idf_sys::gpio_pulldown_dis(pin);
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    warn!("gpio_pulldown_dis({pin}) failed: {err}");
-                }
-            }
-        }
-
-        // 3. Reset every GPIO that BPF programs configured as output.
+        // 2. Return all provisioned bus/control pins and any BPF-configured
+        //    outputs to a high-impedance input state.
         let mut mask = self.gpio_output_configured;
+        for pin in self.board_layout.assigned_pins().into_iter().flatten() {
+            mask |= 1u64 << pin;
+        }
         while mask != 0 {
             let pin = mask.trailing_zeros();
-            unsafe {
-                let err = esp_idf_sys::gpio_set_direction(
-                    pin as i32,
-                    esp_idf_sys::gpio_mode_t_GPIO_MODE_DISABLE,
-                );
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    warn!("gpio_set_direction({pin}, DISABLE) failed: {err}");
-                }
-                let err = esp_idf_sys::gpio_pullup_dis(pin as i32);
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    warn!("gpio_pullup_dis({pin}) failed: {err}");
-                }
-                let err = esp_idf_sys::gpio_pulldown_dis(pin as i32);
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    warn!("gpio_pulldown_dis({pin}) failed: {err}");
-                }
-            }
+            Self::set_high_z_input(pin as i32);
             mask &= !(1u64 << pin);
         }
         self.gpio_output_configured = 0;
 
-        // 4. Clear ADC tracking so a fresh wake cycle re-configures.
+        // 3. Clear ADC tracking so a fresh wake cycle re-configures.
         self.adc_width_configured = false;
         self.adc_channels_configured = 0;
-    }
-}
-
-/// Battery reader using a fixed estimate.
-///
-/// On real hardware this would read an ADC channel connected to a
-/// voltage divider on the battery. For initial bring-up, return a
-/// fixed value indicating "battery OK".
-pub struct EspBatteryReader;
-
-impl hal::BatteryReader for EspBatteryReader {
-    fn battery_mv(&self) -> u32 {
-        3300 // Fixed estimate until ADC channel is configured
     }
 }

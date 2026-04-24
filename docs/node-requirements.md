@@ -126,15 +126,17 @@ Each wake cycle MUST follow this structure: wake → send one or more `WAKE` mes
 **Source:** protocol.md §5.1
 
 **Description:**  
-The `WAKE` message MUST include `firmware_abi_version`, `program_hash` (SHA-256 of the resident program, or zero-length if none installed), `battery_mv`, and `firmware_version` (semantic version string derived from `CARGO_PKG_VERSION` at compile time, e.g., `"0.5.0"`). The `nonce` header field MUST contain a fresh 64-bit random value from the hardware RNG. The WAKE message MAY include an optional `blob` field (CBOR key 10) containing a single piggybacked uplink data blob from a prior `send_async()` call. The blob is included only when exactly one message is queued and it fits within the available payload budget (223 bytes minus the space consumed by the four required fields and their CBOR encoding overhead). When the blob would not fit or multiple messages are queued, the `blob` field is omitted and data is sent via APP_DATA after receiving COMMAND.
+The `WAKE` message MUST include `firmware_abi_version`, `program_hash` (SHA-256 of the resident program, or zero-length if none installed), `battery_mv`, and `firmware_version` (semantic version string derived from `CARGO_PKG_VERSION` at compile time, e.g., `"0.5.0"`). The `battery_mv` field reports the battery reading stored from the previous wake cycle in RTC-retained state. On the first wake after provisioning or cold boot, before any battery value has been stored, `battery_mv` MUST be `0`. If the provisioned board layout does not assign a battery ADC pin, the firmware stores a known fallback value (`3300` mV) for use on subsequent wakes. The `nonce` header field MUST contain a fresh 64-bit random value from the hardware RNG. The WAKE message MAY include an optional `blob` field (CBOR key 10) containing a single piggybacked uplink data blob from a prior `send_async()` call. The blob is included only when exactly one message is queued and it fits within the available payload budget (223 bytes minus the space consumed by the four required fields and their CBOR encoding overhead). When the blob would not fit or multiple messages are queued, the `blob` field is omitted and data is sent via APP_DATA after receiving COMMAND.
 
 **Acceptance criteria:**
 
 1. `firmware_abi_version` reflects the actual firmware ABI.
 2. `program_hash` matches the SHA-256 of the currently installed resident program.
-3. `battery_mv` is a current ADC reading of the battery voltage.
-4. `firmware_version` is a valid semantic version string matching the compiled firmware version.
-5. The nonce is generated from the hardware RNG (not a constant or predictable value).
+3. On the first wake after provisioning or cold boot, `battery_mv` is `0`.
+4. On subsequent wakes, `battery_mv` equals the battery value stored from the previous wake cycle.
+5. If the provisioned board layout does not assign a battery ADC pin, the firmware stores and later reports the known fallback value (`3300` mV).
+6. `firmware_version` is a valid semantic version string matching the compiled firmware version.
+7. The nonce is generated from the hardware RNG (not a constant or predictable value).
 
 ---
 
@@ -441,7 +443,7 @@ The firmware MUST populate a read-only `sonde_context` structure before each BPF
 **Acceptance criteria:**
 
 1. `timestamp` is derived from the gateway's `timestamp_ms` plus local elapsed time since COMMAND was received.
-2. `battery_mv` is a current ADC reading.
+2. `battery_mv` is the current-cycle battery value captured after `COMMAND` processing using the provisioned board layout (fresh ADC reading when a battery ADC pin is assigned, otherwise the known fallback value).
 3. `firmware_abi_version` matches the firmware's actual ABI.
 4. `wake_reason` is set correctly: `WAKE_SCHEDULED` (0x00) for normal wake, `WAKE_EARLY` (0x01) when woken early due to `set_next_wake()`, `WAKE_PROGRAM_UPDATE` (0x02) on first execution after a program update.
 5. The context is read-only — the BPF program cannot modify it.
@@ -544,7 +546,7 @@ The firmware MUST provide `get_time()`, `get_battery_mv()`, `delay_us()`, `set_n
 **Acceptance criteria:**
 
 1. `get_time()` returns the current time in milliseconds since epoch.
-2. `get_battery_mv()` returns the current battery voltage.
+2. `get_battery_mv()` returns the current-cycle battery value captured after `COMMAND` processing using the provisioned board layout (fresh ADC reading when a battery ADC pin is assigned, otherwise the known fallback value).
 3. `delay_us()` busy-waits for the specified microseconds; the firmware enforces a maximum delay value.
 4. `set_next_wake()` sets the interval for the next wake cycle only; the firmware applies `min(requested, base interval)`.
 5. Ephemeral programs calling `set_next_wake()` receive an error.
@@ -604,22 +606,42 @@ The program image format MUST support optional initial data for each map definit
 
 ---
 
-### ND-0608  Configurable I2C pin assignments
+### ND-0608  Provisioned board layout
 
-**Priority:** Should  
+**Priority:** Must  
 **Source:** issue #490
 
 **Description:**  
-The firmware MUST support configurable I2C bus GPIO pin assignments so that a single firmware binary works across ESP32-C3 boards with different Qwiic/I2C pin mappings. Pin assignments are provided during BLE provisioning as optional fields in the NODE_PROVISION message body and persisted to NVS. If no pin config is provided, the firmware uses compiled-in defaults (GPIO 0 = SDA, GPIO 1 = SCL).
+The firmware MUST support a provisioned board layout so that a single firmware binary works across different hardware revisions without assuming any specific board layout. The provisioned layout is stored in flash during BLE provisioning, loaded on boot, and copied into RTC-backed runtime state for the current wake cycle. The layout defines the GPIO assignment (or explicit unassigned state) for `i2c0_sda`, `i2c0_scl`, `one_wire_data`, `battery_adc`, and `sensor_enable`.
 
 **Acceptance criteria:**
 
-1. I2C0 SDA and SCL GPIO pin numbers are read from NVS at HAL initialization time.
-2. If the NVS keys are absent, the firmware falls back to compiled-in defaults (SDA=0, SCL=1).
-3. Pin assignments persist across deep-sleep cycles and power-on resets.
-4. Factory reset (ND-0917) does NOT erase pin config — the board hardware does not change.
-5. The NODE_PROVISION BLE message body may include optional pin config bytes after the encrypted payload; the node parses and persists them to NVS.
-6. Backward compatibility: a NODE_PROVISION body without pin config bytes (from an older pairing tool) is accepted without error.
+1. The provisioned board-layout record is read from flash at boot and made available to the HAL and wake-cycle code before peripheral initialization.
+2. The effective board layout for the current wake cycle is copied into RTC-backed runtime state on boot.
+3. Board-layout assignments persist across deep-sleep cycles and power-on resets.
+4. Factory reset (ND-0917) does NOT erase the provisioned board layout — the board hardware does not change when the node is re-provisioned.
+5. The `NODE_PROVISION` BLE message body may include optional board-layout bytes after the encrypted payload; when present, the node parses and persists them to flash.
+6. A `NODE_PROVISION` body without board-layout bytes (from an older pairing tool) is accepted without error. If a board layout is already provisioned, it is retained unchanged; otherwise the node synthesizes a legacy compatibility layout equivalent to the pre-layout implementation (`i2c0_sda=0`, `i2c0_scl=1`, all other functions explicitly unassigned).
+7. The persisted board layout preserves explicit "function unassigned" state for each supported function.
+8. Malformed board-layout data is rejected; the firmware MUST NOT guess or silently substitute a different layout.
+
+---
+
+### ND-0608a  Provisioned sensor rail and battery sampling
+
+**Priority:** Must  
+**Source:** issue #134, hw/carrier-board netlists
+
+**Description:**  
+The firmware MUST use the provisioned board layout to control sensor power and capture the current-cycle battery value after the `WAKE` / `COMMAND` exchange. If the provisioned board layout assigns `sensor_enable`, the firmware asserts that GPIO active after a valid `COMMAND` is received, waits for the provisioned buses and battery divider to settle, then captures the battery value for the current cycle. If `battery_adc` is assigned to a GPIO that the current ESP32-C3 target can sample, the firmware samples that configured ADC pin; otherwise it uses the known fallback value (`3300` mV). The captured current-cycle value is stored in RTC-retained state for the next wake and exposed to the current-cycle BPF execution context and helpers.
+
+**Acceptance criteria:**
+
+1. When `sensor_enable` is assigned, the firmware asserts the configured GPIO only after a valid `COMMAND` is received and before executing BPF or other post-WAKE command work.
+2. When `sensor_enable` is assigned, the firmware waits for the sensor rail and attached buses to settle before taking a battery measurement or using the provisioned bus helpers.
+3. When `battery_adc` is assigned to an ADC-capable GPIO supported on the current ESP32-C3 target, the firmware samples the configured ADC pin and stores the resulting battery value in RTC-retained state for the next wake.
+4. When `battery_adc` is unassigned, or assigned to a GPIO that is not ADC-capable on the current target, the firmware stores the known fallback value (`3300` mV) in RTC-retained state for the next wake.
+5. The same-cycle `sonde_context.battery_mv` value and `get_battery_mv()` helper return the current-cycle value captured after `COMMAND` processing, not the previous wake's stored `WAKE.battery_mv`.
 
 ---
 
@@ -1363,13 +1385,13 @@ The node MUST apply build-type–aware log-level policies to eliminate logging o
 **Source:** issue #517
 
 **Description:**  
-Before entering deep sleep, the firmware MUST reset all bus peripheral GPIOs (I2C SDA/SCL, any BPF-configured output GPIOs) to a disabled state with no pull resistors to minimize sleep leakage current.
+Before entering deep sleep, the firmware MUST place all provisioned bus and control GPIOs into a high-impedance input state with no pull resistors to minimize sleep leakage current and prevent floating bus lines. This includes provisioned I2C pins, 1-Wire data, battery ADC, provisioned sensor-enable GPIO, and any GPIOs configured as outputs by BPF helper calls, except for RTC-domain pins explicitly required as wake-up sources.
 
 **Acceptance criteria:**
 
 1. On the normal wake-cycle deep-sleep path, a `prepare_for_sleep()` function is called before `esp_deep_sleep_start()`.
-2. All I2C bus GPIOs (SDA, SCL) are reset to a disabled/high-impedance state with pull resistors removed.
-3. Any GPIOs configured as outputs by BPF helper calls during the wake cycle are reset to a disabled state.
+2. All provisioned bus and control GPIOs (`i2c0_sda`, `i2c0_scl`, `one_wire_data`, `battery_adc`, `sensor_enable`) are placed into a high-impedance input state with pull resistors removed, unless a particular pin is explicitly unassigned in the board layout.
+3. Any GPIOs configured as outputs by BPF helper calls during the wake cycle are returned to high-impedance input state.
 4. After `prepare_for_sleep()` completes on the wake-cycle path, no GPIO pin sources leakage current through an active pull resistor or driven output.
 5. The GPIO reset does not affect RTC-domain pins required for wake-up (e.g., the pairing button GPIO).
 

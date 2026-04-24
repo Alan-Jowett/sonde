@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::sync::RwLock;
@@ -27,16 +27,28 @@ pub async fn read_modem_msg(
     decoder: &mut FrameDecoder,
     buf: &mut [u8],
 ) -> ModemMessage {
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match decoder.decode() {
             Ok(Some(msg)) => return msg,
             Ok(None) => {}
             Err(e) => panic!("decode error: {e}"),
         }
-        let n = tokio::time::timeout(Duration::from_secs(10), stream.read(buf))
-            .await
-            .expect("timed out waiting for modem message")
-            .expect("read failed");
+        // Use a wall-clock deadline so paused Tokio time does not turn a
+        // missing modem frame into a hung test.
+        let n = loop {
+            tokio::select! {
+                read = stream.read(buf) => {
+                    break read.expect("read failed");
+                }
+                _ = tokio::task::yield_now() => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for modem message"
+                    );
+                }
+            }
+        };
         assert!(n > 0, "stream closed unexpectedly");
         decoder.push(&buf[..n]);
     }

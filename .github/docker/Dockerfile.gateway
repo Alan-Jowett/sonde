@@ -28,7 +28,7 @@
 FROM rust:alpine@sha256:ef7b340d4201444fa2757dfddfd4c03be9d2bde468de7b7a68b0e9fabb794334 AS builder
 
 RUN apk add --no-cache build-base eudev-dev musl-dev pkgconf protobuf \
-    && cargo install --locked espflash --root /opt/espflash
+    && cargo install --locked espflash@4.4.0 --root /opt/espflash
 
 WORKDIR /src
 COPY . .

@@ -90,8 +90,8 @@ const MAX_PROTECTED_PSK_BLOB_LEN: usize = 4096;
 
 /// On-disk pairing record.
 ///
-/// Exactly one of `phone_psk` (legacy / no-protector) or `phone_psk_protected`
-/// (protector-encrypted) must be present on any valid record.  Both fields are
+/// At least one of `phone_psk` (legacy / no-protector) or `phone_psk_protected`
+/// (protector-encrypted) must be present on any valid record. Both fields are
 /// optional in the schema to support the migration path:
 ///
 /// | Field present         | Meaning                                       |
@@ -99,6 +99,8 @@ const MAX_PROTECTED_PSK_BLOB_LEN: usize = 4096;
 /// | `phone_psk` only      | Legacy plaintext; written before a protector  |
 /// |                       | was configured.                               |
 /// | `phone_psk_protected` | PSK encrypted by the configured protector.    |
+/// | both                  | Migration-compatible record; load logic       |
+/// |                       | selects the appropriate representation.       |
 /// | neither               | Corrupted record — rejected on load.          |
 #[derive(Serialize, Deserialize)]
 struct StoredArtifacts {

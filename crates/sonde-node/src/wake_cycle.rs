@@ -583,10 +583,17 @@ fn get_chunk_with_retry<T: Transport, A: AeadProvider, S: Sha256Provider>(
         *current_seq += 1;
 
         // Inner loop: drain stale wrong-type frames without consuming a retry
-        // attempt (F-003). A timeout (None) or a non-stale decode error breaks
-        // to the outer loop, which re-sends GET_CHUNK and counts as a retry.
+        // attempt (F-003), but keep each attempt bounded by the original
+        // RESPONSE_TIMEOUT_MS budget so a flood of stale frames cannot keep the
+        // node awake indefinitely.
+        let deadline = clock.elapsed_ms().saturating_add(RESPONSE_TIMEOUT_MS as u64);
         loop {
-            match transport.recv(RESPONSE_TIMEOUT_MS)? {
+            let now = clock.elapsed_ms();
+            if now >= deadline {
+                break;
+            }
+            let remaining = (deadline - now) as u32;
+            match transport.recv(remaining)? {
                 None => break, // timeout — count as a retry attempt
                 Some(raw_response) => {
                     match verify_and_decode_chunk(
@@ -1906,6 +1913,86 @@ mod tests {
                 current_seq,
                 starting_seq + 1,
                 "seq must advance exactly once"
+            );
+        }
+
+        struct AdvancingClock(std::cell::Cell<u64>);
+        impl Clock for AdvancingClock {
+            fn elapsed_ms(&self) -> u64 {
+                let now = self.0.get();
+                self.0.set(now + 1);
+                now
+            }
+
+            fn delay_ms(&self, _ms: u32) {}
+        }
+
+        struct InfiniteStaleTransport {
+            outbound: Vec<Vec<u8>>,
+            stale_frame: Vec<u8>,
+            recv_calls: usize,
+        }
+
+        impl Transport for InfiniteStaleTransport {
+            fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
+                self.outbound.push(frame.to_vec());
+                Ok(())
+            }
+
+            fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+                self.recv_calls += 1;
+                if timeout_ms == 0 {
+                    return Ok(None);
+                }
+                Ok(Some(self.stale_frame.clone()))
+            }
+        }
+
+        #[test]
+        fn chunked_transfer_stale_wrong_type_frames_are_bounded_per_attempt() {
+            let psk = [0x56u8; 32];
+            let sha = crate::crypto::SoftwareSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = AdvancingClock(std::cell::Cell::new(0));
+            let starting_seq = 700u64;
+            let stale_frame = make_command(&psk, starting_seq, &CommandPayload::Nop);
+            let mut transport = InfiniteStaleTransport {
+                outbound: Vec::new(),
+                stale_frame,
+                recv_calls: 0,
+            };
+            let mut current_seq = starting_seq;
+
+            let err = get_chunk_with_retry(
+                &mut transport,
+                &identity,
+                &mut current_seq,
+                0,
+                &clock,
+                &aead,
+                &sha,
+            )
+            .expect_err("stale-frame flood should eventually time out");
+
+            assert!(
+                matches!(err, NodeError::ChunkTransferFailed { chunk_index: 0 }),
+                "expected bounded retry exhaustion, got {err:?}"
+            );
+            assert_eq!(
+                transport.outbound.len(),
+                (MAX_RETRIES + 1) as usize,
+                "each attempt should still send at most one GET_CHUNK"
+            );
+            assert_eq!(
+                current_seq,
+                starting_seq + (MAX_RETRIES + 1) as u64,
+                "sequence should advance once per retry attempt"
+            );
+            assert!(
+                transport.recv_calls < 1000,
+                "per-attempt stale-frame draining must remain bounded"
             );
         }
 

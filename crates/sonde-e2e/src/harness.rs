@@ -134,11 +134,30 @@ pub struct WakeCycleStats {
 }
 
 /// Node transport that exposes captured per-frame statistics for test assertions.
+///
+/// Implementations must return cumulative lifetime statistics for a single
+/// transport instance. Callers snapshot these values before and after a wake
+/// cycle and derive per-cycle deltas by subtracting counts and slicing from the
+/// previous lengths.
+///
+/// Therefore:
+///
+/// - [`response_count`](Self::response_count) must be monotonic and never decrease.
+/// - The slices returned by the other methods must be cumulative append-only
+///   views whose lengths never decrease while the transport is being observed.
+/// - Earlier entries must remain at the same indices; implementations must not
+///   clear, rotate, or reorder recorded data between snapshots.
 pub trait RecordedNodeTransport: NodeTransport {
+    /// Returns the cumulative number of non-`None` responses seen by this
+    /// transport instance.
     fn response_count(&self) -> usize;
+    /// Returns all WAKE nonces recorded so far.
     fn wake_nonces(&self) -> &[u64];
+    /// Returns all `(msg_type, nonce)` pairs recorded so far.
     fn sent_frames(&self) -> &[(u8, u64)];
+    /// Returns all captured outbound APP_DATA raw frames recorded so far.
     fn sent_raw_frames(&self) -> &[Vec<u8>];
+    /// Returns the message types of all valid non-`None` responses recorded so far.
     fn received_msg_types(&self) -> &[u8];
 }
 
@@ -298,13 +317,41 @@ impl NodeProxy {
             &mut self.async_queue,
         );
 
+        let response_count_after = transport.response_count();
+        let wake_nonces_after = transport.wake_nonces().len();
+        let sent_frames_after = transport.sent_frames().len();
+        let sent_raw_after = transport.sent_raw_frames().len();
+        let recv_type_after = transport.received_msg_types().len();
+
+        assert!(
+            wake_nonces_after >= wake_nonce_start,
+            "RecordedNodeTransport::wake_nonces must be cumulative and append-only"
+        );
+        assert!(
+            sent_frames_after >= sent_frame_start,
+            "RecordedNodeTransport::sent_frames must be cumulative and append-only"
+        );
+        assert!(
+            sent_raw_after >= sent_raw_start,
+            "RecordedNodeTransport::sent_raw_frames must be cumulative and append-only"
+        );
+        assert!(
+            recv_type_after >= recv_type_start,
+            "RecordedNodeTransport::received_msg_types must be cumulative and append-only"
+        );
+
         WakeCycleStats {
             outcome,
-            response_count: transport.response_count() - response_count_before,
-            wake_nonces: transport.wake_nonces()[wake_nonce_start..].to_vec(),
-            sent_frames: transport.sent_frames()[sent_frame_start..].to_vec(),
-            sent_raw_frames: transport.sent_raw_frames()[sent_raw_start..].to_vec(),
-            received_msg_types: transport.received_msg_types()[recv_type_start..].to_vec(),
+            response_count: response_count_after.checked_sub(response_count_before).expect(
+                "RecordedNodeTransport::response_count must be cumulative and never decrease",
+            ),
+            wake_nonces: transport.wake_nonces()
+                [wake_nonce_start..wake_nonces_after]
+                .to_vec(),
+            sent_frames: transport.sent_frames()[sent_frame_start..sent_frames_after].to_vec(),
+            sent_raw_frames: transport.sent_raw_frames()[sent_raw_start..sent_raw_after].to_vec(),
+            received_msg_types: transport.received_msg_types()[recv_type_start..recv_type_after]
+                .to_vec(),
         }
     }
 }

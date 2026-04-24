@@ -5,7 +5,7 @@
 > **Document status:** Draft  
 > **Scope:** The data-plane API between a Sonde gateway and developer applications.  
 > **Audience:** Developers building applications on the Sonde platform.  
-> **Related:** [gateway-requirements.md](gateway-requirements.md), [protocol.md](protocol.md)
+> **Related:** [gateway-requirements.md](gateway-requirements.md), [gateway-companion-api.md](gateway-companion-api.md), [protocol.md](protocol.md)
 
 ---
 

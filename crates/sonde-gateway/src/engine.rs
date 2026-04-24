@@ -17,6 +17,7 @@ use sonde_protocol::{
 
 use std::collections::BTreeMap;
 
+use crate::companion::{pb::CompanionPayloadOrigin, CompanionEventHub};
 use crate::crypto::RustCryptoSha256;
 use crate::gateway_identity::GatewayIdentity;
 use crate::handler::HandlerRouter;
@@ -231,6 +232,8 @@ pub struct Gateway {
     rssi_bad_threshold: i8,
     /// Deferred handler replies awaiting delivery on the next WAKE cycle.
     deferred_replies: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    /// Live event publication for companion processes.
+    companion_event_hub: Arc<CompanionEventHub>,
 }
 
 impl Gateway {
@@ -248,6 +251,7 @@ impl Gateway {
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
+            companion_event_hub: Arc::new(CompanionEventHub::default()),
         }
     }
 
@@ -276,6 +280,7 @@ impl Gateway {
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
+            companion_event_hub: Arc::new(CompanionEventHub::default()),
         }
     }
 
@@ -297,6 +302,7 @@ impl Gateway {
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
+            companion_event_hub: Arc::new(CompanionEventHub::default()),
         }
     }
 
@@ -332,6 +338,11 @@ impl Gateway {
     /// Return a clone of the shared handler router reference (GW-1407).
     pub fn handler_router(&self) -> Arc<tokio::sync::RwLock<HandlerRouter>> {
         Arc::clone(&self.handler_router)
+    }
+
+    /// Return a clone of the companion event hub.
+    pub fn companion_event_hub(&self) -> Arc<CompanionEventHub> {
+        Arc::clone(&self.companion_event_hub)
     }
 
     /// Process a raw frame using AES-256-GCM authenticated encryption.
@@ -872,6 +883,16 @@ impl Gateway {
             .record_last_seen(&node.node_id, SystemTime::now())
             .await;
 
+        self.companion_event_hub.emit_node_checkin(
+            node.node_id.clone(),
+            program_hash.clone(),
+            updated_node.assigned_program_hash.clone(),
+            battery_mv,
+            firmware_abi_version,
+            updated_node.firmware_version.clone().unwrap_or_default(),
+            timestamp_ms,
+        );
+
         // 4a. Emit node_online EVENT to handlers (GW-0507)
         {
             let process_refs = self.handler_router.read().await.clone_all_process_refs();
@@ -950,57 +971,74 @@ impl Gateway {
         // Spawned as a background task so it does not block COMMAND delivery.
         if let Some(wake_data) = wake_blob {
             if !wake_data.is_empty() && !program_hash.is_empty() {
-                let handler_router = Arc::clone(&self.handler_router);
-                let deferred_replies = Arc::clone(&self.deferred_replies);
+                let handler_result = {
+                    let router = self.handler_router.read().await;
+                    (
+                        router.find_handler_cloned(&program_hash),
+                        router.handler_count(),
+                    )
+                };
                 let node_id = node.node_id.clone();
                 let program_hash = program_hash.clone();
-                let nonce = header.nonce;
-                tokio::spawn(async move {
-                    let (handler_result, handler_count) = {
-                        let router = handler_router.read().await;
-                        (
-                            router.find_handler_cloned(&program_hash),
-                            router.handler_count(),
-                        )
-                    };
-                    if let Some((config, process_arc)) = handler_result {
-                        let timestamp = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let msg = crate::handler::HandlerMessage::Data {
-                            request_id: nonce,
-                            node_id: node_id.clone(),
-                            program_hash: program_hash.clone(),
-                            data: wake_data,
-                            timestamp,
-                        };
-                        info!(
-                            node_id = %node_id,
-                            command = %config.command,
-                            "WAKE blob routed to handler"
+                match handler_result {
+                    (Some((config, process_arc)), _) => {
+                        self.companion_event_hub.emit_node_payload(
+                            node_id.clone(),
+                            program_hash.clone(),
+                            wake_data.clone(),
+                            timestamp_ms,
+                            CompanionPayloadOrigin::WakeBlob,
                         );
-                        let mut process = process_arc.lock().await;
-                        if let Some(crate::handler::HandlerMessage::DataReply { data, .. }) =
-                            process.send_data(&msg).await
-                        {
-                            if !data.is_empty()
-                                && data.len() <= sonde_protocol::MAX_COMMAND_BLOB_SIZE
+                        let deferred_replies = Arc::clone(&self.deferred_replies);
+                        let nonce = header.nonce;
+                        tokio::spawn(async move {
+                            let timestamp = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            let msg = crate::handler::HandlerMessage::Data {
+                                request_id: nonce,
+                                node_id: node_id.clone(),
+                                program_hash: program_hash.clone(),
+                                data: wake_data,
+                                timestamp,
+                            };
+                            info!(
+                                node_id = %node_id,
+                                command = %config.command,
+                                "WAKE blob routed to handler"
+                            );
+                            let mut process = process_arc.lock().await;
+                            if let Some(crate::handler::HandlerMessage::DataReply {
+                                data, ..
+                            }) = process.send_data(&msg).await
                             {
-                                deferred_replies.write().await.insert(node_id.clone(), data);
-                                info!(
-                                    node_id = %node_id,
-                                    "deferred reply stored from WAKE blob handler response"
-                                );
-                            } else if data.len() > sonde_protocol::MAX_COMMAND_BLOB_SIZE {
-                                warn!(
-                                    node_id = %node_id,
-                                    len = data.len(),
-                                    "WAKE blob handler reply too large for deferred delivery — dropping"
-                                );
+                                if !data.is_empty()
+                                    && data.len() <= sonde_protocol::MAX_COMMAND_BLOB_SIZE
+                                {
+                                    deferred_replies.write().await.insert(node_id.clone(), data);
+                                    info!(
+                                        node_id = %node_id,
+                                        "deferred reply stored from WAKE blob handler response"
+                                    );
+                                } else if data.len() > sonde_protocol::MAX_COMMAND_BLOB_SIZE {
+                                    warn!(
+                                        node_id = %node_id,
+                                        len = data.len(),
+                                        "WAKE blob handler reply too large for deferred delivery — dropping"
+                                    );
+                                }
                             }
-                        }
-                    } else {
+                        });
+                    }
+                    (None, handler_count) => {
+                        self.companion_event_hub.emit_node_payload(
+                            node_id.clone(),
+                            program_hash.clone(),
+                            wake_data,
+                            timestamp_ms,
+                            CompanionPayloadOrigin::WakeBlob,
+                        );
                         let ph_hex: String =
                             program_hash.iter().map(|b| format!("{b:02x}")).collect();
                         warn!(
@@ -1010,7 +1048,7 @@ impl Gateway {
                             "WAKE blob dropped: no handler matched `program_hash`"
                         );
                     }
-                });
+                }
             }
         }
 
@@ -1237,23 +1275,49 @@ impl Gateway {
             }
         };
 
+        let now_duration = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let timestamp = now_duration.as_secs();
+        let timestamp_ms = now_duration.as_millis() as u64;
+
         // Find the matching handler under the read lock, then release before I/O.
-        let (config, process_arc) = {
+        let handler_result = {
             let router = self.handler_router.read().await;
             match router.find_handler_cloned(&program_hash) {
-                Some(result) => result,
-                None => {
-                    let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
-                    warn!(
-                        node_id = %node.node_id,
-                        program_hash = %ph_hex,
-                        handler_count = router.handler_count(),
-                        "APP_DATA dropped: no handler matched `program_hash`"
-                    );
-                    return None;
-                }
+                Some(result) => Ok(result),
+                None => Err(router.handler_count()),
             }
         }; // read lock released here
+        let (config, process_arc) = match handler_result {
+            Ok(result) => {
+                self.companion_event_hub.emit_node_payload(
+                    node.node_id.clone(),
+                    program_hash.clone(),
+                    blob.clone(),
+                    timestamp_ms,
+                    CompanionPayloadOrigin::AppData,
+                );
+                result
+            }
+            Err(handler_count) => {
+                self.companion_event_hub.emit_node_payload(
+                    node.node_id.clone(),
+                    program_hash.clone(),
+                    blob,
+                    timestamp_ms,
+                    CompanionPayloadOrigin::AppData,
+                );
+                let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
+                warn!(
+                    node_id = %node.node_id,
+                    program_hash = %ph_hex,
+                    handler_count,
+                    "APP_DATA dropped: no handler matched `program_hash`"
+                );
+                return None;
+            }
+        };
 
         // GW-1308 AC1: log APP_DATA received with node_id, program_hash, len.
         if tracing::enabled!(tracing::Level::INFO) {
@@ -1275,11 +1339,6 @@ impl Gateway {
                 "handler matched"
             );
         }
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
 
         // GW-1308 AC3: handler invoked with command.
         info!(command = %config.command, "handler invoked");

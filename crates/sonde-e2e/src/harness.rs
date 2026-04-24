@@ -342,12 +342,12 @@ impl NodeProxy {
 
         WakeCycleStats {
             outcome,
-            response_count: response_count_after.checked_sub(response_count_before).expect(
-                "RecordedNodeTransport::response_count must be cumulative and never decrease",
-            ),
-            wake_nonces: transport.wake_nonces()
-                [wake_nonce_start..wake_nonces_after]
-                .to_vec(),
+            response_count: response_count_after
+                .checked_sub(response_count_before)
+                .expect(
+                    "RecordedNodeTransport::response_count must be cumulative and never decrease",
+                ),
+            wake_nonces: transport.wake_nonces()[wake_nonce_start..wake_nonces_after].to_vec(),
             sent_frames: transport.sent_frames()[sent_frame_start..sent_frames_after].to_vec(),
             sent_raw_frames: transport.sent_raw_frames()[sent_raw_start..sent_raw_after].to_vec(),
             received_msg_types: transport.received_msg_types()[recv_type_start..recv_type_after]

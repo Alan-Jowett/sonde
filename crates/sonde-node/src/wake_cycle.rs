@@ -586,7 +586,9 @@ fn get_chunk_with_retry<T: Transport, A: AeadProvider, S: Sha256Provider>(
         // attempt (F-003), but keep each attempt bounded by the original
         // RESPONSE_TIMEOUT_MS budget so a flood of stale frames cannot keep the
         // node awake indefinitely.
-        let deadline = clock.elapsed_ms().saturating_add(RESPONSE_TIMEOUT_MS as u64);
+        let deadline = clock
+            .elapsed_ms()
+            .saturating_add(RESPONSE_TIMEOUT_MS as u64);
         loop {
             let now = clock.elapsed_ms();
             if now >= deadline {

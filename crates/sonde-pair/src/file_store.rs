@@ -209,7 +209,7 @@ impl FilePairingStore {
     ///
     /// Handles both the current protected format and the legacy plaintext format.
     /// When a [`PskProtector`] is configured and a plaintext `phone_psk` is found,
-    /// the PSK is decrypted from plaintext and a warning is emitted; the next call
+    /// the PSK is loaded from plaintext and a warning is emitted; the next call
     /// to [`save_artifacts`](Self::save_artifacts) will re-write it in protected form.
     pub fn load_artifacts(&self) -> Result<Option<crate::phase1::PairingArtifacts>, PairingError> {
         let aead_path = self.aead_path();

@@ -94,6 +94,7 @@ async fn start_server(test_name: &str) -> String {
     }
 }
 
+#[cfg(debug_assertions)]
 fn minimal_program_cbor() -> Vec<u8> {
     let bytecode: Vec<u8> = vec![
         0xB7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0

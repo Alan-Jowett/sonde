@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::UNIX_EPOCH;
 
 use tokio::sync::RwLock;
@@ -141,7 +141,7 @@ fn schedule_admin_display_restore(
     status_page_scroll_task: &StatusPageScrollTask,
     generation: u64,
 ) {
-    let transport = Arc::clone(transport);
+    let transport: Weak<UsbEspNowTransport> = Arc::downgrade(transport);
     let controller = Arc::clone(controller);
     let display_generation = Arc::clone(display_generation);
     let status_page_cycle = Arc::clone(status_page_cycle);
@@ -157,6 +157,9 @@ fn schedule_admin_display_restore(
         }
         cancel_status_page_scroll(&status_page_scroll_task).await;
         reset_status_page_cycle(&status_page_cycle).await;
+        let Some(transport) = transport.upgrade() else {
+            return;
+        };
         if let Err(e) = send_gateway_version_banner(&transport).await {
             warn!(error = %e, "failed to restore gateway version banner after admin display");
         }
@@ -1259,7 +1262,7 @@ impl GatewayAdmin for AdminService {
         let controller = self
             .ble_controller
             .as_ref()
-            .ok_or_else(|| Status::unavailable("no modem transport configured"))?;
+            .ok_or_else(|| Status::unavailable("no BLE controller configured"))?;
         let display_generation = self
             .display_generation
             .as_ref()

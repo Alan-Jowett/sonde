@@ -272,6 +272,16 @@ impl AdminClient {
         Ok(resp.into_inner().entries)
     }
 
+    pub async fn show_modem_display_message(
+        &mut self,
+        lines: Vec<String>,
+    ) -> Result<(), tonic::Status> {
+        self.inner
+            .show_modem_display_message(ShowModemDisplayMessageRequest { lines })
+            .await?;
+        Ok(())
+    }
+
     // -- BLE phone pairing --
 
     pub async fn open_ble_pairing(

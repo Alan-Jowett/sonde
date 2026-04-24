@@ -4,6 +4,7 @@
 //! Shared mock-modem helpers for gateway integration tests.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,6 +13,7 @@ use tokio::sync::RwLock;
 
 use sonde_gateway::admin::AdminService;
 use sonde_gateway::ble_pairing::BlePairingController;
+use sonde_gateway::display_control::{StatusPageCycle, StatusPageScrollTask};
 use sonde_gateway::engine::PendingCommand;
 use sonde_gateway::modem::UsbEspNowTransport;
 use sonde_gateway::session::SessionManager;
@@ -109,9 +111,17 @@ pub async fn build_admin_with_modem(
     let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
     let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
         Arc::new(RwLock::new(HashMap::new()));
+    let display_generation = Arc::new(AtomicU64::new(0));
+    let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
+    let status_page_scroll_task: StatusPageScrollTask = Arc::new(tokio::sync::Mutex::new(None));
 
     let admin = AdminService::new(storage.clone(), pending, session_manager)
-        .with_ble(controller.clone(), transport);
+        .with_ble(controller.clone(), transport)
+        .with_display_state(
+            display_generation,
+            status_page_cycle,
+            status_page_scroll_task,
+        );
 
     (admin, server, controller, storage)
 }

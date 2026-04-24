@@ -412,6 +412,32 @@ to avoid collisions when tests run in parallel.
 
 ---
 
+### T-0603  Modem display — line-count validation
+
+**Validates:** ADMIN-0603
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Invoke `sonde-admin modem display one two three four five`.
+2. Assert: clap rejects the command locally.
+3. Assert: stderr indicates that too many positional arguments were supplied.
+
+---
+
+### T-0604  Modem display — RPC mapping and output
+
+**Validates:** ADMIN-0603
+**Category:** Structural/manual until a display-capable modem harness is documented
+
+**Procedure:**
+1. Perform structural verification of the CLI path in `main.rs` and `grpc_client.rs`.
+2. Assert: the `modem display` subcommand accepts between 1 and 4 positional line arguments, forwards the provided lines unchanged to the `ShowModemDisplayMessage` RPC wrapper, and does not block for 60 seconds after the RPC succeeds.
+3. Assert: text output reports a 60-second transient display request.
+4. Assert: JSON output contains the requested lines and `duration_s = 60`.
+5. If a modem-equipped manual setup is available, invoke both `sonde-admin modem display "Device login"` and `sonde-admin modem display "Device login" "Use browser" "Code" "ABCD-EFGH"` and verify that the requested text appears on the modem display and the CLI returns immediately in both cases.
+
+---
+
 ## 9  BLE pairing tests
 
 ### T-0700  List phones — empty

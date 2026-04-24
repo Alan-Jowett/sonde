@@ -433,16 +433,19 @@ async fn t0822_lagging_subscriber_is_terminated_without_blocking_active_one() {
         seen
     });
 
-    let lag_count = DEFAULT_COMPANION_EVENT_BUFFER as u8 + 24;
+    let lag_count = DEFAULT_COMPANION_EVENT_BUFFER + 24;
     for i in 0..lag_count {
+        let payload_byte = u8::try_from(i).expect("test event index should fit in u8");
+        let battery_mv_offset = u32::try_from(i).expect("test event index should fit in u32");
+        let timestamp = u64::try_from(i).expect("test event index should fit in u64");
         h.event_hub.emit_node_checkin(
             format!("node-{i}"),
-            vec![i; 32],
+            vec![payload_byte; 32],
             None,
-            3200 + i as u32,
+            3200 + battery_mv_offset,
             1,
             "0.5.0".into(),
-            i as u64,
+            timestamp,
         );
         tokio::task::yield_now().await;
     }

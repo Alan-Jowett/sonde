@@ -131,7 +131,7 @@ fn test_p020() {
         firmware_abi_version: 1,
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
-        firmware_version: "0.4.0".into(),
+        firmware_version: "0.5.0".into(),
         blob: None,
     };
     let cbor = msg.encode().unwrap();
@@ -147,7 +147,7 @@ fn test_p020() {
             assert_eq!(firmware_abi_version, 1);
             assert_eq!(program_hash, vec![0xAA; 32]);
             assert_eq!(battery_mv, 3300);
-            assert_eq!(firmware_version, "0.4.0");
+            assert_eq!(firmware_version, "0.5.0");
         }
         _ => panic!("expected Wake"),
     }
@@ -159,7 +159,7 @@ fn test_p021() {
         firmware_abi_version: 1,
         program_hash: vec![],
         battery_mv: 3300,
-        firmware_version: "0.4.0".into(),
+        firmware_version: "0.5.0".into(),
         blob: None,
     };
     let cbor = msg.encode().unwrap();
@@ -324,7 +324,7 @@ fn test_p029() {
         firmware_abi_version: 1,
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
-        firmware_version: "0.4.0".into(),
+        firmware_version: "0.5.0".into(),
         blob: None,
     };
     let cbor = msg.encode().unwrap();
@@ -354,7 +354,7 @@ fn test_p029() {
             assert_eq!(firmware_abi_version, 1);
             assert_eq!(program_hash, vec![0xAA; 32]);
             assert_eq!(battery_mv, 3300);
-            assert_eq!(firmware_version, "0.4.0");
+            assert_eq!(firmware_version, "0.5.0");
         }
         _ => panic!("expected Wake"),
     }
@@ -374,7 +374,7 @@ fn test_p030() {
         ),
         (
             ciborium::Value::Integer(KEY_FIRMWARE_VERSION.into()),
-            ciborium::Value::Text("0.4.0".into()),
+            ciborium::Value::Text("0.5.0".into()),
         ),
     ];
     // KEY_BATTERY_MV deliberately omitted
@@ -469,7 +469,7 @@ fn test_p030b_non_ascii_firmware_version() {
         ),
         (
             ciborium::Value::Integer(KEY_FIRMWARE_VERSION.into()),
-            ciborium::Value::Text("0.4.0-β".into()),
+            ciborium::Value::Text("0.5.0-β".into()),
         ),
     ];
     let mut cbor = Vec::new();
@@ -489,7 +489,7 @@ fn test_p031() {
         firmware_abi_version: 1,
         program_hash: vec![],
         battery_mv: 3300,
-        firmware_version: "0.4.0".into(),
+        firmware_version: "0.5.0".into(),
         blob: None,
     }
     .encode()
@@ -508,7 +508,7 @@ fn test_p032() {
         firmware_abi_version: 1,
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
-        firmware_version: "0.4.0".into(),
+        firmware_version: "0.5.0".into(),
         blob: None,
     };
     let cbor = msg.encode().unwrap();
@@ -984,7 +984,7 @@ fn test_p039() {
             firmware_abi_version: 1,
             program_hash: vec![0xAA; 32],
             battery_mv: u32::MAX,
-            firmware_version: "0.4.0".into(),
+            firmware_version: "0.5.0".into(),
             blob: None,
         };
         let cbor = msg.encode().unwrap();
@@ -1469,7 +1469,7 @@ fn test_p063() {
         firmware_abi_version: 1,
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
-        firmware_version: "0.4.0".into(),
+        firmware_version: "0.5.0".into(),
         blob: None,
     }
     .encode()
@@ -2034,7 +2034,7 @@ mod aead_tests {
             firmware_abi_version: 1,
             program_hash: vec![0x42u8; 32],
             battery_mv: 3300,
-            firmware_version: "0.4.0".into(),
+            firmware_version: "0.5.0".into(),
             blob: None,
         };
         let payload = wake.encode().unwrap();
@@ -2205,7 +2205,7 @@ mod aead_tests {
             firmware_abi_version: 1,
             program_hash: vec![0x42u8; 32],
             battery_mv: 3300,
-            firmware_version: "0.4.0".into(),
+            firmware_version: "0.5.0".into(),
             blob: None,
         };
         let wake_cbor = wake.encode().unwrap();
@@ -2451,7 +2451,7 @@ fn test_p120_wake_blob_round_trip() {
         firmware_abi_version: 1,
         program_hash: hash.clone(),
         battery_mv: 3300,
-        firmware_version: "0.4.0".into(),
+        firmware_version: "0.5.0".into(),
         blob: Some(vec![0xAA, 0xBB]),
     };
     let encoded = wake_with.encode().unwrap();
@@ -2463,7 +2463,7 @@ fn test_p120_wake_blob_round_trip() {
         firmware_abi_version: 1,
         program_hash: hash,
         battery_mv: 3300,
-        firmware_version: "0.4.0".into(),
+        firmware_version: "0.5.0".into(),
         blob: None,
     };
     let encoded_no_blob = wake_without.encode().unwrap();

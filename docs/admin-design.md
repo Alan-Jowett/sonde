@@ -134,7 +134,8 @@ sonde-admin
 ├── modem
 │   ├── status
 │   ├── set-channel <channel:1-14>
-│   └── scan
+│   ├── scan
+│   └── display <line> [<line> ...]
 ├── pairing
 │   ├── start [--duration-s <seconds>]
 │   ├── stop
@@ -155,6 +156,7 @@ The CLI validates the following inputs before sending RPCs:
 | `psk-hex` | `hex::decode` + length == 32 bytes | ADMIN-0202 |
 | `program-hash` | `hex::decode` for commands that send a binary hash (`program assign`, `program remove`, `ephemeral`); handler commands pass through `*` or the provided string without local validation (gateway enforces) | ADMIN-0302, ADMIN-0800 |
 | `channel` | clap `value_parser!(u32).range(1..=14)` | ADMIN-0601 |
+| `display` lines | variadic positional argument with clap `num_args = 1..=4`; each argument maps to one display line | ADMIN-0603 |
 | `passphrase` | Non-empty check | ADMIN-0502 |
 
 ---
@@ -214,6 +216,7 @@ interval. Optional fields are omitted when absent.
 | `modem status` | `GetModemStatus` | — | `{channel, tx_count, ...}` | Multi-line status |
 | `modem set-channel` | `SetModemChannel` | — | `{channel}` | "Set modem channel to {ch}" |
 | `modem scan` | `ScanModemChannels` | — | `[{channel, ap_count, strongest_rssi}]` | Table with headers |
+| `modem display` | `ShowModemDisplayMessage` | — | `{lines, duration_s}` | "Displayed modem message for 60s" |
 | `pairing start` | `OpenBlePairing` (stream) | — | N/A (interactive) | Event-by-event text |
 | `pairing stop` | `CloseBlePairing` | Yes | `{status}` | "BLE pairing window closed" |
 | `pairing list-phones` | `ListPhones` | — | `[{phone_id, ...}]` | Table with headers |

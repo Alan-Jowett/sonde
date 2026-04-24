@@ -332,7 +332,7 @@ pub enum SExpr {
 (kicad_sch
   (version 20231120)
   (generator "sonde-kicad")
-  (generator_version "0.4.0")
+  (generator_version "0.5.0")
   (uuid "a1b2c3d4-...")
   (paper "A4")
   (lib_symbols

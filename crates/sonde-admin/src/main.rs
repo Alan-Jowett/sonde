@@ -217,6 +217,12 @@ enum ModemAction {
     },
     /// Scan all WiFi channels for AP activity.
     Scan,
+    /// Display 1 to 4 lines of text on the modem for 60 seconds.
+    Display {
+        /// Text lines to render; each argument becomes one display line.
+        #[arg(num_args = 1..=4)]
+        lines: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -673,6 +679,17 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                             e.channel, e.ap_count, e.strongest_rssi
                         );
                     }
+                }
+            }
+            ModemAction::Display { lines } => {
+                client.show_modem_display_message(lines.clone()).await?;
+                if json {
+                    print_json(&serde_json::json!({
+                        "lines": lines,
+                        "duration_s": 60,
+                    }))?;
+                } else {
+                    println!("Displayed modem message for 60s");
                 }
             }
         },

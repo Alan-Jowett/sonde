@@ -961,6 +961,36 @@ The gateway MUST persist the current ESP-NOW radio channel in the database so th
 
 ---
 
+### GW-0809  Admin API — transient modem display message
+
+**Priority:** Must  
+**Source:** Issue #771
+
+**Description:**  
+The admin API MUST support a gateway-owned transient display override for the
+modem-attached OLED. The operation accepts 1 to 4 text lines, renders them
+using the gateway's existing centered text renderer, displays the result for 60
+seconds, then restores the normal `Sonde Gateway v<semver>` banner.
+
+The RPC MUST return after the initial display update succeeds; it MUST NOT wait
+for the 60-second timeout to expire. A later successful transient-display
+request replaces any earlier one and restarts the 60-second timer.
+
+To avoid obscuring pairing prompts, the operation MUST fail with
+`FAILED_PRECONDITION` while a BLE pairing session owns the display. If no modem
+transport is configured, it MUST fail with `UNAVAILABLE`.
+
+**Acceptance criteria:**
+
+1. `ShowModemDisplayMessage` with 1 to 4 lines updates the modem display and returns before the 60-second timeout expires.
+2. `ShowModemDisplayMessage` with fewer than 1 line or more than 4 lines returns `INVALID_ARGUMENT`.
+3. If no newer display owner claims the screen, the normal `Sonde Gateway v<semver>` banner is restored after 60 seconds.
+4. A second successful `ShowModemDisplayMessage` received before the first timeout expires replaces the earlier text and restarts the 60-second timeout window.
+5. While a BLE pairing session owns the display, `ShowModemDisplayMessage` returns `FAILED_PRECONDITION`.
+6. Without a configured modem transport, `ShowModemDisplayMessage` returns `UNAVAILABLE`.
+
+---
+
 ## 10  Operational requirements
 
 ### GW-1000  Gateway failover / replaceability
@@ -1109,6 +1139,59 @@ Whenever the gateway re-initializes the modem after a serial reconnect or warm r
 4. The gateway waits for `DISPLAY_FRAME_ACK` after the begin frame and after every display chunk, retransmitting on timeout up to the configured retry budget.
 5. If the retry budget is exhausted for any display-transfer ACK, the gateway treats the modem transport as failed and enters the modem recovery path from GW-1103.
 6. After a serial reconnect recovery or warm reboot recovery, the gateway sends the version banner again without requiring operator action.
+
+---
+
+### GW-1101b  Short-press display page navigation
+
+**Priority:** Should
+**Source:** Issue #798
+
+**Description:**
+While no BLE pairing session is active, the gateway SHOULD interpret `EVENT_BUTTON(BUTTON_SHORT)` as a request to advance the modem display to the next gateway-owned status page. The gateway owns status-page selection and framebuffer rendering; the modem continues to render only the received framebuffer bytes. The default status-page sequence consists of a `Channel` page and a `Nodes` page. The `Nodes` page text output MUST show the key operational node details in `node_id` order: `node_id`, assigned/current program hashes, battery, last seen, and schedule, with optional fields omitted when absent. `key_hint` MUST NOT be shown on the display page. The `last seen` value MUST be rendered in local time using the host locale's date/time presentation rather than fixed UTC text. On the display, each field is rendered as a left-aligned property line followed by a left-aligned `- value` line so properties and values are visually distinct. An empty node registry MUST display `No nodes registered.`
+
+**Acceptance criteria:**
+
+1. A `BUTTON_SHORT` event received while no BLE pairing session is active causes the gateway to send a new reliable display transfer for the next status page.
+2. Consecutive short presses advance through the configured status-page sequence in order; the default sequence remains `Channel` followed by `Nodes`.
+3. The `Nodes` page renders `node_id`, assigned/current program hashes, battery, last seen, and schedule in `node_id` order, omits absent optional fields, excludes `key_hint`, and uses a left-aligned property line followed by a `- value` line for each displayed field.
+4. When the node registry is empty, the `Nodes` page displays `No nodes registered.`
+5. Status-page framebuffer generation remains gateway-owned; the modem receives only opaque framebuffer data.
+
+---
+
+### GW-1101c  Idle return to default display banner
+
+**Priority:** Should
+**Source:** Issue #798
+
+**Description:**
+After the gateway switches the modem display away from the default `Sonde Gateway v<semver>` banner for a short-press status page, it SHOULD restore the default banner after 60 seconds without further short-press navigation activity. Autonomous scroll updates on the `Nodes` page do not count as navigation activity and therefore do not extend the idle timeout.
+
+**Acceptance criteria:**
+
+1. The idle timeout for returning from a status page to the default banner is 60 seconds.
+2. A new short press received before the timeout expires resets the 60-second timeout against the newly selected status page.
+3. When the timeout expires, the gateway stops any active `Nodes` page autonomous scrolling and sends the same default version banner format defined by GW-1101a.
+4. Autonomous `Nodes` page scroll updates do not reset or extend the 60-second timeout.
+
+---
+
+### GW-1101d  Scrolling oversized `Nodes` status page
+
+**Priority:** Should
+**Source:** Issue #798
+
+**Description:**
+When the rendered `Nodes` status page is taller than the modem display, the gateway SHOULD render the complete node-list text into an off-screen 1-bit framebuffer tall enough to contain all rendered rows plus a full-display blank lead-in region before the first rendered row, then send a scrolling 128×64 visible window while that page remains active. The visible window advances downward through the off-screen framebuffer by 3 pixels every 50 ms, which makes the displayed text scroll upward. The initial visible window therefore shows blank space, and the rendered content enters from the bottom edge of the display. Scrolling continues until the bottom of the rendered content has fully moved off the top edge of the display, after which the next scroll update restarts from the top of the blank lead-in region. Each time the user re-enters the `Nodes` page via short-press navigation, scrolling restarts from the top of that blank lead-in region.
+
+**Acceptance criteria:**
+
+1. The gateway renders the full `Nodes` page text into an off-screen framebuffer tall enough to contain all rendered rows and, for oversized content, a full-display blank lead-in region before the first rendered row, extracting visible windows for display transfer.
+2. While the active `Nodes` page content exceeds 64 pixels in height, the gateway sends a new reliable display transfer every 50 ms whose visible window is shifted by 3 pixels relative to the prior update.
+3. When the bottom of the rendered `Nodes` content has fully scrolled off the top of the display, the next scroll update restarts from the top of the blank lead-in region.
+4. When short-press navigation enters the `Nodes` page, the first visible window starts at the top of the blank lead-in region so the rendered content enters from the bottom of the display.
+5. If the rendered `Nodes` page content fits within 64 pixels, the gateway sends a static page and does not start the autonomous scroll updates.
 
 ---
 
@@ -1334,6 +1417,7 @@ The gateway MUST open the registration window either via a modem `EVENT_BUTTON(B
 7. The default duration is 120 s.
 8. Opening the window sends `BLE_ENABLE` to the modem.
 9. Closing the window (auto-close, explicit admin close, or button cancel) sends `BLE_DISABLE` to the modem.
+10. A `BUTTON_SHORT` event received while no BLE pairing session is active does not open or close the registration window; display-page navigation is governed separately by GW-1101b / GW-1101c / GW-1101d.
 
 ---
 
@@ -2141,7 +2225,7 @@ Container images MUST follow a consistent tagging strategy. Release builds (git 
 **Acceptance criteria:**
 
 1. Nightly builds are tagged `nightly` and `nightly-YYYYMMDD`.
-2. Release builds (tag `v*`) are tagged `latest` and the semver version (e.g., `0.4.0`).
+2. Release builds (tag `v*`) are tagged `latest` and the semver version (e.g., `0.5.0`).
 3. Every image is also tagged `sha-<short-sha>`.
 4. Public tags are created only after both amd64 and arm64 builds succeed.
 5. Pull request builds do not publish images.
@@ -2264,6 +2348,10 @@ The gateway container image MUST bundle the modem flashing assets needed for man
 | GW-1003 | Concurrent node handling | Should |
 | GW-1100 | Modem transport trait implementation | Must |
 | GW-1101 | Modem startup sequence | Must |
+| GW-1101a | Modem-ready display banner | Must |
+| GW-1101b | Short-press display page navigation | Should |
+| GW-1101c | Idle return to default display banner | Should |
+| GW-1101d | Scrolling oversized `Nodes` status page | Should |
 | GW-1102 | Modem health monitoring | Should |
 | GW-1103 | Modem error handling | Must |
 | GW-1200 | Ed25519 keypair generation — RETIRED | Must |

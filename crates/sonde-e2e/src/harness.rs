@@ -25,7 +25,7 @@ use sonde_node::async_queue::AsyncQueue;
 use sonde_node::bpf_helpers::SondeContext;
 use sonde_node::bpf_runtime::{BpfError, BpfInterpreter, HelperFn};
 use sonde_node::error::NodeResult;
-use sonde_node::hal::{BatteryReader, Hal};
+use sonde_node::hal::Hal;
 use sonde_node::map_storage::MapStorage;
 use sonde_node::traits::{Clock, PlatformStorage, Rng, Transport as NodeTransport};
 use sonde_node::wake_cycle::WakeCycleOutcome;
@@ -233,7 +233,6 @@ impl NodeProxy {
 
         let mut hal = MockHal;
         let clock = MockClock::new();
-        let battery = MockBattery;
         let sha = TestSha256;
         let aead = NodeAead;
 
@@ -249,7 +248,7 @@ impl NodeProxy {
             &mut hal,
             &mut self.rng,
             &clock,
-            &battery,
+            &sonde_protocol::BoardLayout::LEGACY_COMPAT,
             interpreter,
             &mut self.map_storage,
             &sha,
@@ -406,6 +405,7 @@ pub struct MockNodeStorage {
     channel: Option<u8>,
     peer_payload: Option<Vec<u8>>,
     reg_complete: bool,
+    last_battery_mv: Option<u32>,
 }
 
 impl MockNodeStorage {
@@ -419,6 +419,7 @@ impl MockNodeStorage {
             channel: None,
             peer_payload: None,
             reg_complete: false,
+            last_battery_mv: None,
         }
     }
 
@@ -434,6 +435,7 @@ impl MockNodeStorage {
             channel: None,
             peer_payload: None,
             reg_complete: false,
+            last_battery_mv: None,
         }
     }
 
@@ -454,6 +456,7 @@ impl MockNodeStorage {
             channel: Some(channel),
             peer_payload: Some(peer_payload),
             reg_complete: false,
+            last_battery_mv: None,
         }
     }
 }
@@ -553,6 +556,15 @@ impl PlatformStorage for MockNodeStorage {
         self.reg_complete = complete;
         Ok(())
     }
+
+    fn read_last_battery_mv(&self) -> Option<u32> {
+        self.last_battery_mv
+    }
+
+    fn write_last_battery_mv(&mut self, battery_mv: u32) -> NodeResult<()> {
+        self.last_battery_mv = Some(battery_mv);
+        Ok(())
+    }
 }
 
 struct MockHal;
@@ -578,14 +590,6 @@ impl Hal for MockHal {
     }
     fn adc_read(&mut self, _ch: u32) -> i32 {
         0
-    }
-}
-
-struct MockBattery;
-
-impl BatteryReader for MockBattery {
-    fn battery_mv(&self) -> u32 {
-        3300
     }
 }
 

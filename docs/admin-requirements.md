@@ -539,6 +539,28 @@ display a tabular summary with channel, AP count, and strongest RSSI.
 
 ---
 
+### ADMIN-0603  modem display
+
+**Priority:** Must
+**Source:** GW-0809
+
+**Description:**
+`sonde-admin modem display <line> [<line> ...]` MUST request a transient modem
+display message using 1 to 4 positional text lines. The command returns as
+soon as the gateway accepts the request; it does not wait for the 60-second
+display interval to complete. The gateway is responsible for restoring the
+normal banner after the timeout.
+
+**Acceptance criteria:**
+
+1. One to four text lines are accepted and sent to the gateway.
+2. Supplying more than four text lines is rejected locally by clap.
+3. Text output reports that the transient display request was accepted for 60 seconds.
+4. JSON output returns the requested lines and `duration_s = 60`.
+5. The command exits after the request is accepted, without waiting for the timeout.
+
+---
+
 ## 9  BLE pairing subcommands
 
 ### ADMIN-0700  pairing start

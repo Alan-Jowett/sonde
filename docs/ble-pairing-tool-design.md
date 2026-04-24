@@ -159,7 +159,7 @@ The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairin
 
 ### 4.3  Phase 2 state machine — Node provisioning
 
-The Phase 2 state machine implements the node provisioning flow from [ble-pairing-protocol.md §6](ble-pairing-protocol.md).  `provision_node()` takes a `BleTransport`, `PairingArtifacts` (from Phase 1), `RngProvider`, device address, operator-supplied `node_id`, sensor descriptors, and an optional `PinConfig`, and returns `Result<NodeProvisionResult, PairingError>`.
+The Phase 2 state machine implements the node provisioning flow from [ble-pairing-protocol.md §6](ble-pairing-protocol.md).  `provision_node()` takes a `BleTransport`, `PairingArtifacts` (from Phase 1), `RngProvider`, device address, operator-supplied `node_id`, sensor descriptors, and an optional `BoardLayout`, and returns `Result<NodeProvisionResult, PairingError>`.
 
 ```
 ┌─────────────┐
@@ -217,19 +217,22 @@ Offset  Size           Field
 34      1              rf_channel        (1–13)
 35      2              payload_len       (BE u16, encrypted payload length)
 37      payload_len    encrypted_payload (opaque blob for gateway)
-37+N    remaining      pin_config_cbor   (optional, CBOR map — see below)
+37+N    remaining      board_layout_cbor (optional, CBOR map — see below)
 ```
 
-**Pin config (ND-0608):** If the NODE_PROVISION body is longer than `37 + payload_len`, the remaining bytes are a deterministic CBOR map (RFC 8949 §4.2) of board-specific pin assignments:
+**Board layout (ND-0608):** If the `NODE_PROVISION` body is longer than `37 + payload_len`, the remaining bytes are a deterministic CBOR map (RFC 8949 §4.2) of board-specific function assignments:
 
-| CBOR key | Field | Type | Default |
+| CBOR key | Field | Type | Meaning |
 |----------|-------|------|---------|
-| 1 | `i2c0_sda` | uint | 0 |
-| 2 | `i2c0_scl` | uint | 1 |
+| 1 | `i2c0_sda` | uint or null | I2C0 SDA GPIO, or explicitly unassigned |
+| 2 | `i2c0_scl` | uint or null | I2C0 SCL GPIO, or explicitly unassigned |
+| 3 | `one_wire_data` | uint or null | 1-Wire data GPIO, or explicitly unassigned |
+| 4 | `battery_adc` | uint or null | Battery ADC GPIO, or explicitly unassigned |
+| 5 | `sensor_enable` | uint or null | Active-low sensor-rail enable GPIO, or explicitly unassigned |
 
-The node persists these to NVS. If the map is absent (older pairing tool), the node uses compiled-in defaults. Future keys (SPI pins, pairing button GPIO) may be added without breaking backward compatibility.
+When the map is present, the five known keys are always emitted in ascending order with either a concrete GPIO number or `null`, so the receiver can distinguish "assigned" from "explicitly unassigned" without inference. If the map is absent entirely (older pairing tool / non-UI caller), the node retains any previously provisioned board layout; if none exists yet, it applies the legacy compatibility layout defined in the node specification.
 
-**Pin config source:** The pairing tool obtains `i2c0_sda` and `i2c0_scl` values from the board selector UI (see PT-1216).  The operator selects a named board preset (e.g., "Espressif ESP32-C3 DevKitM-1" or "SparkFun ESP32-C3 Pro Micro") or enters custom GPIO numbers.  The UI layer resolves the selection to a `PinConfig` and passes it to `provision_node()`.  This keeps provisioning simple — no separate board profile files or bundle manifests are required.
+**Board layout source:** The pairing tool obtains `BoardLayout` values from the board selector UI (see PT-1216).  The operator selects a named board preset (for example `Sonde Sensor Node rev_a`, `Espressif ESP32-C3 DevKitM-1`, or `SparkFun ESP32-C3 Pro Micro`) or enters a custom layout. The UI layer resolves the selection to a `BoardLayout` and passes it to `provision_node()`.
 
 ---
 
@@ -707,6 +710,7 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 - **Storage:** `EncryptedSharedPreferences` backed by the Android Keystore for PSK protection.
 - **Lifecycle:** The BLE connection must be managed carefully around Android activity lifecycle events (pause/resume).  The transport implementation should disconnect on pause and reconnect on resume if a pairing flow was in progress (PT-0107).
 - **JNI classloader caching:** App-defined Java classes (`BleHelper`, `SecureStore`) must be resolved and cached as `GlobalRef` from `JNI_OnLoad` or another Java-attached thread that uses the application classloader.  Tokio worker threads use the system classloader, which cannot find app-defined classes via `FindClass` (PT-0108).
+- **Application icons:** The packaged app must use Sonde-branded icon assets rather than Tauri defaults (PT-0109). The canonical source image is `docs/sonde_logo.png`. Platform-specific derived assets are generated into `crates/sonde-pair-ui/src-tauri/icons/` using `cargo tauri icon`. Because `cargo tauri android init` regenerates `src-tauri/gen/android/` with stock template resources, the Android workflow must copy `src-tauri/icons/android/` into `src-tauri/gen/android/app/src/main/res/` after init and before APK build.
 
 ### 9.3  Cross-platform considerations
 
@@ -803,7 +807,7 @@ The mock RNG for testing returns deterministic bytes, enabling reproducible test
 
 ## 12  Input validation
 
-User inputs are validated before any BLE or cryptographic operation (PT-0403, PT-1205).  Validation is split across `validation.rs` (string and range checks for Phase 1/2 fields) and `phase2.rs` (payload size and pin configuration checks):
+User inputs are validated before any BLE or cryptographic operation (PT-0403, PT-1205).  Validation is split across `validation.rs` (string and range checks for Phase 1/2 fields) and `phase2.rs` (payload size and board-layout checks):
 
 | Input | Validation rule | Validated by | Error |
 |-------|----------------|-------------|-------|
@@ -811,8 +815,11 @@ User inputs are validated before any BLE or cryptographic operation (PT-0403, PT
 | `rf_channel` | 1–13 inclusive | `validation.rs` | `PairingError::InvalidRfChannel` |
 | `phone_label` | 0–64 bytes UTF-8 | `validation.rs` | `PairingError::InvalidLabel` |
 | Encrypted payload | ≤ 202 bytes | `phase2.rs` | `PairingError::PayloadTooLarge` |
-| `i2c0_sda` | 0–21, ≠ `i2c0_scl` | `phase2.rs` | `PairingError::InvalidPinConfig` |
-| `i2c0_scl` | 0–21, ≠ `i2c0_sda` | `phase2.rs` | `PairingError::InvalidPinConfig` |
+| `i2c0_sda` | 0–21 when assigned; if assigned then `i2c0_scl` must also be assigned and differ | `phase2.rs` | `PairingError::InvalidPinConfig` |
+| `i2c0_scl` | 0–21 when assigned; if assigned then `i2c0_sda` must also be assigned and differ | `phase2.rs` | `PairingError::InvalidPinConfig` |
+| `one_wire_data` | 0–21 when assigned, or null | `phase2.rs` | `PairingError::InvalidPinConfig` |
+| `battery_adc` | 0–21 when assigned, or null | `phase2.rs` | `PairingError::InvalidPinConfig` |
+| `sensor_enable` | 0–21 when assigned, or null | `phase2.rs` | `PairingError::InvalidPinConfig` |
 
 All validation occurs *before* any BLE write, ensuring that invalid inputs never reach the transport layer.
 
@@ -820,34 +827,35 @@ All validation occurs *before* any BLE write, ensuring that invalid inputs never
 
 ## 12.1  Board selector UI (PT-1216)
 
-The Tauri UI includes a board selector dropdown on the Phase 2 (Node Provisioning) card.  The selector is always visible (not collapsed behind an "Advanced" section) and determines the I2C `PinConfig` passed to `provision_node()`.
+The Tauri UI includes a board selector dropdown on the Phase 2 (Node Provisioning) card.  The selector is always visible (not collapsed behind an "Advanced" section) and determines the `BoardLayout` passed to `provision_node()`.
 
 ### Board presets
 
-Board presets are defined as a static table in the frontend JavaScript.  Each preset maps a human-readable board name to its I2C pin assignments:
+Board presets are defined as a static table in the frontend JavaScript. Each preset maps a human-readable board name to a full `BoardLayout`:
 
-| Preset label | `i2c0_sda` | `i2c0_scl` |
-|---|---|---|
-| Espressif ESP32-C3 DevKitM-1 | 0 | 1 |
-| SparkFun ESP32-C3 Pro Micro | 5 | 6 |
-| Custom | (user input) | (user input) |
+| Preset label | `i2c0_sda` | `i2c0_scl` | `one_wire_data` | `battery_adc` | `sensor_enable` |
+|---|---|---|---|---|---|
+| Sonde Sensor Node rev_a | 6 | 7 | 3 | 2 | 4 |
+| Espressif ESP32-C3 DevKitM-1 | 0 | 1 | `null` | `null` | `null` |
+| SparkFun ESP32-C3 Pro Micro | 5 | 6 | `null` | `null` | `null` |
+| Custom | (user input) | (user input) | (user input / blank) | (user input / blank) | (user input / blank) |
 
-The default selection is "Espressif ESP32-C3 DevKitM-1".  Adding a new board requires only a new entry in the frontend preset table — no backend or protocol changes.
+The default selection is `Sonde Sensor Node rev_a`. Adding a new board profile requires only a new entry in the frontend preset table — no backend or wire-format changes, because the full layout is already explicit in the provisioning payload.
 
 ### UI behavior
 
-- **Named preset selected:** The two GPIO values are resolved from the preset table.  No additional input fields are shown.
-- **"Custom" selected:** Two numeric `<input>` fields for SDA and SCL are revealed.  Values are validated client-side per PT-0409 (range 0–21, SDA ≠ SCL) before the Tauri command is invoked.  Validation errors are displayed in the existing error bar.
+- **Named preset selected:** The full `BoardLayout` is resolved from the preset table. No additional input fields are shown.
+- **"Custom" selected:** Editable fields for `i2c0_sda`, `i2c0_scl`, `one_wire_data`, `battery_adc`, and `sensor_enable` are revealed. Optional functions may be left blank to represent `null` / unassigned. Values are validated client-side per PT-0409 before the Tauri command is invoked. Validation errors are displayed in the existing error bar.
 
 ### Tauri command interface
 
-The `provision_node` Tauri command gains two optional parameters:
+The `provision_node` Tauri command gains an optional structured board-layout parameter:
 
 ```
-provision_node(address, nodeId, i2cSda?, i2cScl?)
+provision_node(address, nodeId, boardLayout?)
 ```
 
-When both `i2cSda` and `i2cScl` are provided, the backend constructs `Some(PinConfig { i2c0_sda, i2c0_scl })` and passes it to `phase2::provision_node()`.  When both are omitted, `None` is passed (backward compatible for non-UI callers).  Providing exactly one is an error.
+When provided, `boardLayout` contains nullable fields for `i2cSda`, `i2cScl`, `oneWireData`, `batteryAdc`, and `sensorEnable`. The backend validates the object, constructs `Some(BoardLayout { ... })`, and passes it to `phase2::provision_node()`. When omitted, `None` is passed for backward compatibility with non-UI callers.
 
 ---
 
@@ -1082,7 +1090,7 @@ No log event at any level may include key material: PSKs, ephemeral private keys
 | §6 Cryptographic operations | PT-0301, PT-0304, PT-0402, PT-0408, PT-0900, PT-0901, PT-0902, PT-1100–PT-1103 |
 | §7 Persistence | PT-0800–PT-0804 |
 | §8 Error handling | PT-0500–PT-0502, PT-1000, PT-1003 |
-| §9 Platform-specific | PT-0100, PT-0105, PT-0106, PT-0107, PT-0108, PT-0300, PT-0801, PT-0904 |
+| §9 Platform-specific | PT-0100, PT-0105, PT-0106, PT-0107, PT-0108, PT-0109, PT-0300, PT-0801, PT-0904 |
 | §10 BLE message envelope | PT-0301, PT-0303, PT-0407 |
 | §11 RNG provider | PT-0901, PT-0903 |
 | §12 Input validation | PT-0403, PT-0406, PT-0409 |

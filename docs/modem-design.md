@@ -63,7 +63,7 @@ The firmware is intentionally minimal — no application- or protocol-layer cryp
 | **BLE lifecycle** | `BLE_ENABLE`/`BLE_DISABLE` handling, connection/disconnection events, `BLE_CONNECTED`/`BLE_DISCONNECTED` notifications, idle timeout | MD-0405, MD-0410, MD-0411, MD-0413, MD-0414, MD-0415 |
 | **Watchdog** *(cross-cutting)* | Task watchdog feed in main loop; hardware reset on stall | MD-0302 |
 | **Button scanner** | GPIO2 polling, debounce, press classification, `EVENT_BUTTON` emission | MD-0600, MD-0601, MD-0602, MD-0603, MD-0604, MD-0605 |
-| **Display driver** | Validate reliable display transfers, reassemble framebuffer chunks, convert row-major pixels to SSD1306 page writes, incremental I²C flush, `EVENT_ERROR` emission | MD-0700, MD-0701, MD-0702, MD-0703, MD-0704 |
+| **Display driver** | Validate reliable display transfers, reassemble framebuffer chunks, convert row-major pixels to SSD1306 page writes, incremental I²C flush, local OLED sleep/wake, `EVENT_ERROR` emission | MD-0700, MD-0701, MD-0702, MD-0703, MD-0704, MD-0705 |
 
 ---
 
@@ -291,7 +291,18 @@ To preserve modem responsiveness (MD-0702), `display.poll()` performs at most on
 
 If a newer display transfer completes while an older one is still flushing, the pending buffer is replaced and the next flush restarts from page 0 so the display converges to the latest gateway-supplied image.
 
-### 9a.4  Failure handling
+### 9a.4  Local OLED power state
+
+The modem owns only OLED panel power state, not display-page semantics. The display driver tracks the monotonic deadline for panel idle sleep:
+
+1. Each newly accepted complete display transfer records `last_frame_at = now`.
+2. If the panel is currently off when a new complete transfer is accepted, the driver sends SSD1306 `display on` before resuming page flush.
+3. If 300 seconds elapse with no newly accepted complete display transfer, the driver sends SSD1306 `display off` and marks the panel as asleep.
+4. A sleeping panel keeps the last framebuffer in memory; the next complete display transfer wakes the panel and renders the new framebuffer.
+
+This preserves the modem's dumb-framebuffer role: gateway software still decides *what* to show and *when* to change pages, while the modem only decides whether the OLED glass should currently be powered.
+
+### 9a.5  Failure handling
 
 If any OLED I²C transaction fails during initialization or page flush:
 
@@ -570,7 +581,7 @@ On `BLE_DISABLE`, the modem disconnects the active client (if any) and stops adv
 
 ## 16  Button scanner
 
-The modem detects button presses on the 1-Wire data line (GPIO2 / XIAO ESP32-S3 silk label D1) and emits `EVENT_BUTTON` messages to the gateway. The modem does not interpret button semantics.
+The modem detects button presses on the 1-Wire data line (GPIO2 / XIAO ESP32-S3 silk label D1) and emits `EVENT_BUTTON` messages to the gateway. The modem does not interpret button semantics; gateway software decides whether a short press navigates status pages or a long press opens pairing.
 
 ### 16.1  GPIO configuration
 

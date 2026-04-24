@@ -7,16 +7,16 @@
 //! `boot → WAKE → COMMAND → dispatch → (transfer/execute) → sleep`
 
 use sonde_protocol::{
-    CommandPayload, DecodeError, FrameHeader, GatewayMessage, NodeMessage, Sha256Provider,
-    MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK, MSG_PROGRAM_ACK,
-    MSG_WAKE,
+    BoardLayout, CommandPayload, DecodeError, FrameHeader, GatewayMessage, NodeMessage,
+    Sha256Provider, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK,
+    MSG_PROGRAM_ACK, MSG_WAKE,
 };
 
 use crate::async_queue::AsyncQueue;
 use crate::bpf_helpers::{ProgramClass, SondeContext};
 use crate::bpf_runtime::BpfInterpreter;
 use crate::error::{NodeError, NodeResult};
-use crate::hal::{BatteryReader, Hal};
+use crate::hal::Hal;
 use crate::key_store::NodeIdentity;
 use crate::map_storage::MapStorage;
 use crate::peer_request::peer_request_exchange;
@@ -33,6 +33,10 @@ const RESPONSE_TIMEOUT_MS: u32 = 200;
 
 /// Default instruction budget for BPF execution.
 const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
+const BATTERY_FALLBACK_MV: u32 = 3300;
+const SENSOR_SETTLE_MS: u32 = 10;
+const ADC_FULL_SCALE_MV: u32 = 2500;
+const BATTERY_DIVIDER_RATIO: u32 = 2;
 
 /// Default map budget in bytes (~4 KB for ESP32-C3 after firmware overhead).
 /// Used by tests; production code receives the budget via `MapStorage`.
@@ -62,6 +66,60 @@ impl<'a> core::fmt::Display for HashHexPrefix<'a> {
 /// This avoids heap allocation; use with formatting macros like `log::info!`.
 fn hash_hex_prefix(hash: &[u8]) -> HashHexPrefix<'_> {
     HashHexPrefix(hash)
+}
+
+// The ESP32-C3 ADC1 path used by this firmware exposes GPIO0-4 only.
+fn is_supported_battery_adc_gpio(pin: u8) -> bool {
+    matches!(pin, 0..=4)
+}
+
+fn gpio_to_adc_channel(pin: u8) -> Option<u32> {
+    if is_supported_battery_adc_gpio(pin) {
+        Some(pin as u32)
+    } else {
+        None
+    }
+}
+
+fn capture_current_cycle_battery(
+    hal: &mut dyn Hal,
+    board_layout: &BoardLayout,
+    clock: &dyn Clock,
+) -> u32 {
+    if let Some(sensor_enable) = board_layout.sensor_enable {
+        if hal.gpio_write(sensor_enable as u32, 0) < 0 {
+            log::warn!("failed to assert sensor_enable GPIO {}", sensor_enable);
+        } else {
+            clock.delay_ms(SENSOR_SETTLE_MS);
+        }
+    }
+
+    let Some(battery_pin) = board_layout.battery_adc else {
+        return BATTERY_FALLBACK_MV;
+    };
+
+    let Some(channel) = gpio_to_adc_channel(battery_pin) else {
+        log::warn!(
+            "battery_adc GPIO {} is not ADC-capable on ESP32-C3; using fallback {} mV",
+            battery_pin,
+            BATTERY_FALLBACK_MV
+        );
+        return BATTERY_FALLBACK_MV;
+    };
+
+    let raw = hal.adc_read(channel);
+    if raw < 0 {
+        log::warn!(
+            "battery ADC sample failed on GPIO {} (channel {}); using fallback {} mV",
+            battery_pin,
+            channel,
+            BATTERY_FALLBACK_MV
+        );
+        return BATTERY_FALLBACK_MV;
+    }
+
+    let sensed_mv = (raw as u32).saturating_mul(ADC_FULL_SCALE_MV) / 4095;
+    sensed_mv.saturating_mul(BATTERY_DIVIDER_RATIO)
 }
 
 /// Outcome of a wake cycle.
@@ -629,7 +687,7 @@ pub fn run_wake_cycle<T, S, I, A, H>(
     hal: &mut (dyn Hal + 'static),
     rng: &mut dyn Rng,
     clock: &(dyn Clock + 'static),
-    battery: &dyn BatteryReader,
+    board_layout: &BoardLayout,
     interpreter: &mut I,
     map_storage: &mut MapStorage,
     sha: &H,
@@ -717,7 +775,7 @@ where
 
     // 5. Generate WAKE nonce
     let wake_nonce = rng.random_u64();
-    let battery_mv = battery.battery_mv();
+    let wake_battery_mv = storage.read_last_battery_mv().unwrap_or(0);
 
     // 5a. Check async queue for WAKE piggybacking.
     // The queue persists across wake cycles in RTC slow SRAM (ESP) or
@@ -729,7 +787,7 @@ where
             let trial = NodeMessage::Wake {
                 firmware_abi_version: FIRMWARE_ABI_VERSION,
                 program_hash: program_hash.clone(),
-                battery_mv,
+                battery_mv: wake_battery_mv,
                 firmware_version: env!("CARGO_PKG_VERSION").into(),
                 blob: Some(blob.to_vec()),
             };
@@ -752,7 +810,7 @@ where
         &identity,
         wake_nonce,
         &program_hash,
-        battery_mv,
+        wake_battery_mv,
         clock,
         aead,
         sha,
@@ -788,6 +846,10 @@ where
     };
 
     let mut current_seq = starting_seq;
+    let current_battery_mv = capture_current_cycle_battery(hal, board_layout, clock);
+    if let Err(e) = storage.write_last_battery_mv(current_battery_mv) {
+        log::warn!("failed to persist battery reading for next wake: {}", e);
+    }
 
     // Log the received COMMAND (ND-1003).
     match &command_payload {
@@ -973,10 +1035,10 @@ where
         let map_ptrs = map_storage.map_pointers().to_vec();
 
         let elapsed_since_command = clock.elapsed_ms().saturating_sub(command_received_at);
-        let battery_mv_clamped = if battery_mv > u16::MAX as u32 {
+        let battery_mv_clamped = if current_battery_mv > u16::MAX as u32 {
             u16::MAX
         } else {
-            battery_mv as u16
+            current_battery_mv as u16
         };
         let ctx = SondeContext {
             timestamp: timestamp_ms.saturating_add(elapsed_since_command),
@@ -1008,7 +1070,7 @@ where
                 async_queue as *mut AsyncQueue,
                 timestamp_ms,
                 command_received_at,
-                battery_mv,
+                current_battery_mv,
                 aead as *const dyn AeadProvider,
                 sha as *const dyn Sha256Provider,
             );
@@ -1125,6 +1187,7 @@ mod tests {
         pub channel: Option<u8>,
         pub peer_payload: Option<Vec<u8>>,
         pub reg_complete: bool,
+        pub last_battery_mv: Option<u32>,
     }
 
     impl MockStorage {
@@ -1139,6 +1202,7 @@ mod tests {
                 channel: None,
                 peer_payload: None,
                 reg_complete: false,
+                last_battery_mv: None,
             }
         }
 
@@ -1223,6 +1287,13 @@ mod tests {
             self.reg_complete = c;
             Ok(())
         }
+        fn read_last_battery_mv(&self) -> Option<u32> {
+            self.last_battery_mv
+        }
+        fn write_last_battery_mv(&mut self, battery_mv: u32) -> NodeResult<()> {
+            self.last_battery_mv = Some(battery_mv);
+            Ok(())
+        }
     }
 
     // --- Mock HAL ---
@@ -1252,13 +1323,6 @@ mod tests {
         }
     }
 
-    struct MockBattery;
-    impl BatteryReader for MockBattery {
-        fn battery_mv(&self) -> u32 {
-            3300
-        }
-    }
-
     // --- Mock Rng ---
     struct MockRng(u64);
     impl Rng for MockRng {
@@ -1277,6 +1341,17 @@ mod tests {
         fn delay_ms(&self, _ms: u32) {
             // No-op in tests
         }
+    }
+
+    #[test]
+    fn gpio_to_adc_channel_only_maps_esp32c3_adc1_pins() {
+        assert!(is_supported_battery_adc_gpio(0));
+        assert!(is_supported_battery_adc_gpio(4));
+        assert!(!is_supported_battery_adc_gpio(5));
+        assert_eq!(gpio_to_adc_channel(0), Some(0));
+        assert_eq!(gpio_to_adc_channel(4), Some(4));
+        assert_eq!(gpio_to_adc_channel(5), None);
+        assert_eq!(gpio_to_adc_channel(21), None);
     }
 
     // --- Mock BPF interpreter ---
@@ -1779,7 +1854,7 @@ mod tests {
                 &mut hal,
                 &mut rng,
                 &clock,
-                &MockBattery,
+                &BoardLayout::LEGACY_COMPAT,
                 &mut interp,
                 &mut map_storage,
                 &sha,
@@ -1790,6 +1865,75 @@ mod tests {
             assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
             // WAKE frame should have been sent
             assert!(!transport.outbound.is_empty());
+        }
+
+        #[test]
+        fn run_wake_cycle_reports_previous_battery_on_next_wake() {
+            let psk = [0x42u8; 32];
+            let sha = crate::crypto::SoftwareSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let clock = MockClock;
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            let mut hal = MockHal;
+            let mut rng = MockRng(0);
+            let mut interp = MockBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+            let mut async_queue = AsyncQueue::new();
+
+            let mut transport_first = MockTransport::new();
+            transport_first.queue_response(Some(make_command(&psk, 1, &CommandPayload::Nop)));
+            let first_outcome = run_wake_cycle(
+                &mut transport_first,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &BoardLayout::LEGACY_COMPAT,
+                &mut interp,
+                &mut map_storage,
+                &sha,
+                &aead,
+                &mut async_queue,
+            );
+            assert_eq!(first_outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+            let first_wake = decode_frame(&transport_first.outbound[0]).unwrap();
+            let first_payload = open_frame(&first_wake, &psk, &aead, &sha).unwrap();
+            let first_battery_mv =
+                match sonde_protocol::NodeMessage::decode(MSG_WAKE, &first_payload).unwrap() {
+                    sonde_protocol::NodeMessage::Wake { battery_mv, .. } => battery_mv,
+                    _ => panic!("expected Wake message"),
+                };
+            assert_eq!(first_battery_mv, 0);
+            assert_eq!(storage.last_battery_mv, Some(BATTERY_FALLBACK_MV));
+
+            let mut transport_second = MockTransport::new();
+            transport_second.queue_response(Some(make_command(&psk, 2, &CommandPayload::Nop)));
+            let second_outcome = run_wake_cycle(
+                &mut transport_second,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &BoardLayout::LEGACY_COMPAT,
+                &mut interp,
+                &mut map_storage,
+                &sha,
+                &aead,
+                &mut async_queue,
+            );
+            assert_eq!(second_outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+            let second_wake = decode_frame(&transport_second.outbound[0]).unwrap();
+            let second_payload = open_frame(&second_wake, &psk, &aead, &sha).unwrap();
+            let second_battery_mv =
+                match sonde_protocol::NodeMessage::decode(MSG_WAKE, &second_payload).unwrap() {
+                    sonde_protocol::NodeMessage::Wake { battery_mv, .. } => battery_mv,
+                    _ => panic!("expected Wake message"),
+                };
+            assert_eq!(second_battery_mv, BATTERY_FALLBACK_MV);
+            assert_eq!(storage.last_battery_mv, Some(BATTERY_FALLBACK_MV));
         }
 
         #[test]
@@ -1851,7 +1995,7 @@ mod tests {
                 &mut hal,
                 &mut rng,
                 &clock,
-                &MockBattery,
+                &BoardLayout::LEGACY_COMPAT,
                 &mut interp,
                 &mut map_storage,
                 &sha,
@@ -1909,7 +2053,7 @@ mod tests {
                 &mut hal,
                 &mut rng,
                 &clock,
-                &MockBattery,
+                &BoardLayout::LEGACY_COMPAT,
                 &mut interp,
                 &mut map_storage,
                 &sha,
@@ -1954,7 +2098,7 @@ mod tests {
                 &mut hal,
                 &mut rng,
                 &clock,
-                &MockBattery,
+                &BoardLayout::LEGACY_COMPAT,
                 &mut interp,
                 &mut map_storage,
                 &sha,
@@ -2032,7 +2176,7 @@ mod tests {
                 &mut hal,
                 &mut rng,
                 &clock,
-                &MockBattery,
+                &BoardLayout::LEGACY_COMPAT,
                 &mut interp,
                 &mut map_storage,
                 &sha,

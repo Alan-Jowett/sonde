@@ -57,8 +57,11 @@ const btnToProvision = document.getElementById("btn-to-provision");
 const nodeId = document.getElementById("node-id");
 const boardSelect = document.getElementById("board-select");
 const customPins = document.getElementById("custom-pins");
-const customSda = document.getElementById("custom-sda");
-const customScl = document.getElementById("custom-scl");
+const customI2cSda = document.getElementById("custom-i2c-sda");
+const customI2cScl = document.getElementById("custom-i2c-scl");
+const customOneWire = document.getElementById("custom-one-wire");
+const customBatteryAdc = document.getElementById("custom-battery-adc");
+const customSensorEnable = document.getElementById("custom-sensor-enable");
 const btnProvision = document.getElementById("btn-provision");
 const provisionStatus = document.getElementById("provision-status");
 
@@ -89,8 +92,18 @@ let scanGeneration = 0;
 // ---------------------------------------------------------------------------
 
 const BOARD_PRESETS = {
-  devkitm1: { label: "Espressif ESP32-C3 DevKitM-1", sda: 0, scl: 1 },
-  sparkfun: { label: "SparkFun ESP32-C3 Pro Micro",   sda: 5, scl: 6 },
+  rev_a: {
+    label: "Sonde Sensor Node rev_a",
+    layout: { i2c0Sda: 6, i2c0Scl: 7, oneWireData: 3, batteryAdc: 2, sensorEnable: 4 },
+  },
+  devkitm1: {
+    label: "Espressif ESP32-C3 DevKitM-1",
+    layout: { i2c0Sda: 0, i2c0Scl: 1, oneWireData: null, batteryAdc: null, sensorEnable: null },
+  },
+  sparkfun: {
+    label: "SparkFun ESP32-C3 Pro Micro",
+    layout: { i2c0Sda: 5, i2c0Scl: 6, oneWireData: null, batteryAdc: null, sensorEnable: null },
+  },
 };
 
 function initBoardSelect() {
@@ -103,22 +116,41 @@ function initBoardSelect() {
     boardSelect.appendChild(option);
   }
   if (customOption) boardSelect.appendChild(customOption);
+  boardSelect.value = "rev_a";
   customPins.classList.toggle("hidden", boardSelect.value !== "custom");
 }
 
-function resolveI2cPins() {
+function parseOptionalPin(input, label) {
+  const raw = input.value.trim();
+  if (raw === "") return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value)) { showError(`Enter a whole GPIO number for ${label}`); return undefined; }
+  if (value < 0 || value > 21) { showError(`${label} must be 0–21`); return undefined; }
+  return value;
+}
+
+function resolveBoardLayout() {
   const board = boardSelect.value;
   if (board === "custom") {
-    const sda = customSda.valueAsNumber;
-    const scl = customScl.valueAsNumber;
-    if (!Number.isInteger(sda) || !Number.isInteger(scl)) { showError("Enter SDA and SCL GPIO numbers"); return null; }
-    if (sda < 0 || sda > 21 || scl < 0 || scl > 21) { showError("GPIO must be 0–21"); return null; }
-    if (sda === scl) { showError("SDA and SCL must be different pins"); return null; }
-    return { sda, scl };
+    const i2c0Sda = parseOptionalPin(customI2cSda, "I2C SDA");
+    const i2c0Scl = parseOptionalPin(customI2cScl, "I2C SCL");
+    const oneWireData = parseOptionalPin(customOneWire, "1-Wire data");
+    const batteryAdc = parseOptionalPin(customBatteryAdc, "battery ADC");
+    const sensorEnable = parseOptionalPin(customSensorEnable, "sensor enable");
+    if ([i2c0Sda, i2c0Scl, oneWireData, batteryAdc, sensorEnable].includes(undefined)) return null;
+    if ((i2c0Sda === null) !== (i2c0Scl === null)) {
+      showError("I2C SDA and I2C SCL must both be assigned or both left blank");
+      return null;
+    }
+    if (i2c0Sda !== null && i2c0Sda === i2c0Scl) {
+      showError("I2C SDA and I2C SCL must be different pins");
+      return null;
+    }
+    return { i2c0Sda, i2c0Scl, oneWireData, batteryAdc, sensorEnable };
   }
   const preset = BOARD_PRESETS[board];
   if (!preset) { showError("Unknown board selection"); return null; }
-  return { sda: preset.sda, scl: preset.scl };
+  return preset.layout;
 }
 
 // ---------------------------------------------------------------------------
@@ -511,8 +543,8 @@ async function provisionNode() {
   if (!selectedAddressNode) return;
   const nid = nodeId.value.trim();
   if (!nid) { showError("Enter a Node ID"); return; }
-  const pins = resolveI2cPins();
-  if (!pins) return;
+  const boardLayout = resolveBoardLayout();
+  if (!boardLayout) return;
   clearError();
   if (scanning) await stopScan();
   setBusy(true);
@@ -522,8 +554,7 @@ async function provisionNode() {
     await invoke("provision_node", {
       address: selectedAddressNode,
       nodeId: nid,
-      i2cSda: pins.sda,
-      i2cScl: pins.scl,
+      boardLayout,
     });
     hideStatus(provisionStatus);
     provisionDetails.textContent = "Node \"" + nid + "\" provisioned.";

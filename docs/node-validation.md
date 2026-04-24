@@ -153,7 +153,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0201
 
 **Procedure:**
-1. Install a known program (hash X). Set battery to 3300 mV via mock ADC.
+1. Install a known program (hash X). Preload RTC-retained battery state with 3300 mV.
 2. Boot node.
 3. Capture WAKE frame, parse the fixed 11-byte frame header, and decode the CBOR payload.
 4. Assert: `firmware_abi_version` matches firmware ABI.
@@ -161,6 +161,30 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 6. Assert: `battery_mv` = 3300.
 7. Assert: `firmware_version` is a valid semantic version string matching the compiled firmware version.
 8. Assert: the WAKE frame header `nonce` field (in the fixed 11-byte header, not the CBOR payload) is present and sourced from the hardware RNG.
+
+---
+
+### T-N202a  First WAKE sends zero battery reading
+
+**Validates:** ND-0201
+
+**Procedure:**
+1. Boot node with no RTC-retained battery value present (cold boot or immediately after provisioning).
+2. Capture the WAKE frame and decode the CBOR payload.
+3. Assert: `battery_mv` = 0.
+
+---
+
+### T-N202b  Board without battery ADC uses fallback on subsequent wakes
+
+**Validates:** ND-0201, ND-0608a
+
+**Procedure:**
+1. Provision a board layout with `battery_adc = null`.
+2. Run one full wake cycle through `COMMAND` processing so the node computes a current-cycle battery value.
+3. Assert: the node stores `3300` mV in RTC-retained battery state.
+4. Trigger the next wake cycle and capture WAKE.
+5. Assert: `battery_mv` = 3300.
 
 ---
 
@@ -487,7 +511,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Mock gateway sends `timestamp_ms = 1710000000000`.
 2. Install a program that reads `ctx->timestamp`, `ctx->battery_mv`, `ctx->firmware_abi_version`, `ctx->wake_reason` and sends them via `send()`.
 3. Assert: `timestamp` ≈ 1710000000000 + elapsed time since COMMAND was processed (within a few ms tolerance).
-4. Assert: `battery_mv` matches ADC reading.
+4. Assert: `battery_mv` matches the current-cycle battery value captured after `COMMAND` processing.
 5. Assert: `firmware_abi_version` matches firmware.
 6. Assert: `wake_reason` = `WAKE_SCHEDULED` (0x00).
 
@@ -676,7 +700,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Mock gateway sends `timestamp_ms = 1710000000000`.
 2. Install program that calls `get_time()` and `get_battery_mv()`.
 3. Assert: `get_time()` ≈ 1710000000000 + elapsed time since COMMAND was processed (within a few ms tolerance).
-4. Assert: `get_battery_mv()` matches mock ADC.
+4. Assert: `get_battery_mv()` matches the current-cycle battery value captured after `COMMAND` processing.
 
 ---
 
@@ -1380,12 +1404,12 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-1013
 
 **Procedure:**
-1. Provision a node with non-default I2C pins (e.g., SDA=5, SCL=6).
+1. Provision a node with a full board layout (for example `i2c0_sda=6`, `i2c0_scl=7`, `one_wire_data=3`, `battery_adc=2`, `sensor_enable=4`).
 2. Install a BPF program that calls `gpio_write` on an additional output GPIO (e.g., GPIO 7).
 3. Run a complete wake cycle so that I2C and GPIO peripherals are active.
 4. Assert: `prepare_for_sleep()` is called before deep sleep entry.
-5. Assert: I2C SDA and SCL GPIOs are reset to disabled/high-impedance with no pull resistors.
-6. Assert: the BPF-configured output GPIO is reset to a disabled state.
+5. Assert: provisioned I2C, 1-Wire, battery ADC, and sensor-enable GPIOs are returned to high-impedance input state with no pull resistors.
+6. Assert: the BPF-configured output GPIO is returned to high-impedance input state.
 7. Assert: the RTC wake-up GPIO (pairing button) retains its configured state.
 
 ---
@@ -1841,76 +1865,129 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N0607a  I2C pins read from NVS at HAL init
+### T-N0607a  Board layout read from flash and expanded at boot
 
-**Validates:** ND-0608 (AC 1, 3)
+**Validates:** ND-0608 (AC 1, 2, 3)
 
 **Procedure:**
-1. Write SDA=4, SCL=5 to NVS keys `i2c0_sda` and `i2c0_scl`.
-2. Trigger HAL initialization (power-on reset or deep-sleep wake).
-3. Assert: the I2C0 peripheral is configured with SDA=4, SCL=5.
-4. Assert: pin assignments survive a deep-sleep cycle — repeat step 2 and verify the same pins are used.
+1. Write a board-layout record to flash with `i2c0_sda=6`, `i2c0_scl=7`, `one_wire_data=3`, `battery_adc=2`, and `sensor_enable=4`.
+2. Trigger boot initialization (power-on reset or deep-sleep wake).
+3. Assert: the effective runtime board layout is loaded before HAL initialization.
+4. Assert: the I2C0 peripheral is configured with SDA=6, SCL=7.
+5. Assert: the same layout survives a deep-sleep cycle and a power-on reset.
 
 ---
 
-### T-N0607b  Missing NVS keys fall back to defaults
+### T-N0607b  Missing board layout falls back to legacy compatibility layout
 
 **Validates:** ND-0608 (AC 2)
 
 **Procedure:**
-1. Erase NVS keys `i2c0_sda` and `i2c0_scl` (or start with a fresh NVS partition).
+1. Erase the `board_layout` flash key (or start with a fresh NVS partition).
 2. Trigger HAL initialization.
-3. Assert: the I2C0 peripheral is configured with the compiled-in defaults SDA=0, SCL=1.
+3. Assert: the effective layout is `i2c0_sda=0`, `i2c0_scl=1`, `one_wire_data=null`, `battery_adc=null`, `sensor_enable=null`.
+4. Assert: the I2C0 peripheral is configured with SDA=0, SCL=1.
 
 ---
 
-### T-N0607c  Pin config persisted from NODE_PROVISION with CBOR pin data
+### T-N0607c  Board layout persisted from NODE_PROVISION with CBOR layout data
 
 **Validates:** ND-0608 (AC 5)
 
 **Procedure:**
-1. Construct a NODE_PROVISION BLE message body with a valid encrypted payload followed by a deterministic CBOR map `{1: 6, 2: 7}` (SDA=6, SCL=7).
+1. Construct a NODE_PROVISION BLE message body with a valid encrypted payload followed by a deterministic CBOR map `{1: 6, 2: 7, 3: 3, 4: 2, 5: 4}`.
 2. Deliver the message to the node's provisioning handler.
-3. Assert: NVS keys `i2c0_sda` and `i2c0_scl` are written with values 6 and 7 respectively.
+3. Assert: the `board_layout` flash key is written with the decoded layout.
 4. Trigger a HAL re-initialization (or reboot).
-5. Assert: the I2C0 peripheral is configured with SDA=6, SCL=7.
+5. Assert: the I2C0 peripheral is configured with SDA=6, SCL=7 and the other functions are available in runtime layout state.
 
 ---
 
-### T-N0607d  NODE_PROVISION without pin config — backward compatible
+### T-N0607d  NODE_PROVISION without board layout — backward compatible
 
 **Validates:** ND-0608 (AC 6)
 
 **Procedure:**
-1. Construct a NODE_PROVISION BLE message body with a valid encrypted payload and no trailing pin config bytes.
+1. Construct a NODE_PROVISION BLE message body with a valid encrypted payload and no trailing board-layout bytes.
 2. Deliver the message to the node's provisioning handler.
 3. Assert: provisioning succeeds without error.
-4. Assert: NVS keys `i2c0_sda` and `i2c0_scl` are not written (or remain at their prior values).
+4. Assert: if a `board_layout` flash key already exists, it is not overwritten.
+5. Assert: if no `board_layout` flash key exists, the node uses the legacy compatibility layout on next boot (`i2c0_sda=0`, `i2c0_scl=1`, `one_wire_data=null`, `battery_adc=null`, `sensor_enable=null`).
 
 ---
 
-### T-N0607e  Factory reset does NOT erase pin config
+### T-N0607e  Factory reset does NOT erase board layout
 
 **Validates:** ND-0608 (AC 4), ND-0917
 
 **Procedure:**
-1. Write SDA=4, SCL=5 to NVS keys `i2c0_sda` and `i2c0_scl`.
+1. Write a board-layout record to flash.
 2. Trigger a factory reset (ND-0917).
-3. Assert: NVS keys `i2c0_sda` and `i2c0_scl` still contain 4 and 5.
+3. Assert: the `board_layout` flash key is unchanged.
 4. Trigger HAL initialization.
-5. Assert: the I2C0 peripheral is configured with SDA=4, SCL=5.
+5. Assert: the effective runtime layout still matches the pre-reset board layout.
 
 ---
 
-### T-N0607f  Invalid CBOR trailing data treated as no pin config
+### T-N0607f  Invalid board-layout CBOR is rejected
 
-**Validates:** ND-0608 (AC 6)
+**Validates:** ND-0608 (AC 8)
 
 **Procedure:**
 1. Construct a NODE_PROVISION BLE message body with a valid encrypted payload followed by invalid trailing bytes (e.g., truncated CBOR or random data).
 2. Deliver the message to the node's provisioning handler.
-3. Assert: provisioning succeeds (the encrypted payload is processed normally).
-4. Assert: NVS keys `i2c0_sda` and `i2c0_scl` are not written.
+3. Assert: provisioning fails with a storage / validation error response rather than treating the bytes as "no layout".
+4. Assert: the existing `board_layout` flash key is not modified.
+
+---
+
+### T-N0607g  Explicitly unassigned functions preserved in board layout
+
+**Validates:** ND-0608 (AC 7)
+
+**Procedure:**
+1. Construct a NODE_PROVISION BLE message body with board-layout CBOR `{1: 0, 2: 1, 3: null, 4: null, 5: null}`.
+2. Deliver the message to the provisioning handler and reboot.
+3. Assert: the effective runtime layout preserves `one_wire_data=null`, `battery_adc=null`, and `sensor_enable=null`.
+4. Assert: those functions are distinguishable from concrete GPIO assignments.
+
+---
+
+### T-N0608a  Sensor rail enable occurs after COMMAND
+
+**Validates:** ND-0608a (AC 1)
+
+**Procedure:**
+1. Provision a board layout with `sensor_enable=4` and `battery_adc=2`.
+2. Run a wake cycle with instrumentation on GPIO4 transitions.
+3. Assert: GPIO4 is not asserted before `COMMAND` is successfully received.
+4. Assert: GPIO4 is driven active before post-WAKE command work / BPF execution begins.
+
+---
+
+### T-N0608b  Battery ADC sample stored for next wake
+
+**Validates:** ND-0608a (AC 2, AC 3, AC 5)
+
+**Procedure:**
+1. Provision a board layout with `sensor_enable=4` and `battery_adc=2`.
+2. Configure mock ADC reading to 3125 mV equivalent.
+3. Run a wake cycle through `COMMAND` processing and BPF execution.
+4. Assert: the firmware waits for the fixed `SENSOR_SETTLE_MS` delay (10 ms) before sampling.
+5. Assert: the current-cycle `sonde_context.battery_mv` and `get_battery_mv()` value are 3125.
+6. Assert: 3125 mV is stored in RTC-retained state for the next wake.
+
+---
+
+### T-N0608c  Fallback battery value stored when no ADC assigned
+
+**Validates:** ND-0608a (AC 4, AC 5)
+
+**Procedure:**
+1. Provision a board layout with `battery_adc=null`.
+2. Run a wake cycle through `COMMAND` processing.
+3. Assert: the current-cycle `sonde_context.battery_mv` and `get_battery_mv()` value are 3300.
+4. Assert: 3300 mV is stored in RTC-retained state for the next wake.
 
 ---
 
@@ -2064,7 +2141,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0102 | T-N102 |
 | ND-0103 | T-N103, T-N104, T-N920 |
 | ND-0200 | T-N200, T-N201, T-N921 |
-| ND-0201 | T-N202, T-N203 |
+| ND-0201 | T-N202, T-N202a, T-N202b, T-N203 |
 | ND-0202 | T-N204, T-N205, T-N206, T-N207, T-N922 |
 | ND-0203 | T-N205, T-N208, T-N209, T-N923 |
 | ND-0300 | T-N606a, T-N606b (AEAD path) |
@@ -2088,7 +2165,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0601 | T-N600, T-N601, T-N602, T-N603, T-N931 |
 | ND-0602 | T-N604, T-N605, T-N606, T-N621, T-N627a |
 | ND-0603 | T-N607, T-N608, T-N609, T-N932 |
-| ND-0604 | T-N610, T-N611, T-N612, T-N613, T-N933 |
+| ND-0604 | T-N610, T-N611, T-N612, T-N613, T-N933, T-N0608b, T-N0608c |
 | ND-0605 | T-N614, T-N615, T-N934 |
 | ND-0606 | T-N616, T-N619, T-N620, T-N935 |
 | ND-0700 | T-N201, T-N700 |
@@ -2116,7 +2193,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0916 | T-N918 |
 | ND-0917 | T-N906 |
 | ND-0918 | *(verified by sdkconfig.defaults setting)* |
-| ND-0608 | T-N0607a, T-N0607b, T-N0607c, T-N0607d, T-N0607e, T-N0607f |
+| ND-0608 | T-N0607a, T-N0607b, T-N0607c, T-N0607d, T-N0607e, T-N0607f, T-N0607g |
+| ND-0608a | T-N202b, T-N0608a, T-N0608b, T-N0608c |
 | ND-0609 | T-N621, T-N626, T-N627, T-N632 |
 | ND-0610 | T-N622, T-N623, T-N624 |
 | ND-0611 | T-N623 |

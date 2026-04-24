@@ -185,6 +185,23 @@ On Android, the native library MUST cache `GlobalRef` references to app-defined 
 
 ---
 
+### PT-0109  Sonde-branded application icons
+
+**Priority:** Must  
+**Source:** USER-REQUEST (Sonde Pairing Tool branding)
+
+**Description:**  
+Packaged Sonde Pairing Tool builds MUST use Sonde-branded application icon assets rather than framework-default icons. The desktop bundle icons and Android launcher icons MUST be derived from the canonical Sonde logo asset already stored in the repository.
+
+**Acceptance criteria:**
+
+1. Desktop packaged builds use Sonde-branded application icons in launcher/taskbar/dock surfaces rather than default Tauri branding.
+2. Android packaged builds use Sonde-branded launcher icons rather than default Tauri branding.
+3. The platform-specific icon set is derived from the canonical Sonde logo asset in the repository.
+4. The build/package configuration documents where the canonical icon source lives and how platform-specific derived assets are wired into packaged builds.
+
+---
+
 ## 4  Device discovery
 
 ### PT-0200  BLE scanning
@@ -409,7 +426,7 @@ The encrypted payload MUST NOT exceed 202 bytes (the ESP-NOW frame budget). The 
 **Source:** ble-pairing-protocol.md §6.6, §6.7
 
 **Description:**  
-The tool MUST assemble the `NODE_PROVISION` body as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ payload_len[2, BE u16] ‖ encrypted_payload`, write it to the Node Command characteristic, and wait for `NODE_ACK` (timeout: 5 s). The `encrypted_payload` is a complete ESP-NOW `PEER_REQUEST` frame (see ble-pairing-protocol.md §7.1) built by the phone in two AES-256-GCM layers using `phone_psk`: first, the inner PairingRequest CBOR is encrypted with AAD = `"sonde-pairing-v2"`; then that result is wrapped in the outer ESP-NOW `PEER_REQUEST` frame, whose AEAD AAD is the 11-byte ESP-NOW frame header. The node stores and forwards this frame verbatim — it does not decrypt or interpret the contents.
+The tool MUST assemble the `NODE_PROVISION` body as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ payload_len[2, BE u16] ‖ encrypted_payload ‖ board_layout_cbor?`, write it to the Node Command characteristic, and wait for `NODE_ACK` (timeout: 5 s). The `encrypted_payload` is a complete ESP-NOW `PEER_REQUEST` frame (see ble-pairing-protocol.md §7.1) built by the phone in two AES-256-GCM layers using `phone_psk`: first, the inner PairingRequest CBOR is encrypted with AAD = `"sonde-pairing-v2"`; then that result is wrapped in the outer ESP-NOW `PEER_REQUEST` frame, whose AEAD AAD is the 11-byte ESP-NOW frame header. When present, `board_layout_cbor` is a deterministic CBOR map describing the provisioned board layout (PT-1214). The node stores and forwards the encrypted payload verbatim — it does not decrypt or interpret the contents.
 
 **Acceptance criteria:**
 
@@ -436,19 +453,21 @@ After a successful `NODE_PROVISION` write, the tool MUST zero `node_psk` from me
 
 ---
 
-### PT-0409  Pin configuration validation
+### PT-0409  Board layout validation
 
 **Priority:** Must  
-**Source:** PT-1214 (board pin configuration), phase2.rs implementation
+**Source:** PT-1214 (board layout), phase2.rs implementation
 
 **Description:**  
-Before provisioning, the tool MUST validate any pin configuration supplied by the operator.  GPIO pin numbers must be in range 0–21 (valid ESP32-C3 GPIOs), and the I²C SDA and SCL pins must not be identical.  Invalid configurations MUST be rejected before any BLE transmission.
+Before provisioning, the tool MUST validate any board layout supplied by the operator or selected from a preset. Assigned GPIO pin numbers must be in range 0–21 (valid ESP32-C3 GPIOs). The I2C SDA and SCL functions form a pair: either both are assigned concrete GPIOs or both are explicitly unassigned, and when both are assigned they MUST NOT be identical. Optional functions such as 1-Wire data and sensor-rail enable may be explicitly unassigned; `battery_adc` may also be explicitly unassigned, but when assigned it MUST target an ADC-capable ESP32-C3 GPIO (currently GPIO0–GPIO4). The encoding MUST preserve unassigned state unambiguously. Invalid layouts MUST be rejected before any BLE transmission.
 
 **Acceptance criteria:**
 
-1. A pin configuration with any GPIO number > 21 is rejected with an actionable error identifying the out-of-range pin.
-2. A pin configuration where SDA == SCL is rejected with an actionable error.
-3. A valid pin configuration (both pins in range, SDA ≠ SCL) is accepted.
+1. A board layout with any assigned GPIO number outside 0–21 is rejected with an actionable error identifying the out-of-range function.
+2. A board layout where `i2c0_sda == i2c0_scl` is rejected with an actionable error.
+3. A board layout where exactly one of `i2c0_sda` or `i2c0_scl` is assigned is rejected with an actionable error.
+4. A board layout where `battery_adc` is assigned to a non-ADC-capable GPIO is rejected with an actionable error.
+5. A valid board layout with optional functions explicitly marked unassigned is accepted.
 
 ---
 
@@ -1103,24 +1122,25 @@ The pairing tool MUST apply build-type–aware log-level policies: compile-time 
 
 ---
 
-### PT-1214  Board pin configuration in NODE_PROVISION
+### PT-1214  Board layout in NODE_PROVISION
 
-**Priority:** Should  
+**Priority:** Must  
 **Source:** issue #490, issue #641, ND-0608
 
 **Description:**  
-The pairing tool SHOULD support including optional board-specific pin configuration (I2C SDA/SCL GPIO numbers) in the NODE_PROVISION message body so that a single firmware binary works across different ESP32-C3 boards.
+The pairing tool MUST support including an optional explicit board layout in the `NODE_PROVISION` message body so that a single firmware binary works across board revisions without hard-coding any specific layout in firmware. The board layout describes the GPIO assignment for each supported hardware function and whether that function is explicitly unassigned on the target board.
 
-Pin configuration is sourced from the board selector UI (see PT-1216).  The operator selects a named board preset or enters custom GPIO pin numbers.  The `provision_node` API accepts an optional pin config parameter; the UI layer extracts the selected board's pin assignments and passes them through.
+Board layout is sourced from the board selector UI (see PT-1216). The operator selects a named board preset or enters a custom layout. The `provision_node` API accepts an optional board-layout parameter; the UI layer extracts the selected board's layout and passes it through.
 
 **Acceptance criteria:**
 
-1. The `provision_node(...)` API (which constructs/sends NODE_PROVISION during Phase 2) accepts an optional pin config parameter.
-2. When provided, pin config is encoded as a deterministic CBOR map and appended to the NODE_PROVISION body after the encrypted payload.
-3. When not provided, the NODE_PROVISION body is identical to the existing format (backward compatible).
-4. The CBOR map uses integer keys: 1 = `i2c0_sda` (uint), 2 = `i2c0_scl` (uint).
-5. GPIO values MUST be in the range 0–21 (ESP32-C3).
-6. `i2c0_sda` MUST NOT equal `i2c0_scl`.
+1. The `provision_node(...)` API (which constructs/sends `NODE_PROVISION` during Phase 2) accepts an optional board-layout parameter.
+2. When provided, board layout is encoded as a deterministic CBOR map and appended to the `NODE_PROVISION` body after the encrypted payload.
+3. When not provided, the `NODE_PROVISION` body is identical to the existing format (backward compatible for older callers).
+4. The CBOR map uses integer keys: 1 = `i2c0_sda`, 2 = `i2c0_scl`, 3 = `one_wire_data`, 4 = `battery_adc`, 5 = `sensor_enable`.
+5. Each known key in the board-layout map is encoded as either a concrete GPIO number (`uint`) or `null` to indicate "function explicitly unassigned on this board".
+6. The encoding makes "unassigned" unambiguous to the receiver; the receiver never has to guess whether a function is absent, unsupported, or accidentally omitted.
+7. GPIO values MUST be in the range 0–21 (ESP32-C3); when assigned, `battery_adc` MUST use an ADC-capable GPIO (currently GPIO0–GPIO4); and `i2c0_sda` / `i2c0_scl` MUST either both be assigned or both be `null`.
 
 ---
 
@@ -1146,29 +1166,30 @@ When the pairing tool encounters an error at a user-facing boundary (BLE connect
 ### PT-1216  Board selector UI for node provisioning
 
 **Priority:** Must  
-**Source:** PT-1214 (board pin configuration), ND-0608
+**Source:** PT-1214 (board layout), ND-0608
 
 **Description:**  
-The pairing tool UI MUST present a board selector during Phase 2 (node provisioning) so the operator can specify the target board's I2C pin assignments without entering raw GPIO numbers. The selector is always visible on the provisioning card and determines the `PinConfig` passed to `provision_node()`.
+The pairing tool UI MUST present a board selector during Phase 2 (node provisioning) so the operator can choose a complete target-board layout without entering raw GPIO numbers for common cases. The selector is always visible on the provisioning card and determines the `BoardLayout` passed to `provision_node()`.
 
 The tool MUST include at least the following named presets:
 
-| Preset | `i2c0_sda` | `i2c0_scl` |
-|--------|-----------|-----------|
-| Espressif ESP32-C3 DevKitM-1 | 0 | 1 |
-| SparkFun ESP32-C3 Pro Micro | 5 | 6 |
+| Preset | `i2c0_sda` | `i2c0_scl` | `one_wire_data` | `battery_adc` | `sensor_enable` |
+|--------|-------------|-------------|------------------|---------------|-----------------|
+| Sonde Sensor Node rev_a | 6 | 7 | 3 | 2 | 4 |
+| Espressif ESP32-C3 DevKitM-1 | 0 | 1 | `null` | `null` | `null` |
+| SparkFun ESP32-C3 Pro Micro | 5 | 6 | `null` | `null` | `null` |
 
-A "Custom" option MUST also be available, which reveals two numeric input fields for arbitrary GPIO pin entry (validated per PT-0409).
+A "Custom" option MUST also be available, which reveals editable fields for the supported hardware functions. Optional functions may be left blank to encode `null` / unassigned (validated per PT-0409).
 
 **Acceptance criteria:**
 
 1. The Phase 2 provisioning card includes a board selector dropdown with the named presets above and a "Custom" option.
-2. The default selection is "Espressif ESP32-C3 DevKitM-1".
-3. Selecting a named preset sets the `PinConfig` to the preset's pin values — no additional input required.
-4. Selecting "Custom" reveals two numeric input fields for SDA and SCL GPIO numbers.
-5. Custom GPIO values are validated per PT-0409 (range 0–21, SDA ≠ SCL) before provisioning.
-6. The selected `PinConfig` is always passed to `provision_node()` — the tool never sends `None` when the UI is used.
-7. The Tauri `provision_node` command accepts optional `i2c_sda` and `i2c_scl` parameters and converts them to a `PinConfig`.
+2. The default selection is "Sonde Sensor Node rev_a".
+3. Selecting a named preset sets the complete `BoardLayout` to the preset's values — no additional input required.
+4. Selecting "Custom" reveals editable fields for `i2c0_sda`, `i2c0_scl`, `one_wire_data`, `battery_adc`, and `sensor_enable`, with optional functions allowed to remain blank / unassigned.
+5. Custom values are validated per PT-0409 before provisioning.
+6. The selected `BoardLayout` is always passed to `provision_node()` when the UI is used — the tool does not rely on implicit firmware defaults.
+7. The Tauri `provision_node` command accepts board-layout parameters sufficient to represent all supported functions and explicit unassigned state.
 
 ---
 
@@ -1374,7 +1395,7 @@ The UI SHOULD use CSS transitions for page changes.  Forward navigation slides t
 | PT-1211 | LESC pairing status logging | Active |
 | PT-1212 | Error logging with actionable context | Active |
 | PT-1213 | Build-type–aware log levels | Active |
-| PT-1214 | Board pin configuration in NODE_PROVISION | Active |
+| PT-1214 | Board layout in NODE_PROVISION | Active |
 | PT-1215 | Error diagnostic observability (extends PT-1212) | Active |
 | PT-1216 | Board selector UI for node provisioning | Active |
 | PT-1217 | Multi-page wizard navigation | Active |

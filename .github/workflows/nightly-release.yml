@@ -28,6 +28,7 @@ jobs:
 
   gateway-container:
     name: Gateway container
+    needs: [modem-firmware]
     uses: ./.github/workflows/gateway-container.yml
     permissions:
       contents: read

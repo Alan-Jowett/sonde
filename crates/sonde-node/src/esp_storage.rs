@@ -88,6 +88,94 @@ impl NvsStorage {
         self.nvs.get_u32("i2c0_sda").ok().flatten().is_some()
             || self.nvs.get_u32("i2c0_scl").ok().flatten().is_some()
     }
+
+    fn legacy_i2c0_pin_state(&self) -> (Option<u8>, Option<u8>) {
+        const MAX_GPIO: u8 = 21;
+        let read_pin = |key: &str| {
+            self.nvs
+                .get_u32(key)
+                .ok()
+                .flatten()
+                .and_then(|v| u8::try_from(v).ok())
+                .filter(|&v| v <= MAX_GPIO)
+        };
+        (read_pin("i2c0_sda"), read_pin("i2c0_scl"))
+    }
+
+    fn restore_legacy_i2c0_pins(
+        &mut self,
+        i2c0_sda: Option<u8>,
+        i2c0_scl: Option<u8>,
+    ) -> NodeResult<()> {
+        match i2c0_sda {
+            Some(pin) => self
+                .nvs
+                .set_u32("i2c0_sda", pin as u32)
+                .map_err(|_| NodeError::StorageError("legacy i2c0_sda write failed"))?,
+            None => {
+                self.nvs
+                    .remove("i2c0_sda")
+                    .map_err(|_| NodeError::StorageError("legacy i2c0_sda erase failed"))?;
+            }
+        }
+        match i2c0_scl {
+            Some(pin) => self
+                .nvs
+                .set_u32("i2c0_scl", pin as u32)
+                .map_err(|_| NodeError::StorageError("legacy i2c0_scl write failed"))?,
+            None => {
+                self.nvs
+                    .remove("i2c0_scl")
+                    .map_err(|_| NodeError::StorageError("legacy i2c0_scl erase failed"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn read_blob_exact(&self, key: &str) -> NodeResult<Option<Vec<u8>>> {
+        let Some(len) = self
+            .nvs
+            .blob_len(key)
+            .map_err(|_| NodeError::StorageError("blob length read failed"))?
+        else {
+            return Ok(None);
+        };
+
+        let mut buf = vec![0u8; len];
+        let slice_len = self
+            .nvs
+            .get_blob(key, &mut buf)
+            .map_err(|_| NodeError::StorageError("blob read failed"))?
+            .ok_or(NodeError::StorageError("blob disappeared during read"))?
+            .len();
+        buf.truncate(slice_len);
+        Ok(Some(buf))
+    }
+
+    fn restore_board_layout_blob(&mut self, blob: Option<&[u8]>) -> NodeResult<()> {
+        match blob {
+            Some(blob) => self
+                .nvs
+                .set_blob("board_layout", blob)
+                .map_err(|_| NodeError::StorageError("board_layout rollback failed"))?,
+            None => {
+                self.nvs
+                    .remove("board_layout")
+                    .map_err(|_| NodeError::StorageError("board_layout erase failed"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn rollback_board_layout_update(
+        &mut self,
+        board_layout_blob: Option<&[u8]>,
+        legacy_i2c0_sda: Option<u8>,
+        legacy_i2c0_scl: Option<u8>,
+    ) -> NodeResult<()> {
+        self.restore_board_layout_blob(board_layout_blob)?;
+        self.restore_legacy_i2c0_pins(legacy_i2c0_sda, legacy_i2c0_scl)
+    }
 }
 
 impl crate::traits::PlatformStorage for NvsStorage {
@@ -330,10 +418,16 @@ impl crate::traits::PlatformStorage for NvsStorage {
     }
 
     fn read_board_layout(&self) -> Option<BoardLayout> {
-        let mut buf = [0u8; 32];
-        if let Ok(Some(slice)) = self.nvs.get_blob("board_layout", &mut buf) {
-            if let Ok(layout) = decode_board_layout_cbor(slice) {
-                return Some(layout);
+        match self.read_blob_exact("board_layout") {
+            Ok(Some(blob)) => match decode_board_layout_cbor(&blob) {
+                Ok(layout) => return Some(layout),
+                Err(err) => {
+                    log::warn!("failed to decode stored board_layout: {}", err);
+                }
+            },
+            Ok(None) => {}
+            Err(err) => {
+                log::warn!("failed to read stored board_layout: {}", err);
             }
         }
 
@@ -354,19 +448,30 @@ impl crate::traits::PlatformStorage for NvsStorage {
     fn write_board_layout(&mut self, layout: &BoardLayout) -> NodeResult<()> {
         let encoded = encode_board_layout_cbor(layout)
             .map_err(|_| NodeError::StorageError("board_layout encode failed"))?;
-        self.nvs
-            .set_blob("board_layout", &encoded)
-            .map_err(|_| NodeError::StorageError("board_layout write failed"))?;
+        let previous_board_layout = self.read_blob_exact("board_layout")?;
+        let (previous_i2c0_sda, previous_i2c0_scl) = self.legacy_i2c0_pin_state();
 
-        if let Some(i2c0_sda) = layout.i2c0_sda {
-            self.nvs
-                .set_u32("i2c0_sda", i2c0_sda as u32)
-                .map_err(|_| NodeError::StorageError("legacy i2c0_sda write failed"))?;
+        if let Err(err) = self
+            .nvs
+            .set_blob("board_layout", &encoded)
+            .map_err(|_| NodeError::StorageError("board_layout write failed"))
+        {
+            let _ = self.rollback_board_layout_update(
+                previous_board_layout.as_deref(),
+                previous_i2c0_sda,
+                previous_i2c0_scl,
+            );
+            return Err(err);
         }
-        if let Some(i2c0_scl) = layout.i2c0_scl {
-            self.nvs
-                .set_u32("i2c0_scl", i2c0_scl as u32)
-                .map_err(|_| NodeError::StorageError("legacy i2c0_scl write failed"))?;
+
+        if let Err(err) = self.restore_legacy_i2c0_pins(layout.i2c0_sda, layout.i2c0_scl) {
+            self.rollback_board_layout_update(
+                previous_board_layout.as_deref(),
+                previous_i2c0_sda,
+                previous_i2c0_scl,
+            )
+            .map_err(|_| NodeError::StorageError("board_layout rollback failed"))?;
+            return Err(err);
         }
         Ok(())
     }

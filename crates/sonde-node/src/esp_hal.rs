@@ -299,8 +299,9 @@ impl hal::Hal for EspHal {
     }
 
     fn adc_read(&mut self, channel: u32) -> i32 {
-        // ESP32 ADC1 has channels 0-7.
-        if channel > 7 {
+        // ESP32-C3 exposes ADC1 channels 0-4 on GPIO0-4. GPIO5 is ADC2 and
+        // is not handled by this ADC1-only path.
+        if channel > 4 {
             return -1;
         }
         unsafe {

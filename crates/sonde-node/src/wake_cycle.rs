@@ -70,7 +70,7 @@ fn hash_hex_prefix(hash: &[u8]) -> HashHexPrefix<'_> {
 
 fn gpio_to_adc_channel(pin: u8) -> Option<u32> {
     match pin {
-        0..=5 => Some(pin as u32),
+        0..=4 => Some(pin as u32),
         _ => None,
     }
 }
@@ -1335,6 +1335,14 @@ mod tests {
         fn delay_ms(&self, _ms: u32) {
             // No-op in tests
         }
+    }
+
+    #[test]
+    fn gpio_to_adc_channel_only_maps_esp32c3_adc1_pins() {
+        assert_eq!(gpio_to_adc_channel(0), Some(0));
+        assert_eq!(gpio_to_adc_channel(4), Some(4));
+        assert_eq!(gpio_to_adc_channel(5), None);
+        assert_eq!(gpio_to_adc_channel(21), None);
     }
 
     // --- Mock BPF interpreter ---

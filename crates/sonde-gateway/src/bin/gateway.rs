@@ -20,10 +20,10 @@ use sonde_gateway::display_banner::{
     send_gateway_version_banner, ScrollableFramebuffer, STATUS_TEXT_COLUMNS,
 };
 use sonde_gateway::display_control::{
-    cancel_status_page_scroll, invalidate_display_restore, reset_status_page_cycle,
-    try_claim_display_restore, ActiveStatusPageScroll, StatusPageCycle, StatusPageScrollTask,
-    BUTTON_EXIT_REASON_DISPLAY_DURATION, NODE_STATUS_SCROLL_INTERVAL, NODE_STATUS_SCROLL_STEP_PX,
-    STATUS_PAGE_TIMEOUT,
+    cancel_status_page_scroll, claim_display_generation, invalidate_display_restore,
+    reset_status_page_cycle, try_claim_display_restore, ActiveStatusPageScroll, StatusPageCycle,
+    StatusPageScrollTask, BUTTON_EXIT_REASON_DISPLAY_DURATION, NODE_STATUS_SCROLL_INTERVAL,
+    NODE_STATUS_SCROLL_STEP_PX, STATUS_PAGE_TIMEOUT,
 };
 use sonde_gateway::engine::{resolve_espnow_channel, Gateway, PendingCommand};
 use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
@@ -224,7 +224,7 @@ fn schedule_button_pairing_banner_restore(
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     display_generation: &Arc<AtomicU64>,
 ) {
-    let generation = display_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let generation = claim_display_generation(display_generation);
     let transport: Weak<UsbEspNowTransport> = Arc::downgrade(transport);
     let controller = Arc::clone(controller);
     let display_generation = Arc::clone(display_generation);
@@ -252,7 +252,7 @@ fn schedule_status_page_banner_restore(
     status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
     scroll_task: &StatusPageScrollTask,
 ) -> u64 {
-    let generation = display_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let generation = claim_display_generation(display_generation);
     let transport: Weak<UsbEspNowTransport> = Arc::downgrade(transport);
     let controller = Arc::clone(controller);
     let display_generation = Arc::clone(display_generation);

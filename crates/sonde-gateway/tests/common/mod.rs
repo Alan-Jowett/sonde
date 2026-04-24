@@ -4,9 +4,9 @@
 //! Shared mock-modem helpers for gateway integration tests.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::sync::RwLock;
@@ -21,13 +21,43 @@ use sonde_gateway::storage::{InMemoryStorage, Storage};
 
 use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage, ModemReady};
 
+async fn read_with_wall_clock_timeout(
+    stream: &mut DuplexStream,
+    buf: &mut [u8],
+    timeout: Duration,
+) -> usize {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled_bg = Arc::clone(&cancelled);
+    tokio::task::spawn_blocking(move || {
+        let deadline = std::time::Instant::now() + timeout;
+        while !cancelled_bg.load(Ordering::SeqCst) {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                let _ = tx.send(());
+                return;
+            }
+            std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
+        }
+    });
+
+    tokio::select! {
+        read = stream.read(buf) => {
+            cancelled.store(true, Ordering::SeqCst);
+            read.expect("read failed")
+        }
+        _ = async {
+            let _ = rx.await;
+        } => panic!("timed out waiting for modem message"),
+    }
+}
+
 /// Read the next decoded modem message from a mock server stream.
 pub async fn read_modem_msg(
     stream: &mut DuplexStream,
     decoder: &mut FrameDecoder,
     buf: &mut [u8],
 ) -> ModemMessage {
-    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match decoder.decode() {
             Ok(Some(msg)) => return msg,
@@ -36,19 +66,7 @@ pub async fn read_modem_msg(
         }
         // Use a wall-clock deadline so paused Tokio time does not turn a
         // missing modem frame into a hung test.
-        let n = loop {
-            tokio::select! {
-                read = stream.read(buf) => {
-                    break read.expect("read failed");
-                }
-                _ = tokio::task::yield_now() => {
-                    assert!(
-                        Instant::now() < deadline,
-                        "timed out waiting for modem message"
-                    );
-                }
-            }
-        };
+        let n = read_with_wall_clock_timeout(stream, buf, Duration::from_secs(10)).await;
         assert!(n > 0, "stream closed unexpectedly");
         decoder.push(&buf[..n]);
     }

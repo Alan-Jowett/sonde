@@ -1824,9 +1824,8 @@ Each architecture (`linux/amd64`, `linux/arm64`) is built natively on a per-arch
 
 **Multi-stage Dockerfile** (`.github/docker/Dockerfile.gateway`):
 
-1. **Builder stage** (`rust:alpine`): installs `musl-dev` and `protobuf`, builds all four binaries; the `sonde-gateway` build uses `--no-default-features` to exclude the `keyring` feature and its `secret-service`/`zbus` dependency tree.
-2. **Flashing-assets stage**: produces or imports the `espflash` executable plus the two merged modem flash images (`modem-firmware` and `modem-firmware-verbose`) generated for the same workflow run and source revision as the gateway image build.
-3. **Runtime stage** (`alpine:3.21`): copies only the compiled runtime binaries, `espflash`, and the bundled modem flash images, creates a non-root `sonde` user, and declares `VOLUME /var/lib/sonde`.
+1. **Builder stage** (`rust:alpine`): installs `musl-dev`, `protobuf`, and the additional native dependencies required to build `espflash`; installs the pinned `espflash` CLI; builds all four Sonde binaries; and uses `--no-default-features` for `sonde-gateway` to exclude the `keyring` feature and its `secret-service`/`zbus` dependency tree.
+2. **Runtime stage** (`alpine:3.21`): copies only the compiled runtime binaries, the `espflash` executable from the builder stage, and the two merged modem flash images (`modem-firmware` and `modem-firmware-verbose`) supplied in the Docker build context by the same workflow run. It then creates a non-root `sonde` user and declares `VOLUME /var/lib/sonde`.
 
 ### 22.3  Bundled flashing assets (GW-1804)
 

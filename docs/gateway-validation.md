@@ -3394,11 +3394,10 @@ A configurable stub handler process (or in-process mock) that:
 4. Run `docker run --rm <image> --help` and verify `--key-provider env` appears in the output.
 
 **Expected:**
-1. `ENTRYPOINT` is `["sonde-gateway"]` and `CMD` is `["--db", "/var/lib/sonde/sonde.db", "--port", "/dev/ttyACM0", "--key-provider", "env"]`.
+1. `ENTRYPOINT` is `["sonde-gateway"]` and `CMD` is `["--db", "/var/lib/sonde/sonde.db", "--port", "/dev/ttyACM0", "--key-provider", "env"]`, so the default startup path remains the gateway binary rather than `espflash`.
 2. `whoami` outputs `sonde`.
 3. File creation in `/var/lib/sonde` succeeds (writable by `sonde` user).
 4. `--key-provider env` is accepted by the CLI help path.
-5. The default startup path is the gateway binary, not `espflash`.
 
 ---
 

@@ -29,8 +29,9 @@ pub struct SensorDescriptor {
     pub label: Option<String>,
 }
 
-/// Persisted node record. The `node_id` is an admin-assigned opaque
-/// identifier used to correlate a node across sessions and handler API calls.
+/// Node record. The `node_id` is an admin-assigned opaque identifier used to
+/// correlate a node across sessions and handler API calls. The `last_seen`
+/// field is runtime-only and is not persisted by durable storage backends.
 #[derive(Debug, Clone)]
 pub struct NodeRecord {
     pub node_id: String,
@@ -85,7 +86,6 @@ impl NodeRecord {
         self.firmware_abi_version = Some(firmware_abi_version);
         self.firmware_version = Some(firmware_version);
         let now = SystemTime::now();
-        self.last_seen = Some(now);
 
         // GW-0702 AC2: maintain battery history, capped at MAX_BATTERY_HISTORY.
         self.battery_history.push(BatteryReading {

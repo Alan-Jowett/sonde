@@ -304,10 +304,11 @@ recv frame
   │     ├── determine command (check program_hash, pending actions)
   │     ├── if command is NOP and deferred data exists for node:
   │     │     └── include deferred data as `blob` (key 10) in COMMAND, clear store
-  │     ├── encode COMMAND response
-  │     ├── send response (echoing wake nonce)
-  │     ├── update node registry (battery_mv, firmware_abi_version, firmware_version)
-  │     ├── if WAKE contains `blob`:
+   │     ├── encode COMMAND response
+   │     ├── send response (echoing wake nonce)
+   │     ├── update node registry (battery_mv, firmware_abi_version, firmware_version)
+   │     ├── update runtime node observations (`last_seen`)
+   │     ├── if WAKE contains `blob`:
   │     │     ├── route to handler as DATA message (§9.4)
   │     │     └── store handler reply as deferred data (§6.3a)
   │     └── emit EVENT to handler (node_online)
@@ -349,7 +350,7 @@ Only one command is issued per WAKE (GW-0103).
 
 ## 7  Node registry
 
-The node registry persists node metadata through the storage trait.
+The node registry persists durable node metadata through the storage trait. Runtime-only observation data is kept separately in memory.
 
 ### 7.1  Node record
 
@@ -364,10 +365,23 @@ pub struct NodeRecord {
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
     pub last_battery_mv: Option<u32>,
-    pub last_seen: Option<SystemTime>,
     pub admin_node_id: String,  // opaque human-readable ID for handler API
 }
 ```
+
+`NodeRecord` is used primarily for durable registry state. The Rust struct currently retains a `last_seen` field for in-memory compatibility, but it is not storage-backed, is initialized as `None` on reads/imports, and is not used as the source of truth for admin status or timeout detection. The runtime `last_seen` data lives in the separate in-memory observation map below.
+
+### 7.1a  Runtime node observations
+
+The gateway maintains a separate in-memory map for per-node runtime observations:
+
+```rust
+pub struct RuntimeNodeState {
+    pub last_seen: Option<SystemTime>,
+}
+```
+
+The runtime state is keyed by `NodeId` and updated only after a valid `WAKE` is processed. It is cleared on gateway restart and is excluded from SQLite persistence and state export/import. Admin read paths and timeout detection merge durable `NodeRecord` data with this runtime map.
 
 ### 7.2  Key lookup
 
@@ -576,7 +590,7 @@ The session manager emits lifecycle events to handlers (GW-0507):
 |---|---|---|
 | `node_online` | WAKE processed | `battery_mv`, `firmware_abi_version`, `firmware_version` |
 | `program_updated` | PROGRAM_ACK received | `program_hash` |
-| `node_timeout` | Node missed expected wake | `last_seen`, `expected_interval_s` |
+| `node_timeout` | Node missed expected wake | `last_seen`, `expected_interval_s` (`last_seen` comes from runtime node observations) |
 
 Events are sent as EVENT messages (msg_type 0x02) to the handler's stdin. No reply is expected.
 
@@ -935,7 +949,7 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 | Assign program | `AssignProgram` | Sets a node's assigned program. Next WAKE triggers UPDATE_PROGRAM if hash differs. |
 | Queue ephemeral | `QueueEphemeral` | Queues a one-shot diagnostic program for a node's next WAKE. |
 | Set schedule | `SetSchedule` | Queues an UPDATE_SCHEDULE for a node's next WAKE. |
-| Node status | `GetNodeStatus` | Returns latest known state for a node (program hash, battery, ABI version, last seen, active session). |
+| Node status | `GetNodeStatus` | Returns latest known state for a node (program hash, battery, ABI version, runtime last seen, active session). Runtime `last_seen` is cleared on gateway restart. |
 | Export state | `ExportState` | Serializes gateway state (node registry, program library, registered identity/phone PSKs, and handler configuration). Encrypted with AES-256-GCM using an operator-supplied passphrase. |
 | Import state | `ImportState` | Restores node registry, program library, registered identity/phone PSKs, and handler configuration from a previously exported, encrypted bundle. If the bundle lacks handler records (older version), existing handlers are preserved. |
 | Modem status | `GetModemStatus` | Returns modem status: radio channel, TX/RX/fail counters, uptime. |

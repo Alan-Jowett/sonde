@@ -687,7 +687,6 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
             format!("psk decryption failed for node '{node_id}': {e}").into(),
         )
     })?;
-    let last_seen_epoch: Option<i64> = row.get(8)?;
     let rf_channel: Option<u8> = {
         let v: Option<u32> = row.get(9)?;
         v.map(|c| {
@@ -723,7 +722,7 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         firmware_abi_version: row.get(6)?,
         firmware_version,
         last_battery_mv: row.get(7)?,
-        last_seen: last_seen_epoch.map(epoch_s_to_system_time),
+        last_seen: None,
         rf_channel,
         sensors: sensors_json
             .map(|j| sensors_from_json(&j))
@@ -909,7 +908,6 @@ impl Storage for SqliteStorage {
         let record = record.clone();
         let mk = self.master_key.clone();
         self.with_conn(move |conn| {
-            let last_seen_epoch = record.last_seen.as_ref().map(system_time_to_epoch_s);
             let encrypted_psk = encrypt_psk(&mk, &record.node_id, &record.psk)?;
             let sensors_json = sensors_to_json(&record.sensors);
             let tx = conn.unchecked_transaction().map_err(map_err)?;
@@ -941,7 +939,7 @@ impl Storage for SqliteStorage {
                     record.schedule_interval_s,
                     record.firmware_abi_version,
                     record.last_battery_mv,
-                    last_seen_epoch,
+                    Option::<i64>::None,
                     record.rf_channel.map(|c| c as u32),
                     sensors_json,
                     record.registered_by_phone_id,
@@ -960,7 +958,6 @@ impl Storage for SqliteStorage {
         let record = record.clone();
         let mk = self.master_key.clone();
         self.with_conn(move |conn| {
-            let last_seen_epoch = record.last_seen.as_ref().map(system_time_to_epoch_s);
             let encrypted_psk = encrypt_psk(&mk, &record.node_id, &record.psk)?;
             let sensors_json = sensors_to_json(&record.sensors);
             let rows = conn
@@ -979,7 +976,7 @@ impl Storage for SqliteStorage {
                         record.schedule_interval_s,
                         record.firmware_abi_version,
                         record.last_battery_mv,
-                        last_seen_epoch,
+                        Option::<i64>::None,
                         record.rf_channel.map(|c| c as u32),
                         sensors_json,
                         record.registered_by_phone_id,
@@ -1146,8 +1143,6 @@ impl Storage for SqliteStorage {
                 }
 
                 for record in &nodes {
-                    let last_seen_epoch: Option<i64> =
-                        record.last_seen.as_ref().map(system_time_to_epoch_s);
                     let encrypted_psk =
                         encrypt_psk(&mk, &record.node_id, &record.psk)?;
                     conn.execute(
@@ -1164,7 +1159,7 @@ impl Storage for SqliteStorage {
                             record.schedule_interval_s,
                             record.firmware_abi_version,
                             record.last_battery_mv,
-                            last_seen_epoch,
+                            Option::<i64>::None,
                             record.firmware_version,
                         ],
                     )
@@ -1737,7 +1732,6 @@ mod tests {
         // Create.
         let mut node = make_node("n1", 42);
         node.assigned_program_hash = Some(vec![0xFF; 32]);
-        node.last_seen = Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000));
         store.upsert_node(&node).await.unwrap();
 
         // Read.
@@ -1747,10 +1741,7 @@ mod tests {
         assert_eq!(fetched.psk, [0xAB; 32]);
         assert_eq!(fetched.assigned_program_hash, Some(vec![0xFF; 32]));
         assert_eq!(fetched.schedule_interval_s, 60);
-        assert_eq!(
-            fetched.last_seen,
-            Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000))
-        );
+        assert_eq!(fetched.last_seen, None);
 
         // List.
         assert_eq!(store.list_nodes().await.unwrap().len(), 1);

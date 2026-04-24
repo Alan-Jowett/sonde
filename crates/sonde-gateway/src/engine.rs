@@ -864,10 +864,13 @@ impl Gateway {
             _ => {}
         }
 
-        // 4. Update registry (battery_mv, firmware_abi_version, firmware_version, last_seen)
+        // 4. Update registry (battery_mv, firmware_abi_version, firmware_version)
         let mut updated_node = node.clone();
         updated_node.update_telemetry(battery_mv, firmware_abi_version, firmware_version);
         let _ = self.storage.upsert_node(&updated_node).await;
+        self.session_manager
+            .record_last_seen(&node.node_id, SystemTime::now())
+            .await;
 
         // 4a. Emit node_online EVENT to handlers (GW-0507)
         {
@@ -1531,7 +1534,7 @@ impl Gateway {
     ///
     /// Emits a `node_timeout` EVENT to handlers for each timed-out node.
     /// A node is considered timed-out when `multiplier × schedule_interval_s`
-    /// has elapsed since its `last_seen` timestamp (default multiplier: 3,
+    /// has elapsed since its runtime `last_seen` timestamp (default multiplier: 3,
     /// per gateway-design.md). Call this periodically from the gateway main
     /// loop.
     pub async fn check_node_timeouts(&self, multiplier: u64) {
@@ -1541,6 +1544,7 @@ impl Gateway {
         let multiplier = if multiplier == 0 { 3 } else { multiplier };
 
         let nodes = self.storage.list_nodes().await.unwrap_or_default();
+        let last_seen_by_node = self.session_manager.snapshot_last_seen().await;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
@@ -1551,7 +1555,7 @@ impl Gateway {
                 continue;
             }
 
-            let last_seen = match node.last_seen {
+            let last_seen = match last_seen_by_node.get(&node.node_id).copied() {
                 Some(ts) => match ts.duration_since(UNIX_EPOCH) {
                     Ok(d) => d.as_secs(),
                     Err(_) => continue,

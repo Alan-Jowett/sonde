@@ -741,6 +741,22 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0517a  Node timeout suppressed after restart until next WAKE
+
+**Validates:** GW-0507
+
+**Procedure:**
+1. Register a node with a known schedule (`interval_s = 10`).
+2. Start the gateway, send one WAKE, then stop the gateway before the timeout interval elapses.
+3. Start a fresh gateway instance using the same durable state, but do not send a new WAKE from the node.
+4. Wait longer than `node_timeout_multiplier × interval_s`.
+5. Assert: no `node_timeout` EVENT is emitted for the node.
+6. Send a new WAKE from the node.
+7. Wait longer than `node_timeout_multiplier × interval_s` without another WAKE.
+8. Assert: the handler now receives `node_timeout` with `last_seen` from the post-restart WAKE.
+
+---
+
 ### T-0518  WAKE with piggybacked blob routed to handler
 
 **Validates:** GW-0510
@@ -1342,6 +1358,21 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0809a  Node status omits `last_seen` before first post-startup WAKE
+
+**Validates:** GW-0804
+
+**Procedure:**
+1. Register a node.
+2. Start the gateway and immediately call `GetNodeStatus` before any WAKE from that node.
+3. Assert: status is returned successfully.
+4. Assert: `last_seen` is absent.
+5. Send WAKE from the node.
+6. Call `GetNodeStatus` again.
+7. Assert: `last_seen` is now present and recent.
+
+---
+
 ### T-0810  State export and import via gRPC
 
 **Validates:** GW-0805
@@ -1353,6 +1384,7 @@ A configurable stub handler process (or in-process mock) that:
 4. Call `ImportState` with the saved bytes.
 5. Call `ListNodes` and `ListPrograms`.
 6. Assert: all nodes and programs are restored.
+7. Assert: `last_seen` is absent for imported nodes until each node completes a new `WAKE`.
 
 ---
 

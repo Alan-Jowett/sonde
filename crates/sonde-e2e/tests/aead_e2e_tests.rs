@@ -93,7 +93,12 @@ async fn t_e2e_001_nop_wake_cycle() {
     // Verify gateway updated node telemetry.
     let record = env.storage.get_node("aead-nop").await.unwrap().unwrap();
     assert_eq!(record.last_battery_mv, Some(0));
-    assert!(record.last_seen.is_some());
+    assert!(env
+        .gateway
+        .session_manager()
+        .get_last_seen("aead-nop")
+        .await
+        .is_some());
     assert_eq!(
         record.firmware_abi_version,
         Some(sonde_node::FIRMWARE_ABI_VERSION)
@@ -196,8 +201,12 @@ async fn t_e2e_003_wrong_psk_rejected() {
     // Gateway must not have updated telemetry.
     let record = env.storage.get_node("aead-wrong").await.unwrap().unwrap();
     assert!(
-        record.last_seen.is_none(),
-        "`last_seen` should be None — gateway silently discarded the WAKE"
+        env.gateway
+            .session_manager()
+            .get_last_seen("aead-wrong")
+            .await
+            .is_none(),
+        "runtime `last_seen` should be None — gateway silently discarded the WAKE"
     );
     assert_eq!(
         record.last_battery_mv, None,
@@ -228,8 +237,12 @@ async fn t_e2e_004_tampered_frame_discarded() {
     // Gateway must not have updated telemetry.
     let record = env.storage.get_node("aead-tamper").await.unwrap().unwrap();
     assert!(
-        record.last_seen.is_none(),
-        "`last_seen` should be None — gateway silently discarded the tampered WAKE"
+        env.gateway
+            .session_manager()
+            .get_last_seen("aead-tamper")
+            .await
+            .is_none(),
+        "runtime `last_seen` should be None — gateway silently discarded the tampered WAKE"
     );
     assert_eq!(
         record.last_battery_mv, None,

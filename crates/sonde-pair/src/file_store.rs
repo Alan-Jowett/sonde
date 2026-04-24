@@ -78,6 +78,12 @@ pub fn default_protector() -> Option<Box<dyn PskProtector>> {
     None
 }
 
+/// Maximum accepted size for a protected PSK blob before hex decoding.
+///
+/// The protected form is opaque and backend-specific, but it should remain
+/// comfortably below this bound for the currently supported protectors.
+const MAX_PROTECTED_PSK_BLOB_LEN: usize = 4096;
+
 // ---------------------------------------------------------------------------
 // Serialisation types
 // ---------------------------------------------------------------------------
@@ -167,7 +173,7 @@ impl FilePairingStore {
         }
 
         let (phone_psk, phone_psk_protected) = if let Some(ref protector) = self.protector {
-            let protected = protector.protect(&artifacts.phone_psk)?;
+            let protected = Zeroizing::new(protector.protect(&artifacts.phone_psk)?);
             (None, Some(to_hex(&protected)))
         } else {
             (Some(to_hex(&*artifacts.phone_psk)), None)
@@ -224,7 +230,19 @@ impl FilePairingStore {
         ) {
             (Some(protected_hex), _, Some(protector)) => {
                 // Protected path: use the configured protector to decrypt.
-                let protected_bytes = from_hex(protected_hex, protected_hex.len() / 2)?;
+                if protected_hex.len() % 2 != 0 {
+                    return Err(PairingError::StoreCorrupted(
+                        "phone_psk_protected must contain an even number of hex chars".into(),
+                    ));
+                }
+                let protected_len = protected_hex.len() / 2;
+                if protected_len > MAX_PROTECTED_PSK_BLOB_LEN {
+                    return Err(PairingError::StoreCorrupted(format!(
+                        "phone_psk_protected exceeds maximum supported size ({} bytes)",
+                        MAX_PROTECTED_PSK_BLOB_LEN
+                    )));
+                }
+                let protected_bytes = Zeroizing::new(from_hex(protected_hex, protected_len)?);
                 let unprotected = protector.unprotect(&protected_bytes)?;
                 *psk = *unprotected;
             }

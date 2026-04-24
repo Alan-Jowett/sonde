@@ -466,7 +466,7 @@ pub trait PairingStore: Send + Sync {
 
 Concrete implementations:
 
-- `store::MockPairingStore` — in-memory, `Arc<Mutex<…>>`-backed, for tests.
+- `store::MockPairingStore` — in-memory, `Mutex<…>`-backed; can be wrapped in `Arc` for sharing in tests.
 - `file_store::FilePairingStore` — JSON file, desktop (`file-store` feature), with optional `PskProtector` for at-rest PSK encryption.
 - `android_store::AndroidPairingStore` — `EncryptedSharedPreferences` via JNI (`android` feature).
 

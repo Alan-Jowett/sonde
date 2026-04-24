@@ -127,12 +127,10 @@ impl SerialPort for PipeSerial {
     fn read(&mut self, buf: &mut [u8]) -> (usize, bool) {
         self.drain_incoming();
 
-        let reconnected = if self.first_read {
+        if self.first_read {
             self.first_read = false;
-            self.pending.is_empty()
-        } else {
-            false
-        };
+        }
+        let reconnected = false;
 
         let n = buf.len().min(self.pending.len());
         for slot in &mut buf[..n] {

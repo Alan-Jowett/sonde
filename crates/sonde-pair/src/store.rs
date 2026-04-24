@@ -18,7 +18,7 @@
 //! pre-loaded with test data and optionally configured to inject a corruption error on
 //! `load_artifacts()`.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::error::PairingError;
 use crate::phase1::PairingArtifacts;
@@ -95,18 +95,27 @@ impl MockPairingStore {
     ///
     /// The injected error is consumed once; subsequent calls return the stored value.
     pub fn set_load_error(&self, error: PairingError) {
-        self.inner.lock().unwrap().load_error = Some(error);
+        self
+            .lock_inner()
+            .expect("MockPairingStore mutex poisoned during test setup")
+            .load_error = Some(error);
+    }
+
+    fn lock_inner(&self) -> Result<MutexGuard<'_, MockInner>, PairingError> {
+        self.inner
+            .lock()
+            .map_err(|_| PairingError::StoreCorrupted("MockPairingStore mutex poisoned".into()))
     }
 }
 
 impl PairingStore for MockPairingStore {
     fn save_artifacts(&self, artifacts: &PairingArtifacts) -> Result<(), PairingError> {
-        self.inner.lock().unwrap().artifacts = Some(artifacts.clone());
+        self.lock_inner()?.artifacts = Some(artifacts.clone());
         Ok(())
     }
 
     fn load_artifacts(&self) -> Result<Option<PairingArtifacts>, PairingError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner()?;
         if let Some(err) = inner.load_error.take() {
             return Err(err);
         }
@@ -114,7 +123,7 @@ impl PairingStore for MockPairingStore {
     }
 
     fn clear(&self) -> Result<(), PairingError> {
-        self.inner.lock().unwrap().artifacts = None;
+        self.lock_inner()?.artifacts = None;
         Ok(())
     }
 }

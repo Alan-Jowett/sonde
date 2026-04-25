@@ -18,6 +18,16 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         echo "gateway companion socket not found: $socket_path" >&2
         exit 1
     fi
+    if [ "$#" -eq 0 ]; then
+        if [ -z "${SONDE_AZURE_DEVICE_CLIENT_ID:-}" ]; then
+            echo "SONDE_AZURE_DEVICE_CLIENT_ID must be set for bootstrap" >&2
+            exit 1
+        fi
+        if [ -z "${SONDE_AZURE_DEVICE_SCOPES:-}" ]; then
+            echo "SONDE_AZURE_DEVICE_SCOPES must be set for bootstrap" >&2
+            exit 1
+        fi
+    fi
 
     exec docker run --rm \
         --name "${SONDE_AZURE_COMPANION_CONTAINER_NAME:-sonde-azure-companion}" \

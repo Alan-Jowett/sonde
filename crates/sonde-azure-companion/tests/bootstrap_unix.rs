@@ -484,6 +484,58 @@ fn host_bootstrap_invokes_docker_with_expected_mounts() {
 }
 
 #[test]
+fn host_bootstrap_requires_non_empty_bootstrap_env() {
+    let temp = TempDir::new().unwrap();
+    let bin_dir = prepare_path_dir(&temp);
+    let state_dir = temp.path().join("state");
+    let runtime_dir = temp.path().join("runtime");
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::create_dir_all(&runtime_dir).unwrap();
+    let _socket =
+        std::os::unix::net::UnixListener::bind(runtime_dir.join("companion.sock")).unwrap();
+    let docker_log = temp.path().join("docker.log");
+
+    write_executable(
+        &bin_dir.join("docker"),
+        &format!(
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" > \"{}\"\n",
+            docker_log.display()
+        ),
+    );
+
+    let mut cmd = Command::new("sh");
+    cmd.arg(bootstrap_script_path());
+    cmd.env(
+        "PATH",
+        format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+    cmd.env("SONDE_AZURE_COMPANION_IMAGE", "sonde-azure-companion:test");
+    cmd.env("SONDE_AZURE_COMPANION_STATE_DIR", &state_dir);
+    cmd.env("SONDE_GATEWAY_RUNTIME_DIR", &runtime_dir);
+    cmd.env("SONDE_AZURE_DEVICE_CLIENT_ID", "");
+    cmd.env(
+        "SONDE_AZURE_DEVICE_SCOPES",
+        "https://management.azure.com/.default",
+    );
+
+    let output = cmd.output().unwrap();
+    assert!(
+        !output.status.success(),
+        "host bootstrap unexpectedly succeeded"
+    );
+    assert!(
+        !docker_log.exists(),
+        "docker should not be invoked when required bootstrap env is missing"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("SONDE_AZURE_DEVICE_CLIENT_ID must be set"));
+}
+
+#[test]
 fn t_azc_0100_container_image_smoke() {
     if !docker_available() {
         eprintln!("skipping Docker smoke test because docker is unavailable");

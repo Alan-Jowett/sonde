@@ -109,7 +109,7 @@ shows only the short prompt plus the device code.
 
 ### 4.3  Display failure handling
 
-If step 5 fails because the gateway rejects the display request or no modem
+If step 6 fails because the gateway rejects the display request or no modem
 transport is available, the bootstrap flow exits immediately with a non-zero
 status. It does not continue to a console-only fallback. This preserves the
 headless operator workflow required by the discovery review.

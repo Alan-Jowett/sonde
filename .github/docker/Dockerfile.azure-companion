@@ -1,4 +1,13 @@
-FROM rust:alpine AS builder
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Multi-stage Dockerfile for the Azure companion container image.
+# Produces a minimal Alpine-based image containing the
+# `sonde-azure-companion` binary plus bootstrap scripts.
+
+# ── Stage 1: build ──────────────────────────────────────────────────────────
+# rust:alpine — pinned by digest for reproducible builds.
+FROM rust:alpine@sha256:ef7b340d4201444fa2757dfddfd4c03be9d2bde468de7b7a68b0e9fabb794334 AS builder
 
 RUN apk add --no-cache build-base musl-dev protobuf pkgconf
 
@@ -6,7 +15,9 @@ WORKDIR /sonde
 COPY . .
 RUN cargo build --release -p sonde-azure-companion
 
-FROM alpine:3.21
+# ── Stage 2: runtime ────────────────────────────────────────────────────────
+# alpine:3.21 — pinned by digest for reproducible builds.
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 RUN apk add --no-cache ca-certificates \
     && mkdir -p /var/lib/sonde-azure-companion /var/run/sonde

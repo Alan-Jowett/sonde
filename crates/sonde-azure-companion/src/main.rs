@@ -154,6 +154,16 @@ fn validate_display_lines(lines: &[String]) -> Result<(), String> {
 fn validate_device_scopes(scopes: &[String]) -> Result<(), String> {
     if scopes.is_empty() {
         Err("bootstrap-auth requires at least one device scope".to_string())
+    } else if scopes.iter().any(|scope| scope.trim().is_empty()) {
+        Err("bootstrap-auth device scopes must not be empty".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_device_client_id(client_id: &str) -> Result<(), String> {
+    if client_id.trim().is_empty() {
+        Err("bootstrap-auth requires a non-empty device client ID".to_string())
     } else {
         Ok(())
     }
@@ -162,12 +172,21 @@ fn validate_device_scopes(scopes: &[String]) -> Result<(), String> {
 fn bootstrap_provider_and_config(
     args: &BootstrapAuthArgs,
 ) -> Result<(Provider, DeviceFlowConfig), Box<dyn Error>> {
+    validate_device_client_id(&args.device_client_id)
+        .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
     validate_device_scopes(&args.device_scopes)
         .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
 
+    let device_client_id = args.device_client_id.trim().to_string();
+    let device_scopes: Vec<String> = args
+        .device_scopes
+        .iter()
+        .map(|scope| scope.trim().to_string())
+        .collect();
+
     let config = DeviceFlowConfig::new()
-        .client_id(args.device_client_id.clone())
-        .scopes(args.device_scopes.clone())
+        .client_id(device_client_id)
+        .scopes(device_scopes.clone())
         .poll_interval(Duration::from_secs(args.poll_interval_secs))
         .max_attempts(args.max_attempts);
 
@@ -178,7 +197,7 @@ fn bootstrap_provider_and_config(
                 Url::parse(device_token_url)?,
                 "Microsoft test override".to_string(),
             )
-            .with_default_scopes(args.device_scopes.clone());
+            .with_default_scopes(device_scopes);
             Ok((Provider::Generic, config.generic_provider(provider)))
         }
         (None, None) => Ok((Provider::Microsoft, config)),
@@ -267,8 +286,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bootstrap_provider_and_config, validate_device_scopes, validate_display_lines,
-        BootstrapAuthArgs,
+        bootstrap_provider_and_config, validate_device_client_id, validate_device_scopes,
+        validate_display_lines, BootstrapAuthArgs,
     };
     use oauth_device_flows::Provider;
     use std::path::PathBuf;
@@ -307,6 +326,19 @@ mod tests {
     fn bootstrap_auth_requires_at_least_one_scope() {
         assert!(validate_device_scopes(&[]).is_err());
         assert!(validate_device_scopes(&["scope".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn bootstrap_auth_rejects_blank_scope_entries() {
+        assert!(validate_device_scopes(&[" ".to_string()]).is_err());
+        assert!(validate_device_scopes(&["scope".to_string(), "".to_string()]).is_err());
+    }
+
+    #[test]
+    fn bootstrap_auth_requires_non_empty_client_id() {
+        assert!(validate_device_client_id("").is_err());
+        assert!(validate_device_client_id("   ").is_err());
+        assert!(validate_device_client_id("client-id").is_ok());
     }
 
     #[test]

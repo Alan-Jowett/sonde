@@ -327,15 +327,15 @@ impl PairingStore for FilePairingStore {
         &self,
         artifacts: &crate::phase1::PairingArtifacts,
     ) -> Result<(), PairingError> {
-        self.save_artifacts(artifacts)
+        FilePairingStore::save_artifacts(self, artifacts)
     }
 
     fn load_artifacts(&self) -> Result<Option<crate::phase1::PairingArtifacts>, PairingError> {
-        self.load_artifacts()
+        FilePairingStore::load_artifacts(self)
     }
 
     fn clear(&self) -> Result<(), PairingError> {
-        self.clear()
+        FilePairingStore::clear(self)
     }
 }
 

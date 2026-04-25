@@ -1398,8 +1398,8 @@ async fn t0514_oversized_handler_message_rejected() {
     );
 }
 
-/// T-0514b: `read_message` accepts well-formed messages and rejects messages
-/// with a length prefix exceeding MAX_MESSAGE_SIZE. Tests the exact boundary.
+/// T-0514b: `read_message` accepts a well-formed message and rejects messages
+/// with a length prefix exceeding MAX_MESSAGE_SIZE.
 #[tokio::test]
 async fn t0514b_handler_message_size_boundary() {
     use sonde_gateway::handler::{read_message, HandlerMessage};

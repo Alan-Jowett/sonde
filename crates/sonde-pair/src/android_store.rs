@@ -247,15 +247,15 @@ impl PairingStore for AndroidPairingStore {
         &self,
         artifacts: &crate::phase1::PairingArtifacts,
     ) -> Result<(), PairingError> {
-        self.save_artifacts(artifacts)
+        AndroidPairingStore::save_artifacts(self, artifacts)
     }
 
     fn load_artifacts(&self) -> Result<Option<crate::phase1::PairingArtifacts>, PairingError> {
-        self.load_artifacts()
+        AndroidPairingStore::load_artifacts(self)
     }
 
     fn clear(&self) -> Result<(), PairingError> {
-        self.clear()
+        AndroidPairingStore::clear(self)
     }
 }
 

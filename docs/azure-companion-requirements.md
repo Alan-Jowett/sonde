@@ -14,8 +14,8 @@
 | Term | Definition |
 |------|------------|
 | **Azure companion** | The new Rust process that runs in its own container and integrates with `sonde-gateway` through the local companion API. |
-| **Auth state volume** | A mounted persistent directory used to hold Azure authentication state across container restarts. |
-| **Bootstrap login** | The initial Azure device-code login flow performed when the auth state volume does not yet contain usable authentication state. |
+| **State volume** | A mounted persistent directory reserved for Azure companion bootstrap output such as local credentials, managed-identity identifiers, and related provisioning artifacts once later slices implement them. |
+| **Bootstrap login** | The Azure device-code login flow performed by the current slice before the long-running companion process starts. |
 | **Device code prompt** | The short operator-facing text shown on the modem display during bootstrap, consisting of a prompt plus the Azure device code. |
 
 ---
@@ -43,33 +43,35 @@ Each requirement uses the following fields:
 **Description:**
 The repository MUST build a dedicated Docker container image for the Azure
 companion. The image MUST be separate from the gateway image and MUST contain
-the Azure companion binary, Azure CLI tooling required for device-code login,
-and the bootstrap scripts needed to initialize authentication state.
+the Azure companion binary, the Rust-owned device-auth implementation required
+for device-code login, and the bootstrap scripts needed to initialize the
+mounted state volume.
 
 **Acceptance criteria:**
 
 1. Building the Azure companion Dockerfile produces an image that starts the Azure companion container without requiring the gateway image.
 2. The image contains the Azure companion binary.
-3. The image contains Azure CLI tooling sufficient to perform `az login --use-device-code`.
+3. The image is based on Alpine Linux and does not require Azure CLI tooling to perform device-code login.
 4. The image contains the bootstrap scripts used by the initial login flow.
 
 ---
 
-### AZC-0101  Persistent auth state volume
+### AZC-0101  Persistent state volume
 
 **Priority:** Must
 **Source:** Discovery review
 
 **Description:**
-The Azure companion container MUST use a mounted persistent auth state volume so
-Azure authentication state survives container restarts. The image itself MUST
-remain stateless with respect to bootstrap progress and acquired credentials.
+The Azure companion container MUST use a mounted persistent state volume so
+later slices can store local provisioning output there. The image itself MUST
+remain stateless. The current slice MUST prepare and mount that directory but
+MUST NOT persist Azure access tokens there.
 
 **Acceptance criteria:**
 
-1. When the container is started with a mounted auth state volume, Azure authentication state is written into that mounted directory rather than remaining only in the image filesystem.
-2. Restarting the container with the same mounted auth state volume preserves previously acquired authentication state.
-3. Starting the container with a fresh empty auth state volume is treated as a first-run bootstrap case.
+1. The bootstrap scripts create and use the mounted state directory rather than relying on image-local writable paths.
+2. The container image does not depend on a baked-in token cache or Azure CLI profile directory.
+3. The current slice does not write persisted Azure access tokens into the mounted state volume.
 
 ---
 
@@ -79,35 +81,35 @@ remain stateless with respect to bootstrap progress and acquired credentials.
 **Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), discovery review
 
 **Description:**
-The repository MUST provide bootstrap scripts that prepare the auth state
-volume, run the first-login flow when needed, and then start the long-running
+The repository MUST provide bootstrap scripts that prepare the mounted state
+volume, run the Rust-owned device-auth flow, and then start the long-running
 Azure companion process inside its dedicated container.
 
 **Acceptance criteria:**
 
-1. A provided bootstrap script can start the Azure companion container with the expected auth state volume and gateway companion socket bindings.
-2. The bootstrap path initializes the auth state volume before invoking the login logic.
+1. A provided bootstrap script can start the Azure companion container with the expected state volume and gateway companion socket bindings.
+2. The bootstrap path initializes the state volume before invoking the login logic.
 3. After bootstrap prerequisites are satisfied, the scripts start the Azure companion process without requiring manual in-container steps.
 
 ---
 
 ## 4  Azure device-code login bootstrap
 
-### AZC-0200  Empty-state bootstrap detection
+### AZC-0200  Current-slice bootstrap always performs device auth
 
 **Priority:** Must
 **Source:** Discovery review
 
 **Description:**
-When the mounted auth state volume does not contain usable Azure authentication
-state, the bootstrap flow MUST treat startup as a first-run bootstrap and enter
-Azure device-code login.
+Until later slices implement persistent provisioning output, the bootstrap flow
+MUST perform Azure device-code login on every start. The current slice MUST NOT
+treat any existing volume contents as reusable login state.
 
 **Acceptance criteria:**
 
-1. Starting the container with an empty auth state volume enters the bootstrap login path.
-2. Starting the container with usable persisted authentication state does not enter the bootstrap login path.
-3. The bootstrap decision is based on the mounted auth state volume, not on transient in-memory state.
+1. Starting the container with an empty state volume enters the bootstrap login path.
+2. Starting the container with a previously used state volume still enters the bootstrap login path.
+3. The current slice does not inspect Azure CLI token caches or similar login-state artifacts to skip device auth.
 
 ---
 
@@ -118,7 +120,8 @@ Azure device-code login.
 
 **Description:**
 The bootstrap flow MUST obtain Azure authentication through Azure device-code
-login. The initial implementation MUST use `az login --use-device-code`.
+login. The initial implementation MUST use an in-process Rust OAuth device-flow
+client rather than shelling out to Azure CLI.
 
 **Acceptance criteria:**
 
@@ -134,7 +137,7 @@ login. The initial implementation MUST use `az login --use-device-code`.
 **Source:** Discovery review, [gateway-companion-api.md](gateway-companion-api.md)
 
 **Description:**
-When Azure device-code login produces a device code, the bootstrap flow MUST
+When Azure device-code login produces a device code, the Rust bootstrap flow MUST
 request a modem display update through the gateway companion API. The displayed
 message MUST include a short prompt and the exact device code. The Azure
 companion MUST NOT attempt raw modem control or bypass the gateway's display
@@ -167,21 +170,23 @@ to the operator and require a retry after the display becomes available.
 
 ---
 
-### AZC-0204  Persisted authentication reuse
+### AZC-0204  Persisted login reuse deferred
 
 **Priority:** Must
 **Source:** Discovery review
 
 **Description:**
-After a successful bootstrap login, the Azure companion MUST reuse the persisted
-authentication state from the mounted auth state volume on later starts instead
-of requiring device-code login again.
+Because this slice does not yet provision Azure resources or persist the
+managed-identity bootstrap artifacts that later slices will rely on, it MUST
+NOT treat the mounted state volume as reusable login state. Every start MUST
+repeat device-code login until the provisioning slice defines the persisted
+state format.
 
 **Acceptance criteria:**
 
-1. After a successful first-run bootstrap, restarting the container with the same auth state volume skips Azure device-code login.
-2. On a restart that skips device-code login, the bootstrap flow does not request a modem display update for a new device code.
-3. If persisted authentication state is missing or unusable, the next start re-enters the bootstrap login path.
+1. Restarting the container with the same state volume still performs device-code login.
+2. Each restart that performs device-code login issues a fresh modem display request for the new device code.
+3. No current-slice behavior depends on token caches or other persisted login state.
 
 ---
 

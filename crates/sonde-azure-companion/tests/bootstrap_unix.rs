@@ -11,12 +11,13 @@ use std::process::Command;
 use std::sync::Arc;
 
 use futures::stream;
-use hyper_util::rt::TokioIo;
 use tempfile::TempDir;
 use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use sonde_gateway::companion::pb::gateway_companion_server::{
     GatewayCompanion, GatewayCompanionServer,
@@ -149,11 +150,31 @@ fn prepare_path_dir(temp: &TempDir) -> PathBuf {
     bin_dir
 }
 
-fn bootstrap_env(bin_dir: &Path, state_dir: &Path, socket_path: &Path) -> Vec<(String, String)> {
-    let mut path = std::env::var("PATH").unwrap_or_default();
-    path = format!("{}:{}", bin_dir.display(), path);
+fn bootstrap_script_path() -> PathBuf {
+    repo_root().join("deploy/azure-companion/bootstrap.sh")
+}
+
+fn write_companion_wrapper(bin_dir: &Path, wrapper_log: &Path) {
+    write_executable(
+        &bin_dir.join("sonde-azure-companion"),
+        &format!(
+            "#!/bin/sh\nset -eu\nsocket=\"\"\nif [ \"$1\" = \"--companion-socket\" ]; then\n  socket=\"$2\"\n  shift 2\nfi\nif [ \"$1\" = \"run\" ]; then\n  printf 'run %s\\n' \"$socket\" >> \"{}\"\n  exit 0\nfi\nexec \"{}\" --companion-socket \"$socket\" \"$@\"\n",
+            wrapper_log.display(),
+            env!("CARGO_BIN_EXE_sonde-azure-companion")
+        ),
+    );
+}
+
+fn bootstrap_env(
+    bin_dir: &Path,
+    state_dir: &Path,
+    socket_path: &Path,
+    oauth_server: &MockServer,
+) -> Vec<(String, String)> {
+    let mut path_value = std::env::var("PATH").unwrap_or_default();
+    path_value = format!("{}:{}", bin_dir.display(), path_value);
     vec![
-        ("PATH".to_string(), path),
+        ("PATH".to_string(), path_value),
         (
             "SONDE_AZURE_COMPANION_IN_CONTAINER".to_string(),
             "1".to_string(),
@@ -166,11 +187,92 @@ fn bootstrap_env(bin_dir: &Path, state_dir: &Path, socket_path: &Path) -> Vec<(S
             "SONDE_GATEWAY_COMPANION_SOCKET".to_string(),
             socket_path.display().to_string(),
         ),
+        (
+            "SONDE_AZURE_DEVICE_CLIENT_ID".to_string(),
+            "test-client-id".to_string(),
+        ),
+        (
+            "SONDE_AZURE_DEVICE_SCOPES".to_string(),
+            "https://management.azure.com/.default".to_string(),
+        ),
+        (
+            "SONDE_AZURE_DEVICE_AUTH_URL".to_string(),
+            format!("{}/device", oauth_server.uri()),
+        ),
+        (
+            "SONDE_AZURE_DEVICE_TOKEN_URL".to_string(),
+            format!("{}/token", oauth_server.uri()),
+        ),
     ]
 }
 
-fn bootstrap_script_path() -> PathBuf {
-    repo_root().join("deploy/azure-companion/bootstrap.sh")
+async fn mount_successful_device_flow(
+    oauth_server: &MockServer,
+    user_code: &str,
+    expected_count: u64,
+) {
+    Mock::given(method("POST"))
+        .and(path("/device"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("content-type", "application/json")
+                .set_body_string(format!(
+                    "{{\"device_code\":\"device-code-{user_code}\",\"user_code\":\"{user_code}\",\"verification_uri\":\"https://microsoft.com/devicelogin\",\"verification_uri_complete\":\"https://microsoft.com/devicelogin?code={user_code}\",\"expires_in\":900,\"interval\":1}}"
+                )),
+        )
+        .expect(expected_count)
+        .mount(oauth_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("content-type", "application/json")
+                .set_body_string(
+                    "{\"access_token\":\"temporary-token\",\"token_type\":\"Bearer\",\"expires_in\":300}",
+                ),
+        )
+        .expect(expected_count)
+        .mount(oauth_server)
+        .await;
+}
+
+async fn mount_failed_token_poll(oauth_server: &MockServer, user_code: &str) {
+    Mock::given(method("POST"))
+        .and(path("/device"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("content-type", "application/json")
+                .set_body_string(format!(
+                    "{{\"device_code\":\"device-code-{user_code}\",\"user_code\":\"{user_code}\",\"verification_uri\":\"https://microsoft.com/devicelogin\",\"expires_in\":900,\"interval\":1}}"
+                )),
+        )
+        .expect(1)
+        .mount(oauth_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .append_header("content-type", "application/json")
+                .set_body_string(
+                    "{\"error\":\"expired_token\",\"error_description\":\"expired for test\"}",
+                ),
+        )
+        .expect(1)
+        .mount(oauth_server)
+        .await;
+}
+
+fn run_bootstrap_with_env(env: &[(String, String)]) -> std::process::Output {
+    let mut cmd = Command::new("sh");
+    cmd.arg(bootstrap_script_path());
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    cmd.output().unwrap()
 }
 
 #[tokio::test]
@@ -181,27 +283,18 @@ async fn t_azc_0101_0102_0200_0201_0202_bootstrap_success_path() {
     fs::create_dir_all(&state_dir).unwrap();
     let socket_path = temp.path().join("companion.sock");
     let display_requests = spawn_companion_server(&socket_path, None).await;
+    let oauth_server = MockServer::start().await;
+    mount_successful_device_flow(&oauth_server, "ABCD-EFGH", 1).await;
 
     let wrapper_log = temp.path().join("wrapper.log");
-    write_executable(
-        &bin_dir.join("sonde-azure-companion"),
-        &format!(
-            "#!/bin/sh\nset -eu\nsocket=\"\"\nif [ \"$1\" = \"--companion-socket\" ]; then\n  socket=\"$2\"\n  shift 2\nfi\nif [ \"$1\" = \"run\" ]; then\n  printf 'run %s\\n' \"$socket\" >> \"{}\"\n  exit 0\nfi\nexec \"{}\" --companion-socket \"$socket\" \"$@\"\n",
-            wrapper_log.display(),
-            env!("CARGO_BIN_EXE_sonde-azure-companion")
-        ),
-    );
-    write_executable(
-        &bin_dir.join("az"),
-        "#!/bin/sh\nset -eu\nprintf 'To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code ABCD-EFGH to authenticate.\\n'\ntouch \"$AZURE_CONFIG_DIR/msal_token_cache.json\"\n",
-    );
+    write_companion_wrapper(&bin_dir, &wrapper_log);
 
-    let mut cmd = Command::new("sh");
-    cmd.arg(bootstrap_script_path());
-    for (key, value) in bootstrap_env(&bin_dir, &state_dir, &socket_path) {
-        cmd.env(key, value);
-    }
-    let output = cmd.output().unwrap();
+    let output = run_bootstrap_with_env(&bootstrap_env(
+        &bin_dir,
+        &state_dir,
+        &socket_path,
+        &oauth_server,
+    ));
     assert!(output.status.success(), "bootstrap failed: {output:?}");
 
     let requests = display_requests.lock().await.clone();
@@ -211,122 +304,98 @@ async fn t_azc_0101_0102_0200_0201_0202_bootstrap_success_path() {
     );
     assert!(wrapper_log.exists());
     assert!(fs::read_to_string(&wrapper_log).unwrap().contains("run "));
-    assert!(state_dir.join("azure/msal_token_cache.json").exists());
 }
 
 #[tokio::test]
 async fn t_azc_0203_display_failure_aborts_bootstrap() {
+    for code in [tonic::Code::FailedPrecondition, tonic::Code::Unavailable] {
+        let temp = TempDir::new().unwrap();
+        let bin_dir = prepare_path_dir(&temp);
+        let state_dir = temp.path().join("state");
+        fs::create_dir_all(&state_dir).unwrap();
+        let socket_path = temp.path().join("companion.sock");
+        let display_requests = spawn_companion_server(&socket_path, Some(code)).await;
+        let oauth_server = MockServer::start().await;
+        mount_successful_device_flow(&oauth_server, "ZXCV-1234", 1).await;
+
+        let wrapper_log = temp.path().join("wrapper.log");
+        write_companion_wrapper(&bin_dir, &wrapper_log);
+
+        let output = run_bootstrap_with_env(&bootstrap_env(
+            &bin_dir,
+            &state_dir,
+            &socket_path,
+            &oauth_server,
+        ));
+        assert!(!output.status.success());
+        assert!(!wrapper_log.exists() || fs::read_to_string(&wrapper_log).unwrap().is_empty());
+        assert_eq!(
+            display_requests.lock().await.clone(),
+            vec![vec!["Azure login".to_string(), "ZXCV-1234".to_string()]]
+        );
+    }
+}
+
+#[tokio::test]
+async fn t_azc_0104_previously_used_state_still_runs_device_auth() {
+    let temp = TempDir::new().unwrap();
+    let bin_dir = prepare_path_dir(&temp);
+    let state_dir = temp.path().join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(
+        state_dir.join("managed-identity.json"),
+        b"{\"tenant\":\"placeholder\"}",
+    )
+    .unwrap();
+    let socket_path = temp.path().join("companion.sock");
+    let display_requests = spawn_companion_server(&socket_path, None).await;
+    let oauth_server = MockServer::start().await;
+    mount_successful_device_flow(&oauth_server, "QWER-5678", 1).await;
+
+    let wrapper_log = temp.path().join("wrapper.log");
+    write_companion_wrapper(&bin_dir, &wrapper_log);
+
+    let output = run_bootstrap_with_env(&bootstrap_env(
+        &bin_dir,
+        &state_dir,
+        &socket_path,
+        &oauth_server,
+    ));
+    assert!(output.status.success(), "bootstrap failed: {output:?}");
+    assert_eq!(
+        display_requests.lock().await.clone(),
+        vec![vec!["Azure login".to_string(), "QWER-5678".to_string()]]
+    );
+    assert!(fs::read_to_string(&wrapper_log).unwrap().contains("run "));
+}
+
+#[tokio::test]
+async fn t_azc_0105_repeated_starts_repeat_device_auth() {
     let temp = TempDir::new().unwrap();
     let bin_dir = prepare_path_dir(&temp);
     let state_dir = temp.path().join("state");
     fs::create_dir_all(&state_dir).unwrap();
     let socket_path = temp.path().join("companion.sock");
-    let display_requests =
-        spawn_companion_server(&socket_path, Some(tonic::Code::FailedPrecondition)).await;
-
-    let wrapper_log = temp.path().join("wrapper.log");
-    write_executable(
-        &bin_dir.join("sonde-azure-companion"),
-        &format!(
-            "#!/bin/sh\nset -eu\nsocket=\"\"\nif [ \"$1\" = \"--companion-socket\" ]; then\n  socket=\"$2\"\n  shift 2\nfi\nif [ \"$1\" = \"run\" ]; then\n  printf 'run %s\\n' \"$socket\" >> \"{}\"\n  exit 0\nfi\nexec \"{}\" --companion-socket \"$socket\" \"$@\"\n",
-            wrapper_log.display(),
-            env!("CARGO_BIN_EXE_sonde-azure-companion")
-        ),
-    );
-    write_executable(
-        &bin_dir.join("az"),
-        "#!/bin/sh\nset -eu\nprintf 'To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code ZXCV-1234 to authenticate.\\n'\nsleep 1\n",
-    );
-
-    let mut cmd = Command::new("sh");
-    cmd.arg(bootstrap_script_path());
-    for (key, value) in bootstrap_env(&bin_dir, &state_dir, &socket_path) {
-        cmd.env(key, value);
-    }
-    let output = cmd.output().unwrap();
-    assert!(!output.status.success());
-    assert!(
-        wrapper_log.exists() == false
-            || fs::read_to_string(&wrapper_log)
-                .unwrap_or_default()
-                .is_empty()
-    );
-    assert_eq!(
-        display_requests.lock().await.clone(),
-        vec![vec!["Azure login".to_string(), "ZXCV-1234".to_string()]]
-    );
-}
-
-#[tokio::test]
-async fn t_azc_0104_persisted_state_skips_login_and_display() {
-    let temp = TempDir::new().unwrap();
-    let bin_dir = prepare_path_dir(&temp);
-    let state_dir = temp.path().join("state");
-    fs::create_dir_all(state_dir.join("azure")).unwrap();
-    fs::write(state_dir.join("azure/msal_token_cache.json"), b"cached").unwrap();
-    let socket_path = temp.path().join("companion.sock");
     let display_requests = spawn_companion_server(&socket_path, None).await;
+    let oauth_server = MockServer::start().await;
+    mount_successful_device_flow(&oauth_server, "REPEAT-1", 2).await;
 
     let wrapper_log = temp.path().join("wrapper.log");
-    write_executable(
-        &bin_dir.join("sonde-azure-companion"),
-        &format!(
-            "#!/bin/sh\nset -eu\nsocket=\"\"\nif [ \"$1\" = \"--companion-socket\" ]; then\n  socket=\"$2\"\n  shift 2\nfi\nif [ \"$1\" = \"run\" ]; then\n  printf 'run %s\\n' \"$socket\" >> \"{}\"\n  exit 0\nfi\nexec \"{}\" --companion-socket \"$socket\" \"$@\"\n",
-            wrapper_log.display(),
-            env!("CARGO_BIN_EXE_sonde-azure-companion")
-        ),
-    );
-    write_executable(
-        &bin_dir.join("az"),
-        "#!/bin/sh\nset -eu\nprintf 'az should not be invoked\\n' >&2\nexit 9\n",
-    );
+    write_companion_wrapper(&bin_dir, &wrapper_log);
+    let env = bootstrap_env(&bin_dir, &state_dir, &socket_path, &oauth_server);
 
-    let mut cmd = Command::new("sh");
-    cmd.arg(bootstrap_script_path());
-    for (key, value) in bootstrap_env(&bin_dir, &state_dir, &socket_path) {
-        cmd.env(key, value);
-    }
-    let output = cmd.output().unwrap();
-    assert!(output.status.success(), "bootstrap failed: {output:?}");
-    assert_eq!(display_requests.lock().await.len(), 0);
-    assert!(fs::read_to_string(&wrapper_log).unwrap().contains("run "));
-}
+    let first = run_bootstrap_with_env(&env);
+    assert!(first.status.success(), "first bootstrap failed: {first:?}");
 
-#[tokio::test]
-async fn t_azc_0105_missing_state_reenters_login() {
-    let temp = TempDir::new().unwrap();
-    let bin_dir = prepare_path_dir(&temp);
-    let state_dir = temp.path().join("state");
-    fs::create_dir_all(state_dir.join("azure")).unwrap();
-    let marker = state_dir.join("az-invoked");
-    let socket_path = temp.path().join("companion.sock");
-    let _display_requests = spawn_companion_server(&socket_path, None).await;
-
-    let wrapper_log = temp.path().join("wrapper.log");
-    write_executable(
-        &bin_dir.join("sonde-azure-companion"),
-        &format!(
-            "#!/bin/sh\nset -eu\nsocket=\"\"\nif [ \"$1\" = \"--companion-socket\" ]; then\n  socket=\"$2\"\n  shift 2\nfi\nif [ \"$1\" = \"run\" ]; then\n  printf 'run %s\\n' \"$socket\" >> \"{}\"\n  exit 0\nfi\nexec \"{}\" --companion-socket \"$socket\" \"$@\"\n",
-            wrapper_log.display(),
-            env!("CARGO_BIN_EXE_sonde-azure-companion")
-        ),
-    );
-    write_executable(
-        &bin_dir.join("az"),
-        &format!(
-            "#!/bin/sh\nset -eu\nprintf 'To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code QWER-5678 to authenticate.\\n'\ntouch \"{}\"\ntouch \"$AZURE_CONFIG_DIR/msal_token_cache.json\"\n",
-            marker.display()
-        ),
+    let second = run_bootstrap_with_env(&env);
+    assert!(
+        second.status.success(),
+        "second bootstrap failed: {second:?}"
     );
 
-    let mut cmd = Command::new("sh");
-    cmd.arg(bootstrap_script_path());
-    for (key, value) in bootstrap_env(&bin_dir, &state_dir, &socket_path) {
-        cmd.env(key, value);
-    }
-    let output = cmd.output().unwrap();
-    assert!(output.status.success(), "bootstrap failed: {output:?}");
-    assert!(marker.exists());
+    assert_eq!(display_requests.lock().await.len(), 2);
+    let wrapper_contents = fs::read_to_string(&wrapper_log).unwrap();
+    assert_eq!(wrapper_contents.lines().count(), 2);
 }
 
 #[tokio::test]
@@ -337,28 +406,19 @@ async fn t_azc_0106_login_failure_aborts_bootstrap() {
     fs::create_dir_all(&state_dir).unwrap();
     let socket_path = temp.path().join("companion.sock");
     let _display_requests = spawn_companion_server(&socket_path, None).await;
+    let oauth_server = MockServer::start().await;
+    mount_failed_token_poll(&oauth_server, "FAIL-0001").await;
 
     let wrapper_log = temp.path().join("wrapper.log");
-    write_executable(
-        &bin_dir.join("sonde-azure-companion"),
-        &format!(
-            "#!/bin/sh\nset -eu\nsocket=\"\"\nif [ \"$1\" = \"--companion-socket\" ]; then\n  socket=\"$2\"\n  shift 2\nfi\nif [ \"$1\" = \"run\" ]; then\n  printf 'run %s\\n' \"$socket\" >> \"{}\"\n  exit 0\nfi\nexec \"{}\" --companion-socket \"$socket\" \"$@\"\n",
-            wrapper_log.display(),
-            env!("CARGO_BIN_EXE_sonde-azure-companion")
-        ),
-    );
-    write_executable(
-        &bin_dir.join("az"),
-        "#!/bin/sh\nset -eu\nprintf 'To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code FAIL-0001 to authenticate.\\n'\nexit 42\n",
-    );
+    write_companion_wrapper(&bin_dir, &wrapper_log);
 
-    let mut cmd = Command::new("sh");
-    cmd.arg(bootstrap_script_path());
-    for (key, value) in bootstrap_env(&bin_dir, &state_dir, &socket_path) {
-        cmd.env(key, value);
-    }
-    let output = cmd.output().unwrap();
-    assert_eq!(output.status.code(), Some(42));
+    let output = run_bootstrap_with_env(&bootstrap_env(
+        &bin_dir,
+        &state_dir,
+        &socket_path,
+        &oauth_server,
+    ));
+    assert!(!output.status.success());
     assert!(!wrapper_log.exists());
 }
 
@@ -393,12 +453,19 @@ fn host_bootstrap_invokes_docker_with_expected_mounts() {
     cmd.env("SONDE_AZURE_COMPANION_IMAGE", "sonde-azure-companion:test");
     cmd.env("SONDE_AZURE_COMPANION_STATE_DIR", &state_dir);
     cmd.env("SONDE_GATEWAY_RUNTIME_DIR", &runtime_dir);
+    cmd.env("SONDE_AZURE_DEVICE_CLIENT_ID", "test-client-id");
+    cmd.env(
+        "SONDE_AZURE_DEVICE_SCOPES",
+        "https://management.azure.com/.default",
+    );
 
     let output = cmd.output().unwrap();
     assert!(output.status.success(), "host bootstrap failed: {output:?}");
     let logged = fs::read_to_string(docker_log).unwrap();
     assert!(logged.contains("run --rm"));
     assert!(logged.contains("sonde-azure-companion:test"));
+    assert!(logged.contains("-e SONDE_AZURE_DEVICE_CLIENT_ID"));
+    assert!(logged.contains("-e SONDE_AZURE_DEVICE_SCOPES"));
     assert!(logged.contains(&format!(
         "-v {}:/var/lib/sonde-azure-companion",
         state_dir.display()
@@ -436,8 +503,15 @@ fn t_azc_0100_container_image_smoke() {
     assert!(status.success(), "binary smoke test failed");
 
     let status = Command::new("docker")
-        .args(["run", "--rm", "sonde-azure-companion:test", "az", "version"])
+        .args([
+            "run",
+            "--rm",
+            "sonde-azure-companion:test",
+            "sonde-azure-companion",
+            "bootstrap-auth",
+            "--help",
+        ])
         .status()
         .unwrap();
-    assert!(status.success(), "azure-cli smoke test failed");
+    assert!(status.success(), "bootstrap-auth smoke test failed");
 }

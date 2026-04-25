@@ -17,7 +17,7 @@ initial slice does not yet provision Azure resources or bridge data into Azure
 services. Its responsibility is limited to:
 
 1. starting in a dedicated container,
-2. detecting first-run bootstrap from a mounted auth state volume,
+2. preparing a mounted persistent state volume for later provisioning slices,
 3. obtaining Azure authentication via device-code login,
 4. showing a short prompt plus the device code on the modem display through the
    gateway companion API, and
@@ -38,7 +38,7 @@ The implementation adds the following artifacts:
 |----------|---------|
 | `crates/sonde-azure-companion/` | New Rust crate containing the Azure companion binary. |
 | `.github/docker/Dockerfile.azure-companion` | Dockerfile for the dedicated Azure companion image. |
-| `deploy/azure-companion/bootstrap.sh` | Host/container bootstrap script that prepares the mounted auth state volume and runs first-login bootstrap when needed. |
+| `deploy/azure-companion/bootstrap.sh` | Host/container bootstrap script that prepares the mounted state volume and runs the Rust-owned device-auth bootstrap before normal runtime starts. |
 | `deploy/azure-companion/entrypoint.sh` | In-container entrypoint that orchestrates bootstrap before starting the long-running process. |
 
 The long-running binary is named `sonde-azure-companion`.
@@ -54,13 +54,14 @@ The long-running binary is named `sonde-azure-companion`.
 The container runs a small shell entrypoint that performs bootstrap orchestration
 and then execs the Rust binary. The split is intentional:
 
-1. **Shell script** handles environment preparation, filesystem setup, and Azure
-   CLI invocation.
-2. **Rust binary** owns gateway companion gRPC communication and the future
-   Azure-integration runtime.
+1. **Shell script** handles environment preparation, filesystem setup, and
+   container-vs-host orchestration.
+2. **Rust binary** owns gateway companion gRPC communication, Microsoft device
+   flow, and the future Azure-integration runtime.
 
-This keeps the gateway-facing logic in typed Rust while still using the Azure
-CLI directly for the initial device-code login flow required by issue #771.
+This keeps the gateway-facing logic and the Azure device-code flow in typed
+Rust, which removes the Azure CLI dependency and allows an Alpine runtime
+image.
 
 ### 3.2  Mounted inputs
 
@@ -68,11 +69,11 @@ The container expects two mounted host resources:
 
 | Mount | Purpose |
 |-------|---------|
-| Auth state volume | Persistent storage for Azure CLI authentication state. |
+| State volume | Persistent storage reserved for later managed-identity bootstrap output and other local provisioning artifacts. |
 | Gateway companion socket | Local IPC path used to call `GatewayCompanion` RPCs, including `ShowModemDisplayMessage`. |
 
-The auth state volume is the only persistent state required by this initial
-slice. The image itself is replaceable.
+The current slice prepares the state volume but does not persist Azure access
+tokens there. The image itself is replaceable.
 
 ---
 
@@ -82,29 +83,26 @@ slice. The image itself is replaceable.
 
 ### 4.1  Startup decision
 
-At container start, `entrypoint.sh` checks the mounted auth state volume for
-usable Azure authentication state.
-
-- If usable state is present, the script skips device-code login and starts the
-  long-running Rust process.
-- If usable state is absent, the script runs `bootstrap.sh` to perform first-run
-  login.
+At container start, `entrypoint.sh` delegates to `bootstrap.sh`. The in-container
+bootstrap path creates the mounted state directory and then invokes the Rust
+binary's `bootstrap-auth` mode before starting the normal long-running process.
+This slice does not inspect the state directory to skip login on restart.
 
 ### 4.2  Device-code login sequence
 
 The first-run bootstrap sequence is:
 
-1. Ensure the auth state directory exists and is writable.
-2. Invoke Azure CLI device-code login with `az login --use-device-code`.
-3. Capture the device-code output emitted by Azure CLI.
-4. Extract the device code from that output.
-5. Call `sonde-azure-companion display-message <prompt> <code>` so the Rust
-   binary connects to the gateway companion socket and issues
-   `ShowModemDisplayMessage`.
-6. Wait for Azure CLI to complete successfully.
-7. Leave the resulting Azure authentication state in the mounted auth state
-   volume.
-8. Start the long-running Rust process.
+1. Ensure the mounted state directory exists and is writable.
+2. Invoke `sonde-azure-companion bootstrap-auth`.
+3. Inside Rust, construct a Microsoft device-flow client from explicit
+   environment-provided client ID and scopes.
+4. Request a device code from Microsoft's device authorization endpoint.
+5. Log the verification URI to stdout/stderr for operator visibility.
+6. Call the gateway companion `ShowModemDisplayMessage` RPC with a short prompt
+   plus the exact device code.
+7. Poll the token endpoint until the operator completes device auth or the flow
+   fails.
+8. Discard the short-lived token and exec the long-running `run` mode.
 
 The full Azure verification URL remains in stdout/stderr logs; the modem display
 shows only the short prompt plus the device code.
@@ -120,18 +118,26 @@ headless operator workflow required by the discovery review.
 
 ## 5  Rust binary interface
 
-> **Requirements:** AZC-0100, AZC-0102, AZC-0202, AZC-0300
+> **Requirements:** AZC-0100, AZC-0102, AZC-0201, AZC-0202, AZC-0300
 
-The initial `sonde-azure-companion` binary exposes two modes:
+The initial `sonde-azure-companion` binary exposes three modes:
 
 1. **`run`** — default long-running companion mode. In this initial slice it
    establishes gateway companion connectivity and remains ready for later Azure
    integration work.
-2. **`display-message`** — helper mode used by the bootstrap scripts to call the
+2. **`bootstrap-auth`** — performs Microsoft OAuth device flow in Rust, logs the
+   verification URI, requests the modem display update, waits for operator
+   completion, and discards the resulting token.
+3. **`display-message`** — helper mode used by the bootstrap logic to call the
    gateway companion `ShowModemDisplayMessage` RPC with 1 to 4 lines of text.
 
-The helper mode keeps gateway IPC out of shell-script string munging and ensures
-the same Rust client stack is used during bootstrap and later runtime work.
+The helper modes keep gateway IPC and OAuth error handling out of shell-script
+string munging and ensure the same Rust client stack is used during bootstrap
+and later runtime work.
+
+`bootstrap-auth` requires the caller to provide the Azure device-flow client ID
+and scopes explicitly through environment variables or CLI flags. This slice
+does not guess Azure application defaults.
 
 ---
 

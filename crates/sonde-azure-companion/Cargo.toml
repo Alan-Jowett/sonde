@@ -7,12 +7,15 @@ license = "MIT"
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 hyper-util = "0.1"
+oauth-device-flows = { version = "0.1", default-features = false }
 sonde-gateway = { path = "../sonde-gateway", default-features = false }
 tokio = { version = "1", features = ["full"] }
 tonic = "0.14"
 tower = "0.5"
+url = "2"
 
 [dev-dependencies]
 futures = "0.3"
 tempfile = "3"
 tokio-stream = "0.1"
+wiremock = "0.6"

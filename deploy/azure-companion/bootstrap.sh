@@ -19,6 +19,10 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         -e SONDE_AZURE_COMPANION_IN_CONTAINER=1 \
         -e SONDE_AZURE_COMPANION_STATE_DIR="$container_state_dir" \
         -e SONDE_GATEWAY_COMPANION_SOCKET="$container_runtime_dir/companion.sock" \
+        -e SONDE_AZURE_DEVICE_CLIENT_ID \
+        -e SONDE_AZURE_DEVICE_SCOPES \
+        -e SONDE_AZURE_DEVICE_POLL_INTERVAL_SECS \
+        -e SONDE_AZURE_DEVICE_MAX_ATTEMPTS \
         -v "$state_dir:$container_state_dir" \
         -v "$runtime_dir:$container_runtime_dir" \
         "$image" "$@"
@@ -26,59 +30,16 @@ fi
 
 state_dir="${SONDE_AZURE_COMPANION_STATE_DIR:-/var/lib/sonde-azure-companion}"
 socket_path="${SONDE_GATEWAY_COMPANION_SOCKET:-/var/run/sonde/companion.sock}"
-azure_config_dir="$state_dir/azure"
-pipe_path="$state_dir/az-login.pipe.$$"
 
-mkdir -p "$azure_config_dir"
-export AZURE_CONFIG_DIR="$azure_config_dir"
-
-has_auth_state() {
-    [ -f "$AZURE_CONFIG_DIR/msal_token_cache.json" ] || [ -f "$AZURE_CONFIG_DIR/accessTokens.json" ]
-}
-
-cleanup() {
-    rm -f "$pipe_path"
-}
-
-trap cleanup EXIT INT TERM
-
-if has_auth_state; then
-    exec sonde-azure-companion --companion-socket "$socket_path" run
+if [ "$#" -gt 0 ]; then
+    exec "$@"
 fi
 
-rm -f "$pipe_path"
-mkfifo "$pipe_path"
+mkdir -p "$state_dir"
 
-az login --use-device-code >"$pipe_path" 2>&1 &
-az_pid=$!
-shown=0
-
-while IFS= read -r line; do
-    printf '%s\n' "$line"
-    if [ "$shown" -eq 0 ]; then
-        device_code="$(printf '%s\n' "$line" | sed -nE 's/.*[Cc]ode ([A-Z0-9-]+).*/\1/p')"
-        if [ -n "$device_code" ]; then
-            if ! sonde-azure-companion --companion-socket "$socket_path" display-message "Azure login" "$device_code"; then
-                kill "$az_pid" 2>/dev/null || true
-                wait "$az_pid" 2>/dev/null || true
-                echo "failed to display Azure device code on the modem; retry when the display is available" >&2
-                exit 1
-            fi
-            shown=1
-        fi
-    fi
-done <"$pipe_path"
-
-if wait "$az_pid"; then
-    :
-else
-    status=$?
-    exit "$status"
-fi
-
-if [ "$shown" -eq 0 ]; then
-    echo "Azure device-code login succeeded but no device code was extracted for modem display" >&2
-    exit 1
-fi
+sonde-azure-companion \
+    --companion-socket "$socket_path" \
+    bootstrap-auth \
+    --state-dir "$state_dir"
 
 exec sonde-azure-companion --companion-socket "$socket_path" run

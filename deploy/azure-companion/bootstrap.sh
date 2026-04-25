@@ -5,12 +5,17 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
     image="${SONDE_AZURE_COMPANION_IMAGE:-sonde-azure-companion:local}"
     state_dir="${SONDE_AZURE_COMPANION_STATE_DIR:-$PWD/.sonde-azure-companion}"
     runtime_dir="${SONDE_GATEWAY_RUNTIME_DIR:-/var/run/sonde}"
+    socket_path="$runtime_dir/companion.sock"
     container_state_dir="/var/lib/sonde-azure-companion"
     container_runtime_dir="/var/run/sonde"
 
     mkdir -p "$state_dir"
     if [ ! -d "$runtime_dir" ]; then
         echo "gateway runtime directory not found: $runtime_dir" >&2
+        exit 1
+    fi
+    if [ ! -S "$socket_path" ]; then
+        echo "gateway companion socket not found: $socket_path" >&2
         exit 1
     fi
 

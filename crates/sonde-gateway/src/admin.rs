@@ -80,21 +80,22 @@ impl AdminService {
         status_page_cycle: Arc<tokio::sync::Mutex<StatusPageCycle>>,
         status_page_scroll_task: StatusPageScrollTask,
     ) -> Self {
-        let transport = self
-            .transport
-            .clone()
-            .expect("with_display_state requires transport to be configured first");
-        let controller = self
-            .ble_controller
-            .clone()
-            .expect("with_display_state requires BLE controller to be configured first");
-        self.display_state = Some(ActiveDisplayState::new(
-            transport,
-            controller,
-            display_generation,
-            status_page_cycle,
-            status_page_scroll_task,
-        ));
+        match (&self.transport, &self.ble_controller) {
+            (Some(transport), Some(controller)) => {
+                self.display_state = Some(ActiveDisplayState::new(
+                    Arc::clone(transport),
+                    Arc::clone(controller),
+                    display_generation,
+                    status_page_cycle,
+                    status_page_scroll_task,
+                ));
+            }
+            _ => {
+                warn!(
+                    "with_display_state called before BLE transport/controller were configured; leaving display_state unset"
+                );
+            }
+        }
         self
     }
 

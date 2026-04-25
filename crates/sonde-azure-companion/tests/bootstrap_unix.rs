@@ -275,6 +275,14 @@ fn run_bootstrap_with_env(env: &[(String, String)]) -> std::process::Output {
     cmd.output().unwrap()
 }
 
+fn docker_available() -> bool {
+    Command::new("docker")
+        .arg("version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 #[tokio::test]
 async fn t_azc_0101_0102_0200_0201_0202_bootstrap_success_path() {
     let temp = TempDir::new().unwrap();
@@ -430,6 +438,8 @@ fn host_bootstrap_invokes_docker_with_expected_mounts() {
     let runtime_dir = temp.path().join("runtime");
     fs::create_dir_all(&state_dir).unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();
+    let _socket =
+        std::os::unix::net::UnixListener::bind(runtime_dir.join("companion.sock")).unwrap();
     let docker_log = temp.path().join("docker.log");
 
     write_executable(
@@ -475,6 +485,11 @@ fn host_bootstrap_invokes_docker_with_expected_mounts() {
 
 #[test]
 fn t_azc_0100_container_image_smoke() {
+    if !docker_available() {
+        eprintln!("skipping Docker smoke test because docker is unavailable");
+        return;
+    }
+
     let repo = repo_root();
     let status = Command::new("docker")
         .current_dir(&repo)

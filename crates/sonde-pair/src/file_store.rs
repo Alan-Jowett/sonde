@@ -248,7 +248,14 @@ impl FilePairingStore {
                 let unprotected = protector.unprotect(&protected_bytes)?;
                 *psk = *unprotected;
             }
-            (Some(_), _, None) => {
+            (Some(_), Some(plain_hex), None) => {
+                // Downgrade/migration path: a record may temporarily contain both
+                // forms. Without a protector, fall back to the plaintext copy.
+                let mut psk_bytes = from_hex(plain_hex, 32)?;
+                psk.copy_from_slice(&psk_bytes);
+                psk_bytes.zeroize();
+            }
+            (Some(_), None, None) => {
                 return Err(PairingError::StoreCorrupted(
                     "phone_psk_protected present but no PskProtector is configured; \
                      reconfigure with the correct protector or delete the store"
@@ -625,6 +632,35 @@ mod tests {
             err.to_string().contains("corrupted"),
             "expected corrupted error: {err}"
         );
+    }
+
+    #[test]
+    fn both_psk_fields_without_protector_fall_back_to_plaintext() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pairing.json");
+        let store = FilePairingStore::with_path(path.clone());
+        let artifacts = test_artifacts();
+        let mut protected_blob = vec![0x55; 16];
+
+        std::fs::write(
+            store.aead_path(),
+            serde_json::json!({
+                "phone_psk": to_hex(&*artifacts.phone_psk),
+                "phone_psk_protected": to_hex(&protected_blob),
+                "phone_key_hint": artifacts.phone_key_hint,
+                "rf_channel": artifacts.rf_channel,
+                "phone_label": artifacts.phone_label,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        protected_blob.zeroize();
+
+        let loaded = store.load_artifacts().unwrap().unwrap();
+        assert_eq!(*loaded.phone_psk, *artifacts.phone_psk);
+        assert_eq!(loaded.phone_key_hint, artifacts.phone_key_hint);
+        assert_eq!(loaded.rf_channel, artifacts.rf_channel);
+        assert_eq!(loaded.phone_label, artifacts.phone_label);
     }
 
     #[test]

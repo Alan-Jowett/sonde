@@ -7,7 +7,7 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
     runtime_dir="${SONDE_GATEWAY_RUNTIME_DIR:-/var/run/sonde}"
     socket_path="$runtime_dir/companion.sock"
     container_state_dir="/var/lib/sonde-azure-companion"
-    container_runtime_dir="/var/run/sonde"
+    container_socket_path="/var/run/sonde/companion.sock"
 
     mkdir -p "$state_dir"
     if [ ! -d "$runtime_dir" ]; then
@@ -33,13 +33,13 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         --name "${SONDE_AZURE_COMPANION_CONTAINER_NAME:-sonde-azure-companion}" \
         -e SONDE_AZURE_COMPANION_IN_CONTAINER=1 \
         -e SONDE_AZURE_COMPANION_STATE_DIR="$container_state_dir" \
-        -e SONDE_GATEWAY_COMPANION_SOCKET="$container_runtime_dir/companion.sock" \
+        -e SONDE_GATEWAY_COMPANION_SOCKET="$container_socket_path" \
         -e SONDE_AZURE_DEVICE_CLIENT_ID \
         -e SONDE_AZURE_DEVICE_SCOPES \
         -e SONDE_AZURE_DEVICE_POLL_INTERVAL_SECS \
         -e SONDE_AZURE_DEVICE_MAX_ATTEMPTS \
         -v "$state_dir:$container_state_dir" \
-        -v "$runtime_dir:$container_runtime_dir" \
+        -v "$socket_path:$container_socket_path" \
         "$image" "$@"
 fi
 

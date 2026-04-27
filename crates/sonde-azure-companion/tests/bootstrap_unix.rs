@@ -451,10 +451,12 @@ fn host_bootstrap_invokes_docker_with_expected_mounts() {
     let bin_dir = prepare_path_dir(&temp);
     let state_dir = temp.path().join("state");
     let runtime_dir = temp.path().join("runtime");
+    let companion_socket_path = runtime_dir.join("companion.sock");
+    let _admin_socket_path = runtime_dir.join("admin.sock");
     fs::create_dir_all(&state_dir).unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();
-    let _socket =
-        std::os::unix::net::UnixListener::bind(runtime_dir.join("companion.sock")).unwrap();
+    let _socket = std::os::unix::net::UnixListener::bind(&companion_socket_path).unwrap();
+    let _admin_socket = std::os::unix::net::UnixListener::bind(&_admin_socket_path).unwrap();
     let docker_log = temp.path().join("docker.log");
 
     write_executable(
@@ -495,7 +497,11 @@ fn host_bootstrap_invokes_docker_with_expected_mounts() {
         "-v {}:/var/lib/sonde-azure-companion",
         state_dir.display()
     )));
-    assert!(logged.contains(&format!("-v {}:/var/run/sonde", runtime_dir.display())));
+    assert!(logged.contains(&format!(
+        "-v {}:/var/run/sonde/companion.sock",
+        companion_socket_path.display()
+    )));
+    assert!(!logged.contains(&format!("-v {}:/var/run/sonde", runtime_dir.display())));
 }
 
 #[test]

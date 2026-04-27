@@ -6,6 +6,10 @@
 > **Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771) and companion-bootstrap discovery review.
 > **Scope:** This document covers only the initial Azure companion slice: a new Rust companion app in its own Docker container plus bootstrap scripts for Azure device-code login. Terraform, managed-identity creation, gateway configuration generation, and handler wiring are out of scope for this document.
 > **Related:** [gateway-companion-api.md](gateway-companion-api.md), [gateway-requirements.md](gateway-requirements.md), [gateway-design.md](gateway-design.md)
+>
+> **Note:** This document predates the connector-model redesign. References here
+> to the gateway companion API describe the legacy bootstrap slice and must be
+> revised in follow-on work to align with the current connector contract.
 
 ---
 

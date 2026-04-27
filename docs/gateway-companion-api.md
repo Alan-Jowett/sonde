@@ -7,7 +7,12 @@
 > **Audience:** Developers building transport adapters and control planes for Sonde gateways.  
 > **Related:** [gateway-requirements.md](gateway-requirements.md), [gateway-design.md](gateway-design.md), [gateway-api.md](gateway-api.md)
 >
-> **Note:** This document is titled `Gateway Connector API`, but the file remains named `gateway-companion-api.md` for compatibility with existing links and references.
+> **Note:** This document now defines the **connector API**. The file remains
+> named `gateway-companion-api.md` only for compatibility with existing links
+> and references. The earlier companion-sidecar gRPC contract has been
+> superseded by this connector model; legacy documents that still describe the
+> old companion API semantics must be updated separately rather than reading the
+> old contract into this file.
 
 ---
 

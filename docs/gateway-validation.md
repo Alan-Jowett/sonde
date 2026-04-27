@@ -1699,29 +1699,6 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-0824  Removed per review — companion query RPC coverage
-
-This test case was removed when GW-0814 changed from companion command/query RPCs
-to a declarative desired-state connector model. Query RPC coverage no longer
-matches the approved requirements patch.
-
----
-
-### T-0825  Removed per review — companion gRPC surface exclusion test
-
-This test case was removed when GW-0810 and GW-0814 replaced the typed companion
-gRPC surface with a framed local connector interface.
-
----
-
-### T-0826  Removed per review — companion transient display RPC coverage
-
-This test case was removed when GW-0815 changed from companion display control to
-connector-loss observability. Transient display behavior remains covered by the
-admin API validation linked to GW-0809.
-
----
-
 ## 10  Operational tests
 
 ### T-1000  Gateway failover

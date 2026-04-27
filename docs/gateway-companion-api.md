@@ -76,12 +76,33 @@ The external transport behind the connector is outside this document's scope.
 
 ---
 
-## 3  Logical message model
+## 3  Connector payload schema
 
 The connector payload schema is organized around **desired state**, **actual
-state**, **application data**, and **connector health**.
+state**, **application data**, and **connector health**. All connector message
+bytes are encoded as CBOR maps with integer keys.
 
-### 3.1  Control plane → gateway
+### 3.1  Common encoding conventions
+
+All connector messages use the following common fields:
+
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `msg_type` | 1 | uint | Connector message type. |
+
+Connector message type values are:
+
+| `msg_type` | Name | Direction |
+|---|---|---|
+| `0x01` | `DESIRED_STATE` | Control plane → gateway |
+| `0x02` | `ACTUAL_STATE` | Gateway → control plane |
+| `0x03` | `APP_DATA` | Gateway → control plane |
+| `0x04` | `CONNECTOR_HEALTH` | Gateway → control plane |
+
+Timestamps carried by connector messages are encoded as Unix time in
+milliseconds.
+
+### 3.2  `DESIRED_STATE` (control plane → gateway)
 
 Control-plane ingress carries **complete desired state** for exactly one
 addressable entity per message:
@@ -94,14 +115,34 @@ target entity. The connector path does **not** expose imperative node command
 RPCs such as "queue reboot now" or "assign program now." Those are internal
 gateway reconciliation outcomes.
 
-### 3.2  Gateway → control plane actual-state updates
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `msg_type` | 1 | uint | `0x01` |
+| `entity_kind` | 2 | tstr | `"gateway"` or `"node"` |
+| `entity_id` | 3 | tstr | Opaque identifier of the target entity. For gateway-scoped state, this identifies the gateway instance. |
+| `desired_state` | 4 | map | Complete desired-state map for the target entity. |
+
+### 3.3  `ACTUAL_STATE` (gateway → control plane)
 
 When the gateway learns or changes actual state relevant to reconciliation, it
 emits an upstream connector message. For nodes, this includes the state accepted
 from authenticated `WAKE` traffic and the gateway's resulting latest-known node
-state, including reception timestamps encoded as Unix time in milliseconds.
+state.
 
-### 3.3  Gateway → control plane application-data updates
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `msg_type` | 1 | uint | `0x02` |
+| `entity_kind` | 2 | tstr | `"gateway"` or `"node"` |
+| `entity_id` | 3 | tstr | Opaque identifier of the affected entity. |
+| `current_program_hash` | 4 | bstr/null | Current node program hash when applicable. |
+| `assigned_program_hash` | 5 | bstr/null | Gateway-assigned resident program hash when applicable. |
+| `battery_mv` | 6 | uint/null | Latest node battery reading in millivolts when applicable. |
+| `firmware_abi_version` | 7 | uint/null | Firmware ABI version when applicable. |
+| `firmware_version` | 8 | tstr/null | Firmware version string when applicable. |
+| `timestamp_ms` | 9 | uint | Reception timestamp in Unix milliseconds. |
+| `status_details` | 10 | map | Additional gateway- or entity-scoped status fields relevant to reconciliation. |
+
+### 3.4  `APP_DATA` (gateway → control plane)
 
 When the gateway accepts node-originated application payload data, it emits an
 upstream connector message containing:
@@ -116,12 +157,28 @@ This path is informational only. The connector API does not provide a reply
 channel for node `send_recv()` responses; those continue to flow through the
 handler API.
 
-### 3.4  Connector health and loss signaling
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `msg_type` | 1 | uint | `0x03` |
+| `node_id` | 2 | tstr | Opaque node identifier assigned by the gateway. |
+| `program_hash` | 3 | bstr | Hash of the program that produced the payload. |
+| `payload` | 4 | bstr | Opaque application payload bytes. |
+| `timestamp_ms` | 5 | uint | Reception timestamp in Unix milliseconds. |
+| `payload_origin` | 6 | tstr | `"app_data"` or `"wake_blob"` |
+
+### 3.5  `CONNECTOR_HEALTH` (gateway → control plane)
 
 The connector model is intended to be lossless under normal circumstances.
 Detectable connector-delivery failure or desynchronization must be surfaced to
 operators. The exact external transport retry policy is outside the gateway
 core, but the connector/gateway boundary must not silently mask detected loss.
+
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `msg_type` | 1 | uint | `0x04` |
+| `health_state` | 2 | tstr | Connector health classification such as `ok`, `degraded`, or `desynchronized`. |
+| `timestamp_ms` | 3 | uint | Timestamp when the health condition was observed. |
+| `details` | 4 | map | Additional operator-facing details about the detected condition. |
 
 ---
 

@@ -2,8 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use tokio::sync::RwLock;
@@ -12,11 +11,7 @@ use tracing::warn;
 use zeroize::Zeroizing;
 
 use crate::ble_pairing::BlePairingController;
-use crate::display_banner::{send_display_message, send_gateway_version_banner};
-use crate::display_control::{
-    cancel_status_page_scroll, claim_display_generation, reset_status_page_cycle,
-    try_claim_display_restore, StatusPageCycle, StatusPageScrollTask, STATUS_PAGE_TIMEOUT,
-};
+use crate::display_control::{StatusPageCycle, StatusPageScrollTask};
 use crate::engine::PendingCommand;
 use crate::handler::HandlerConfig;
 use crate::handler::HandlerRouter;
@@ -26,6 +21,7 @@ use crate::program::{ProgramLibrary, VerificationProfile};
 use crate::registry::NodeRecord;
 use crate::session::SessionManager;
 use crate::storage::{HandlerRecord, Storage};
+use crate::transient_display::{show_modem_display_message, ActiveDisplayState};
 
 pub mod pb {
     tonic::include_proto!("sonde.admin");
@@ -42,9 +38,7 @@ pub struct AdminService {
     session_manager: Arc<SessionManager>,
     ble_controller: Option<Arc<BlePairingController>>,
     transport: Option<Arc<UsbEspNowTransport>>,
-    display_generation: Option<Arc<AtomicU64>>,
-    status_page_cycle: Option<Arc<tokio::sync::Mutex<StatusPageCycle>>>,
-    status_page_scroll_task: Option<StatusPageScrollTask>,
+    display_state: Option<ActiveDisplayState>,
     handler_configs: RwLock<Vec<HandlerConfig>>,
     /// Shared handler router for live reload (GW-1404, GW-1407).
     handler_router: Option<Arc<tokio::sync::RwLock<HandlerRouter>>>,
@@ -63,9 +57,7 @@ impl AdminService {
             session_manager,
             ble_controller: None,
             transport: None,
-            display_generation: None,
-            status_page_cycle: None,
-            status_page_scroll_task: None,
+            display_state: None,
             handler_configs: RwLock::new(Vec::new()),
             handler_router: None,
         }
@@ -84,13 +76,26 @@ impl AdminService {
 
     pub fn with_display_state(
         mut self,
-        display_generation: Arc<AtomicU64>,
+        display_generation: Arc<std::sync::atomic::AtomicU64>,
         status_page_cycle: Arc<tokio::sync::Mutex<StatusPageCycle>>,
         status_page_scroll_task: StatusPageScrollTask,
     ) -> Self {
-        self.display_generation = Some(display_generation);
-        self.status_page_cycle = Some(status_page_cycle);
-        self.status_page_scroll_task = Some(status_page_scroll_task);
+        match (&self.transport, &self.ble_controller) {
+            (Some(transport), Some(controller)) => {
+                self.display_state = Some(ActiveDisplayState::new(
+                    Arc::clone(transport),
+                    Arc::clone(controller),
+                    display_generation,
+                    status_page_cycle,
+                    status_page_scroll_task,
+                ));
+            }
+            _ => {
+                warn!(
+                    "with_display_state called before BLE transport/controller were configured; leaving display_state unset"
+                );
+            }
+        }
         self
     }
 
@@ -130,55 +135,6 @@ impl AdminService {
                 warn!("failed to reload handler configs: {e}");
             }
         }
-    }
-}
-
-fn schedule_admin_display_restore(
-    transport: &Arc<UsbEspNowTransport>,
-    controller: &Arc<BlePairingController>,
-    display_generation: &Arc<AtomicU64>,
-    status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
-    status_page_scroll_task: &StatusPageScrollTask,
-    generation: u64,
-) {
-    let transport: Weak<UsbEspNowTransport> = Arc::downgrade(transport);
-    let controller = Arc::clone(controller);
-    let display_generation = Arc::clone(display_generation);
-    let status_page_cycle = Arc::clone(status_page_cycle);
-    let status_page_scroll_task = Arc::clone(status_page_scroll_task);
-
-    tokio::spawn(async move {
-        tokio::time::sleep(STATUS_PAGE_TIMEOUT).await;
-        if controller.session_origin().await.is_some() {
-            return;
-        }
-        if !try_claim_display_restore(display_generation.as_ref(), generation) {
-            return;
-        }
-        cancel_status_page_scroll(&status_page_scroll_task).await;
-        reset_status_page_cycle(&status_page_cycle).await;
-        let Some(transport) = transport.upgrade() else {
-            return;
-        };
-        if let Err(e) = send_gateway_version_banner(&transport).await {
-            warn!(error = %e, "failed to restore gateway version banner after admin display");
-        }
-    });
-}
-
-async fn restore_admin_display_failure(
-    transport: &Arc<UsbEspNowTransport>,
-    display_generation: &Arc<AtomicU64>,
-    generation: u64,
-) {
-    if !try_claim_display_restore(display_generation.as_ref(), generation) {
-        return;
-    }
-    if let Err(e) = send_gateway_version_banner(transport).await {
-        warn!(
-            error = %e,
-            "failed to restore gateway version banner after admin display error"
-        );
     }
 }
 
@@ -1339,60 +1295,12 @@ impl GatewayAdmin for AdminService {
         &self,
         request: Request<ShowModemDisplayMessageRequest>,
     ) -> Result<Response<Empty>, Status> {
-        let transport = self
-            .transport
+        let display_state = self
+            .display_state
             .as_ref()
             .ok_or_else(|| Status::unavailable("no modem transport configured"))?;
-        let controller = self
-            .ble_controller
-            .as_ref()
-            .ok_or_else(|| Status::unavailable("no BLE controller configured"))?;
-        let display_generation = self
-            .display_generation
-            .as_ref()
-            .ok_or_else(|| Status::internal("modem display control not configured"))?;
-        let status_page_cycle = self
-            .status_page_cycle
-            .as_ref()
-            .ok_or_else(|| Status::internal("modem display control not configured"))?;
-        let status_page_scroll_task = self
-            .status_page_scroll_task
-            .as_ref()
-            .ok_or_else(|| Status::internal("modem display control not configured"))?;
-
-        if controller.session_origin().await.is_some() {
-            return Err(Status::failed_precondition(
-                "BLE pairing session owns the modem display",
-            ));
-        }
-
         let lines = request.into_inner().lines;
-        if lines.is_empty() || lines.len() > 4 {
-            return Err(Status::invalid_argument(
-                "lines must contain between 1 and 4 entries",
-            ));
-        }
-
-        cancel_status_page_scroll(status_page_scroll_task).await;
-        let generation = claim_display_generation(display_generation);
-        reset_status_page_cycle(status_page_cycle).await;
-
-        let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        if let Err(e) = send_display_message(transport, &line_refs).await {
-            restore_admin_display_failure(transport, display_generation, generation).await;
-            return Err(Status::internal(format!(
-                "show modem display message failed: {e}"
-            )));
-        }
-
-        schedule_admin_display_restore(
-            transport,
-            controller,
-            display_generation,
-            status_page_cycle,
-            status_page_scroll_task,
-            generation,
-        );
+        show_modem_display_message(display_state, &lines).await?;
 
         Ok(Response::new(Empty {}))
     }

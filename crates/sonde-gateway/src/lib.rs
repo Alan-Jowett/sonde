@@ -21,6 +21,7 @@ pub mod sonde_platform;
 pub mod sqlite_storage;
 pub mod state_bundle;
 pub mod storage;
+pub mod transient_display;
 pub mod transport;
 
 pub use admin::AdminService;

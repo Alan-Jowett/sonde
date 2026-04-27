@@ -29,6 +29,7 @@ use sonde_gateway::program::{ProgramRecord, VerificationProfile};
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::storage::{InMemoryStorage, Storage};
+use sonde_gateway::transient_display::DisplayStateHandle;
 use sonde_gateway::transport::PeerAddress;
 use sonde_gateway::GatewayAead;
 
@@ -119,6 +120,7 @@ impl CompanionHarness {
             pending_commands.clone(),
             session_manager.clone(),
             event_hub.clone(),
+            DisplayStateHandle::new(),
         );
         Self {
             storage,
@@ -676,6 +678,7 @@ fn t0825_companion_contract_excludes_operator_only_workflows() {
         "rpc QueueReboot",
         "rpc QueueEphemeral",
         "rpc GetNodeStatus",
+        "rpc ShowModemDisplayMessage",
     ] {
         assert!(
             proto.contains(rpc),

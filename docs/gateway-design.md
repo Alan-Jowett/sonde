@@ -76,7 +76,7 @@ The gateway is composed of eleven functional modules grouped in two tiers. The u
 | **Handler Process** | Manage handler stdin/stdout lifecycle | GW-0502, GW-0503, GW-0506 |
 | **Storage** | Persist node registry, program library, configuration | GW-0700, GW-1000, GW-1001 |
 | **Admin API** | gRPC admin interface, CLI tool | GW-0800, GW-0801, GW-0802, GW-0803, GW-0804, GW-0805, GW-0806 |
-| **Companion API** | gRPC integration interface for companion processes | GW-0810, GW-0811, GW-0812, GW-0813, GW-0814 |
+| **Companion API** | gRPC integration interface for companion processes | GW-0810, GW-0811, GW-0812, GW-0813, GW-0814, GW-0815 |
 | **BLE Pairing Handler** | BLE pairing protocol logic via modem relay | GW-1200–GW-1222a |
 
 ---
@@ -1013,7 +1013,7 @@ All commands support `--format json` for machine-readable output.
 
 ## 13A  Companion API
 
-> **Requirements:** GW-0810 (companion API), GW-0811 (live event subscription), GW-0812 (`node_checkin`), GW-0813 (`node_payload`), GW-0814 (command/query operations).
+> **Requirements:** GW-0810 (companion API), GW-0811 (live event subscription), GW-0812 (`node_checkin`), GW-0813 (`node_payload`), GW-0814 (command/query operations), GW-0815 (transient modem display).
 
 The gateway exposes a second local gRPC API for companion processes that need a stable integration boundary distinct from the operator-focused `GatewayAdmin` surface. The companion API is specified in [gateway-companion-api.md](gateway-companion-api.md). It uses a separate socket, a separate protobuf service, and companion-specific message types so it can evolve independently without forcing `GatewayAdmin` changes.
 
@@ -1038,10 +1038,11 @@ service GatewayCompanion {
     rpc QueueReboot(CompanionQueueRebootRequest) returns (CompanionEmpty);
     rpc QueueEphemeral(CompanionQueueEphemeralRequest) returns (CompanionEmpty);
     rpc GetNodeStatus(CompanionGetNodeStatusRequest) returns (CompanionNodeStatus);
+    rpc ShowModemDisplayMessage(CompanionShowModemDisplayMessageRequest) returns (CompanionEmpty);
 }
 ```
 
-The companion service intentionally omits operator-only workflows such as program ingestion, node registration/removal, state export/import, modem control, BLE pairing, and handler management.
+The companion service intentionally omits operator-only workflows such as program ingestion, node registration/removal, state export/import, raw modem control, BLE pairing, and handler management. It may request gateway-owned transient display text, but it does not upload raw framebuffers or bypass the gateway's existing display ownership rules.
 
 ### 13A.2  Event publication path
 
@@ -1072,6 +1073,32 @@ This sharing is mandatory for:
 5. `ListNodes`, `GetNode`, and `GetNodeStatus` — surface the same node metadata/state as the gateway already maintains.
 
 The companion protobuf messages remain distinct from the admin protobuf messages even when fields overlap. This avoids coupling future companion-contract changes to the operator-facing admin contract.
+
+### 13A.4  Shared transient display path
+
+The companion API also exposes a `ShowModemDisplayMessage` RPC for headless
+automation flows such as Azure device login. This RPC does not introduce a new
+display implementation. Instead, the gateway factors transient-display behavior
+behind a shared helper that is invoked by both `GatewayAdmin` and
+`GatewayCompanion`.
+
+The shared display helper owns all of the behavior already defined for the admin
+display path:
+
+1. Validate that the request contains 1 to 4 text lines.
+2. Reject the request with `FAILED_PRECONDITION` if a BLE pairing session
+   currently owns the display.
+3. Reject the request with `UNAVAILABLE` if no modem transport is configured.
+4. Cancel any active `Nodes` page scroll task, claim a new `display_generation`,
+   and reset the status-page cycle.
+5. Render the supplied text using the existing centered 128×64 text renderer and
+   send it through the reliable display-transfer path.
+6. Spawn the normal 60-second restore task that returns the display to
+   `Sonde Gateway v<semver>` only if no newer display owner has superseded it.
+
+Because both admin and companion RPCs call the same helper, later successful
+transient-display requests replace earlier ones regardless of which surface
+originated them, while BLE pairing screens continue to preempt both.
 
 ---
 
@@ -1248,12 +1275,13 @@ If another `BUTTON_SHORT` arrives before the timeout fires, the gateway advances
 
 ### 17.4c  Admin-triggered transient display override
 
-The admin API also exposes a gateway-owned transient display override for
-operator prompts such as headless device-login codes. The
-`ShowModemDisplayMessage` RPC accepts 1 to 4 text lines. The gateway validates
-the line count before rendering and rejects the request with
-`FAILED_PRECONDITION` if a BLE pairing session currently owns the display, so
-pairing passkeys and terminal status screens remain visible.
+The admin API exposes a gateway-owned transient display override for operator
+prompts such as headless device-login codes. The companion API's
+`ShowModemDisplayMessage` RPC reuses the same helper and therefore follows the
+same ownership, validation, rendering, and restore behavior. The shared helper
+accepts 1 to 4 text lines and rejects the request with `FAILED_PRECONDITION` if
+a BLE pairing session currently owns the display, so pairing passkeys and
+terminal status screens remain visible.
 
 On success, the gateway renders the supplied lines with the same centered
 128×64 text renderer used for the startup banner and button-pairing status

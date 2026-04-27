@@ -19,6 +19,7 @@ use crate::engine::PendingCommand;
 use crate::registry::NodeRecord;
 use crate::session::SessionManager;
 use crate::storage::Storage;
+use crate::transient_display::{show_modem_display_message, DisplayStateHandle};
 
 pub mod pb {
     tonic::include_proto!("sonde.companion");
@@ -101,6 +102,7 @@ pub struct CompanionService {
     pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
     session_manager: Arc<SessionManager>,
     event_hub: Arc<CompanionEventHub>,
+    display_state: DisplayStateHandle,
 }
 
 impl CompanionService {
@@ -109,12 +111,14 @@ impl CompanionService {
         pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
         session_manager: Arc<SessionManager>,
         event_hub: Arc<CompanionEventHub>,
+        display_state: DisplayStateHandle,
     ) -> Self {
         Self {
             storage,
             pending_commands,
             session_manager,
             event_hub,
+            display_state,
         }
     }
 }
@@ -263,6 +267,20 @@ impl GatewayCompanion for CompanionService {
         )
         .await?;
         Ok(Response::new(node_status_to_proto(status)))
+    }
+
+    async fn show_modem_display_message(
+        &self,
+        request: Request<CompanionShowModemDisplayMessageRequest>,
+    ) -> Result<Response<CompanionEmpty>, Status> {
+        let display_state = self
+            .display_state
+            .get()
+            .await
+            .ok_or_else(|| Status::unavailable("no modem transport configured"))?;
+        let lines = request.into_inner().lines;
+        show_modem_display_message(&display_state, &lines).await?;
+        Ok(Response::new(CompanionEmpty {}))
     }
 }
 

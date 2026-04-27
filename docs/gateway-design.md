@@ -1102,6 +1102,7 @@ The gateway is configured via a configuration file (format TBD — TOML recommen
 | `storage` | Storage backend and connection parameters | Required |
 | `admin_socket` | gRPC admin API socket path | `/var/run/sonde/admin.sock` (Linux), `\\.\pipe\sonde-admin` (Windows) |
 | `connector_socket` | Local connector API socket path | `/var/run/sonde/connector.sock` (Linux), `\\.\pipe\sonde-connector` (Windows) |
+| `connector_max_message_size` | Maximum connector API frame size | `1048576` (1 MB) |
 | `handlers` | Handler routing table (program_hash → command) | `[]` |
 | `session_timeout_s` | Session inactivity timeout | `30` |
 | `node_timeout_multiplier` | Multiple of node's schedule interval before `node_timeout` event | `3` |

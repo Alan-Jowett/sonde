@@ -59,6 +59,12 @@ The message bytes contain a Sonde-defined connector protocol payload. The
 connector adapter forwards these bytes unchanged; only the gateway and the
 control plane interpret the payload schema.
 
+The gateway MUST reject any connector frame whose length exceeds the configured
+maximum connector message size. The default maximum is **1 MB** (1,048,576
+bytes). If the length prefix exceeds the configured bound, or if the peer closes
+the connection before the declared payload bytes are fully received, the gateway
+closes the connector session.
+
 ### 2.3  Session model
 
 The gateway accepts at most one active connector session at a time. The
@@ -102,6 +108,22 @@ Connector message type values are:
 Timestamps carried by connector messages are encoded as Unix time in
 milliseconds.
 
+The following rules apply to all connector payloads:
+
+- **Integer keys only for schema-defined maps.** Every CBOR map defined by this
+  document uses unsigned integer keys, including nested maps.
+- **Independent keyspaces.** Each schema-defined map object has its own key
+  space. Keys are not shared across object types.
+- **Reserved ranges for extension.** Within each schema-defined map, keys
+  `1`-`127` are available for fields defined by this specification and keys
+  `128`-`255` are reserved for future Sonde-defined standard fields.
+- **Unknown key handling.** Receivers MUST ignore unknown keys in any
+  schema-defined map unless a field definition for that message states
+  otherwise.
+- **Explicit opaque payloads only.** If a field is intended to carry opaque CBOR
+  whose internal structure is outside this document, the field definition must
+  say so explicitly.
+
 ### 3.2  `DESIRED_STATE` (control plane → gateway)
 
 Control-plane ingress carries **complete desired state** for exactly one
@@ -119,8 +141,34 @@ gateway reconciliation outcomes.
 |---|---|---|---|
 | `msg_type` | 1 | uint | `0x01` |
 | `entity_kind` | 2 | tstr | `"gateway"` or `"node"` |
-| `entity_id` | 3 | tstr | Opaque identifier of the target entity. For gateway-scoped state, this identifies the gateway instance. |
-| `desired_state` | 4 | map | Complete desired-state map for the target entity. |
+| `entity_id` | 3 | tstr | Opaque identifier of the target entity. For `entity_kind = "node"`, this is the target node identifier. For `entity_kind = "gateway"`, this field has no semantic meaning and MUST be ignored by receivers. |
+| `desired_state` | 4 | map | Complete desired-state map for the target entity. The payload schema depends on `entity_kind`; see sections 3.2.1 and 3.2.2. Any map nested under `desired_state` also uses integer CBOR keys. |
+
+For interoperability, senders SHOULD encode `entity_id` as the empty string
+`""` when `entity_kind = "gateway"`. The connector API models exactly one
+gateway entity per connector stream, so gateway-scoped state is selected by
+`entity_kind`, not by a gateway instance identifier.
+
+#### 3.2.1  `desired_state` payload for `entity_kind = "gateway"`
+
+`desired_state` is a CBOR map with the following schema:
+
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| *(no fields currently defined)* | — | — | Senders SHOULD encode an empty map (`{}`) for gateway desired state in this draft. Receivers MUST accept an empty map and MUST ignore unknown integer keys for forward compatibility. |
+
+#### 3.2.2  `desired_state` payload for `entity_kind = "node"`
+
+`desired_state` is a CBOR map with the following schema:
+
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `assigned_program_hash` | 1 | bstr/null | Desired resident program hash. `null` means the desired state does not include a resident program assignment. |
+| `schedule_interval_s` | 2 | uint/null | Desired node wake interval in seconds. `null` means the desired state does not include a scheduled interval target in this draft. |
+| `ephemeral_program_hash` | 3 | bstr/null | Desired ephemeral program hash to queue when reconciliation determines one is needed. `null` means the desired state does not request an ephemeral run. |
+
+Fields not yet defined by this draft remain reserved for future desired-state
+extension. Receivers MUST ignore unknown integer keys.
 
 ### 3.3  `ACTUAL_STATE` (gateway → control plane)
 
@@ -140,7 +188,15 @@ state.
 | `firmware_abi_version` | 7 | uint/null | Firmware ABI version when applicable. |
 | `firmware_version` | 8 | tstr/null | Firmware version string when applicable. |
 | `timestamp_ms` | 9 | uint | Reception timestamp in Unix milliseconds. |
-| `status_details` | 10 | map | Additional gateway- or entity-scoped status fields relevant to reconciliation. |
+| `status_details` | 10 | map | Additional gateway- or entity-scoped status fields relevant to reconciliation. See section 3.3.1. |
+
+#### 3.3.1  `status_details` payload
+
+`status_details` is a CBOR map with the following schema:
+
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| *(no fields currently defined)* | — | — | Senders SHOULD encode an empty map (`{}`) when no additional status details are available. Receivers MUST accept an empty map and MUST ignore unknown integer keys for forward compatibility. |
 
 ### 3.4  `APP_DATA` (gateway → control plane)
 
@@ -173,12 +229,52 @@ Detectable connector-delivery failure or desynchronization must be surfaced to
 operators. The exact external transport retry policy is outside the gateway
 core, but the connector/gateway boundary must not silently mask detected loss.
 
+For this section, **stale state** means any control-plane-visible state whose
+current value can no longer be assumed to match the gateway's authoritative view
+because one or more connector messages may have been lost, duplicated, or
+applied out of order after a detected connector fault.
+
+When `health_state` is not `ok`, operators and connector implementations must
+treat the following as potentially stale until the condition is cleared and the
+relevant state is re-read from an authoritative gateway surface:
+
+- **Desired state reflected by the control plane** — the external system may be
+  showing a requested configuration that the gateway did not accept or only
+  partially applied.
+- **Node status / inventory / last-known observations** — the control plane may
+  be missing newer `ACTUAL_STATE` updates or may still be showing superseded
+  values.
+- **Pending commands or reconciliation progress** — any in-flight action derived
+  from desired state must be considered uncertain until re-confirmed.
+
+Operator guidance tied to `health_state`:
+
+- `ok`: normal operation. No special handling is required.
+- `degraded`: delivery is impaired but not known to be unrecoverable. Treat
+  newly received state as advisory and verify affected changes through an
+  authoritative gateway surface before concluding reconciliation succeeded.
+- `desynchronized`: the connector/control-plane view is unreliable until
+  resynchronized. Rebuild the external view from authoritative gateway state
+  before resuming normal automation.
+
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
 | `msg_type` | 1 | uint | `0x04` |
 | `health_state` | 2 | tstr | Connector health classification such as `ok`, `degraded`, or `desynchronized`. |
 | `timestamp_ms` | 3 | uint | Timestamp when the health condition was observed. |
-| `details` | 4 | map | Additional operator-facing details about the detected condition. |
+| `details` | 4 | map | Additional operator-facing details about the detected condition, including stale-state scope and suggested remediation when applicable. See section 3.5.1. |
+
+#### 3.5.1  `details` payload
+
+`details` is a CBOR map with the following schema:
+
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `failure_mode` | 1 | tstr | Short identifier for the detected connector fault. |
+| `stale_scope` | 2 | array | Array of text labels naming the potentially stale state domains, such as `desired_state`, `actual_state`, or `reconciliation_progress`. |
+| `remediation` | 3 | tstr | Suggested operator action or recovery guidance when known. |
+
+Receivers MUST ignore unknown integer keys in this map.
 
 ---
 

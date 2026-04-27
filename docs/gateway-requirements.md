@@ -999,7 +999,7 @@ transport is configured, it MUST fail with `UNAVAILABLE`.
 **Source:** User-requested companion-model redesign, `gateway-companion-api.md` §2
 
 **Description:**  
-The gateway MUST expose a separate local control-plane connector API for a single connector application that bridges the gateway to an external control plane. This connector API MUST be distinct from `GatewayAdmin` and from the handler stdin/stdout data plane. The local connector surface MUST use a configurable local socket (`/var/run/sonde/connector.sock` on Unix-like hosts; `\\.\pipe\sonde-connector` on Windows by default) with explicit message framing, and it MUST NOT expose a TCP listener in v1. The connector API defines the gateway/control-plane protocol; the external transport that carries those messages beyond the local connector application is an implementation detail outside the gateway core.
+The gateway MUST expose a separate local control-plane connector API for a single connector application that bridges the gateway to an external control plane. This connector API MUST be distinct from `GatewayAdmin` and from the handler stdin/stdout data plane. The local connector surface MUST use a configurable local socket (`/var/run/sonde/connector.sock` on Unix-like hosts; `\\.\pipe\sonde-connector` on Windows by default) with explicit message framing, and it MUST NOT expose a TCP listener in v1. The connector API defines the gateway/control-plane protocol; the external transport that carries those messages beyond the local connector application is an implementation detail outside the gateway core. The gateway MUST enforce a maximum accepted connector message size, configurable with a default of 1,048,576 bytes.
 
 **Acceptance criteria:**
 
@@ -1008,6 +1008,8 @@ The gateway MUST expose a separate local control-plane connector API for a singl
 3. No TCP listener is opened for the connector API.
 4. The local connector surface uses explicit message framing rather than gRPC request/response semantics.
 5. The gateway exposes only one active connector session at a time; an additional connector attempt is rejected or closed without affecting the active session.
+6. Connector frames larger than the configured maximum accepted size are rejected.
+7. If a connector frame declares an oversized length or terminates before the declared payload bytes are received, the gateway closes the connector session.
 
 ---
 

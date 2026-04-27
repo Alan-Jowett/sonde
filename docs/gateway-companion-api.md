@@ -112,8 +112,12 @@ The following rules apply to all connector payloads:
 
 - **Integer keys only for schema-defined maps.** Every CBOR map defined by this
   document uses unsigned integer keys, including nested maps.
-- **Independent keyspaces.** Each schema-defined map object has its own key
-  space. Keys are not shared across object types.
+- **Per-message keyspaces with explicit shared fields.** Field meanings are
+  defined per schema-defined map or message type, not globally across the
+  connector API. A key MAY be reused by a different message type with a
+  different meaning unless this document explicitly defines it as a common
+  field shared across message types. For connector messages, key `1` is the
+  shared `msg_type` field.
 - **Reserved ranges for extension.** Within each schema-defined map, keys
   `1`-`127` are available for fields defined by this specification and keys
   `128`-`255` are reserved for future Sonde-defined standard fields.
@@ -161,11 +165,18 @@ gateway entity per connector stream, so gateway-scoped state is selected by
 
 `desired_state` is a CBOR map with the following schema:
 
+Each `DESIRED_STATE` message is a complete replacement of the previously known
+desired state for that entity, not a patch. For the fields defined in this
+draft, a missing key and a present key with value `null` have the same meaning:
+the replacement desired state explicitly contains no desired value for that
+field. Receivers MUST NOT interpret `null` as "leave the previous value
+unchanged".
+
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
-| `assigned_program_hash` | 1 | bstr/null | Desired resident program hash. `null` means the desired state does not include a resident program assignment. |
-| `schedule_interval_s` | 2 | uint/null | Desired node wake interval in seconds. `null` means the desired state does not include a scheduled interval target in this draft. |
-| `ephemeral_program_hash` | 3 | bstr/null | Desired ephemeral program hash to queue when reconciliation determines one is needed. `null` means the desired state does not request an ephemeral run. |
+| `assigned_program_hash` | 1 | bstr/null | Desired resident program hash. `null` means no resident program assignment is desired. |
+| `schedule_interval_s` | 2 | uint/null | Desired node wake interval in seconds. `null` means no scheduled interval target is desired in this draft. |
+| `ephemeral_program_hash` | 3 | bstr/null | Desired ephemeral program hash to queue when reconciliation determines one is needed. `null` means no ephemeral run is requested. |
 
 Fields not yet defined by this draft remain reserved for future desired-state
 extension. Receivers MUST ignore unknown integer keys.
@@ -244,6 +255,9 @@ relevant state is re-read from an authoritative gateway surface:
 - **Node status / inventory / last-known observations** — the control plane may
   be missing newer `ACTUAL_STATE` updates or may still be showing superseded
   values.
+- **Application-data visibility** — the control plane may be missing `APP_DATA`
+  messages, may receive them out of order, or may be unable to determine
+  whether a payload was already forwarded before the detected fault.
 - **Pending commands or reconciliation progress** — any in-flight action derived
   from desired state must be considered uncertain until re-confirmed.
 
@@ -271,7 +285,7 @@ Operator guidance tied to `health_state`:
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
 | `failure_mode` | 1 | tstr | Short identifier for the detected connector fault. |
-| `stale_scope` | 2 | array | Array of text labels naming the potentially stale state domains, such as `desired_state`, `actual_state`, or `reconciliation_progress`. |
+| `stale_scope` | 2 | array | Array of text labels naming the potentially stale state domains, such as `desired_state`, `actual_state`, `app_data`, or `reconciliation_progress`. |
 | `remediation` | 3 | tstr | Suggested operator action or recovery guidance when known. |
 
 Receivers MUST ignore unknown integer keys in this map.

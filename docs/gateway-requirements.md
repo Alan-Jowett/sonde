@@ -1008,8 +1008,7 @@ The gateway MUST expose a separate local control-plane connector API for a singl
 3. No TCP listener is opened for the connector API.
 4. The local connector surface uses explicit message framing rather than gRPC request/response semantics.
 5. The gateway exposes only one active connector session at a time; an additional connector attempt is rejected or closed without affecting the active session.
-6. Connector frames larger than the configured maximum accepted size are rejected.
-7. If a connector frame declares an oversized length or terminates before the declared payload bytes are received, the gateway closes the connector session.
+6. If a connector frame declares a payload length larger than the configured maximum accepted size, or terminates before the declared payload bytes are received, the gateway closes the connector session.
 
 ---
 

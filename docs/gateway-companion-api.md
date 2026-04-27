@@ -66,9 +66,11 @@ control plane interpret the payload schema.
 
 The gateway MUST reject any connector frame whose length exceeds the configured
 maximum connector message size. The default maximum is **1 MB** (1,048,576
-bytes). If the length prefix exceeds the configured bound, or if the peer closes
-the connection before the declared payload bytes are fully received, the gateway
-closes the connector session.
+bytes). This bound applies to the `Length` field's declared message bytes only;
+it does not include the 4-byte length prefix itself. If the length prefix
+exceeds the configured bound, or if the peer closes the connection before the
+declared payload bytes are fully received, the gateway closes the connector
+session.
 
 ### 2.3  Session model
 

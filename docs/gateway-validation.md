@@ -1629,13 +1629,13 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-0819  Per-entity desired-state ingress updates gateway reconciliation state
 
-**Validates:** GW-0811, GW-0814
+**Validates:** GW-0811
 
 **Procedure:**
 1. Start the gateway and register a node.
 2. Send one `DESIRED_STATE` message targeting that node through the connector API with a concrete node desired-state map, for example `assigned_program_hash` and `schedule_interval_s`.
-3. Assert: the message is accepted only when it addresses exactly one entity.
-4. Assert: the gateway replaces any prior desired state for that node with the complete desired state from the message.
+3. Send one invalid `DESIRED_STATE` message with an unknown `entity_kind`, then assert the gateway rejects the message or closes the connector connection and does not update desired state for any entity.
+4. Assert: after the valid message, the gateway replaces any prior desired state for that node with the complete desired state from the message.
 5. Send the node's next `WAKE`.
 6. Assert: the resulting `COMMAND` reflects gateway reconciliation of the new desired state through the normal pending-command path rather than a direct imperative connector command.
 7. Repeat the procedure with a gateway-targeted `DESIRED_STATE` message whose `entity_id` is the empty string and whose `desired_state` map is empty, then assert it updates gateway-scoped desired state without masquerading as a node-targeted command.

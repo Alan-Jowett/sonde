@@ -1034,7 +1034,7 @@ The connector API MUST accept control-plane desired-state messages addressed to 
 **Source:** User-requested gateway/control-plane reconciliation model
 
 **Description:**  
-The gateway MUST emit upstream control-plane messages that describe actual gateway and node state changes relevant to reconciliation. For nodes, this includes the state learned when the gateway accepts and processes an authenticated `WAKE`, such as `node_id`, current and assigned program hashes when known, `battery_mv`, firmware ABI/version data, and a reception timestamp. These upstream messages are produced only after the gateway has updated its latest-known actual state for the affected entity.
+The gateway MUST emit upstream control-plane messages that describe actual gateway and node state changes relevant to reconciliation. For nodes, this includes the state learned when the gateway accepts and processes an authenticated `WAKE`, such as `node_id`, current and assigned program hashes when known, `battery_mv`, firmware ABI/version data, and a reception timestamp encoded as Unix time in milliseconds. These upstream messages are produced only after the gateway has updated its latest-known actual state for the affected entity.
 
 **Acceptance criteria:**
 
@@ -1051,7 +1051,7 @@ The gateway MUST emit upstream control-plane messages that describe actual gatew
 **Source:** User-requested control-plane data flow
 
 **Description:**  
-The gateway MUST emit upstream control-plane messages whenever it accepts node-originated application payload data. This includes both `APP_DATA { blob }` frames and `WAKE` messages carrying a piggybacked `blob`. The upstream message MUST include the admin-assigned `node_id`, `program_hash`, the opaque payload bytes, a reception timestamp, and an origin value distinguishing `app_data` from `wake_blob`. This upstream path is informational only: it MUST NOT replace the existing handler reply flow defined by GW-0501 and GW-0506.
+The gateway MUST emit upstream control-plane messages whenever it accepts node-originated application payload data. This includes both `APP_DATA { blob }` frames and `WAKE` messages carrying a piggybacked `blob`. The upstream message MUST include the admin-assigned `node_id`, `program_hash`, the opaque payload bytes, a reception timestamp encoded as Unix time in milliseconds, and an origin value distinguishing `app_data` from `wake_blob`. This upstream path is informational only: it MUST NOT replace the existing handler reply flow defined by GW-0501 and GW-0506.
 
 **Acceptance criteria:**
 

@@ -1618,7 +1618,7 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Start the gateway.
 2. Connect to the configured connector socket.
-3. Send one well-formed framed connector message and assert the gateway accepts or responds to it according to the published connector protocol.
+3. Send one syntactically valid framed connector record whose payload is otherwise opaque to this test, then assert a deterministic framing-level outcome: the gateway closes the connector connection cleanly within a bounded timeout (for example, 1 second). Do not require any protocol-specific ACK or response in this test, because payload semantics are validated by the connector-specific tests below.
 4. Attempt to use a `GatewayAdmin` gRPC client against the connector socket and assert the call fails, proving the connector endpoint is not a second admin gRPC service.
 5. Assert: the connector API is bound to a local-only transport (Unix domain socket or Windows named pipe) distinct from the admin API endpoint.
 6. Assert: no TCP listener is opened for the connector API.

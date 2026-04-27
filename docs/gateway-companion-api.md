@@ -6,6 +6,8 @@
 > **Scope:** The local framed integration API between `sonde-gateway` and a single connector process that bridges the gateway to an external control plane.  
 > **Audience:** Developers building transport adapters and control planes for Sonde gateways.  
 > **Related:** [gateway-requirements.md](gateway-requirements.md), [gateway-design.md](gateway-design.md), [gateway-api.md](gateway-api.md)
+>
+> **Note:** This document is titled `Gateway Connector API`, but the file remains named `gateway-companion-api.md` for compatibility with existing links and references.
 
 ---
 
@@ -97,7 +99,7 @@ gateway reconciliation outcomes.
 When the gateway learns or changes actual state relevant to reconciliation, it
 emits an upstream connector message. For nodes, this includes the state accepted
 from authenticated `WAKE` traffic and the gateway's resulting latest-known node
-state.
+state, including reception timestamps encoded as Unix time in milliseconds.
 
 ### 3.3  Gateway → control plane application-data updates
 
@@ -107,7 +109,7 @@ upstream connector message containing:
 - `node_id`
 - `program_hash`
 - the opaque application payload bytes
-- a reception timestamp
+- a reception timestamp encoded as Unix time in milliseconds
 - an origin discriminator (`app_data` or `wake_blob`)
 
 This path is informational only. The connector API does not provide a reply

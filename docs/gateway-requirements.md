@@ -991,123 +991,107 @@ transport is configured, it MUST fail with `UNAVAILABLE`.
 
 ---
 
-## 9B  Companion API
+## 9B  Control-plane connector
 
-### GW-0810  Companion gRPC API
+### GW-0810  Control-plane connector API
 
 **Priority:** Must  
-**Source:** `gateway-companion-api.md` §2
+**Source:** User-requested companion-model redesign, `gateway-companion-api.md` §2
 
 **Description:**  
-The gateway MUST expose a separate local gRPC API for companion processes that integrate with the gateway at runtime. This companion API MUST be distinct from `GatewayAdmin`: it uses a separate service definition, companion-specific protobuf message types, and a separate configurable local socket (`/var/run/sonde/companion.sock` on Unix-like hosts; `\\.\pipe\sonde-companion` on Windows by default). The companion API MUST NOT expose a TCP listener in v1.
+The gateway MUST expose a separate local control-plane connector API for a single connector application that bridges the gateway to an external control plane. This connector API MUST be distinct from `GatewayAdmin` and from the handler stdin/stdout data plane. The local connector surface MUST use a configurable local socket (`/var/run/sonde/connector.sock` on Unix-like hosts; `\\.\pipe\sonde-connector` on Windows by default) with explicit message framing, and it MUST NOT expose a TCP listener in v1. The connector API defines the gateway/control-plane protocol; the external transport that carries those messages beyond the local connector application is an implementation detail outside the gateway core.
 
 **Acceptance criteria:**
 
-1. The companion API is available when the gateway is running.
-2. The companion API listens on a local-only transport (Unix domain socket or Windows named pipe) separate from the admin API endpoint.
-3. No TCP listener is opened for the companion API.
-4. The companion API does not require clients to use the `GatewayAdmin` service definition or `GatewayAdmin` protobuf messages.
+1. The connector API is available when the gateway is running.
+2. The connector API listens on a local-only transport (Unix domain socket or Windows named pipe) separate from the admin API endpoint.
+3. No TCP listener is opened for the connector API.
+4. The local connector surface uses explicit message framing rather than gRPC request/response semantics.
+5. The gateway exposes only one active connector session at a time; an additional connector attempt is rejected or closed without affecting the active session.
 
 ---
 
-### GW-0811  Companion API — live event subscription
+### GW-0811  Control-plane desired-state ingress
 
 **Priority:** Must  
-**Source:** `gateway-companion-api.md` §2.2, §4
+**Source:** User-requested gateway/control-plane reconciliation model
 
 **Description:**  
-The companion API MUST provide a server-streaming event subscription for live gateway events. The stream is best-effort and non-durable: it delivers only events produced after the subscription is established and MUST NOT replay historical events to reconnecting clients. The gateway MUST bound in-memory buffering for this stream; if a subscriber falls behind, the gateway MUST terminate that subscriber's stream with `RESOURCE_EXHAUSTED` and require the client to reconnect.
+The connector API MUST accept control-plane desired-state messages addressed to exactly one entity per message. The addressable entities are a gateway instance or a registered node. Each desired-state message MUST represent the complete desired state for its target entity, not a partial patch. Upon acceptance, the gateway MUST update its local desired-state view for that entity and reconcile the desired state against the latest actual state and pending command state that the gateway already maintains. The control plane does not directly queue node commands through the connector.
 
 **Acceptance criteria:**
 
-1. After a client subscribes, newly produced companion events are delivered on the stream.
-2. A client that disconnects and reconnects receives only events produced after the new subscription is established.
-3. If a subscriber falls behind the bounded in-memory event buffer, its stream terminates with `RESOURCE_EXHAUSTED`.
-4. Terminating one lagging subscriber does not interrupt gateway processing or other active companion subscribers.
+1. A desired-state message targets exactly one gateway or one node.
+2. Applying a desired-state message replaces the previously stored desired state for that entity.
+3. Desired-state ingestion updates the same gateway-owned reconciliation state used to decide future node `COMMAND` contents.
+4. The connector does not expose imperative cloud-originated operations such as direct `QueueReboot`, `AssignProgram`, or display RPCs as part of the normal control-plane path.
 
 ---
 
-### GW-0812  Companion event — `node_checkin`
+### GW-0812  Control-plane upstream actual-state and status updates
 
 **Priority:** Must  
-**Source:** `gateway-companion-api.md` §3.2
+**Source:** User-requested gateway/control-plane reconciliation model
 
 **Description:**  
-The gateway MUST emit a `node_checkin` companion event when it accepts and processes an authenticated `WAKE` from a registered node. The event MUST include the admin-assigned `node_id`, the node-reported `current_program_hash`, the assigned resident `program_hash` when one exists, `battery_mv`, `firmware_abi_version`, `firmware_version`, and a reception timestamp in Unix milliseconds.
+The gateway MUST emit upstream control-plane messages that describe actual gateway and node state changes relevant to reconciliation. For nodes, this includes the state learned when the gateway accepts and processes an authenticated `WAKE`, such as `node_id`, current and assigned program hashes when known, `battery_mv`, firmware ABI/version data, and a reception timestamp. These upstream messages are produced only after the gateway has updated its latest-known actual state for the affected entity.
 
 **Acceptance criteria:**
 
-1. Each valid `WAKE` from a registered node produces exactly one `node_checkin` event.
-2. The event fields reflect the values extracted from that `WAKE` and the gateway's current assignment state for the node.
-3. The event is emitted only after the gateway has accepted the `WAKE` and updated the node's latest-known status.
+1. Each valid `WAKE` from a registered node produces exactly one upstream actual-state/status update for that node.
+2. The update fields reflect the values extracted from that `WAKE` and the gateway's current assignment state for the node.
+3. The update is emitted only after the gateway has accepted the `WAKE` and updated the node's latest-known status.
+4. Gateway-scoped status changes that materially affect reconciliation or connector health are emitted through the same connector model.
 
 ---
 
-### GW-0813  Companion event — `node_payload`
+### GW-0813  Control-plane upstream application-data delivery
 
 **Priority:** Must  
-**Source:** `gateway-companion-api.md` §3.3
+**Source:** User-requested control-plane data flow
 
 **Description:**  
-The gateway MUST emit a `node_payload` companion event whenever it accepts node-originated application payload data. This includes both `APP_DATA { blob }` frames and `WAKE` messages carrying a piggybacked `blob`. The event MUST include `node_id`, `program_hash`, the opaque payload bytes, a reception timestamp in Unix milliseconds, and a `payload_origin` value of `app_data` or `wake_blob`. The companion API is informational only: it MUST NOT provide a reply channel for payload events.
+The gateway MUST emit upstream control-plane messages whenever it accepts node-originated application payload data. This includes both `APP_DATA { blob }` frames and `WAKE` messages carrying a piggybacked `blob`. The upstream message MUST include the admin-assigned `node_id`, `program_hash`, the opaque payload bytes, a reception timestamp, and an origin value distinguishing `app_data` from `wake_blob`. This upstream path is informational only: it MUST NOT replace the existing handler reply flow defined by GW-0501 and GW-0506.
 
 **Acceptance criteria:**
 
-1. Accepted `APP_DATA` messages produce a `node_payload` event with `payload_origin = app_data`.
-2. Accepted `WAKE` blobs produce a `node_payload` event with `payload_origin = wake_blob`.
-3. The payload bytes are delivered to the companion stream without modification.
-4. For a `WAKE` carrying a blob, the gateway emits `node_checkin` before the corresponding `node_payload`.
-5. Companion clients do not reply to `node_payload`; node replies continue to use the existing handler flow defined by GW-0501 and GW-0506.
+1. Accepted `APP_DATA` messages produce one upstream application-data message with origin `app_data`.
+2. Accepted `WAKE` blobs produce one upstream application-data message with origin `wake_blob`.
+3. The payload bytes are delivered upstream without modification.
+4. For a `WAKE` carrying a blob, the gateway emits the corresponding actual-state/status update before the application-data message.
+5. The control-plane connector does not provide a reply path for these application-data messages; node replies continue to use the handler flow.
 
 ---
 
-### GW-0814  Companion API — command and query operations
+### GW-0814  Connector transport abstraction and store-and-forward model
 
 **Priority:** Must  
-**Source:** `gateway-companion-api.md` §3.1, §4
+**Source:** User-requested cloud-agnostic transport boundary
 
 **Description:**  
-The companion API MUST expose companion-specific RPCs for the node-targeted control and query operations needed by external automation: listing nodes, getting node metadata, assigning a resident program by `program_hash`, setting schedule, queuing reboot, queuing an ephemeral program by `program_hash`, and fetching node status. These operations MUST affect the same underlying gateway state and pending-command pipeline as the corresponding admin operations; the companion API MUST NOT maintain a separate command queue. Operator-focused workflows such as node registration/removal, program ingestion/removal, state export/import, modem management, BLE pairing, and handler management remain outside the v1 companion API surface.
+The gateway MUST remain agnostic to the cloud platform and to the remote control-plane transport. The connector contract exposed by the gateway is a local, framed message interface only. The connector application is responsible for adapting that interface to an asynchronous, store-and-forward external transport. The gateway requirements and design MUST NOT depend on Azure-specific concepts, Service Bus-specific concepts, or any other cloud-vendor protocol details in order to participate in the control-plane flow.
 
 **Acceptance criteria:**
 
-1. A companion client can list nodes and fetch per-node metadata needed to target a command.
-2. `AssignProgram`, `SetSchedule`, `QueueReboot`, and `QueueEphemeral` via the companion API update the same pending state that the gateway uses for the corresponding admin operations.
-3. `GetNodeStatus` via the companion API returns the latest known gateway state for the target node.
-4. The published companion protobuf contract lists only the companion RPCs described above; operator-only workflows remain available only through `GatewayAdmin`.
+1. The gateway-facing connector contract is defined without reference to Azure-specific or broker-specific APIs.
+2. Reconciliation behavior inside the gateway is defined entirely in terms of desired state, actual state, and gateway-owned pending command state, independent of the external transport.
+3. The connector model supports asynchronous upstream and downstream message flow without requiring synchronous request/response coupling between the cloud control plane and a node wake cycle.
 
 ---
 
-### GW-0815  Companion API — transient modem display message
+### GW-0815  Connector loss observability and operator reconciliation
 
 **Priority:** Must  
-**Source:** `gateway-companion-api.md` §3.5, §4
+**Source:** User-requested delivery guarantees
 
 **Description:**  
-The companion API MUST expose a gateway-owned transient display override for the
-modem-attached OLED so headless companion workflows such as Azure device login
-can surface short operator prompts. The operation accepts 1 to 4 text lines and
-MUST use the same gateway-owned renderer, display-ownership state, reliable
-display-transfer path, and 60-second banner-restore behavior as the admin
-`ShowModemDisplayMessage` operation defined by GW-0809. The companion RPC MUST
-return after the initial display update succeeds; it MUST NOT wait for the
-60-second timeout to expire. A later successful transient-display request from
-either the companion or admin surface replaces any earlier one and restarts the
-60-second timer.
-
-To avoid obscuring pairing prompts, the operation MUST fail with
-`FAILED_PRECONDITION` while a BLE pairing session owns the display. If no modem
-transport is configured, it MUST fail with `UNAVAILABLE`. The companion API
-MUST NOT introduce a parallel display state machine or a raw modem-control path.
+The control-plane connector path MUST be designed for lossless operation under normal circumstances. If message loss, irrecoverable desynchronization, or connector-delivery failure is detected, the condition MUST be surfaced to operators so they can reconcile state. The gateway and connector model MUST NOT silently discard detected control-plane message loss.
 
 **Acceptance criteria:**
 
-1. Companion `ShowModemDisplayMessage` with 1 to 4 lines updates the modem display and returns before the 60-second timeout expires.
-2. Companion `ShowModemDisplayMessage` with fewer than 1 line or more than 4 lines returns `INVALID_ARGUMENT`.
-3. If no newer display owner claims the screen, the normal `Sonde Gateway v<semver>` banner is restored after 60 seconds.
-4. A second successful transient-display request received before the first timeout expires replaces the earlier text and restarts the 60-second timeout window, regardless of whether it arrives through the admin or companion surface.
-5. While a BLE pairing session owns the display, companion `ShowModemDisplayMessage` returns `FAILED_PRECONDITION`.
-6. Without a configured modem transport, companion `ShowModemDisplayMessage` returns `UNAVAILABLE`.
+1. Detectable connector-delivery failure is surfaced through operator-visible status, logging, or both.
+2. A detected loss or desynchronization condition does not masquerade as successful steady-state reconciliation.
+3. The documentation defines what state an operator must treat as potentially stale after a detected loss condition.
 
 ---
 
@@ -2462,12 +2446,12 @@ The gateway container image MUST bundle the modem flashing assets needed for man
 | GW-0807 | Admin API — modem management | Must |
 | GW-0808 | ESP-NOW channel persistence | Must |
 | GW-0809 | Admin API — transient modem display message | Must |
-| GW-0810 | Companion gRPC API | Must |
-| GW-0811 | Companion API — live event subscription | Must |
-| GW-0812 | Companion event — `node_checkin` | Must |
-| GW-0813 | Companion event — `node_payload` | Must |
-| GW-0814 | Companion API — command and query operations | Must |
-| GW-0815 | Companion API — transient modem display message | Must |
+| GW-0810 | Control-plane connector API | Must |
+| GW-0811 | Control-plane desired-state ingress | Must |
+| GW-0812 | Control-plane upstream actual-state and status updates | Must |
+| GW-0813 | Control-plane upstream application-data delivery | Must |
+| GW-0814 | Connector transport abstraction and store-and-forward model | Must |
+| GW-0815 | Connector loss observability and operator reconciliation | Must |
 | GW-1000 | Gateway failover / replaceability | Must |
 | GW-1004 | Program hash consistency across failover group | Must |
 | GW-1001 | Exportable / importable state | Should |

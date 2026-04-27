@@ -1609,131 +1609,115 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-## 9B  Companion API tests
+## 9B  Control-plane connector tests
 
-### T-0818  Companion API availability and local-only binding
+### T-0818  Connector API availability, framing, and local-only binding
 
 **Validates:** GW-0810
 
 **Procedure:**
 1. Start the gateway.
-2. Connect to the companion gRPC API on the configured companion socket.
-3. Assert: the connection succeeds and a defined companion RPC (for example, `ListNodes`) can be called successfully.
-4. Using a `GatewayAdmin` client against the companion socket, attempt to call an admin RPC and assert the call fails with `UNIMPLEMENTED`, proving the companion endpoint does not expose the `GatewayAdmin` service definition.
-5. Assert: the companion API is bound to a local-only transport (Unix domain socket or Windows named pipe) distinct from the admin API endpoint.
-6. Assert: no TCP listener is opened for the companion API.
+2. Connect to the configured connector socket.
+3. Send one well-formed framed connector message and assert the gateway accepts or responds to it according to the published connector protocol.
+4. Attempt to use a `GatewayAdmin` gRPC client against the connector socket and assert the call fails, proving the connector endpoint is not a second admin gRPC service.
+5. Assert: the connector API is bound to a local-only transport (Unix domain socket or Windows named pipe) distinct from the admin API endpoint.
+6. Assert: no TCP listener is opened for the connector API.
+7. Open a second connector client while the first remains active and assert the second connection is rejected or closed without disrupting the active connector session.
 
 ---
 
-### T-0819  `node_checkin` event stream
+### T-0819  Per-entity desired-state ingress updates gateway reconciliation state
 
-**Validates:** GW-0811, GW-0812
+**Validates:** GW-0811, GW-0814
+
+**Procedure:**
+1. Start the gateway and register a node.
+2. Send one desired-state message targeting that node through the connector API.
+3. Assert: the message is accepted only when it addresses exactly one entity.
+4. Assert: the gateway replaces any prior desired state for that node with the complete desired state from the message.
+5. Send the node's next `WAKE`.
+6. Assert: the resulting `COMMAND` reflects gateway reconciliation of the new desired state through the normal pending-command path rather than a direct imperative connector command.
+7. Repeat the procedure with a gateway-targeted desired-state message and assert it updates gateway-scoped desired state without masquerading as a node-targeted command.
+
+---
+
+### T-0820  Upstream actual-state/status update after `WAKE`
+
+**Validates:** GW-0812
 
 **Procedure:**
 1. Start the gateway and register a node with an assigned resident program.
-2. Open a companion `StreamEvents` subscription.
+2. Connect one connector client.
 3. Send a valid `WAKE` from the registered node with known `program_hash`, `battery_mv`, `firmware_abi_version`, and `firmware_version`.
-4. Assert: the stream yields exactly one `node_checkin` event for that `WAKE`.
-5. Assert: the event contains the expected `node_id`, current and assigned program hashes, `battery_mv`, `firmware_abi_version`, `firmware_version`, and a recent `timestamp_ms`.
-6. Disconnect and open a new `StreamEvents` subscription without sending another `WAKE`.
-7. Assert: the new subscription does not replay the earlier `node_checkin`.
+4. Assert: the connector client receives exactly one upstream actual-state/status message for that `WAKE`.
+5. Assert: the message contains the expected `node_id`, current and assigned program hashes, `battery_mv`, `firmware_abi_version`, `firmware_version`, and a recent timestamp.
+6. Assert: the message is emitted only after the gateway has updated the node's latest-known status.
 
 ---
 
-### T-0820  `node_payload` event stream for `APP_DATA`
-
-**Validates:** GW-0811, GW-0813
-
-**Procedure:**
-1. Start the gateway, register a node, and open a companion `StreamEvents` subscription.
-2. Send `APP_DATA { blob = [0xAA, 0xBB] }` from the node.
-3. Assert: the stream yields one `node_payload` event with `payload_origin = app_data`.
-4. Assert: the event contains the expected `node_id`, `program_hash`, payload bytes `[0xAA, 0xBB]`, and a recent `timestamp_ms`.
-5. Assert: the companion stream requires no reply from the subscriber and the gateway continues to use the handler path for any node reply.
-
----
-
-### T-0821  `node_payload` event stream for WAKE piggybacked blobs
+### T-0821  Upstream application-data delivery for `APP_DATA` and WAKE piggybacked blobs
 
 **Validates:** GW-0813
 
 **Procedure:**
-1. Start the gateway, register a node, and open a companion `StreamEvents` subscription.
-2. Send a `WAKE` carrying `blob = [0xCC]`.
-3. Assert: the stream first yields `node_checkin`, then yields `node_payload`.
-4. Assert: the `node_payload` event contains payload `[0xCC]` with `payload_origin = wake_blob`.
+1. Start the gateway, register a node, and connect one connector client.
+2. Send `APP_DATA { blob = [0xAA, 0xBB] }` from the node.
+3. Assert: the connector client receives one upstream application-data message with origin `app_data`.
+4. Assert: the message contains the expected `node_id`, `program_hash`, payload bytes `[0xAA, 0xBB]`, and a recent timestamp.
+5. Send a `WAKE` carrying `blob = [0xCC]`.
+6. Assert: the connector client first receives the corresponding actual-state/status message and then the application-data message with origin `wake_blob`.
+7. Assert: the payload bytes are delivered without modification.
+8. Assert: no connector reply path is required or used for node responses; the handler path remains responsible for `send_recv()` replies.
 
 ---
 
-### T-0822  Slow companion subscriber is disconnected
-
-**Validates:** GW-0811
-
-**Procedure:**
-1. Start the gateway and open two companion `StreamEvents` subscriptions: one backed by a test client that stops reading after the stream is established, and one backed by an active reader.
-2. Generate enough `node_checkin` and/or `node_payload` events to exceed the bounded in-memory stream buffer for the stalled subscriber.
-3. Assert: the stalled stream terminates with gRPC status `RESOURCE_EXHAUSTED`.
-4. Assert: the active subscriber continues receiving events during and after the stalled subscriber's termination.
-5. Open a fresh `StreamEvents` subscription.
-6. Assert: the fresh subscription receives only events produced after it reconnects.
-
----
-
-### T-0823  Companion command RPCs share gateway pending-command state
+### T-0822  Connector transport remains asynchronous and non-RPC-coupled
 
 **Validates:** GW-0814
 
 **Procedure:**
-1. Start the gateway and register a node.
-2. Call companion `AssignProgram` with a previously ingested resident `program_hash`.
-3. Call companion `SetSchedule`, `QueueReboot`, and `QueueEphemeral` for the same node in separate sub-cases.
-4. For each sub-case, send the node's next `WAKE`.
-5. Assert: the resulting `COMMAND` matches the behavior defined for the corresponding admin operation, proving the companion RPC updated the gateway's normal pending-command path rather than a separate queue.
+1. Start the gateway and connect one connector client.
+2. Send one desired-state message without concurrently delivering a node `WAKE`.
+3. Assert: the gateway accepts and stores the desired state without requiring an immediate node interaction.
+4. Later, send the node's next `WAKE`.
+5. Assert: the gateway applies the previously stored desired state during its normal reconciliation path.
+6. Verify that upstream actual-state and application-data messages can be emitted independently of any synchronous request/response exchange with the connector.
 
 ---
 
-### T-0824  Companion node query RPCs
-
-**Validates:** GW-0814
-
-**Procedure:**
-1. Start the gateway, register a node, and send a `WAKE` with known battery and ABI values.
-2. Call companion `ListNodes`.
-3. Assert: the registered node appears with the expected metadata required for command targeting.
-4. Call companion `GetNode` and `GetNodeStatus`.
-5. Assert: both responses reflect the gateway's latest known state for the node.
-
----
-
-### T-0825  Companion API surface excludes operator-only workflows
-
-**Validates:** GW-0814, GW-0815
-
-**Procedure:**
-1. Generate or compile a companion client from the published companion protobuf contract.
-2. Assert: the client exposes only the documented companion RPCs (`StreamEvents`, `ListNodes`, `GetNode`, `AssignProgram`, `SetSchedule`, `QueueReboot`, `QueueEphemeral`, `GetNodeStatus`, `ShowModemDisplayMessage`).
-3. Assert: operator-only workflows such as node registration/removal, program ingestion/removal, state export/import, modem management, BLE pairing, and handler management are absent from the companion client surface.
-4. Assert: those operator-only workflows remain available through `GatewayAdmin`.
-
----
-
-### T-0826  Companion transient display RPC reuses gateway display semantics
+### T-0823  Detectable connector-delivery failure is surfaced to operators
 
 **Validates:** GW-0815
 
 **Procedure:**
-1. Start the gateway with a modem transport, a BLE pairing controller, an admin client, and a companion client.
-2. Call companion `ShowModemDisplayMessage` with 2 lines.
-3. Assert: the modem display is updated and the RPC returns before the 60-second timeout expires.
-4. Before the timeout fires, call admin `ShowModemDisplayMessage` with different text.
-5. Assert: the later admin request replaces the earlier companion text and becomes the active transient display.
-6. Assert: after 60 seconds from the later successful request, the normal `Sonde Gateway v<semver>` banner is restored if no newer display owner has claimed the screen.
-7. Call companion `ShowModemDisplayMessage` with 0 lines and with 5 lines in separate sub-cases.
-8. Assert: both invalid-line-count sub-cases return `INVALID_ARGUMENT`.
-9. Open a BLE pairing session that owns the display, then call companion `ShowModemDisplayMessage`.
-10. Assert: the companion RPC returns `FAILED_PRECONDITION`.
-11. Start the gateway without a modem transport and call companion `ShowModemDisplayMessage`.
-12. Assert: the companion RPC returns `UNAVAILABLE`.
+1. Start the gateway with connector-health reporting enabled and connect one connector client.
+2. Induce a connector-delivery failure or desynchronization condition that the gateway can detect.
+3. Assert: the gateway surfaces the condition through operator-visible status, logging, or both.
+4. Assert: the surfaced condition makes clear that control-plane desired state and/or upstream status may be stale.
+5. Assert: the gateway does not silently continue reporting healthy steady-state reconciliation after the detected loss condition.
+
+---
+
+### T-0824  Removed per review — companion query RPC coverage
+
+This test case was removed when GW-0814 changed from companion command/query RPCs
+to a declarative desired-state connector model. Query RPC coverage no longer
+matches the approved requirements patch.
+
+---
+
+### T-0825  Removed per review — companion gRPC surface exclusion test
+
+This test case was removed when GW-0810 and GW-0814 replaced the typed companion
+gRPC surface with a framed local connector interface.
+
+---
+
+### T-0826  Removed per review — companion transient display RPC coverage
+
+This test case was removed when GW-0815 changed from companion display control to
+connector-loss observability. Transient display behavior remains covered by the
+admin API validation linked to GW-0809.
 
 ---
 

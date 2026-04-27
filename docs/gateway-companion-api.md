@@ -1,206 +1,135 @@
 <!-- SPDX-License-Identifier: MIT
   Copyright (c) 2026 sonde contributors -->
-# Gateway Companion API
+# Gateway Connector API
 
 > **Document status:** Draft  
-> **Scope:** The local gRPC integration API between `sonde-gateway` and companion processes that subscribe to gateway events and issue node-targeted commands.  
-> **Audience:** Developers building sidecar or bridge processes alongside the gateway.  
+> **Scope:** The local framed integration API between `sonde-gateway` and a single connector process that bridges the gateway to an external control plane.  
+> **Audience:** Developers building transport adapters and control planes for Sonde gateways.  
 > **Related:** [gateway-requirements.md](gateway-requirements.md), [gateway-design.md](gateway-design.md), [gateway-api.md](gateway-api.md)
 
 ---
 
 ## 1  Overview
 
-The companion API is a **separate integration surface** from both:
+The connector API is a **separate integration surface** from both:
 
 1. **`GatewayAdmin`** — the operator-facing local admin API.
 2. **`gateway-api.md`** — the handler stdin/stdout CBOR data-plane API.
 
-A companion process uses this API when it needs to:
+A connector process uses this API when it needs to:
 
-- subscribe to live gateway events such as node check-ins and payload arrivals, and
-- issue node-targeted commands through the gateway's existing control path, and
-- request short gateway-owned modem display messages for headless operator workflows.
+- receive upstream gateway and node state updates relevant to reconciliation,
+- receive upstream node application payload data, and
+- deliver complete desired-state messages from a control plane to the gateway.
 
-Example use case: a bridge process authenticates to Azure, forwards `node_checkin` and `node_payload` events to a Service Bus queue, reads cloud-issued commands, and relays them to the gateway.
-
-The companion API is **informational and control-only**. It does not replace the handler data-plane API and does not provide a reply channel for node payloads.
+The connector process is intentionally a **transport adapter**. It transports
+connector messages between the gateway's local socket and some external,
+asynchronous, store-and-forward control-plane transport. The gateway does not
+encode Azure-specific, Service Bus-specific, or other cloud-vendor-specific
+logic in this interface.
 
 ---
 
 ## 2  Transport and lifecycle
 
-### 2.1  Transport
+### 2.1  Local transport
 
-The gateway exposes the companion API over **local-only gRPC** on a dedicated endpoint:
+The gateway exposes the connector API over **local-only IPC** on a dedicated
+endpoint:
 
-- **Unix/macOS:** Unix domain socket, default `/var/run/sonde/companion.sock`
-- **Windows:** named pipe, default `\\.\pipe\sonde-companion`
+- **Unix/macOS:** Unix domain socket, default `/var/run/sonde/connector.sock`
+- **Windows:** named pipe, default `\\.\pipe\sonde-connector`
 
 No TCP listener is exposed in v1.
 
-The companion API uses a dedicated protobuf service and companion-specific message types so it can evolve independently from `GatewayAdmin`.
+### 2.2  Framing
 
-### 2.2  Event stream lifecycle
+Each connector message is framed as:
 
-Companion clients subscribe with a server-streaming RPC:
+```
+┌──────────────────────────────────┐
+│  Length (4 bytes, big-endian)    │
+│  Message bytes (Length bytes)    │
+└──────────────────────────────────┘
+```
 
-1. Client connects to the companion socket.
-2. Client calls `StreamEvents`.
-3. Gateway emits future `node_checkin` and `node_payload` events on the stream.
-4. If the client disconnects, the stream ends immediately.
-5. If the client falls behind the gateway's bounded event buffer, the gateway terminates the stream with `RESOURCE_EXHAUSTED`.
+The message bytes contain a Sonde-defined connector protocol payload. The
+connector adapter forwards these bytes unchanged; only the gateway and the
+control plane interpret the payload schema.
 
-The stream is **live best-effort only**:
+### 2.3  Session model
 
-- events produced before subscription are not replayed;
-- reconnecting clients receive only newly produced events; and
-- durability, replay, and downstream queuing are the companion process's responsibility.
+The gateway accepts at most one active connector session at a time. The
+connector session is long-lived and bidirectional:
+
+1. Connector process connects to the local socket.
+2. Gateway and connector exchange framed messages in both directions.
+3. If the connector disconnects, the gateway stops delivering connector traffic
+   until a new connector session is established.
+4. If a second connector client attempts to connect while a session is active,
+   the gateway rejects or closes the new connection without disrupting the
+   active connector.
+
+The external transport behind the connector is outside this document's scope.
 
 ---
 
-## 3  Protobuf contract
+## 3  Logical message model
 
-### 3.1  Service definition
+The connector payload schema is organized around **desired state**, **actual
+state**, **application data**, and **connector health**.
 
-```protobuf
-service GatewayCompanion {
-    rpc StreamEvents(CompanionStreamEventsRequest) returns (stream CompanionEvent);
+### 3.1  Control plane → gateway
 
-    rpc ListNodes(CompanionListNodesRequest) returns (CompanionListNodesResponse);
-    rpc GetNode(CompanionGetNodeRequest) returns (CompanionNodeInfo);
-    rpc AssignProgram(CompanionAssignProgramRequest) returns (CompanionEmpty);
-    rpc SetSchedule(CompanionSetScheduleRequest) returns (CompanionEmpty);
-    rpc QueueReboot(CompanionQueueRebootRequest) returns (CompanionEmpty);
-    rpc QueueEphemeral(CompanionQueueEphemeralRequest) returns (CompanionEmpty);
-    rpc GetNodeStatus(CompanionGetNodeStatusRequest) returns (CompanionNodeStatus);
-    rpc ShowModemDisplayMessage(CompanionShowModemDisplayMessageRequest) returns (CompanionEmpty);
-}
-```
+Control-plane ingress carries **complete desired state** for exactly one
+addressable entity per message:
 
-The companion service intentionally omits operator-only workflows such as node registration/removal, program ingestion/removal, state export/import, raw modem control, BLE pairing, and handler configuration. It may request gateway-owned transient display text, but it does not upload raw framebuffers or bypass the gateway's display arbitration.
+- one **gateway** entity, or
+- one **node** entity.
 
-### 3.2  `node_checkin`
+Each desired-state message replaces the previously stored desired state for the
+target entity. The connector path does **not** expose imperative node command
+RPCs such as "queue reboot now" or "assign program now." Those are internal
+gateway reconciliation outcomes.
 
-```protobuf
-message CompanionEvent {
-    oneof event {
-        CompanionNodeCheckIn node_checkin = 1;
-        CompanionNodePayload node_payload = 2;
-    }
-}
+### 3.2  Gateway → control plane actual-state updates
 
-message CompanionNodeCheckIn {
-    string node_id = 1;
-    bytes current_program_hash = 2;
-    optional bytes assigned_program_hash = 3;
-    uint32 battery_mv = 4;
-    uint32 firmware_abi_version = 5;
-    string firmware_version = 6;
-    uint64 timestamp_ms = 7;
-}
-```
+When the gateway learns or changes actual state relevant to reconciliation, it
+emits an upstream connector message. For nodes, this includes the state accepted
+from authenticated `WAKE` traffic and the gateway's resulting latest-known node
+state.
 
-The gateway emits `node_checkin` after it accepts an authenticated `WAKE` and updates the node's latest-known state.
+### 3.3  Gateway → control plane application-data updates
 
-### 3.3  `node_payload`
+When the gateway accepts node-originated application payload data, it emits an
+upstream connector message containing:
 
-```protobuf
-enum CompanionPayloadOrigin {
-    COMPANION_PAYLOAD_ORIGIN_UNSPECIFIED = 0;
-    COMPANION_PAYLOAD_ORIGIN_APP_DATA = 1;
-    COMPANION_PAYLOAD_ORIGIN_WAKE_BLOB = 2;
-}
+- `node_id`
+- `program_hash`
+- the opaque application payload bytes
+- a reception timestamp
+- an origin discriminator (`app_data` or `wake_blob`)
 
-message CompanionNodePayload {
-    string node_id = 1;
-    bytes program_hash = 2;
-    bytes payload = 3;
-    uint64 timestamp_ms = 4;
-    CompanionPayloadOrigin payload_origin = 5;
-}
-```
+This path is informational only. The connector API does not provide a reply
+channel for node `send_recv()` responses; those continue to flow through the
+handler API.
 
-The gateway emits `node_payload` for:
+### 3.4  Connector health and loss signaling
 
-- `APP_DATA { blob }`, with `payload_origin = COMPANION_PAYLOAD_ORIGIN_APP_DATA`
-- `WAKE { blob }`, with `payload_origin = COMPANION_PAYLOAD_ORIGIN_WAKE_BLOB`
-
-For a `WAKE` carrying a blob, the gateway emits `node_checkin` before the corresponding `node_payload`.
-
-### 3.4  Command and query RPCs
-
-```protobuf
-message CompanionEmpty {}
-message CompanionStreamEventsRequest {}
-message CompanionListNodesRequest {}
-message CompanionListNodesResponse { repeated CompanionNodeInfo nodes = 1; }
-message CompanionGetNodeRequest { string node_id = 1; }
-message CompanionAssignProgramRequest { string node_id = 1; bytes program_hash = 2; }
-message CompanionSetScheduleRequest { string node_id = 1; uint32 interval_s = 2; }
-message CompanionQueueRebootRequest { string node_id = 1; }
-message CompanionQueueEphemeralRequest { string node_id = 1; bytes program_hash = 2; }
-message CompanionGetNodeStatusRequest { string node_id = 1; }
-
-message CompanionNodeInfo {
-    string node_id = 1;
-    uint32 key_hint = 2;
-    optional bytes assigned_program_hash = 3;
-    optional bytes current_program_hash = 4;
-    optional uint32 last_battery_mv = 5;
-    optional uint32 last_firmware_abi_version = 6;
-    optional uint64 last_seen_ms = 7;
-    optional uint32 schedule_interval_s = 8;
-}
-
-message CompanionNodeStatus {
-    string node_id = 1;
-    bytes current_program_hash = 2;
-    optional uint32 battery_mv = 3;
-    optional uint32 firmware_abi_version = 4;
-    optional uint64 last_seen_ms = 5;
-    bool has_active_session = 6;
-}
-```
-
-The companion API's command RPCs reuse the gateway's existing command semantics:
-
-- `AssignProgram` changes the assigned resident program.
-- `SetSchedule` queues `UPDATE_SCHEDULE` for the next `WAKE`.
-- `QueueReboot` queues `REBOOT` for the next `WAKE`.
-- `QueueEphemeral` queues `RUN_EPHEMERAL` for the next `WAKE`.
-
-These operations act on the same gateway state as the corresponding admin operations; the companion API does not define a separate command pipeline.
-
-### 3.5  Transient modem display RPC
-
-```protobuf
-message CompanionShowModemDisplayMessageRequest {
-    repeated string lines = 1;
-}
-```
-
-`ShowModemDisplayMessage` lets a companion request a short, gateway-owned modem
-display update for headless operator flows such as Azure device login. The
-request accepts 1 to 4 text lines. On success, the gateway renders the supplied
-lines using the same centered text renderer, reliable display-transfer path,
-display-ownership state, and 60-second banner-restore behavior used by the admin
-`ShowModemDisplayMessage` RPC.
-
-The RPC returns after the initial display update succeeds; it does not wait for
-the 60-second dwell timeout. A later successful transient-display request from
-either the admin or companion surface replaces any earlier one and restarts the
-restore timer.
-
-If a BLE pairing session currently owns the display, the RPC fails with
-`FAILED_PRECONDITION`. If no modem transport is configured, the RPC fails with
-`UNAVAILABLE`.
+The connector model is intended to be lossless under normal circumstances.
+Detectable connector-delivery failure or desynchronization must be surfaced to
+operators. The exact external transport retry policy is outside the gateway
+core, but the connector/gateway boundary must not silently mask detected loss.
 
 ---
 
 ## 4  Behavioral notes
 
-1. `node_payload` is informational only. Companion clients do not reply to payload events; node replies continue to use the handler flow defined in [gateway-api.md](gateway-api.md).
-2. Message ordering is guaranteed only within a single live stream as produced by the gateway runtime. There is no replay cursor, durable offset, or exactly-once delivery guarantee.
-3. Companion clients are expected to provide their own persistence and retry behavior when forwarding events to external systems.
-4. Companion display requests reuse the same gateway-owned display arbitration and restore rules as admin display requests; companions do not gain raw modem-control privileges.
+1. The connector protocol is **cloud-agnostic**. Any external broker or control
+   plane may be used as long as it can carry the framed connector messages.
+2. The gateway remains the reconciler. The control plane sends desired state;
+   the gateway determines which node-facing commands are required to converge.
+3. Upstream application data is **informational only**; it does not replace the
+   existing handler data-plane contract.
+4. Admin/operator workflows remain on `GatewayAdmin`; the connector API is not a
+   second admin surface.

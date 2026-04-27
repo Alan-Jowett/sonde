@@ -52,9 +52,36 @@ fi
 
 mkdir -p "$state_dir"
 
+bootstrap_pid=
+
+forward_signal() {
+    signal="$1"
+    if [ -n "${bootstrap_pid:-}" ]; then
+        kill "-$signal" "$bootstrap_pid" 2>/dev/null || true
+        wait "$bootstrap_pid" 2>/dev/null || true
+    fi
+}
+
+trap 'forward_signal TERM; exit 143' TERM
+trap 'forward_signal INT; exit 130' INT
+
 sonde-azure-companion \
     --companion-socket "$socket_path" \
     bootstrap-auth \
-    --state-dir "$state_dir"
+    --state-dir "$state_dir" &
+bootstrap_pid=$!
+
+if wait "$bootstrap_pid"; then
+    bootstrap_status=0
+else
+    bootstrap_status=$?
+fi
+
+trap - TERM INT
+bootstrap_pid=
+
+if [ "$bootstrap_status" -ne 0 ]; then
+    exit "$bootstrap_status"
+fi
 
 exec sonde-azure-companion --companion-socket "$socket_path" run

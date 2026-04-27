@@ -9,10 +9,13 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use futures::stream;
 use tempfile::TempDir;
 use tokio::net::UnixListener;
+use tokio::process::Command as TokioCommand;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status};
@@ -154,6 +157,17 @@ fn bootstrap_script_path() -> PathBuf {
     repo_root().join("deploy/azure-companion/bootstrap.sh")
 }
 
+fn wait_for_path(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if path.exists() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!("timed out waiting for {}", path.display());
+}
+
 fn write_companion_wrapper(bin_dir: &Path, wrapper_log: &Path) {
     write_executable(
         &bin_dir.join("sonde-azure-companion"),
@@ -266,13 +280,13 @@ async fn mount_failed_token_poll(oauth_server: &MockServer, user_code: &str) {
         .await;
 }
 
-fn run_bootstrap_with_env(env: &[(String, String)]) -> std::process::Output {
-    let mut cmd = Command::new("sh");
+async fn run_bootstrap_with_env(env: &[(String, String)]) -> std::process::Output {
+    let mut cmd = TokioCommand::new("sh");
     cmd.arg(bootstrap_script_path());
     for (key, value) in env {
         cmd.env(key, value);
     }
-    cmd.output().unwrap()
+    cmd.output().await.unwrap()
 }
 
 fn docker_available() -> bool {
@@ -302,7 +316,8 @@ async fn t_azc_0101_0102_0200_0201_0202_bootstrap_success_path() {
         &state_dir,
         &socket_path,
         &oauth_server,
-    ));
+    ))
+    .await;
     assert!(output.status.success(), "bootstrap failed: {output:?}");
 
     let requests = display_requests.lock().await.clone();
@@ -334,7 +349,8 @@ async fn t_azc_0203_display_failure_aborts_bootstrap() {
             &state_dir,
             &socket_path,
             &oauth_server,
-        ));
+        ))
+        .await;
         assert!(!output.status.success());
         assert!(!wrapper_log.exists() || fs::read_to_string(&wrapper_log).unwrap().is_empty());
         assert_eq!(
@@ -368,7 +384,8 @@ async fn t_azc_0104_previously_used_state_still_runs_device_auth() {
         &state_dir,
         &socket_path,
         &oauth_server,
-    ));
+    ))
+    .await;
     assert!(output.status.success(), "bootstrap failed: {output:?}");
     assert_eq!(
         display_requests.lock().await.clone(),
@@ -392,10 +409,10 @@ async fn t_azc_0105_repeated_starts_repeat_device_auth() {
     write_companion_wrapper(&bin_dir, &wrapper_log);
     let env = bootstrap_env(&bin_dir, &state_dir, &socket_path, &oauth_server);
 
-    let first = run_bootstrap_with_env(&env);
+    let first = run_bootstrap_with_env(&env).await;
     assert!(first.status.success(), "first bootstrap failed: {first:?}");
 
-    let second = run_bootstrap_with_env(&env);
+    let second = run_bootstrap_with_env(&env).await;
     assert!(
         second.status.success(),
         "second bootstrap failed: {second:?}"
@@ -425,7 +442,8 @@ async fn t_azc_0106_login_failure_aborts_bootstrap() {
         &state_dir,
         &socket_path,
         &oauth_server,
-    ));
+    ))
+    .await;
     assert!(!output.status.success());
     assert!(!wrapper_log.exists());
 }
@@ -581,4 +599,58 @@ fn t_azc_0100_container_image_smoke() {
         .status()
         .unwrap();
     assert!(status.success(), "bootstrap-auth smoke test failed");
+}
+
+#[test]
+fn container_bootstrap_forwards_sigterm_to_bootstrap_auth_child() {
+    let temp = TempDir::new().unwrap();
+    let bin_dir = prepare_path_dir(&temp);
+    let state_dir = temp.path().join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let pid_file = temp.path().join("bootstrap.pid");
+    let signal_log = temp.path().join("signal.log");
+    let run_log = temp.path().join("run.log");
+
+    write_executable(
+        &bin_dir.join("sonde-azure-companion"),
+        &format!(
+            "#!/bin/sh\nset -eu\nif [ \"$1\" = \"--companion-socket\" ]; then\n  shift 2\nfi\ncase \"$1\" in\n  bootstrap-auth)\n    printf '%s\\n' \"$$\" > \"{}\"\n    trap 'printf TERM\\n >> \"{}\"; exit 143' TERM\n    trap 'printf INT\\n >> \"{}\"; exit 130' INT\n    while :; do\n      sleep 1\n    done\n    ;;\n  run)\n    printf 'run\\n' >> \"{}\"\n    exit 0\n    ;;\n  *)\n    exit 64\n    ;;\nesac\n",
+            pid_file.display(),
+            signal_log.display(),
+            signal_log.display(),
+            run_log.display(),
+        ),
+    );
+
+    let mut cmd = Command::new("sh");
+    cmd.arg(bootstrap_script_path());
+    cmd.env(
+        "PATH",
+        format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+    cmd.env("SONDE_AZURE_COMPANION_IN_CONTAINER", "1");
+    cmd.env("SONDE_AZURE_COMPANION_STATE_DIR", &state_dir);
+    cmd.env(
+        "SONDE_GATEWAY_COMPANION_SOCKET",
+        temp.path().join("companion.sock"),
+    );
+
+    let mut child = cmd.spawn().unwrap();
+    wait_for_path(&pid_file);
+
+    let status = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success(), "failed to signal bootstrap script");
+
+    let exit_status = child.wait().unwrap();
+    assert_eq!(exit_status.code(), Some(143));
+    wait_for_path(&signal_log);
+    assert_eq!(fs::read_to_string(&signal_log).unwrap(), "TERM\n");
+    assert!(!run_log.exists(), "run should not start after SIGTERM");
 }

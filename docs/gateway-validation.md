@@ -1618,11 +1618,12 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Start the gateway.
 2. Connect to the configured connector socket.
-3. Send one syntactically valid framed connector record whose payload is otherwise opaque to this test, then assert a deterministic framing-level outcome: the gateway closes the connector connection cleanly within a bounded timeout (for example, 1 second). Do not require any protocol-specific ACK or response in this test, because payload semantics are validated by the connector-specific tests below.
-4. Attempt to use a `GatewayAdmin` gRPC client against the connector socket and assert the call fails, proving the connector endpoint is not a second admin gRPC service.
-5. Assert: the connector API is bound to a local-only transport (Unix domain socket or Windows named pipe) distinct from the admin API endpoint.
-6. Assert: no TCP listener is opened for the connector API.
-7. Open a second connector client while the first remains active and assert the second connection is rejected or closed without disrupting the active connector session.
+3. Send one malformed framed connector record (for example, a length prefix that does not match the delivered payload bytes) and assert the gateway closes the connector connection cleanly within a bounded timeout (for example, 1 second).
+4. Open a fresh connector connection and keep it active without requiring any protocol-specific ACK or response; this sub-case validates only the local socket/session behavior, not connector payload semantics.
+5. Attempt to use a `GatewayAdmin` gRPC client against the connector socket and assert the call fails within a bounded timeout, proving the connector endpoint is not a second admin gRPC service.
+6. Assert: the connector API is bound to a local-only transport (Unix domain socket or Windows named pipe) distinct from the admin API endpoint.
+7. Assert: no TCP listener is opened for the connector API.
+8. Open a second connector client while the fresh connector session from step 4 remains active and assert the second connection is rejected or closed without disrupting the active connector session.
 
 ---
 

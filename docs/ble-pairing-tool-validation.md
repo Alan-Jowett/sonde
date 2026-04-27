@@ -1643,7 +1643,7 @@ TestNode {
 | T-PT-307 | PT-1102 | Phone PSK authentication (AES-256-GCM) |
 | T-PT-308 | PT-0407, PT-1102 | Payload encryption (AES-256-GCM with phone_psk) |
 | T-PT-309 | ~~PT-0405, PT-0902~~ | ~~Ed25519 → X25519 low-order point rejection~~ — RETIRED |
-| T-PT-310 | PT-0406 | Payload size > 218 bytes rejected |
+| T-PT-310 | PT-0406 | Payload size > 202 bytes rejected |
 | T-PT-311 | PT-0407 | NODE_PROVISION happy path → NODE_ACK(0x00) |
 | T-PT-312 | PT-0407 | NODE_ACK(0x01) — already paired |
 | T-PT-313 | PT-0407 | NODE_ACK(0x02) — storage error |

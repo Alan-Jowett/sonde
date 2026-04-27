@@ -21,6 +21,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 ciborium = "0.2"
+sonde-modem = { path = "../sonde-modem" }
 tempfile = "3"
 
 [lib]

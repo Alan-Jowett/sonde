@@ -34,6 +34,7 @@ use tracing::debug;
 use zeroize::Zeroizing;
 
 use crate::error::PairingError;
+use crate::store::PairingStore;
 
 /// Cached JavaVM for creating stores on demand (set in `JNI_OnLoad`).
 static CACHED_STORE_VM: OnceLock<JavaVM> = OnceLock::new();
@@ -159,7 +160,7 @@ impl AndroidPairingStore {
 
     /// Save AEAD pairing artifacts to encrypted SharedPreferences.
     pub fn save_artifacts(
-        &mut self,
+        &self,
         artifacts: &crate::phase1::PairingArtifacts,
     ) -> Result<(), PairingError> {
         self.vm.attach_current_thread(|env| {
@@ -220,7 +221,7 @@ impl AndroidPairingStore {
     }
 
     /// Clear all pairing artifacts from encrypted SharedPreferences.
-    pub fn clear(&mut self) -> Result<(), PairingError> {
+    pub fn clear(&self) -> Result<(), PairingError> {
         self.vm
             .attach_current_thread(|env| {
                 env.call_method(self.store.as_obj(), jni_str!("clear"), jni_sig!("()V"), &[])
@@ -234,6 +235,27 @@ impl AndroidPairingStore {
                 }
                 other => other,
             })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PairingStore trait impl
+// ---------------------------------------------------------------------------
+
+impl PairingStore for AndroidPairingStore {
+    fn save_artifacts(
+        &self,
+        artifacts: &crate::phase1::PairingArtifacts,
+    ) -> Result<(), PairingError> {
+        AndroidPairingStore::save_artifacts(self, artifacts)
+    }
+
+    fn load_artifacts(&self) -> Result<Option<crate::phase1::PairingArtifacts>, PairingError> {
+        AndroidPairingStore::load_artifacts(self)
+    }
+
+    fn clear(&self) -> Result<(), PairingError> {
+        AndroidPairingStore::clear(self)
     }
 }
 

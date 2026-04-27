@@ -446,7 +446,7 @@ Look up a value in a BPF map.
 
 **Returns:** Pointer to the value on success, `NULL` if the key is not found.
 
-**Availability:** Resident and ephemeral.
+**Availability:** Resident only. Ephemeral programs cannot declare maps and therefore cannot use map helpers (see §2.2 and §7).
 
 #### `map_update_elem`
 

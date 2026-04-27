@@ -261,6 +261,10 @@ pub enum NodeMessage {
         program_hash: Vec<u8>,
         battery_mv: u32,
         firmware_version: String,
+        /// Optional opaque bytes piggybacked on the Wake message (CBOR key 10).
+        /// Present when the node has pending sensor data from the previous BPF execution.
+        /// Absent (`None`) if the node has no data to return.
+        blob: Option<Vec<u8>>,
     },
     GetChunk {
         chunk_index: u32,
@@ -312,6 +316,10 @@ pub enum GatewayMessage {
         starting_seq: u64,
         timestamp_ms: u64,
         payload: CommandPayload,
+        /// Optional opaque bytes piggybacked on a `CommandPayload::Nop` command (CBOR key 10).
+        /// Used by the gateway to deliver a deferred reply without a dedicated APP_DATA_REPLY frame.
+        /// Must be `None` for all non-`Nop` payload variants.
+        blob: Option<Vec<u8>>,
     },
     Chunk {
         chunk_index: u32,
@@ -416,7 +424,11 @@ pub struct ProgramImage {
 
 ```rust
 impl ProgramImage {
-    pub fn encode_deterministic(&self) -> Vec<u8> { ... }
+    /// Encode the program image using deterministic CBOR (RFC 8949 §4.2).
+    ///
+    /// Returns `Err(EncodeError)` if `map_initial_data.len() != maps.len()` or
+    /// another encoding constraint is violated.
+    pub fn encode_deterministic(&self) -> Result<Vec<u8>, EncodeError> { ... }
 }
 ```
 

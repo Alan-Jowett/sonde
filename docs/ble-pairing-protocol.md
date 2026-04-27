@@ -708,7 +708,7 @@ For even higher assurance, BLE Passkey Entry can be used in place of Numeric Com
 | Node BLE advertising name | `"sonde-XXXX"` | XXXX = last 4 hex digits of BLE MAC. |
 | Max node_id length | 64 bytes | UTF-8. |
 | Max sensor label length | 64 bytes | UTF-8. |
-| Max encrypted_payload size | 218 bytes | Must fit in ESP-NOW frame (250B max), see §11.1. |
+| Max encrypted_payload size | 202 bytes (tool-enforced) | Must fit in ESP-NOW frame (250B max). The theoretical protocol ceiling is 218 bytes (see §11.1); the pairing tool enforces 202 bytes to maintain headroom for future CBOR key expansion. |
 
 ### 11.1  Encrypted payload size budget
 
@@ -725,6 +725,8 @@ Available for encrypted_payload:  219 bytes (exact)
 ```
 
 The constant `MAX_ENCRYPTED_PAYLOAD` is set to **218 bytes** (conservative, reserving 1 byte for possible future CBOR keys).  The `protocol.md` payload budget of 223 bytes (250 − 11 − 16) is 4 bytes larger because it does not include CBOR framing overhead.
+
+> **Tool-enforced limit:** The pairing tool (`sonde-pair`) applies a stricter **202-byte** limit (`PEER_PAYLOAD_MAX_LEN = 202`) on the encrypted payload to maintain additional headroom for future protocol fields. The 218-byte figure above describes the theoretical protocol ceiling; 202 bytes is the operative bound enforced by PT-0406.
 
 The encrypted payload contains:
 

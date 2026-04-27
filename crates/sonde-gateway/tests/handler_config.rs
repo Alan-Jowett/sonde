@@ -1371,3 +1371,58 @@ handlers:
     assert_eq!(list.handlers[0].program_hash, HASH_A);
     assert_eq!(list.handlers[0].command, "/usr/bin/valid_handler");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  T-0514: Oversized handler message rejection
+// ═══════════════════════════════════════════════════════════════════════
+
+/// T-0514: `read_message` rejects frames whose 4-byte length header declares
+/// a body larger than MAX_MESSAGE_SIZE (1 MiB), preventing memory exhaustion
+/// from a misbehaving handler process.
+#[tokio::test]
+async fn t0514_oversized_handler_message_rejected() {
+    use sonde_gateway::handler::read_message;
+
+    const MAX_MESSAGE_SIZE: u32 = 1_048_576;
+    // Length header one byte over the limit; no body needed — the reader
+    // must reject before attempting to allocate or read the body.
+    let data = (MAX_MESSAGE_SIZE + 1).to_be_bytes().to_vec();
+    let mut reader = std::io::Cursor::new(data);
+
+    let result = read_message(&mut reader).await;
+    assert!(result.is_err(), "oversized message must be rejected");
+    assert_eq!(
+        result.unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData,
+        "rejection must use InvalidData error kind"
+    );
+}
+
+/// T-0514b: `read_message` accepts a well-formed message and rejects messages
+/// with a length prefix exceeding MAX_MESSAGE_SIZE.
+#[tokio::test]
+async fn t0514b_handler_message_size_boundary() {
+    use sonde_gateway::handler::{read_message, HandlerMessage};
+
+    // Build a valid LOG message frame manually: 4-byte BE length + CBOR body.
+    let msg = HandlerMessage::Log {
+        level: "info".to_string(),
+        message: "test".to_string(),
+    };
+    let cbor = msg.encode().unwrap();
+    let mut framed = (cbor.len() as u32).to_be_bytes().to_vec();
+    framed.extend_from_slice(&cbor);
+    let mut reader = std::io::Cursor::new(framed);
+    let decoded = read_message(&mut reader)
+        .await
+        .expect("valid message must decode");
+    assert_eq!(decoded, msg);
+
+    // A frame with length == MAX_MESSAGE_SIZE + 1 must be rejected.
+    const MAX_MESSAGE_SIZE: u32 = 1_048_576;
+    let data = (MAX_MESSAGE_SIZE + 1).to_be_bytes().to_vec();
+    let mut reader2 = std::io::Cursor::new(data);
+    let result = read_message(&mut reader2).await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+}

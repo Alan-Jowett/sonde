@@ -133,6 +133,34 @@ pub struct WakeCycleStats {
     pub received_msg_types: Vec<u8>,
 }
 
+/// Node transport that exposes captured per-frame statistics for test assertions.
+///
+/// Implementations must return cumulative lifetime statistics for a single
+/// transport instance. Callers snapshot these values before and after a wake
+/// cycle and derive per-cycle deltas by subtracting counts and slicing from the
+/// previous lengths.
+///
+/// Therefore:
+///
+/// - [`response_count`](Self::response_count) must be monotonic and never decrease.
+/// - The slices returned by the other methods must be cumulative append-only
+///   views whose lengths never decrease while the transport is being observed.
+/// - Earlier entries must remain at the same indices; implementations must not
+///   clear, rotate, or reorder recorded data between snapshots.
+pub trait RecordedNodeTransport: NodeTransport {
+    /// Returns the cumulative number of non-`None` responses seen by this
+    /// transport instance.
+    fn response_count(&self) -> usize;
+    /// Returns all WAKE nonces recorded so far.
+    fn wake_nonces(&self) -> &[u64];
+    /// Returns all `(msg_type, nonce)` pairs recorded so far.
+    fn sent_frames(&self) -> &[(u8, u64)];
+    /// Returns all captured outbound APP_DATA raw frames recorded so far.
+    fn sent_raw_frames(&self) -> &[Vec<u8>];
+    /// Returns the message types of all valid non-`None` responses recorded so far.
+    fn received_msg_types(&self) -> &[u8];
+}
+
 /// Lightweight handle representing a remote node.
 ///
 /// Identity and schedule are stored exclusively in `self.storage`
@@ -198,6 +226,26 @@ impl NodeProxy {
         self.run_wake_cycle_inner(env, &mut interpreter, false)
     }
 
+    /// Run one wake cycle using a caller-supplied transport.
+    ///
+    /// Requires a multi-thread Tokio runtime (see [`run_wake_cycle`]).
+    pub fn run_wake_cycle_on<T: RecordedNodeTransport + 'static>(
+        &mut self,
+        transport: &mut T,
+    ) -> WakeCycleStats {
+        let mut interpreter = MockBpfInterpreter::new();
+        self.run_wake_cycle_on_with(transport, &mut interpreter)
+    }
+
+    /// Like [`run_wake_cycle_on`] but accepts a caller-supplied BPF interpreter.
+    pub fn run_wake_cycle_on_with<T: RecordedNodeTransport + 'static>(
+        &mut self,
+        transport: &mut T,
+        interpreter: &mut impl BpfInterpreter,
+    ) -> WakeCycleStats {
+        self.run_wake_cycle_with_transport(transport, interpreter)
+    }
+
     /// Like [`run_wake_cycle`] but accepts a caller-supplied BPF
     /// interpreter for tests that require real BPF program execution.
     ///
@@ -228,6 +276,19 @@ impl NodeProxy {
         interpreter: &mut impl BpfInterpreter,
         tamper: bool,
     ) -> WakeCycleStats {
+        let mut transport = if tamper {
+            BridgeTransport::new_tampered(env.gateway.clone(), self.mac.clone())
+        } else {
+            BridgeTransport::new(env.gateway.clone(), self.mac.clone())
+        };
+        self.run_wake_cycle_with_transport(&mut transport, interpreter)
+    }
+
+    fn run_wake_cycle_with_transport<T: RecordedNodeTransport + 'static>(
+        &mut self,
+        transport: &mut T,
+        interpreter: &mut impl BpfInterpreter,
+    ) -> WakeCycleStats {
         use sonde_node::node_aead::NodeAead;
         use sonde_node::wake_cycle::run_wake_cycle;
 
@@ -236,14 +297,14 @@ impl NodeProxy {
         let sha = TestSha256;
         let aead = NodeAead;
 
-        let mut transport = if tamper {
-            BridgeTransport::new_tampered(env.gateway.clone(), self.mac.clone())
-        } else {
-            BridgeTransport::new(env.gateway.clone(), self.mac.clone())
-        };
+        let response_count_before = transport.response_count();
+        let wake_nonce_start = transport.wake_nonces().len();
+        let sent_frame_start = transport.sent_frames().len();
+        let sent_raw_start = transport.sent_raw_frames().len();
+        let recv_type_start = transport.received_msg_types().len();
 
         let outcome = run_wake_cycle(
-            &mut transport,
+            transport,
             &mut self.storage,
             &mut hal,
             &mut self.rng,
@@ -255,13 +316,42 @@ impl NodeProxy {
             &aead,
             &mut self.async_queue,
         );
+
+        let response_count_after = transport.response_count();
+        let wake_nonces_after = transport.wake_nonces().len();
+        let sent_frames_after = transport.sent_frames().len();
+        let sent_raw_after = transport.sent_raw_frames().len();
+        let recv_type_after = transport.received_msg_types().len();
+
+        assert!(
+            wake_nonces_after >= wake_nonce_start,
+            "RecordedNodeTransport::wake_nonces must be cumulative and append-only"
+        );
+        assert!(
+            sent_frames_after >= sent_frame_start,
+            "RecordedNodeTransport::sent_frames must be cumulative and append-only"
+        );
+        assert!(
+            sent_raw_after >= sent_raw_start,
+            "RecordedNodeTransport::sent_raw_frames must be cumulative and append-only"
+        );
+        assert!(
+            recv_type_after >= recv_type_start,
+            "RecordedNodeTransport::received_msg_types must be cumulative and append-only"
+        );
+
         WakeCycleStats {
             outcome,
-            response_count: transport.response_count(),
-            wake_nonces: transport.wake_nonces().to_vec(),
-            sent_frames: transport.sent_frames().to_vec(),
-            sent_raw_frames: transport.sent_raw_frames().to_vec(),
-            received_msg_types: transport.received_msg_types().to_vec(),
+            response_count: response_count_after
+                .checked_sub(response_count_before)
+                .expect(
+                    "RecordedNodeTransport::response_count must be cumulative and never decrease",
+                ),
+            wake_nonces: transport.wake_nonces()[wake_nonce_start..wake_nonces_after].to_vec(),
+            sent_frames: transport.sent_frames()[sent_frame_start..sent_frames_after].to_vec(),
+            sent_raw_frames: transport.sent_raw_frames()[sent_raw_start..sent_raw_after].to_vec(),
+            received_msg_types: transport.received_msg_types()[recv_type_start..recv_type_after]
+                .to_vec(),
         }
     }
 }
@@ -376,6 +466,28 @@ impl NodeTransport for BridgeTransport {
 
     fn recv(&mut self, _timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
         Ok(self.pending_response.take())
+    }
+}
+
+impl RecordedNodeTransport for BridgeTransport {
+    fn response_count(&self) -> usize {
+        self.response_count()
+    }
+
+    fn wake_nonces(&self) -> &[u64] {
+        self.wake_nonces()
+    }
+
+    fn sent_frames(&self) -> &[(u8, u64)] {
+        self.sent_frames()
+    }
+
+    fn sent_raw_frames(&self) -> &[Vec<u8>] {
+        self.sent_raw_frames()
+    }
+
+    fn received_msg_types(&self) -> &[u8] {
+        self.received_msg_types()
     }
 }
 

@@ -582,28 +582,50 @@ fn get_chunk_with_retry<T: Transport, A: AeadProvider, S: Sha256Provider>(
         );
         *current_seq += 1;
 
-        match transport.recv(RESPONSE_TIMEOUT_MS)? {
-            Some(raw_response) => {
-                match verify_and_decode_chunk(
-                    &raw_response,
-                    identity,
-                    attempt_seq,
-                    chunk_index,
-                    aead,
-                    sha,
-                ) {
-                    Ok(data) => {
-                        log::debug!(
-                            "CHUNK received chunk_index={} len={} (ND-1011)",
-                            chunk_index,
-                            data.len()
-                        );
-                        return Ok(data);
+        // Inner loop: drain stale wrong-type frames without consuming a retry
+        // attempt (F-003), but keep each attempt bounded by the original
+        // RESPONSE_TIMEOUT_MS budget so a flood of stale frames cannot keep the
+        // node awake indefinitely.
+        let deadline = clock
+            .elapsed_ms()
+            .saturating_add(RESPONSE_TIMEOUT_MS as u64);
+        loop {
+            let now = clock.elapsed_ms();
+            if now >= deadline {
+                break;
+            }
+            let remaining = (deadline - now) as u32;
+            match transport.recv(remaining)? {
+                None => break, // timeout — count as a retry attempt
+                Some(raw_response) => {
+                    match verify_and_decode_chunk(
+                        &raw_response,
+                        identity,
+                        attempt_seq,
+                        chunk_index,
+                        aead,
+                        sha,
+                    ) {
+                        Ok(data) => {
+                            log::debug!(
+                                "CHUNK received chunk_index={} len={} (ND-1011)",
+                                chunk_index,
+                                data.len()
+                            );
+                            return Ok(data);
+                        }
+                        Err(NodeError::UnexpectedMsgType(_)) => {
+                            // Stale frame from a different exchange — discard
+                            // and keep waiting without burning a retry attempt.
+                            log::debug!(
+                                "GET_CHUNK: discarding stale frame (wrong msg_type) chunk_index={}",
+                                chunk_index
+                            );
+                        }
+                        Err(_) => break, // auth failure, seq mismatch, etc.
                     }
-                    Err(_) => continue,
                 }
             }
-            None => continue,
         }
     }
 
@@ -1824,6 +1846,155 @@ mod tests {
             assert!(
                 result.is_err(),
                 "wrong chunk index should cause transfer failure"
+            );
+        }
+
+        /// F-003 regression: a stale frame with the wrong msg_type received
+        /// before the correct CHUNK does NOT consume a retry attempt or
+        /// advance `current_seq` a second time.
+        ///
+        /// Before the fix, the `UnexpectedMsgType` error path hit `continue`
+        /// in the outer retry loop, burning one retry for a stale frame.
+        #[test]
+        fn chunked_transfer_stale_wrong_type_frame_does_not_consume_retry() {
+            let psk = [0x55u8; 32];
+            let sha = crate::crypto::SoftwareSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+
+            let image = sonde_protocol::ProgramImage {
+                bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                maps: vec![],
+                map_initial_data: vec![],
+            };
+            let image_cbor = image.encode_deterministic().unwrap();
+            let chunk_size = image_cbor.len() as u32; // single chunk
+            let chunk_count = 1u32;
+            let starting_seq = 300u64;
+            let mut current_seq = starting_seq;
+
+            // Queue a stale COMMAND frame (wrong msg_type) then the correct CHUNK.
+            // The stale frame is encrypted with the same PSK so AEAD succeeds, but
+            // msg_type != MSG_CHUNK, triggering UnexpectedMsgType.
+            let stale_frame = make_command(&psk, starting_seq, &CommandPayload::Nop);
+            let correct_chunk = build_chunk_response(&psk, starting_seq, 0, &image_cbor);
+            transport.queue_response(Some(stale_frame));
+            transport.queue_response(Some(correct_chunk));
+
+            let result = chunked_transfer(
+                &mut transport,
+                &identity,
+                &mut current_seq,
+                image_cbor.len() as u32,
+                chunk_size,
+                chunk_count,
+                MAX_RESIDENT_IMAGE_SIZE,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(
+                result.is_ok(),
+                "transfer must succeed after discarding stale frame"
+            );
+            assert_eq!(result.unwrap(), image_cbor);
+            // Only one GET_CHUNK was sent (no retry triggered by the stale frame).
+            assert_eq!(
+                transport.outbound.len(),
+                1,
+                "only one GET_CHUNK should be sent"
+            );
+            // Two recv calls: one for the stale frame, one for the correct chunk.
+            assert_eq!(transport.recv_timeouts.len(), 2, "two recv calls expected");
+            // current_seq advanced by exactly 1 (one GET_CHUNK sent).
+            assert_eq!(
+                current_seq,
+                starting_seq + 1,
+                "seq must advance exactly once"
+            );
+        }
+
+        struct AdvancingClock(std::cell::Cell<u64>);
+        impl Clock for AdvancingClock {
+            fn elapsed_ms(&self) -> u64 {
+                let now = self.0.get();
+                self.0.set(now + 1);
+                now
+            }
+
+            fn delay_ms(&self, _ms: u32) {}
+        }
+
+        struct InfiniteStaleTransport {
+            outbound: Vec<Vec<u8>>,
+            stale_frame: Vec<u8>,
+            recv_calls: usize,
+        }
+
+        impl Transport for InfiniteStaleTransport {
+            fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
+                self.outbound.push(frame.to_vec());
+                Ok(())
+            }
+
+            fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+                self.recv_calls += 1;
+                if timeout_ms == 0 {
+                    return Ok(None);
+                }
+                Ok(Some(self.stale_frame.clone()))
+            }
+        }
+
+        #[test]
+        fn chunked_transfer_stale_wrong_type_frames_are_bounded_per_attempt() {
+            let psk = [0x56u8; 32];
+            let sha = crate::crypto::SoftwareSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = AdvancingClock(std::cell::Cell::new(0));
+            let starting_seq = 700u64;
+            let stale_frame = make_command(&psk, starting_seq, &CommandPayload::Nop);
+            let mut transport = InfiniteStaleTransport {
+                outbound: Vec::new(),
+                stale_frame,
+                recv_calls: 0,
+            };
+            let mut current_seq = starting_seq;
+
+            let err = get_chunk_with_retry(
+                &mut transport,
+                &identity,
+                &mut current_seq,
+                0,
+                &clock,
+                &aead,
+                &sha,
+            )
+            .expect_err("stale-frame flood should eventually time out");
+
+            assert!(
+                matches!(err, NodeError::ChunkTransferFailed { chunk_index: 0 }),
+                "expected bounded retry exhaustion, got {err:?}"
+            );
+            assert_eq!(
+                transport.outbound.len(),
+                (MAX_RETRIES + 1) as usize,
+                "each attempt should still send at most one GET_CHUNK"
+            );
+            assert_eq!(
+                current_seq,
+                starting_seq + (MAX_RETRIES + 1) as u64,
+                "sequence should advance once per retry attempt"
+            );
+            assert!(
+                transport.recv_calls < 1000,
+                "per-attempt stale-frame draining must remain bounded"
             );
         }
 

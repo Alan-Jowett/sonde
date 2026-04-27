@@ -225,18 +225,7 @@ async fn mount_successful_device_flow(
     user_code: &str,
     expected_count: u64,
 ) {
-    Mock::given(method("POST"))
-        .and(path("/device"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .append_header("content-type", "application/json")
-                .set_body_string(format!(
-                    "{{\"device_code\":\"device-code-{user_code}\",\"user_code\":\"{user_code}\",\"verification_uri\":\"https://microsoft.com/devicelogin\",\"verification_uri_complete\":\"https://microsoft.com/devicelogin?code={user_code}\",\"expires_in\":900,\"interval\":1}}"
-                )),
-        )
-        .expect(expected_count)
-        .mount(oauth_server)
-        .await;
+    mount_device_code_request(oauth_server, user_code, expected_count).await;
 
     Mock::given(method("POST"))
         .and(path("/token"))
@@ -252,19 +241,27 @@ async fn mount_successful_device_flow(
         .await;
 }
 
-async fn mount_failed_token_poll(oauth_server: &MockServer, user_code: &str) {
+async fn mount_device_code_request(
+    oauth_server: &MockServer,
+    user_code: &str,
+    expected_count: u64,
+) {
     Mock::given(method("POST"))
         .and(path("/device"))
         .respond_with(
             ResponseTemplate::new(200)
                 .append_header("content-type", "application/json")
                 .set_body_string(format!(
-                    "{{\"device_code\":\"device-code-{user_code}\",\"user_code\":\"{user_code}\",\"verification_uri\":\"https://microsoft.com/devicelogin\",\"expires_in\":900,\"interval\":1}}"
+                    "{{\"device_code\":\"device-code-{user_code}\",\"user_code\":\"{user_code}\",\"verification_uri\":\"https://microsoft.com/devicelogin\",\"verification_uri_complete\":\"https://microsoft.com/devicelogin?code={user_code}\",\"expires_in\":900,\"interval\":1}}"
                 )),
         )
-        .expect(1)
+        .expect(expected_count)
         .mount(oauth_server)
         .await;
+}
+
+async fn mount_failed_token_poll(oauth_server: &MockServer, user_code: &str) {
+    mount_device_code_request(oauth_server, user_code, 1).await;
 
     Mock::given(method("POST"))
         .and(path("/token"))
@@ -339,7 +336,7 @@ async fn t_azc_0203_display_failure_aborts_bootstrap() {
         let socket_path = temp.path().join("companion.sock");
         let display_requests = spawn_companion_server(&socket_path, Some(code)).await;
         let oauth_server = MockServer::start().await;
-        mount_successful_device_flow(&oauth_server, "ZXCV-1234", 1).await;
+        mount_device_code_request(&oauth_server, "ZXCV-1234", 1).await;
 
         let wrapper_log = temp.path().join("wrapper.log");
         write_companion_wrapper(&bin_dir, &wrapper_log);
@@ -614,7 +611,7 @@ fn container_bootstrap_forwards_sigterm_to_bootstrap_auth_child() {
     write_executable(
         &bin_dir.join("sonde-azure-companion"),
         &format!(
-            "#!/bin/sh\nset -eu\nif [ \"$1\" = \"--companion-socket\" ]; then\n  shift 2\nfi\ncase \"$1\" in\n  bootstrap-auth)\n    printf '%s\\n' \"$$\" > \"{}\"\n    trap 'printf TERM\\n >> \"{}\"; exit 143' TERM\n    trap 'printf INT\\n >> \"{}\"; exit 130' INT\n    while :; do\n      sleep 1\n    done\n    ;;\n  run)\n    printf 'run\\n' >> \"{}\"\n    exit 0\n    ;;\n  *)\n    exit 64\n    ;;\nesac\n",
+            "#!/bin/sh\nset -eu\nif [ \"$1\" = \"--companion-socket\" ]; then\n  shift 2\nfi\ncase \"$1\" in\n  bootstrap-auth)\n    printf '%s\\n' \"$$\" > \"{}\"\n    trap 'printf \"%s\\n\" TERM >> \"{}\"; exit 143' TERM\n    trap 'printf \"%s\\n\" INT >> \"{}\"; exit 130' INT\n    while :; do\n      sleep 1\n    done\n    ;;\n  run)\n    printf 'run\\n' >> \"{}\"\n    exit 0\n    ;;\n  *)\n    exit 64\n    ;;\nesac\n",
             pid_file.display(),
             signal_log.display(),
             signal_log.display(),

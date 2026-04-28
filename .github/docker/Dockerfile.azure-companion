@@ -9,7 +9,7 @@
 # rust:alpine — pinned by digest for reproducible builds.
 FROM rust:alpine@sha256:ef7b340d4201444fa2757dfddfd4c03be9d2bde468de7b7a68b0e9fabb794334 AS builder
 
-RUN apk add --no-cache build-base musl-dev openssl-dev protobuf pkgconf
+RUN apk add --no-cache build-base musl-dev openssl-dev openssl-libs-static protobuf pkgconf
 
 WORKDIR /sonde
 COPY . .

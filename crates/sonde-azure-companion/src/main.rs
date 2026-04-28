@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -389,13 +389,39 @@ fn service_principal_state_path(state_dir: &Path) -> PathBuf {
     state_dir.join(SERVICE_PRINCIPAL_STATE_FILENAME)
 }
 
-fn resolve_state_relative_path(state_dir: &Path, value: &str) -> PathBuf {
+fn resolve_state_relative_path(state_dir: &Path, value: &str) -> Result<PathBuf, CompanionError> {
     let path = PathBuf::from(value);
     if path.is_absolute() {
-        path
-    } else {
-        state_dir.join(path)
+        return Err(CompanionError::Config(format!(
+            "service principal path `{value}` must be relative to the state directory"
+        )));
     }
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(CompanionError::Config(format!(
+            "service principal path `{value}` must stay within the state directory"
+        )));
+    }
+    Ok(state_dir.join(path))
+}
+
+fn canonicalize_state_file_path(
+    state_dir: &Path,
+    path: &Path,
+    value: &str,
+) -> Result<PathBuf, CompanionError> {
+    let canonical_state_dir = state_dir.canonicalize()?;
+    let canonical_path = path.canonicalize()?;
+    if !canonical_path.starts_with(&canonical_state_dir) {
+        return Err(CompanionError::Config(format!(
+            "service principal path `{value}` resolved outside the state directory"
+        )));
+    }
+    Ok(canonical_path)
 }
 
 fn load_runtime_credential_state(
@@ -407,22 +433,26 @@ fn load_runtime_credential_state(
     let client_id = require_non_empty(state.client_id, "service principal client_id")?;
     let certificate_path_value =
         require_non_empty(state.certificate_path, "service principal certificate_path")?;
-    let certificate_path = resolve_state_relative_path(state_dir, &certificate_path_value);
+    let certificate_path = resolve_state_relative_path(state_dir, &certificate_path_value)?;
     if !certificate_path.is_file() {
         return Err(CompanionError::Config(format!(
             "service principal certificate file not found: {}",
             certificate_path.display()
         )));
     }
+    let certificate_path =
+        canonicalize_state_file_path(state_dir, &certificate_path, &certificate_path_value)?;
     let private_key_path_value =
         require_non_empty(state.private_key_path, "service principal private_key_path")?;
-    let private_key_path = resolve_state_relative_path(state_dir, &private_key_path_value);
+    let private_key_path = resolve_state_relative_path(state_dir, &private_key_path_value)?;
     if !private_key_path.is_file() {
         return Err(CompanionError::Config(format!(
             "service principal private key file not found: {}",
             private_key_path.display()
         )));
     }
+    let private_key_path =
+        canonicalize_state_file_path(state_dir, &private_key_path, &private_key_path_value)?;
     Ok(RuntimeCredentialState {
         tenant_id,
         client_id,
@@ -828,8 +858,22 @@ where
     F::Consumer: 'static,
 {
     let (runtime_config, runtime_state) = check_runtime_ready(state_dir)?;
+    run_checked_with_factory(connector_socket, &runtime_config, &runtime_state, factory).await
+}
+
+async fn run_checked_with_factory<F>(
+    connector_socket: &str,
+    runtime_config: &RuntimeConfig,
+    runtime_state: &RuntimeCredentialState,
+    factory: &F,
+) -> Result<(), CompanionError>
+where
+    F: BrokerTransportFactory,
+    F::Publisher: 'static,
+    F::Consumer: 'static,
+{
+    let (publisher, consumer) = factory.connect(runtime_config, runtime_state).await?;
     let stream = connect_connector(connector_socket).await?;
-    let (publisher, consumer) = factory.connect(&runtime_config, &runtime_state).await?;
     eprintln!(
         "connected to gateway connector at {connector_socket} and Azure Service Bus namespace {}",
         runtime_config.namespace
@@ -922,9 +966,15 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::Path;
     use std::path::PathBuf;
+    #[cfg(unix)]
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    #[cfg(unix)]
+    use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::io::duplex;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[cfg(unix)]
+    use tokio::sync::{Mutex, Notify};
 
     fn lines(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| (*s).to_string()).collect()
@@ -1051,6 +1101,95 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    struct BlockingConsumer {
+        queued: VecDeque<Vec<u8>>,
+        inflight: Option<Vec<u8>>,
+    }
+
+    #[cfg(unix)]
+    impl BlockingConsumer {
+        fn new(payloads: impl IntoIterator<Item = Vec<u8>>) -> Self {
+            Self {
+                queued: payloads.into_iter().collect(),
+                inflight: None,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tonic::async_trait]
+    impl DownstreamConsumer for BlockingConsumer {
+        async fn receive(&mut self) -> Result<Option<Vec<u8>>, CompanionError> {
+            if let Some(payload) = self.queued.pop_front() {
+                self.inflight = Some(payload.clone());
+                Ok(Some(payload))
+            } else {
+                std::future::pending::<Result<Option<Vec<u8>>, CompanionError>>().await
+            }
+        }
+
+        async fn complete(&mut self) -> Result<(), CompanionError> {
+            self.inflight.take();
+            Ok(())
+        }
+
+        async fn abandon(&mut self) -> Result<(), CompanionError> {
+            self.inflight.take();
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    struct SharedPublisher {
+        published: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    #[cfg(unix)]
+    #[tonic::async_trait]
+    impl UpstreamPublisher for SharedPublisher {
+        async fn publish(&mut self, payload: Vec<u8>) -> Result<(), CompanionError> {
+            self.published.lock().await.push(payload);
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    struct TestBrokerTransportFactory {
+        connect_started: Arc<Notify>,
+        release_connect: Arc<Notify>,
+        connect_calls: Arc<AtomicUsize>,
+        published: Arc<Mutex<Vec<Vec<u8>>>>,
+        downstream_payloads: Vec<Vec<u8>>,
+        allow_return: Arc<AtomicBool>,
+    }
+
+    #[cfg(unix)]
+    #[tonic::async_trait]
+    impl super::BrokerTransportFactory for TestBrokerTransportFactory {
+        type Publisher = SharedPublisher;
+        type Consumer = BlockingConsumer;
+
+        async fn connect(
+            &self,
+            _runtime_config: &RuntimeConfig,
+            _runtime_state: &RuntimeCredentialState,
+        ) -> Result<(Self::Publisher, Self::Consumer), CompanionError> {
+            self.connect_calls.fetch_add(1, Ordering::SeqCst);
+            self.connect_started.notify_waiters();
+            if !self.allow_return.load(Ordering::SeqCst) {
+                self.release_connect.notified().await;
+                self.allow_return.store(true, Ordering::SeqCst);
+            }
+            Ok((
+                SharedPublisher {
+                    published: Arc::clone(&self.published),
+                },
+                BlockingConsumer::new(self.downstream_payloads.clone()),
+            ))
+        }
+    }
+
     #[test]
     fn display_lines_accept_one_to_four_entries() {
         for line_count in 1..=4 {
@@ -1154,8 +1293,16 @@ mod tests {
                     RuntimeCredentialState {
                         tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
                         client_id: "22222222-2222-2222-2222-222222222222".to_string(),
-                        certificate_path: temp.path().join("client-cert.pem"),
-                        private_key_path: temp.path().join("client-key.pem"),
+                        certificate_path: temp
+                            .path()
+                            .join("client-cert.pem")
+                            .canonicalize()
+                            .unwrap(),
+                        private_key_path: temp
+                            .path()
+                            .join("client-key.pem")
+                            .canonicalize()
+                            .unwrap(),
                     }
                 );
             },
@@ -1304,8 +1451,139 @@ mod tests {
     fn relative_state_paths_resolve_under_state_directory() {
         let state_dir = Path::new("/tmp/sonde-state");
         assert_eq!(
-            resolve_state_relative_path(state_dir, "certs/client.pem"),
+            resolve_state_relative_path(state_dir, "certs/client.pem").unwrap(),
             state_dir.join("certs/client.pem")
         );
+    }
+
+    #[test]
+    fn resolve_state_relative_path_rejects_absolute_paths() {
+        let state_dir = Path::new("/tmp/sonde-state");
+        let absolute = std::env::current_dir().unwrap().join("client.pem");
+        let err =
+            resolve_state_relative_path(state_dir, &absolute.display().to_string()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("must be relative to the state directory"));
+    }
+
+    #[test]
+    fn resolve_state_relative_path_rejects_parent_directory_traversal() {
+        let state_dir = Path::new("/tmp/sonde-state");
+        let err = resolve_state_relative_path(state_dir, "../client.pem").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("must stay within the state directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_ready_rejects_symlink_escape_from_state_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let state_dir = temp.path().join("state");
+        let outside_dir = temp.path().join("outside");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+
+        let outside_cert = outside_dir.join("client-cert.pem");
+        std::fs::write(&outside_cert, "dummy").unwrap();
+        symlink(&outside_cert, state_dir.join("client-cert.pem")).unwrap();
+        std::fs::write(state_dir.join("client-key.pem"), "dummy").unwrap();
+
+        let state = ServicePrincipalStateFile {
+            tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            certificate_path: "client-cert.pem".to_string(),
+            private_key_path: "client-key.pem".to_string(),
+        };
+        std::fs::write(
+            state_dir.join("service-principal.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+
+        let err = super::load_runtime_credential_state(&state_dir).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("resolved outside the state directory"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_checked_with_factory_waits_for_broker_before_opening_connector_and_bridges_frames()
+    {
+        use tokio::net::UnixListener;
+        use tokio::time::{timeout, Duration};
+
+        let temp = TempDir::new().unwrap();
+        let socket_path = temp.path().join("connector.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let connect_started = Arc::new(Notify::new());
+        let release_connect = Arc::new(Notify::new());
+        let connect_calls = Arc::new(AtomicUsize::new(0));
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let connect_started_wait = connect_started.notified();
+        let factory = TestBrokerTransportFactory {
+            connect_started: Arc::clone(&connect_started),
+            release_connect: Arc::clone(&release_connect),
+            connect_calls: Arc::clone(&connect_calls),
+            published: Arc::clone(&published),
+            downstream_payloads: vec![vec![7u8, 8, 9]],
+            allow_return: Arc::new(AtomicBool::new(false)),
+        };
+        let connector_socket = socket_path.to_string_lossy().into_owned();
+        let runtime_config = RuntimeConfig {
+            namespace: "example.servicebus.windows.net".to_string(),
+            upstream_queue: "upstream".to_string(),
+            downstream_queue: "downstream".to_string(),
+        };
+        let runtime_state = RuntimeCredentialState {
+            tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            certificate_path: temp.path().join("client-cert.pem"),
+            private_key_path: temp.path().join("client-key.pem"),
+        };
+
+        let run_task = tokio::spawn(async move {
+            super::run_checked_with_factory(
+                &connector_socket,
+                &runtime_config,
+                &runtime_state,
+                &factory,
+            )
+            .await
+        });
+
+        connect_started_wait.await;
+        assert_eq!(connect_calls.load(Ordering::SeqCst), 1);
+        assert!(timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err());
+
+        release_connect.notify_waiters();
+        let (mut server, _) = timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+
+        write_framed(&mut server, b"upstream-test").await.unwrap();
+        let downstream = read_framed(&mut server).await.unwrap().unwrap();
+        assert_eq!(downstream, vec![7u8, 8, 9]);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if published.lock().await.clone() == vec![b"upstream-test".to_vec()] {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        run_task.abort();
     }
 }

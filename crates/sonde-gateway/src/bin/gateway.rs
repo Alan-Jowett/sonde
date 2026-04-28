@@ -35,13 +35,17 @@ use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::storage::Storage;
 use sonde_gateway::transient_display::{ActiveDisplayState, DisplayStateHandle};
 use sonde_gateway::transport::Transport;
-use sonde_gateway::{AdminService, CompanionService};
+use sonde_gateway::{AdminService, CompanionService, ConnectorService};
 use zeroize::Zeroizing;
 
 #[cfg(unix)]
 const DEFAULT_ADMIN_SOCKET: &str = "/var/run/sonde/admin.sock";
 #[cfg(windows)]
 const DEFAULT_ADMIN_SOCKET: &str = r"\\.\pipe\sonde-admin";
+#[cfg(unix)]
+const DEFAULT_CONNECTOR_SOCKET: &str = "/var/run/sonde/connector.sock";
+#[cfg(windows)]
+const DEFAULT_CONNECTOR_SOCKET: &str = r"\\.\pipe\sonde-connector";
 #[cfg(unix)]
 const DEFAULT_COMPANION_SOCKET: &str = "/var/run/sonde/companion.sock";
 #[cfg(windows)]
@@ -656,6 +660,14 @@ struct Cli {
     #[arg(long, default_value = DEFAULT_COMPANION_SOCKET)]
     companion_socket: String,
 
+    /// Local connector API socket path (UDS on Linux/macOS, named pipe on Windows).
+    #[arg(long, default_value = DEFAULT_CONNECTOR_SOCKET)]
+    connector_socket: String,
+
+    /// Maximum connector message payload size in bytes (excluding the 4-byte length prefix).
+    #[arg(long, default_value_t = sonde_gateway::connector::DEFAULT_CONNECTOR_MAX_MESSAGE_SIZE)]
+    connector_max_message_size: usize,
+
     /// Session timeout in seconds.
     #[arg(long, default_value_t = 30)]
     session_timeout: u64,
@@ -950,6 +962,20 @@ async fn run_gateway(
             sonde_gateway::companion::serve_companion(companion_service, &companion_socket).await
         {
             error!("companion gRPC server error: {}", e);
+        }
+    });
+    let connector_service = ConnectorService::new(
+        storage.clone(),
+        pending_commands.clone(),
+        gateway.connector_event_hub(),
+        cli.connector_max_message_size,
+    );
+    let connector_socket = cli.connector_socket.clone();
+    let mut connector_handle = tokio::spawn(async move {
+        if let Err(e) =
+            sonde_gateway::connector::serve_connector(connector_service, &connector_socket).await
+        {
+            error!("connector server error: {}", e);
         }
     });
 
@@ -1403,6 +1429,7 @@ async fn run_gateway(
                 ble_loop.abort();
                 grpc_handle.abort();
                 companion_handle.abort();
+                connector_handle.abort();
                 if !frame_loop.is_finished() {
                     let _ = frame_loop.await;
                 }
@@ -1414,6 +1441,9 @@ async fn run_gateway(
                 }
                 if !companion_handle.is_finished() {
                     let _ = companion_handle.await;
+                }
+                if !connector_handle.is_finished() {
+                    let _ = connector_handle.await;
                 }
                 if !health_handle.is_finished() {
                     let _ = health_handle.await;
@@ -1437,6 +1467,7 @@ async fn run_gateway(
                 frame_loop.abort();
                 ble_loop.abort();
                 companion_handle.abort();
+                connector_handle.abort();
                 if !frame_loop.is_finished() {
                     let _ = frame_loop.await;
                 }
@@ -1445,6 +1476,9 @@ async fn run_gateway(
                 }
                 if !companion_handle.is_finished() {
                     let _ = companion_handle.await;
+                }
+                if !connector_handle.is_finished() {
+                    let _ = connector_handle.await;
                 }
                 if !health_handle.is_finished() {
                     let _ = health_handle.await;
@@ -1468,6 +1502,36 @@ async fn run_gateway(
                 }
                 if !grpc_handle.is_finished() {
                     let _ = grpc_handle.await;
+                }
+                if !connector_handle.is_finished() {
+                    let _ = connector_handle.await;
+                }
+                if !health_handle.is_finished() {
+                    let _ = health_handle.await;
+                }
+                transport.abort_reader_and_wait().await;
+                break;
+            }
+            _ = &mut connector_handle => {
+                error!("connector server exited unexpectedly");
+                companion_display_state.clear().await;
+                ble_controller.cancel_and_wait().await;
+                health_cancel.cancel();
+                frame_loop.abort();
+                ble_loop.abort();
+                grpc_handle.abort();
+                companion_handle.abort();
+                if !frame_loop.is_finished() {
+                    let _ = frame_loop.await;
+                }
+                if !ble_loop.is_finished() {
+                    let _ = ble_loop.await;
+                }
+                if !grpc_handle.is_finished() {
+                    let _ = grpc_handle.await;
+                }
+                if !companion_handle.is_finished() {
+                    let _ = companion_handle.await;
                 }
                 if !health_handle.is_finished() {
                     let _ = health_handle.await;
@@ -1500,6 +1564,8 @@ async fn run_gateway(
             frame_loop.abort();
             ble_loop.abort();
             grpc_handle.abort();
+            companion_handle.abort();
+            connector_handle.abort();
             // Guard each await with is_finished(): if a handle's output was already
             // consumed by the select! arm above, awaiting it again would hang
             // (poll returns Pending indefinitely once the output is taken).
@@ -1533,6 +1599,8 @@ async fn run_gateway(
         frame_loop.abort();
         ble_loop.abort();
         grpc_handle.abort();
+        companion_handle.abort();
+        connector_handle.abort();
         if !frame_loop.is_finished() {
             let _ = frame_loop.await;
         }

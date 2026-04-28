@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Exclude large/unnecessary directories from the Azure companion Docker build
+# context. The image builds from the workspace root, so this file keeps local
+# build artifacts and unrelated repo outputs out of the Docker context.
+target/
+hw/
+docs/
+sensor-data/
+logs/
+rfcxml/
+prevail-rust/tests/upstream/external/
+.git/
+.artifacts/
+firmware/
+firmware-modem/
+bin/
+apk/
+apk-nightly/
+installer/windows/CustomActions/bin/
+installer/windows/CustomActions/obj/
+*.etl
+*.xlsx
+*.wprp

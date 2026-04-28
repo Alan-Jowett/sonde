@@ -318,6 +318,7 @@ pub(crate) async fn set_schedule_impl(
         .map_err(storage_err)?
         .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
 
+    node.desired_schedule_interval_s = Some(interval_s);
     node.schedule_interval_s = interval_s;
     storage.upsert_node(&node).await.map_err(storage_err)?;
 

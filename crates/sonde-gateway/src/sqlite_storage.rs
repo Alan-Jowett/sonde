@@ -374,6 +374,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     psk BLOB NOT NULL,
     assigned_program_hash BLOB,
     current_program_hash BLOB,
+    desired_schedule_interval_s INTEGER,
     schedule_interval_s INTEGER NOT NULL DEFAULT 60,
     firmware_abi_version INTEGER,
     firmware_version TEXT,
@@ -564,6 +565,19 @@ impl SqliteStorage {
                         ))
                     })?;
             }
+            if !has_col("desired_schedule_interval_s") {
+                conn.execute_batch(
+                    "ALTER TABLE nodes ADD COLUMN desired_schedule_interval_s INTEGER;\
+                     UPDATE nodes \
+                        SET desired_schedule_interval_s = schedule_interval_s \
+                      WHERE desired_schedule_interval_s IS NULL",
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: add/copy desired_schedule_interval_s: {e}"
+                    ))
+                })?;
+            }
         }
         // Migrate any legacy plaintext 32-byte PSK blobs to AES-256-GCM encrypted
         // form. This must run before `validate_master_key` since validation only
@@ -688,11 +702,11 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         )
     })?;
     let rf_channel: Option<u8> = {
-        let v: Option<u32> = row.get(9)?;
+        let v: Option<u32> = row.get(10)?;
         v.map(|c| {
             u8::try_from(c).map_err(|_| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    9,
+                    10,
                     rusqlite::types::Type::Integer,
                     format!("rf_channel {c} out of u8 range").into(),
                 )
@@ -700,9 +714,11 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         })
         .transpose()?
     };
-    let sensors_json: Option<String> = row.get(10)?;
-    let registered_by_phone_id: Option<u32> = row.get(11)?;
-    let firmware_version: Option<String> = row.get(12)?;
+    let desired_schedule_interval_s: Option<u32> = row.get(5)?;
+    let sensors_json: Option<String> = row.get(11)?;
+    let registered_by_phone_id: Option<u32> = row.get(12)?;
+    let firmware_version: Option<String> = row.get(13)?;
+    let schedule_interval_s = row.get(6)?;
     Ok(NodeRecord {
         node_id,
         key_hint: {
@@ -718,10 +734,11 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         psk,
         assigned_program_hash: row.get(3)?,
         current_program_hash: row.get(4)?,
-        schedule_interval_s: row.get(5)?,
-        firmware_abi_version: row.get(6)?,
+        desired_schedule_interval_s,
+        schedule_interval_s,
+        firmware_abi_version: row.get(7)?,
         firmware_version,
-        last_battery_mv: row.get(7)?,
+        last_battery_mv: row.get(8)?,
         last_seen: None,
         rf_channel,
         sensors: sensors_json
@@ -832,9 +849,9 @@ impl Storage for SqliteStorage {
             let mut stmt = conn
                 .prepare(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
-                     current_program_hash, schedule_interval_s, firmware_abi_version, \
-                     last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
-                     registered_by_phone_id, firmware_version FROM nodes",
+                     current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
+                     firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
+                     sensors_json, registered_by_phone_id, firmware_version FROM nodes",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -859,9 +876,10 @@ impl Storage for SqliteStorage {
             let maybe_node = conn
                 .query_row(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
-                     current_program_hash, schedule_interval_s, firmware_abi_version, \
-                     last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
-                     registered_by_phone_id, firmware_version FROM nodes WHERE node_id = ?1",
+                     current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
+                     firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
+                     sensors_json, registered_by_phone_id, firmware_version \
+                     FROM nodes WHERE node_id = ?1",
                     params![node_id],
                     |row| row_to_node(row, &mk),
                 )
@@ -884,9 +902,10 @@ impl Storage for SqliteStorage {
             let mut stmt = conn
                 .prepare(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
-                     current_program_hash, schedule_interval_s, firmware_abi_version, \
-                     last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
-                     registered_by_phone_id, firmware_version FROM nodes WHERE key_hint = ?1",
+                     current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
+                     firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
+                     sensors_json, registered_by_phone_id, firmware_version \
+                     FROM nodes WHERE key_hint = ?1",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -913,15 +932,16 @@ impl Storage for SqliteStorage {
             let tx = conn.unchecked_transaction().map_err(map_err)?;
             tx.execute(
                 "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
-                 current_program_hash, schedule_interval_s, firmware_abi_version, \
-                 last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
-                 registered_by_phone_id, firmware_version) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+                 current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
+                 firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
+                 sensors_json, registered_by_phone_id, firmware_version) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
                  ON CONFLICT(node_id) DO UPDATE SET \
                  key_hint = excluded.key_hint, \
                  psk = excluded.psk, \
                  assigned_program_hash = excluded.assigned_program_hash, \
                  current_program_hash = excluded.current_program_hash, \
+                 desired_schedule_interval_s = excluded.desired_schedule_interval_s, \
                  schedule_interval_s = excluded.schedule_interval_s, \
                  firmware_abi_version = excluded.firmware_abi_version, \
                  last_battery_mv = excluded.last_battery_mv, \
@@ -936,6 +956,7 @@ impl Storage for SqliteStorage {
                     encrypted_psk,
                     record.assigned_program_hash,
                     record.current_program_hash,
+                    record.desired_schedule_interval_s,
                     record.schedule_interval_s,
                     record.firmware_abi_version,
                     record.last_battery_mv,
@@ -963,16 +984,17 @@ impl Storage for SqliteStorage {
             let rows = conn
                 .execute(
                     "INSERT OR IGNORE INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
-                     current_program_hash, schedule_interval_s, firmware_abi_version, \
-                     last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
-                     registered_by_phone_id, firmware_version) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                     current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
+                     firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
+                     sensors_json, registered_by_phone_id, firmware_version) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                     params![
                         record.node_id,
                         record.key_hint as u32,
                         encrypted_psk,
                         record.assigned_program_hash,
                         record.current_program_hash,
+                        record.desired_schedule_interval_s,
                         record.schedule_interval_s,
                         record.firmware_abi_version,
                         record.last_battery_mv,
@@ -1147,15 +1169,16 @@ impl Storage for SqliteStorage {
                         encrypt_psk(&mk, &record.node_id, &record.psk)?;
                     conn.execute(
                         "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
-                         current_program_hash, schedule_interval_s, firmware_abi_version, \
-                         last_battery_mv, last_seen_epoch_s, firmware_version) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                         current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
+                         firmware_abi_version, last_battery_mv, last_seen_epoch_s, firmware_version) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                         params![
                             &record.node_id,
                             record.key_hint,
                             &encrypted_psk,
                             record.assigned_program_hash.as_deref(),
                             record.current_program_hash.as_deref(),
+                            record.desired_schedule_interval_s,
                             record.schedule_interval_s,
                             record.firmware_abi_version,
                             record.last_battery_mv,
@@ -1696,6 +1719,7 @@ mod tests {
             psk: [0xAB; 32],
             assigned_program_hash: None,
             current_program_hash: None,
+            desired_schedule_interval_s: Some(60),
             schedule_interval_s: 60,
             firmware_abi_version: None,
             firmware_version: None,
@@ -1740,6 +1764,7 @@ mod tests {
         assert_eq!(fetched.key_hint, 42);
         assert_eq!(fetched.psk, [0xAB; 32]);
         assert_eq!(fetched.assigned_program_hash, Some(vec![0xFF; 32]));
+        assert_eq!(fetched.desired_schedule_interval_s, Some(60));
         assert_eq!(fetched.schedule_interval_s, 60);
         assert_eq!(fetched.last_seen, None);
 
@@ -1860,10 +1885,12 @@ mod tests {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
 
         let mut node = make_node("u1", 1);
+        node.desired_schedule_interval_s = Some(30);
         node.schedule_interval_s = 30;
         store.upsert_node(&node).await.unwrap();
 
         // Upsert with different values.
+        node.desired_schedule_interval_s = Some(120);
         node.schedule_interval_s = 120;
         node.key_hint = 2;
         node.last_battery_mv = Some(3300);
@@ -1873,6 +1900,7 @@ mod tests {
         let nodes = store.list_nodes().await.unwrap();
         assert_eq!(nodes.len(), 1);
         let fetched = &nodes[0];
+        assert_eq!(fetched.desired_schedule_interval_s, Some(120));
         assert_eq!(fetched.schedule_interval_s, 120);
         assert_eq!(fetched.key_hint, 2);
         assert_eq!(fetched.last_battery_mv, Some(3300));
@@ -1938,6 +1966,90 @@ mod tests {
                 "post-migration blob must be encrypted"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_desired_schedule_migration_copies_existing_schedule() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("desired-schedule.db");
+
+        {
+            use rusqlite::Connection;
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
+                 CREATE TABLE nodes (
+                     node_id TEXT PRIMARY KEY,
+                     key_hint INTEGER NOT NULL,
+                     psk BLOB NOT NULL,
+                     assigned_program_hash BLOB,
+                     current_program_hash BLOB,
+                     schedule_interval_s INTEGER NOT NULL DEFAULT 60,
+                     firmware_abi_version INTEGER,
+                     firmware_version TEXT,
+                     last_battery_mv INTEGER,
+                     last_seen_epoch_s INTEGER,
+                     rf_channel INTEGER,
+                     sensors_json TEXT,
+                     registered_by_phone_id INTEGER
+                 );
+                 CREATE INDEX idx_nodes_key_hint ON nodes(key_hint);
+                 CREATE TABLE programs (
+                     hash BLOB PRIMARY KEY,
+                     image BLOB NOT NULL,
+                     size INTEGER NOT NULL,
+                     verification_profile TEXT NOT NULL,
+                     abi_version INTEGER,
+                     source_filename TEXT
+                 );
+                 CREATE TABLE gateway_identity (
+                     id INTEGER PRIMARY KEY CHECK (id = 1),
+                     encrypted_seed BLOB NOT NULL,
+                     gateway_id BLOB NOT NULL,
+                     public_key BLOB NOT NULL
+                 );
+                 CREATE TABLE phone_psks (
+                     phone_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     phone_key_hint INTEGER NOT NULL,
+                     psk BLOB NOT NULL,
+                     label TEXT NOT NULL,
+                     issued_at_epoch_s INTEGER NOT NULL,
+                     status TEXT NOT NULL DEFAULT 'active'
+                 );
+                 CREATE INDEX idx_phone_psks_key_hint ON phone_psks(phone_key_hint);
+                 CREATE TABLE battery_readings (
+                     node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+                     timestamp_epoch_s INTEGER NOT NULL,
+                     battery_mv INTEGER NOT NULL
+                 );
+                 CREATE INDEX idx_battery_readings_node ON battery_readings(node_id, timestamp_epoch_s);
+                 CREATE TABLE gateway_config (
+                     key TEXT PRIMARY KEY,
+                     value TEXT NOT NULL
+                 );
+                 CREATE TABLE handlers (
+                     program_hash TEXT PRIMARY KEY,
+                     command TEXT NOT NULL,
+                     args_json TEXT NOT NULL DEFAULT '[]',
+                     working_dir TEXT,
+                     reply_timeout_ms INTEGER
+                 );",
+            )
+            .unwrap();
+            let encrypted_psk =
+                encrypt_psk(&TEST_MASTER_KEY_RAW, "legacy-node", &[0xAB; 32]).unwrap();
+            conn.execute(
+                "INSERT INTO nodes (node_id, key_hint, psk, schedule_interval_s)
+                 VALUES ('legacy-node', 7, ?1, 900)",
+                params![encrypted_psk],
+            )
+            .unwrap();
+        }
+
+        let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+        let node = store.get_node("legacy-node").await.unwrap().unwrap();
+        assert_eq!(node.schedule_interval_s, 900);
+        assert_eq!(node.desired_schedule_interval_s, Some(900));
     }
 
     /// Verify that opening an existing database that predates the `abi_version`

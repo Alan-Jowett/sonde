@@ -358,16 +358,7 @@ impl ConnectorService {
         node_id: &str,
         desired_state: &[(Value, Value)],
     ) -> Result<(), String> {
-        if node_id.is_empty() {
-            return Err("node desired state requires a non-empty entity_id".to_string());
-        }
-
-        let mut node = self
-            .storage
-            .get_node(node_id)
-            .await
-            .map_err(|e| format!("lookup node `{node_id}` failed: {e}"))?
-            .ok_or_else(|| format!("node `{node_id}` not found"))?;
+        require_existing_node(&self.storage, node_id).await?;
 
         let assigned_program_hash =
             optional_bytes_field(desired_state, 1, "assigned_program_hash")?;
@@ -382,11 +373,11 @@ impl ConnectorService {
                     .map_err(|e| format!("assign connector desired program failed: {e}"))?;
             }
             None => {
-                node.assigned_program_hash = None;
-                self.storage
-                    .upsert_node(&node)
-                    .await
-                    .map_err(|e| format!("clear connector desired program failed: {e}"))?;
+                update_node_record(&self.storage, node_id, |node| {
+                    node.assigned_program_hash = None;
+                })
+                .await
+                .map_err(|e| format!("clear connector desired program failed: {e}"))?;
             }
         }
 
@@ -397,6 +388,11 @@ impl ConnectorService {
                     .map_err(|e| format!("set connector desired schedule failed: {e}"))?;
             }
             None => {
+                update_node_record(&self.storage, node_id, |node| {
+                    node.desired_schedule_interval_s = None;
+                })
+                .await
+                .map_err(|e| format!("clear connector desired schedule failed: {e}"))?;
                 let mut pending = self.pending_commands.write().await;
                 if let Some(commands) = pending.get_mut(node_id) {
                     commands.retain(|cmd| !matches!(cmd, PendingCommand::UpdateSchedule { .. }));
@@ -565,8 +561,40 @@ fn connector_codec(max_message_size: usize) -> LengthDelimitedCodec {
     LengthDelimitedCodec::builder()
         .length_field_length(4)
         .big_endian()
-        .max_frame_length(max_message_size.saturating_add(4))
+        .max_frame_length(max_message_size)
         .new_codec()
+}
+
+async fn require_existing_node(storage: &Arc<dyn Storage>, node_id: &str) -> Result<(), String> {
+    if node_id.is_empty() {
+        return Err("node desired state requires a non-empty entity_id".to_string());
+    }
+    storage
+        .get_node(node_id)
+        .await
+        .map_err(|e| format!("lookup node `{node_id}` failed: {e}"))?
+        .ok_or_else(|| format!("node `{node_id}` not found"))?;
+    Ok(())
+}
+
+async fn update_node_record<F>(
+    storage: &Arc<dyn Storage>,
+    node_id: &str,
+    mut update: F,
+) -> Result<(), String>
+where
+    F: FnMut(&mut crate::registry::NodeRecord),
+{
+    let mut node = storage
+        .get_node(node_id)
+        .await
+        .map_err(|e| format!("lookup node `{node_id}` failed: {e}"))?
+        .ok_or_else(|| format!("node `{node_id}` not found"))?;
+    update(&mut node);
+    storage
+        .upsert_node(&node)
+        .await
+        .map_err(|e| format!("update node `{node_id}` failed: {e}"))
 }
 
 fn map_entry(key: u64, value: Value) -> (Value, Value) {

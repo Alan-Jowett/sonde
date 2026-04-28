@@ -213,6 +213,36 @@ async fn read_framed(stream: &mut DuplexStream) -> Vec<u8> {
     payload
 }
 
+async fn expect_session_closed(stream: &mut DuplexStream) {
+    let mut byte = [0u8; 1];
+    let n = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut byte))
+        .await
+        .expect("connector session should close promptly")
+        .unwrap();
+    assert_eq!(n, 0, "connector session should close cleanly");
+}
+
+async fn wait_for_desired_state(
+    harness: &ConnectorHarness,
+    node_id: &str,
+    expected_program_hash: Option<&[u8]>,
+    expected_schedule_interval_s: u32,
+) -> sonde_gateway::registry::NodeRecord {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let stored = harness.storage.get_node(node_id).await.unwrap().unwrap();
+            if stored.assigned_program_hash.as_deref() == expected_program_hash
+                && stored.schedule_interval_s == expected_schedule_interval_s
+            {
+                break stored;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for desired state to be applied")
+}
+
 fn encode_value(value: &Value) -> Vec<u8> {
     let mut buf = Vec::new();
     ciborium::into_writer(value, &mut buf).unwrap();
@@ -265,12 +295,39 @@ async fn connector_rejects_non_connector_protocol_bytes() {
         .unwrap();
     client.flush().await.unwrap();
 
-    let mut byte = [0u8; 1];
-    let n = tokio::time::timeout(Duration::from_secs(1), client.read(&mut byte))
-        .await
-        .expect("connector session should close promptly")
-        .unwrap();
-    assert_eq!(n, 0, "connector session should close on non-framed input");
+    expect_session_closed(&mut client).await;
+
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn connector_rejects_oversized_declared_frame() {
+    let harness = ConnectorHarness::new();
+    let service = ConnectorService::new(
+        harness.storage.clone(),
+        Arc::new(RwLock::new(HashMap::new())),
+        harness.event_hub.clone(),
+        8,
+    );
+    let (mut client, handle) = spawn_connection(service).await;
+
+    client.write_all(&9u32.to_be_bytes()).await.unwrap();
+    client.write_all(&[0u8; 9]).await.unwrap();
+    client.flush().await.unwrap();
+
+    expect_session_closed(&mut client).await;
+
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn connector_rejects_truncated_declared_frame() {
+    let harness = ConnectorHarness::new();
+    let (mut client, handle) = spawn_connection(harness.service.clone()).await;
+
+    client.write_all(&8u32.to_be_bytes()).await.unwrap();
+    client.write_all(&[0u8; 3]).await.unwrap();
+    client.shutdown().await.unwrap();
 
     handle.await.unwrap();
 }
@@ -326,24 +383,14 @@ async fn connector_desired_state_updates_gateway_reconciliation_state() {
     ]);
     write_framed(&mut client, &encode_value(&gateway_desired)).await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let stored = harness
-        .storage
-        .get_node(&node.node_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let stored = wait_for_desired_state(&harness, &node.node_id, Some(&program_hash), 900).await;
     assert_eq!(stored.assigned_program_hash, Some(program_hash.clone()));
+    assert_eq!(stored.desired_schedule_interval_s, Some(900));
     assert_eq!(stored.schedule_interval_s, 900);
 
-    let other_stored = harness
-        .storage
-        .get_node(&other.node_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let other_stored = wait_for_desired_state(&harness, &other.node_id, None, 60).await;
     assert_eq!(other_stored.assigned_program_hash, None);
+    assert_eq!(other_stored.desired_schedule_interval_s, Some(60));
     assert_eq!(other_stored.schedule_interval_s, 60);
 
     let payload = do_wake(&harness.gateway, &node, 100, &program_hash, None).await;
@@ -351,6 +398,56 @@ async fn connector_desired_state_updates_gateway_reconciliation_state() {
         payload,
         CommandPayload::UpdateSchedule { interval_s: 900 }
     ));
+
+    drop(client);
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn connector_null_schedule_clears_desired_schedule_target() {
+    let harness = ConnectorHarness::new();
+    let node = TestNode::new("alpha-clear", 0x1111, [0x31; 32]);
+    register_node(&harness.storage, &node).await;
+
+    let mut stored = harness
+        .storage
+        .get_node(&node.node_id)
+        .await
+        .unwrap()
+        .unwrap();
+    stored.desired_schedule_interval_s = Some(900);
+    stored.schedule_interval_s = 900;
+    harness.storage.upsert_node(&stored).await.unwrap();
+
+    let (mut client, handle) = spawn_connection(harness.service.clone()).await;
+    let desired = Value::Map(vec![
+        map_entry(1, Value::Integer(MSG_TYPE_DESIRED_STATE.into())),
+        map_entry(2, Value::Text("node".to_string())),
+        map_entry(3, Value::Text(node.node_id.clone())),
+        map_entry(4, Value::Map(vec![map_entry(2, Value::Null)])),
+    ]);
+    write_framed(&mut client, &encode_value(&desired)).await;
+
+    let stored = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let stored = harness
+                .storage
+                .get_node(&node.node_id)
+                .await
+                .unwrap()
+                .unwrap();
+            if stored.desired_schedule_interval_s.is_none() {
+                break stored;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for desired schedule clear");
+    assert_eq!(stored.schedule_interval_s, 900);
+
+    let payload = do_wake(&harness.gateway, &node, 101, &[0x42; 32], None).await;
+    assert!(matches!(payload, CommandPayload::Nop));
 
     drop(client);
     handle.await.unwrap();

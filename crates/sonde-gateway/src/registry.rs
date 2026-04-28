@@ -39,6 +39,10 @@ pub struct NodeRecord {
     pub psk: [u8; 32],
     pub assigned_program_hash: Option<Vec<u8>>,
     pub current_program_hash: Option<Vec<u8>>,
+    /// Connector/admin desired schedule target. `None` means no schedule target
+    /// is currently desired, while `schedule_interval_s` retains the latest
+    /// persisted interval value for compatibility with existing runtime logic.
+    pub desired_schedule_interval_s: Option<u32>,
     pub schedule_interval_s: u32,
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
@@ -63,6 +67,7 @@ impl NodeRecord {
             psk,
             assigned_program_hash: None,
             current_program_hash: None,
+            desired_schedule_interval_s: Some(60),
             schedule_interval_s: 60,
             firmware_abi_version: None,
             firmware_version: None,

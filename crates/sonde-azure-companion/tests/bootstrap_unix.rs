@@ -832,7 +832,7 @@ fn container_bootstrap_forwards_sigterm_to_bootstrap_auth_child() {
     write_executable(
         &bin_dir.join("sonde-azure-companion"),
         &format!(
-            "#!/bin/sh\nset -eu\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --admin-socket|--connector-socket)\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\ncase \"$1\" in\n  bootstrap-auth)\n    printf '%s\\n' \"$$\" > \"{}\"\n    trap 'printf \"%s\\n\" TERM >> \"{}\"; exit 143' TERM\n    trap 'printf \"%s\\n\" INT >> \"{}\"; exit 130' INT\n    while :; do\n      sleep 1\n    done\n    ;;\n  run)\n    printf 'run\\n' >> \"{}\"\n    exit 0\n    ;;\n  *)\n    exit 64\n    ;;\nesac\n",
+            "#!/bin/sh\nset -eu\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --admin-socket|--connector-socket|--state-dir)\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\ncase \"$1\" in\n  bootstrap-auth)\n    printf '%s\\n' \"$$\" > \"{}\"\n    trap 'printf \"%s\\n\" TERM >> \"{}\"; exit 143' TERM\n    trap 'printf \"%s\\n\" INT >> \"{}\"; exit 130' INT\n    while :; do\n      sleep 1\n    done\n    ;;\n  run)\n    printf 'run\\n' >> \"{}\"\n    exit 0\n    ;;\n  *)\n    exit 64\n    ;;\nesac\n",
             pid_file.display(),
             signal_log.display(),
             signal_log.display(),

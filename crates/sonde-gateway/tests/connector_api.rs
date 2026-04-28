@@ -90,6 +90,7 @@ impl TestNode {
 
 struct ConnectorHarness {
     storage: Arc<InMemoryStorage>,
+    pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
     gateway: Gateway,
     event_hub: Arc<ConnectorEventHub>,
     service: ConnectorService,
@@ -110,12 +111,13 @@ impl ConnectorHarness {
         let event_hub = gateway.connector_event_hub();
         let service = ConnectorService::new(
             storage.clone(),
-            pending_commands,
+            pending_commands.clone(),
             event_hub.clone(),
             DEFAULT_CONNECTOR_MAX_MESSAGE_SIZE,
         );
         Self {
             storage,
+            pending_commands,
             gateway,
             event_hub,
             service,
@@ -136,20 +138,28 @@ fn make_cbor_image(bytecode: &[u8]) -> Vec<u8> {
     image.encode_deterministic().unwrap()
 }
 
-async fn store_program(storage: &Arc<InMemoryStorage>, hash_byte: u8) -> Vec<u8> {
+async fn store_program_with_profile(
+    storage: &Arc<InMemoryStorage>,
+    hash_byte: u8,
+    verification_profile: VerificationProfile,
+) -> Vec<u8> {
     let hash = vec![hash_byte; 32];
     storage
         .store_program(&ProgramRecord {
             hash: hash.clone(),
             image: make_cbor_image(MINIMAL_BPF),
             size: MINIMAL_BPF.len() as u32,
-            verification_profile: VerificationProfile::Resident,
+            verification_profile,
             abi_version: None,
             source_filename: None,
         })
         .await
         .unwrap();
     hash
+}
+
+async fn store_program(storage: &Arc<InMemoryStorage>, hash_byte: u8) -> Vec<u8> {
+    store_program_with_profile(storage, hash_byte, VerificationProfile::Resident).await
 }
 
 async fn register_node(storage: &Arc<InMemoryStorage>, node: &TestNode) {
@@ -448,6 +458,90 @@ async fn connector_null_schedule_clears_desired_schedule_target() {
 
     let payload = do_wake(&harness.gateway, &node, 101, &[0x42; 32], None).await;
     assert!(matches!(payload, CommandPayload::Nop));
+
+    drop(client);
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn connector_invalid_ephemeral_preserves_existing_desired_state() {
+    let harness = ConnectorHarness::new();
+    let node = TestNode::new("alpha-ephemeral", 0x1212, [0x44; 32]);
+    let old_assigned = store_program(&harness.storage, 0x51).await;
+    let new_assigned = store_program(&harness.storage, 0x52).await;
+    let old_ephemeral =
+        store_program_with_profile(&harness.storage, 0x61, VerificationProfile::Ephemeral).await;
+    let invalid_ephemeral = store_program(&harness.storage, 0x62).await;
+
+    register_node(&harness.storage, &node).await;
+
+    let mut stored = harness
+        .storage
+        .get_node(&node.node_id)
+        .await
+        .unwrap()
+        .unwrap();
+    stored.assigned_program_hash = Some(old_assigned.clone());
+    stored.desired_schedule_interval_s = Some(120);
+    stored.schedule_interval_s = 120;
+    harness.storage.upsert_node(&stored).await.unwrap();
+
+    harness.pending_commands.write().await.insert(
+        node.node_id.clone(),
+        vec![
+            PendingCommand::UpdateSchedule { interval_s: 120 },
+            PendingCommand::RunEphemeral {
+                program_hash: old_ephemeral.clone(),
+            },
+        ],
+    );
+
+    let (mut client, handle) = spawn_connection(harness.service.clone()).await;
+    let desired = Value::Map(vec![
+        map_entry(1, Value::Integer(MSG_TYPE_DESIRED_STATE.into())),
+        map_entry(2, Value::Text("node".to_string())),
+        map_entry(3, Value::Text(node.node_id.clone())),
+        map_entry(
+            4,
+            Value::Map(vec![
+                map_entry(1, Value::Bytes(new_assigned.clone())),
+                map_entry(2, Value::Integer(900u64.into())),
+                map_entry(3, Value::Bytes(invalid_ephemeral)),
+            ]),
+        ),
+    ]);
+    write_framed(&mut client, &encode_value(&desired)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let stored = harness
+        .storage
+        .get_node(&node.node_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.assigned_program_hash, Some(old_assigned));
+    assert_eq!(stored.desired_schedule_interval_s, Some(120));
+    assert_eq!(stored.schedule_interval_s, 120);
+
+    let pending = harness.pending_commands.read().await;
+    let commands = pending
+        .get(&node.node_id)
+        .expect("existing pending commands must be preserved");
+    assert_eq!(commands.len(), 2);
+    assert!(
+        matches!(
+            commands[0],
+            PendingCommand::UpdateSchedule { interval_s: 120 }
+        ),
+        "expected preserved UpdateSchedule(120), got {:?}",
+        commands[0]
+    );
+    match &commands[1] {
+        PendingCommand::RunEphemeral { program_hash } => {
+            assert_eq!(program_hash, &old_ephemeral);
+        }
+        other => panic!("expected preserved RunEphemeral, got {other:?}"),
+    }
 
     drop(client);
     handle.await.unwrap();

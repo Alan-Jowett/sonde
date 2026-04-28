@@ -239,7 +239,7 @@ const PROGRAM_HASH_LEN: usize = 32;
 /// Returns the hex representation on success, or an appropriate gRPC error
 /// with guidance on failure.  This prevents unbounded allocations from
 /// arbitrarily large client-supplied byte vectors.
-fn validate_program_hash_bytes(operation: &str, hash: &[u8]) -> Result<String, Status> {
+pub(crate) fn validate_program_hash_bytes(operation: &str, hash: &[u8]) -> Result<String, Status> {
     if hash.len() != PROGRAM_HASH_LEN {
         return Err(Status::invalid_argument(format!(
             "{operation} failed: program_hash must be {PROGRAM_HASH_LEN} bytes (got {})",

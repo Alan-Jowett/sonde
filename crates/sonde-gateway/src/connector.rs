@@ -13,10 +13,9 @@ use tokio_util::bytes::Bytes;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{error, info, warn};
 
-use crate::admin::{
-    assign_program_impl, queue_ephemeral_impl, set_schedule_impl, system_time_to_millis,
-};
+use crate::admin::{system_time_to_millis, validate_program_hash_bytes};
 use crate::engine::PendingCommand;
+use crate::program::VerificationProfile;
 use crate::storage::Storage;
 
 pub const MSG_TYPE_DESIRED_STATE: u64 = 0x01;
@@ -358,91 +357,64 @@ impl ConnectorService {
         node_id: &str,
         desired_state: &[(Value, Value)],
     ) -> Result<(), String> {
-        require_existing_node(&self.storage, node_id).await?;
-
+        let mut node = load_existing_node(&self.storage, node_id).await?;
         let assigned_program_hash =
             optional_bytes_field(desired_state, 1, "assigned_program_hash")?;
         let schedule_interval_s = optional_u32_field(desired_state, 2, "schedule_interval_s")?;
         let ephemeral_program_hash =
             optional_bytes_field(desired_state, 3, "ephemeral_program_hash")?;
 
-        match assigned_program_hash {
-            Some(program_hash) => {
-                assign_program_impl(&self.storage, node_id, &program_hash)
-                    .await
-                    .map_err(|e| format!("assign connector desired program failed: {e}"))?;
-            }
-            None => {
-                update_node_record(&self.storage, node_id, |node| {
-                    node.assigned_program_hash = None;
-                })
-                .await
-                .map_err(|e| format!("clear connector desired program failed: {e}"))?;
-            }
+        if let Some(program_hash) = assigned_program_hash.as_deref() {
+            validate_program_exists(
+                &self.storage,
+                "assign connector desired program",
+                "assign program",
+                program_hash,
+            )
+            .await?;
+        }
+        if let Some(program_hash) = ephemeral_program_hash.as_deref() {
+            validate_ephemeral_program(&self.storage, program_hash).await?;
         }
 
+        node.assigned_program_hash = assigned_program_hash;
         match schedule_interval_s {
             Some(interval_s) => {
-                set_schedule_impl(&self.storage, &self.pending_commands, node_id, interval_s)
-                    .await
-                    .map_err(|e| format!("set connector desired schedule failed: {e}"))?;
+                node.desired_schedule_interval_s = Some(interval_s);
+                node.schedule_interval_s = interval_s;
             }
             None => {
-                update_node_record(&self.storage, node_id, |node| {
-                    node.desired_schedule_interval_s = None;
-                })
-                .await
-                .map_err(|e| format!("clear connector desired schedule failed: {e}"))?;
-                let mut pending = self.pending_commands.write().await;
-                if let Some(commands) = pending.get_mut(node_id) {
-                    commands.retain(|cmd| !matches!(cmd, PendingCommand::UpdateSchedule { .. }));
-                    if commands.is_empty() {
-                        pending.remove(node_id);
-                    }
-                }
+                node.desired_schedule_interval_s = None;
             }
         }
+        self.storage
+            .upsert_node(&node)
+            .await
+            .map_err(|e| format!("update node `{node_id}` failed: {e}"))?;
 
-        match ephemeral_program_hash {
-            Some(program_hash) => {
-                clear_pending_commands(node_id, &self.pending_commands, |cmd| {
-                    matches!(cmd, PendingCommand::RunEphemeral { .. })
-                })
-                .await;
-                queue_ephemeral_impl(
-                    &self.storage,
-                    &self.pending_commands,
-                    node_id,
-                    &program_hash,
+        let mut pending = self.pending_commands.write().await;
+        if let Some(commands) = pending.get_mut(node_id) {
+            commands.retain(|cmd| {
+                !matches!(
+                    cmd,
+                    PendingCommand::UpdateSchedule { .. } | PendingCommand::RunEphemeral { .. }
                 )
-                .await
-                .map_err(|e| format!("queue connector desired ephemeral failed: {e}"))?;
+            });
+            if commands.is_empty() {
+                pending.remove(node_id);
             }
-            None => {
-                clear_pending_commands(node_id, &self.pending_commands, |cmd| {
-                    matches!(cmd, PendingCommand::RunEphemeral { .. })
-                })
-                .await;
+        }
+        if schedule_interval_s.is_some() || ephemeral_program_hash.is_some() {
+            let commands = pending.entry(node_id.to_string()).or_default();
+            if let Some(interval_s) = schedule_interval_s {
+                commands.push(PendingCommand::UpdateSchedule { interval_s });
+            }
+            if let Some(program_hash) = ephemeral_program_hash {
+                commands.push(PendingCommand::RunEphemeral { program_hash });
             }
         }
 
         Ok(())
-    }
-}
-
-async fn clear_pending_commands<F>(
-    node_id: &str,
-    pending_commands: &Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
-    mut predicate: F,
-) where
-    F: FnMut(&PendingCommand) -> bool,
-{
-    let mut pending = pending_commands.write().await;
-    if let Some(commands) = pending.get_mut(node_id) {
-        commands.retain(|cmd| !predicate(cmd));
-        if commands.is_empty() {
-            pending.remove(node_id);
-        }
     }
 }
 
@@ -565,7 +537,10 @@ fn connector_codec(max_message_size: usize) -> LengthDelimitedCodec {
         .new_codec()
 }
 
-async fn require_existing_node(storage: &Arc<dyn Storage>, node_id: &str) -> Result<(), String> {
+async fn load_existing_node(
+    storage: &Arc<dyn Storage>,
+    node_id: &str,
+) -> Result<crate::registry::NodeRecord, String> {
     if node_id.is_empty() {
         return Err("node desired state requires a non-empty entity_id".to_string());
     }
@@ -573,28 +548,51 @@ async fn require_existing_node(storage: &Arc<dyn Storage>, node_id: &str) -> Res
         .get_node(node_id)
         .await
         .map_err(|e| format!("lookup node `{node_id}` failed: {e}"))?
-        .ok_or_else(|| format!("node `{node_id}` not found"))?;
+        .ok_or_else(|| format!("node `{node_id}` not found"))
+}
+
+async fn validate_program_exists(
+    storage: &Arc<dyn Storage>,
+    error_context: &str,
+    operation: &str,
+    program_hash: &[u8],
+) -> Result<(), String> {
+    let program_hash_hex = validate_program_hash_bytes(operation, program_hash)
+        .map_err(|e| format!("{error_context} failed: {e}"))?;
+    storage
+        .get_program(program_hash)
+        .await
+        .map_err(|e| format!("{error_context} failed: look up program `{program_hash_hex}`: {e}"))?
+        .ok_or_else(|| format!("{error_context} failed: program `{program_hash_hex}` not found"))?;
     Ok(())
 }
 
-async fn update_node_record<F>(
+async fn validate_ephemeral_program(
     storage: &Arc<dyn Storage>,
-    node_id: &str,
-    mut update: F,
-) -> Result<(), String>
-where
-    F: FnMut(&mut crate::registry::NodeRecord),
-{
-    let mut node = storage
-        .get_node(node_id)
+    program_hash: &[u8],
+) -> Result<(), String> {
+    let program_hash_hex = validate_program_hash_bytes("queue ephemeral", program_hash)
+        .map_err(|e| format!("queue connector desired ephemeral failed: {e}"))?;
+    let program = storage
+        .get_program(program_hash)
         .await
-        .map_err(|e| format!("lookup node `{node_id}` failed: {e}"))?
-        .ok_or_else(|| format!("node `{node_id}` not found"))?;
-    update(&mut node);
-    storage
-        .upsert_node(&node)
-        .await
-        .map_err(|e| format!("update node `{node_id}` failed: {e}"))
+        .map_err(|e| {
+            format!(
+                "queue connector desired ephemeral failed: look up program `{program_hash_hex}`: {e}"
+            )
+        })?
+        .ok_or_else(|| {
+            format!(
+                "queue connector desired ephemeral failed: program `{program_hash_hex}` not found"
+            )
+        })?;
+    if program.verification_profile != VerificationProfile::Ephemeral {
+        return Err(format!(
+            "queue connector desired ephemeral failed: program `{program_hash_hex}` has {:?} verification profile, expected Ephemeral",
+            program.verification_profile
+        ));
+    }
+    Ok(())
 }
 
 fn map_entry(key: u64, value: Value) -> (Value, Value) {

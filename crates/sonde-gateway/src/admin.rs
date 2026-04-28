@@ -504,7 +504,7 @@ impl GatewayAdmin for AdminService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ListNodesResponse>, Status> {
-        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
+        let nodes = list_nodes_impl(&self.storage).await?;
         let last_seen = self.session_manager.snapshot_last_seen().await;
         let mut nodes: Vec<_> = nodes
             .iter()
@@ -519,12 +519,7 @@ impl GatewayAdmin for AdminService {
         request: Request<GetNodeRequest>,
     ) -> Result<Response<NodeInfo>, Status> {
         let node_id = &request.get_ref().node_id;
-        let node = self
-            .storage
-            .get_node(node_id)
-            .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+        let node = get_node_impl(&self.storage, node_id).await?;
         let last_seen = self.session_manager.get_last_seen(node_id).await;
         Ok(Response::new(node_to_info(&node, last_seen)))
     }

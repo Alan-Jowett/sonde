@@ -33,9 +33,8 @@ use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::storage::Storage;
-use sonde_gateway::transient_display::{ActiveDisplayState, DisplayStateHandle};
 use sonde_gateway::transport::Transport;
-use sonde_gateway::{AdminService, CompanionService, ConnectorService};
+use sonde_gateway::{AdminService, ConnectorService};
 use zeroize::Zeroizing;
 
 #[cfg(unix)]
@@ -46,10 +45,6 @@ const DEFAULT_ADMIN_SOCKET: &str = r"\\.\pipe\sonde-admin";
 const DEFAULT_CONNECTOR_SOCKET: &str = "/var/run/sonde/connector.sock";
 #[cfg(windows)]
 const DEFAULT_CONNECTOR_SOCKET: &str = r"\\.\pipe\sonde-connector";
-#[cfg(unix)]
-const DEFAULT_COMPANION_SOCKET: &str = "/var/run/sonde/companion.sock";
-#[cfg(windows)]
-const DEFAULT_COMPANION_SOCKET: &str = r"\\.\pipe\sonde-companion";
 
 /// Maximum time to wait for graceful shutdown before force-exiting (GW-1400).
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -656,10 +651,6 @@ struct Cli {
     #[arg(long, default_value = DEFAULT_ADMIN_SOCKET)]
     admin_socket: String,
 
-    /// gRPC companion API socket path (UDS on Linux/macOS, named pipe on Windows).
-    #[arg(long, default_value = DEFAULT_COMPANION_SOCKET)]
-    companion_socket: String,
-
     /// Local connector API socket path (UDS on Linux/macOS, named pipe on Windows).
     #[arg(long, default_value = DEFAULT_CONNECTOR_SOCKET)]
     connector_socket: String,
@@ -948,22 +939,6 @@ async fn run_gateway(
         gw.set_rssi_thresholds(cli.rssi_good_threshold, cli.rssi_bad_threshold);
         gw
     });
-    let companion_display_state = DisplayStateHandle::new();
-    let companion_service = CompanionService::new(
-        storage.clone(),
-        pending_commands.clone(),
-        session_manager.clone(),
-        gateway.companion_event_hub(),
-        companion_display_state.clone(),
-    );
-    let companion_socket = cli.companion_socket.clone();
-    let mut companion_handle = tokio::spawn(async move {
-        if let Err(e) =
-            sonde_gateway::companion::serve_companion(companion_service, &companion_socket).await
-        {
-            error!("companion gRPC server error: {}", e);
-        }
-    });
     let connector_service = ConnectorService::new(
         storage.clone(),
         pending_commands.clone(),
@@ -989,8 +964,6 @@ async fn run_gateway(
     const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
     loop {
-        companion_display_state.clear().await;
-
         // 6. Open serial port and create modem transport
         let serial_port = match async {
             let port = serial2_tokio::SerialPort::open(&cli.port, cli.baud_rate)?;
@@ -1101,15 +1074,6 @@ async fn run_gateway(
         )
         .with_handler_configs(handler_configs_from_db.clone())
         .with_handler_router(handler_router.clone());
-        companion_display_state
-            .set(ActiveDisplayState::new(
-                Arc::clone(&transport),
-                Arc::clone(&ble_controller),
-                Arc::clone(&display_generation),
-                Arc::clone(&status_page_cycle),
-                Arc::clone(&status_page_scroll_task),
-            ))
-            .await;
         let admin_socket = cli.admin_socket.clone();
 
         let mut grpc_handle = tokio::spawn(async move {
@@ -1420,7 +1384,6 @@ async fn run_gateway(
         tokio::select! {
             _ = &mut shutdown => {
                 info!("shutdown signal received, stopping gateway");
-                companion_display_state.clear().await;
                 // Abort all subsystem tasks so the tokio runtime does not
                 // block on orphaned futures during teardown (GW-1400).
                 ble_controller.cancel_and_wait().await;
@@ -1428,7 +1391,6 @@ async fn run_gateway(
                 frame_loop.abort();
                 ble_loop.abort();
                 grpc_handle.abort();
-                companion_handle.abort();
                 connector_handle.abort();
                 if !frame_loop.is_finished() {
                     let _ = frame_loop.await;
@@ -1438,9 +1400,6 @@ async fn run_gateway(
                 }
                 if !grpc_handle.is_finished() {
                     let _ = grpc_handle.await;
-                }
-                if !companion_handle.is_finished() {
-                    let _ = companion_handle.await;
                 }
                 if !connector_handle.is_finished() {
                     let _ = connector_handle.await;
@@ -1459,23 +1418,18 @@ async fn run_gateway(
             }
             _ = &mut grpc_handle => {
                 error!("gRPC server exited unexpectedly");
-                companion_display_state.clear().await;
                 // Abort all subsystem tasks so the tokio runtime does not
                 // block on orphaned futures during teardown (GW-1400).
                 ble_controller.cancel_and_wait().await;
                 health_cancel.cancel();
                 frame_loop.abort();
                 ble_loop.abort();
-                companion_handle.abort();
                 connector_handle.abort();
                 if !frame_loop.is_finished() {
                     let _ = frame_loop.await;
                 }
                 if !ble_loop.is_finished() {
                     let _ = ble_loop.await;
-                }
-                if !companion_handle.is_finished() {
-                    let _ = companion_handle.await;
                 }
                 if !connector_handle.is_finished() {
                     let _ = connector_handle.await;
@@ -1486,41 +1440,13 @@ async fn run_gateway(
                 transport.abort_reader_and_wait().await;
                 break; // gRPC failure is not recoverable
             }
-            _ = &mut companion_handle => {
-                error!("companion gRPC server exited unexpectedly");
-                companion_display_state.clear().await;
-                ble_controller.cancel_and_wait().await;
-                health_cancel.cancel();
-                frame_loop.abort();
-                ble_loop.abort();
-                grpc_handle.abort();
-                if !frame_loop.is_finished() {
-                    let _ = frame_loop.await;
-                }
-                if !ble_loop.is_finished() {
-                    let _ = ble_loop.await;
-                }
-                if !grpc_handle.is_finished() {
-                    let _ = grpc_handle.await;
-                }
-                if !connector_handle.is_finished() {
-                    let _ = connector_handle.await;
-                }
-                if !health_handle.is_finished() {
-                    let _ = health_handle.await;
-                }
-                transport.abort_reader_and_wait().await;
-                break;
-            }
             _ = &mut connector_handle => {
                 error!("connector server exited unexpectedly");
-                companion_display_state.clear().await;
                 ble_controller.cancel_and_wait().await;
                 health_cancel.cancel();
                 frame_loop.abort();
                 ble_loop.abort();
                 grpc_handle.abort();
-                companion_handle.abort();
                 if !frame_loop.is_finished() {
                     let _ = frame_loop.await;
                 }
@@ -1529,9 +1455,6 @@ async fn run_gateway(
                 }
                 if !grpc_handle.is_finished() {
                     let _ = grpc_handle.await;
-                }
-                if !companion_handle.is_finished() {
-                    let _ = companion_handle.await;
                 }
                 if !health_handle.is_finished() {
                     let _ = health_handle.await;
@@ -1556,7 +1479,6 @@ async fn run_gateway(
         // GW-1103 AC7-9: warm reboot recovery — re-run full startup immediately.
         if warm_reboot_flag.load(std::sync::atomic::Ordering::Acquire) {
             info!("modem warm reboot detected — reconnecting immediately");
-            companion_display_state.clear().await;
             // Cancel the BLE pairing session before dropping the transport so
             // the event-forwarding task releases its Arc<UsbEspNowTransport>.
             ble_controller.cancel_and_wait().await;
@@ -1594,7 +1516,6 @@ async fn run_gateway(
         // the old gRPC server releases its UDS/named-pipe socket and its
         // Arc<UsbEspNowTransport> clone, preventing bind failures and transport
         // leaks on the next reconnect iteration (GW-1103, GW-1301).
-        companion_display_state.clear().await;
         ble_controller.cancel_and_wait().await;
         health_cancel.cancel();
         frame_loop.abort();

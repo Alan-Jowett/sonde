@@ -4,7 +4,6 @@
 pub mod admin;
 pub mod aead;
 pub mod ble_pairing;
-pub mod companion;
 pub mod connector;
 pub mod crypto;
 pub mod display_banner;
@@ -27,7 +26,6 @@ pub mod transport;
 
 pub use admin::AdminService;
 pub use aead::GatewayAead;
-pub use companion::{CompanionEventHub, CompanionService};
 pub use connector::{ConnectorEventHub, ConnectorPayloadOrigin, ConnectorService};
 pub use crypto::RustCryptoSha256;
 pub use engine::{resolve_espnow_channel, Gateway, PendingCommand};

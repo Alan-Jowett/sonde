@@ -5,17 +5,23 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
     image="${SONDE_AZURE_COMPANION_IMAGE:-sonde-azure-companion:local}"
     state_dir="${SONDE_AZURE_COMPANION_STATE_DIR:-$PWD/.sonde-azure-companion}"
     runtime_dir="${SONDE_GATEWAY_RUNTIME_DIR:-/var/run/sonde}"
-    socket_path="$runtime_dir/companion.sock"
+    admin_socket_path="$runtime_dir/admin.sock"
+    connector_socket_path="$runtime_dir/connector.sock"
     container_state_dir="/var/lib/sonde-azure-companion"
-    container_socket_path="/var/run/sonde/companion.sock"
+    container_admin_socket_path="/var/run/sonde/admin.sock"
+    container_connector_socket_path="/var/run/sonde/connector.sock"
 
     mkdir -p "$state_dir"
     if [ ! -d "$runtime_dir" ]; then
         echo "gateway runtime directory not found: $runtime_dir" >&2
         exit 1
     fi
-    if [ ! -S "$socket_path" ]; then
-        echo "gateway companion socket not found: $socket_path" >&2
+    if [ ! -S "$admin_socket_path" ]; then
+        echo "gateway admin socket not found: $admin_socket_path" >&2
+        exit 1
+    fi
+    if [ ! -S "$connector_socket_path" ]; then
+        echo "gateway connector socket not found: $connector_socket_path" >&2
         exit 1
     fi
     if [ "$#" -eq 0 ]; then
@@ -33,18 +39,21 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         --name "${SONDE_AZURE_COMPANION_CONTAINER_NAME:-sonde-azure-companion}" \
         -e SONDE_AZURE_COMPANION_IN_CONTAINER=1 \
         -e SONDE_AZURE_COMPANION_STATE_DIR="$container_state_dir" \
-        -e SONDE_GATEWAY_COMPANION_SOCKET="$container_socket_path" \
+        -e SONDE_GATEWAY_ADMIN_SOCKET="$container_admin_socket_path" \
+        -e SONDE_GATEWAY_CONNECTOR_SOCKET="$container_connector_socket_path" \
         -e SONDE_AZURE_DEVICE_CLIENT_ID \
         -e SONDE_AZURE_DEVICE_SCOPES \
         -e SONDE_AZURE_DEVICE_POLL_INTERVAL_SECS \
         -e SONDE_AZURE_DEVICE_MAX_ATTEMPTS \
         -v "$state_dir:$container_state_dir" \
-        -v "$socket_path:$container_socket_path" \
+        -v "$admin_socket_path:$container_admin_socket_path" \
+        -v "$connector_socket_path:$container_connector_socket_path" \
         "$image" "$@"
 fi
 
 state_dir="${SONDE_AZURE_COMPANION_STATE_DIR:-/var/lib/sonde-azure-companion}"
-socket_path="${SONDE_GATEWAY_COMPANION_SOCKET:-/var/run/sonde/companion.sock}"
+admin_socket_path="${SONDE_GATEWAY_ADMIN_SOCKET:-/var/run/sonde/admin.sock}"
+connector_socket_path="${SONDE_GATEWAY_CONNECTOR_SOCKET:-/var/run/sonde/connector.sock}"
 
 if [ "$#" -gt 0 ]; then
     exec "$@"
@@ -66,7 +75,8 @@ trap 'forward_signal TERM; exit 143' TERM
 trap 'forward_signal INT; exit 130' INT
 
 sonde-azure-companion \
-    --companion-socket "$socket_path" \
+    --admin-socket "$admin_socket_path" \
+    --connector-socket "$connector_socket_path" \
     bootstrap-auth \
     --state-dir "$state_dir" &
 bootstrap_pid=$!
@@ -84,4 +94,7 @@ if [ "$bootstrap_status" -ne 0 ]; then
     exit "$bootstrap_status"
 fi
 
-exec sonde-azure-companion --companion-socket "$socket_path" run
+exec sonde-azure-companion \
+    --admin-socket "$admin_socket_path" \
+    --connector-socket "$connector_socket_path" \
+    run

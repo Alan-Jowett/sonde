@@ -1020,7 +1020,10 @@ connector application that bridges the gateway to an external control plane. The
 connector API is specified in [gateway-companion-api.md](gateway-companion-api.md).
 Unlike the operator-focused `GatewayAdmin` gRPC surface, the connector API is a
 local framed-message interface whose downstream transport is intentionally left
-outside the gateway core.
+outside the gateway core. There is no separate companion-runtime server in the
+supported architecture: bootstrap-local clients use `GatewayAdmin` directly for
+limited operator-facing actions such as transient modem display, while
+long-running control-plane traffic uses the connector API.
 
 ### 13A.1  Local connector transport and framing
 

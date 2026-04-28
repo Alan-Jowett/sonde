@@ -4,12 +4,12 @@
 
 > **Document status:** Draft
 > **Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771) and companion-bootstrap discovery review.
-> **Scope:** This document covers only the initial Azure companion slice: a new Rust companion app in its own Docker container plus bootstrap scripts for Azure device-code login. Terraform, managed-identity creation, gateway configuration generation, and handler wiring are out of scope for this document.
+> **Scope:** This document covers the current Azure companion slice: a new Rust
+> connector app in its own Docker container plus bootstrap scripts for Azure
+> device-code login. Terraform, managed-identity creation, gateway configuration
+> generation, and Azure-side message handling beyond local gateway integration
+> are out of scope for this document.
 > **Related:** [gateway-companion-api.md](gateway-companion-api.md), [gateway-requirements.md](gateway-requirements.md), [gateway-design.md](gateway-design.md)
->
-> **Note:** This document predates the connector-model redesign. References here
-> to the gateway companion API describe the legacy bootstrap slice and must be
-> revised in follow-on work to align with the current connector contract.
 
 ---
 
@@ -17,9 +17,9 @@
 
 | Term | Definition |
 |------|------------|
-| **Azure companion** | The new Rust process that runs in its own container and integrates with `sonde-gateway` through the local companion API. |
+| **Azure companion** | The new Rust process that runs in its own container and integrates with `sonde-gateway` through the local admin API for bootstrap and the local connector API for long-running runtime traffic. |
 | **State volume** | A mounted persistent directory reserved for Azure companion bootstrap output such as local credentials, managed-identity identifiers, and related provisioning artifacts once later slices implement them. |
-| **Bootstrap login** | The Azure device-code login flow performed by the current slice before the long-running companion process starts. |
+| **Bootstrap login** | The Azure device-code login flow performed by the current slice before the long-running runtime process starts. |
 | **Device code prompt** | The short operator-facing text shown on the modem display during bootstrap, consisting of a prompt plus the Azure device code. |
 
 ---
@@ -91,7 +91,7 @@ Azure companion process inside its dedicated container.
 
 **Acceptance criteria:**
 
-1. A provided bootstrap script can start the Azure companion container with the expected state volume and gateway companion socket bindings.
+1. A provided bootstrap script can start the Azure companion container with the expected state volume plus the required local gateway socket bindings.
 2. The bootstrap path initializes the state volume before invoking the login logic.
 3. After bootstrap prerequisites are satisfied, the scripts start the Azure companion process without requiring manual in-container steps.
 
@@ -135,23 +135,23 @@ client rather than shelling out to Azure CLI.
 
 ---
 
-### AZC-0202  Device code display via gateway companion API
+### AZC-0202  Device code display via gateway admin API
 
 **Priority:** Must
-**Source:** Discovery review, [gateway-companion-api.md](gateway-companion-api.md)
+**Source:** Discovery review, GW-0809
 
 **Description:**
 When Azure device-code login produces a device code, the Rust bootstrap flow MUST
-request a modem display update through the gateway companion API. The displayed
+request a modem display update through the gateway admin API. The displayed
 message MUST include a short prompt and the exact device code. The Azure
 companion MUST NOT attempt raw modem control or bypass the gateway's display
 ownership rules.
 
 **Acceptance criteria:**
 
-1. During first-run bootstrap, the Azure companion calls the gateway companion `ShowModemDisplayMessage` RPC with text that includes both a short prompt and the exact device code.
+1. During first-run bootstrap, the Azure companion calls the admin `ShowModemDisplayMessage` RPC with text that includes both a short prompt and the exact device code.
 2. The displayed device code matches the value produced by Azure device-code login without modification.
-3. The Azure companion uses the gateway companion socket, not the admin socket, for this display request.
+3. The Azure companion uses the gateway admin socket, not the connector socket, for this display request.
 4. The bootstrap flow does not invoke raw modem serial commands or direct framebuffer upload.
 
 ---
@@ -163,7 +163,7 @@ ownership rules.
 
 **Description:**
 If the Azure companion cannot display the device code on the modem through the
-gateway companion API, bootstrap MUST fail closed. It MUST surface the failure
+gateway admin API, bootstrap MUST fail closed. It MUST surface the failure
 to the operator and require a retry after the display becomes available.
 
 **Acceptance criteria:**
@@ -196,19 +196,39 @@ state format.
 
 ## 5  Gateway integration
 
-### AZC-0300  Companion-socket integration
+### AZC-0300  Bootstrap admin-socket integration
 
 **Priority:** Must
-**Source:** Discovery review, [gateway-companion-api.md](gateway-companion-api.md) §2
+**Source:** Discovery review, GW-0809
 
 **Description:**
-The Azure companion MUST integrate with the gateway through the local companion
-socket exposed by the `GatewayCompanion` service. It MUST NOT depend on the
-gateway admin socket for its normal runtime integration.
+The Azure companion bootstrap flow MUST integrate with the gateway through the
+local admin socket exposed by `GatewayAdmin` for operator-visible bootstrap
+actions such as transient modem display. Bootstrap MUST NOT route those actions
+through the connector API.
 
 **Acceptance criteria:**
 
-1. The Azure companion can connect to the configured companion socket when the gateway is running.
-2. The Azure companion uses the companion socket for the modem display request defined by AZC-0202.
-3. Normal Azure companion startup does not require access to the gateway admin socket.
+1. The Azure companion bootstrap flow can connect to the configured admin socket when the gateway is running.
+2. The Azure companion uses the admin socket for the modem display request defined by AZC-0202.
+3. Bootstrap display behavior does not require a separate companion-runtime socket.
+
+---
+
+### AZC-0301  Runtime connector-socket integration
+
+**Priority:** Must
+**Source:** Gateway connector redesign, GW-0810 through GW-0815
+
+**Description:**
+After bootstrap succeeds, the long-running Azure companion runtime MUST connect
+to the gateway through the local connector socket and treat that framed
+connector API as its normal runtime integration surface. Runtime control-plane
+traffic MUST NOT depend on `GatewayAdmin`.
+
+**Acceptance criteria:**
+
+1. The long-running Azure companion runtime can connect to the configured connector socket when the gateway is running.
+2. Runtime startup does not require access to a legacy companion socket.
+3. The long-running runtime treats the connector API, not `GatewayAdmin`, as its normal control-plane integration path.
 

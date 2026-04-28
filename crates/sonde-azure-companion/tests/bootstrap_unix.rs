@@ -22,85 +22,152 @@ use tonic::{Request, Response, Status};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use sonde_gateway::companion::pb::gateway_companion_server::{
-    GatewayCompanion, GatewayCompanionServer,
-};
-use sonde_gateway::companion::pb::*;
+use sonde_gateway::admin::pb::gateway_admin_server::{GatewayAdmin, GatewayAdminServer};
+use sonde_gateway::admin::pb::*;
 
-type EventStream = Pin<Box<dyn futures::Stream<Item = Result<CompanionEvent, Status>> + Send>>;
+type BlePairingStream =
+    Pin<Box<dyn futures::Stream<Item = Result<BlePairingEvent, Status>> + Send>>;
 
 #[derive(Clone)]
-struct TestCompanionServer {
+struct TestAdminServer {
     display_requests: Arc<Mutex<Vec<Vec<String>>>>,
     display_error: Option<tonic::Code>,
 }
 
 #[tonic::async_trait]
-impl GatewayCompanion for TestCompanionServer {
-    type StreamEventsStream = EventStream;
-
-    async fn stream_events(
-        &self,
-        _request: Request<CompanionStreamEventsRequest>,
-    ) -> Result<Response<Self::StreamEventsStream>, Status> {
-        Ok(Response::new(Box::pin(stream::empty())))
-    }
+impl GatewayAdmin for TestAdminServer {
+    type OpenBlePairingStream = BlePairingStream;
 
     async fn list_nodes(
         &self,
-        _request: Request<CompanionListNodesRequest>,
-    ) -> Result<Response<CompanionListNodesResponse>, Status> {
-        Ok(Response::new(CompanionListNodesResponse {
-            nodes: Vec::new(),
-        }))
+        _request: Request<Empty>,
+    ) -> Result<Response<ListNodesResponse>, Status> {
+        Err(Status::unimplemented("not used in test"))
     }
 
     async fn get_node(
         &self,
-        _request: Request<CompanionGetNodeRequest>,
-    ) -> Result<Response<CompanionNodeInfo>, Status> {
+        _request: Request<GetNodeRequest>,
+    ) -> Result<Response<NodeInfo>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn register_node(
+        &self,
+        _request: Request<RegisterNodeRequest>,
+    ) -> Result<Response<RegisterNodeResponse>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn remove_node(
+        &self,
+        _request: Request<RemoveNodeRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn factory_reset(
+        &self,
+        _request: Request<FactoryResetRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn ingest_program(
+        &self,
+        _request: Request<IngestProgramRequest>,
+    ) -> Result<Response<IngestProgramResponse>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn list_programs(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ListProgramsResponse>, Status> {
         Err(Status::unimplemented("not used in test"))
     }
 
     async fn assign_program(
         &self,
-        _request: Request<CompanionAssignProgramRequest>,
-    ) -> Result<Response<CompanionEmpty>, Status> {
+        _request: Request<AssignProgramRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn remove_program(
+        &self,
+        _request: Request<RemoveProgramRequest>,
+    ) -> Result<Response<Empty>, Status> {
         Err(Status::unimplemented("not used in test"))
     }
 
     async fn set_schedule(
         &self,
-        _request: Request<CompanionSetScheduleRequest>,
-    ) -> Result<Response<CompanionEmpty>, Status> {
+        _request: Request<SetScheduleRequest>,
+    ) -> Result<Response<Empty>, Status> {
         Err(Status::unimplemented("not used in test"))
     }
 
     async fn queue_reboot(
         &self,
-        _request: Request<CompanionQueueRebootRequest>,
-    ) -> Result<Response<CompanionEmpty>, Status> {
+        _request: Request<QueueRebootRequest>,
+    ) -> Result<Response<Empty>, Status> {
         Err(Status::unimplemented("not used in test"))
     }
 
     async fn queue_ephemeral(
         &self,
-        _request: Request<CompanionQueueEphemeralRequest>,
-    ) -> Result<Response<CompanionEmpty>, Status> {
+        _request: Request<QueueEphemeralRequest>,
+    ) -> Result<Response<Empty>, Status> {
         Err(Status::unimplemented("not used in test"))
     }
 
     async fn get_node_status(
         &self,
-        _request: Request<CompanionGetNodeStatusRequest>,
-    ) -> Result<Response<CompanionNodeStatus>, Status> {
+        _request: Request<GetNodeStatusRequest>,
+    ) -> Result<Response<NodeStatus>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn export_state(
+        &self,
+        _request: Request<ExportStateRequest>,
+    ) -> Result<Response<ExportStateResponse>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn import_state(
+        &self,
+        _request: Request<ImportStateRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn get_modem_status(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ModemStatus>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn set_modem_channel(
+        &self,
+        _request: Request<SetModemChannelRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn scan_modem_channels(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ScanModemChannelsResponse>, Status> {
         Err(Status::unimplemented("not used in test"))
     }
 
     async fn show_modem_display_message(
         &self,
-        request: Request<CompanionShowModemDisplayMessageRequest>,
-    ) -> Result<Response<CompanionEmpty>, Status> {
+        request: Request<ShowModemDisplayMessageRequest>,
+    ) -> Result<Response<Empty>, Status> {
         self.display_requests
             .lock()
             .await
@@ -108,7 +175,60 @@ impl GatewayCompanion for TestCompanionServer {
         if let Some(code) = self.display_error {
             return Err(Status::new(code, "injected display failure"));
         }
-        Ok(Response::new(CompanionEmpty {}))
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn open_ble_pairing(
+        &self,
+        _request: Request<OpenBlePairingRequest>,
+    ) -> Result<Response<Self::OpenBlePairingStream>, Status> {
+        Ok(Response::new(Box::pin(stream::empty())))
+    }
+
+    async fn close_ble_pairing(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn confirm_ble_pairing(
+        &self,
+        _request: Request<ConfirmBlePairingRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn list_phones(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ListPhonesResponse>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn revoke_phone(
+        &self,
+        _request: Request<RevokePhoneRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn add_handler(
+        &self,
+        _request: Request<AddHandlerRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn remove_handler(
+        &self,
+        _request: Request<RemoveHandlerRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented("not used in test"))
+    }
+
+    async fn list_handlers(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ListHandlersResponse>, Status> {
+        Err(Status::unimplemented("not used in test"))
     }
 }
 
@@ -127,19 +247,19 @@ fn write_executable(path: &Path, body: &str) {
     fs::set_permissions(path, perms).unwrap();
 }
 
-async fn spawn_companion_server(
+async fn spawn_admin_server(
     socket_path: &Path,
     display_error: Option<tonic::Code>,
 ) -> Arc<Mutex<Vec<Vec<String>>>> {
     let display_requests = Arc::new(Mutex::new(Vec::new()));
-    let service = TestCompanionServer {
+    let service = TestAdminServer {
         display_requests: Arc::clone(&display_requests),
         display_error,
     };
     let listener = UnixListener::bind(socket_path).unwrap();
     tokio::spawn(async move {
         tonic::transport::Server::builder()
-            .add_service(GatewayCompanionServer::new(service))
+            .add_service(GatewayAdminServer::new(service))
             .serve_with_incoming(UnixListenerStream::new(listener))
             .await
             .unwrap();
@@ -168,11 +288,11 @@ fn wait_for_path(path: &Path) {
     panic!("timed out waiting for {}", path.display());
 }
 
-fn write_companion_wrapper(bin_dir: &Path, wrapper_log: &Path) {
+fn write_runtime_wrapper(bin_dir: &Path, wrapper_log: &Path) {
     write_executable(
         &bin_dir.join("sonde-azure-companion"),
         &format!(
-            "#!/bin/sh\nset -eu\nsocket=\"\"\nif [ \"$1\" = \"--companion-socket\" ]; then\n  socket=\"$2\"\n  shift 2\nfi\nif [ \"$1\" = \"run\" ]; then\n  printf 'run %s\\n' \"$socket\" >> \"{}\"\n  exit 0\nfi\nexec \"{}\" --companion-socket \"$socket\" \"$@\"\n",
+            "#!/bin/sh\nset -eu\nadmin_socket=\"\"\nconnector_socket=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --admin-socket)\n      admin_socket=\"$2\"\n      shift 2\n      ;;\n    --connector-socket)\n      connector_socket=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\nif [ \"$1\" = \"run\" ]; then\n  printf 'run %s %s\\n' \"$admin_socket\" \"$connector_socket\" >> \"{}\"\n  exit 0\nfi\nexec \"{}\" --admin-socket \"$admin_socket\" --connector-socket \"$connector_socket\" \"$@\"\n",
             wrapper_log.display(),
             env!("CARGO_BIN_EXE_sonde-azure-companion")
         ),
@@ -182,7 +302,8 @@ fn write_companion_wrapper(bin_dir: &Path, wrapper_log: &Path) {
 fn bootstrap_env(
     bin_dir: &Path,
     state_dir: &Path,
-    socket_path: &Path,
+    admin_socket_path: &Path,
+    connector_socket_path: &Path,
     oauth_server: &MockServer,
 ) -> Vec<(String, String)> {
     let mut path_value = std::env::var("PATH").unwrap_or_default();
@@ -198,8 +319,12 @@ fn bootstrap_env(
             state_dir.display().to_string(),
         ),
         (
-            "SONDE_GATEWAY_COMPANION_SOCKET".to_string(),
-            socket_path.display().to_string(),
+            "SONDE_GATEWAY_ADMIN_SOCKET".to_string(),
+            admin_socket_path.display().to_string(),
+        ),
+        (
+            "SONDE_GATEWAY_CONNECTOR_SOCKET".to_string(),
+            connector_socket_path.display().to_string(),
         ),
         (
             "SONDE_AZURE_DEVICE_CLIENT_ID".to_string(),
@@ -300,18 +425,20 @@ async fn t_azc_0101_0102_0200_0201_0202_bootstrap_success_path() {
     let bin_dir = prepare_path_dir(&temp);
     let state_dir = temp.path().join("state");
     fs::create_dir_all(&state_dir).unwrap();
-    let socket_path = temp.path().join("companion.sock");
-    let display_requests = spawn_companion_server(&socket_path, None).await;
+    let admin_socket_path = temp.path().join("admin.sock");
+    let connector_socket_path = temp.path().join("connector.sock");
+    let display_requests = spawn_admin_server(&admin_socket_path, None).await;
     let oauth_server = MockServer::start().await;
     mount_successful_device_flow(&oauth_server, "ABCD-EFGH", 1).await;
 
     let wrapper_log = temp.path().join("wrapper.log");
-    write_companion_wrapper(&bin_dir, &wrapper_log);
+    write_runtime_wrapper(&bin_dir, &wrapper_log);
 
     let output = run_bootstrap_with_env(&bootstrap_env(
         &bin_dir,
         &state_dir,
-        &socket_path,
+        &admin_socket_path,
+        &connector_socket_path,
         &oauth_server,
     ))
     .await;
@@ -322,8 +449,10 @@ async fn t_azc_0101_0102_0200_0201_0202_bootstrap_success_path() {
         requests,
         vec![vec!["Azure login".to_string(), "ABCD-EFGH".to_string()]]
     );
-    assert!(wrapper_log.exists());
-    assert!(fs::read_to_string(&wrapper_log).unwrap().contains("run "));
+    let wrapper_contents = fs::read_to_string(&wrapper_log).unwrap();
+    assert!(wrapper_contents.contains("run "));
+    assert!(wrapper_contents.contains(&admin_socket_path.display().to_string()));
+    assert!(wrapper_contents.contains(&connector_socket_path.display().to_string()));
 }
 
 #[tokio::test]
@@ -333,18 +462,20 @@ async fn t_azc_0203_display_failure_aborts_bootstrap() {
         let bin_dir = prepare_path_dir(&temp);
         let state_dir = temp.path().join("state");
         fs::create_dir_all(&state_dir).unwrap();
-        let socket_path = temp.path().join("companion.sock");
-        let display_requests = spawn_companion_server(&socket_path, Some(code)).await;
+        let admin_socket_path = temp.path().join("admin.sock");
+        let connector_socket_path = temp.path().join("connector.sock");
+        let display_requests = spawn_admin_server(&admin_socket_path, Some(code)).await;
         let oauth_server = MockServer::start().await;
         mount_device_code_request(&oauth_server, "ZXCV-1234", 1).await;
 
         let wrapper_log = temp.path().join("wrapper.log");
-        write_companion_wrapper(&bin_dir, &wrapper_log);
+        write_runtime_wrapper(&bin_dir, &wrapper_log);
 
         let output = run_bootstrap_with_env(&bootstrap_env(
             &bin_dir,
             &state_dir,
-            &socket_path,
+            &admin_socket_path,
+            &connector_socket_path,
             &oauth_server,
         ))
         .await;
@@ -368,18 +499,20 @@ async fn t_azc_0104_previously_used_state_still_runs_device_auth() {
         b"{\"tenant\":\"placeholder\"}",
     )
     .unwrap();
-    let socket_path = temp.path().join("companion.sock");
-    let display_requests = spawn_companion_server(&socket_path, None).await;
+    let admin_socket_path = temp.path().join("admin.sock");
+    let connector_socket_path = temp.path().join("connector.sock");
+    let display_requests = spawn_admin_server(&admin_socket_path, None).await;
     let oauth_server = MockServer::start().await;
     mount_successful_device_flow(&oauth_server, "QWER-5678", 1).await;
 
     let wrapper_log = temp.path().join("wrapper.log");
-    write_companion_wrapper(&bin_dir, &wrapper_log);
+    write_runtime_wrapper(&bin_dir, &wrapper_log);
 
     let output = run_bootstrap_with_env(&bootstrap_env(
         &bin_dir,
         &state_dir,
-        &socket_path,
+        &admin_socket_path,
+        &connector_socket_path,
         &oauth_server,
     ))
     .await;
@@ -397,14 +530,21 @@ async fn t_azc_0105_repeated_starts_repeat_device_auth() {
     let bin_dir = prepare_path_dir(&temp);
     let state_dir = temp.path().join("state");
     fs::create_dir_all(&state_dir).unwrap();
-    let socket_path = temp.path().join("companion.sock");
-    let display_requests = spawn_companion_server(&socket_path, None).await;
+    let admin_socket_path = temp.path().join("admin.sock");
+    let connector_socket_path = temp.path().join("connector.sock");
+    let display_requests = spawn_admin_server(&admin_socket_path, None).await;
     let oauth_server = MockServer::start().await;
     mount_successful_device_flow(&oauth_server, "REPEAT-1", 2).await;
 
     let wrapper_log = temp.path().join("wrapper.log");
-    write_companion_wrapper(&bin_dir, &wrapper_log);
-    let env = bootstrap_env(&bin_dir, &state_dir, &socket_path, &oauth_server);
+    write_runtime_wrapper(&bin_dir, &wrapper_log);
+    let env = bootstrap_env(
+        &bin_dir,
+        &state_dir,
+        &admin_socket_path,
+        &connector_socket_path,
+        &oauth_server,
+    );
 
     let first = run_bootstrap_with_env(&env).await;
     assert!(first.status.success(), "first bootstrap failed: {first:?}");
@@ -426,23 +566,49 @@ async fn t_azc_0106_login_failure_aborts_bootstrap() {
     let bin_dir = prepare_path_dir(&temp);
     let state_dir = temp.path().join("state");
     fs::create_dir_all(&state_dir).unwrap();
-    let socket_path = temp.path().join("companion.sock");
-    let _display_requests = spawn_companion_server(&socket_path, None).await;
+    let admin_socket_path = temp.path().join("admin.sock");
+    let connector_socket_path = temp.path().join("connector.sock");
+    let _display_requests = spawn_admin_server(&admin_socket_path, None).await;
     let oauth_server = MockServer::start().await;
     mount_failed_token_poll(&oauth_server, "FAIL-0001").await;
 
     let wrapper_log = temp.path().join("wrapper.log");
-    write_companion_wrapper(&bin_dir, &wrapper_log);
+    write_runtime_wrapper(&bin_dir, &wrapper_log);
 
     let output = run_bootstrap_with_env(&bootstrap_env(
         &bin_dir,
         &state_dir,
-        &socket_path,
+        &admin_socket_path,
+        &connector_socket_path,
         &oauth_server,
     ))
     .await;
     assert!(!output.status.success());
     assert!(!wrapper_log.exists());
+}
+
+#[tokio::test]
+async fn t_azc_0107_runtime_connects_to_connector_socket() {
+    let temp = TempDir::new().unwrap();
+    let connector_socket_path = temp.path().join("connector.sock");
+    let listener = UnixListener::bind(&connector_socket_path).unwrap();
+
+    let mut child = TokioCommand::new(env!("CARGO_BIN_EXE_sonde-azure-companion"))
+        .arg("--connector-socket")
+        .arg(&connector_socket_path)
+        .arg("run")
+        .spawn()
+        .unwrap();
+
+    let accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .expect("timed out waiting for runtime connector connection")
+        .unwrap();
+    drop(accepted);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(child.try_wait().unwrap().is_none());
+    child.kill().await.unwrap();
 }
 
 #[test]
@@ -451,12 +617,12 @@ fn host_bootstrap_invokes_docker_with_expected_mounts() {
     let bin_dir = prepare_path_dir(&temp);
     let state_dir = temp.path().join("state");
     let runtime_dir = temp.path().join("runtime");
-    let companion_socket_path = runtime_dir.join("companion.sock");
-    let _admin_socket_path = runtime_dir.join("admin.sock");
+    let admin_socket_path = runtime_dir.join("admin.sock");
+    let connector_socket_path = runtime_dir.join("connector.sock");
     fs::create_dir_all(&state_dir).unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();
-    let _socket = std::os::unix::net::UnixListener::bind(&companion_socket_path).unwrap();
-    let _admin_socket = std::os::unix::net::UnixListener::bind(&_admin_socket_path).unwrap();
+    let _admin_socket = std::os::unix::net::UnixListener::bind(&admin_socket_path).unwrap();
+    let _connector_socket = std::os::unix::net::UnixListener::bind(&connector_socket_path).unwrap();
     let docker_log = temp.path().join("docker.log");
 
     write_executable(
@@ -498,8 +664,12 @@ fn host_bootstrap_invokes_docker_with_expected_mounts() {
         state_dir.display()
     )));
     assert!(logged.contains(&format!(
-        "-v {}:/var/run/sonde/companion.sock",
-        companion_socket_path.display()
+        "-v {}:/var/run/sonde/admin.sock",
+        admin_socket_path.display()
+    )));
+    assert!(logged.contains(&format!(
+        "-v {}:/var/run/sonde/connector.sock",
+        connector_socket_path.display()
     )));
     assert!(!logged.contains(&format!("-v {}:/var/run/sonde", runtime_dir.display())));
 }
@@ -512,8 +682,10 @@ fn host_bootstrap_requires_non_empty_bootstrap_env() {
     let runtime_dir = temp.path().join("runtime");
     fs::create_dir_all(&state_dir).unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();
-    let _socket =
-        std::os::unix::net::UnixListener::bind(runtime_dir.join("companion.sock")).unwrap();
+    let _admin_socket =
+        std::os::unix::net::UnixListener::bind(runtime_dir.join("admin.sock")).unwrap();
+    let _connector_socket =
+        std::os::unix::net::UnixListener::bind(runtime_dir.join("connector.sock")).unwrap();
     let docker_log = temp.path().join("docker.log");
 
     write_executable(
@@ -617,7 +789,7 @@ fn container_bootstrap_forwards_sigterm_to_bootstrap_auth_child() {
     write_executable(
         &bin_dir.join("sonde-azure-companion"),
         &format!(
-            "#!/bin/sh\nset -eu\nif [ \"$1\" = \"--companion-socket\" ]; then\n  shift 2\nfi\ncase \"$1\" in\n  bootstrap-auth)\n    printf '%s\\n' \"$$\" > \"{}\"\n    trap 'printf \"%s\\n\" TERM >> \"{}\"; exit 143' TERM\n    trap 'printf \"%s\\n\" INT >> \"{}\"; exit 130' INT\n    while :; do\n      sleep 1\n    done\n    ;;\n  run)\n    printf 'run\\n' >> \"{}\"\n    exit 0\n    ;;\n  *)\n    exit 64\n    ;;\nesac\n",
+            "#!/bin/sh\nset -eu\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --admin-socket|--connector-socket)\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\ncase \"$1\" in\n  bootstrap-auth)\n    printf '%s\\n' \"$$\" > \"{}\"\n    trap 'printf \"%s\\n\" TERM >> \"{}\"; exit 143' TERM\n    trap 'printf \"%s\\n\" INT >> \"{}\"; exit 130' INT\n    while :; do\n      sleep 1\n    done\n    ;;\n  run)\n    printf 'run\\n' >> \"{}\"\n    exit 0\n    ;;\n  *)\n    exit 64\n    ;;\nesac\n",
             pid_file.display(),
             signal_log.display(),
             signal_log.display(),
@@ -637,9 +809,10 @@ fn container_bootstrap_forwards_sigterm_to_bootstrap_auth_child() {
     );
     cmd.env("SONDE_AZURE_COMPANION_IN_CONTAINER", "1");
     cmd.env("SONDE_AZURE_COMPANION_STATE_DIR", &state_dir);
+    cmd.env("SONDE_GATEWAY_ADMIN_SOCKET", temp.path().join("admin.sock"));
     cmd.env(
-        "SONDE_GATEWAY_COMPANION_SOCKET",
-        temp.path().join("companion.sock"),
+        "SONDE_GATEWAY_CONNECTOR_SOCKET",
+        temp.path().join("connector.sock"),
     );
 
     let mut child = cmd.spawn().unwrap();

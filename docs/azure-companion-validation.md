@@ -3,7 +3,9 @@
 # Azure Companion Validation Plan
 
 > **Document status:** Draft
-> **Scope:** Validation for the initial Azure companion slice: container packaging, bootstrap scripts, gateway companion display integration, and Azure device-code login state handling.
+> **Scope:** Validation for the current Azure companion slice: container
+> packaging, bootstrap scripts, gateway admin/connector integration, and Azure
+> device-code login state handling.
 > **Audience:** Implementers and reviewers validating the Azure companion bootstrap flow.
 > **Related:** [azure-companion-requirements.md](azure-companion-requirements.md), [azure-companion-design.md](azure-companion-design.md), [gateway-validation.md](gateway-validation.md)
 
@@ -37,15 +39,15 @@
 
 ---
 
-### T-AZC-0102  Device code is shown through the gateway companion display RPC
+### T-AZC-0102  Device code is shown through the gateway admin display RPC
 
 **Validates:** AZC-0202, AZC-0300
 
 **Procedure:**
-1. Start a test gateway exposing the companion socket and instrument the companion `ShowModemDisplayMessage` RPC.
+1. Start a test gateway exposing the admin socket and instrument the admin `ShowModemDisplayMessage` RPC.
 2. Start the Azure companion bootstrap path with the Rust device-flow endpoint stubbed to emit a known device code.
-3. Assert: the Azure companion connects to the gateway companion socket.
-4. Assert: it issues `ShowModemDisplayMessage` through the companion API with text containing both a short prompt and the exact known device code.
+3. Assert: the Azure companion connects to the gateway admin socket.
+4. Assert: it issues `ShowModemDisplayMessage` through the admin API with text containing both a short prompt and the exact known device code.
 5. Assert: the bootstrap path does not attempt raw modem control.
 
 ---
@@ -55,7 +57,7 @@
 **Validates:** AZC-0203
 
 **Procedure:**
-1. Start a test gateway whose companion `ShowModemDisplayMessage` RPC returns `FAILED_PRECONDITION` in one sub-case and `UNAVAILABLE` in another.
+1. Start a test gateway whose admin `ShowModemDisplayMessage` RPC returns `FAILED_PRECONDITION` in one sub-case and `UNAVAILABLE` in another.
 2. Start the Azure companion bootstrap path with the Rust device-flow endpoint stubbed to emit a device code.
 3. Assert: bootstrap exits with a non-zero status in both sub-cases.
 4. Assert: bootstrap reports the display failure to the operator.
@@ -73,7 +75,7 @@
 3. Assert: startup still performs Azure device-code login.
 4. Assert: startup issues a new modem display request for the new device code.
 5. Assert: the long-running Azure companion process starts normally after successful auth.
-6. Assert: startup succeeds without requiring access to the gateway admin socket.
+6. Assert: startup succeeds without requiring access to a legacy companion socket.
 
 ---
 
@@ -99,4 +101,17 @@
 3. Assert: bootstrap exits with a non-zero status.
 4. Assert: the long-running Azure companion process is not started.
 5. Assert: bootstrap does not report success.
+
+---
+
+### T-AZC-0107  Long-running runtime connects through the gateway connector socket
+
+**Validates:** AZC-0301
+
+**Procedure:**
+1. Start a test gateway exposing both the admin socket and the connector socket.
+2. Complete a successful Azure bootstrap sequence.
+3. Start the long-running Azure companion runtime.
+4. Assert: the runtime connects to the configured connector socket and keeps the connector session open.
+5. Assert: runtime startup does not require a legacy companion socket.
 

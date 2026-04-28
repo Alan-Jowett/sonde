@@ -1617,7 +1617,7 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Start the gateway.
-2. Connect to the configured connector socket.
+2. Connect to the configured connector socket using the real local IPC transport (Unix domain socket or Windows named pipe), not an in-memory test stream.
 3. Send one malformed framed connector record (for example, a length prefix that exceeds `connector_max_message_size` or a length prefix that does not match the delivered payload bytes) and assert the gateway closes the connector connection cleanly within a bounded timeout (for example, 1 second).
 4. Open a fresh connector connection and keep it active without requiring any protocol-specific ACK or response; this sub-case validates only the local socket/session behavior, not connector payload semantics.
 5. Attempt to use a `GatewayAdmin` gRPC client against the connector socket and assert the call fails within a bounded timeout, proving the connector endpoint is not a second admin gRPC service.
@@ -1692,7 +1692,7 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Start the gateway and connect one connector client.
-2. Induce a connector-delivery failure or desynchronization condition that the gateway can detect.
+2. Induce a connector-delivery failure or desynchronization condition that the gateway can detect, for example by forcing the connector subscriber to lag far enough behind the live event stream that the gateway observes a dropped-event condition.
 3. Assert: the gateway surfaces the condition through operator-visible status, logging, or both.
 4. Assert: the surfaced condition makes clear that control-plane desired state, upstream actual-state/app-data visibility, and reconciliation progress may be stale.
 5. Assert: the emitted `CONNECTOR_HEALTH.details` identifies the detected failure mode and the stale-state scope that operators must revalidate.

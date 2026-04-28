@@ -972,6 +972,11 @@ modem-attached OLED. The operation accepts 1 to 4 text lines, renders them
 using the gateway's existing centered text renderer, displays the result for 60
 seconds, then restores the normal `Sonde Gateway v<semver>` banner.
 
+Bootstrap-oriented local clients that need temporary operator-visible display
+control, such as Azure device-auth bootstrap, MUST use this admin RPC rather
+than the control-plane connector API. The connector path remains reserved for
+desired-state and upstream runtime traffic.
+
 The RPC MUST return after the initial display update succeeds; it MUST NOT wait
 for the 60-second timeout to expire. A later successful transient-display
 request replaces any earlier one and restarts the 60-second timer.
@@ -999,7 +1004,7 @@ transport is configured, it MUST fail with `UNAVAILABLE`.
 **Source:** User-requested companion-model redesign, `gateway-companion-api.md` §2
 
 **Description:**  
-The gateway MUST expose a separate local control-plane connector API for a single connector application that bridges the gateway to an external control plane. This connector API MUST be distinct from `GatewayAdmin` and from the handler stdin/stdout data plane. The local connector surface MUST use a configurable local socket (`/var/run/sonde/connector.sock` on Unix-like hosts; `\\.\pipe\sonde-connector` on Windows by default) with explicit message framing, and it MUST NOT expose a TCP listener in v1. The connector API defines the gateway/control-plane protocol; the external transport that carries those messages beyond the local connector application is an implementation detail outside the gateway core. The gateway MUST enforce a maximum accepted connector message payload size, configurable with a default of 1,048,576 bytes, measured against the framed record's declared message bytes and excluding the 4-byte length prefix.
+The gateway MUST expose a separate local control-plane connector API for a single connector application that bridges the gateway to an external control plane. This connector API MUST be distinct from `GatewayAdmin` and from the handler stdin/stdout data plane. The local connector surface MUST use a configurable local socket (`/var/run/sonde/connector.sock` on Unix-like hosts; `\\.\pipe\sonde-connector` on Windows by default) with explicit message framing, and it MUST NOT expose a TCP listener in v1. The connector API defines the gateway/control-plane protocol; the external transport that carries those messages beyond the local connector application is an implementation detail outside the gateway core. The gateway MUST enforce a maximum accepted connector message payload size, configurable with a default of 1,048,576 bytes, measured against the framed record's declared message bytes and excluding the 4-byte length prefix. The connector API is the only supported non-admin local integration surface for long-running control-plane/runtime traffic; earlier companion-sidecar runtime APIs are retired from the supported architecture.
 
 **Acceptance criteria:**
 
@@ -1009,6 +1014,7 @@ The gateway MUST expose a separate local control-plane connector API for a singl
 4. The local connector surface uses explicit message framing rather than gRPC request/response semantics.
 5. The gateway exposes only one active connector session at a time; an additional connector attempt is rejected or closed without affecting the active session.
 6. If a connector frame declares a payload length larger than the configured maximum accepted size, or terminates before the declared payload bytes are received, the gateway closes the connector session.
+7. Supported local bootstrap/operator flows continue to use `GatewayAdmin`; the connector API is reserved for long-running control-plane runtime traffic.
 
 ---
 

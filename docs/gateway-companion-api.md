@@ -152,13 +152,12 @@ gateway reconciliation outcomes.
 |---|---|---|---|
 | `msg_type` | 1 | uint | `0x01` |
 | `entity_kind` | 2 | tstr | `"gateway"` or `"node"` |
-| `entity_id` | 3 | tstr | Opaque identifier of the target entity. For `entity_kind = "node"`, this is the target node identifier. For `entity_kind = "gateway"`, this field has no semantic meaning and MUST be ignored by receivers. |
+| `entity_id` | 3 | tstr | Opaque identifier of the target entity. For `entity_kind = "node"`, this is the target node identifier. For `entity_kind = "gateway"`, senders MUST encode `""` and receivers MUST ignore the field when interpreting gateway-scoped state. |
 | `desired_state` | 4 | map | Complete desired-state map for the target entity. The payload schema depends on `entity_kind`; see sections 3.2.1 and 3.2.2. Any map nested under `desired_state` also uses integer CBOR keys. |
 
-For interoperability, senders SHOULD encode `entity_id` as the empty string
-`""` when `entity_kind = "gateway"`. The connector API models exactly one
-gateway entity per connector stream, so gateway-scoped state is selected by
-`entity_kind`, not by a gateway instance identifier.
+The connector API models exactly one gateway entity per connector stream, so
+gateway-scoped state is selected by `entity_kind`, not by a gateway instance
+identifier.
 
 #### 3.2.1  `desired_state` payload for `entity_kind = "gateway"`
 
@@ -199,7 +198,7 @@ state.
 |---|---|---|---|
 | `msg_type` | 1 | uint | `0x02` |
 | `entity_kind` | 2 | tstr | `"gateway"` or `"node"` |
-| `entity_id` | 3 | tstr | Opaque identifier of the affected entity. |
+| `entity_id` | 3 | tstr | Opaque identifier of the affected entity. For `entity_kind = "node"`, this is the affected node identifier. For `entity_kind = "gateway"`, senders MUST encode `""` and receivers MUST ignore the field when interpreting gateway-scoped state. |
 | `current_program_hash` | 4 | bstr/null | Current node program hash when applicable. |
 | `assigned_program_hash` | 5 | bstr/null | Gateway-assigned resident program hash when applicable. |
 | `battery_mv` | 6 | uint/null | Latest node battery reading in millivolts when applicable. |
@@ -278,10 +277,16 @@ Operator guidance tied to `health_state`:
   resynchronized. Rebuild the external view from authoritative gateway state
   before resuming normal automation.
 
+`health_state` is an enumerated text field. Senders MUST encode exactly one of
+`ok`, `degraded`, or `desynchronized`. Receivers that encounter any other
+`health_state` string MUST treat the condition as equivalent to
+`desynchronized` for safety and SHOULD surface the unrecognized value for
+diagnostics.
+
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
 | `msg_type` | 1 | uint | `0x04` |
-| `health_state` | 2 | tstr | Connector health classification such as `ok`, `degraded`, or `desynchronized`. |
+| `health_state` | 2 | tstr | Connector health classification. MUST be one of `ok`, `degraded`, or `desynchronized`; receivers MUST treat unknown values as `desynchronized` for safety. |
 | `timestamp_ms` | 3 | uint | Timestamp when the health condition was observed. |
 | `details` | 4 | map | Additional operator-facing details about the detected condition, including stale-state scope and suggested remediation when applicable. See section 3.5.1. |
 

@@ -1018,7 +1018,7 @@ The gateway MUST expose a separate local control-plane connector API for a singl
 **Source:** User-requested gateway/control-plane reconciliation model
 
 **Description:**  
-The connector API MUST accept control-plane desired-state messages addressed to exactly one entity per message. The addressable entities are a gateway instance or a registered node. Each desired-state message MUST represent the complete desired state for its target entity, not a partial patch. Upon acceptance, the gateway MUST update its local desired-state view for that entity and reconcile the desired state against the latest actual state and pending command state that the gateway already maintains. The control plane does not directly queue node commands through the connector.
+The connector API MUST accept control-plane desired-state messages addressed to exactly one entity per message. The addressable entities are the singleton gateway entity or a registered node. Gateway-scoped desired state is selected by `entity_kind = "gateway"`; the connector contract does not use a gateway instance identifier, and any accompanying `entity_id` is ignored for gateway-targeted messages. Each desired-state message MUST represent the complete desired state for its target entity, not a partial patch. Upon acceptance, the gateway MUST update its local desired-state view for that entity and reconcile the desired state against the latest actual state and pending command state that the gateway already maintains. The control plane does not directly queue node commands through the connector.
 
 **Acceptance criteria:**
 

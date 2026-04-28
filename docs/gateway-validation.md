@@ -1691,7 +1691,7 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-0815
 
 **Procedure:**
-1. Start the gateway with connector-health reporting enabled and connect one connector client.
+1. Start the gateway and connect one connector client.
 2. Induce a connector-delivery failure or desynchronization condition that the gateway can detect.
 3. Assert: the gateway surfaces the condition through operator-visible status, logging, or both.
 4. Assert: the surfaced condition makes clear that control-plane desired state, upstream actual-state/app-data visibility, and reconciliation progress may be stale.

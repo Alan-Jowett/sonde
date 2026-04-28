@@ -3,30 +3,29 @@
 # Azure Companion Design Specification
 
 > **Document status:** Draft
-> **Scope:** Internal design for the initial Azure companion slice: container packaging, bootstrap scripts, gateway companion integration, and Azure device-code login.
+> **Scope:** Internal design for the current Azure companion slice: container
+> packaging, bootstrap scripts, gateway admin/connector integration, and Azure
+> device-code login.
 > **Audience:** Implementers building the new Azure companion crate and its deployment artifacts.
 > **Related:** [azure-companion-requirements.md](azure-companion-requirements.md), [gateway-companion-api.md](gateway-companion-api.md), [gateway-design.md](gateway-design.md)
->
-> **Note:** This design predates the connector-model redesign. References here
-> to the gateway companion gRPC API describe the legacy bootstrap slice and
-> must be revised in follow-on work to align with the current connector
-> contract.
 
 ---
 
 ## 1  Overview
 
 The Azure companion is a new Rust workspace crate that runs in its own Docker
-container and talks to `sonde-gateway` over the local companion gRPC API. This
-initial slice does not yet provision Azure resources or bridge data into Azure
-services. Its responsibility is limited to:
+container and talks to `sonde-gateway` over two local gateway-facing surfaces:
+the admin gRPC API for bootstrap-only operator-visible actions and the local
+framed connector API for long-running runtime traffic. This slice does not yet
+provision Azure resources or bridge data into Azure services. Its responsibility
+is limited to:
 
 1. starting in a dedicated container,
 2. preparing a mounted persistent state volume for later provisioning slices,
 3. obtaining Azure authentication via device-code login,
 4. showing a short prompt plus the device code on the modem display through the
-   gateway companion API, and
-5. starting a minimal long-running companion process after bootstrap completes.
+   gateway admin API, and
+5. starting a minimal long-running connector process after bootstrap completes.
 
 Terraform provisioning, managed-identity creation, gateway configuration
 generation, and Azure-side message forwarding are deferred to later issues.
@@ -61,8 +60,9 @@ and then execs the Rust binary. The split is intentional:
 
 1. **Shell script** handles environment preparation, filesystem setup, and
    container-vs-host orchestration.
-2. **Rust binary** owns gateway companion gRPC communication, Microsoft device
-   flow, and the future Azure-integration runtime.
+2. **Rust binary** owns gateway admin gRPC communication for bootstrap,
+   connector-socket runtime communication, Microsoft device flow, and the future
+   Azure-integration runtime.
 
 This keeps the gateway-facing logic and the Azure device-code flow in typed
 Rust, which removes the Azure CLI dependency and allows an Alpine runtime
@@ -75,7 +75,8 @@ The container expects two mounted host resources:
 | Mount | Purpose |
 |-------|---------|
 | State volume | Persistent storage reserved for later managed-identity bootstrap output and other local provisioning artifacts. |
-| Gateway companion socket | Local IPC path used to call `GatewayCompanion` RPCs, including `ShowModemDisplayMessage`. |
+| Gateway admin socket | Local IPC path used by bootstrap to call `GatewayAdmin` RPCs such as `ShowModemDisplayMessage`. |
+| Gateway connector socket | Local framed IPC path used by the long-running runtime after bootstrap succeeds. |
 
 The current slice prepares the state volume but does not persist Azure access
 tokens there. The image itself is replaceable.
@@ -103,8 +104,8 @@ The first-run bootstrap sequence is:
    environment-provided client ID and scopes.
 4. Request a device code from Microsoft's device authorization endpoint.
 5. Log the verification URI to stdout/stderr for operator visibility.
-6. Call the gateway companion `ShowModemDisplayMessage` RPC with a short prompt
-   plus the exact device code.
+6. Call the gateway admin `ShowModemDisplayMessage` RPC with a short prompt plus
+   the exact device code.
 7. Poll the token endpoint until the operator completes device auth or the flow
    fails.
 8. Discard the short-lived token and exec the long-running `run` mode.
@@ -123,18 +124,18 @@ headless operator workflow required by the discovery review.
 
 ## 5  Rust binary interface
 
-> **Requirements:** AZC-0100, AZC-0102, AZC-0201, AZC-0202, AZC-0300
+> **Requirements:** AZC-0100, AZC-0102, AZC-0201, AZC-0202, AZC-0300, AZC-0301
 
 The initial `sonde-azure-companion` binary exposes three modes:
 
-1. **`run`** — default long-running companion mode. In this initial slice it
-   establishes gateway companion connectivity and remains ready for later Azure
+1. **`run`** — default long-running runtime mode. In this initial slice it
+   establishes gateway connector connectivity and remains ready for later Azure
    integration work.
 2. **`bootstrap-auth`** — performs Microsoft OAuth device flow in Rust, logs the
    verification URI, requests the modem display update, waits for operator
    completion, and discards the resulting token.
 3. **`display-message`** — helper mode used by the bootstrap logic to call the
-   gateway companion `ShowModemDisplayMessage` RPC with 1 to 4 lines of text.
+   gateway admin `ShowModemDisplayMessage` RPC with 1 to 4 lines of text.
 
 The helper modes keep gateway IPC and OAuth error handling out of shell-script
 string munging and ensure the same Rust client stack is used during bootstrap
@@ -150,17 +151,16 @@ does not guess Azure application defaults.
 
 > **Requirements:** AZC-0202, AZC-0203, AZC-0300
 
-### 6.1  Companion client
+### 6.1  Bootstrap admin client
 
-The Rust binary connects only to the gateway companion socket. It does not use
-the admin socket. The gRPC client uses the published `GatewayCompanion` contract
-and companion-specific message types.
+Bootstrap helper paths connect to the gateway admin socket. They use the
+published `GatewayAdmin` contract for operator-visible bootstrap actions and do
+not use the connector API for transient display requests.
 
 ### 6.2  Shared display path
 
-The gateway-side `ShowModemDisplayMessage` companion RPC reuses the same display
-helper as the existing admin RPC. The Azure companion therefore gains no special
-display privileges:
+The gateway-side `ShowModemDisplayMessage` admin RPC gives the Azure companion no
+special display privileges:
 
 1. BLE pairing still preempts transient display requests.
 2. Line-count validation remains 1 to 4 lines.
@@ -169,12 +169,22 @@ display privileges:
 
 ---
 
+### 6.3  Runtime connector client
+
+After bootstrap succeeds, the `run` mode connects to the gateway connector
+socket and keeps a single long-lived connector session open. The runtime treats
+the framed connector API as its normal control-plane integration surface and
+does not depend on a separate companion runtime socket.
+
+---
+
 ## 7  Long-running process behavior in this slice
 
-> **Requirements:** AZC-0102, AZC-0300
+> **Requirements:** AZC-0102, AZC-0301
 
-After bootstrap succeeds, the `run` mode starts and validates gateway companion
+After bootstrap succeeds, the `run` mode starts and validates gateway connector
 connectivity. This first slice does not yet forward events to Azure services or
 pull cloud-issued commands. Those behaviors are deferred to the later Terraform
-and cloud-integration issues.
+and cloud-integration issues, but the long-running process already uses the
+connector surface rather than a legacy companion runtime API.
 

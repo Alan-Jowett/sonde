@@ -11,15 +11,17 @@ use oauth_device_flows::{DeviceFlow, DeviceFlowConfig, Provider};
 use tonic::transport::{Channel, Endpoint, Uri};
 use url::Url;
 
-use sonde_gateway::companion::pb::gateway_companion_client::GatewayCompanionClient;
-use sonde_gateway::companion::pb::{
-    CompanionListNodesRequest, CompanionShowModemDisplayMessageRequest,
-};
+use sonde_gateway::admin::pb::gateway_admin_client::GatewayAdminClient;
+use sonde_gateway::admin::pb::ShowModemDisplayMessageRequest;
 
 #[cfg(unix)]
-const DEFAULT_COMPANION_SOCKET: &str = "/var/run/sonde/companion.sock";
+const DEFAULT_ADMIN_SOCKET: &str = "/var/run/sonde/admin.sock";
 #[cfg(windows)]
-const DEFAULT_COMPANION_SOCKET: &str = r"\\.\pipe\sonde-companion";
+const DEFAULT_ADMIN_SOCKET: &str = r"\\.\pipe\sonde-admin";
+#[cfg(unix)]
+const DEFAULT_CONNECTOR_SOCKET: &str = "/var/run/sonde/connector.sock";
+#[cfg(windows)]
+const DEFAULT_CONNECTOR_SOCKET: &str = r"\\.\pipe\sonde-connector";
 
 #[cfg(unix)]
 const DEFAULT_STATE_DIR: &str = "/var/lib/sonde-azure-companion";
@@ -29,9 +31,13 @@ const DEFAULT_STATE_DIR: &str = r"C:\ProgramData\sonde-azure-companion";
 #[derive(Debug, Parser)]
 #[command(name = "sonde-azure-companion")]
 struct Cli {
-    /// Gateway companion socket path (UDS on Unix, named pipe on Windows).
-    #[arg(long, env = "SONDE_GATEWAY_COMPANION_SOCKET", default_value = DEFAULT_COMPANION_SOCKET)]
-    companion_socket: String,
+    /// Gateway admin socket path (UDS on Unix, named pipe on Windows).
+    #[arg(long, env = "SONDE_GATEWAY_ADMIN_SOCKET", default_value = DEFAULT_ADMIN_SOCKET)]
+    admin_socket: String,
+
+    /// Gateway connector socket path (UDS on Unix, named pipe on Windows).
+    #[arg(long, env = "SONDE_GATEWAY_CONNECTOR_SOCKET", default_value = DEFAULT_CONNECTOR_SOCKET)]
+    connector_socket: String,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -39,11 +45,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Start the long-running Azure companion process.
+    /// Start the long-running Azure connector runtime.
     Run,
     /// Perform Microsoft device auth, display the user code, and discard the token on success.
     BootstrapAuth(BootstrapAuthArgs),
-    /// Ask the gateway companion API to render a transient modem display message.
+    /// Ask the gateway admin API to render a transient modem display message.
     DisplayMessage {
         /// Between 1 and 4 text lines to render.
         lines: Vec<String>,
@@ -86,9 +92,7 @@ struct BootstrapAuthArgs {
 }
 
 #[cfg(unix)]
-async fn connect_companion(
-    socket_path: &str,
-) -> Result<GatewayCompanionClient<Channel>, Box<dyn Error>> {
+async fn connect_admin(socket_path: &str) -> Result<GatewayAdminClient<Channel>, Box<dyn Error>> {
     use hyper_util::rt::TokioIo;
 
     let socket_path = socket_path.to_owned();
@@ -101,13 +105,11 @@ async fn connect_companion(
             }
         }))
         .await?;
-    Ok(GatewayCompanionClient::new(channel))
+    Ok(GatewayAdminClient::new(channel))
 }
 
 #[cfg(windows)]
-async fn connect_companion(
-    pipe_name: &str,
-) -> Result<GatewayCompanionClient<Channel>, Box<dyn Error>> {
+async fn connect_admin(pipe_name: &str) -> Result<GatewayAdminClient<Channel>, Box<dyn Error>> {
     use hyper_util::rt::TokioIo;
     use tokio::net::windows::named_pipe::ClientOptions;
 
@@ -135,7 +137,36 @@ async fn connect_companion(
             }
         }))
         .await?;
-    Ok(GatewayCompanionClient::new(channel))
+    Ok(GatewayAdminClient::new(channel))
+}
+
+#[cfg(unix)]
+async fn connect_connector(socket_path: &str) -> Result<tokio::net::UnixStream, Box<dyn Error>> {
+    Ok(tokio::net::UnixStream::connect(socket_path).await?)
+}
+
+#[cfg(windows)]
+async fn connect_connector(
+    pipe_name: &str,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, Box<dyn Error>> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match ClientOptions::new().open(pipe_name) {
+            Ok(client) => return Ok(client),
+            Err(e) if e.raw_os_error() == Some(231) => {}
+            Err(e) => return Err(e.into()),
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "named pipe busy — timed out after 5s",
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -209,32 +240,27 @@ fn bootstrap_provider_and_config(
     }
 }
 
-async fn run(socket_path: &str) -> Result<(), Box<dyn Error>> {
-    let mut client = connect_companion(socket_path).await?;
-    let response = client
-        .list_nodes(CompanionListNodesRequest {})
-        .await?
-        .into_inner();
+async fn run(connector_socket: &str) -> Result<(), Box<dyn Error>> {
+    let _stream = connect_connector(connector_socket).await?;
     eprintln!(
-        "connected to gateway companion API at {socket_path}; {} nodes known",
-        response.nodes.len()
+        "connected to gateway connector at {connector_socket}; runtime is idle until Azure transport integration is added"
     );
     std::future::pending::<()>().await;
     #[allow(unreachable_code)]
     Ok(())
 }
 
-async fn display_message(socket_path: &str, lines: Vec<String>) -> Result<(), Box<dyn Error>> {
+async fn display_message(admin_socket: &str, lines: Vec<String>) -> Result<(), Box<dyn Error>> {
     validate_display_lines(&lines)
         .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
-    let mut client = connect_companion(socket_path).await?;
+    let mut client = connect_admin(admin_socket).await?;
     client
-        .show_modem_display_message(CompanionShowModemDisplayMessageRequest { lines })
+        .show_modem_display_message(ShowModemDisplayMessageRequest { lines })
         .await?;
     Ok(())
 }
 
-async fn bootstrap_auth(socket_path: &str, args: BootstrapAuthArgs) -> Result<(), Box<dyn Error>> {
+async fn bootstrap_auth(admin_socket: &str, args: BootstrapAuthArgs) -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(&args.state_dir)?;
 
     let (provider, config) = bootstrap_provider_and_config(&args)?;
@@ -251,7 +277,7 @@ async fn bootstrap_auth(socket_path: &str, args: BootstrapAuthArgs) -> Result<()
     }
 
     display_message(
-        socket_path,
+        admin_socket,
         vec!["Azure login".to_string(), auth.user_code().to_string()],
     )
     .await?;
@@ -276,9 +302,9 @@ async fn bootstrap_auth(socket_path: &str, args: BootstrapAuthArgs) -> Result<()
 async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
-        Command::Run => run(&cli.companion_socket).await?,
-        Command::BootstrapAuth(args) => bootstrap_auth(&cli.companion_socket, args).await?,
-        Command::DisplayMessage { lines } => display_message(&cli.companion_socket, lines).await?,
+        Command::Run => run(&cli.connector_socket).await?,
+        Command::BootstrapAuth(args) => bootstrap_auth(&cli.admin_socket, args).await?,
+        Command::DisplayMessage { lines } => display_message(&cli.admin_socket, lines).await?,
     }
     Ok(())
 }

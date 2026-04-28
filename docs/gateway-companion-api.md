@@ -9,10 +9,11 @@
 >
 > **Note:** This document now defines the **connector API**. The file remains
 > named `gateway-companion-api.md` only for compatibility with existing links
-> and references. The earlier companion-sidecar gRPC contract has been
-> superseded by this connector model; legacy documents that still describe the
-> old companion API semantics must be updated separately rather than reading the
-> old contract into this file.
+> and references. The earlier companion-sidecar gRPC contract has been retired
+> from the supported architecture. Bootstrap-oriented local clients use
+> `GatewayAdmin` for limited operator-facing actions such as transient modem
+> display; long-running control-plane/runtime traffic uses the connector model
+> defined here.
 
 ---
 
@@ -314,3 +315,5 @@ Receivers MUST ignore unknown integer keys in this map.
    existing handler data-plane contract.
 4. Admin/operator workflows remain on `GatewayAdmin`; the connector API is not a
    second admin surface.
+5. Bootstrap-only local clients use `GatewayAdmin` rather than the connector
+   path when they need operator-visible actions such as transient display.

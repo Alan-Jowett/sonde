@@ -8,8 +8,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ciborium::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tempfile::TempDir;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::sync::RwLock;
+use tonic::Request;
+
+use sonde_gateway::admin::pb::gateway_admin_client::GatewayAdminClient;
+use sonde_gateway::admin::pb::Empty;
 
 use sonde_gateway::connector::{
     ConnectorEventHub, ConnectorHealthState, ConnectorPayloadOrigin, ConnectorService,
@@ -193,10 +198,11 @@ async fn do_wake(
     }
 }
 
-async fn spawn_connection(
+async fn spawn_connection_with_capacity(
     service: ConnectorService,
+    capacity: usize,
 ) -> (DuplexStream, tokio::task::JoinHandle<()>) {
-    let (client, server) = tokio::io::duplex(16 * 1024);
+    let (client, server) = tokio::io::duplex(capacity);
     let handle = tokio::spawn(async move {
         service
             .handle_connection(server)
@@ -207,14 +213,26 @@ async fn spawn_connection(
     (client, handle)
 }
 
-async fn write_framed(stream: &mut DuplexStream, payload: &[u8]) {
+async fn spawn_connection(
+    service: ConnectorService,
+) -> (DuplexStream, tokio::task::JoinHandle<()>) {
+    spawn_connection_with_capacity(service, 16 * 1024).await
+}
+
+async fn write_framed<T>(stream: &mut T, payload: &[u8])
+where
+    T: AsyncWrite + Unpin,
+{
     let len = u32::try_from(payload.len()).unwrap().to_be_bytes();
     stream.write_all(&len).await.unwrap();
     stream.write_all(payload).await.unwrap();
     stream.flush().await.unwrap();
 }
 
-async fn read_framed(stream: &mut DuplexStream) -> Vec<u8> {
+async fn read_framed<T>(stream: &mut T) -> Vec<u8>
+where
+    T: AsyncRead + Unpin,
+{
     let mut len = [0u8; 4];
     stream.read_exact(&mut len).await.unwrap();
     let len = usize::try_from(u32::from_be_bytes(len)).unwrap();
@@ -223,7 +241,10 @@ async fn read_framed(stream: &mut DuplexStream) -> Vec<u8> {
     payload
 }
 
-async fn expect_session_closed(stream: &mut DuplexStream) {
+async fn expect_session_closed<T>(stream: &mut T)
+where
+    T: AsyncRead + Unpin,
+{
     let mut byte = [0u8; 1];
     let n = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut byte))
         .await
@@ -294,6 +315,103 @@ fn uint_field(map: &[(Value, Value)], key: u64) -> u64 {
         .unwrap()
 }
 
+#[cfg(unix)]
+async fn connect_connector_socket(
+    socket_path: &str,
+) -> Result<tokio::net::UnixStream, Box<dyn std::error::Error>> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match tokio::net::UnixStream::connect(socket_path).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) if tokio::time::Instant::now() < deadline => {
+                let _ = err;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn connect_connector_socket(
+    pipe_name: &str,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, Box<dyn std::error::Error>> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match ClientOptions::new().open(pipe_name) {
+            Ok(client) => return Ok(client),
+            Err(e) if matches!(e.raw_os_error(), Some(2 | 231)) => {}
+            Err(e) => return Err(e.into()),
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "connector client timed out waiting for named pipe",
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(unix)]
+async fn connect_admin_client(
+    socket_path: &str,
+) -> Result<GatewayAdminClient<tonic::transport::Channel>, Box<dyn std::error::Error>> {
+    use hyper_util::rt::TokioIo;
+    use tonic::transport::{Endpoint, Uri};
+    use tower::service_fn;
+
+    let socket_path = socket_path.to_owned();
+    let channel = Endpoint::from_static("http://[::]:50051")
+        .connect_with_connector(service_fn(move |_: Uri| {
+            let path = socket_path.clone();
+            async move {
+                let stream = tokio::net::UnixStream::connect(path).await?;
+                Ok::<_, std::io::Error>(TokioIo::new(stream))
+            }
+        }))
+        .await?;
+    Ok(GatewayAdminClient::new(channel))
+}
+
+#[cfg(windows)]
+async fn connect_admin_client(
+    pipe_name: &str,
+) -> Result<GatewayAdminClient<tonic::transport::Channel>, Box<dyn std::error::Error>> {
+    use hyper_util::rt::TokioIo;
+    use tokio::net::windows::named_pipe::ClientOptions;
+    use tonic::transport::{Endpoint, Uri};
+
+    let pipe_name = pipe_name.to_owned();
+    let channel = Endpoint::from_static("http://[::]:50051")
+        .connect_with_connector(tower::service_fn(move |_: Uri| {
+            let name = pipe_name.clone();
+            async move {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                let client = loop {
+                    match ClientOptions::new().open(&name) {
+                        Ok(client) => break client,
+                        Err(e) if matches!(e.raw_os_error(), Some(2 | 231)) => {}
+                        Err(e) => return Err(e),
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "admin client timed out waiting for named pipe",
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                };
+                Ok::<_, std::io::Error>(TokioIo::new(client))
+            }
+        }))
+        .await?;
+    Ok(GatewayAdminClient::new(channel))
+}
+
 #[tokio::test]
 async fn connector_rejects_non_connector_protocol_bytes() {
     let harness = ConnectorHarness::new();
@@ -308,6 +426,63 @@ async fn connector_rejects_non_connector_protocol_bytes() {
     expect_session_closed(&mut client).await;
 
     handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn connector_transport_uses_real_ipc_and_rejects_second_client() {
+    let harness = ConnectorHarness::new();
+    let _tmp_dir = TempDir::new().expect("failed to create temp dir");
+    #[cfg(unix)]
+    let socket_path = _tmp_dir.path().join("connector.sock");
+    #[cfg(windows)]
+    let socket_path = format!(r"\\.\pipe\sonde-connector-test-{}", std::process::id());
+    #[cfg(unix)]
+    let socket_path_str = socket_path.to_string_lossy().to_string();
+    #[cfg(windows)]
+    let socket_path_str = socket_path.clone();
+
+    let service = harness.service.clone();
+    let server_socket_path = socket_path_str.clone();
+    let server_handle = tokio::spawn(async move {
+        sonde_gateway::connector::serve_connector(service, &server_socket_path)
+            .await
+            .expect("connector server should run");
+    });
+
+    let mut first = connect_connector_socket(&socket_path_str)
+        .await
+        .expect("first connector client should connect");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut admin_client = connect_admin_client(&socket_path_str)
+        .await
+        .expect("admin client transport should connect");
+    assert!(
+        admin_client
+            .list_nodes(Request::new(Empty {}))
+            .await
+            .is_err(),
+        "connector socket must not accept admin gRPC calls"
+    );
+
+    let mut second = connect_connector_socket(&socket_path_str)
+        .await
+        .expect("second connector client should reach IPC endpoint");
+    expect_session_closed(&mut second).await;
+
+    write_framed(
+        &mut first,
+        &encode_value(&Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_DESIRED_STATE.into())),
+            map_entry(2, Value::Text("gateway".to_string())),
+            map_entry(3, Value::Text(String::new())),
+            map_entry(4, Value::Map(Vec::new())),
+        ])),
+    )
+    .await;
+
+    drop(first);
+    server_handle.abort();
 }
 
 #[tokio::test]
@@ -672,6 +847,57 @@ async fn connector_health_messages_are_delivered_as_framed_cbor() {
     assert_eq!(scopes.len(), 3);
     assert_eq!(scopes[2].as_text().unwrap(), "app_data");
     assert_eq!(text_field(&details, 3), "Rebuild state from the gateway.");
+
+    drop(client);
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn connector_emits_desynchronized_health_after_actual_subscriber_lag() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let event_hub = Arc::new(ConnectorEventHub::new(1));
+    let service = ConnectorService::new(
+        storage,
+        pending_commands,
+        event_hub.clone(),
+        DEFAULT_CONNECTOR_MAX_MESSAGE_SIZE,
+    );
+    let (mut client, handle) = spawn_connection_with_capacity(service, 256).await;
+    let remediation = "R".repeat(1024);
+
+    for i in 0..32 {
+        event_hub.emit_health(
+            ConnectorHealthState::Ok,
+            format!("steady_state_{i}"),
+            vec!["actual_state".to_string()],
+            remediation.clone(),
+        );
+    }
+
+    let mut saw_desync = false;
+    for _ in 0..8 {
+        let message = decode_map(&read_framed(&mut client).await);
+        if uint_field(&message, 1) != MSG_TYPE_CONNECTOR_HEALTH {
+            continue;
+        }
+        if text_field(&message, 2) != "desynchronized" {
+            continue;
+        }
+        let details = map_get(&message, 4).as_map().cloned().unwrap();
+        assert_eq!(text_field(&details, 1), "subscriber_lag");
+        let scopes = map_get(&details, 2).as_array().unwrap();
+        assert_eq!(scopes.len(), 4);
+        assert_eq!(scopes[3].as_text().unwrap(), "reconciliation_progress");
+        saw_desync = true;
+        break;
+    }
+
+    assert!(
+        saw_desync,
+        "expected a desynchronized health message after lag"
+    );
 
     drop(client);
     handle.await.unwrap();

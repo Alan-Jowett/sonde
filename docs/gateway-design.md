@@ -40,7 +40,7 @@ The gateway is **stateless with respect to replay protection** — active sessio
 
 ## 3  Module architecture
 
-The gateway is composed of eleven functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), Handler Process (handler stdin/stdout management), Admin API (gRPC interface and CLI tool), Companion API (gRPC interface for companion processes), and BLE Pairing Handler (pairing protocol logic via modem relay). Node Registry and Program Library share a common Storage trait abstraction at the bottom. The architecture diagram below shows the eight core data-path and infrastructure modules; the Admin API, Companion API, and BLE Pairing Handler are described in §13, §13A, and §17 respectively.
+The gateway is composed of eleven functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node session lifecycle, desired-vs-actual reconciliation, and command dispatch), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), Handler Process (handler stdin/stdout management), Admin API (gRPC interface and CLI tool), Connector API (local framed interface for a single control-plane connector app), and BLE Pairing Handler (pairing protocol logic via modem relay). Node Registry and Program Library share a common Storage trait abstraction at the bottom. The architecture diagram below shows the nine core data-path and infrastructure modules; the Admin API, Connector API, and BLE Pairing Handler are described in §13, §13A, and §17 respectively.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -76,7 +76,7 @@ The gateway is composed of eleven functional modules grouped in two tiers. The u
 | **Handler Process** | Manage handler stdin/stdout lifecycle | GW-0502, GW-0503, GW-0506 |
 | **Storage** | Persist node registry, program library, configuration | GW-0700, GW-1000, GW-1001 |
 | **Admin API** | gRPC admin interface, CLI tool | GW-0800, GW-0801, GW-0802, GW-0803, GW-0804, GW-0805, GW-0806 |
-| **Companion API** | gRPC integration interface for companion processes | GW-0810, GW-0811, GW-0812, GW-0813, GW-0814, GW-0815 |
+| **Connector API** | Local framed control-plane bridge for a single connector app | GW-0810, GW-0811, GW-0812, GW-0813, GW-0814, GW-0815 |
 | **BLE Pairing Handler** | BLE pairing protocol logic via modem relay | GW-1200–GW-1222a |
 
 ---
@@ -1011,94 +1011,84 @@ All commands support `--format json` for machine-readable output.
 
 ---
 
-## 13A  Companion API
+## 13A  Control-plane connector
 
-> **Requirements:** GW-0810 (companion API), GW-0811 (live event subscription), GW-0812 (`node_checkin`), GW-0813 (`node_payload`), GW-0814 (command/query operations), GW-0815 (transient modem display).
+> **Requirements:** GW-0810 (connector API), GW-0811 (desired-state ingress), GW-0812 (upstream actual-state/status), GW-0813 (upstream application data), GW-0814 (transport abstraction), GW-0815 (loss observability).
 
-The gateway exposes a second local gRPC API for companion processes that need a stable integration boundary distinct from the operator-focused `GatewayAdmin` surface. The companion API is specified in [gateway-companion-api.md](gateway-companion-api.md). It uses a separate socket, a separate protobuf service, and companion-specific message types so it can evolve independently without forcing `GatewayAdmin` changes.
+The gateway exposes a second local integration surface for a single control-plane
+connector application that bridges the gateway to an external control plane. The
+connector API is specified in [gateway-companion-api.md](gateway-companion-api.md).
+Unlike the operator-focused `GatewayAdmin` gRPC surface, the connector API is a
+local framed-message interface whose downstream transport is intentionally left
+outside the gateway core.
 
-### 13A.1  Service definition and transport
+### 13A.1  Local connector transport and framing
 
-The companion server is implemented with `tonic` on the same platform-specific local transports used by the admin API:
+The connector server uses the same platform-specific local transports as the
+admin API:
 
-- **Unix/macOS:** Unix domain socket (default `/var/run/sonde/companion.sock`)
-- **Windows:** Named pipe (default `\\.\pipe\sonde-companion`)
+- **Unix/macOS:** Unix domain socket (default `/var/run/sonde/connector.sock`)
+- **Windows:** Named pipe (default `\\.\pipe\sonde-connector`)
 
-No TCP listener is opened. The companion API is a separate `GatewayCompanion` service, not an extension of `GatewayAdmin`.
+No TCP listener is opened. The connector interface is not a second admin RPC
+surface and it is not modeled as cloud-vendor-specific transport inside the
+gateway. Each connector message is written as:
 
-The protobuf contract includes:
-
-```protobuf
-service GatewayCompanion {
-    rpc StreamEvents(CompanionStreamEventsRequest) returns (stream CompanionEvent);
-    rpc ListNodes(CompanionListNodesRequest) returns (CompanionListNodesResponse);
-    rpc GetNode(CompanionGetNodeRequest) returns (CompanionNodeInfo);
-    rpc AssignProgram(CompanionAssignProgramRequest) returns (CompanionEmpty);
-    rpc SetSchedule(CompanionSetScheduleRequest) returns (CompanionEmpty);
-    rpc QueueReboot(CompanionQueueRebootRequest) returns (CompanionEmpty);
-    rpc QueueEphemeral(CompanionQueueEphemeralRequest) returns (CompanionEmpty);
-    rpc GetNodeStatus(CompanionGetNodeStatusRequest) returns (CompanionNodeStatus);
-    rpc ShowModemDisplayMessage(CompanionShowModemDisplayMessageRequest) returns (CompanionEmpty);
-}
+```text
++-------------------------------+
+| Length (4 bytes, big-endian)  |
+| Message bytes (Length bytes)  |
++-------------------------------+
 ```
 
-The companion service intentionally omits operator-only workflows such as program ingestion, node registration/removal, state export/import, raw modem control, BLE pairing, and handler management. It may request gateway-owned transient display text, but it does not upload raw framebuffers or bypass the gateway's existing display ownership rules.
+The message bytes contain the Sonde-defined connector protocol payload. The
+gateway and the external control plane interpret that payload; the connector
+application only transports framed messages between the local socket and the
+configured external transport.
 
-### 13A.2  Event publication path
+### 13A.2  Desired-state ingestion and reconciliation path
 
-The session manager publishes companion events into a bounded in-memory event hub:
+Connector ingress messages target exactly one addressable entity: the gateway
+itself or one registered node. Each message carries the complete desired state
+for that entity. The gateway persists the new desired state, replaces any older
+desired state for the same entity, and then reconciles desired state against:
 
-```rust
-pub struct CompanionEventHub {
-    tx: tokio::sync::broadcast::Sender<CompanionEvent>,
-}
-```
+1. the latest actual state already recorded for that entity,
+2. the node registry and program library,
+3. the gateway's normal `pending_commands` state, and
+4. any gateway-scoped desired state that influences node command production.
 
-- `node_checkin` is published after an authenticated `WAKE` updates the node's latest-known registry state.
-- `node_payload` is published when the gateway accepts node-originated payload data (`APP_DATA` or `WAKE` `blob`).
-- For a `WAKE` carrying a `blob`, the session manager publishes `node_checkin` first, then `node_payload`.
+The connector path therefore does not provide imperative cloud-originated
+operations such as `QueueReboot` or `AssignProgram`. Those remain internal
+effects that fall out of gateway reconciliation when desired state differs from
+actual state.
 
-Each `StreamEvents` RPC subscribes to the broadcast hub. The stream is live-only: no replay cursor or durable offset is maintained in the gateway. If a subscriber lags and overruns the bounded broadcast buffer, the server terminates that stream with `RESOURCE_EXHAUSTED`; the client must reconnect and resume from newly produced events only.
+### 13A.3  Upstream actual-state, status, and application-data path
 
-### 13A.3  Shared command and query path
+When the gateway accepts a node `WAKE`, it updates the node's latest-known
+actual state and emits an upstream connector message describing that state
+change. When the gateway accepts node-originated application data, it emits a
+separate upstream connector message containing the opaque payload bytes plus the
+gateway metadata needed by the control plane to associate the data with the
+originating node and program.
 
-The companion service shares the same storage, `pending_commands`, and `SessionManager` used by the admin API and engine. Companion command RPCs call the same internal helpers used by `GatewayAdmin`; they do not maintain a parallel queue or alternate state store.
+For a `WAKE` carrying a piggybacked `blob`, the gateway emits the actual-state
+update first and the application-data message second. Application-data egress is
+informational only; it does not replace the existing handler reply path used for
+node `send_recv()` responses.
 
-This sharing is mandatory for:
+### 13A.4  External transport boundary and loss signaling
 
-1. `AssignProgram` — updates the node's assigned resident program.
-2. `SetSchedule` — queues `UPDATE_SCHEDULE` for the next `WAKE`.
-3. `QueueReboot` — queues `REBOOT` for the next `WAKE`.
-4. `QueueEphemeral` — queues `RUN_EPHEMERAL` for the next `WAKE`.
-5. `ListNodes`, `GetNode`, and `GetNodeStatus` — surface the same node metadata/state as the gateway already maintains.
+The gateway does not know whether the external control-plane transport is Azure
+Service Bus, Kafka, NATS, or another asynchronous broker. The connector
+application owns that transport-specific adaptation. The gateway design assumes
+an asynchronous, store-and-forward connector path and requires detectable loss
+or desynchronization to be surfaced to operators rather than silently ignored.
 
-The companion protobuf messages remain distinct from the admin protobuf messages even when fields overlap. This avoids coupling future companion-contract changes to the operator-facing admin contract.
-
-### 13A.4  Shared transient display path
-
-The companion API also exposes a `ShowModemDisplayMessage` RPC for headless
-automation flows such as Azure device login. This RPC does not introduce a new
-display implementation. Instead, the gateway factors transient-display behavior
-behind a shared helper that is invoked by both `GatewayAdmin` and
-`GatewayCompanion`.
-
-The shared display helper owns all of the behavior already defined for the admin
-display path:
-
-1. Validate that the request contains 1 to 4 text lines.
-2. Reject the request with `FAILED_PRECONDITION` if a BLE pairing session
-   currently owns the display.
-3. Reject the request with `UNAVAILABLE` if no modem transport is configured.
-4. Cancel any active `Nodes` page scroll task, claim a new `display_generation`,
-   and reset the status-page cycle.
-5. Render the supplied text using the existing centered 128×64 text renderer and
-   send it through the reliable display-transfer path.
-6. Spawn the normal 60-second restore task that returns the display to
-   `Sonde Gateway v<semver>` only if no newer display owner has superseded it.
-
-Because both admin and companion RPCs call the same helper, later successful
-transient-display requests replace earlier ones regardless of which surface
-originated them, while BLE pairing screens continue to preempt both.
+The gateway therefore treats connector health as gateway status. A connector
+delivery failure that could make desired state or upstream status stale must be
+reported through gateway-visible status, logging, or both so operators know that
+reconciliation against the control plane may need manual review.
 
 ---
 
@@ -1111,7 +1101,8 @@ The gateway is configured via a configuration file (format TBD — TOML recommen
 | `transport` | Transport backend and connection parameters | Required |
 | `storage` | Storage backend and connection parameters | Required |
 | `admin_socket` | gRPC admin API socket path | `/var/run/sonde/admin.sock` (Linux), `\\.\pipe\sonde-admin` (Windows) |
-| `companion_socket` | gRPC companion API socket path | `/var/run/sonde/companion.sock` (Linux), `\\.\pipe\sonde-companion` (Windows) |
+| `connector_socket` | Local connector API socket path | `/var/run/sonde/connector.sock` (Linux), `\\.\pipe\sonde-connector` (Windows) |
+| `connector_max_message_size` | Maximum connector API payload length accepted in a framed record (excludes the 4-byte length prefix) | `1048576` (1 MB) |
 | `handlers` | Handler routing table (program_hash → command) | `[]` |
 | `session_timeout_s` | Session inactivity timeout | `30` |
 | `node_timeout_multiplier` | Multiple of node's schedule interval before `node_timeout` event | `3` |
@@ -1163,7 +1154,7 @@ The gateway emits the version string in its first `info!()` log line so that ope
 6. If `--handler-config` is provided, bootstrap handlers from YAML into the database (GW-1405, §19.6).
 7. Load handler configuration from database and build `HandlerRouter` (GW-1401, GW-1407). The router is always built, even if no handlers exist. Wrap in `Arc<tokio::sync::RwLock<HandlerRouter>>` for shared access.
 8. Start gRPC admin API server, passing the shared `HandlerRouter` reference to the `AdminService` for live reload (GW-1404).
-9. Start gRPC companion API server, passing shared storage, node state, pending-command state, and companion event hub.
+9. Start the local connector API server, passing shared desired-state storage, actual-state publication path, and connector health state.
 10. Start handler processes for configured handlers.
 11. Start session reaper background task.
 12. Start node timeout detector background task.
@@ -1276,12 +1267,11 @@ If another `BUTTON_SHORT` arrives before the timeout fires, the gateway advances
 ### 17.4c  Admin-triggered transient display override
 
 The admin API exposes a gateway-owned transient display override for operator
-prompts such as headless device-login codes. The companion API's
-`ShowModemDisplayMessage` RPC reuses the same helper and therefore follows the
-same ownership, validation, rendering, and restore behavior. The shared helper
-accepts 1 to 4 text lines and rejects the request with `FAILED_PRECONDITION` if
-a BLE pairing session currently owns the display, so pairing passkeys and
-terminal status screens remain visible.
+prompts such as headless device-login codes. This remains an operator/admin
+workflow; the control-plane connector model in §13A does not introduce a second
+display-control path. The shared helper accepts 1 to 4 text lines and rejects
+the request with `FAILED_PRECONDITION` if a BLE pairing session currently owns
+the display, so pairing passkeys and terminal status screens remain visible.
 
 On success, the gateway renders the supplied lines with the same centered
 128×64 text renderer used for the startup banner and button-pairing status

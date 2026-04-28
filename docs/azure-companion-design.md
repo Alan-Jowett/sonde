@@ -6,6 +6,11 @@
 > **Scope:** Internal design for the initial Azure companion slice: container packaging, bootstrap scripts, gateway companion integration, and Azure device-code login.
 > **Audience:** Implementers building the new Azure companion crate and its deployment artifacts.
 > **Related:** [azure-companion-requirements.md](azure-companion-requirements.md), [gateway-companion-api.md](gateway-companion-api.md), [gateway-design.md](gateway-design.md)
+>
+> **Note:** This design predates the connector-model redesign. References here
+> to the gateway companion gRPC API describe the legacy bootstrap slice and
+> must be revised in follow-on work to align with the current connector
+> contract.
 
 ---
 

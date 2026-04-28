@@ -1,206 +1,316 @@
 <!-- SPDX-License-Identifier: MIT
   Copyright (c) 2026 sonde contributors -->
-# Gateway Companion API
+# Gateway Connector API
 
 > **Document status:** Draft  
-> **Scope:** The local gRPC integration API between `sonde-gateway` and companion processes that subscribe to gateway events and issue node-targeted commands.  
-> **Audience:** Developers building sidecar or bridge processes alongside the gateway.  
+> **Scope:** The local framed integration API between `sonde-gateway` and a single connector process that bridges the gateway to an external control plane.  
+> **Audience:** Developers building transport adapters and control planes for Sonde gateways.  
 > **Related:** [gateway-requirements.md](gateway-requirements.md), [gateway-design.md](gateway-design.md), [gateway-api.md](gateway-api.md)
+>
+> **Note:** This document now defines the **connector API**. The file remains
+> named `gateway-companion-api.md` only for compatibility with existing links
+> and references. The earlier companion-sidecar gRPC contract has been
+> superseded by this connector model; legacy documents that still describe the
+> old companion API semantics must be updated separately rather than reading the
+> old contract into this file.
 
 ---
 
 ## 1  Overview
 
-The companion API is a **separate integration surface** from both:
+The connector API is a **separate integration surface** from both:
 
 1. **`GatewayAdmin`** — the operator-facing local admin API.
 2. **`gateway-api.md`** — the handler stdin/stdout CBOR data-plane API.
 
-A companion process uses this API when it needs to:
+A connector process uses this API when it needs to:
 
-- subscribe to live gateway events such as node check-ins and payload arrivals, and
-- issue node-targeted commands through the gateway's existing control path, and
-- request short gateway-owned modem display messages for headless operator workflows.
+- receive upstream gateway and node state updates relevant to reconciliation,
+- receive upstream node application payload data, and
+- deliver complete desired-state messages from a control plane to the gateway.
 
-Example use case: a bridge process authenticates to Azure, forwards `node_checkin` and `node_payload` events to a Service Bus queue, reads cloud-issued commands, and relays them to the gateway.
-
-The companion API is **informational and control-only**. It does not replace the handler data-plane API and does not provide a reply channel for node payloads.
+The connector process is intentionally a **transport adapter**. It transports
+connector messages between the gateway's local socket and some external,
+asynchronous, store-and-forward control-plane transport. The gateway does not
+encode Azure-specific, Service Bus-specific, or other cloud-vendor-specific
+logic in this interface.
 
 ---
 
 ## 2  Transport and lifecycle
 
-### 2.1  Transport
+### 2.1  Local transport
 
-The gateway exposes the companion API over **local-only gRPC** on a dedicated endpoint:
+The gateway exposes the connector API over **local-only IPC** on a dedicated
+endpoint:
 
-- **Unix/macOS:** Unix domain socket, default `/var/run/sonde/companion.sock`
-- **Windows:** named pipe, default `\\.\pipe\sonde-companion`
+- **Unix/macOS:** Unix domain socket, default `/var/run/sonde/connector.sock`
+- **Windows:** named pipe, default `\\.\pipe\sonde-connector`
 
 No TCP listener is exposed in v1.
 
-The companion API uses a dedicated protobuf service and companion-specific message types so it can evolve independently from `GatewayAdmin`.
+### 2.2  Framing
 
-### 2.2  Event stream lifecycle
+Each connector message is framed as:
 
-Companion clients subscribe with a server-streaming RPC:
+```
+┌──────────────────────────────────┐
+│  Length (4 bytes, big-endian)    │
+│  Message bytes (Length bytes)    │
+└──────────────────────────────────┘
+```
 
-1. Client connects to the companion socket.
-2. Client calls `StreamEvents`.
-3. Gateway emits future `node_checkin` and `node_payload` events on the stream.
-4. If the client disconnects, the stream ends immediately.
-5. If the client falls behind the gateway's bounded event buffer, the gateway terminates the stream with `RESOURCE_EXHAUSTED`.
+The message bytes contain a Sonde-defined connector protocol payload. The
+connector adapter forwards these bytes unchanged; only the gateway and the
+control plane interpret the payload schema.
 
-The stream is **live best-effort only**:
+The gateway MUST reject any connector frame whose length exceeds the configured
+maximum connector message size. The default maximum is **1 MB** (1,048,576
+bytes). This bound applies to the `Length` field's declared message bytes only;
+it does not include the 4-byte length prefix itself. If the length prefix
+exceeds the configured bound, or if the peer closes the connection before the
+declared payload bytes are fully received, the gateway closes the connector
+session.
 
-- events produced before subscription are not replayed;
-- reconnecting clients receive only newly produced events; and
-- durability, replay, and downstream queuing are the companion process's responsibility.
+### 2.3  Session model
+
+The gateway accepts at most one active connector session at a time. The
+connector session is long-lived and bidirectional:
+
+1. Connector process connects to the local socket.
+2. Gateway and connector exchange framed messages in both directions.
+3. If the connector disconnects, the gateway stops delivering connector traffic
+   until a new connector session is established.
+4. If a second connector client attempts to connect while a session is active,
+   the gateway rejects or closes the new connection without disrupting the
+   active connector.
+
+The external transport behind the connector is outside this document's scope.
 
 ---
 
-## 3  Protobuf contract
+## 3  Connector payload schema
 
-### 3.1  Service definition
+The connector payload schema is organized around **desired state**, **actual
+state**, **application data**, and **connector health**. All connector message
+bytes are encoded as CBOR maps with integer keys.
 
-```protobuf
-service GatewayCompanion {
-    rpc StreamEvents(CompanionStreamEventsRequest) returns (stream CompanionEvent);
+### 3.1  Common encoding conventions
 
-    rpc ListNodes(CompanionListNodesRequest) returns (CompanionListNodesResponse);
-    rpc GetNode(CompanionGetNodeRequest) returns (CompanionNodeInfo);
-    rpc AssignProgram(CompanionAssignProgramRequest) returns (CompanionEmpty);
-    rpc SetSchedule(CompanionSetScheduleRequest) returns (CompanionEmpty);
-    rpc QueueReboot(CompanionQueueRebootRequest) returns (CompanionEmpty);
-    rpc QueueEphemeral(CompanionQueueEphemeralRequest) returns (CompanionEmpty);
-    rpc GetNodeStatus(CompanionGetNodeStatusRequest) returns (CompanionNodeStatus);
-    rpc ShowModemDisplayMessage(CompanionShowModemDisplayMessageRequest) returns (CompanionEmpty);
-}
-```
+All connector messages use the following common fields:
 
-The companion service intentionally omits operator-only workflows such as node registration/removal, program ingestion/removal, state export/import, raw modem control, BLE pairing, and handler configuration. It may request gateway-owned transient display text, but it does not upload raw framebuffers or bypass the gateway's display arbitration.
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `msg_type` | 1 | uint | Connector message type. |
 
-### 3.2  `node_checkin`
+Connector message type values are:
 
-```protobuf
-message CompanionEvent {
-    oneof event {
-        CompanionNodeCheckIn node_checkin = 1;
-        CompanionNodePayload node_payload = 2;
-    }
-}
+| `msg_type` | Name | Direction |
+|---|---|---|
+| `0x01` | `DESIRED_STATE` | Control plane → gateway |
+| `0x02` | `ACTUAL_STATE` | Gateway → control plane |
+| `0x03` | `APP_DATA` | Gateway → control plane |
+| `0x04` | `CONNECTOR_HEALTH` | Gateway → control plane |
 
-message CompanionNodeCheckIn {
-    string node_id = 1;
-    bytes current_program_hash = 2;
-    optional bytes assigned_program_hash = 3;
-    uint32 battery_mv = 4;
-    uint32 firmware_abi_version = 5;
-    string firmware_version = 6;
-    uint64 timestamp_ms = 7;
-}
-```
+Timestamps carried by connector messages are encoded as Unix time in
+milliseconds.
 
-The gateway emits `node_checkin` after it accepts an authenticated `WAKE` and updates the node's latest-known state.
+The following rules apply to all connector payloads:
 
-### 3.3  `node_payload`
+- **Integer keys only for schema-defined maps.** Every CBOR map defined by this
+  document uses unsigned integer keys, including nested maps.
+- **Per-message keyspaces with explicit shared fields.** Field meanings are
+  defined per schema-defined map or message type, not globally across the
+  connector API. A key MAY be reused by a different message type with a
+  different meaning unless this document explicitly defines it as a common
+  field shared across message types. For connector messages, key `1` is the
+  shared `msg_type` field.
+- **Reserved ranges for extension.** Within each schema-defined map, keys
+  `1`-`127` are available for fields defined by this specification and keys
+  `128`-`255` are reserved for future Sonde-defined standard fields.
+- **Unknown key handling.** Receivers MUST ignore unknown keys in any
+  schema-defined map unless a field definition for that message states
+  otherwise.
+- **Explicit opaque payloads only.** If a field is intended to carry opaque CBOR
+  whose internal structure is outside this document, the field definition must
+  say so explicitly.
 
-```protobuf
-enum CompanionPayloadOrigin {
-    COMPANION_PAYLOAD_ORIGIN_UNSPECIFIED = 0;
-    COMPANION_PAYLOAD_ORIGIN_APP_DATA = 1;
-    COMPANION_PAYLOAD_ORIGIN_WAKE_BLOB = 2;
-}
+### 3.2  `DESIRED_STATE` (control plane → gateway)
 
-message CompanionNodePayload {
-    string node_id = 1;
-    bytes program_hash = 2;
-    bytes payload = 3;
-    uint64 timestamp_ms = 4;
-    CompanionPayloadOrigin payload_origin = 5;
-}
-```
+Control-plane ingress carries **complete desired state** for exactly one
+addressable entity per message:
 
-The gateway emits `node_payload` for:
+- one **gateway** entity, or
+- one **node** entity.
 
-- `APP_DATA { blob }`, with `payload_origin = COMPANION_PAYLOAD_ORIGIN_APP_DATA`
-- `WAKE { blob }`, with `payload_origin = COMPANION_PAYLOAD_ORIGIN_WAKE_BLOB`
+Each desired-state message replaces the previously stored desired state for the
+target entity. The connector path does **not** expose imperative node command
+RPCs such as "queue reboot now" or "assign program now." Those are internal
+gateway reconciliation outcomes.
 
-For a `WAKE` carrying a blob, the gateway emits `node_checkin` before the corresponding `node_payload`.
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `msg_type` | 1 | uint | `0x01` |
+| `entity_kind` | 2 | tstr | `"gateway"` or `"node"` |
+| `entity_id` | 3 | tstr | Opaque identifier of the target entity. For `entity_kind = "node"`, this is the target node identifier. For `entity_kind = "gateway"`, senders MUST encode `""` and receivers MUST ignore the field when interpreting gateway-scoped state. |
+| `desired_state` | 4 | map | Complete desired-state map for the target entity. The payload schema depends on `entity_kind`; see sections 3.2.1 and 3.2.2. Any map nested under `desired_state` also uses integer CBOR keys. |
 
-### 3.4  Command and query RPCs
+The connector API models exactly one gateway entity per connector stream, so
+gateway-scoped state is selected by `entity_kind`, not by a gateway instance
+identifier.
 
-```protobuf
-message CompanionEmpty {}
-message CompanionStreamEventsRequest {}
-message CompanionListNodesRequest {}
-message CompanionListNodesResponse { repeated CompanionNodeInfo nodes = 1; }
-message CompanionGetNodeRequest { string node_id = 1; }
-message CompanionAssignProgramRequest { string node_id = 1; bytes program_hash = 2; }
-message CompanionSetScheduleRequest { string node_id = 1; uint32 interval_s = 2; }
-message CompanionQueueRebootRequest { string node_id = 1; }
-message CompanionQueueEphemeralRequest { string node_id = 1; bytes program_hash = 2; }
-message CompanionGetNodeStatusRequest { string node_id = 1; }
+#### 3.2.1  `desired_state` payload for `entity_kind = "gateway"`
 
-message CompanionNodeInfo {
-    string node_id = 1;
-    uint32 key_hint = 2;
-    optional bytes assigned_program_hash = 3;
-    optional bytes current_program_hash = 4;
-    optional uint32 last_battery_mv = 5;
-    optional uint32 last_firmware_abi_version = 6;
-    optional uint64 last_seen_ms = 7;
-    optional uint32 schedule_interval_s = 8;
-}
+`desired_state` is a CBOR map with the following schema:
 
-message CompanionNodeStatus {
-    string node_id = 1;
-    bytes current_program_hash = 2;
-    optional uint32 battery_mv = 3;
-    optional uint32 firmware_abi_version = 4;
-    optional uint64 last_seen_ms = 5;
-    bool has_active_session = 6;
-}
-```
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| *(no fields currently defined)* | — | — | Senders SHOULD encode an empty map (`{}`) for gateway desired state in this draft. Receivers MUST accept an empty map and MUST ignore unknown integer keys for forward compatibility. |
 
-The companion API's command RPCs reuse the gateway's existing command semantics:
+#### 3.2.2  `desired_state` payload for `entity_kind = "node"`
 
-- `AssignProgram` changes the assigned resident program.
-- `SetSchedule` queues `UPDATE_SCHEDULE` for the next `WAKE`.
-- `QueueReboot` queues `REBOOT` for the next `WAKE`.
-- `QueueEphemeral` queues `RUN_EPHEMERAL` for the next `WAKE`.
+`desired_state` is a CBOR map with the following schema:
 
-These operations act on the same gateway state as the corresponding admin operations; the companion API does not define a separate command pipeline.
+Each `DESIRED_STATE` message is a complete replacement of the previously known
+desired state for that entity, not a patch. For the fields defined in this
+draft, a missing key and a present key with value `null` have the same meaning:
+the replacement desired state explicitly contains no desired value for that
+field. Receivers MUST NOT interpret `null` as "leave the previous value
+unchanged".
 
-### 3.5  Transient modem display RPC
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `assigned_program_hash` | 1 | bstr/null | Desired resident program hash. `null` means no resident program assignment is desired. |
+| `schedule_interval_s` | 2 | uint/null | Desired node wake interval in seconds. `null` means no scheduled interval target is desired in this draft. |
+| `ephemeral_program_hash` | 3 | bstr/null | Desired ephemeral program hash to queue when reconciliation determines one is needed. `null` means no ephemeral run is requested. |
 
-```protobuf
-message CompanionShowModemDisplayMessageRequest {
-    repeated string lines = 1;
-}
-```
+Fields not yet defined by this draft remain reserved for future desired-state
+extension. Receivers MUST ignore unknown integer keys.
 
-`ShowModemDisplayMessage` lets a companion request a short, gateway-owned modem
-display update for headless operator flows such as Azure device login. The
-request accepts 1 to 4 text lines. On success, the gateway renders the supplied
-lines using the same centered text renderer, reliable display-transfer path,
-display-ownership state, and 60-second banner-restore behavior used by the admin
-`ShowModemDisplayMessage` RPC.
+### 3.3  `ACTUAL_STATE` (gateway → control plane)
 
-The RPC returns after the initial display update succeeds; it does not wait for
-the 60-second dwell timeout. A later successful transient-display request from
-either the admin or companion surface replaces any earlier one and restarts the
-restore timer.
+When the gateway learns or changes actual state relevant to reconciliation, it
+emits an upstream connector message. For nodes, this includes the state accepted
+from authenticated `WAKE` traffic and the gateway's resulting latest-known node
+state.
 
-If a BLE pairing session currently owns the display, the RPC fails with
-`FAILED_PRECONDITION`. If no modem transport is configured, the RPC fails with
-`UNAVAILABLE`.
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `msg_type` | 1 | uint | `0x02` |
+| `entity_kind` | 2 | tstr | `"gateway"` or `"node"` |
+| `entity_id` | 3 | tstr | Opaque identifier of the affected entity. For `entity_kind = "node"`, this is the affected node identifier. For `entity_kind = "gateway"`, senders MUST encode `""` and receivers MUST ignore the field when interpreting gateway-scoped state. |
+| `current_program_hash` | 4 | bstr/null | Current node program hash when applicable. |
+| `assigned_program_hash` | 5 | bstr/null | Gateway-assigned resident program hash when applicable. |
+| `battery_mv` | 6 | uint/null | Latest node battery reading in millivolts when applicable. |
+| `firmware_abi_version` | 7 | uint/null | Firmware ABI version when applicable. |
+| `firmware_version` | 8 | tstr/null | Firmware version string when applicable. |
+| `timestamp_ms` | 9 | uint | Reception timestamp in Unix milliseconds. |
+| `status_details` | 10 | map | Additional gateway- or entity-scoped status fields relevant to reconciliation. See section 3.3.1. |
+
+#### 3.3.1  `status_details` payload
+
+`status_details` is a CBOR map with the following schema:
+
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| *(no fields currently defined)* | — | — | Senders SHOULD encode an empty map (`{}`) when no additional status details are available. Receivers MUST accept an empty map and MUST ignore unknown integer keys for forward compatibility. |
+
+### 3.4  `APP_DATA` (gateway → control plane)
+
+When the gateway accepts node-originated application payload data, it emits an
+upstream connector message containing:
+
+- `node_id`
+- `program_hash`
+- the opaque application payload bytes
+- a reception timestamp encoded as Unix time in milliseconds
+- an origin discriminator (`app_data` or `wake_blob`)
+
+This path is informational only. The connector API does not provide a reply
+channel for node `send_recv()` responses; those continue to flow through the
+handler API.
+
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `msg_type` | 1 | uint | `0x03` |
+| `node_id` | 2 | tstr | Opaque node identifier assigned by the gateway. |
+| `program_hash` | 3 | bstr | Hash of the program that produced the payload. |
+| `payload` | 4 | bstr | Opaque application payload bytes. |
+| `timestamp_ms` | 5 | uint | Reception timestamp in Unix milliseconds. |
+| `payload_origin` | 6 | tstr | `"app_data"` or `"wake_blob"` |
+
+### 3.5  `CONNECTOR_HEALTH` (gateway → control plane)
+
+The connector model is intended to be lossless under normal circumstances.
+Detectable connector-delivery failure or desynchronization must be surfaced to
+operators. The exact external transport retry policy is outside the gateway
+core, but the connector/gateway boundary must not silently mask detected loss.
+
+For this section, **stale state** means any control-plane-visible state whose
+current value can no longer be assumed to match the gateway's authoritative view
+because one or more connector messages may have been lost, duplicated, or
+applied out of order after a detected connector fault.
+
+When `health_state` is not `ok`, operators and connector implementations must
+treat the following as potentially stale until the condition is cleared and the
+relevant state is re-read from an authoritative gateway surface:
+
+- **Desired state reflected by the control plane** — the external system may be
+  showing a requested configuration that the gateway did not accept or only
+  partially applied.
+- **Node status / inventory / last-known observations** — the control plane may
+  be missing newer `ACTUAL_STATE` updates or may still be showing superseded
+  values.
+- **Application-data visibility** — the control plane may be missing `APP_DATA`
+  messages, may receive them out of order, or may be unable to determine
+  whether a payload was already forwarded before the detected fault.
+- **Pending commands or reconciliation progress** — any in-flight action derived
+  from desired state must be considered uncertain until re-confirmed.
+
+Operator guidance tied to `health_state`:
+
+- `ok`: normal operation. No special handling is required.
+- `degraded`: delivery is impaired but not known to be unrecoverable. Treat
+  newly received state as advisory and verify affected changes through an
+  authoritative gateway surface before concluding reconciliation succeeded.
+- `desynchronized`: the connector/control-plane view is unreliable until
+  resynchronized. Rebuild the external view from authoritative gateway state
+  before resuming normal automation.
+
+`health_state` is an enumerated text field. Senders MUST encode exactly one of
+`ok`, `degraded`, or `desynchronized`. Receivers that encounter any other
+`health_state` string MUST treat the condition as equivalent to
+`desynchronized` for safety and SHOULD surface the unrecognized value for
+diagnostics.
+
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `msg_type` | 1 | uint | `0x04` |
+| `health_state` | 2 | tstr | Connector health classification. MUST be one of `ok`, `degraded`, or `desynchronized`; receivers MUST treat unknown values as `desynchronized` for safety. |
+| `timestamp_ms` | 3 | uint | Timestamp when the health condition was observed. |
+| `details` | 4 | map | Additional operator-facing details about the detected condition, including stale-state scope and suggested remediation when applicable. See section 3.5.1. |
+
+#### 3.5.1  `details` payload
+
+`details` is a CBOR map with the following schema:
+
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `failure_mode` | 1 | tstr | Short identifier for the detected connector fault. |
+| `stale_scope` | 2 | array | Array of text labels naming the potentially stale state domains, such as `desired_state`, `actual_state`, `app_data`, or `reconciliation_progress`. |
+| `remediation` | 3 | tstr | Suggested operator action or recovery guidance when known. |
+
+Receivers MUST ignore unknown integer keys in this map.
 
 ---
 
 ## 4  Behavioral notes
 
-1. `node_payload` is informational only. Companion clients do not reply to payload events; node replies continue to use the handler flow defined in [gateway-api.md](gateway-api.md).
-2. Message ordering is guaranteed only within a single live stream as produced by the gateway runtime. There is no replay cursor, durable offset, or exactly-once delivery guarantee.
-3. Companion clients are expected to provide their own persistence and retry behavior when forwarding events to external systems.
-4. Companion display requests reuse the same gateway-owned display arbitration and restore rules as admin display requests; companions do not gain raw modem-control privileges.
+1. The connector protocol is **cloud-agnostic**. Any external broker or control
+   plane may be used as long as it can carry the framed connector messages.
+2. The gateway remains the reconciler. The control plane sends desired state;
+   the gateway determines which node-facing commands are required to converge.
+3. Upstream application data is **informational only**; it does not replace the
+   existing handler data-plane contract.
+4. Admin/operator workflows remain on `GatewayAdmin`; the connector API is not a
+   second admin surface.

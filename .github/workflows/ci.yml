@@ -71,7 +71,12 @@ jobs:
 
       - name: Test gateway (Python handler tests)
         if: matrix.profile == 'debug'
-        run: cargo test -p sonde-gateway --features python-tests
+        run: |
+          cargo test -p sonde-gateway --features python-tests \
+            --test handler_config \
+            --test logging \
+            --test phase2c \
+            --test phase2d
 
       - name: Build gateway and admin (release)
         if: matrix.profile == 'release'

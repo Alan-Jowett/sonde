@@ -239,7 +239,7 @@ const PROGRAM_HASH_LEN: usize = 32;
 /// Returns the hex representation on success, or an appropriate gRPC error
 /// with guidance on failure.  This prevents unbounded allocations from
 /// arbitrarily large client-supplied byte vectors.
-fn validate_program_hash_bytes(operation: &str, hash: &[u8]) -> Result<String, Status> {
+pub(crate) fn validate_program_hash_bytes(operation: &str, hash: &[u8]) -> Result<String, Status> {
     if hash.len() != PROGRAM_HASH_LEN {
         return Err(Status::invalid_argument(format!(
             "{operation} failed: program_hash must be {PROGRAM_HASH_LEN} bytes (got {})",
@@ -318,6 +318,7 @@ pub(crate) async fn set_schedule_impl(
         .map_err(storage_err)?
         .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
 
+    node.desired_schedule_interval_s = Some(interval_s);
     node.schedule_interval_s = interval_s;
     storage.upsert_node(&node).await.map_err(storage_err)?;
 

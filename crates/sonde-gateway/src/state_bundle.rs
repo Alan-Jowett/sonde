@@ -81,6 +81,7 @@ const NODE_KEY_SENSORS: i64 = 11;
 const NODE_KEY_REGISTERED_BY: i64 = 12;
 const NODE_KEY_BATTERY_HISTORY: i64 = 13;
 const NODE_KEY_FW_VERSION: i64 = 14;
+const NODE_KEY_DESIRED_SCHEDULE: i64 = 15;
 
 // ── CBOR key IDs (program map) ──────────────────────────────────────────────
 
@@ -379,6 +380,10 @@ fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
         (
             Value::Integer(NODE_KEY_SCHEDULE.into()),
             Value::Integer(n.schedule_interval_s.into()),
+        ),
+        (
+            Value::Integer(NODE_KEY_DESIRED_SCHEDULE.into()),
+            opt_u32_val(n.desired_schedule_interval_s),
         ),
         (
             Value::Integer(NODE_KEY_FW_ABI.into()),
@@ -758,6 +763,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
     let mut psk: Option<[u8; 32]> = None;
     let mut assigned_program_hash: Option<Option<Vec<u8>>> = None;
     let mut current_program_hash: Option<Option<Vec<u8>>> = None;
+    let mut desired_schedule_interval_s: Option<Option<u32>> = None;
     let mut schedule_interval_s: Option<u32> = None;
     let mut firmware_abi_version: Option<Option<u32>> = None;
     let mut last_battery_mv: Option<Option<u32>> = None;
@@ -816,6 +822,10 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                             ))
                         }
                     });
+                }
+                Some(NODE_KEY_DESIRED_SCHEDULE) => {
+                    desired_schedule_interval_s =
+                        Some(opt_u32_from_cbor(v, "desired_schedule_interval_s")?);
                 }
                 Some(NODE_KEY_FW_ABI) => {
                     firmware_abi_version = Some(opt_u32_from_cbor(v, "firmware_abi_version")?);
@@ -969,6 +979,10 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         psk,
         assigned_program_hash: assigned_program_hash.flatten(),
         current_program_hash: current_program_hash.flatten(),
+        desired_schedule_interval_s: match desired_schedule_interval_s {
+            Some(value) => value,
+            None => Some(schedule_interval_s),
+        },
         schedule_interval_s,
         firmware_abi_version: firmware_abi_version.flatten(),
         firmware_version,
@@ -1469,6 +1483,7 @@ mod tests {
     #[test]
     fn roundtrip_nodes_and_programs() {
         let mut node1 = make_node("node-a", 0x1234);
+        node1.desired_schedule_interval_s = None;
         node1.schedule_interval_s = 120;
         node1.last_battery_mv = Some(3700);
         let node2 = make_node("node-b", 0x5678);
@@ -1488,11 +1503,13 @@ mod tests {
         let na = out_nodes.iter().find(|n| n.node_id == "node-a").unwrap();
         assert_eq!(na.key_hint, 0x1234);
         assert_eq!(na.psk[0], 0x34);
+        assert_eq!(na.desired_schedule_interval_s, None);
         assert_eq!(na.schedule_interval_s, 120);
         assert_eq!(na.last_battery_mv, Some(3700));
 
         let nb = out_nodes.iter().find(|n| n.node_id == "node-b").unwrap();
         assert_eq!(nb.key_hint, 0x5678);
+        assert_eq!(nb.desired_schedule_interval_s, Some(60));
 
         let pr = out_programs
             .iter()

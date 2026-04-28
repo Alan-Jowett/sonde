@@ -18,6 +18,7 @@ use sonde_protocol::{
 use std::collections::BTreeMap;
 
 use crate::companion::{pb::CompanionPayloadOrigin, CompanionEventHub};
+use crate::connector::{ConnectorEventHub, ConnectorPayloadOrigin};
 use crate::crypto::RustCryptoSha256;
 use crate::gateway_identity::GatewayIdentity;
 use crate::handler::HandlerRouter;
@@ -234,6 +235,8 @@ pub struct Gateway {
     deferred_replies: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     /// Live event publication for companion processes.
     companion_event_hub: Arc<CompanionEventHub>,
+    /// Live event publication for connector processes.
+    connector_event_hub: Arc<ConnectorEventHub>,
 }
 
 impl Gateway {
@@ -252,6 +255,7 @@ impl Gateway {
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             companion_event_hub: Arc::new(CompanionEventHub::default()),
+            connector_event_hub: Arc::new(ConnectorEventHub::default()),
         }
     }
 
@@ -281,6 +285,7 @@ impl Gateway {
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             companion_event_hub: Arc::new(CompanionEventHub::default()),
+            connector_event_hub: Arc::new(ConnectorEventHub::default()),
         }
     }
 
@@ -303,6 +308,7 @@ impl Gateway {
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             companion_event_hub: Arc::new(CompanionEventHub::default()),
+            connector_event_hub: Arc::new(ConnectorEventHub::default()),
         }
     }
 
@@ -343,6 +349,11 @@ impl Gateway {
     /// Return a clone of the companion event hub.
     pub fn companion_event_hub(&self) -> Arc<CompanionEventHub> {
         Arc::clone(&self.companion_event_hub)
+    }
+
+    /// Return a clone of the connector event hub.
+    pub fn connector_event_hub(&self) -> Arc<ConnectorEventHub> {
+        Arc::clone(&self.connector_event_hub)
     }
 
     /// Process a raw frame using AES-256-GCM authenticated encryption.
@@ -892,6 +903,15 @@ impl Gateway {
             updated_node.firmware_version.clone().unwrap_or_default(),
             timestamp_ms,
         );
+        self.connector_event_hub.emit_actual_state_for_node(
+            node.node_id.clone(),
+            program_hash.clone(),
+            updated_node.assigned_program_hash.clone(),
+            battery_mv,
+            firmware_abi_version,
+            updated_node.firmware_version.clone().unwrap_or_default(),
+            timestamp_ms,
+        );
 
         // 4a. Emit node_online EVENT to handlers (GW-0507)
         {
@@ -989,6 +1009,13 @@ impl Gateway {
                             timestamp_ms,
                             CompanionPayloadOrigin::WakeBlob,
                         );
+                        self.connector_event_hub.emit_app_data(
+                            node_id.clone(),
+                            program_hash.clone(),
+                            wake_data.clone(),
+                            timestamp_ms,
+                            ConnectorPayloadOrigin::WakeBlob,
+                        );
                         let deferred_replies = Arc::clone(&self.deferred_replies);
                         let nonce = header.nonce;
                         tokio::spawn(async move {
@@ -1035,9 +1062,16 @@ impl Gateway {
                         self.companion_event_hub.emit_node_payload(
                             node_id.clone(),
                             program_hash.clone(),
-                            wake_data,
+                            wake_data.clone(),
                             timestamp_ms,
                             CompanionPayloadOrigin::WakeBlob,
+                        );
+                        self.connector_event_hub.emit_app_data(
+                            node_id.clone(),
+                            program_hash.clone(),
+                            wake_data.clone(),
+                            timestamp_ms,
+                            ConnectorPayloadOrigin::WakeBlob,
                         );
                         let ph_hex: String =
                             program_hash.iter().map(|b| format!("{b:02x}")).collect();
@@ -1298,15 +1332,29 @@ impl Gateway {
                     timestamp_ms,
                     CompanionPayloadOrigin::AppData,
                 );
+                self.connector_event_hub.emit_app_data(
+                    node.node_id.clone(),
+                    program_hash.clone(),
+                    blob.clone(),
+                    timestamp_ms,
+                    ConnectorPayloadOrigin::AppData,
+                );
                 result
             }
             Err(handler_count) => {
                 self.companion_event_hub.emit_node_payload(
                     node.node_id.clone(),
                     program_hash.clone(),
-                    blob,
+                    blob.clone(),
                     timestamp_ms,
                     CompanionPayloadOrigin::AppData,
+                );
+                self.connector_event_hub.emit_app_data(
+                    node.node_id.clone(),
+                    program_hash.clone(),
+                    blob.clone(),
+                    timestamp_ms,
+                    ConnectorPayloadOrigin::AppData,
                 );
                 let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
                 warn!(

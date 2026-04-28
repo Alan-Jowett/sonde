@@ -4,6 +4,8 @@
 mod common;
 
 use std::collections::HashMap;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -234,12 +236,21 @@ where
     T: AsyncRead + Unpin,
 {
     let mut len = [0u8; 4];
-    stream.read_exact(&mut len).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), stream.read_exact(&mut len))
+        .await
+        .expect("timed out waiting for connector frame length")
+        .unwrap();
     let len = usize::try_from(u32::from_be_bytes(len)).unwrap();
     let mut payload = vec![0u8; len];
-    stream.read_exact(&mut payload).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), stream.read_exact(&mut payload))
+        .await
+        .expect("timed out waiting for connector frame payload")
+        .unwrap();
     payload
 }
+
+#[cfg(windows)]
+static NEXT_CONNECTOR_TEST_PIPE_ID: AtomicU64 = AtomicU64::new(1);
 
 async fn expect_session_closed<T>(stream: &mut T)
 where
@@ -435,7 +446,11 @@ async fn connector_transport_uses_real_ipc_and_rejects_second_client() {
     #[cfg(unix)]
     let socket_path = _tmp_dir.path().join("connector.sock");
     #[cfg(windows)]
-    let socket_path = format!(r"\\.\pipe\sonde-connector-test-{}", std::process::id());
+    let socket_path = format!(
+        r"\\.\pipe\sonde-connector-test-{}-{}",
+        std::process::id(),
+        NEXT_CONNECTOR_TEST_PIPE_ID.fetch_add(1, Ordering::Relaxed)
+    );
     #[cfg(unix)]
     let socket_path_str = socket_path.to_string_lossy().to_string();
     #[cfg(windows)]

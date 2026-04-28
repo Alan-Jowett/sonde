@@ -33,7 +33,6 @@ use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::storage::Storage;
-use sonde_gateway::transient_display::{ActiveDisplayState, DisplayStateHandle};
 use sonde_gateway::transport::Transport;
 use sonde_gateway::{AdminService, ConnectorService};
 use zeroize::Zeroizing;
@@ -940,7 +939,6 @@ async fn run_gateway(
         gw.set_rssi_thresholds(cli.rssi_good_threshold, cli.rssi_bad_threshold);
         gw
     });
-    let display_state = DisplayStateHandle::new();
     let connector_service = ConnectorService::new(
         storage.clone(),
         pending_commands.clone(),
@@ -966,8 +964,6 @@ async fn run_gateway(
     const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
     loop {
-        display_state.clear().await;
-
         // 6. Open serial port and create modem transport
         let serial_port = match async {
             let port = serial2_tokio::SerialPort::open(&cli.port, cli.baud_rate)?;
@@ -1078,15 +1074,6 @@ async fn run_gateway(
         )
         .with_handler_configs(handler_configs_from_db.clone())
         .with_handler_router(handler_router.clone());
-        display_state
-            .set(ActiveDisplayState::new(
-                Arc::clone(&transport),
-                Arc::clone(&ble_controller),
-                Arc::clone(&display_generation),
-                Arc::clone(&status_page_cycle),
-                Arc::clone(&status_page_scroll_task),
-            ))
-            .await;
         let admin_socket = cli.admin_socket.clone();
 
         let mut grpc_handle = tokio::spawn(async move {
@@ -1397,7 +1384,6 @@ async fn run_gateway(
         tokio::select! {
             _ = &mut shutdown => {
                 info!("shutdown signal received, stopping gateway");
-                display_state.clear().await;
                 // Abort all subsystem tasks so the tokio runtime does not
                 // block on orphaned futures during teardown (GW-1400).
                 ble_controller.cancel_and_wait().await;
@@ -1432,7 +1418,6 @@ async fn run_gateway(
             }
             _ = &mut grpc_handle => {
                 error!("gRPC server exited unexpectedly");
-                display_state.clear().await;
                 // Abort all subsystem tasks so the tokio runtime does not
                 // block on orphaned futures during teardown (GW-1400).
                 ble_controller.cancel_and_wait().await;
@@ -1457,7 +1442,6 @@ async fn run_gateway(
             }
             _ = &mut connector_handle => {
                 error!("connector server exited unexpectedly");
-                display_state.clear().await;
                 ble_controller.cancel_and_wait().await;
                 health_cancel.cancel();
                 frame_loop.abort();
@@ -1495,7 +1479,6 @@ async fn run_gateway(
         // GW-1103 AC7-9: warm reboot recovery — re-run full startup immediately.
         if warm_reboot_flag.load(std::sync::atomic::Ordering::Acquire) {
             info!("modem warm reboot detected — reconnecting immediately");
-            display_state.clear().await;
             // Cancel the BLE pairing session before dropping the transport so
             // the event-forwarding task releases its Arc<UsbEspNowTransport>.
             ble_controller.cancel_and_wait().await;
@@ -1533,7 +1516,6 @@ async fn run_gateway(
         // the old gRPC server releases its UDS/named-pipe socket and its
         // Arc<UsbEspNowTransport> clone, preventing bind failures and transport
         // leaks on the next reconnect iteration (GW-1103, GW-1301).
-        display_state.clear().await;
         ble_controller.cancel_and_wait().await;
         health_cancel.cancel();
         frame_loop.abort();

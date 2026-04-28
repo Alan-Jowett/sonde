@@ -54,6 +54,24 @@ fi
 
 mkdir -p "$state_dir"
 
+check_runtime_ready_with_log() {
+    runtime_ready_log="$state_dir/check-runtime-ready.$$.log"
+    if sonde-azure-companion \
+        --admin-socket "$admin_socket_path" \
+        --connector-socket "$connector_socket_path" \
+        --state-dir "$state_dir" \
+        check-runtime-ready >"$runtime_ready_log" 2>&1; then
+        rm -f "$runtime_ready_log"
+        return 0
+    fi
+
+    if [ -s "$runtime_ready_log" ]; then
+        cat "$runtime_ready_log" >&2 || true
+    fi
+    rm -f "$runtime_ready_log"
+    return 1
+}
+
 if sonde-azure-companion \
     --admin-socket "$admin_socket_path" \
     --connector-socket "$connector_socket_path" \
@@ -108,11 +126,7 @@ if [ "$bootstrap_status" -ne 0 ]; then
     exit "$bootstrap_status"
 fi
 
-if ! sonde-azure-companion \
-    --admin-socket "$admin_socket_path" \
-    --connector-socket "$connector_socket_path" \
-    --state-dir "$state_dir" \
-    check-runtime-ready >/dev/null 2>&1; then
+if ! check_runtime_ready_with_log; then
     echo "bootstrap completed device auth, but runtime state is still incomplete" >&2
     exit 1
 fi

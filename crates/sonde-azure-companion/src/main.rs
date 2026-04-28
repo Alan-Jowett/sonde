@@ -45,6 +45,8 @@ const DEFAULT_STATE_DIR: &str = r"C:\ProgramData\sonde-azure-companion";
 
 const SERVICE_PRINCIPAL_STATE_FILENAME: &str = "service-principal.json";
 const DEFAULT_DOWNSTREAM_WAIT_SECS: u64 = 1;
+const CONNECTOR_MAX_FRAME_LENGTH: usize =
+    sonde_gateway::connector::DEFAULT_CONNECTOR_MAX_MESSAGE_SIZE;
 const ACCESS_TOKEN_REFRESH_MARGIN_SECS: i64 = 300;
 const CLIENT_ASSERTION_LIFETIME_SECS: i64 = 600;
 const CLIENT_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
@@ -403,14 +405,18 @@ fn load_runtime_credential_state(
     let state: ServicePrincipalStateFile = serde_json::from_slice(&std::fs::read(&state_path)?)?;
     let tenant_id = require_non_empty(state.tenant_id, "service principal tenant_id")?;
     let client_id = require_non_empty(state.client_id, "service principal client_id")?;
-    let certificate_path = resolve_state_relative_path(state_dir, state.certificate_path.trim());
+    let certificate_path_value =
+        require_non_empty(state.certificate_path, "service principal certificate_path")?;
+    let certificate_path = resolve_state_relative_path(state_dir, &certificate_path_value);
     if !certificate_path.is_file() {
         return Err(CompanionError::Config(format!(
             "service principal certificate file not found: {}",
             certificate_path.display()
         )));
     }
-    let private_key_path = resolve_state_relative_path(state_dir, state.private_key_path.trim());
+    let private_key_path_value =
+        require_non_empty(state.private_key_path, "service principal private_key_path")?;
+    let private_key_path = resolve_state_relative_path(state_dir, &private_key_path_value);
     if !private_key_path.is_file() {
         return Err(CompanionError::Config(format!(
             "service principal private key file not found: {}",
@@ -430,6 +436,8 @@ fn check_runtime_ready(
 ) -> Result<(RuntimeConfig, RuntimeCredentialState), CompanionError> {
     let runtime_config = load_runtime_config()?;
     let runtime_state = load_runtime_credential_state(state_dir)?;
+    let _ = load_certificate_thumbprint(&runtime_state.certificate_path)?;
+    let _ = load_signing_key(&runtime_state.private_key_path)?;
     Ok((runtime_config, runtime_state))
 }
 
@@ -634,18 +642,20 @@ impl DownstreamConsumer for AzServiceBusConsumer {
     }
 
     async fn complete(&mut self) -> Result<(), CompanionError> {
-        let inflight = self.inflight.take().ok_or_else(|| {
+        let inflight = self.inflight.as_ref().ok_or_else(|| {
             CompanionError::Config("no inflight downstream message to complete".to_string())
         })?;
-        self.receiver.complete_message(&inflight).await?;
+        self.receiver.complete_message(inflight).await?;
+        self.inflight = None;
         Ok(())
     }
 
     async fn abandon(&mut self) -> Result<(), CompanionError> {
-        let inflight = self.inflight.take().ok_or_else(|| {
+        let inflight = self.inflight.as_ref().ok_or_else(|| {
             CompanionError::Config("no inflight downstream message to abandon".to_string())
         })?;
-        self.receiver.abandon_message(&inflight, None).await?;
+        self.receiver.abandon_message(inflight, None).await?;
+        self.inflight = None;
         Ok(())
     }
 }
@@ -715,6 +725,12 @@ where
     let len = usize::try_from(u32::from_be_bytes(len)).map_err(|_| {
         CompanionError::Config("connector frame length did not fit in usize".to_string())
     })?;
+    if len > CONNECTOR_MAX_FRAME_LENGTH {
+        return Err(CompanionError::Config(format!(
+            "connector frame length {len} exceeds max {}",
+            CONNECTOR_MAX_FRAME_LENGTH
+        )));
+    }
     let mut payload = vec![0u8; len];
     reader.read_exact(&mut payload).await?;
     Ok(Some(payload))
@@ -724,6 +740,13 @@ async fn write_framed<T>(writer: &mut T, payload: &[u8]) -> Result<(), Companion
 where
     T: AsyncWrite + Unpin,
 {
+    if payload.len() > CONNECTOR_MAX_FRAME_LENGTH {
+        return Err(CompanionError::Config(format!(
+            "connector payload length {} exceeds max {}",
+            payload.len(),
+            CONNECTOR_MAX_FRAME_LENGTH
+        )));
+    }
     let len = u32::try_from(payload.len()).map_err(|_| {
         CompanionError::Config("connector payload exceeded 32-bit framed length".to_string())
     })?;
@@ -889,10 +912,11 @@ async fn main() -> Result<(), CompanionError> {
 mod tests {
     use super::{
         bootstrap_provider_and_config, check_runtime_ready, load_runtime_config,
-        pump_downstream_once, pump_upstream_once, resolve_state_relative_path,
-        validate_device_client_id, validate_device_scopes, validate_display_lines,
+        pump_downstream_once, pump_upstream_once, read_framed, resolve_state_relative_path,
+        validate_device_client_id, validate_device_scopes, validate_display_lines, write_framed,
         BootstrapAuthArgs, CompanionError, DownstreamConsumer, RuntimeConfig,
         RuntimeCredentialState, ServicePrincipalStateFile, UpstreamPublisher,
+        CONNECTOR_MAX_FRAME_LENGTH,
     };
     use oauth_device_flows::Provider;
     use std::collections::VecDeque;
@@ -957,6 +981,22 @@ mod tests {
         };
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
         state_path
+    }
+
+    fn write_invalid_service_principal_state(temp: &TempDir) {
+        std::fs::write(temp.path().join("client-cert.pem"), b"not-a-certificate").unwrap();
+        std::fs::write(temp.path().join("client-key.pem"), b"not-a-key").unwrap();
+        let state = ServicePrincipalStateFile {
+            tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            certificate_path: "client-cert.pem".to_string(),
+            private_key_path: "client-key.pem".to_string(),
+        };
+        std::fs::write(
+            temp.path().join("service-principal.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
     }
 
     #[derive(Default)]
@@ -1122,6 +1162,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn runtime_ready_rejects_blank_state_paths() {
+        let temp = TempDir::new().unwrap();
+        let state = ServicePrincipalStateFile {
+            tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            certificate_path: " ".to_string(),
+            private_key_path: "client-key.pem".to_string(),
+        };
+        std::fs::write(
+            temp.path().join("service-principal.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(temp.path().join("client-key.pem"), b"dummy").unwrap();
+        temp_env::with_vars(
+            [
+                (
+                    "SONDE_AZURE_SERVICEBUS_NAMESPACE",
+                    Some("example.servicebus.windows.net"),
+                ),
+                ("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE", Some("upstream")),
+                (
+                    "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+                    Some("downstream"),
+                ),
+            ],
+            || {
+                let err = check_runtime_ready(temp.path()).unwrap_err();
+                assert!(err
+                    .to_string()
+                    .contains("service principal certificate_path must be set and non-empty"));
+            },
+        );
+    }
+
+    #[test]
+    fn runtime_ready_rejects_unparseable_pem_material() {
+        let temp = TempDir::new().unwrap();
+        write_invalid_service_principal_state(&temp);
+        temp_env::with_vars(
+            [
+                (
+                    "SONDE_AZURE_SERVICEBUS_NAMESPACE",
+                    Some("example.servicebus.windows.net"),
+                ),
+                ("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE", Some("upstream")),
+                (
+                    "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+                    Some("downstream"),
+                ),
+            ],
+            || {
+                assert!(check_runtime_ready(temp.path()).is_err());
+            },
+        );
+    }
+
     #[tokio::test]
     async fn upstream_pump_publishes_one_framed_payload() {
         let (mut client, server) = duplex(64);
@@ -1175,6 +1273,31 @@ mod tests {
             .is_err());
         assert_eq!(consumer.completes, 0);
         assert_eq!(consumer.abandons, 1);
+    }
+
+    #[tokio::test]
+    async fn read_framed_rejects_payloads_over_connector_limit() {
+        let oversized_len = u32::try_from(CONNECTOR_MAX_FRAME_LENGTH + 1)
+            .unwrap()
+            .to_be_bytes();
+        let (mut client, mut server) = duplex(16);
+
+        tokio::spawn(async move {
+            server.write_all(&oversized_len).await.unwrap();
+            server.flush().await.unwrap();
+        });
+
+        let err = read_framed(&mut client).await.unwrap_err();
+        assert!(err.to_string().contains("exceeds max"));
+    }
+
+    #[tokio::test]
+    async fn write_framed_rejects_payloads_over_connector_limit() {
+        let (mut client, _server) = duplex(16);
+        let payload = vec![0u8; CONNECTOR_MAX_FRAME_LENGTH + 1];
+
+        let err = write_framed(&mut client, &payload).await.unwrap_err();
+        assert!(err.to_string().contains("exceeds max"));
     }
 
     #[test]

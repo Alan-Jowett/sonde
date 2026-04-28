@@ -28,6 +28,28 @@ use sonde_gateway::admin::pb::*;
 type BlePairingStream =
     Pin<Box<dyn futures::Stream<Item = Result<BlePairingEvent, Status>> + Send>>;
 
+const TEST_CERT_PEM: &str = concat!(
+    "-----BEGIN CERTIFICATE-----\n",
+    "MIIBszCCAVmgAwIBAgIUAlA4D2+fMZ5I2mv8VLK0sgM4nWkwCgYIKoZIzj0EAwIw\n",
+    "GDEWMBQGA1UEAwwNc29uZGUtdGVzdC1jZXJ0MB4XDTI2MDEwMTAwMDAwMFoXDTM2\n",
+    "MDEwMTAwMDAwMFowGDEWMBQGA1UEAwwNc29uZGUtdGVzdC1jZXJ0MFkwEwYHKoZI\n",
+    "zj0CAQYIKoZIzj0DAQcDQgAErTVS8gkGqkT1vqe8LTTlYF+XNfL7+uJ+9fwbH3P9\n",
+    "SiJrjN4J1wzqP8cP6lP0wtD+u2E4b4W0QW+E3ajQe8rW+6NTMFEwHQYDVR0OBBYE\n",
+    "FCn5Pw3Ozl7pJ1mJtqQv5Xz6vbALMB8GA1UdIwQYMBaAFCn5Pw3Ozl7pJ1mJtqQv\n",
+    "5Xz6vbALMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIhAJNL5l3C\n",
+    "tI6X5x4c4x6pI0vA6PfXzL5K5ll4D7OQyZcAAiA1dQXJk0v6qY+Mi8XGcX6Z7J5u\n",
+    "gW4Y8d+4T2oD7j9m0Q==\n",
+    "-----END CERTIFICATE-----\n"
+);
+
+const TEST_KEY_PEM: &str = concat!(
+    "-----BEGIN PRIVATE KEY-----\n",
+    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg2X8i4lE4hM2t0b5Y\n",
+    "fI7xW0ZzM3ZrY4L3s67qG8R0uYWhRANCAAStNVLyCQaqRPW+p7wtNOVgX5c18vv6\n",
+    "4n71/Bsfc/1KImuM3gnXDOo/xw/qU/TC0P67YThvhbRBb4TdqNB7ytb7\n",
+    "-----END PRIVATE KEY-----\n"
+);
+
 #[derive(Clone)]
 struct TestAdminServer {
     display_requests: Arc<Mutex<Vec<Vec<String>>>>,
@@ -292,9 +314,11 @@ fn write_runtime_wrapper(bin_dir: &Path, wrapper_log: &Path) {
     write_executable(
         &bin_dir.join("sonde-azure-companion"),
         &format!(
-            "#!/bin/sh\nset -eu\nadmin_socket=\"\"\nconnector_socket=\"\"\nstate_dir=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --admin-socket)\n      admin_socket=\"$2\"\n      shift 2\n      ;;\n    --connector-socket)\n      connector_socket=\"$2\"\n      shift 2\n      ;;\n    --state-dir)\n      state_dir=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\ncase \"$1\" in\n  run)\n    printf 'run %s %s %s\\n' \"$admin_socket\" \"$connector_socket\" \"$state_dir\" >> \"{}\"\n    exit 0\n    ;;\n  bootstrap-auth)\n    \"{}\" --admin-socket \"$admin_socket\" --connector-socket \"$connector_socket\" --state-dir \"$state_dir\" \"$@\"\n    status=$?\n    if [ \"$status\" -eq 0 ] && [ \"${{SONDE_TEST_WRITE_RUNTIME_STATE:-0}}\" = \"1\" ]; then\n      mkdir -p \"$state_dir\"\n      cat > \"$state_dir/client-cert.pem\" <<'EOF'\n-----BEGIN CERTIFICATE-----\nMIIBhTCCASugAwIBAgIUY0y4lG7kY7xKpD3xj0w4H0P0aQYwCgYIKoZIzj0EAwIw\nGDEWMBQGA1UEAwwNc29uZGUtdGVzdC1jZXJ0MB4XDTI2MDEwMTAwMDAwMFoXDTM2\nMDEwMTAwMDAwMFowGDEWMBQGA1UEAwwNc29uZGUtdGVzdC1jZXJ0MFkwEwYHKoZI\nzj0CAQYIKoZIzj0DAQcDQgAE4S0r6F8qLZ8w1+E3gD2d8EoV5Wb7c5d1u0S6m7nY\nkH0QwP2wG3g1rj0G4F2L4x0Fv8dB7p3gH2qkE3JQ3V+32KNTMFEwHQYDVR0OBBYE\nFDnJ2C4XhS9Rz4D0Hj2A0m0WjvYSMB8GA1UdIwQYMBaAFDnJ2C4XhS9Rz4D0Hj2A\n0m0WjvYSMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKF5N5kU\nn6u4iW4yW+z5AxpKxR4QYw8WQk3gk2mQY7fDAiEA0TjKx0sS7Y2f7g5mQ8b4G9nP\n8qS7xA6mQ9dL8f3J9xk=\n-----END CERTIFICATE-----\nEOF\n      cat > \"$state_dir/client-key.pem\" <<'EOF'\n-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgQ5z5Q4e0v7rN7m4K\nXW4bqM5dYt8G0S1G3Z4e1pY4JqKhRANCAAT hLSvoXyotnzDX4TeAPZ3wShXlZvtz\nl3W7RLqbudiQfRDA/bAbeDWuPQbgXYvjHQW/x0HuneAf aqQTclDdX7fY\n-----END PRIVATE KEY-----\nEOF\n      cat > \"$state_dir/service-principal.json\" <<'EOF'\n{{\"tenant_id\":\"11111111-1111-1111-1111-111111111111\",\"client_id\":\"22222222-2222-2222-2222-222222222222\",\"certificate_path\":\"client-cert.pem\",\"private_key_path\":\"client-key.pem\"}}\nEOF\n    fi\n    exit \"$status\"\n    ;;\n  *)\n    exec \"{}\" --admin-socket \"$admin_socket\" --connector-socket \"$connector_socket\" --state-dir \"$state_dir\" \"$@\"\n    ;;\nesac\n",
+            "#!/bin/sh\nset -eu\nadmin_socket=\"\"\nconnector_socket=\"\"\nstate_dir=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --admin-socket)\n      admin_socket=\"$2\"\n      shift 2\n      ;;\n    --connector-socket)\n      connector_socket=\"$2\"\n      shift 2\n      ;;\n    --state-dir)\n      state_dir=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\ncase \"$1\" in\n  run)\n    printf 'run %s %s %s\\n' \"$admin_socket\" \"$connector_socket\" \"$state_dir\" >> \"{}\"\n    exit 0\n    ;;\n  bootstrap-auth)\n    \"{}\" --admin-socket \"$admin_socket\" --connector-socket \"$connector_socket\" --state-dir \"$state_dir\" \"$@\"\n    status=$?\n    if [ \"$status\" -eq 0 ] && [ \"${{SONDE_TEST_WRITE_RUNTIME_STATE:-0}}\" = \"1\" ]; then\n      mkdir -p \"$state_dir\"\n      cat > \"$state_dir/client-cert.pem\" <<'EOF'\n{}\nEOF\n      cat > \"$state_dir/client-key.pem\" <<'EOF'\n{}\nEOF\n      cat > \"$state_dir/service-principal.json\" <<'EOF'\n{{\"tenant_id\":\"11111111-1111-1111-1111-111111111111\",\"client_id\":\"22222222-2222-2222-2222-222222222222\",\"certificate_path\":\"client-cert.pem\",\"private_key_path\":\"client-key.pem\"}}\nEOF\n    fi\n    exit \"$status\"\n    ;;\n  *)\n    exec \"{}\" --admin-socket \"$admin_socket\" --connector-socket \"$connector_socket\" --state-dir \"$state_dir\" \"$@\"\n    ;;\nesac\n",
             wrapper_log.display(),
             env!("CARGO_BIN_EXE_sonde-azure-companion"),
+            TEST_CERT_PEM,
+            TEST_KEY_PEM,
             env!("CARGO_BIN_EXE_sonde-azure-companion")
         ),
     );
@@ -302,8 +326,8 @@ fn write_runtime_wrapper(bin_dir: &Path, wrapper_log: &Path) {
 
 fn write_runtime_ready_state(state_dir: &Path) {
     fs::create_dir_all(state_dir).unwrap();
-    fs::write(state_dir.join("client-cert.pem"), b"dummy-cert").unwrap();
-    fs::write(state_dir.join("client-key.pem"), b"dummy-key").unwrap();
+    fs::write(state_dir.join("client-cert.pem"), TEST_CERT_PEM).unwrap();
+    fs::write(state_dir.join("client-key.pem"), TEST_KEY_PEM).unwrap();
     fs::write(
         state_dir.join("service-principal.json"),
         br#"{"tenant_id":"11111111-1111-1111-1111-111111111111","client_id":"22222222-2222-2222-2222-222222222222","certificate_path":"client-cert.pem","private_key_path":"client-key.pem"}"#,

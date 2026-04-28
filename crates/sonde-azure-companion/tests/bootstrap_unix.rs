@@ -292,11 +292,23 @@ fn write_runtime_wrapper(bin_dir: &Path, wrapper_log: &Path) {
     write_executable(
         &bin_dir.join("sonde-azure-companion"),
         &format!(
-            "#!/bin/sh\nset -eu\nadmin_socket=\"\"\nconnector_socket=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --admin-socket)\n      admin_socket=\"$2\"\n      shift 2\n      ;;\n    --connector-socket)\n      connector_socket=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\nif [ \"$1\" = \"run\" ]; then\n  printf 'run %s %s\\n' \"$admin_socket\" \"$connector_socket\" >> \"{}\"\n  exit 0\nfi\nexec \"{}\" --admin-socket \"$admin_socket\" --connector-socket \"$connector_socket\" \"$@\"\n",
+            "#!/bin/sh\nset -eu\nadmin_socket=\"\"\nconnector_socket=\"\"\nstate_dir=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --admin-socket)\n      admin_socket=\"$2\"\n      shift 2\n      ;;\n    --connector-socket)\n      connector_socket=\"$2\"\n      shift 2\n      ;;\n    --state-dir)\n      state_dir=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\ncase \"$1\" in\n  run)\n    printf 'run %s %s %s\\n' \"$admin_socket\" \"$connector_socket\" \"$state_dir\" >> \"{}\"\n    exit 0\n    ;;\n  bootstrap-auth)\n    \"{}\" --admin-socket \"$admin_socket\" --connector-socket \"$connector_socket\" --state-dir \"$state_dir\" \"$@\"\n    status=$?\n    if [ \"$status\" -eq 0 ] && [ \"${{SONDE_TEST_WRITE_RUNTIME_STATE:-0}}\" = \"1\" ]; then\n      mkdir -p \"$state_dir\"\n      cat > \"$state_dir/client-cert.pem\" <<'EOF'\n-----BEGIN CERTIFICATE-----\nMIIBhTCCASugAwIBAgIUY0y4lG7kY7xKpD3xj0w4H0P0aQYwCgYIKoZIzj0EAwIw\nGDEWMBQGA1UEAwwNc29uZGUtdGVzdC1jZXJ0MB4XDTI2MDEwMTAwMDAwMFoXDTM2\nMDEwMTAwMDAwMFowGDEWMBQGA1UEAwwNc29uZGUtdGVzdC1jZXJ0MFkwEwYHKoZI\nzj0CAQYIKoZIzj0DAQcDQgAE4S0r6F8qLZ8w1+E3gD2d8EoV5Wb7c5d1u0S6m7nY\nkH0QwP2wG3g1rj0G4F2L4x0Fv8dB7p3gH2qkE3JQ3V+32KNTMFEwHQYDVR0OBBYE\nFDnJ2C4XhS9Rz4D0Hj2A0m0WjvYSMB8GA1UdIwQYMBaAFDnJ2C4XhS9Rz4D0Hj2A\n0m0WjvYSMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKF5N5kU\nn6u4iW4yW+z5AxpKxR4QYw8WQk3gk2mQY7fDAiEA0TjKx0sS7Y2f7g5mQ8b4G9nP\n8qS7xA6mQ9dL8f3J9xk=\n-----END CERTIFICATE-----\nEOF\n      cat > \"$state_dir/client-key.pem\" <<'EOF'\n-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgQ5z5Q4e0v7rN7m4K\nXW4bqM5dYt8G0S1G3Z4e1pY4JqKhRANCAAT hLSvoXyotnzDX4TeAPZ3wShXlZvtz\nl3W7RLqbudiQfRDA/bAbeDWuPQbgXYvjHQW/x0HuneAf aqQTclDdX7fY\n-----END PRIVATE KEY-----\nEOF\n      cat > \"$state_dir/service-principal.json\" <<'EOF'\n{{\"tenant_id\":\"11111111-1111-1111-1111-111111111111\",\"client_id\":\"22222222-2222-2222-2222-222222222222\",\"certificate_path\":\"client-cert.pem\",\"private_key_path\":\"client-key.pem\"}}\nEOF\n    fi\n    exit \"$status\"\n    ;;\n  *)\n    exec \"{}\" --admin-socket \"$admin_socket\" --connector-socket \"$connector_socket\" --state-dir \"$state_dir\" \"$@\"\n    ;;\nesac\n",
             wrapper_log.display(),
+            env!("CARGO_BIN_EXE_sonde-azure-companion"),
             env!("CARGO_BIN_EXE_sonde-azure-companion")
         ),
     );
+}
+
+fn write_runtime_ready_state(state_dir: &Path) {
+    fs::create_dir_all(state_dir).unwrap();
+    fs::write(state_dir.join("client-cert.pem"), b"dummy-cert").unwrap();
+    fs::write(state_dir.join("client-key.pem"), b"dummy-key").unwrap();
+    fs::write(
+        state_dir.join("service-principal.json"),
+        br#"{"tenant_id":"11111111-1111-1111-1111-111111111111","client_id":"22222222-2222-2222-2222-222222222222","certificate_path":"client-cert.pem","private_key_path":"client-key.pem"}"#,
+    )
+    .unwrap();
 }
 
 fn bootstrap_env(
@@ -341,6 +353,18 @@ fn bootstrap_env(
         (
             "SONDE_AZURE_DEVICE_TOKEN_URL".to_string(),
             format!("{}/token", oauth_server.uri()),
+        ),
+        (
+            "SONDE_AZURE_SERVICEBUS_NAMESPACE".to_string(),
+            "example.servicebus.windows.net".to_string(),
+        ),
+        (
+            "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE".to_string(),
+            "upstream".to_string(),
+        ),
+        (
+            "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE".to_string(),
+            "downstream".to_string(),
         ),
     ]
 }
@@ -433,15 +457,19 @@ async fn t_azc_0101_0102_0200_0201_0202_bootstrap_success_path() {
 
     let wrapper_log = temp.path().join("wrapper.log");
     write_runtime_wrapper(&bin_dir, &wrapper_log);
-
-    let output = run_bootstrap_with_env(&bootstrap_env(
+    let mut env = bootstrap_env(
         &bin_dir,
         &state_dir,
         &admin_socket_path,
         &connector_socket_path,
         &oauth_server,
-    ))
-    .await;
+    );
+    env.push((
+        "SONDE_TEST_WRITE_RUNTIME_STATE".to_string(),
+        "1".to_string(),
+    ));
+
+    let output = run_bootstrap_with_env(&env).await;
     assert!(output.status.success(), "bootstrap failed: {output:?}");
 
     let requests = display_requests.lock().await.clone();
@@ -453,6 +481,7 @@ async fn t_azc_0101_0102_0200_0201_0202_bootstrap_success_path() {
     assert!(wrapper_contents.contains("run "));
     assert!(wrapper_contents.contains(&admin_socket_path.display().to_string()));
     assert!(wrapper_contents.contains(&connector_socket_path.display().to_string()));
+    assert!(wrapper_contents.contains(&state_dir.display().to_string()));
 }
 
 #[tokio::test]
@@ -489,21 +518,15 @@ async fn t_azc_0203_display_failure_aborts_bootstrap() {
 }
 
 #[tokio::test]
-async fn t_azc_0104_previously_used_state_still_runs_device_auth() {
+async fn t_azc_0104_ready_state_skips_device_auth() {
     let temp = TempDir::new().unwrap();
     let bin_dir = prepare_path_dir(&temp);
     let state_dir = temp.path().join("state");
-    fs::create_dir_all(&state_dir).unwrap();
-    fs::write(
-        state_dir.join("managed-identity.json"),
-        b"{\"tenant\":\"placeholder\"}",
-    )
-    .unwrap();
+    write_runtime_ready_state(&state_dir);
     let admin_socket_path = temp.path().join("admin.sock");
     let connector_socket_path = temp.path().join("connector.sock");
     let display_requests = spawn_admin_server(&admin_socket_path, None).await;
     let oauth_server = MockServer::start().await;
-    mount_successful_device_flow(&oauth_server, "QWER-5678", 1).await;
 
     let wrapper_log = temp.path().join("wrapper.log");
     write_runtime_wrapper(&bin_dir, &wrapper_log);
@@ -516,25 +539,21 @@ async fn t_azc_0104_previously_used_state_still_runs_device_auth() {
         &oauth_server,
     ))
     .await;
-    assert!(output.status.success(), "bootstrap failed: {output:?}");
-    assert_eq!(
-        display_requests.lock().await.clone(),
-        vec![vec!["Azure login".to_string(), "QWER-5678".to_string()]]
-    );
+    assert!(output.status.success(), "runtime start failed: {output:?}");
+    assert!(display_requests.lock().await.is_empty());
     assert!(fs::read_to_string(&wrapper_log).unwrap().contains("run "));
 }
 
 #[tokio::test]
-async fn t_azc_0105_repeated_starts_repeat_device_auth() {
+async fn t_azc_0105_repeated_starts_reuse_ready_state() {
     let temp = TempDir::new().unwrap();
     let bin_dir = prepare_path_dir(&temp);
     let state_dir = temp.path().join("state");
-    fs::create_dir_all(&state_dir).unwrap();
+    write_runtime_ready_state(&state_dir);
     let admin_socket_path = temp.path().join("admin.sock");
     let connector_socket_path = temp.path().join("connector.sock");
     let display_requests = spawn_admin_server(&admin_socket_path, None).await;
     let oauth_server = MockServer::start().await;
-    mount_successful_device_flow(&oauth_server, "REPEAT-1", 2).await;
 
     let wrapper_log = temp.path().join("wrapper.log");
     write_runtime_wrapper(&bin_dir, &wrapper_log);
@@ -552,10 +571,10 @@ async fn t_azc_0105_repeated_starts_repeat_device_auth() {
     let second = run_bootstrap_with_env(&env).await;
     assert!(
         second.status.success(),
-        "second bootstrap failed: {second:?}"
+        "second runtime start failed: {second:?}"
     );
 
-    assert_eq!(display_requests.lock().await.len(), 2);
+    assert!(display_requests.lock().await.is_empty());
     let wrapper_contents = fs::read_to_string(&wrapper_log).unwrap();
     assert_eq!(wrapper_contents.lines().count(), 2);
 }
@@ -588,27 +607,35 @@ async fn t_azc_0106_login_failure_aborts_bootstrap() {
 }
 
 #[tokio::test]
-async fn t_azc_0107_runtime_connects_to_connector_socket() {
+async fn t_azc_0107_bootstrap_without_runtime_state_fails_closed() {
     let temp = TempDir::new().unwrap();
+    let bin_dir = prepare_path_dir(&temp);
+    let state_dir = temp.path().join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let admin_socket_path = temp.path().join("admin.sock");
     let connector_socket_path = temp.path().join("connector.sock");
-    let listener = UnixListener::bind(&connector_socket_path).unwrap();
+    let display_requests = spawn_admin_server(&admin_socket_path, None).await;
+    let oauth_server = MockServer::start().await;
+    mount_successful_device_flow(&oauth_server, "POST-BOOT", 1).await;
 
-    let mut child = TokioCommand::new(env!("CARGO_BIN_EXE_sonde-azure-companion"))
-        .arg("--connector-socket")
-        .arg(&connector_socket_path)
-        .arg("run")
-        .spawn()
-        .unwrap();
+    let wrapper_log = temp.path().join("wrapper.log");
+    write_runtime_wrapper(&bin_dir, &wrapper_log);
 
-    let accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept())
-        .await
-        .expect("timed out waiting for runtime connector connection")
-        .unwrap();
-    drop(accepted);
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(child.try_wait().unwrap().is_none());
-    child.kill().await.unwrap();
+    let output = run_bootstrap_with_env(&bootstrap_env(
+        &bin_dir,
+        &state_dir,
+        &admin_socket_path,
+        &connector_socket_path,
+        &oauth_server,
+    ))
+    .await;
+    assert!(!output.status.success());
+    assert_eq!(
+        display_requests.lock().await.clone(),
+        vec![vec!["Azure login".to_string(), "POST-BOOT".to_string()]]
+    );
+    assert!(!wrapper_log.exists() || fs::read_to_string(&wrapper_log).unwrap().is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("runtime state is still incomplete"));
 }
 
 #[test]
@@ -675,7 +702,7 @@ fn host_bootstrap_invokes_docker_with_expected_mounts() {
 }
 
 #[test]
-fn host_bootstrap_requires_non_empty_bootstrap_env() {
+fn host_bootstrap_defers_bootstrap_env_validation_to_container() {
     let temp = TempDir::new().unwrap();
     let bin_dir = prepare_path_dir(&temp);
     let state_dir = temp.path().join("state");
@@ -710,22 +737,14 @@ fn host_bootstrap_requires_non_empty_bootstrap_env() {
     cmd.env("SONDE_AZURE_COMPANION_STATE_DIR", &state_dir);
     cmd.env("SONDE_GATEWAY_RUNTIME_DIR", &runtime_dir);
     cmd.env("SONDE_AZURE_DEVICE_CLIENT_ID", "");
-    cmd.env(
-        "SONDE_AZURE_DEVICE_SCOPES",
-        "https://management.azure.com/.default",
-    );
+    cmd.env("SONDE_AZURE_DEVICE_SCOPES", "");
 
     let output = cmd.output().unwrap();
+    assert!(output.status.success(), "host bootstrap failed: {output:?}");
     assert!(
-        !output.status.success(),
-        "host bootstrap unexpectedly succeeded"
+        docker_log.exists(),
+        "docker should still be invoked by the host wrapper"
     );
-    assert!(
-        !docker_log.exists(),
-        "docker should not be invoked when required bootstrap env is missing"
-    );
-    assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("SONDE_AZURE_DEVICE_CLIENT_ID must be set"));
 }
 
 #[test]
@@ -813,6 +832,11 @@ fn container_bootstrap_forwards_sigterm_to_bootstrap_auth_child() {
     cmd.env(
         "SONDE_GATEWAY_CONNECTOR_SOCKET",
         temp.path().join("connector.sock"),
+    );
+    cmd.env("SONDE_AZURE_DEVICE_CLIENT_ID", "test-client-id");
+    cmd.env(
+        "SONDE_AZURE_DEVICE_SCOPES",
+        "https://management.azure.com/.default",
     );
 
     let mut child = cmd.spawn().unwrap();

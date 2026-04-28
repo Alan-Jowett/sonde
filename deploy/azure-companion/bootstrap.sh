@@ -24,16 +24,6 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         echo "gateway connector socket not found: $connector_socket_path" >&2
         exit 1
     fi
-    if [ "$#" -eq 0 ]; then
-        if [ -z "${SONDE_AZURE_DEVICE_CLIENT_ID:-}" ]; then
-            echo "SONDE_AZURE_DEVICE_CLIENT_ID must be set for bootstrap" >&2
-            exit 1
-        fi
-        if [ -z "${SONDE_AZURE_DEVICE_SCOPES:-}" ]; then
-            echo "SONDE_AZURE_DEVICE_SCOPES must be set for bootstrap" >&2
-            exit 1
-        fi
-    fi
 
     exec docker run --rm \
         --name "${SONDE_AZURE_COMPANION_CONTAINER_NAME:-sonde-azure-companion}" \
@@ -41,6 +31,9 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         -e SONDE_AZURE_COMPANION_STATE_DIR="$container_state_dir" \
         -e SONDE_GATEWAY_ADMIN_SOCKET="$container_admin_socket_path" \
         -e SONDE_GATEWAY_CONNECTOR_SOCKET="$container_connector_socket_path" \
+        -e SONDE_AZURE_SERVICEBUS_NAMESPACE \
+        -e SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE \
+        -e SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE \
         -e SONDE_AZURE_DEVICE_CLIENT_ID \
         -e SONDE_AZURE_DEVICE_SCOPES \
         -e SONDE_AZURE_DEVICE_POLL_INTERVAL_SECS \
@@ -61,6 +54,27 @@ fi
 
 mkdir -p "$state_dir"
 
+if sonde-azure-companion \
+    --admin-socket "$admin_socket_path" \
+    --connector-socket "$connector_socket_path" \
+    --state-dir "$state_dir" \
+    check-runtime-ready >/dev/null 2>&1; then
+    exec sonde-azure-companion \
+        --admin-socket "$admin_socket_path" \
+        --connector-socket "$connector_socket_path" \
+        --state-dir "$state_dir" \
+        run
+fi
+
+if [ -z "${SONDE_AZURE_DEVICE_CLIENT_ID:-}" ]; then
+    echo "SONDE_AZURE_DEVICE_CLIENT_ID must be set for bootstrap" >&2
+    exit 1
+fi
+if [ -z "${SONDE_AZURE_DEVICE_SCOPES:-}" ]; then
+    echo "SONDE_AZURE_DEVICE_SCOPES must be set for bootstrap" >&2
+    exit 1
+fi
+
 bootstrap_pid=
 
 forward_signal() {
@@ -77,8 +91,8 @@ trap 'forward_signal INT; exit 130' INT
 sonde-azure-companion \
     --admin-socket "$admin_socket_path" \
     --connector-socket "$connector_socket_path" \
-    bootstrap-auth \
-    --state-dir "$state_dir" &
+    --state-dir "$state_dir" \
+    bootstrap-auth &
 bootstrap_pid=$!
 
 if wait "$bootstrap_pid"; then
@@ -94,7 +108,17 @@ if [ "$bootstrap_status" -ne 0 ]; then
     exit "$bootstrap_status"
 fi
 
+if ! sonde-azure-companion \
+    --admin-socket "$admin_socket_path" \
+    --connector-socket "$connector_socket_path" \
+    --state-dir "$state_dir" \
+    check-runtime-ready >/dev/null 2>&1; then
+    echo "bootstrap completed device auth, but runtime state is still incomplete" >&2
+    exit 1
+fi
+
 exec sonde-azure-companion \
     --admin-socket "$admin_socket_path" \
     --connector-socket "$connector_socket_path" \
+    --state-dir "$state_dir" \
     run

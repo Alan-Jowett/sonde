@@ -9,7 +9,7 @@
 # rust:alpine — pinned by digest for reproducible builds.
 FROM rust:alpine@sha256:ef7b340d4201444fa2757dfddfd4c03be9d2bde468de7b7a68b0e9fabb794334 AS builder
 
-RUN apk add --no-cache build-base musl-dev protobuf pkgconf
+RUN apk add --no-cache build-base musl-dev openssl-dev protobuf pkgconf
 
 WORKDIR /sonde
 COPY . .
@@ -19,7 +19,7 @@ RUN cargo build --release -p sonde-azure-companion
 # alpine:3.21 — pinned by digest for reproducible builds.
 FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache ca-certificates libstdc++ openssl \
     && mkdir -p /var/lib/sonde-azure-companion /var/run/sonde
 
 COPY --from=builder /sonde/target/release/sonde-azure-companion /usr/local/bin/sonde-azure-companion
@@ -31,7 +31,6 @@ RUN chmod +x /usr/local/bin/sonde-azure-companion \
     /opt/sonde/deploy/azure-companion/entrypoint.sh
 
 ENV SONDE_AZURE_COMPANION_STATE_DIR=/var/lib/sonde-azure-companion
-ENV SONDE_GATEWAY_COMPANION_SOCKET=/var/run/sonde/companion.sock
 
 WORKDIR /var/lib/sonde-azure-companion
 ENTRYPOINT ["/opt/sonde/deploy/azure-companion/entrypoint.sh"]

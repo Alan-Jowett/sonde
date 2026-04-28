@@ -380,7 +380,17 @@ async fn connect_admin_client(
         .connect_with_connector(service_fn(move |_: Uri| {
             let path = socket_path.clone();
             async move {
-                let stream = tokio::net::UnixStream::connect(path).await?;
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                let stream = loop {
+                    match tokio::net::UnixStream::connect(&path).await {
+                        Ok(stream) => break stream,
+                        Err(err) if tokio::time::Instant::now() < deadline => {
+                            let _ = err;
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                };
                 Ok::<_, std::io::Error>(TokioIo::new(stream))
             }
         }))
@@ -471,7 +481,7 @@ async fn connector_transport_uses_real_ipc_and_rejects_second_client() {
         admin_client
             .list_nodes(Request::new(Empty {}))
             .await
-        .is_err(),
+            .is_err(),
         "connector socket must not accept admin gRPC calls"
     );
 

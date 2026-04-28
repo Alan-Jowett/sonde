@@ -464,11 +464,6 @@ async fn connector_transport_uses_real_ipc_and_rejects_second_client() {
             .expect("connector server should run");
     });
 
-    let mut first = connect_connector_socket(&socket_path_str)
-        .await
-        .expect("first connector client should connect");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     let mut admin_client = connect_admin_client(&socket_path_str)
         .await
         .expect("admin client transport should connect");
@@ -476,9 +471,14 @@ async fn connector_transport_uses_real_ipc_and_rejects_second_client() {
         admin_client
             .list_nodes(Request::new(Empty {}))
             .await
-            .is_err(),
+        .is_err(),
         "connector socket must not accept admin gRPC calls"
     );
+
+    let mut first = connect_connector_socket(&socket_path_str)
+        .await
+        .expect("first connector client should connect");
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut second = connect_connector_socket(&socket_path_str)
         .await

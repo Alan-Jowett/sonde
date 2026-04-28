@@ -566,7 +566,12 @@ impl SqliteStorage {
                     })?;
             }
             if !has_col("desired_schedule_interval_s") {
-                conn.execute_batch(
+                let tx = conn.unchecked_transaction().map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: begin desired_schedule_interval_s transaction: {e}"
+                    ))
+                })?;
+                tx.execute_batch(
                     "ALTER TABLE nodes ADD COLUMN desired_schedule_interval_s INTEGER;\
                      UPDATE nodes \
                         SET desired_schedule_interval_s = schedule_interval_s \
@@ -575,6 +580,11 @@ impl SqliteStorage {
                 .map_err(|e| {
                     StorageError::Internal(format!(
                         "migration failed: add/copy desired_schedule_interval_s: {e}"
+                    ))
+                })?;
+                tx.commit().map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: commit desired_schedule_interval_s transaction: {e}"
                     ))
                 })?;
             }

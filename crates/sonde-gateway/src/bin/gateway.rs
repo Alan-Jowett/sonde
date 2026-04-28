@@ -1564,8 +1564,9 @@ async fn run_gateway(
             frame_loop.abort();
             ble_loop.abort();
             grpc_handle.abort();
-            companion_handle.abort();
-            connector_handle.abort();
+            // Keep the long-lived local API servers running across modem reconnects.
+            // They are spawned outside the reconnect loop and must survive until
+            // process shutdown or an actual server-task failure.
             // Guard each await with is_finished(): if a handle's output was already
             // consumed by the select! arm above, awaiting it again would hang
             // (poll returns Pending indefinitely once the output is taken).
@@ -1599,8 +1600,7 @@ async fn run_gateway(
         frame_loop.abort();
         ble_loop.abort();
         grpc_handle.abort();
-        companion_handle.abort();
-        connector_handle.abort();
+        // Keep the long-lived local API servers running across modem reconnects.
         if !frame_loop.is_finished() {
             let _ = frame_loop.await;
         }

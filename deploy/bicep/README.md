@@ -13,7 +13,7 @@ Azure companion architecture.
   - `connector-upstream`
   - `desired-state`
 - An Azure Storage Account and Table resource for later decoded-data storage
-- A placeholder Azure Function App on a consumption plan
+- A placeholder Azure Function App on a Flex Consumption plan
 - A system-assigned managed identity on the Function App with:
   - receive permissions on the upstream queue
   - send permissions on the downstream queue

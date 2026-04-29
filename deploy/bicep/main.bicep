@@ -68,6 +68,7 @@ module companionIdentity './modules/companion-identity.bicep' = {
   name: 'companionIdentity'
   params: {
     projectName: projectName
+    identitySuffix: take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'companion-identity'), 8)
     certificateBase64: companionCertificateBase64
     certificateDisplayName: companionCertificateDisplayName
   }

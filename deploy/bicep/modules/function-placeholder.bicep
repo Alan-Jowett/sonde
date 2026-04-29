@@ -12,31 +12,31 @@ param functionAppName string
 @description('Function hosting plan name.')
 param functionPlanName string
 
+@description('Blob container URL used by the Function placeholder deployment configuration.')
+param deploymentContainerUrl string
+
 @secure()
-@description('Connection string for the Function host storage account.')
+@description('Connection string used by the Function placeholder deployment storage configuration.')
 param storageConnectionString string
 
 @description('Tags applied to provisioned resources.')
 param tags object
 
-var contentShareName = toLower(take(replace(functionAppName, '-', ''), 63))
-
-resource hostingPlan 'Microsoft.Web/serverfarms@2022-03-01' = {
+resource hostingPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: functionPlanName
   location: location
+  kind: 'functionapp'
   tags: tags
   sku: {
-    name: 'Y1'
-    tier: 'Dynamic'
-    size: 'Y1'
-    family: 'Y'
+    name: 'FC1'
+    tier: 'FlexConsumption'
   }
   properties: {
     reserved: true
   }
 }
 
-resource functionApp 'Microsoft.Web/sites@2022-03-01' = {
+resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   name: functionAppName
   location: location
   kind: 'functionapp,linux'
@@ -45,43 +45,39 @@ resource functionApp 'Microsoft.Web/sites@2022-03-01' = {
     type: 'SystemAssigned'
   }
   properties: {
-    reserved: true
     httpsOnly: true
     serverFarmId: hostingPlan.id
     siteConfig: {
-      linuxFxVersion: 'Custom'
-      appSettings: [
-        {
-          name: 'AzureWebJobsStorage'
-          value: storageConnectionString
+      minTlsVersion: '1.2'
+    }
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: deploymentContainerUrl
+          authentication: {
+            type: 'StorageAccountConnectionString'
+            storageAccountConnectionStringName: 'DEPLOYMENT_STORAGE_CONNECTION_STRING'
+          }
         }
-        {
-          name: 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING'
-          value: storageConnectionString
-        }
-        {
-          name: 'WEBSITE_CONTENTSHARE'
-          value: contentShareName
-        }
-        {
-          name: 'FUNCTIONS_EXTENSION_VERSION'
-          value: '~4'
-        }
-        {
-          name: 'FUNCTIONS_WORKER_RUNTIME'
-          value: 'custom'
-        }
-      ]
+      }
+      runtime: {
+        name: 'custom'
+        version: '1.0'
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 100
+        instanceMemoryMB: 512
+      }
     }
   }
 }
 
-resource webConfig 'Microsoft.Web/sites/config@2022-03-01' = {
+resource appSettings 'Microsoft.Web/sites/config@2024-04-01' = {
   parent: functionApp
-  name: 'web'
+  name: 'appsettings'
   properties: {
-    ftpsState: 'Disabled'
-    minTlsVersion: '1.2'
+    DEPLOYMENT_STORAGE_CONNECTION_STRING: storageConnectionString
   }
 }
 

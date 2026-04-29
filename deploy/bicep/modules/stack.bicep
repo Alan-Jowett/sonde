@@ -33,14 +33,15 @@ param functionPlanName string
 @description('Object ID of the Azure companion runtime service principal.')
 param companionServicePrincipalObjectId string
 
-var serviceBusDataSenderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'e1ecfa86-44a4-4fa6-9e13-a6f4d06e2913')
-var serviceBusDataReceiverRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a638d3c7-ab3a-418d-83e6-5f17a39d4fde')
-var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b00c-4d22-95b9-937d2d07ed72')
+var serviceBusDataSenderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39')
+var serviceBusDataReceiverRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')
+var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
 var companionUpstreamSenderAssignmentName = guid('companion-upstream-sender', companionServicePrincipalObjectId, serviceBusDataSenderRoleId, serviceBusNamespaceName, upstreamQueueName)
 var companionDownstreamReceiverAssignmentName = guid('companion-downstream-receiver', companionServicePrincipalObjectId, serviceBusDataReceiverRoleId, serviceBusNamespaceName, downstreamQueueName)
 var functionUpstreamReceiverAssignmentName = guid('function-upstream-receiver', functionAppName, serviceBusDataReceiverRoleId, serviceBusNamespaceName, upstreamQueueName)
 var functionDownstreamSenderAssignmentName = guid('function-downstream-sender', functionAppName, serviceBusDataSenderRoleId, serviceBusNamespaceName, downstreamQueueName)
 var functionTableContributorAssignmentName = guid('function-table-contributor', functionAppName, storageTableDataContributorRoleId, storageAccountName, tableName)
+var deploymentStorageContainerName = toLower(take('app-package-${take(functionAppName, 32)}-${take(uniqueString(resourceGroup().id, functionAppName), 7)}', 63))
 
 module serviceBus './service-bus.bicep' = {
   name: 'serviceBus'
@@ -59,11 +60,13 @@ module storage './storage.bicep' = {
     location: location
     storageAccountName: storageAccountName
     tableName: tableName
+    deploymentContainerName: deploymentStorageContainerName
     tags: tags
   }
 }
 
 var functionStorageConnectionString = 'DefaultEndpointsProtocol=https;AccountName=${storage.outputs.storageAccountName};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.outputs.primaryKey}'
+var functionDeploymentContainerUrl = '${storage.outputs.blobEndpoint}${storage.outputs.deploymentContainerName}'
 
 module functionPlaceholder './function-placeholder.bicep' = {
   name: 'functionPlaceholder'
@@ -71,6 +74,7 @@ module functionPlaceholder './function-placeholder.bicep' = {
     location: location
     functionAppName: functionAppName
     functionPlanName: functionPlanName
+    deploymentContainerUrl: functionDeploymentContainerUrl
     storageConnectionString: functionStorageConnectionString
     tags: tags
   }
@@ -107,6 +111,9 @@ resource existingStorageTable 'Microsoft.Storage/storageAccounts/tableServices/t
 resource companionUpstreamSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: companionUpstreamSenderAssignmentName
   scope: existingUpstreamQueue
+  dependsOn: [
+    serviceBus
+  ]
   properties: {
     principalId: companionServicePrincipalObjectId
     principalType: 'ServicePrincipal'
@@ -117,6 +124,9 @@ resource companionUpstreamSender 'Microsoft.Authorization/roleAssignments@2022-0
 resource companionDownstreamReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: companionDownstreamReceiverAssignmentName
   scope: existingDownstreamQueue
+  dependsOn: [
+    serviceBus
+  ]
   properties: {
     principalId: companionServicePrincipalObjectId
     principalType: 'ServicePrincipal'
@@ -127,6 +137,9 @@ resource companionDownstreamReceiver 'Microsoft.Authorization/roleAssignments@20
 resource functionUpstreamReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: functionUpstreamReceiverAssignmentName
   scope: existingUpstreamQueue
+  dependsOn: [
+    serviceBus
+  ]
   properties: {
     principalId: functionPlaceholder.outputs.principalId
     principalType: 'ServicePrincipal'
@@ -137,6 +150,9 @@ resource functionUpstreamReceiver 'Microsoft.Authorization/roleAssignments@2022-
 resource functionDownstreamSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: functionDownstreamSenderAssignmentName
   scope: existingDownstreamQueue
+  dependsOn: [
+    serviceBus
+  ]
   properties: {
     principalId: functionPlaceholder.outputs.principalId
     principalType: 'ServicePrincipal'

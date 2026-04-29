@@ -8,6 +8,9 @@ extension microsoftGraphV1
 @description('Project prefix used for the companion app registration display name.')
 param projectName string
 
+@description('Stable per-stack suffix used to keep the companion identity unique across deployments.')
+param identitySuffix string
+
 @description('Base64-encoded DER certificate public data to register on the Azure companion app registration.')
 param certificateBase64 string
 
@@ -16,7 +19,7 @@ param certificateDisplayName string = 'sonde-azure-companion'
 
 var projectSlug = toLower(replace(projectName, '-', ''))
 var appDisplayName = '${projectName}-azure-companion'
-var appUniqueName = '${projectSlug}-azure-companion'
+var appUniqueName = '${projectSlug}-azure-companion-${identitySuffix}'
 
 resource companionApp 'Microsoft.Graph/applications@v1.0' = {
   uniqueName: appUniqueName

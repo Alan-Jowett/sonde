@@ -116,6 +116,22 @@ fn main() {
     }
     info!("GPIO2 configured as button input (active-low, pull-up — MD-0600)");
 
+    // Configure GPIO3 (XIAO D2) as output, driven low at boot.
+    unsafe {
+        esp_idf_sys::gpio_reset_pin(esp_idf_sys::gpio_num_t_GPIO_NUM_3);
+        esp_idf_sys::esp!(esp_idf_sys::gpio_set_direction(
+            esp_idf_sys::gpio_num_t_GPIO_NUM_3,
+            esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT,
+        ))
+        .expect("failed to configure GPIO3 direction");
+        esp_idf_sys::esp!(esp_idf_sys::gpio_set_level(
+            esp_idf_sys::gpio_num_t_GPIO_NUM_3,
+            0,
+        ))
+        .expect("failed to set GPIO3 low");
+    }
+    info!("GPIO3 (XIAO D2) configured as output, low");
+
     let button_scanner = ButtonScanner::new(|| {
         // Active-low: GPIO reads 0 when pressed, 1 when idle.
         // Return true when pressed.

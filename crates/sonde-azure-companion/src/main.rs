@@ -191,7 +191,12 @@ struct ClientAssertionCredential {
     signing_key: EncodingKey,
     certificate_thumbprint: String,
     http_client: reqwest::Client,
-    cached_token: Mutex<Option<AccessToken>>,
+    cached_token: Mutex<Option<CachedAccessToken>>,
+}
+
+struct CachedAccessToken {
+    scope: String,
+    token: AccessToken,
 }
 
 impl std::fmt::Debug for ClientAssertionCredential {
@@ -214,6 +219,7 @@ trait DownstreamConsumer: Send {
     async fn receive(&mut self) -> Result<Option<Vec<u8>>, CompanionError>;
     async fn complete(&mut self) -> Result<(), CompanionError>;
     async fn abandon(&mut self) -> Result<(), CompanionError>;
+    async fn abandon_inflight(&mut self) -> Result<(), CompanionError>;
 }
 
 #[tonic::async_trait]
@@ -616,23 +622,30 @@ impl TokenCredential for ClientAssertionCredential {
         scopes: &[&str],
         _options: Option<TokenRequestOptions>,
     ) -> azure_core::Result<AccessToken> {
-        let scope = scopes.first().copied().ok_or_else(|| {
-            azure_core::Error::message(ErrorKind::Credential, "missing Azure token scope")
-        })?;
+        if scopes.is_empty() {
+            return Err(azure_core::Error::message(
+                ErrorKind::Credential,
+                "missing Azure token scope",
+            ));
+        }
+        let scope = scopes.join(" ");
         let refresh_after =
             OffsetDateTime::now_utc() + TimeDuration::seconds(ACCESS_TOKEN_REFRESH_MARGIN_SECS);
         {
             let cached_token = self.cached_token.lock().await;
-            if let Some(token) = cached_token.as_ref() {
-                if token.expires_on > refresh_after {
-                    return Ok(token.clone());
+            if let Some(cached_token) = cached_token.as_ref() {
+                if cached_token.scope == scope && cached_token.token.expires_on > refresh_after {
+                    return Ok(cached_token.token.clone());
                 }
             }
         }
 
-        let token = self.fetch_token(scope).await?;
+        let token = self.fetch_token(&scope).await?;
         let mut cached_token = self.cached_token.lock().await;
-        *cached_token = Some(token.clone());
+        *cached_token = Some(CachedAccessToken {
+            scope,
+            token: token.clone(),
+        });
         Ok(token)
     }
 }
@@ -687,6 +700,13 @@ impl DownstreamConsumer for AzServiceBusConsumer {
         self.receiver.abandon_message(inflight, None).await?;
         self.inflight = None;
         Ok(())
+    }
+
+    async fn abandon_inflight(&mut self) -> Result<(), CompanionError> {
+        if self.inflight.is_none() {
+            return Ok(());
+        }
+        self.abandon().await
     }
 }
 
@@ -835,15 +855,20 @@ where
         while pump_upstream_once(&mut reader, &mut publisher).await? {}
         Ok::<(), CompanionError>(())
     };
-    let downstream = async move {
-        loop {
-            pump_downstream_once(&mut writer, &mut consumer).await?;
-        }
-    };
+    tokio::pin!(upstream);
 
-    tokio::select! {
-        result = upstream => result,
-        result = downstream => result,
+    loop {
+        tokio::select! {
+            result = &mut upstream => {
+                if let Err(abandon_err) = consumer.abandon_inflight().await {
+                    eprintln!("failed to abandon downstream Service Bus message during bridge shutdown: {abandon_err}");
+                }
+                return result;
+            }
+            result = pump_downstream_once(&mut writer, &mut consumer) => {
+                result?;
+            }
+        }
     }
 }
 
@@ -958,23 +983,35 @@ mod tests {
         bootstrap_provider_and_config, check_runtime_ready, load_runtime_config,
         pump_downstream_once, pump_upstream_once, read_framed, resolve_state_relative_path,
         validate_device_client_id, validate_device_scopes, validate_display_lines, write_framed,
-        BootstrapAuthArgs, CompanionError, DownstreamConsumer, RuntimeConfig,
-        RuntimeCredentialState, ServicePrincipalStateFile, UpstreamPublisher,
+        BootstrapAuthArgs, ClientAssertionCredential, CompanionError, DownstreamConsumer,
+        RuntimeConfig, RuntimeCredentialState, ServicePrincipalStateFile, UpstreamPublisher,
         CONNECTOR_MAX_FRAME_LENGTH,
     };
+    use azure_core::credentials::TokenCredential;
+    use jsonwebtoken::{Algorithm, EncodingKey};
     use oauth_device_flows::Provider;
     use std::collections::VecDeque;
     use std::path::Path;
     use std::path::PathBuf;
     #[cfg(unix)]
+    use std::pin::Pin;
+    #[cfg(unix)]
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     #[cfg(unix)]
     use std::sync::Arc;
+    #[cfg(unix)]
+    use std::sync::Mutex as StdMutex;
+    #[cfg(unix)]
+    use std::task::{Context, Poll, Waker};
     use tempfile::TempDir;
     use tokio::io::duplex;
+    #[cfg(unix)]
+    use tokio::io::{AsyncRead, AsyncWrite};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     #[cfg(unix)]
     use tokio::sync::{Mutex, Notify};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn lines(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| (*s).to_string()).collect()
@@ -1099,6 +1136,13 @@ mod tests {
             self.abandons += 1;
             Ok(())
         }
+
+        async fn abandon_inflight(&mut self) -> Result<(), CompanionError> {
+            if self.inflight.is_some() {
+                self.abandon().await?;
+            }
+            Ok(())
+        }
     }
 
     #[cfg(unix)]
@@ -1136,6 +1180,13 @@ mod tests {
 
         async fn abandon(&mut self) -> Result<(), CompanionError> {
             self.inflight.take();
+            Ok(())
+        }
+
+        async fn abandon_inflight(&mut self) -> Result<(), CompanionError> {
+            if self.inflight.is_some() {
+                self.abandon().await?;
+            }
             Ok(())
         }
     }
@@ -1187,6 +1238,111 @@ mod tests {
                 },
                 BlockingConsumer::new(self.downstream_payloads.clone()),
             ))
+        }
+    }
+
+    #[cfg(unix)]
+    struct ShutdownAwareConsumer {
+        payload: Option<Vec<u8>>,
+        inflight: bool,
+        inflight_set: Arc<Notify>,
+        abandons: Arc<AtomicUsize>,
+    }
+
+    #[cfg(unix)]
+    #[tonic::async_trait]
+    impl DownstreamConsumer for ShutdownAwareConsumer {
+        async fn receive(&mut self) -> Result<Option<Vec<u8>>, CompanionError> {
+            let payload = self.payload.take();
+            if let Some(payload) = payload {
+                self.inflight = true;
+                self.inflight_set.notify_waiters();
+                Ok(Some(payload))
+            } else {
+                std::future::pending::<Result<Option<Vec<u8>>, CompanionError>>().await
+            }
+        }
+
+        async fn complete(&mut self) -> Result<(), CompanionError> {
+            self.inflight = false;
+            Ok(())
+        }
+
+        async fn abandon(&mut self) -> Result<(), CompanionError> {
+            if self.inflight {
+                self.inflight = false;
+                self.abandons.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+
+        async fn abandon_inflight(&mut self) -> Result<(), CompanionError> {
+            self.abandon().await
+        }
+    }
+
+    #[cfg(unix)]
+    struct ReaderState {
+        eof: AtomicBool,
+        waker: StdMutex<Option<Waker>>,
+    }
+
+    #[cfg(unix)]
+    impl ReaderState {
+        fn new() -> Self {
+            Self {
+                eof: AtomicBool::new(false),
+                waker: StdMutex::new(None),
+            }
+        }
+
+        fn finish(&self) {
+            self.eof.store(true, Ordering::SeqCst);
+            if let Some(waker) = self.waker.lock().unwrap().take() {
+                waker.wake();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    struct ShutdownTestStream {
+        reader_state: Arc<ReaderState>,
+        write_started: Arc<Notify>,
+    }
+
+    #[cfg(unix)]
+    impl AsyncRead for ShutdownTestStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if self.reader_state.eof.load(Ordering::SeqCst) {
+                Poll::Ready(Ok(()))
+            } else {
+                *self.reader_state.waker.lock().unwrap() = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl AsyncWrite for ShutdownTestStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.write_started.notify_waiters();
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
         }
     }
 
@@ -1368,6 +1524,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_assertion_credential_joins_scopes_and_caches_by_scope_set() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .append_header("content-type", "application/json")
+                    .set_body_string("{\"access_token\":\"cached-token\",\"expires_in\":3600}"),
+            )
+            .mount(&server)
+            .await;
+
+        let credential = ClientAssertionCredential {
+            client_id: "test-client-id".to_string(),
+            token_endpoint: format!("{}/token", server.uri()),
+            signing_algorithm: Algorithm::HS256,
+            signing_key: EncodingKey::from_secret(b"test-secret"),
+            certificate_thumbprint: "thumbprint".to_string(),
+            http_client: reqwest::Client::builder().build().unwrap(),
+            cached_token: tokio::sync::Mutex::new(None),
+        };
+
+        credential
+            .get_token(&["scope-a", "scope-b"], None)
+            .await
+            .unwrap();
+        credential
+            .get_token(&["scope-a", "scope-b"], None)
+            .await
+            .unwrap();
+        credential.get_token(&["scope-c"], None).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let request_bodies = requests
+            .iter()
+            .map(|request| String::from_utf8(request.body.clone()).unwrap())
+            .collect::<Vec<_>>();
+        assert!(request_bodies
+            .iter()
+            .any(|body| body.contains("scope=scope-a+scope-b")));
+        assert!(request_bodies
+            .iter()
+            .any(|body| body.contains("scope=scope-c")));
+    }
+
+    #[tokio::test]
     async fn upstream_pump_publishes_one_framed_payload() {
         let (mut client, server) = duplex(64);
         let mut publisher = FakePublisher::default();
@@ -1445,6 +1648,38 @@ mod tests {
 
         let err = write_framed(&mut client, &payload).await.unwrap_err();
         assert!(err.to_string().contains("exceeds max"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bridge_runtime_abandons_inflight_message_when_upstream_finishes() {
+        let reader_state = Arc::new(ReaderState::new());
+        let write_started = Arc::new(Notify::new());
+        let inflight_set = Arc::new(Notify::new());
+        let abandons = Arc::new(AtomicUsize::new(0));
+        let inflight_wait = inflight_set.notified();
+        let write_wait = write_started.notified();
+        let stream = ShutdownTestStream {
+            reader_state: Arc::clone(&reader_state),
+            write_started: Arc::clone(&write_started),
+        };
+        let consumer = ShutdownAwareConsumer {
+            payload: Some(vec![1u8, 2, 3]),
+            inflight: false,
+            inflight_set: Arc::clone(&inflight_set),
+            abandons: Arc::clone(&abandons),
+        };
+
+        let bridge_task = tokio::spawn(async move {
+            super::bridge_runtime(stream, FakePublisher::default(), consumer).await
+        });
+
+        inflight_wait.await;
+        write_wait.await;
+        reader_state.finish();
+
+        bridge_task.await.unwrap().unwrap();
+        assert_eq!(abandons.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -44,9 +44,9 @@ const TEST_CERT_PEM: &str = concat!(
 
 const TEST_KEY_PEM: &str = concat!(
     "-----BEGIN PRIVATE KEY-----\n",
-    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg2X8i4lE4hM2t0b5Y\n",
-    "fI7xW0ZzM3ZrY4L3s67qG8R0uYWhRANCAAStNVLyCQaqRPW+p7wtNOVgX5c18vv6\n",
-    "4n71/Bsfc/1KImuM3gnXDOo/xw/qU/TC0P67YThvhbRBb4TdqNB7ytb7\n",
+    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgiHx55EC3Yiih4pAE\n",
+    "7x0NrlcsxiOH+SRn2I9N8+XzugihRANCAAS/bEotS4/FxoJf+T+jEGzlFQtYKea0\n",
+    "nmvBHE5F9GNfpDliGtxecWSjvICrTVwN0x4a5UuxfFF0rgL6I/2IGAWs\n",
     "-----END PRIVATE KEY-----\n"
 );
 

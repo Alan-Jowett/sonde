@@ -30,23 +30,22 @@ type BlePairingStream =
 
 const TEST_CERT_PEM: &str = concat!(
     "-----BEGIN CERTIFICATE-----\n",
-    "MIIBszCCAVmgAwIBAgIUAlA4D2+fMZ5I2mv8VLK0sgM4nWkwCgYIKoZIzj0EAwIw\n",
-    "GDEWMBQGA1UEAwwNc29uZGUtdGVzdC1jZXJ0MB4XDTI2MDEwMTAwMDAwMFoXDTM2\n",
-    "MDEwMTAwMDAwMFowGDEWMBQGA1UEAwwNc29uZGUtdGVzdC1jZXJ0MFkwEwYHKoZI\n",
-    "zj0CAQYIKoZIzj0DAQcDQgAErTVS8gkGqkT1vqe8LTTlYF+XNfL7+uJ+9fwbH3P9\n",
-    "SiJrjN4J1wzqP8cP6lP0wtD+u2E4b4W0QW+E3ajQe8rW+6NTMFEwHQYDVR0OBBYE\n",
-    "FCn5Pw3Ozl7pJ1mJtqQv5Xz6vbALMB8GA1UdIwQYMBaAFCn5Pw3Ozl7pJ1mJtqQv\n",
-    "5Xz6vbALMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIhAJNL5l3C\n",
-    "tI6X5x4c4x6pI0vA6PfXzL5K5ll4D7OQyZcAAiA1dQXJk0v6qY+Mi8XGcX6Z7J5u\n",
-    "gW4Y8d+4T2oD7j9m0Q==\n",
+    "MIIBWDCB/6ADAgECAggbYn85Il496TAKBggqhkjOPQQDAjAaMRgwFgYDVQQDEw9z\n",
+    "b25kZS10ZXN0LWNlcnQwHhcNMjYwNDI4MTczNDAzWhcNMzYwNDI5MTczNDAzWjAa\n",
+    "MRgwFgYDVQQDEw9zb25kZS10ZXN0LWNlcnQwWTATBgcqhkjOPQIBBggqhkjOPQMB\n",
+    "BwNCAASvz+sAGz7/92glvERlQlom5OFgseIgMgvGZM04KsqOD+D/hwG3tzmpOu4U\n",
+    "AZyhAdrkAqvHWmfQkK5D8jdhgv33oy8wLTAMBgNVHRMBAf8EAjAAMB0GA1UdDgQW\n",
+    "BBQ4+jYZ/ddAOO7/msNIHh9f61IeFjAKBggqhkjOPQQDAgNIADBFAiBmBB/wP94s\n",
+    "DdBiCaUetVSkrk484rSijsJqpqnlJ/0H+QIhAMYgtEuZ8LcCsScdbwsFArve4TVN\n",
+    "yfVpQffskcauwpb9\n",
     "-----END CERTIFICATE-----\n"
 );
 
 const TEST_KEY_PEM: &str = concat!(
     "-----BEGIN PRIVATE KEY-----\n",
-    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgiHx55EC3Yiih4pAE\n",
-    "7x0NrlcsxiOH+SRn2I9N8+XzugihRANCAAS/bEotS4/FxoJf+T+jEGzlFQtYKea0\n",
-    "nmvBHE5F9GNfpDliGtxecWSjvICrTVwN0x4a5UuxfFF0rgL6I/2IGAWs\n",
+    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgor2vT3esA5xTV1E4\n",
+    "IWCpH+V2pudlqDwiS4+LKEKy3X6hRANCAASvz+sAGz7/92glvERlQlom5OFgseIg\n",
+    "MgvGZM04KsqOD+D/hwG3tzmpOu4UAZyhAdrkAqvHWmfQkK5D8jdhgv33\n",
     "-----END PRIVATE KEY-----\n"
 );
 
@@ -665,6 +664,40 @@ async fn t_azc_0107_bootstrap_without_runtime_state_fails_closed() {
         .file_name()
         .to_string_lossy()
         .starts_with("check-runtime-ready.")));
+}
+
+#[tokio::test]
+async fn t_azc_0108_missing_runtime_config_beats_device_auth_env_error() {
+    let temp = TempDir::new().unwrap();
+    let bin_dir = prepare_path_dir(&temp);
+    let state_dir = temp.path().join("state");
+    write_runtime_ready_state(&state_dir);
+    let admin_socket_path = temp.path().join("admin.sock");
+    let connector_socket_path = temp.path().join("connector.sock");
+    let _display_requests = spawn_admin_server(&admin_socket_path, None).await;
+    let oauth_server = MockServer::start().await;
+
+    let wrapper_log = temp.path().join("wrapper.log");
+    write_runtime_wrapper(&bin_dir, &wrapper_log);
+    let mut env = bootstrap_env(
+        &bin_dir,
+        &state_dir,
+        &admin_socket_path,
+        &connector_socket_path,
+        &oauth_server,
+    );
+    env.retain(|(key, _)| {
+        key != "SONDE_AZURE_SERVICEBUS_NAMESPACE"
+            && key != "SONDE_AZURE_DEVICE_CLIENT_ID"
+            && key != "SONDE_AZURE_DEVICE_SCOPES"
+    });
+
+    let output = run_bootstrap_with_env(&env).await;
+    assert!(!output.status.success());
+    assert!(!wrapper_log.exists() || fs::read_to_string(&wrapper_log).unwrap().is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("SONDE_AZURE_SERVICEBUS_NAMESPACE must be set and non-empty"));
+    assert!(!stderr.contains("SONDE_AZURE_DEVICE_CLIENT_ID must be set for bootstrap"));
 }
 
 #[test]

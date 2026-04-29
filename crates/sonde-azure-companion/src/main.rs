@@ -15,18 +15,22 @@ use azure_core::error::ErrorKind;
 use azure_core::Uuid;
 use base64::Engine as _;
 use clap::{Args, Parser, Subcommand};
+use ed25519_dalek::pkcs8::DecodePrivateKey as Ed25519DecodePrivateKey;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use oauth_device_flows::provider::GenericProviderConfig;
 use oauth_device_flows::{DeviceFlow, DeviceFlowConfig, Provider};
-use p256::pkcs8::DecodePrivateKey;
+use rsa::pkcs1::DecodeRsaPrivateKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use spki::EncodePublicKey;
 use thiserror::Error;
 use time::Duration as TimeDuration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint, Uri};
 use url::Url;
+use x509_cert::der::{Decode, Encode};
+use x509_cert::Certificate;
 
 use sonde_gateway::admin::pb::gateway_admin_client::GatewayAdminClient;
 use sonde_gateway::admin::pb::ShowModemDisplayMessageRequest;
@@ -487,6 +491,10 @@ fn check_runtime_ready(
     let runtime_state = load_runtime_credential_state(state_dir)?;
     let _ = load_certificate_thumbprint(&runtime_state.certificate_path)?;
     let _ = load_signing_key(&runtime_state.private_key_path)?;
+    validate_certificate_matches_private_key(
+        &runtime_state.certificate_path,
+        &runtime_state.private_key_path,
+    )?;
     Ok((runtime_config, runtime_state))
 }
 
@@ -540,6 +548,38 @@ fn load_certificate_thumbprint(certificate_path: &Path) -> Result<String, Compan
         })?;
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(Sha256::digest(certificate.as_ref())))
+}
+
+fn load_certificate_subject_public_key_info(
+    certificate_path: &Path,
+) -> Result<Vec<u8>, CompanionError> {
+    let certificate_file = std::fs::File::open(certificate_path)?;
+    let mut reader = std::io::BufReader::new(certificate_file);
+    let certificate = rustls_pemfile::certs(&mut reader)
+        .next()
+        .transpose()?
+        .ok_or_else(|| {
+            CompanionError::Config(format!(
+                "service principal certificate file did not contain a PEM certificate: {}",
+                certificate_path.display()
+            ))
+        })?;
+    let certificate = Certificate::from_der(certificate.as_ref()).map_err(|err| {
+        CompanionError::Config(format!(
+            "service principal certificate file did not contain a parseable X.509 certificate: {} ({err})",
+            certificate_path.display()
+        ))
+    })?;
+    certificate
+        .tbs_certificate
+        .subject_public_key_info
+        .to_der()
+        .map_err(|err| {
+            CompanionError::Config(format!(
+                "failed to encode service principal certificate public key: {} ({err})",
+                certificate_path.display()
+            ))
+        })
 }
 
 fn load_signing_key(private_key_path: &Path) -> Result<(Algorithm, EncodingKey), CompanionError> {
@@ -599,6 +639,96 @@ fn ensure_p256_private_key(
         }
     }
 
+    Ok(())
+}
+
+fn encode_public_key_der<T>(
+    public_key: &T,
+    private_key_path: &Path,
+) -> Result<Vec<u8>, CompanionError>
+where
+    T: EncodePublicKey,
+{
+    public_key
+        .to_public_key_der()
+        .map(|der| der.as_ref().to_vec())
+        .map_err(|err| {
+            CompanionError::Config(format!(
+                "failed to encode service principal public key from private key: {} ({err})",
+                private_key_path.display()
+            ))
+        })
+}
+
+fn load_private_key_subject_public_key_info(
+    private_key_path: &Path,
+) -> Result<Vec<u8>, CompanionError> {
+    let private_key_pem = std::fs::read(private_key_path)?;
+    let mut reader = std::io::BufReader::new(private_key_pem.as_slice());
+    let private_key = rustls_pemfile::read_one(&mut reader)?.ok_or_else(|| {
+        CompanionError::Config(format!(
+            "service principal private key file did not contain a PEM private key: {}",
+            private_key_path.display()
+        ))
+    })?;
+
+    match private_key {
+        rustls_pemfile::Item::Pkcs1Key(key) => {
+            let private_key =
+                rsa::RsaPrivateKey::from_pkcs1_der(key.secret_pkcs1_der()).map_err(|err| {
+                    CompanionError::Config(format!(
+                        "service principal RSA private key could not be parsed: {} ({err})",
+                        private_key_path.display()
+                    ))
+                })?;
+            encode_public_key_der(&private_key.to_public_key(), private_key_path)
+        }
+        rustls_pemfile::Item::Pkcs8Key(key) => {
+            let der = key.secret_pkcs8_der();
+            if let Ok(private_key) = rsa::RsaPrivateKey::from_pkcs8_der(der) {
+                return encode_public_key_der(&private_key.to_public_key(), private_key_path);
+            }
+            if let Ok(private_key) = p256::SecretKey::from_pkcs8_der(der) {
+                return encode_public_key_der(&private_key.public_key(), private_key_path);
+            }
+            if let Ok(private_key) = ed25519_dalek::SigningKey::from_pkcs8_der(der) {
+                return encode_public_key_der(&private_key.verifying_key(), private_key_path);
+            }
+            Err(CompanionError::Config(format!(
+                "service principal private key file must contain a PEM-encoded RSA, EC, or EdDSA private key: {}",
+                private_key_path.display()
+            )))
+        }
+        rustls_pemfile::Item::Sec1Key(key) => {
+            let private_key =
+                p256::SecretKey::from_sec1_der(key.secret_sec1_der()).map_err(|err| {
+                    CompanionError::Config(format!(
+                        "service principal EC private key could not be parsed: {} ({err})",
+                        private_key_path.display()
+                    ))
+                })?;
+            encode_public_key_der(&private_key.public_key(), private_key_path)
+        }
+        _ => Err(CompanionError::Config(format!(
+            "service principal private key file must contain a PEM private key: {}",
+            private_key_path.display()
+        ))),
+    }
+}
+
+fn validate_certificate_matches_private_key(
+    certificate_path: &Path,
+    private_key_path: &Path,
+) -> Result<(), CompanionError> {
+    let certificate_public_key = load_certificate_subject_public_key_info(certificate_path)?;
+    let private_key_public_key = load_private_key_subject_public_key_info(private_key_path)?;
+    if certificate_public_key != private_key_public_key {
+        return Err(CompanionError::Config(format!(
+            "service principal certificate public key does not match private key: {} / {}",
+            certificate_path.display(),
+            private_key_path.display()
+        )));
+    }
     Ok(())
 }
 
@@ -1074,8 +1204,7 @@ async fn bootstrap_auth(
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), CompanionError> {
+async fn run_cli() -> Result<(), CompanionError> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => run(&cli.connector_socket, &cli.state_dir).await?,
@@ -1088,6 +1217,14 @@ async fn main() -> Result<(), CompanionError> {
         }
     }
     Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(err) = run_cli().await {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]
@@ -1149,15 +1286,14 @@ mod tests {
             &cert_path,
             concat!(
                 "-----BEGIN CERTIFICATE-----\n",
-                "MIIBszCCAVmgAwIBAgIUAlA4D2+fMZ5I2mv8VLK0sgM4nWkwCgYIKoZIzj0EAwIw\n",
-                "GDEWMBQGA1UEAwwNc29uZGUtdGVzdC1jZXJ0MB4XDTI2MDEwMTAwMDAwMFoXDTM2\n",
-                "MDEwMTAwMDAwMFowGDEWMBQGA1UEAwwNc29uZGUtdGVzdC1jZXJ0MFkwEwYHKoZI\n",
-                "zj0CAQYIKoZIzj0DAQcDQgAErTVS8gkGqkT1vqe8LTTlYF+XNfL7+uJ+9fwbH3P9\n",
-                "SiJrjN4J1wzqP8cP6lP0wtD+u2E4b4W0QW+E3ajQe8rW+6NTMFEwHQYDVR0OBBYE\n",
-                "FCn5Pw3Ozl7pJ1mJtqQv5Xz6vbALMB8GA1UdIwQYMBaAFCn5Pw3Ozl7pJ1mJtqQv\n",
-                "5Xz6vbALMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIhAJNL5l3C\n",
-                "tI6X5x4c4x6pI0vA6PfXzL5K5ll4D7OQyZcAAiA1dQXJk0v6qY+Mi8XGcX6Z7J5u\n",
-                "gW4Y8d+4T2oD7j9m0Q==\n",
+                "MIIBWDCB/6ADAgECAggbYn85Il496TAKBggqhkjOPQQDAjAaMRgwFgYDVQQDEw9z\n",
+                "b25kZS10ZXN0LWNlcnQwHhcNMjYwNDI4MTczNDAzWhcNMzYwNDI5MTczNDAzWjAa\n",
+                "MRgwFgYDVQQDEw9zb25kZS10ZXN0LWNlcnQwWTATBgcqhkjOPQIBBggqhkjOPQMB\n",
+                "BwNCAASvz+sAGz7/92glvERlQlom5OFgseIgMgvGZM04KsqOD+D/hwG3tzmpOu4U\n",
+                "AZyhAdrkAqvHWmfQkK5D8jdhgv33oy8wLTAMBgNVHRMBAf8EAjAAMB0GA1UdDgQW\n",
+                "BBQ4+jYZ/ddAOO7/msNIHh9f61IeFjAKBggqhkjOPQQDAgNIADBFAiBmBB/wP94s\n",
+                "DdBiCaUetVSkrk484rSijsJqpqnlJ/0H+QIhAMYgtEuZ8LcCsScdbwsFArve4TVN\n",
+                "yfVpQffskcauwpb9\n",
                 "-----END CERTIFICATE-----\n"
             ),
         )
@@ -1166,9 +1302,9 @@ mod tests {
             &key_path,
             concat!(
                 "-----BEGIN PRIVATE KEY-----\n",
-                "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgiHx55EC3Yiih4pAE\n",
-                "7x0NrlcsxiOH+SRn2I9N8+XzugihRANCAAS/bEotS4/FxoJf+T+jEGzlFQtYKea0\n",
-                "nmvBHE5F9GNfpDliGtxecWSjvICrTVwN0x4a5UuxfFF0rgL6I/2IGAWs\n",
+                "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgor2vT3esA5xTV1E4\n",
+                "IWCpH+V2pudlqDwiS4+LKEKy3X6hRANCAASvz+sAGz7/92glvERlQlom5OFgseIg\n",
+                "MgvGZM04KsqOD+D/hwG3tzmpOu4UAZyhAdrkAqvHWmfQkK5D8jdhgv33\n",
                 "-----END PRIVATE KEY-----\n"
             ),
         )
@@ -1196,6 +1332,21 @@ mod tests {
         std::fs::write(
             temp.path().join("service-principal.json"),
             serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_mismatched_service_principal_state(temp: &TempDir) {
+        write_service_principal_state(temp);
+        std::fs::write(
+            temp.path().join("client-key.pem"),
+            concat!(
+                "-----BEGIN PRIVATE KEY-----\n",
+                "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgwA92gZP+jHsasiyN\n",
+                "7EXLuqVG2dtgLXuEaEdJqKI9ueOhRANCAAQ3nLx4zRkZlPBKa53AJ9tc8SJeY6MI\n",
+                "f2Nv/cxwiGclvIa/mG/Rz9WYK+tAWhhjZnPJyRJ4YoiYPSvkPJGBYVD8\n",
+                "-----END PRIVATE KEY-----\n"
+            ),
         )
         .unwrap();
     }
@@ -1621,6 +1772,18 @@ mod tests {
         write_invalid_service_principal_state(&temp);
         with_runtime_env(|| {
             assert!(check_runtime_ready(temp.path()).is_err());
+        });
+    }
+
+    #[test]
+    fn runtime_ready_rejects_mismatched_certificate_private_key() {
+        let temp = TempDir::new().unwrap();
+        write_mismatched_service_principal_state(&temp);
+        with_runtime_env(|| {
+            let err = check_runtime_ready(temp.path()).unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("service principal certificate public key does not match private key"));
         });
     }
 

@@ -84,6 +84,10 @@ if sonde-azure-companion \
         run
 fi
 
+if [ -z "${SONDE_AZURE_DEVICE_CLIENT_ID:-}" ] || [ -z "${SONDE_AZURE_DEVICE_SCOPES:-}" ]; then
+    check_runtime_ready_with_log || exit 1
+fi
+
 if [ -z "${SONDE_AZURE_DEVICE_CLIENT_ID:-}" ]; then
     echo "SONDE_AZURE_DEVICE_CLIENT_ID must be set for bootstrap" >&2
     exit 1

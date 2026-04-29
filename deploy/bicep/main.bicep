@@ -41,7 +41,7 @@ param functionPlanName string = ''
 
 var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
 var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
-var effectiveResourceGroupName = empty(resource_group_name) ? '${project_name}-azure' : resource_group_name
+var effectiveResourceGroupName = empty(resource_group_name) ? '${take(effectiveProjectSlug, 84)}-azure' : resource_group_name
 var effectiveServiceBusNamespaceName = empty(serviceBusNamespaceName)
   ? take('${take(effectiveProjectSlug, 20)}-sb-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName), 8)}', 50)
   : serviceBusNamespaceName

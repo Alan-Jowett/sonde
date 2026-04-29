@@ -17,9 +17,10 @@ param certificateBase64 string
 @description('Display name for the registered companion certificate credential.')
 param certificateDisplayName string = 'sonde-azure-companion'
 
-var projectSlug = toLower(replace(projectName, '-', ''))
+var projectSlug = toLower(replace(replace(replace(replace(replace(projectName, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
+var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
 var appDisplayName = '${projectName}-azure-companion'
-var appUniqueName = '${projectSlug}-azure-companion-${identitySuffix}'
+var appUniqueName = '${effectiveProjectSlug}-azure-companion-${identitySuffix}'
 
 resource companionApp 'Microsoft.Graph/applications@v1.0' = {
   uniqueName: appUniqueName

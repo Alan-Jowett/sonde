@@ -32,6 +32,7 @@ Azure companion architecture.
 | `project_name` | `sonde` | Prefix for resource names and tags |
 | `resource_group_name` | empty | Optional override for the resource group name |
 | `companionCertificateBase64` | none | Base64-encoded DER certificate public material registered on the Azure companion app |
+| `companionCertificateDisplayName` | `sonde-azure-companion` | Optional display name for the registered certificate credential |
 | `serviceBusNamespaceName` | derived | Optional Service Bus namespace override |
 | `upstreamQueueName` | `connector-upstream` | Gateway-originated connector traffic queue |
 | `downstreamQueueName` | `desired-state` | Desired-state ingress queue |

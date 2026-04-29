@@ -37,7 +37,7 @@ var serviceBusDataSenderRoleId = subscriptionResourceId('Microsoft.Authorization
 var serviceBusDataReceiverRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')
 var companionUpstreamSenderAssignmentName = guid('companion-upstream-sender', companionServicePrincipalObjectId, serviceBusDataSenderRoleId, serviceBusNamespaceName, upstreamQueueName)
 var companionDownstreamReceiverAssignmentName = guid('companion-downstream-receiver', companionServicePrincipalObjectId, serviceBusDataReceiverRoleId, serviceBusNamespaceName, downstreamQueueName)
-var deploymentStorageContainerName = toLower(take('app-package-${take(functionAppName, 32)}-${take(uniqueString(resourceGroup().id, functionAppName), 7)}', 63))
+var deploymentStorageContainerName = 'app-package-${take(uniqueString(resourceGroup().id, functionAppName, 'deployment-package'), 20)}'
 
 module serviceBus './service-bus.bicep' = {
   name: 'serviceBus'

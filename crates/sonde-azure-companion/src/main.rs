@@ -18,6 +18,7 @@ use clap::{Args, Parser, Subcommand};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use oauth_device_flows::provider::GenericProviderConfig;
 use oauth_device_flows::{DeviceFlow, DeviceFlowConfig, Provider};
+use p256::pkcs8::DecodePrivateKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -50,6 +51,8 @@ const CONNECTOR_MAX_FRAME_LENGTH: usize =
 const ACCESS_TOKEN_REFRESH_MARGIN_SECS: i64 = 300;
 const CLIENT_ASSERTION_LIFETIME_SECS: i64 = 600;
 const CLIENT_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+const TOKEN_HTTP_CONNECT_TIMEOUT_SECS: u64 = 10;
+const TOKEN_HTTP_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Error)]
 enum CompanionError {
@@ -434,7 +437,17 @@ fn load_runtime_credential_state(
     state_dir: &Path,
 ) -> Result<RuntimeCredentialState, CompanionError> {
     let state_path = service_principal_state_path(state_dir);
-    let state: ServicePrincipalStateFile = serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    let state_bytes = match std::fs::read(&state_path) {
+        Ok(state_bytes) => state_bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(CompanionError::Config(format!(
+                "service principal state file not found: {}",
+                state_path.display()
+            )));
+        }
+        Err(err) => return Err(err.into()),
+    };
+    let state: ServicePrincipalStateFile = serde_json::from_slice(&state_bytes)?;
     let tenant_id = require_non_empty(state.tenant_id, "service principal tenant_id")?;
     let client_id = require_non_empty(state.client_id, "service principal client_id")?;
     let certificate_path_value =
@@ -536,6 +549,7 @@ fn load_signing_key(private_key_path: &Path) -> Result<(Algorithm, EncodingKey),
         return Ok((Algorithm::RS256, key));
     }
     if let Ok(key) = EncodingKey::from_ec_pem(&private_key_pem) {
+        ensure_p256_private_key(&private_key_pem, private_key_path)?;
         return Ok((Algorithm::ES256, key));
     }
     if let Ok(key) = EncodingKey::from_ed_pem(&private_key_pem) {
@@ -548,6 +562,46 @@ fn load_signing_key(private_key_path: &Path) -> Result<(Algorithm, EncodingKey),
     )))
 }
 
+fn ensure_p256_private_key(
+    private_key_pem: &[u8],
+    private_key_path: &Path,
+) -> Result<(), CompanionError> {
+    let mut reader = std::io::BufReader::new(private_key_pem);
+    let private_key = rustls_pemfile::read_one(&mut reader)?.ok_or_else(|| {
+        CompanionError::Config(format!(
+            "service principal private key file did not contain a PEM private key: {}",
+            private_key_path.display()
+        ))
+    })?;
+
+    match private_key {
+        rustls_pemfile::Item::Pkcs8Key(key) => {
+            p256::SecretKey::from_pkcs8_der(key.secret_pkcs8_der()).map_err(|_| {
+                CompanionError::Config(format!(
+                    "service principal EC private key must use the P-256 curve for ES256 assertions: {}",
+                    private_key_path.display()
+                ))
+            })?;
+        }
+        rustls_pemfile::Item::Sec1Key(key) => {
+            p256::SecretKey::from_sec1_der(key.secret_sec1_der()).map_err(|_| {
+                CompanionError::Config(format!(
+                    "service principal EC private key must use the P-256 curve for ES256 assertions: {}",
+                    private_key_path.display()
+                ))
+            })?;
+        }
+        _ => {
+            return Err(CompanionError::Config(format!(
+                "service principal EC private key must be encoded as PKCS#8 or SEC1 PEM: {}",
+                private_key_path.display()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 fn build_service_bus_credential(
     runtime_state: &RuntimeCredentialState,
 ) -> Result<Arc<dyn TokenCredential>, CompanionError> {
@@ -557,7 +611,10 @@ fn build_service_bus_credential(
         "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
         runtime_state.tenant_id
     );
-    let http_client = reqwest::Client::builder().build()?;
+    let http_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(TOKEN_HTTP_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(TOKEN_HTTP_TIMEOUT_SECS))
+        .build()?;
     Ok(Arc::new(ClientAssertionCredential {
         client_id: runtime_state.client_id.clone(),
         token_endpoint,
@@ -1016,7 +1073,7 @@ async fn main() -> Result<(), CompanionError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bootstrap_provider_and_config, check_runtime_ready, load_runtime_config,
+        bootstrap_provider_and_config, check_runtime_ready, load_runtime_config, load_signing_key,
         pump_downstream_once, pump_upstream_once, read_framed, resolve_state_relative_path,
         validate_device_client_id, validate_device_scopes, validate_display_lines, write_framed,
         BootstrapAuthArgs, ClientAssertionCredential, CompanionError, DownstreamConsumer,
@@ -1088,9 +1145,9 @@ mod tests {
             &key_path,
             concat!(
                 "-----BEGIN PRIVATE KEY-----\n",
-                "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg2X8i4lE4hM2t0b5Y\n",
-                "fI7xW0ZzM3ZrY4L3s67qG8R0uYWhRANCAAStNVLyCQaqRPW+p7wtNOVgX5c18vv6\n",
-                "4n71/Bsfc/1KImuM3gnXDOo/xw/qU/TC0P67YThvhbRBb4TdqNB7ytb7\n",
+                "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgiHx55EC3Yiih4pAE\n",
+                "7x0NrlcsxiOH+SRn2I9N8+XzugihRANCAAS/bEotS4/FxoJf+T+jEGzlFQtYKea0\n",
+                "nmvBHE5F9GNfpDliGtxecWSjvICrTVwN0x4a5UuxfFF0rgL6I/2IGAWs\n",
                 "-----END PRIVATE KEY-----\n"
             ),
         )
@@ -1120,6 +1177,23 @@ mod tests {
             serde_json::to_vec(&state).unwrap(),
         )
         .unwrap();
+    }
+
+    fn with_runtime_env(test: impl FnOnce()) {
+        temp_env::with_vars(
+            [
+                (
+                    "SONDE_AZURE_SERVICEBUS_NAMESPACE",
+                    Some("example.servicebus.windows.net"),
+                ),
+                ("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE", Some("upstream")),
+                (
+                    "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+                    Some("downstream"),
+                ),
+            ],
+            test,
+        );
     }
 
     #[derive(Default)]
@@ -1475,47 +1549,26 @@ mod tests {
     fn runtime_ready_uses_service_principal_state_file() {
         let temp = TempDir::new().unwrap();
         write_service_principal_state(&temp);
-        temp_env::with_vars(
-            [
-                (
-                    "SONDE_AZURE_SERVICEBUS_NAMESPACE",
-                    Some("example.servicebus.windows.net"),
-                ),
-                ("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE", Some("upstream")),
-                (
-                    "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
-                    Some("downstream"),
-                ),
-            ],
-            || {
-                let (config, state) = check_runtime_ready(temp.path()).unwrap();
-                assert_eq!(
-                    config,
-                    RuntimeConfig {
-                        namespace: "example.servicebus.windows.net".to_string(),
-                        upstream_queue: "upstream".to_string(),
-                        downstream_queue: "downstream".to_string(),
-                    }
-                );
-                assert_eq!(
-                    state,
-                    RuntimeCredentialState {
-                        tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
-                        client_id: "22222222-2222-2222-2222-222222222222".to_string(),
-                        certificate_path: temp
-                            .path()
-                            .join("client-cert.pem")
-                            .canonicalize()
-                            .unwrap(),
-                        private_key_path: temp
-                            .path()
-                            .join("client-key.pem")
-                            .canonicalize()
-                            .unwrap(),
-                    }
-                );
-            },
-        );
+        with_runtime_env(|| {
+            let (config, state) = check_runtime_ready(temp.path()).unwrap();
+            assert_eq!(
+                config,
+                RuntimeConfig {
+                    namespace: "example.servicebus.windows.net".to_string(),
+                    upstream_queue: "upstream".to_string(),
+                    downstream_queue: "downstream".to_string(),
+                }
+            );
+            assert_eq!(
+                state,
+                RuntimeCredentialState {
+                    tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                    client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                    certificate_path: temp.path().join("client-cert.pem").canonicalize().unwrap(),
+                    private_key_path: temp.path().join("client-key.pem").canonicalize().unwrap(),
+                }
+            );
+        });
     }
 
     #[test]
@@ -1533,47 +1586,62 @@ mod tests {
         )
         .unwrap();
         std::fs::write(temp.path().join("client-key.pem"), b"dummy").unwrap();
-        temp_env::with_vars(
-            [
-                (
-                    "SONDE_AZURE_SERVICEBUS_NAMESPACE",
-                    Some("example.servicebus.windows.net"),
-                ),
-                ("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE", Some("upstream")),
-                (
-                    "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
-                    Some("downstream"),
-                ),
-            ],
-            || {
-                let err = check_runtime_ready(temp.path()).unwrap_err();
-                assert!(err
-                    .to_string()
-                    .contains("service principal certificate_path must be set and non-empty"));
-            },
-        );
+        with_runtime_env(|| {
+            let err = check_runtime_ready(temp.path()).unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("service principal certificate_path must be set and non-empty"));
+        });
     }
 
     #[test]
     fn runtime_ready_rejects_unparseable_pem_material() {
         let temp = TempDir::new().unwrap();
         write_invalid_service_principal_state(&temp);
-        temp_env::with_vars(
-            [
-                (
-                    "SONDE_AZURE_SERVICEBUS_NAMESPACE",
-                    Some("example.servicebus.windows.net"),
-                ),
-                ("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE", Some("upstream")),
-                (
-                    "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
-                    Some("downstream"),
-                ),
-            ],
-            || {
-                assert!(check_runtime_ready(temp.path()).is_err());
-            },
-        );
+        with_runtime_env(|| {
+            assert!(check_runtime_ready(temp.path()).is_err());
+        });
+    }
+
+    #[test]
+    fn runtime_ready_reports_missing_state_file_clearly() {
+        let temp = TempDir::new().unwrap();
+        with_runtime_env(|| {
+            let err = check_runtime_ready(temp.path()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "service principal state file not found: {}",
+                    temp.path().join("service-principal.json").display()
+                )
+            );
+        });
+    }
+
+    #[test]
+    fn load_signing_key_rejects_non_p256_ec_private_keys() {
+        let temp = TempDir::new().unwrap();
+        let private_key_path = temp.path().join("client-key.pem");
+        std::fs::write(
+            &private_key_path,
+            concat!(
+                "-----BEGIN PRIVATE KEY-----\n",
+                "MIG2AgEAMBAGByqGSM49AgEGBSuBBAAiBIGeMIGbAgEBBDD6GGUh9wwgHc1R0MYl\n",
+                "xZfpPwMaBFTrBgVlM+BwH5lDYPlcsiyN1yQxjtNvBGY9HRChZANiAARjYBFs2Isx\n",
+                "DAL8I6WJrqUHfWv3iFNkGaNXrJJSf2q5Qe1pmV4qURhQ9bvqcE/fjyRNui4vO9vZ\n",
+                "YpU8DwOw4WRFViavnnT+S7gi+MPx9LgM0Ol80YC4eaFWfPc1D11V0zs=\n",
+                "-----END PRIVATE KEY-----\n"
+            ),
+        )
+        .unwrap();
+
+        let err = match load_signing_key(&private_key_path) {
+            Ok(_) => panic!("expected non-P-256 EC private key to be rejected"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("service principal EC private key must use the P-256 curve"));
     }
 
     #[tokio::test]

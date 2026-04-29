@@ -55,7 +55,7 @@ fi
 mkdir -p "$state_dir"
 
 check_runtime_ready_with_log() {
-    runtime_ready_log="$state_dir/check-runtime-ready.$$.log"
+    runtime_ready_log="$(mktemp "${TMPDIR:-/tmp}/sonde-azure-companion-runtime-ready.XXXXXX")"
     if sonde-azure-companion \
         --admin-socket "$admin_socket_path" \
         --connector-socket "$connector_socket_path" \

@@ -660,6 +660,11 @@ async fn t_azc_0107_bootstrap_without_runtime_state_fails_closed() {
     );
     assert!(!wrapper_log.exists() || fs::read_to_string(&wrapper_log).unwrap().is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("runtime state is still incomplete"));
+    assert!(fs::read_dir(&state_dir).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with("check-runtime-ready.")));
 }
 
 #[test]

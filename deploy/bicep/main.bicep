@@ -7,10 +7,10 @@ targetScope = 'subscription'
 param location string = 'eastus'
 
 @description('Prefix used for resource names and default tags.')
-param projectName string = 'sonde'
+param project_name string = 'sonde'
 
-@description('Optional override for the resource group name. Leave empty to derive one from projectName.')
-param resourceGroupName string = ''
+@description('Optional override for the resource group name. Leave empty to derive one from project_name.')
+param resource_group_name string = ''
 
 @description('Base64-encoded DER certificate public data to register on the Azure companion app registration.')
 param companionCertificateBase64 string
@@ -39,14 +39,14 @@ param functionAppName string = ''
 @description('Optional override for the placeholder Function hosting plan name.')
 param functionPlanName string = ''
 
-var projectSlug = toLower(replace(replace(replace(replace(replace(projectName, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
+var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
 var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
-var effectiveResourceGroupName = empty(resourceGroupName) ? '${projectName}-azure' : resourceGroupName
+var effectiveResourceGroupName = empty(resource_group_name) ? '${project_name}-azure' : resource_group_name
 var effectiveServiceBusNamespaceName = empty(serviceBusNamespaceName)
   ? take('${take(effectiveProjectSlug, 20)}-sb-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName), 8)}', 50)
   : serviceBusNamespaceName
 var effectiveStorageAccountName = empty(storageAccountName)
-  ? take('st${take(uniqueString(subscription().subscriptionId, projectName, effectiveResourceGroupName, 'storage'), 22)}', 24)
+  ? take('st${take(uniqueString(subscription().subscriptionId, project_name, effectiveResourceGroupName, 'storage'), 22)}', 24)
   : storageAccountName
 var effectiveFunctionAppName = empty(functionAppName)
   ? take('${take(effectiveProjectSlug, 24)}-decoder-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'func'), 8)}', 60)
@@ -55,7 +55,7 @@ var effectiveFunctionPlanName = empty(functionPlanName)
   ? take('${take(effectiveProjectSlug, 24)}-func-plan', 40)
   : functionPlanName
 var tags = {
-  project: projectName
+  project: project_name
 }
 
 resource stackResourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
@@ -67,7 +67,7 @@ resource stackResourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
 module companionIdentity './modules/companion-identity.bicep' = {
   name: 'companionIdentity'
   params: {
-    projectName: projectName
+    projectName: project_name
     identitySuffix: take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'companion-identity'), 8)
     certificateBase64: companionCertificateBase64
     certificateDisplayName: companionCertificateDisplayName

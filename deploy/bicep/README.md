@@ -29,8 +29,8 @@ Azure companion architecture.
 | Parameter | Default | Purpose |
 |-----------|---------|---------|
 | `location` | `eastus` | Azure region for the stack |
-| `projectName` | `sonde` | Prefix for resource names and tags |
-| `resourceGroupName` | empty | Optional override for the resource group name |
+| `project_name` | `sonde` | Prefix for resource names and tags |
+| `resource_group_name` | empty | Optional override for the resource group name |
 | `companionCertificateBase64` | none | Base64-encoded DER certificate public material registered on the Azure companion app |
 | `serviceBusNamespaceName` | derived | Optional Service Bus namespace override |
 | `upstreamQueueName` | `connector-upstream` | Gateway-originated connector traffic queue |
@@ -41,7 +41,7 @@ Azure companion architecture.
 | `functionPlanName` | derived | Optional Function hosting plan override |
 
 When resource names are derived automatically, the deployment normalizes
-`projectName` to satisfy Azure naming rules for the target resource types.
+`project_name` to satisfy Azure naming rules for the target resource types.
 
 ## Companion certificate input
 

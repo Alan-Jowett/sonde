@@ -35,12 +35,8 @@ param companionServicePrincipalObjectId string
 
 var serviceBusDataSenderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39')
 var serviceBusDataReceiverRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')
-var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
 var companionUpstreamSenderAssignmentName = guid('companion-upstream-sender', companionServicePrincipalObjectId, serviceBusDataSenderRoleId, serviceBusNamespaceName, upstreamQueueName)
 var companionDownstreamReceiverAssignmentName = guid('companion-downstream-receiver', companionServicePrincipalObjectId, serviceBusDataReceiverRoleId, serviceBusNamespaceName, downstreamQueueName)
-var functionUpstreamReceiverAssignmentName = guid('function-upstream-receiver', functionAppName, serviceBusDataReceiverRoleId, serviceBusNamespaceName, upstreamQueueName)
-var functionDownstreamSenderAssignmentName = guid('function-downstream-sender', functionAppName, serviceBusDataSenderRoleId, serviceBusNamespaceName, downstreamQueueName)
-var functionTableContributorAssignmentName = guid('function-table-contributor', functionAppName, storageTableDataContributorRoleId, storageAccountName, tableName)
 var deploymentStorageContainerName = toLower(take('app-package-${take(functionAppName, 32)}-${take(uniqueString(resourceGroup().id, functionAppName), 7)}', 63))
 
 module serviceBus './service-bus.bicep' = {
@@ -94,20 +90,6 @@ resource existingDownstreamQueue 'Microsoft.ServiceBus/namespaces/queues@2024-01
   name: downstreamQueueName
 }
 
-resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
-  name: storageAccountName
-}
-
-resource existingTableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' existing = {
-  parent: existingStorageAccount
-  name: 'default'
-}
-
-resource existingStorageTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
-  parent: existingTableService
-  name: tableName
-}
-
 resource companionUpstreamSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: companionUpstreamSenderAssignmentName
   scope: existingUpstreamQueue
@@ -134,40 +116,21 @@ resource companionDownstreamReceiver 'Microsoft.Authorization/roleAssignments@20
   }
 }
 
-resource functionUpstreamReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: functionUpstreamReceiverAssignmentName
-  scope: existingUpstreamQueue
+module functionRbac './function-rbac.bicep' = {
+  name: 'functionRbac'
+  params: {
+    functionPrincipalId: functionPlaceholder.outputs.principalId
+    serviceBusNamespaceName: serviceBusNamespaceName
+    upstreamQueueName: upstreamQueueName
+    downstreamQueueName: downstreamQueueName
+    storageAccountName: storageAccountName
+    tableName: tableName
+  }
   dependsOn: [
     serviceBus
+    storage
+    functionPlaceholder
   ]
-  properties: {
-    principalId: functionPlaceholder.outputs.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: serviceBusDataReceiverRoleId
-  }
-}
-
-resource functionDownstreamSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: functionDownstreamSenderAssignmentName
-  scope: existingDownstreamQueue
-  dependsOn: [
-    serviceBus
-  ]
-  properties: {
-    principalId: functionPlaceholder.outputs.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: serviceBusDataSenderRoleId
-  }
-}
-
-resource functionTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: functionTableContributorAssignmentName
-  scope: existingStorageTable
-  properties: {
-    principalId: functionPlaceholder.outputs.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: storageTableDataContributorRoleId
-  }
 }
 
 output serviceBusNamespaceName string = serviceBus.outputs.namespaceName

@@ -602,6 +602,17 @@ fn ensure_p256_private_key(
     Ok(())
 }
 
+fn downstream_body_to_connector_payload(body: &[u8]) -> Result<Vec<u8>, CompanionError> {
+    if body.len() > CONNECTOR_MAX_FRAME_LENGTH {
+        return Err(CompanionError::Config(format!(
+            "downstream Service Bus message body length {} exceeds connector max frame length {}",
+            body.len(),
+            CONNECTOR_MAX_FRAME_LENGTH
+        )));
+    }
+    Ok(body.to_vec())
+}
+
 fn build_service_bus_credential(
     runtime_state: &RuntimeCredentialState,
 ) -> Result<Arc<dyn TokenCredential>, CompanionError> {
@@ -743,7 +754,7 @@ impl DownstreamConsumer for AzServiceBusConsumer {
                         "downstream Service Bus message body was not raw binary data: {err}"
                     ))
                 })
-                .map(|body| body.to_vec());
+                .and_then(downstream_body_to_connector_payload);
             match payload {
                 Ok(payload) => Ok(Some(payload)),
                 Err(err) => {
@@ -1073,11 +1084,12 @@ async fn main() -> Result<(), CompanionError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bootstrap_provider_and_config, check_runtime_ready, load_runtime_config, load_signing_key,
-        pump_downstream_once, pump_upstream_once, read_framed, resolve_state_relative_path,
-        validate_device_client_id, validate_device_scopes, validate_display_lines, write_framed,
-        BootstrapAuthArgs, ClientAssertionCredential, CompanionError, DownstreamConsumer,
-        RuntimeConfig, RuntimeCredentialState, ServicePrincipalStateFile, UpstreamPublisher,
+        bootstrap_provider_and_config, check_runtime_ready, downstream_body_to_connector_payload,
+        load_runtime_config, load_signing_key, pump_downstream_once, pump_upstream_once,
+        read_framed, resolve_state_relative_path, validate_device_client_id,
+        validate_device_scopes, validate_display_lines, write_framed, BootstrapAuthArgs,
+        ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
+        RuntimeCredentialState, ServicePrincipalStateFile, UpstreamPublisher,
         CONNECTOR_MAX_FRAME_LENGTH,
     };
     use azure_core::credentials::TokenCredential;
@@ -1642,6 +1654,15 @@ mod tests {
         assert!(err
             .to_string()
             .contains("service principal EC private key must use the P-256 curve"));
+    }
+
+    #[test]
+    fn downstream_body_to_connector_payload_rejects_oversized_messages() {
+        let body = vec![0u8; CONNECTOR_MAX_FRAME_LENGTH + 1];
+        let err = downstream_body_to_connector_payload(&body).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("exceeds connector max frame length"));
     }
 
     #[tokio::test]

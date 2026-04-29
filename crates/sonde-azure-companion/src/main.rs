@@ -662,6 +662,12 @@ impl UpstreamPublisher for AzServiceBusPublisher {
 #[tonic::async_trait]
 impl DownstreamConsumer for AzServiceBusConsumer {
     async fn receive(&mut self) -> Result<Option<Vec<u8>>, CompanionError> {
+        if self.inflight.is_some() {
+            return Err(CompanionError::Config(
+                "cannot receive a new downstream message while another message is still inflight"
+                    .to_string(),
+            ));
+        }
         let message = self
             .receiver
             .receive_message_with_max_wait_time(Some(Duration::from_secs(
@@ -669,16 +675,29 @@ impl DownstreamConsumer for AzServiceBusConsumer {
             )))
             .await?;
         if let Some(message) = message {
-            let payload = message
+            self.inflight = Some(message);
+            let payload = self
+                .inflight
+                .as_ref()
+                .expect("inflight message must exist immediately after receive")
                 .body()
                 .map_err(|err| {
                     CompanionError::Config(format!(
                         "downstream Service Bus message body was not raw binary data: {err}"
                     ))
-                })?
-                .to_vec();
-            self.inflight = Some(message);
-            Ok(Some(payload))
+                })
+                .map(|body| body.to_vec());
+            match payload {
+                Ok(payload) => Ok(Some(payload)),
+                Err(err) => {
+                    if let Err(abandon_err) = self.abandon().await {
+                        eprintln!(
+                            "failed to abandon downstream Service Bus message after body decode error: {abandon_err}"
+                        );
+                    }
+                    Err(err)
+                }
+            }
         } else {
             Ok(None)
         }
@@ -767,10 +786,20 @@ where
     T: AsyncRead + Unpin,
 {
     let mut len = [0u8; 4];
-    match reader.read_exact(&mut len).await {
-        Ok(_) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(err) => return Err(err.into()),
+    let mut read_len = 0usize;
+    while read_len < len.len() {
+        match reader.read(&mut len[read_len..]).await {
+            Ok(0) if read_len == 0 => return Ok(None),
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connector EOF while reading frame length prefix",
+                )
+                .into())
+            }
+            Ok(n) => read_len += n,
+            Err(err) => return Err(err.into()),
+        }
     }
     let len = usize::try_from(u32::from_be_bytes(len)).map_err(|_| {
         CompanionError::Config("connector frame length did not fit in usize".to_string())
@@ -836,7 +865,14 @@ where
         return Err(err);
     }
 
-    consumer.complete().await?;
+    if let Err(err) = consumer.complete().await {
+        if let Err(abandon_err) = consumer.abandon().await {
+            eprintln!(
+                "failed to abandon downstream Service Bus message after completion error: {abandon_err}"
+            );
+        }
+        return Err(err);
+    }
     Ok(())
 }
 
@@ -1104,6 +1140,7 @@ mod tests {
         inflight: Option<Vec<u8>>,
         completes: usize,
         abandons: usize,
+        fail_complete: bool,
     }
 
     impl FakeConsumer {
@@ -1113,6 +1150,17 @@ mod tests {
                 inflight: None,
                 completes: 0,
                 abandons: 0,
+                fail_complete: false,
+            }
+        }
+
+        fn with_complete_error(payloads: impl IntoIterator<Item = Vec<u8>>) -> Self {
+            Self {
+                queued: payloads.into_iter().collect(),
+                inflight: None,
+                completes: 0,
+                abandons: 0,
+                fail_complete: true,
             }
         }
     }
@@ -1126,6 +1174,11 @@ mod tests {
         }
 
         async fn complete(&mut self) -> Result<(), CompanionError> {
+            if self.fail_complete {
+                return Err(CompanionError::Config(
+                    "injected downstream completion failure".to_string(),
+                ));
+            }
             self.inflight.take();
             self.completes += 1;
             Ok(())
@@ -1626,6 +1679,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn downstream_pump_abandons_after_completion_failure() {
+        let (client, mut server) = duplex(64);
+        let mut client = client;
+        let mut consumer = FakeConsumer::with_complete_error([vec![4u8, 5, 6]]);
+
+        let err = pump_downstream_once(&mut client, &mut consumer)
+            .await
+            .unwrap_err();
+        let mut len = [0u8; 4];
+        server.read_exact(&mut len).await.unwrap();
+        let frame_len = usize::try_from(u32::from_be_bytes(len)).unwrap();
+        let mut payload = vec![0u8; frame_len];
+        server.read_exact(&mut payload).await.unwrap();
+
+        assert_eq!(payload, vec![4u8, 5, 6]);
+        assert!(err.to_string().contains("completion failure"));
+        assert_eq!(consumer.completes, 0);
+        assert_eq!(consumer.abandons, 1);
+    }
+
+    #[tokio::test]
     async fn read_framed_rejects_payloads_over_connector_limit() {
         let oversized_len = u32::try_from(CONNECTOR_MAX_FRAME_LENGTH + 1)
             .unwrap()
@@ -1639,6 +1713,29 @@ mod tests {
 
         let err = read_framed(&mut client).await.unwrap_err();
         assert!(err.to_string().contains("exceeds max"));
+    }
+
+    #[tokio::test]
+    async fn read_framed_returns_none_on_clean_eof() {
+        let (mut client, server) = duplex(16);
+        drop(server);
+
+        assert!(read_framed(&mut client).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn read_framed_rejects_truncated_length_prefix() {
+        let (mut client, mut server) = duplex(16);
+
+        tokio::spawn(async move {
+            server.write_all(&[0u8, 0u8]).await.unwrap();
+            server.shutdown().await.unwrap();
+        });
+
+        let err = read_framed(&mut client).await.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("connector EOF while reading frame length prefix"));
     }
 
     #[tokio::test]

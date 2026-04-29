@@ -20,7 +20,7 @@ tokio-stream = "0.1"
 tonic = "0.14"
 tonic-prost = "0.14"
 tower = "0.5"
-rpassword = "7.4.0"
+rpassword = "7.5.1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [build-dependencies]

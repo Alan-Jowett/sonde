@@ -19,7 +19,7 @@ RUN cargo build --release -p sonde-azure-companion
 # alpine:3.21 — pinned by digest for reproducible builds.
 FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
-RUN apk add --no-cache ca-certificates libstdc++ openssl \
+RUN apk add --no-cache ca-certificates \
     && mkdir -p /var/lib/sonde-azure-companion /var/run/sonde
 
 COPY --from=builder /sonde/target/release/sonde-azure-companion /usr/local/bin/sonde-azure-companion

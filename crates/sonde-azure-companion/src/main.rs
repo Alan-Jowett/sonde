@@ -671,9 +671,18 @@ impl ClientAssertionCredential {
             ])
             .send()
             .await
-            .map_err(|err| azure_core::Error::new(ErrorKind::Credential, err))?
-            .error_for_status()
             .map_err(|err| azure_core::Error::new(ErrorKind::Credential, err))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|err| format!("<failed to read token error response body: {err}>"));
+            return Err(azure_core::Error::new(
+                ErrorKind::Credential,
+                std::io::Error::other(format!("token endpoint returned {status}: {body}")),
+            ));
+        }
         let response: OAuthTokenResponse = response
             .json()
             .await
@@ -1710,6 +1719,41 @@ mod tests {
         assert!(request_bodies
             .iter()
             .any(|body| body.contains("scope=scope-c")));
+    }
+
+    #[tokio::test]
+    async fn client_assertion_credential_surfaces_token_error_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .append_header("content-type", "application/json")
+                    .set_body_string(
+                        "{\"error\":\"invalid_scope\",\"error_description\":\"scope rejected for test\"}",
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let credential = ClientAssertionCredential {
+            client_id: "test-client-id".to_string(),
+            token_endpoint: format!("{}/token", server.uri()),
+            signing_algorithm: Algorithm::HS256,
+            signing_key: EncodingKey::from_secret(b"test-secret"),
+            certificate_thumbprint: "thumbprint".to_string(),
+            http_client: reqwest::Client::builder().build().unwrap(),
+            cached_token: tokio::sync::Mutex::new(None),
+        };
+
+        let err = credential
+            .get_token(&["scope-a"], None)
+            .await
+            .expect_err("expected token request to fail");
+        let err_text = err.to_string();
+        assert!(err_text.contains("400 Bad Request"));
+        assert!(err_text.contains("invalid_scope"));
+        assert!(err_text.contains("scope rejected for test"));
     }
 
     #[tokio::test]

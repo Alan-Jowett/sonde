@@ -697,7 +697,8 @@ async fn t_azc_0108_missing_runtime_config_beats_device_auth_env_error() {
     assert!(!wrapper_log.exists() || fs::read_to_string(&wrapper_log).unwrap().is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("SONDE_AZURE_SERVICEBUS_NAMESPACE must be set and non-empty"));
-    assert!(!stderr.contains("SONDE_AZURE_DEVICE_CLIENT_ID must be set for bootstrap"));
+    assert!(stderr.contains("SONDE_AZURE_DEVICE_CLIENT_ID must be set for bootstrap"));
+    assert!(stderr.contains("SONDE_AZURE_DEVICE_SCOPES must be set for bootstrap"));
 }
 
 #[test]

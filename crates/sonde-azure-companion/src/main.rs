@@ -1109,7 +1109,12 @@ where
                 return result;
             }
             result = pump_downstream_once(&mut writer, &mut consumer) => {
-                result?;
+                if let Err(err) = result {
+                    if let Err(abandon_err) = consumer.abandon_inflight().await {
+                        eprintln!("failed to abandon downstream Service Bus message after downstream error: {abandon_err}");
+                    }
+                    return Err(err);
+                }
             }
         }
     }
@@ -1581,6 +1586,54 @@ mod tests {
     }
 
     #[cfg(unix)]
+    struct DownstreamErrorCleanupConsumer {
+        payload: Option<Vec<u8>>,
+        inflight: bool,
+        first_abandon_fails: bool,
+        abandon_calls: Arc<AtomicUsize>,
+        abandon_inflight_calls: Arc<AtomicUsize>,
+    }
+
+    #[cfg(unix)]
+    #[tonic::async_trait]
+    impl DownstreamConsumer for DownstreamErrorCleanupConsumer {
+        async fn receive(&mut self) -> Result<Option<Vec<u8>>, CompanionError> {
+            let payload = self.payload.take();
+            if let Some(payload) = payload {
+                self.inflight = true;
+                Ok(Some(payload))
+            } else {
+                std::future::pending::<Result<Option<Vec<u8>>, CompanionError>>().await
+            }
+        }
+
+        async fn complete(&mut self) -> Result<(), CompanionError> {
+            self.inflight = false;
+            Ok(())
+        }
+
+        async fn abandon(&mut self) -> Result<(), CompanionError> {
+            self.abandon_calls.fetch_add(1, Ordering::SeqCst);
+            if self.first_abandon_fails {
+                self.first_abandon_fails = false;
+                return Err(CompanionError::Config(
+                    "injected downstream abandon failure".to_string(),
+                ));
+            }
+            self.inflight = false;
+            Ok(())
+        }
+
+        async fn abandon_inflight(&mut self) -> Result<(), CompanionError> {
+            self.abandon_inflight_calls.fetch_add(1, Ordering::SeqCst);
+            if self.inflight {
+                self.abandon().await?;
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
     struct ReaderState {
         eof: AtomicBool,
         waker: StdMutex<Option<Waker>>,
@@ -1634,6 +1687,42 @@ mod tests {
         ) -> Poll<std::io::Result<usize>> {
             self.write_started.notify_waiters();
             Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[cfg(unix)]
+    struct FailingWriteStream;
+
+    #[cfg(unix)]
+    impl AsyncRead for FailingWriteStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    #[cfg(unix)]
+    impl AsyncWrite for FailingWriteStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "injected downstream write failure",
+            )))
         }
 
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
@@ -2073,6 +2162,30 @@ mod tests {
 
         bridge_task.await.unwrap().unwrap();
         assert_eq!(abandons.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bridge_runtime_abandons_inflight_message_after_downstream_error() {
+        let abandon_calls = Arc::new(AtomicUsize::new(0));
+        let abandon_inflight_calls = Arc::new(AtomicUsize::new(0));
+        let consumer = DownstreamErrorCleanupConsumer {
+            payload: Some(vec![1u8, 2, 3]),
+            inflight: false,
+            first_abandon_fails: true,
+            abandon_calls: Arc::clone(&abandon_calls),
+            abandon_inflight_calls: Arc::clone(&abandon_inflight_calls),
+        };
+
+        let err = super::bridge_runtime(FailingWriteStream, FakePublisher::default(), consumer)
+            .await
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("injected downstream write failure"));
+        assert_eq!(abandon_inflight_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(abandon_calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

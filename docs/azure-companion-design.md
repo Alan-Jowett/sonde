@@ -9,7 +9,8 @@
 > and broker resources is outside this document's scope.
 > **Audience:** Implementers building the Azure companion crate and its
 > deployment artifacts.
-> **Related:** [azure-companion-requirements.md](azure-companion-requirements.md),
+> **Related:** [azure-provisioning-design.md](azure-provisioning-design.md),
+> [azure-companion-requirements.md](azure-companion-requirements.md),
 > [gateway-companion-api.md](gateway-companion-api.md),
 > [gateway-design.md](gateway-design.md)
 

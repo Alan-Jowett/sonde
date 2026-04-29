@@ -11,7 +11,8 @@
 > The internal Azure provisioning workflow that creates the runtime certificate
 > and private key, Entra application/service principal, and Service Bus
 > resources is out of scope for this document.
-> **Related:** [gateway-companion-api.md](gateway-companion-api.md),
+> **Related:** [azure-provisioning-requirements.md](azure-provisioning-requirements.md),
+> [gateway-companion-api.md](gateway-companion-api.md),
 > [gateway-requirements.md](gateway-requirements.md),
 > [gateway-design.md](gateway-design.md)
 

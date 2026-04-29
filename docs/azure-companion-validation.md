@@ -9,7 +9,8 @@
 > broker resources are outside this document's scope.
 > **Audience:** Implementers and reviewers validating the Azure companion
 > bootstrap and runtime bridge behavior.
-> **Related:** [azure-companion-requirements.md](azure-companion-requirements.md),
+> **Related:** [azure-provisioning-validation.md](azure-provisioning-validation.md),
+> [azure-companion-requirements.md](azure-companion-requirements.md),
 > [azure-companion-design.md](azure-companion-design.md),
 > [gateway-validation.md](gateway-validation.md)
 

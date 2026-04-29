@@ -28,7 +28,7 @@ resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2024-01-01' = {
     capacity: 0
   }
   properties: {
-    disableLocalAuth: false
+    disableLocalAuth: true
     publicNetworkAccess: 'Enabled'
     zoneRedundant: false
   }

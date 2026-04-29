@@ -61,7 +61,6 @@ module storage './storage.bicep' = {
   }
 }
 
-var functionStorageConnectionString = 'DefaultEndpointsProtocol=https;AccountName=${storage.outputs.storageAccountName};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.outputs.primaryKey}'
 var functionDeploymentContainerUrl = '${storage.outputs.blobEndpoint}${storage.outputs.deploymentContainerName}'
 
 module functionPlaceholder './function-placeholder.bicep' = {
@@ -71,7 +70,7 @@ module functionPlaceholder './function-placeholder.bicep' = {
     functionAppName: functionAppName
     functionPlanName: functionPlanName
     deploymentContainerUrl: functionDeploymentContainerUrl
-    storageConnectionString: functionStorageConnectionString
+    storageAccountName: storage.outputs.storageAccountName
     tags: tags
   }
 }

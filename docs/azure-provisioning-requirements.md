@@ -105,6 +105,7 @@ explicitly opts into a different supported tier.
 3. The workflow provisions one downstream queue for cloud-originated desired-state traffic.
 4. The default namespace tier is Standard.
 5. The workflow exposes the namespace and queue names as deployment outputs or documented post-deploy values consumable by Azure companion bootstrap/runtime configuration.
+6. The default namespace configuration disables local/SAS authentication so Entra-based RBAC is the only steady-state access path unless a later specification explicitly broadens it.
 
 ---
 
@@ -123,6 +124,7 @@ resource. This issue does not define the table's logical schema.
 1. The workflow provisions one Azure Storage Account for this stack.
 2. The workflow provisions the Table resource needed by the later decoder path.
 3. The workflow documents that table schema ownership is deferred to the later Azure Function issue and is not defined by this provisioning specification.
+4. The workflow does not expose raw Storage Account keys in deployment outputs or bootstrap handoff values.
 
 ---
 

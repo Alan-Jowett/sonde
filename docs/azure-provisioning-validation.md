@@ -50,7 +50,8 @@
 3. Assert: one namespace exists for the stack.
 4. Assert: one upstream queue and one downstream queue exist.
 5. Assert: the namespace uses the Standard tier by default.
-6. Assert: the queue names are available through deployment outputs or documented post-deploy values.
+6. Assert: the namespace has local/SAS authentication disabled by default.
+7. Assert: the queue names are available through deployment outputs or documented post-deploy values.
 
 ---
 
@@ -63,7 +64,8 @@
 2. Inspect the resulting Storage Account and Table resources.
 3. Assert: the Storage Account exists.
 4. Assert: the Table resource exists.
-5. Assert: the provisioning documentation explicitly defers logical table schema ownership to the later Azure Function work.
+5. Assert: deployment outputs and bootstrap handoff values do not expose raw Storage Account keys.
+6. Assert: the provisioning documentation explicitly defers logical table schema ownership to the later Azure Function work.
 
 ---
 

@@ -96,6 +96,9 @@ The design keeps the queue names explicit deployment outputs so bootstrap and
 runtime configuration can consume them directly rather than relying on embedded
 defaults inside `sonde-azure-companion`. The default namespace tier is
 Standard.
+The namespace disables local/SAS authentication by default so steady-state
+access is mediated through Entra identities and the scoped RBAC grants defined
+elsewhere in this design.
 
 ### 3.4  Storage resources
 
@@ -107,6 +110,9 @@ The storage module provisions:
 This module intentionally stops at resource creation. It does not define the
 table's logical schema, retention semantics, or decoded-column contract; those
 belong to the later Azure Function work that will own decode/storage behavior.
+When the Function placeholder needs storage credentials for deployment wiring,
+the design keeps that secret handling inside the consuming module rather than
+surfacing raw account keys as deployment outputs.
 
 ### 3.5  Function placeholder resources
 

@@ -15,12 +15,17 @@ param functionPlanName string
 @description('Blob container URL used by the Function placeholder deployment configuration.')
 param deploymentContainerUrl string
 
-@secure()
-@description('Connection string used by the Function placeholder deployment storage configuration.')
-param storageConnectionString string
+@description('Storage Account name used by the Function placeholder deployment configuration.')
+param storageAccountName string
 
 @description('Tags applied to provisioned resources.')
 param tags object
+
+resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: storageAccountName
+}
+
+var storageConnectionString = 'DefaultEndpointsProtocol=https;AccountName=${existingStorageAccount.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${existingStorageAccount.listKeys().keys[0].value}'
 
 resource hostingPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: functionPlanName

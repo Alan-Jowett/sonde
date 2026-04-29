@@ -60,8 +60,6 @@ resource storageTable 'Microsoft.Storage/storageAccounts/tableServices/tables@20
   }
 }
 
-@secure()
-output primaryKey string = storageAccount.listKeys().keys[0].value
 output storageAccountName string = storageAccount.name
 output storageAccountResourceId string = storageAccount.id
 output blobEndpoint string = storageAccount.properties.primaryEndpoints.blob

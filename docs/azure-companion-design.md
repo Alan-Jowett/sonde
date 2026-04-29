@@ -133,7 +133,8 @@ When bootstrap is required, the Azure companion performs this sequence:
    fails.
 7. Hand off to the out-of-scope provisioning workflow that creates the runtime
    certificate and broker resources.
-8. Return success only after bootstrap-complete state has been established.
+8. The bootstrap wrapper/entrypoint reports overall success only after
+   bootstrap-complete state has been established.
 
 The modem display shows only the short prompt plus the device code; the full
 verification URL remains in stdout/stderr logs.

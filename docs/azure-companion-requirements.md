@@ -8,10 +8,9 @@
 > **Scope:** This document covers the Azure companion container, bootstrap-state
 > detection, bootstrap-trigger behavior, and the long-running Azure Service Bus
 > runtime bridge between `sonde-gateway` and an external Azure control plane.
-> The internal Azure provisioning workflow that creates the runtime certificate,
-> private key,
-> Entra application/service principal, and Service Bus resources is out of scope
-> for this document.
+> The internal Azure provisioning workflow that creates the runtime certificate
+> and private key, Entra application/service principal, and Service Bus
+> resources is out of scope for this document.
 > **Related:** [gateway-companion-api.md](gateway-companion-api.md),
 > [gateway-requirements.md](gateway-requirements.md),
 > [gateway-design.md](gateway-design.md)

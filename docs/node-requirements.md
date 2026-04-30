@@ -633,12 +633,12 @@ The firmware MUST support a provisioned board layout so that a single firmware b
 **Source:** issue #134, hw/carrier-board netlists
 
 **Description:**  
-The firmware MUST use the provisioned board layout to control sensor power and capture the current-cycle battery value after the `WAKE` / `COMMAND` exchange. If the provisioned board layout assigns `sensor_enable`, the firmware drives that GPIO low (active-low) after a valid `COMMAND` is received, waits for the provisioned buses and battery divider to settle, then captures the battery value for the current cycle. If `battery_adc` is assigned to a GPIO that the current ESP32-C3 target can sample, the firmware samples that configured ADC pin; otherwise it uses the known fallback value (`3300` mV). The captured current-cycle value is stored in RTC-retained state for the next wake and exposed to the current-cycle BPF execution context and helpers.
+The firmware MUST use the provisioned board layout to control sensor power and capture the current-cycle battery value for BPF execution. After a valid `COMMAND` is received but before the BPF program runs, the firmware enters an active GPIO state derived from the provisioned layout: `sensor_enable` is driven low so the sensor rail is on, provisioned I2C and 1-Wire pins are driven high, and `battery_adc` is configured as an input with no pull resistors. The firmware then waits for the bus and battery divider to settle, captures the battery value for the current cycle, and executes the BPF program. If `battery_adc` is assigned to a GPIO that the current ESP32-C3 target can sample, the firmware samples that configured ADC pin; otherwise it uses the known fallback value (`3300` mV). After BPF execution, the firmware restores the idle GPIO state.
 
 **Acceptance criteria:**
 
-1. When `sensor_enable` is assigned, the firmware drives the configured GPIO low (active-low) only after a valid `COMMAND` is received and before executing BPF or other post-WAKE command work.
-2. When `sensor_enable` is assigned, the firmware waits for the sensor rail and attached buses to settle before taking a battery measurement or using the provisioned bus helpers.
+1. When `sensor_enable` is assigned, the firmware drives the configured GPIO low only after a valid `COMMAND` is received and immediately before the BPF execution window begins.
+2. The firmware enters the active GPIO state, waits 1 ms for the sensor rail and attached buses to settle, then takes the battery measurement before calling the BPF interpreter.
 3. When `battery_adc` is assigned to an ADC-capable GPIO supported on the current ESP32-C3 target, the firmware samples the configured ADC pin and stores the resulting battery value in RTC-retained state for the next wake.
 4. When `battery_adc` is unassigned, or assigned to a GPIO that is not ADC-capable on the current target, the firmware stores the known fallback value (`3300` mV) in RTC-retained state for the next wake.
 5. The same-cycle `sonde_context.battery_mv` value and `get_battery_mv()` helper return the current-cycle value captured after `COMMAND` processing, not the previous wake's stored `WAKE.battery_mv`.
@@ -1385,14 +1385,14 @@ The node MUST apply build-type–aware log-level policies to eliminate logging o
 **Source:** issue #517
 
 **Description:**  
-Before entering deep sleep, the firmware MUST place all provisioned bus and control GPIOs into a high-impedance input state with no pull resistors to minimize sleep leakage current and prevent floating bus lines. This includes provisioned I2C pins, 1-Wire data, battery ADC, provisioned sensor-enable GPIO, and any GPIOs configured as outputs by BPF helper calls, except for RTC-domain pins explicitly required as wake-up sources.
+Before entering deep sleep, the firmware MUST restore the provisioned bus and control GPIOs to the paired board layout's idle baseline to minimize leakage current without disturbing attached hardware. In that baseline, provisioned `i2c0_sda`, `i2c0_scl`, and `one_wire_data` pins are high-impedance inputs with no pull resistors, provisioned `battery_adc` is an input with no pull resistors, and provisioned `sensor_enable` is driven high so the sensor rail is off. Any GPIOs configured as outputs by BPF helper calls that are not part of the provisioned board layout MUST be returned to a high-impedance input state, except for RTC-domain pins explicitly required as wake-up sources.
 
 **Acceptance criteria:**
 
 1. On the normal wake-cycle deep-sleep path, a `prepare_for_sleep()` function is called before `esp_deep_sleep_start()`.
-2. All provisioned bus and control GPIOs (`i2c0_sda`, `i2c0_scl`, `one_wire_data`, `battery_adc`, `sensor_enable`) are placed into a high-impedance input state with pull resistors removed, unless a particular pin is explicitly unassigned in the board layout.
-3. Any GPIOs configured as outputs by BPF helper calls during the wake cycle are returned to high-impedance input state.
-4. After `prepare_for_sleep()` completes on the wake-cycle path, no GPIO pin sources leakage current through an active pull resistor or driven output.
+2. All provisioned bus and control GPIOs are restored to the paired layout idle baseline before sleep: `i2c0_sda`, `i2c0_scl`, and `one_wire_data` are high-impedance inputs with pull resistors removed; `battery_adc` is an input with pull resistors removed; and `sensor_enable` is driven high, unless a particular pin is explicitly unassigned in the board layout.
+3. Any GPIOs configured as outputs by BPF helper calls during the wake cycle that are not part of the provisioned board layout are returned to high-impedance input state.
+4. After `prepare_for_sleep()` completes on the wake-cycle path, no GPIO pin sources leakage current through an active pull resistor, and only provisioned `sensor_enable` remains actively driven.
 5. The GPIO reset does not affect RTC-domain pins required for wake-up (e.g., the pairing button GPIO).
 
 ---

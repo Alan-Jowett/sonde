@@ -51,13 +51,32 @@ pub trait Hal {
     /// Returns the ADC reading on success, negative on error.
     fn adc_read(&mut self, channel: u32) -> i32;
 
+    /// Enter the paired board layout's idle GPIO state.
+    ///
+    /// In the idle state, provisioned I2C, 1-Wire, and battery-sense pins
+    /// are high-impedance inputs with no pull resistors, while the
+    /// provisioned `sensor_enable` pin is driven high so the sensor rail is off.
+    ///
+    /// The default implementation is a no-op (suitable for test mocks).
+    fn enter_idle_gpio_state(&mut self) {}
+
+    /// Enter the paired board layout's active GPIO state for BPF execution.
+    ///
+    /// In the active state, the provisioned `sensor_enable` pin is driven low
+    /// so the sensor rail is on, the provisioned I2C and 1-Wire pins are driven
+    /// high, and the provisioned battery-sense pin is configured as an input
+    /// with no pull resistors.
+    ///
+    /// The default implementation is a no-op (suitable for test mocks).
+    fn enter_active_gpio_state(&mut self) {}
+
     /// Prepare hardware for deep sleep by placing all peripherals and
     /// GPIOs into low-power states.
     ///
     /// Implementations should:
     /// - Deinitialize bus peripherals (I2C, SPI) to release their pins
-    /// - Reset GPIO pins configured during the wake cycle to disabled
-    ///   (no input buffer, no output driver, no pull resistors)
+    /// - Reset GPIO pins configured during the wake cycle
+    /// - Restore the paired board layout's idle GPIO state
     /// - Clear ADC configuration
     ///
     /// This must be called immediately before entering deep sleep to

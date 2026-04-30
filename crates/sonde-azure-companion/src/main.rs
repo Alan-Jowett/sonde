@@ -1574,7 +1574,17 @@ async fn run_bootstrap_deployment(
 ) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
     let docker = Docker::connect_with_local_defaults()
         .map_err(|e| CompanionError::Config(format!("failed to connect to Docker daemon: {e}")))?;
+    run_bootstrap_deployment_with_docker(&docker, admin_socket, staging_dir, cert_base64, args)
+        .await
+}
 
+async fn run_bootstrap_deployment_with_docker(
+    docker: &Docker,
+    admin_socket: &str,
+    staging_dir: &Path,
+    cert_base64: &str,
+    args: &BootstrapArgs,
+) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
     eprintln!("Pulling Azure CLI container image...");
     let pull_opts = CreateImageOptionsBuilder::default()
         .from_image(AZURE_CLI_IMAGE)
@@ -1609,7 +1619,7 @@ async fn run_bootstrap_deployment(
     let container_id = container.id;
 
     let bootstrap_result = async {
-        copy_files_to_container(&docker, &container_id, staging_dir).await?;
+        copy_files_to_container(docker, &container_id, staging_dir).await?;
         docker
             .start_container(&container_id, None)
             .await
@@ -1617,7 +1627,7 @@ async fn run_bootstrap_deployment(
                 CompanionError::Config(format!("failed to start Azure CLI container: {e}"))
             })?;
 
-        let stdout_output = stream_container_output(&docker, &container_id, admin_socket).await?;
+        let stdout_output = stream_container_output(docker, &container_id, admin_socket).await?;
         let wait_options = WaitContainerOptionsBuilder::default()
             .condition("not-running")
             .build();
@@ -1702,7 +1712,10 @@ async fn bootstrap(
         Err(e) => return report_bootstrap_failure(admin_socket, &staging_dir, e).await,
     };
 
-    display_progress(admin_socket, "Authenticating...").await?;
+    if let Err(err) = display_progress(admin_socket, "Authenticating...").await {
+        cleanup_staging(&staging_dir);
+        return Err(err);
+    }
     eprintln!("Starting Azure CLI container for device-code auth and Bicep deployment");
     let (sp_state, sb_config) =
         match run_bootstrap_deployment(admin_socket, &staging_dir, &cert_base64, &args).await {
@@ -1710,7 +1723,10 @@ async fn bootstrap(
             Err(e) => return report_bootstrap_failure(admin_socket, &staging_dir, e).await,
         };
 
-    display_progress(admin_socket, "Writing config...").await?;
+    if let Err(err) = display_progress(admin_socket, "Writing config...").await {
+        cleanup_staging(&staging_dir);
+        return Err(err);
+    }
     eprintln!("Writing runtime artifacts to state volume");
 
     let sp_path = staging_dir.join(SERVICE_PRINCIPAL_STATE_FILENAME);
@@ -1761,15 +1777,18 @@ mod tests {
         downstream_body_to_connector_payload, extract_device_code, generate_certificate,
         load_runtime_config, load_runtime_credential_state, load_signing_key, parse_bicep_outputs,
         prepare_staging_dir, pump_downstream_once, pump_upstream_once, read_framed,
-        resolve_effective_state_dir, resolve_state_relative_path, validate_display_lines,
-        write_framed, ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
+        resolve_effective_state_dir, resolve_state_relative_path,
+        run_bootstrap_deployment_with_docker, validate_display_lines, write_framed,
+        ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
         RuntimeCredentialState, ServiceBusConfigFile, ServicePrincipalStateFile, UpstreamPublisher,
-        ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME,
-        SERVICE_BUS_CONFIG_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX,
+        ACTIVE_STATE_FILENAME, BUNDLED_BICEP_PATH, CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH,
+        KEY_PEM_FILENAME, SERVICE_BUS_CONFIG_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME,
+        STATE_GENERATION_PREFIX,
     };
     use azure_core::credentials::TokenCredential;
     #[cfg(unix)]
     use base64::Engine as _;
+    use bollard::{Docker, API_DEFAULT_VERSION};
     use jsonwebtoken::{Algorithm, EncodingKey};
     use std::collections::VecDeque;
     use std::path::Path;
@@ -1791,7 +1810,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     #[cfg(unix)]
     use tokio::sync::{Mutex, Notify};
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
     #[cfg(unix)]
     use x509_cert::der::Decode;
@@ -2633,6 +2652,87 @@ mod tests {
             state_generations.is_empty(),
             "unexpected generations: {state_generations:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_deployment_removes_container_after_start_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/create"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/containers/create"))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .append_header("content-type", "application/json")
+                    .set_body_string(r#"{"Id":"test-container","Warnings":null}"#),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/containers/test-container/archive"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/containers/test-container/start"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("start failed"))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path_regex(r"^/containers/test-container$"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let docker = Docker::connect_with_http(&server.uri(), 120, API_DEFAULT_VERSION).unwrap();
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join(CERT_PEM_FILENAME), b"test-cert").unwrap();
+        let bundled_bicep_dir = Path::new(BUNDLED_BICEP_PATH);
+        std::fs::create_dir_all(bundled_bicep_dir).unwrap();
+        let bundled_bicep_file = bundled_bicep_dir.join("main.bicep");
+        let created_bicep_file = !bundled_bicep_file.exists();
+        if created_bicep_file {
+            std::fs::write(&bundled_bicep_file, b"targetScope = 'subscription'\n").unwrap();
+        }
+        let args = super::BootstrapArgs {
+            azure_location: "westus2".to_string(),
+            azure_project_name: "sonde".to_string(),
+            azure_subscription_id: None,
+        };
+
+        let err = run_bootstrap_deployment_with_docker(
+            &docker,
+            "/tmp/unused-admin.sock",
+            temp.path(),
+            "dummy-cert-base64",
+            &args,
+        )
+        .await
+        .unwrap_err();
+        if created_bicep_file {
+            let _ = std::fs::remove_file(&bundled_bicep_file);
+        }
+        assert!(matches!(err, CompanionError::Config(_)));
+
+        let requests = server.received_requests().await.unwrap();
+        let methods_and_paths = requests
+            .iter()
+            .map(|request| format!("{} {}", request.method, request.url.path()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            methods_and_paths,
+            vec![
+                "POST /images/create".to_string(),
+                "POST /containers/create".to_string(),
+                "PUT /containers/test-container/archive".to_string(),
+                "POST /containers/test-container/start".to_string(),
+                "DELETE /containers/test-container".to_string(),
+            ]
+        );
+        assert!(!requests[2].body.is_empty());
     }
 
     #[test]

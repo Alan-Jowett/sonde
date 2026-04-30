@@ -1967,7 +1967,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Provision a board layout with `sensor_enable=4` and `battery_adc=2`.
 2. Run a wake cycle with instrumentation on GPIO4 transitions.
 3. Assert: GPIO4 stays high until the BPF execution window begins.
-4. Assert: GPIO4 is driven low before the 1 ms bus-stabilization delay and battery sample.
+4. Assert: GPIO4 is driven low before the configured settle delay and battery sample.
 5. Assert: GPIO4 returns high immediately after BPF execution ends.
 
 ---
@@ -1980,7 +1980,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Provision a board layout with `sensor_enable=4` and `battery_adc=2`.
 2. Configure mock ADC reading to 3125 mV equivalent.
 3. Run a wake cycle through `COMMAND` processing and BPF execution.
-4. Assert: the firmware waits for the fixed 1 ms bus-stabilization delay before sampling.
+4. Assert: the firmware waits for the configured settle delay before sampling (`50` ms on the canonical carrier board when `battery_adc` is provisioned, otherwise `1` ms).
 5. Assert: the current-cycle `sonde_context.battery_mv` and `get_battery_mv()` value are 3125.
 6. Assert: 3125 mV is stored in RTC-retained state for the next wake.
 

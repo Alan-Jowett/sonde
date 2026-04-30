@@ -34,7 +34,8 @@ const RESPONSE_TIMEOUT_MS: u32 = 200;
 /// Default instruction budget for BPF execution.
 const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
 const BATTERY_FALLBACK_MV: u32 = 3300;
-const BUS_STABILIZE_MS: u32 = 1;
+const SENSOR_BUS_STABILIZE_MS: u32 = 1;
+const BATTERY_DIVIDER_SETTLE_MS: u32 = 50;
 const ADC_FULL_SCALE_MV: u32 = 2500;
 const BATTERY_DIVIDER_RATIO: u32 = 2;
 
@@ -108,6 +109,14 @@ fn capture_current_cycle_battery(hal: &mut dyn Hal, board_layout: &BoardLayout) 
 
     let sensed_mv = (raw as u32).saturating_mul(ADC_FULL_SCALE_MV) / 4095;
     sensed_mv.saturating_mul(BATTERY_DIVIDER_RATIO)
+}
+
+fn active_gpio_settle_ms(board_layout: &BoardLayout) -> u32 {
+    if board_layout.battery_adc.is_some() {
+        BATTERY_DIVIDER_SETTLE_MS
+    } else {
+        SENSOR_BUS_STABILIZE_MS
+    }
 }
 
 /// Outcome of a wake cycle.
@@ -1021,7 +1030,7 @@ where
     }
 
     hal.enter_active_gpio_state();
-    clock.delay_ms(BUS_STABILIZE_MS);
+    clock.delay_ms(active_gpio_settle_ms(board_layout));
     let current_battery_mv = capture_current_cycle_battery(hal, board_layout);
     if let Err(e) = storage.write_last_battery_mv(current_battery_mv) {
         log::warn!("failed to persist battery reading for next wake: {}", e);
@@ -1482,7 +1491,10 @@ mod tests {
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         assert_eq!(hal.gpio_state_transitions, vec!["active", "idle"]);
-        assert_eq!(*clock.delays_ms.borrow(), vec![BUS_STABILIZE_MS]);
+        assert_eq!(
+            *clock.delays_ms.borrow(),
+            vec![active_gpio_settle_ms(&board_layout)]
+        );
         assert_eq!(hal.adc_reads, vec![2]);
         assert_eq!(storage.last_battery_mv, Some(expected_battery_mv));
         assert_eq!(

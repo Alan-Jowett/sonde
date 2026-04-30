@@ -512,8 +512,17 @@ fn commit_staging(staging_dir: &Path, state_dir: &Path) -> Result<(), CompanionE
 
     let marker_path = active_state_marker_path(state_dir);
     let marker_tmp = state_dir.join(format!("{ACTIVE_STATE_FILENAME}.tmp"));
-    std::fs::write(&marker_tmp, format!("{generation_name}\n"))?;
-    std::fs::rename(&marker_tmp, &marker_path)?;
+    let marker_update_result: Result<(), CompanionError> = (|| {
+        std::fs::write(&marker_tmp, format!("{generation_name}\n"))?;
+        std::fs::rename(&marker_tmp, &marker_path)?;
+        Ok(())
+    })();
+
+    if let Err(err) = marker_update_result {
+        let _ = std::fs::remove_file(&marker_tmp);
+        let _ = std::fs::remove_dir_all(&generation_dir);
+        return Err(err);
+    }
 
     if let Some(previous_generation) = previous_generation {
         if previous_generation.starts_with(STATE_GENERATION_PREFIX)
@@ -585,8 +594,11 @@ fn write_private_key_pem(path: &Path, pem: &str) -> Result<(), CompanionError> {
 
     #[cfg(not(unix))]
     {
-        std::fs::write(path, pem.as_bytes())?;
-        Ok(())
+        let _ = (path, pem);
+        Err(CompanionError::Config(
+            "bootstrap private-key generation requires Unix so the key file can be created with owner-only permissions"
+                .to_string(),
+        ))
     }
 }
 
@@ -1742,19 +1754,21 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::validate_certificate_matches_private_key;
     use super::{
         build_az_bootstrap_script, check_runtime_ready, cleanup_staging, commit_staging,
         downstream_body_to_connector_payload, extract_device_code, generate_certificate,
         load_runtime_config, load_runtime_credential_state, load_signing_key, parse_bicep_outputs,
         prepare_staging_dir, pump_downstream_once, pump_upstream_once, read_framed,
-        resolve_effective_state_dir, resolve_state_relative_path,
-        validate_certificate_matches_private_key, validate_display_lines, write_framed,
-        ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
+        resolve_effective_state_dir, resolve_state_relative_path, validate_display_lines,
+        write_framed, ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
         RuntimeCredentialState, ServiceBusConfigFile, ServicePrincipalStateFile, UpstreamPublisher,
         ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME,
-        SERVICE_BUS_CONFIG_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME,
+        SERVICE_BUS_CONFIG_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX,
     };
     use azure_core::credentials::TokenCredential;
+    #[cfg(unix)]
     use base64::Engine as _;
     use jsonwebtoken::{Algorithm, EncodingKey};
     use std::collections::VecDeque;
@@ -1779,7 +1793,9 @@ mod tests {
     use tokio::sync::{Mutex, Notify};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+    #[cfg(unix)]
     use x509_cert::der::Decode;
+    #[cfg(unix)]
     use x509_cert::Certificate;
 
     fn lines(values: &[&str]) -> Vec<String> {
@@ -2266,36 +2282,45 @@ mod tests {
     #[test]
     fn test_generate_certificate() {
         let temp = TempDir::new().unwrap();
-        let (cert_path, key_path, cert_base64) = generate_certificate(temp.path()).unwrap();
 
-        assert_eq!(cert_path, temp.path().join(CERT_PEM_FILENAME));
-        assert_eq!(key_path, temp.path().join(KEY_PEM_FILENAME));
-        assert!(cert_path.is_file());
-        assert!(key_path.is_file());
-
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(cert_base64)
-            .unwrap();
-        let cert_file = std::fs::File::open(&cert_path).unwrap();
-        let mut reader = std::io::BufReader::new(cert_file);
-        let cert_der = rustls_pemfile::certs(&mut reader)
-            .next()
-            .transpose()
-            .unwrap()
-            .unwrap();
-        assert_eq!(decoded, cert_der.as_ref());
-
-        let certificate = Certificate::from_der(cert_der.as_ref()).unwrap();
-        assert_ne!(
-            certificate.tbs_certificate.validity.not_before,
-            certificate.tbs_certificate.validity.not_after
-        );
-        let (algorithm, _) = load_signing_key(&key_path).unwrap();
-        assert_eq!(algorithm, Algorithm::ES256);
-        validate_certificate_matches_private_key(&cert_path, &key_path).unwrap();
+        #[cfg(not(unix))]
+        {
+            let err = generate_certificate(temp.path()).unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("bootstrap private-key generation requires Unix"));
+        }
 
         #[cfg(unix)]
         {
+            let (cert_path, key_path, cert_base64) = generate_certificate(temp.path()).unwrap();
+
+            assert_eq!(cert_path, temp.path().join(CERT_PEM_FILENAME));
+            assert_eq!(key_path, temp.path().join(KEY_PEM_FILENAME));
+            assert!(cert_path.is_file());
+            assert!(key_path.is_file());
+
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(cert_base64)
+                .unwrap();
+            let cert_file = std::fs::File::open(&cert_path).unwrap();
+            let mut reader = std::io::BufReader::new(cert_file);
+            let cert_der = rustls_pemfile::certs(&mut reader)
+                .next()
+                .transpose()
+                .unwrap()
+                .unwrap();
+            assert_eq!(decoded, cert_der.as_ref());
+
+            let certificate = Certificate::from_der(cert_der.as_ref()).unwrap();
+            assert_ne!(
+                certificate.tbs_certificate.validity.not_before,
+                certificate.tbs_certificate.validity.not_after
+            );
+            let (algorithm, _) = load_signing_key(&key_path).unwrap();
+            assert_eq!(algorithm, Algorithm::ES256);
+            validate_certificate_matches_private_key(&cert_path, &key_path).unwrap();
+
             use std::os::unix::fs::PermissionsExt;
 
             let key_mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
@@ -2554,6 +2579,60 @@ mod tests {
         cleanup_staging(&staging_dir);
 
         assert!(!staging_dir.exists());
+    }
+
+    #[test]
+    fn test_staged_commit_rolls_back_generation_on_marker_update_failure() {
+        let temp = TempDir::new().unwrap();
+        let staging_dir = prepare_staging_dir(temp.path()).unwrap();
+        std::fs::write(staging_dir.join(CERT_PEM_FILENAME), b"new-cert").unwrap();
+        std::fs::write(staging_dir.join(KEY_PEM_FILENAME), b"new-key").unwrap();
+        std::fs::write(
+            staging_dir.join(SERVICE_PRINCIPAL_STATE_FILENAME),
+            serde_json::to_vec(&ServicePrincipalStateFile {
+                tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                certificate_path: CERT_PEM_FILENAME.to_string(),
+                private_key_path: KEY_PEM_FILENAME.to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            staging_dir.join(SERVICE_BUS_CONFIG_FILENAME),
+            serde_json::to_vec(&ServiceBusConfigFile {
+                namespace: "example.servicebus.windows.net".to_string(),
+                upstream_queue: "upstream".to_string(),
+                downstream_queue: "downstream".to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        std::fs::create_dir(temp.path().join(format!("{ACTIVE_STATE_FILENAME}.tmp"))).unwrap();
+
+        let err = commit_staging(&staging_dir, temp.path()).unwrap_err();
+        assert!(matches!(err, CompanionError::Io(_)));
+        assert!(!staging_dir.exists());
+        assert!(!temp.path().join(ACTIVE_STATE_FILENAME).exists());
+
+        let state_generations = std::fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let file_name = entry.file_name();
+                let file_name = file_name.to_str()?;
+                if file_name.starts_with(STATE_GENERATION_PREFIX) {
+                    Some(file_name.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            state_generations.is_empty(),
+            "unexpected generations: {state_generations:?}"
+        );
     }
 
     #[test]

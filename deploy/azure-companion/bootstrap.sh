@@ -43,7 +43,12 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         fi
 
         generation_name="$(host_trim_string "$(cat "$active_state_file")")"
-        if [ -z "$generation_name" ] || [ ! -d "$state_dir/$generation_name" ]; then
+        case "$generation_name" in
+            ''|*/*|*\\*|*..*|-*)
+                return 1
+                ;;
+        esac
+        if [ ! -d "$state_dir/$generation_name" ]; then
             return 1
         fi
 

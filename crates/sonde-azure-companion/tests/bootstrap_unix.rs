@@ -92,6 +92,13 @@ fn write_runtime_ready_state(state_dir: &Path) {
     .unwrap();
 }
 
+fn write_generated_runtime_ready_state(state_dir: &Path) {
+    let generation_dir = state_dir.join(".state-test");
+    fs::create_dir_all(&generation_dir).unwrap();
+    write_runtime_ready_state(&generation_dir);
+    fs::write(state_dir.join(".current-state"), b".state-test\n").unwrap();
+}
+
 fn wait_for_path(path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -117,6 +124,50 @@ fn container_ready_state_skips_bootstrap_and_runs() {
     let bin_dir = prepare_path_dir(&temp);
     let state_dir = temp.path().join("state");
     write_runtime_ready_state(&state_dir);
+    let wrapper_log = temp.path().join("wrapper.log");
+    write_runtime_wrapper(&bin_dir, &wrapper_log);
+
+    let mut cmd = Command::new("sh");
+    cmd.arg(bootstrap_script_path());
+    cmd.env(
+        "PATH",
+        format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+    cmd.env("SONDE_AZURE_COMPANION_IN_CONTAINER", "1");
+    cmd.env("SONDE_AZURE_COMPANION_STATE_DIR", &state_dir);
+    cmd.env("SONDE_GATEWAY_ADMIN_SOCKET", temp.path().join("admin.sock"));
+    cmd.env(
+        "SONDE_GATEWAY_CONNECTOR_SOCKET",
+        temp.path().join("connector.sock"),
+    );
+
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "runtime start failed: {output:?}");
+    assert_eq!(
+        fs::read_to_string(&wrapper_log)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![format!(
+            "run {} {} {}",
+            temp.path().join("admin.sock").display(),
+            temp.path().join("connector.sock").display(),
+            state_dir.display()
+        )]
+    );
+}
+
+#[test]
+fn container_ready_state_uses_active_generation_directory() {
+    let temp = TempDir::new().unwrap();
+    let bin_dir = prepare_path_dir(&temp);
+    let state_dir = temp.path().join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    write_generated_runtime_ready_state(&state_dir);
     let wrapper_log = temp.path().join("wrapper.log");
     write_runtime_wrapper(&bin_dir, &wrapper_log);
 

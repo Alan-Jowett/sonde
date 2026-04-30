@@ -28,11 +28,31 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
     host_json_string() {
         key="$1"
         file="$2"
-        sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$file" | head -n 1
+        sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$file" | head -n 1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+    }
+
+    host_trim_string() {
+        printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+    }
+
+    host_effective_state_dir() {
+        active_state_file="$state_dir/.current-state"
+        if [ ! -f "$active_state_file" ]; then
+            printf '%s\n' "$state_dir"
+            return 0
+        fi
+
+        generation_name="$(host_trim_string "$(cat "$active_state_file")")"
+        if [ -z "$generation_name" ] || [ ! -d "$state_dir/$generation_name" ]; then
+            return 1
+        fi
+
+        printf '%s\n' "$state_dir/$generation_name"
     }
 
     host_runtime_ready() {
-        service_principal_path="$state_dir/service-principal.json"
+        effective_state_dir="$(host_effective_state_dir)" || return 1
+        service_principal_path="$effective_state_dir/service-principal.json"
         if [ ! -f "$service_principal_path" ]; then
             return 1
         fi
@@ -42,17 +62,20 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         if [ -z "$cert_rel" ] || [ -z "$key_rel" ]; then
             return 1
         fi
-        if [ ! -f "$state_dir/$cert_rel" ] || [ ! -f "$state_dir/$key_rel" ]; then
+        if [ ! -f "$effective_state_dir/$cert_rel" ] || [ ! -f "$effective_state_dir/$key_rel" ]; then
             return 1
         fi
 
-        if [ -n "${SONDE_AZURE_SERVICEBUS_NAMESPACE:-}" ] &&
-            [ -n "${SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE:-}" ] &&
-            [ -n "${SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE:-}" ]; then
+        namespace_env="$(host_trim_string "${SONDE_AZURE_SERVICEBUS_NAMESPACE:-}")"
+        upstream_env="$(host_trim_string "${SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE:-}")"
+        downstream_env="$(host_trim_string "${SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE:-}")"
+        if [ -n "$namespace_env" ] &&
+            [ -n "$upstream_env" ] &&
+            [ -n "$downstream_env" ]; then
             return 0
         fi
 
-        service_bus_path="$state_dir/service-bus.json"
+        service_bus_path="$effective_state_dir/service-bus.json"
         if [ ! -f "$service_bus_path" ]; then
             return 1
         fi

@@ -4,6 +4,7 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use azservicebus::{
     ServiceBusClient, ServiceBusClientOptions, ServiceBusMessage, ServiceBusReceiver,
@@ -64,6 +65,8 @@ const CERT_PEM_FILENAME: &str = "cert.pem";
 const KEY_PEM_FILENAME: &str = "key.pem";
 const SERVICE_BUS_CONFIG_FILENAME: &str = "service-bus.json";
 const STAGING_DIR_NAME: &str = ".staging";
+const ACTIVE_STATE_FILENAME: &str = ".current-state";
+const STATE_GENERATION_PREFIX: &str = ".state-";
 const DEFAULT_DOWNSTREAM_WAIT_SECS: u64 = 1;
 const CONNECTOR_MAX_FRAME_LENGTH: usize =
     sonde_gateway::connector::DEFAULT_CONNECTOR_MAX_MESSAGE_SIZE;
@@ -446,7 +449,8 @@ fn load_runtime_config(state_dir: &Path) -> Result<RuntimeConfig, CompanionError
 }
 
 fn load_service_bus_config_file(state_dir: &Path) -> Result<ServiceBusConfigFile, CompanionError> {
-    let config_path = state_dir.join(SERVICE_BUS_CONFIG_FILENAME);
+    let effective_state_dir = resolve_effective_state_dir(state_dir)?;
+    let config_path = effective_state_dir.join(SERVICE_BUS_CONFIG_FILENAME);
     let bytes = std::fs::read(&config_path)?;
     let config: ServiceBusConfigFile = serde_json::from_slice(&bytes)?;
     Ok(config)
@@ -461,61 +465,65 @@ fn prepare_staging_dir(state_dir: &Path) -> Result<PathBuf, CompanionError> {
     Ok(staging_dir)
 }
 
+fn active_state_marker_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(ACTIVE_STATE_FILENAME)
+}
+
+fn active_state_generation_name(state_dir: &Path) -> Result<Option<String>, CompanionError> {
+    let marker_path = active_state_marker_path(state_dir);
+    let marker_text = match std::fs::read_to_string(&marker_path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    let generation_name = marker_text.trim();
+    if generation_name.is_empty() {
+        return Err(CompanionError::Config(format!(
+            "active state marker `{}` must not be empty",
+            marker_path.display()
+        )));
+    }
+    let generation_path = resolve_state_relative_path(state_dir, generation_name)?;
+    if !generation_path.is_dir() {
+        return Err(CompanionError::Config(format!(
+            "active state generation directory not found: {}",
+            generation_path.display()
+        )));
+    }
+    Ok(Some(generation_name.to_string()))
+}
+
+fn resolve_effective_state_dir(state_dir: &Path) -> Result<PathBuf, CompanionError> {
+    match active_state_generation_name(state_dir)? {
+        Some(generation_name) => resolve_state_relative_path(state_dir, &generation_name),
+        None => Ok(state_dir.to_path_buf()),
+    }
+}
+
 fn commit_staging(staging_dir: &Path, state_dir: &Path) -> Result<(), CompanionError> {
-    let backup_dir = state_dir.join(format!("{STAGING_DIR_NAME}-backup"));
-    if backup_dir.exists() {
-        std::fs::remove_dir_all(&backup_dir)?;
-    }
-    std::fs::create_dir_all(&backup_dir)?;
+    let previous_generation = active_state_generation_name(state_dir)?;
+    let generation_suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| CompanionError::Config(format!("system clock before UNIX_EPOCH: {err}")))?
+        .as_nanos();
+    let generation_name = format!("{STATE_GENERATION_PREFIX}{generation_suffix}");
+    let generation_dir = state_dir.join(&generation_name);
+    std::fs::rename(staging_dir, &generation_dir)?;
 
-    let staged_files: Vec<(PathBuf, PathBuf)> = std::fs::read_dir(staging_dir)?
-        .map(|entry| {
-            let entry = entry?;
-            Ok((entry.path(), state_dir.join(entry.file_name())))
-        })
-        .collect::<Result<_, std::io::Error>>()?;
+    let marker_path = active_state_marker_path(state_dir);
+    let marker_tmp = state_dir.join(format!("{ACTIVE_STATE_FILENAME}.tmp"));
+    std::fs::write(&marker_tmp, format!("{generation_name}\n"))?;
+    std::fs::rename(&marker_tmp, &marker_path)?;
 
-    let mut backed_up: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let mut committed: Vec<PathBuf> = Vec::new();
-
-    let commit_result: Result<(), CompanionError> = (|| {
-        for (_, dest) in &staged_files {
-            if dest.exists() {
-                let backup_path = backup_dir.join(dest.file_name().ok_or_else(|| {
-                    CompanionError::Config(format!(
-                        "staged destination had no file name: {}",
-                        dest.display()
-                    ))
-                })?);
-                std::fs::rename(dest, &backup_path)?;
-                backed_up.push((backup_path, dest.clone()));
-            }
+    if let Some(previous_generation) = previous_generation {
+        if previous_generation.starts_with(STATE_GENERATION_PREFIX)
+            && previous_generation != generation_name
+        {
+            let previous_dir = state_dir.join(previous_generation);
+            let _ = std::fs::remove_dir_all(previous_dir);
         }
-
-        for (src, dest) in &staged_files {
-            std::fs::rename(src, dest)?;
-            committed.push(dest.clone());
-        }
-        Ok(())
-    })();
-
-    if let Err(err) = commit_result {
-        for dest in &committed {
-            if dest.exists() {
-                let _ = std::fs::remove_file(dest);
-            }
-        }
-        for (backup_path, dest) in backed_up.iter().rev() {
-            if backup_path.exists() {
-                let _ = std::fs::rename(backup_path, dest);
-            }
-        }
-        let _ = std::fs::remove_dir_all(&backup_dir);
-        return Err(err);
     }
 
-    let _ = std::fs::remove_dir_all(&backup_dir);
-    let _ = std::fs::remove_dir(staging_dir);
     Ok(())
 }
 
@@ -582,10 +590,6 @@ fn write_private_key_pem(path: &Path, pem: &str) -> Result<(), CompanionError> {
     }
 }
 
-fn service_principal_state_path(state_dir: &Path) -> PathBuf {
-    state_dir.join(SERVICE_PRINCIPAL_STATE_FILENAME)
-}
-
 fn resolve_state_relative_path(state_dir: &Path, value: &str) -> Result<PathBuf, CompanionError> {
     let path = PathBuf::from(value);
     if path.is_absolute() {
@@ -624,7 +628,8 @@ fn canonicalize_state_file_path(
 fn load_runtime_credential_state(
     state_dir: &Path,
 ) -> Result<RuntimeCredentialState, CompanionError> {
-    let state_path = service_principal_state_path(state_dir);
+    let effective_state_dir = resolve_effective_state_dir(state_dir)?;
+    let state_path = effective_state_dir.join(SERVICE_PRINCIPAL_STATE_FILENAME);
     let state_bytes = match std::fs::read(&state_path) {
         Ok(state_bytes) => state_bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -640,26 +645,34 @@ fn load_runtime_credential_state(
     let client_id = require_non_empty(state.client_id, "service principal client_id")?;
     let certificate_path_value =
         require_non_empty(state.certificate_path, "service principal certificate_path")?;
-    let certificate_path = resolve_state_relative_path(state_dir, &certificate_path_value)?;
+    let certificate_path =
+        resolve_state_relative_path(&effective_state_dir, &certificate_path_value)?;
     if !certificate_path.is_file() {
         return Err(CompanionError::Config(format!(
             "service principal certificate file not found: {}",
             certificate_path.display()
         )));
     }
-    let certificate_path =
-        canonicalize_state_file_path(state_dir, &certificate_path, &certificate_path_value)?;
+    let certificate_path = canonicalize_state_file_path(
+        &effective_state_dir,
+        &certificate_path,
+        &certificate_path_value,
+    )?;
     let private_key_path_value =
         require_non_empty(state.private_key_path, "service principal private_key_path")?;
-    let private_key_path = resolve_state_relative_path(state_dir, &private_key_path_value)?;
+    let private_key_path =
+        resolve_state_relative_path(&effective_state_dir, &private_key_path_value)?;
     if !private_key_path.is_file() {
         return Err(CompanionError::Config(format!(
             "service principal private key file not found: {}",
             private_key_path.display()
         )));
     }
-    let private_key_path =
-        canonicalize_state_file_path(state_dir, &private_key_path, &private_key_path_value)?;
+    let private_key_path = canonicalize_state_file_path(
+        &effective_state_dir,
+        &private_key_path,
+        &private_key_path_value,
+    )?;
     Ok(RuntimeCredentialState {
         tenant_id,
         client_id,
@@ -939,6 +952,7 @@ az login --use-device-code --output none >&2
 if [ -n "${SONDE_AZURE_SUBSCRIPTION_ID:-}" ]; then
     az account set --subscription "$SONDE_AZURE_SUBSCRIPTION_ID" >&2
 fi
+echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2
 az deployment sub create \
     --location "$SONDE_AZURE_LOCATION" \
     --template-file /bicep/main.bicep \
@@ -953,7 +967,16 @@ az deployment sub create \
 fn device_code_regex() -> &'static Regex {
     static DEVICE_CODE_RE: OnceLock<Regex> = OnceLock::new();
     DEVICE_CODE_RE.get_or_init(|| {
-        Regex::new(r"enter the code ([A-Z0-9-]+) to authenticate").expect("valid device code regex")
+        Regex::new(r"(?i)enter\s+the\s+code\s+([A-Z0-9-]+)\s+to\s+authenticate")
+            .expect("valid device code regex")
+    })
+}
+
+fn device_code_fallback_regex() -> &'static Regex {
+    static DEVICE_CODE_FALLBACK_RE: OnceLock<Regex> = OnceLock::new();
+    DEVICE_CODE_FALLBACK_RE.get_or_init(|| {
+        Regex::new(r"(?i)microsoft\.com/devicelogin[^\n]*\b([A-Z0-9]{4}(?:-[A-Z0-9]{4})+)\b")
+            .expect("valid fallback device code regex")
     })
 }
 
@@ -962,6 +985,12 @@ fn extract_device_code(stderr_buffer: &str) -> Option<String> {
         .captures(stderr_buffer)
         .and_then(|captures| captures.get(1))
         .map(|code| code.as_str().to_string())
+        .or_else(|| {
+            device_code_fallback_regex()
+                .captures(stderr_buffer)
+                .and_then(|captures| captures.get(1))
+                .map(|code| code.as_str().to_string())
+        })
 }
 
 fn build_container_env(cert_base64: &str, args: &BootstrapArgs) -> Vec<String> {
@@ -1467,6 +1496,7 @@ async fn stream_container_output(
     let mut stdout_buffer = String::new();
     let mut stderr_buffer = String::new();
     let mut device_code_displayed = false;
+    let mut deployment_displayed = false;
 
     while let Some(result) = logs.next().await {
         match result {
@@ -1482,6 +1512,13 @@ async fn stream_container_output(
                 if stderr_buffer.len() > MAX_STDERR_BUFFER_LEN {
                     let trim_start = stderr_buffer.len() - MAX_STDERR_BUFFER_LEN;
                     stderr_buffer.drain(..trim_start);
+                }
+
+                if !deployment_displayed
+                    && stderr_buffer.contains("__SONDE_AZURE_DEPLOYMENT_START__")
+                {
+                    display_progress(admin_socket, "Deploying Azure...").await?;
+                    deployment_displayed = true;
                 }
 
                 if !device_code_displayed {
@@ -1626,7 +1663,11 @@ async fn report_bootstrap_failure(
     err: CompanionError,
 ) -> Result<(), CompanionError> {
     cleanup_staging(staging_dir);
-    display_progress(admin_socket, "Bootstrap failed").await?;
+    if let Err(display_err) = display_progress(admin_socket, "Bootstrap failed").await {
+        return Err(CompanionError::Config(format!(
+            "bootstrap failed: {err}; additionally failed to display modem error: {display_err}"
+        )));
+    }
     Err(err)
 }
 
@@ -1704,13 +1745,14 @@ mod tests {
     use super::{
         build_az_bootstrap_script, check_runtime_ready, cleanup_staging, commit_staging,
         downstream_body_to_connector_payload, extract_device_code, generate_certificate,
-        load_runtime_config, load_signing_key, parse_bicep_outputs, prepare_staging_dir,
-        pump_downstream_once, pump_upstream_once, read_framed, resolve_state_relative_path,
+        load_runtime_config, load_runtime_credential_state, load_signing_key, parse_bicep_outputs,
+        prepare_staging_dir, pump_downstream_once, pump_upstream_once, read_framed,
+        resolve_effective_state_dir, resolve_state_relative_path,
         validate_certificate_matches_private_key, validate_display_lines, write_framed,
         ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
         RuntimeCredentialState, ServiceBusConfigFile, ServicePrincipalStateFile, UpstreamPublisher,
-        CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME,
-        SERVICE_BUS_CONFIG_FILENAME,
+        ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME,
+        SERVICE_BUS_CONFIG_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME,
     };
     use azure_core::credentials::TokenCredential;
     use base64::Engine as _;
@@ -2391,6 +2433,7 @@ mod tests {
         let script = build_az_bootstrap_script();
         assert!(script.contains(r#"--location "$SONDE_AZURE_LOCATION""#));
         assert!(script.contains(r#"--parameters location="$SONDE_AZURE_LOCATION""#));
+        assert!(script.contains(r#"echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2"#));
     }
 
     #[test]
@@ -2400,6 +2443,18 @@ mod tests {
             "enter the code ABCD-EFGH to authenticate.\n",
         );
         assert_eq!(extract_device_code(buffer).as_deref(), Some("ABCD-EFGH"));
+    }
+
+    #[test]
+    fn extract_device_code_is_case_insensitive() {
+        let buffer = "ENTER THE CODE WXYZ-1234 TO AUTHENTICATE";
+        assert_eq!(extract_device_code(buffer).as_deref(), Some("WXYZ-1234"));
+    }
+
+    #[test]
+    fn extract_device_code_supports_devicelogin_fallback_pattern() {
+        let buffer = "Open https://microsoft.com/devicelogin and use code QRST-UVWX when prompted.";
+        assert_eq!(extract_device_code(buffer).as_deref(), Some("QRST-UVWX"));
     }
 
     #[test]
@@ -2442,17 +2497,50 @@ mod tests {
         let staging_dir = prepare_staging_dir(temp.path()).unwrap();
         std::fs::write(staging_dir.join(CERT_PEM_FILENAME), b"new-cert").unwrap();
         std::fs::write(staging_dir.join(KEY_PEM_FILENAME), b"new-key").unwrap();
+        std::fs::write(
+            staging_dir.join(SERVICE_PRINCIPAL_STATE_FILENAME),
+            serde_json::to_vec(&ServicePrincipalStateFile {
+                tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                certificate_path: CERT_PEM_FILENAME.to_string(),
+                private_key_path: KEY_PEM_FILENAME.to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            staging_dir.join(SERVICE_BUS_CONFIG_FILENAME),
+            serde_json::to_vec(&ServiceBusConfigFile {
+                namespace: "example.servicebus.windows.net".to_string(),
+                upstream_queue: "upstream".to_string(),
+                downstream_queue: "downstream".to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
         std::fs::write(temp.path().join(CERT_PEM_FILENAME), b"old-cert").unwrap();
 
         commit_staging(&staging_dir, temp.path()).unwrap();
 
+        let active_marker = temp.path().join(ACTIVE_STATE_FILENAME);
+        assert!(active_marker.exists());
+        let effective_state_dir = resolve_effective_state_dir(temp.path()).unwrap();
+        assert_ne!(effective_state_dir, temp.path());
         assert_eq!(
-            std::fs::read(temp.path().join(CERT_PEM_FILENAME)).unwrap(),
+            std::fs::read(effective_state_dir.join(CERT_PEM_FILENAME)).unwrap(),
             b"new-cert"
         );
         assert_eq!(
-            std::fs::read(temp.path().join(KEY_PEM_FILENAME)).unwrap(),
+            std::fs::read(effective_state_dir.join(KEY_PEM_FILENAME)).unwrap(),
             b"new-key"
+        );
+        let runtime_state = load_runtime_credential_state(temp.path()).unwrap();
+        assert_eq!(
+            runtime_state.certificate_path,
+            effective_state_dir
+                .join(CERT_PEM_FILENAME)
+                .canonicalize()
+                .unwrap()
         );
         assert!(!staging_dir.exists());
     }

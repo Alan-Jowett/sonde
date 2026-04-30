@@ -99,7 +99,11 @@ The current runtime artifact shape is a companion-owned `service-principal.json`
 file containing the Entra tenant ID, client ID, PEM certificate path, and PEM
 private-key path, plus the referenced certificate and key files in the mounted
 state directory. After bootstrap, the state volume also contains
-`service-bus.json` with the Service Bus namespace and queue names.
+`service-bus.json` with the Service Bus namespace and queue names. New bootstrap
+commits are written into a generation directory under the state volume and made
+current by atomically updating a `.current-state` marker file. For backward
+compatibility, startup also accepts the legacy flat-file layout when the marker
+is absent.
 
 ### 3.3  Bootstrap-state decision
 
@@ -168,8 +172,10 @@ When bootstrap is required, the Azure companion performs this sequence:
 14. Write `service-principal.json` and `service-bus.json` to the staging
     directory with the extracted values and relative paths to the certificate
     and private-key PEM files.
-15. Atomically swap the staging directory contents into the state volume,
-    replacing any previous bootstrap artifacts only after all writes succeed.
+15. Rename the staging directory into a new generation directory under the state
+    volume, then atomically update the `.current-state` marker to point at that
+    generation, leaving the previous generation untouched until the new one is
+    fully committed.
 16. Remove the Azure CLI container.
 17. Display "Bootstrap complete" on the modem display.
 18. The bootstrap wrapper/entrypoint reports overall success only after

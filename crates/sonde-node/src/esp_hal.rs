@@ -67,6 +67,7 @@ pub struct EspHal {
     board_layout: BoardLayout,
     adc_width_configured: bool,
     adc_calibration_handle: esp_idf_sys::adc_cali_handle_t,
+    adc_calibration_channel: Option<u32>,
     adc_calibration_attempted: bool,
     /// Bitmask of GPIO pins already configured as output.
     gpio_output_configured: u64,
@@ -82,6 +83,7 @@ impl EspHal {
             board_layout,
             adc_width_configured: false,
             adc_calibration_handle: ptr::null_mut(),
+            adc_calibration_channel: None,
             adc_calibration_attempted: false,
             gpio_output_configured: 0,
             adc_channels_configured: 0,
@@ -266,9 +268,21 @@ impl EspHal {
         }
     }
 
-    fn ensure_adc_calibration(&mut self) -> bool {
-        if self.adc_calibration_attempted {
+    fn ensure_adc_calibration(&mut self, channel: u32) -> bool {
+        if self.adc_calibration_attempted && self.adc_calibration_channel == Some(channel) {
             return !self.adc_calibration_handle.is_null();
+        }
+
+        if !self.adc_calibration_handle.is_null() {
+            unsafe {
+                let err =
+                    esp_idf_sys::adc_cali_delete_scheme_curve_fitting(self.adc_calibration_handle);
+                if err != esp_idf_sys::ESP_OK as i32 {
+                    warn!("adc_cali_delete_scheme_curve_fitting failed: {err}");
+                }
+            }
+            self.adc_calibration_handle = ptr::null_mut();
+            self.adc_calibration_channel = None;
         }
 
         self.adc_calibration_attempted = true;
@@ -276,6 +290,7 @@ impl EspHal {
         unsafe {
             let config = esp_idf_sys::adc_cali_curve_fitting_config_t {
                 unit_id: esp_idf_sys::adc_unit_t_ADC_UNIT_1,
+                chan: channel,
                 atten: esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11,
                 bitwidth: esp_idf_sys::adc_bits_width_t_ADC_WIDTH_BIT_12,
             };
@@ -286,6 +301,7 @@ impl EspHal {
                 return false;
             }
             self.adc_calibration_handle = handle;
+            self.adc_calibration_channel = Some(channel);
         }
 
         true
@@ -481,7 +497,7 @@ impl hal::Hal for EspHal {
             return raw;
         }
 
-        if !self.ensure_adc_calibration() {
+        if !self.ensure_adc_calibration(channel) {
             return hal::Hal::adc_read_mv(self, channel);
         }
 
@@ -533,6 +549,7 @@ impl hal::Hal for EspHal {
             }
             self.adc_calibration_handle = ptr::null_mut();
         }
+        self.adc_calibration_channel = None;
         self.adc_calibration_attempted = false;
     }
 

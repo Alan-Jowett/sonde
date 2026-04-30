@@ -51,6 +51,23 @@ pub trait Hal {
     /// Returns the ADC reading on success, negative on error.
     fn adc_read(&mut self, channel: u32) -> i32;
 
+    /// Read an ADC channel and convert it to millivolts.
+    ///
+    /// The default implementation uses the legacy fixed-scale approximation
+    /// that existing tests and simple mocks rely on. Platform HALs should
+    /// override this with a calibrated conversion when available.
+    fn adc_read_mv(&mut self, channel: u32) -> i32 {
+        const ADC_APPROX_FULL_SCALE_MV: i64 = 2500;
+        const ADC_APPROX_RAW_MAX: i64 = 4095;
+
+        let raw = self.adc_read(channel);
+        if raw < 0 {
+            return raw;
+        }
+
+        ((raw as i64).saturating_mul(ADC_APPROX_FULL_SCALE_MV) / ADC_APPROX_RAW_MAX) as i32
+    }
+
     /// Enter the paired board layout's idle GPIO state.
     ///
     /// In the idle state, provisioned I2C, 1-Wire, and battery-sense pins

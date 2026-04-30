@@ -36,7 +36,6 @@ const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
 const BATTERY_FALLBACK_MV: u32 = 3300;
 const SENSOR_BUS_STABILIZE_MS: u32 = 1;
 const BATTERY_DIVIDER_SETTLE_MS: u32 = 50;
-const ADC_FULL_SCALE_MV: u32 = 2500;
 const BATTERY_DIVIDER_RATIO: u32 = 2;
 
 /// Default map budget in bytes (~4 KB for ESP32-C3 after firmware overhead).
@@ -96,8 +95,8 @@ fn capture_current_cycle_battery(hal: &mut dyn Hal, board_layout: &BoardLayout) 
         return BATTERY_FALLBACK_MV;
     };
 
-    let raw = hal.adc_read(channel);
-    if raw < 0 {
+    let sensed_mv = hal.adc_read_mv(channel);
+    if sensed_mv < 0 {
         log::warn!(
             "battery ADC sample failed on GPIO {} (channel {}); using fallback {} mV",
             battery_pin,
@@ -107,8 +106,7 @@ fn capture_current_cycle_battery(hal: &mut dyn Hal, board_layout: &BoardLayout) 
         return BATTERY_FALLBACK_MV;
     }
 
-    let sensed_mv = (raw as u32).saturating_mul(ADC_FULL_SCALE_MV) / 4095;
-    sensed_mv.saturating_mul(BATTERY_DIVIDER_RATIO)
+    (sensed_mv as u32).saturating_mul(BATTERY_DIVIDER_RATIO)
 }
 
 fn active_gpio_settle_ms(board_layout: &BoardLayout) -> u32 {
@@ -1427,7 +1425,7 @@ mod tests {
         assert_eq!(hal.adc_reads, vec![2]);
         assert_eq!(
             battery_mv,
-            ((2048u32 * ADC_FULL_SCALE_MV) / 4095) * BATTERY_DIVIDER_RATIO
+            ((2048u32 * 2500) / 4095) * BATTERY_DIVIDER_RATIO
         );
     }
 
@@ -1498,7 +1496,7 @@ mod tests {
             &mut async_queue,
         );
 
-        let expected_battery_mv = ((2048u32 * ADC_FULL_SCALE_MV) / 4095) * BATTERY_DIVIDER_RATIO;
+        let expected_battery_mv = ((2048u32 * 2500) / 4095) * BATTERY_DIVIDER_RATIO;
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         assert_eq!(hal.gpio_state_transitions, vec!["active", "idle"]);

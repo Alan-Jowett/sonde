@@ -12,6 +12,8 @@
 //! SPI is left as a stub until device-specific CS pin configuration is
 //! available.
 
+use core::ptr;
+
 use crate::hal;
 use log::warn;
 use sonde_protocol::BoardLayout;
@@ -64,6 +66,8 @@ pub struct EspHal {
     i2c0_initialized: bool,
     board_layout: BoardLayout,
     adc_width_configured: bool,
+    adc_calibration_handle: esp_idf_sys::adc_cali_handle_t,
+    adc_calibration_attempted: bool,
     /// Bitmask of GPIO pins already configured as output.
     gpio_output_configured: u64,
     /// Bitmask of ADC channels already configured with attenuation.
@@ -77,6 +81,8 @@ impl EspHal {
             i2c0_initialized: false,
             board_layout,
             adc_width_configured: false,
+            adc_calibration_handle: ptr::null_mut(),
+            adc_calibration_attempted: false,
             gpio_output_configured: 0,
             adc_channels_configured: 0,
         };
@@ -258,6 +264,32 @@ impl EspHal {
             Self::set_input_no_pull(i2c0_scl as i32);
             Self::configure_sleep_input_no_pull(i2c0_scl as i32);
         }
+    }
+
+    fn ensure_adc_calibration(&mut self) -> bool {
+        if self.adc_calibration_attempted {
+            return !self.adc_calibration_handle.is_null();
+        }
+
+        self.adc_calibration_attempted = true;
+
+        unsafe {
+            let config = esp_idf_sys::adc_cali_line_fitting_config_t {
+                unit_id: esp_idf_sys::adc_unit_t_ADC_UNIT_1,
+                atten: esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11,
+                bitwidth: esp_idf_sys::adc_bits_width_t_ADC_WIDTH_BIT_12,
+                default_vref: 0,
+            };
+            let mut handle: esp_idf_sys::adc_cali_handle_t = ptr::null_mut();
+            let err = esp_idf_sys::adc_cali_create_scheme_line_fitting(&config, &mut handle);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("adc_cali_create_scheme_line_fitting failed: {err}");
+                return false;
+            }
+            self.adc_calibration_handle = handle;
+        }
+
+        true
     }
 }
 
@@ -444,6 +476,28 @@ impl hal::Hal for EspHal {
         }
     }
 
+    fn adc_read_mv(&mut self, channel: u32) -> i32 {
+        let raw = self.adc_read(channel);
+        if raw < 0 {
+            return raw;
+        }
+
+        if !self.ensure_adc_calibration() {
+            return hal::Hal::adc_read_mv(self, channel);
+        }
+
+        unsafe {
+            let mut mv = 0i32;
+            let err =
+                esp_idf_sys::adc_cali_raw_to_voltage(self.adc_calibration_handle, raw, &mut mv);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("adc_cali_raw_to_voltage failed: {err}");
+                return hal::Hal::adc_read_mv(self, channel);
+            }
+            mv
+        }
+    }
+
     fn enter_idle_gpio_state(&mut self) {
         if self.i2c0_initialized {
             let err = unsafe { esp_idf_sys::i2c_driver_delete(esp_idf_sys::i2c_port_t_I2C_NUM_0) };
@@ -470,6 +524,17 @@ impl hal::Hal for EspHal {
         self.gpio_output_configured = 0;
         self.adc_width_configured = false;
         self.adc_channels_configured = 0;
+        if !self.adc_calibration_handle.is_null() {
+            unsafe {
+                let err =
+                    esp_idf_sys::adc_cali_delete_scheme_line_fitting(self.adc_calibration_handle);
+                if err != esp_idf_sys::ESP_OK as i32 {
+                    warn!("adc_cali_delete_scheme_line_fitting failed: {err}");
+                }
+            }
+            self.adc_calibration_handle = ptr::null_mut();
+        }
+        self.adc_calibration_attempted = false;
     }
 
     fn enter_active_gpio_state(&mut self) {

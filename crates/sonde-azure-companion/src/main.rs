@@ -2,7 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use azservicebus::{
@@ -25,6 +25,7 @@ use clap::{Args, Parser, Subcommand};
 use ed25519_dalek::pkcs8::DecodePrivateKey as Ed25519DecodePrivateKey;
 use futures_util::StreamExt;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use regex::Regex;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -400,30 +401,42 @@ fn load_runtime_config(state_dir: &Path) -> Result<RuntimeConfig, CompanionError
         Err(err) => return Err(err),
     };
 
-    let namespace = namespace_env
-        .or_else(|| file_config.as_ref().map(|c| c.namespace.clone()))
-        .ok_or_else(|| {
-            CompanionError::Config(
-                "SONDE_AZURE_SERVICEBUS_NAMESPACE must be set and non-empty (or service-bus.json must exist in state dir)"
-                    .into(),
-            )
-        })?;
-    let upstream_queue = upstream_env
-        .or_else(|| file_config.as_ref().map(|c| c.upstream_queue.clone()))
-        .ok_or_else(|| {
-            CompanionError::Config(
-                "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE must be set and non-empty (or service-bus.json must exist in state dir)"
-                    .into(),
-            )
-        })?;
-    let downstream_queue = downstream_env
-        .or_else(|| file_config.as_ref().map(|c| c.downstream_queue.clone()))
-        .ok_or_else(|| {
-            CompanionError::Config(
-                "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE must be set and non-empty (or service-bus.json must exist in state dir)"
-                    .into(),
-            )
-        })?;
+    let namespace = if let Some(value) = namespace_env {
+        require_non_empty(value, "SONDE_AZURE_SERVICEBUS_NAMESPACE")?
+    } else if let Some(config) = file_config.as_ref() {
+        require_non_empty(config.namespace.clone(), "service-bus.json namespace")?
+    } else {
+        return Err(CompanionError::Config(
+            "SONDE_AZURE_SERVICEBUS_NAMESPACE must be set and non-empty (or service-bus.json must exist in state dir)"
+                .into(),
+        ));
+    };
+    let upstream_queue = if let Some(value) = upstream_env {
+        require_non_empty(value, "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE")?
+    } else if let Some(config) = file_config.as_ref() {
+        require_non_empty(
+            config.upstream_queue.clone(),
+            "service-bus.json upstream_queue",
+        )?
+    } else {
+        return Err(CompanionError::Config(
+            "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE must be set and non-empty (or service-bus.json must exist in state dir)"
+                .into(),
+        ));
+    };
+    let downstream_queue = if let Some(value) = downstream_env {
+        require_non_empty(value, "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE")?
+    } else if let Some(config) = file_config.as_ref() {
+        require_non_empty(
+            config.downstream_queue.clone(),
+            "service-bus.json downstream_queue",
+        )?
+    } else {
+        return Err(CompanionError::Config(
+            "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE must be set and non-empty (or service-bus.json must exist in state dir)"
+                .into(),
+        ));
+    };
 
     Ok(RuntimeConfig {
         namespace,
@@ -536,18 +549,37 @@ fn generate_certificate(staging_dir: &Path) -> Result<(PathBuf, PathBuf, String)
     let key_path = staging_dir.join(KEY_PEM_FILENAME);
 
     std::fs::write(&cert_path, cert_pem.as_bytes())?;
-    std::fs::write(&key_path, key_pem.as_bytes())?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    write_private_key_pem(&key_path, &key_pem)?;
 
     let cert_der = cert.der().to_vec();
     let cert_base64 = base64::engine::general_purpose::STANDARD.encode(&cert_der);
 
     Ok((cert_path, key_path, cert_base64))
+}
+
+fn write_private_key_pem(path: &Path, pem: &str) -> Result<(), CompanionError> {
+    #[cfg(unix)]
+    {
+        use std::fs::OpenOptions;
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(pem.as_bytes())?;
+        file.flush()?;
+        return Ok(());
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, pem.as_bytes())?;
+        Ok(())
+    }
 }
 
 fn service_principal_state_path(state_dir: &Path) -> PathBuf {
@@ -911,10 +943,25 @@ az deployment sub create \
     --location "$SONDE_AZURE_LOCATION" \
     --template-file /bicep/main.bicep \
     --parameters companionCertificateBase64="$COMPANION_CERT_BASE64" \
+    --parameters location="$SONDE_AZURE_LOCATION" \
     --parameters project_name="$SONDE_AZURE_PROJECT_NAME" \
     --query 'properties.outputs' \
     --output json"#
         .to_string()
+}
+
+fn device_code_regex() -> &'static Regex {
+    static DEVICE_CODE_RE: OnceLock<Regex> = OnceLock::new();
+    DEVICE_CODE_RE.get_or_init(|| {
+        Regex::new(r"enter the code ([A-Z0-9-]+) to authenticate").expect("valid device code regex")
+    })
+}
+
+fn extract_device_code(stderr_buffer: &str) -> Option<String> {
+    device_code_regex()
+        .captures(stderr_buffer)
+        .and_then(|captures| captures.get(1))
+        .map(|code| code.as_str().to_string())
 }
 
 fn build_container_env(cert_base64: &str, args: &BootstrapArgs) -> Vec<String> {
@@ -1410,8 +1457,6 @@ async fn stream_container_output(
     container_id: &str,
     admin_socket: &str,
 ) -> Result<String, CompanionError> {
-    use regex::Regex;
-
     let log_opts = LogsOptionsBuilder::default()
         .follow(true)
         .stdout(true)
@@ -1421,8 +1466,6 @@ async fn stream_container_output(
     let mut logs = docker.logs(container_id, Some(log_opts));
     let mut stdout_buffer = String::new();
     let mut stderr_buffer = String::new();
-    let device_code_re = Regex::new(r"enter the code ([A-Z0-9-]+) to authenticate")
-        .expect("valid device code regex");
     let mut device_code_displayed = false;
 
     while let Some(result) = logs.next().await {
@@ -1442,22 +1485,19 @@ async fn stream_container_output(
                 }
 
                 if !device_code_displayed {
-                    if let Some(captures) = device_code_re.captures(&stderr_buffer) {
-                        if let Some(code) = captures.get(1) {
-                            let device_code = code.as_str().to_string();
-                            eprintln!("Detected device code: {device_code}");
-                            if let Err(e) = display_message(
-                                admin_socket,
-                                vec!["Azure login".to_string(), device_code],
-                            )
-                            .await
-                            {
-                                return Err(CompanionError::Config(format!(
-                                    "failed to display device code on modem: {e}"
-                                )));
-                            }
-                            device_code_displayed = true;
+                    if let Some(device_code) = extract_device_code(&stderr_buffer) {
+                        eprintln!("Detected device code: {device_code}");
+                        if let Err(e) = display_message(
+                            admin_socket,
+                            vec!["Azure login".to_string(), device_code],
+                        )
+                        .await
+                        {
+                            return Err(CompanionError::Config(format!(
+                                "failed to display device code on modem: {e}"
+                            )));
                         }
+                        device_code_displayed = true;
                     }
                 }
             }
@@ -1576,10 +1616,18 @@ async fn display_message(admin_socket: &str, lines: Vec<String>) -> Result<(), C
     Ok(())
 }
 
-async fn display_progress(admin_socket: &str, msg: &str) {
-    if let Err(e) = display_message(admin_socket, vec![msg.to_string()]).await {
-        eprintln!("warning: failed to update modem display: {e}");
-    }
+async fn display_progress(admin_socket: &str, msg: &str) -> Result<(), CompanionError> {
+    display_message(admin_socket, vec![msg.to_string()]).await
+}
+
+async fn report_bootstrap_failure(
+    admin_socket: &str,
+    staging_dir: &Path,
+    err: CompanionError,
+) -> Result<(), CompanionError> {
+    cleanup_staging(staging_dir);
+    display_progress(admin_socket, "Bootstrap failed").await?;
+    Err(err)
 }
 
 async fn bootstrap(
@@ -1591,30 +1639,25 @@ async fn bootstrap(
 
     let staging_dir = prepare_staging_dir(state_dir)?;
 
-    display_progress(admin_socket, "Generating cert...").await;
+    if let Err(err) = display_progress(admin_socket, "Generating cert...").await {
+        cleanup_staging(&staging_dir);
+        return Err(err);
+    }
     eprintln!("Generating ECDSA P-256 self-signed certificate");
     let (_cert_path, _key_path, cert_base64) = match generate_certificate(&staging_dir) {
         Ok(result) => result,
-        Err(e) => {
-            cleanup_staging(&staging_dir);
-            display_progress(admin_socket, "Bootstrap failed").await;
-            return Err(e);
-        }
+        Err(e) => return report_bootstrap_failure(admin_socket, &staging_dir, e).await,
     };
 
-    display_progress(admin_socket, "Authenticating...").await;
+    display_progress(admin_socket, "Authenticating...").await?;
     eprintln!("Starting Azure CLI container for device-code auth and Bicep deployment");
     let (sp_state, sb_config) =
         match run_bootstrap_deployment(admin_socket, &staging_dir, &cert_base64, &args).await {
             Ok(result) => result,
-            Err(e) => {
-                cleanup_staging(&staging_dir);
-                display_progress(admin_socket, "Bootstrap failed").await;
-                return Err(e);
-            }
+            Err(e) => return report_bootstrap_failure(admin_socket, &staging_dir, e).await,
         };
 
-    display_progress(admin_socket, "Writing config...").await;
+    display_progress(admin_socket, "Writing config...").await?;
     eprintln!("Writing runtime artifacts to state volume");
 
     let sp_path = staging_dir.join(SERVICE_PRINCIPAL_STATE_FILENAME);
@@ -1626,12 +1669,10 @@ async fn bootstrap(
     std::fs::write(&sb_path, sb_json.as_bytes())?;
 
     if let Err(e) = commit_staging(&staging_dir, state_dir) {
-        cleanup_staging(&staging_dir);
-        display_progress(admin_socket, "Bootstrap failed").await;
-        return Err(e);
+        return report_bootstrap_failure(admin_socket, &staging_dir, e).await;
     }
 
-    display_progress(admin_socket, "Bootstrap complete").await;
+    display_progress(admin_socket, "Bootstrap complete").await?;
     eprintln!("Bootstrap completed successfully");
 
     Ok(())
@@ -1661,14 +1702,15 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_runtime_ready, cleanup_staging, commit_staging, downstream_body_to_connector_payload,
-        generate_certificate, load_runtime_config, load_signing_key, parse_bicep_outputs,
-        prepare_staging_dir, pump_downstream_once, pump_upstream_once, read_framed,
-        resolve_state_relative_path, validate_certificate_matches_private_key,
-        validate_display_lines, write_framed, ClientAssertionCredential, CompanionError,
-        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState, ServiceBusConfigFile,
-        ServicePrincipalStateFile, UpstreamPublisher, CERT_PEM_FILENAME,
-        CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME, SERVICE_BUS_CONFIG_FILENAME,
+        build_az_bootstrap_script, check_runtime_ready, cleanup_staging, commit_staging,
+        downstream_body_to_connector_payload, extract_device_code, generate_certificate,
+        load_runtime_config, load_signing_key, parse_bicep_outputs, prepare_staging_dir,
+        pump_downstream_once, pump_upstream_once, read_framed, resolve_state_relative_path,
+        validate_certificate_matches_private_key, validate_display_lines, write_framed,
+        ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
+        RuntimeCredentialState, ServiceBusConfigFile, ServicePrincipalStateFile, UpstreamPublisher,
+        CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME,
+        SERVICE_BUS_CONFIG_FILENAME,
     };
     use azure_core::credentials::TokenCredential;
     use base64::Engine as _;
@@ -2209,6 +2251,14 @@ mod tests {
         let (algorithm, _) = load_signing_key(&key_path).unwrap();
         assert_eq!(algorithm, Algorithm::ES256);
         validate_certificate_matches_private_key(&cert_path, &key_path).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let key_mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(key_mode, 0o600);
+        }
     }
 
     #[test]
@@ -2262,6 +2312,94 @@ mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    fn test_load_runtime_config_trims_selected_values() {
+        let temp = TempDir::new().unwrap();
+        write_service_bus_config(
+            &temp,
+            "  file.servicebus.windows.net  ",
+            "  file-up  ",
+            "  file-down  ",
+        );
+
+        temp_env::with_vars_unset(
+            [
+                "SONDE_AZURE_SERVICEBUS_NAMESPACE",
+                "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE",
+                "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+            ],
+            || {
+                let config = load_runtime_config(temp.path()).unwrap();
+                assert_eq!(
+                    config,
+                    RuntimeConfig {
+                        namespace: "file.servicebus.windows.net".to_string(),
+                        upstream_queue: "file-up".to_string(),
+                        downstream_queue: "file-down".to_string(),
+                    }
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_load_runtime_config_rejects_blank_service_bus_file_values() {
+        let temp = TempDir::new().unwrap();
+        write_service_bus_config(&temp, "example.servicebus.windows.net", "  ", "downstream");
+
+        temp_env::with_vars_unset(
+            [
+                "SONDE_AZURE_SERVICEBUS_NAMESPACE",
+                "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE",
+                "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+            ],
+            || {
+                let err = load_runtime_config(temp.path()).unwrap_err();
+                assert!(err
+                    .to_string()
+                    .contains("service-bus.json upstream_queue must be set and non-empty"));
+            },
+        );
+    }
+
+    #[test]
+    fn test_load_runtime_config_surfaces_invalid_service_bus_json() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join(SERVICE_BUS_CONFIG_FILENAME),
+            b"{not valid json",
+        )
+        .unwrap();
+
+        temp_env::with_vars_unset(
+            [
+                "SONDE_AZURE_SERVICEBUS_NAMESPACE",
+                "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE",
+                "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+            ],
+            || {
+                let err = load_runtime_config(temp.path()).unwrap_err();
+                assert!(matches!(err, CompanionError::Json(_)));
+            },
+        );
+    }
+
+    #[test]
+    fn build_az_bootstrap_script_passes_location_parameter_to_template() {
+        let script = build_az_bootstrap_script();
+        assert!(script.contains(r#"--location "$SONDE_AZURE_LOCATION""#));
+        assert!(script.contains(r#"--parameters location="$SONDE_AZURE_LOCATION""#));
+    }
+
+    #[test]
+    fn extract_device_code_handles_split_prompt_buffer() {
+        let buffer = concat!(
+            "To sign in, use a web browser to open the page https://microsoft.com/devicelogin and ",
+            "enter the code ABCD-EFGH to authenticate.\n",
+        );
+        assert_eq!(extract_device_code(buffer).as_deref(), Some("ABCD-EFGH"));
     }
 
     #[test]
@@ -2622,6 +2760,23 @@ mod tests {
         assert!(err.to_string().contains("completion failure"));
         assert_eq!(consumer.completes, 0);
         assert_eq!(consumer.abandons, 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bootstrap_fails_closed_when_progress_display_fails() {
+        let temp = TempDir::new().unwrap();
+        let args = super::BootstrapArgs {
+            azure_location: "westus2".to_string(),
+            azure_project_name: "sonde".to_string(),
+            azure_subscription_id: None,
+        };
+
+        let err = super::bootstrap("/tmp/sonde-missing-admin.sock", temp.path(), args)
+            .await
+            .unwrap_err();
+        assert!(!temp.path().join(".staging").exists());
+        assert!(err.to_string().contains("No such file or directory"));
     }
 
     #[tokio::test]

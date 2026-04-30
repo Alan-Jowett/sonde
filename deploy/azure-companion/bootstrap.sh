@@ -46,13 +46,24 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
             return 1
         fi
 
-        if [ -f "$state_dir/service-bus.json" ]; then
+        if [ -n "${SONDE_AZURE_SERVICEBUS_NAMESPACE:-}" ] &&
+            [ -n "${SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE:-}" ] &&
+            [ -n "${SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE:-}" ]; then
             return 0
         fi
 
-        [ -n "${SONDE_AZURE_SERVICEBUS_NAMESPACE:-}" ] &&
-            [ -n "${SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE:-}" ] &&
-            [ -n "${SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE:-}" ]
+        service_bus_path="$state_dir/service-bus.json"
+        if [ ! -f "$service_bus_path" ]; then
+            return 1
+        fi
+
+        namespace="$(host_json_string namespace "$service_bus_path")"
+        upstream_queue="$(host_json_string upstream_queue "$service_bus_path")"
+        downstream_queue="$(host_json_string downstream_queue "$service_bus_path")"
+
+        [ -n "$namespace" ] &&
+            [ -n "$upstream_queue" ] &&
+            [ -n "$downstream_queue" ]
     }
 
     enable_docker_mount=0

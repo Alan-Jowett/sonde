@@ -25,6 +25,89 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         exit 1
     fi
 
+    host_json_string() {
+        key="$1"
+        file="$2"
+        sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$file" | head -n 1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+    }
+
+    host_trim_string() {
+        printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+    }
+
+    host_effective_state_dir() {
+        active_state_file="$state_dir/.current-state"
+        if [ ! -f "$active_state_file" ]; then
+            printf '%s\n' "$state_dir"
+            return 0
+        fi
+
+        generation_name="$(host_trim_string "$(cat "$active_state_file")")"
+        case "$generation_name" in
+            ''|*/*|*\\*|*..*|-*)
+                return 1
+                ;;
+        esac
+        if [ ! -d "$state_dir/$generation_name" ]; then
+            return 1
+        fi
+
+        printf '%s\n' "$state_dir/$generation_name"
+    }
+
+    host_runtime_ready() {
+        effective_state_dir="$(host_effective_state_dir)" || return 1
+        service_principal_path="$effective_state_dir/service-principal.json"
+        if [ ! -f "$service_principal_path" ]; then
+            return 1
+        fi
+
+        cert_rel="$(host_json_string certificate_path "$service_principal_path")"
+        key_rel="$(host_json_string private_key_path "$service_principal_path")"
+        if [ -z "$cert_rel" ] || [ -z "$key_rel" ]; then
+            return 1
+        fi
+        if [ ! -f "$effective_state_dir/$cert_rel" ] || [ ! -f "$effective_state_dir/$key_rel" ]; then
+            return 1
+        fi
+
+        namespace_env="$(host_trim_string "${SONDE_AZURE_SERVICEBUS_NAMESPACE:-}")"
+        upstream_env="$(host_trim_string "${SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE:-}")"
+        downstream_env="$(host_trim_string "${SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE:-}")"
+        if [ -n "$namespace_env" ] &&
+            [ -n "$upstream_env" ] &&
+            [ -n "$downstream_env" ]; then
+            return 0
+        fi
+
+        service_bus_path="$effective_state_dir/service-bus.json"
+        if [ ! -f "$service_bus_path" ]; then
+            return 1
+        fi
+
+        namespace="$(host_json_string namespace "$service_bus_path")"
+        upstream_queue="$(host_json_string upstream_queue "$service_bus_path")"
+        downstream_queue="$(host_json_string downstream_queue "$service_bus_path")"
+
+        [ -n "$namespace" ] &&
+            [ -n "$upstream_queue" ] &&
+            [ -n "$downstream_queue" ]
+    }
+
+    enable_docker_mount=0
+    if [ "$#" -gt 0 ] && [ "$1" = "bootstrap" ]; then
+        enable_docker_mount=1
+    elif [ "${SONDE_AZURE_COMPANION_ENABLE_DOCKER:-0}" = "1" ]; then
+        enable_docker_mount=1
+    elif ! host_runtime_ready; then
+        enable_docker_mount=1
+    fi
+
+    docker_mount_args=""
+    if [ "$enable_docker_mount" -eq 1 ]; then
+        docker_mount_args="-v /var/run/docker.sock:/var/run/docker.sock"
+    fi
+
     exec docker run --rm \
         --name "${SONDE_AZURE_COMPANION_CONTAINER_NAME:-sonde-azure-companion}" \
         -e SONDE_AZURE_COMPANION_IN_CONTAINER=1 \
@@ -34,13 +117,13 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         -e SONDE_AZURE_SERVICEBUS_NAMESPACE \
         -e SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE \
         -e SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE \
-        -e SONDE_AZURE_DEVICE_CLIENT_ID \
-        -e SONDE_AZURE_DEVICE_SCOPES \
-        -e SONDE_AZURE_DEVICE_POLL_INTERVAL_SECS \
-        -e SONDE_AZURE_DEVICE_MAX_ATTEMPTS \
+        -e SONDE_AZURE_LOCATION \
+        -e SONDE_AZURE_PROJECT_NAME \
+        -e SONDE_AZURE_SUBSCRIPTION_ID \
         -v "$state_dir:$container_state_dir" \
         -v "$admin_socket_path:$container_admin_socket_path" \
         -v "$connector_socket_path:$container_connector_socket_path" \
+        $docker_mount_args \
         "$image" "$@"
 fi
 
@@ -84,22 +167,6 @@ if sonde-azure-companion \
         run
 fi
 
-missing_bootstrap_env=0
-if [ -z "${SONDE_AZURE_DEVICE_CLIENT_ID:-}" ]; then
-    echo "SONDE_AZURE_DEVICE_CLIENT_ID must be set for bootstrap" >&2
-    missing_bootstrap_env=1
-fi
-if [ -z "${SONDE_AZURE_DEVICE_SCOPES:-}" ]; then
-    echo "SONDE_AZURE_DEVICE_SCOPES must be set for bootstrap" >&2
-    missing_bootstrap_env=1
-fi
-if [ "$missing_bootstrap_env" -ne 0 ]; then
-    if [ -f "$state_dir/service-principal.json" ]; then
-        check_runtime_ready_with_log || true
-    fi
-    exit 1
-fi
-
 bootstrap_pid=
 
 forward_signal() {
@@ -117,7 +184,7 @@ sonde-azure-companion \
     --admin-socket "$admin_socket_path" \
     --connector-socket "$connector_socket_path" \
     --state-dir "$state_dir" \
-    bootstrap-auth &
+    bootstrap &
 bootstrap_pid=$!
 
 if wait "$bootstrap_pid"; then
@@ -134,7 +201,7 @@ if [ "$bootstrap_status" -ne 0 ]; then
 fi
 
 if ! check_runtime_ready_with_log; then
-    echo "bootstrap completed device auth, but runtime state is still incomplete" >&2
+    echo "bootstrap completed, but runtime state is still incomplete" >&2
     exit 1
 fi
 

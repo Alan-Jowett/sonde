@@ -151,6 +151,60 @@ impl EspHal {
         }
     }
 
+    fn configure_sleep_input_no_pull(pin: i32) {
+        unsafe {
+            let err = esp_idf_sys::gpio_sleep_sel_en(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_sel_en({pin}) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_sleep_set_direction(
+                pin,
+                esp_idf_sys::gpio_mode_t_GPIO_MODE_DISABLE,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_set_direction({pin}, DISABLE) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_sleep_set_pull_mode(
+                pin,
+                esp_idf_sys::gpio_pull_mode_t_GPIO_FLOATING,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_set_pull_mode({pin}, FLOATING) failed: {err}");
+            }
+        }
+    }
+
+    fn configure_sleep_output(pin: i32, level: u32) {
+        unsafe {
+            let err = esp_idf_sys::gpio_sleep_sel_en(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_sel_en({pin}) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_sleep_set_direction(
+                pin,
+                esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_set_direction({pin}, OUTPUT) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_sleep_set_pull_mode(
+                pin,
+                esp_idf_sys::gpio_pull_mode_t_GPIO_FLOATING,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_set_pull_mode({pin}, FLOATING) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_hold_en(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_hold_en({pin}) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_set_level(pin, if level != 0 { 1 } else { 0 });
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_set_level({pin}, {level}) failed: {err}");
+            }
+        }
+    }
+
     fn set_output_level(pin: i32, level: u32) {
         unsafe {
             let err =
@@ -177,15 +231,19 @@ impl EspHal {
     fn set_idle_inputs(board_layout: &BoardLayout) {
         if let Some(battery_adc) = board_layout.battery_adc {
             Self::set_input_no_pull(battery_adc as i32);
+            Self::configure_sleep_input_no_pull(battery_adc as i32);
         }
         if let Some(one_wire_data) = board_layout.one_wire_data {
             Self::set_input_no_pull(one_wire_data as i32);
+            Self::configure_sleep_input_no_pull(one_wire_data as i32);
         }
         if let Some(i2c0_sda) = board_layout.i2c0_sda {
             Self::set_input_no_pull(i2c0_sda as i32);
+            Self::configure_sleep_input_no_pull(i2c0_sda as i32);
         }
         if let Some(i2c0_scl) = board_layout.i2c0_scl {
             Self::set_input_no_pull(i2c0_scl as i32);
+            Self::configure_sleep_input_no_pull(i2c0_scl as i32);
         }
     }
 }
@@ -393,6 +451,7 @@ impl hal::Hal for EspHal {
         Self::set_idle_inputs(&self.board_layout);
         if let Some(sensor_enable) = self.board_layout.sensor_enable {
             Self::set_output_level(sensor_enable as i32, 1);
+            Self::configure_sleep_output(sensor_enable as i32, 1);
         }
 
         self.gpio_output_configured = 0;

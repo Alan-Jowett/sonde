@@ -572,7 +572,7 @@ fn write_private_key_pem(path: &Path, pem: &str) -> Result<(), CompanionError> {
             .open(path)?;
         file.write_all(pem.as_bytes())?;
         file.flush()?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]
@@ -2776,7 +2776,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(!temp.path().join(".staging").exists());
-        assert!(err.to_string().contains("No such file or directory"));
+        assert!(matches!(err, CompanionError::TonicTransport(_)));
     }
 
     #[tokio::test]

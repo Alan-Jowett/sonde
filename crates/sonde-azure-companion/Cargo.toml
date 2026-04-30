@@ -8,12 +8,15 @@ license = "MIT"
 azservicebus = { version = "0.25.1", default-features = false, features = ["rustls"] }
 azure_core = { version = "0.25", default-features = false }
 base64 = "0.22"
+bollard = "0.20"
 clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
 hyper-util = "0.1"
 jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
-oauth-device-flows = { version = "0.1", default-features = false }
+regex = "1"
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
 p256 = { version = "0.13", features = ["pkcs8"] }
+rcgen = { version = "0.14", features = ["pem"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots-no-provider"] }
 rsa = "0.9"
 rustls-pemfile = "2"
@@ -26,8 +29,8 @@ time = "0.3"
 tokio = { version = "1", features = ["full"] }
 tonic = "0.14"
 tower = "0.5"
+tar = "0.4"
 thiserror = "2"
-url = "2"
 x509-cert = "0.2"
 
 [dev-dependencies]

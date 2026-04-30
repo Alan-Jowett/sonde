@@ -14,11 +14,18 @@ use azure_core::date::OffsetDateTime;
 use azure_core::error::ErrorKind;
 use azure_core::Uuid;
 use base64::Engine as _;
+use bollard::container::LogOutput;
+use bollard::models::ContainerCreateBody;
+use bollard::query_parameters::{
+    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, LogsOptionsBuilder,
+    RemoveContainerOptionsBuilder, UploadToContainerOptionsBuilder,
+    WaitContainerOptionsBuilder,
+};
+use bollard::{body_full, Docker};
 use clap::{Args, Parser, Subcommand};
 use ed25519_dalek::pkcs8::DecodePrivateKey as Ed25519DecodePrivateKey;
+use futures_util::StreamExt;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use oauth_device_flows::provider::GenericProviderConfig;
-use oauth_device_flows::{DeviceFlow, DeviceFlowConfig, Provider};
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -28,7 +35,6 @@ use time::Duration as TimeDuration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint, Uri};
-use url::Url;
 use x509_cert::der::{Decode, Encode};
 use x509_cert::Certificate;
 
@@ -49,6 +55,15 @@ const DEFAULT_STATE_DIR: &str = "/var/lib/sonde-azure-companion";
 const DEFAULT_STATE_DIR: &str = r"C:\ProgramData\sonde-azure-companion";
 
 const SERVICE_PRINCIPAL_STATE_FILENAME: &str = "service-principal.json";
+/// Path to bundled Bicep files inside the companion container image.
+const BUNDLED_BICEP_PATH: &str = "/opt/sonde/deploy/bicep";
+/// Pinned Azure CLI container image digest for reproducible bootstrap.
+const AZURE_CLI_IMAGE: &str =
+    "mcr.microsoft.com/azure-cli@sha256:7f9ca8e6bf1c72e5fafefb6925546272776d635fb428538455c5c79bb77e2aa7";
+const CERT_PEM_FILENAME: &str = "cert.pem";
+const KEY_PEM_FILENAME: &str = "key.pem";
+const SERVICE_BUS_CONFIG_FILENAME: &str = "service-bus.json";
+const STAGING_DIR_NAME: &str = ".staging";
 const DEFAULT_DOWNSTREAM_WAIT_SECS: u64 = 1;
 const CONNECTOR_MAX_FRAME_LENGTH: usize =
     sonde_gateway::connector::DEFAULT_CONNECTOR_MAX_MESSAGE_SIZE;
@@ -67,15 +82,11 @@ enum CompanionError {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
-    Url(#[from] url::ParseError),
-    #[error(transparent)]
     TonicTransport(#[from] tonic::transport::Error),
     #[error(transparent)]
     TonicStatus(#[from] tonic::Status),
     #[error(transparent)]
     AzureCore(#[from] azure_core::Error),
-    #[error(transparent)]
-    OAuth(#[from] oauth_device_flows::DeviceFlowError),
     #[error(transparent)]
     Jwt(#[from] jsonwebtoken::errors::Error),
     #[error(transparent)]
@@ -108,8 +119,8 @@ struct Cli {
 enum Command {
     /// Start the long-running Azure connector runtime.
     Run,
-    /// Perform Microsoft device auth and display the user code on the modem.
-    BootstrapAuth(BootstrapAuthArgs),
+    /// Perform bootstrap deployment and display the device code on the modem.
+    Bootstrap(BootstrapArgs),
     /// Ask the gateway admin API to render a transient modem display message.
     DisplayMessage {
         /// Between 1 and 4 text lines to render.
@@ -121,34 +132,18 @@ enum Command {
 }
 
 #[derive(Debug, Args)]
-struct BootstrapAuthArgs {
-    /// Microsoft Entra application client ID used for device auth.
-    #[arg(long, env = "SONDE_AZURE_DEVICE_CLIENT_ID")]
-    device_client_id: String,
+struct BootstrapArgs {
+    /// Azure region for Bicep deployment.
+    #[arg(long, env = "SONDE_AZURE_LOCATION", default_value = "eastus")]
+    azure_location: String,
 
-    /// Comma-delimited OAuth scopes to request during device auth.
-    #[arg(long, env = "SONDE_AZURE_DEVICE_SCOPES", value_delimiter = ',', num_args = 1..)]
-    device_scopes: Vec<String>,
+    /// Project name for Bicep deployment.
+    #[arg(long, env = "SONDE_AZURE_PROJECT_NAME", default_value = "sonde")]
+    azure_project_name: String,
 
-    /// Poll interval in seconds for the device auth token endpoint.
-    #[arg(
-        long,
-        env = "SONDE_AZURE_DEVICE_POLL_INTERVAL_SECS",
-        default_value_t = 5
-    )]
-    poll_interval_secs: u64,
-
-    /// Maximum number of token polling attempts before bootstrap fails.
-    #[arg(long, env = "SONDE_AZURE_DEVICE_MAX_ATTEMPTS", default_value_t = 60)]
-    max_attempts: u32,
-
-    /// Optional override for the device authorization endpoint, primarily for tests.
-    #[arg(long, env = "SONDE_AZURE_DEVICE_AUTH_URL")]
-    device_auth_url: Option<String>,
-
-    /// Optional override for the token endpoint, primarily for tests.
-    #[arg(long, env = "SONDE_AZURE_DEVICE_TOKEN_URL")]
-    device_token_url: Option<String>,
+    /// Optional Azure subscription ID override.
+    #[arg(long, env = "SONDE_AZURE_SUBSCRIPTION_ID")]
+    azure_subscription_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +159,13 @@ struct ServicePrincipalStateFile {
     client_id: String,
     certificate_path: String,
     private_key_path: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+struct ServiceBusConfigFile {
+    namespace: String,
+    upstream_queue: String,
+    downstream_queue: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +191,31 @@ struct ClientAssertionClaims {
 struct OAuthTokenResponse {
     access_token: String,
     expires_in: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BicepBootstrapValues {
+    #[serde(rename = "tenantId")]
+    tenant_id: BicepOutputValue,
+    #[serde(rename = "clientId")]
+    client_id: BicepOutputValue,
+    #[serde(rename = "serviceBusNamespace")]
+    service_bus_namespace: BicepOutputValue,
+    #[serde(rename = "upstreamQueue")]
+    upstream_queue: BicepOutputValue,
+    #[serde(rename = "downstreamQueue")]
+    downstream_queue: BicepOutputValue,
+}
+
+#[derive(Debug, Deserialize)]
+struct BicepOutputValue {
+    value: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct BicepOutputs {
+    #[serde(rename = "companionBootstrapValues")]
+    companion_bootstrap_values: BicepOutputValue,
 }
 
 struct ClientAssertionCredential {
@@ -347,30 +374,6 @@ fn validate_display_lines(lines: &[String]) -> Result<(), CompanionError> {
     }
 }
 
-fn validate_device_scopes(scopes: &[String]) -> Result<(), CompanionError> {
-    if scopes.is_empty() {
-        Err(CompanionError::Config(
-            "bootstrap-auth requires at least one device scope".to_string(),
-        ))
-    } else if scopes.iter().any(|scope| scope.trim().is_empty()) {
-        Err(CompanionError::Config(
-            "bootstrap-auth device scopes must not be empty".to_string(),
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_device_client_id(client_id: &str) -> Result<(), CompanionError> {
-    if client_id.trim().is_empty() {
-        Err(CompanionError::Config(
-            "bootstrap-auth requires a non-empty device client ID".to_string(),
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 fn require_non_empty(value: String, env_name: &str) -> Result<String, CompanionError> {
     if value.trim().is_empty() {
         Err(CompanionError::Config(format!(
@@ -381,21 +384,171 @@ fn require_non_empty(value: String, env_name: &str) -> Result<String, CompanionE
     }
 }
 
-fn load_runtime_config() -> Result<RuntimeConfig, CompanionError> {
+fn load_runtime_config(state_dir: &Path) -> Result<RuntimeConfig, CompanionError> {
+    let namespace_env = std::env::var("SONDE_AZURE_SERVICEBUS_NAMESPACE")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let upstream_env = std::env::var("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let downstream_env = std::env::var("SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+
+    let file_config = load_service_bus_config_file(state_dir).ok();
+
+    let namespace = namespace_env
+        .or_else(|| file_config.as_ref().map(|c| c.namespace.clone()))
+        .ok_or_else(|| {
+            CompanionError::Config(
+                "SONDE_AZURE_SERVICEBUS_NAMESPACE must be set and non-empty (or service-bus.json must exist in state dir)"
+                    .into(),
+            )
+        })?;
+    let upstream_queue = upstream_env
+        .or_else(|| file_config.as_ref().map(|c| c.upstream_queue.clone()))
+        .ok_or_else(|| {
+            CompanionError::Config(
+                "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE must be set and non-empty (or service-bus.json must exist in state dir)"
+                    .into(),
+            )
+        })?;
+    let downstream_queue = downstream_env
+        .or_else(|| file_config.as_ref().map(|c| c.downstream_queue.clone()))
+        .ok_or_else(|| {
+            CompanionError::Config(
+                "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE must be set and non-empty (or service-bus.json must exist in state dir)"
+                    .into(),
+            )
+        })?;
+
     Ok(RuntimeConfig {
-        namespace: require_non_empty(
-            std::env::var("SONDE_AZURE_SERVICEBUS_NAMESPACE").unwrap_or_default(),
-            "SONDE_AZURE_SERVICEBUS_NAMESPACE",
-        )?,
-        upstream_queue: require_non_empty(
-            std::env::var("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE").unwrap_or_default(),
-            "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE",
-        )?,
-        downstream_queue: require_non_empty(
-            std::env::var("SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE").unwrap_or_default(),
-            "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
-        )?,
+        namespace,
+        upstream_queue,
+        downstream_queue,
     })
+}
+
+fn load_service_bus_config_file(state_dir: &Path) -> Result<ServiceBusConfigFile, CompanionError> {
+    let config_path = state_dir.join(SERVICE_BUS_CONFIG_FILENAME);
+    let bytes = std::fs::read(&config_path)?;
+    let config: ServiceBusConfigFile = serde_json::from_slice(&bytes)?;
+    Ok(config)
+}
+
+fn prepare_staging_dir(state_dir: &Path) -> Result<PathBuf, CompanionError> {
+    let staging_dir = state_dir.join(STAGING_DIR_NAME);
+    if staging_dir.exists() {
+        std::fs::remove_dir_all(&staging_dir)?;
+    }
+    std::fs::create_dir_all(&staging_dir)?;
+    Ok(staging_dir)
+}
+
+fn commit_staging(staging_dir: &Path, state_dir: &Path) -> Result<(), CompanionError> {
+    let backup_dir = state_dir.join(format!("{STAGING_DIR_NAME}-backup"));
+    if backup_dir.exists() {
+        std::fs::remove_dir_all(&backup_dir)?;
+    }
+    std::fs::create_dir_all(&backup_dir)?;
+
+    let staged_files: Vec<(PathBuf, PathBuf)> = std::fs::read_dir(staging_dir)?
+        .map(|entry| {
+            let entry = entry?;
+            Ok((entry.path(), state_dir.join(entry.file_name())))
+        })
+        .collect::<Result<_, std::io::Error>>()?;
+
+    let mut backed_up: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut committed: Vec<PathBuf> = Vec::new();
+
+    let commit_result: Result<(), CompanionError> = (|| {
+        for (_, dest) in &staged_files {
+            if dest.exists() {
+                let backup_path = backup_dir.join(
+                    dest.file_name()
+                        .ok_or_else(|| {
+                            CompanionError::Config(format!(
+                                "staged destination had no file name: {}",
+                                dest.display()
+                            ))
+                        })?,
+                );
+                std::fs::rename(dest, &backup_path)?;
+                backed_up.push((backup_path, dest.clone()));
+            }
+        }
+
+        for (src, dest) in &staged_files {
+            std::fs::rename(src, dest)?;
+            committed.push(dest.clone());
+        }
+        Ok(())
+    })();
+
+    if let Err(err) = commit_result {
+        for dest in &committed {
+            if dest.exists() {
+                let _ = std::fs::remove_file(dest);
+            }
+        }
+        for (backup_path, dest) in backed_up.iter().rev() {
+            if backup_path.exists() {
+                let _ = std::fs::rename(backup_path, dest);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&backup_dir);
+        return Err(err);
+    }
+
+    let _ = std::fs::remove_dir_all(&backup_dir);
+    let _ = std::fs::remove_dir(staging_dir);
+    Ok(())
+}
+
+fn cleanup_staging(staging_dir: &Path) {
+    let _ = std::fs::remove_dir_all(staging_dir);
+}
+
+fn generate_certificate(staging_dir: &Path) -> Result<(PathBuf, PathBuf, String), CompanionError> {
+    use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|e| {
+        CompanionError::Config(format!("failed to generate ECDSA P-256 key pair: {e}"))
+    })?;
+
+    let mut params = CertificateParams::new(Vec::<String>::new()).map_err(|e| {
+        CompanionError::Config(format!("failed to create certificate params: {e}"))
+    })?;
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "sonde-azure-companion");
+    params.not_before = time::OffsetDateTime::now_utc();
+    params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(730);
+
+    let cert = params.self_signed(&key_pair).map_err(|e| {
+        CompanionError::Config(format!("failed to generate self-signed certificate: {e}"))
+    })?;
+
+    let cert_pem = cert.pem();
+    let key_pem = key_pair.serialize_pem();
+
+    let cert_path = staging_dir.join(CERT_PEM_FILENAME);
+    let key_path = staging_dir.join(KEY_PEM_FILENAME);
+
+    std::fs::write(&cert_path, cert_pem.as_bytes())?;
+    std::fs::write(&key_path, key_pem.as_bytes())?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    let cert_der = cert.der().to_vec();
+    let cert_base64 = base64::engine::general_purpose::STANDARD.encode(&cert_der);
+
+    Ok((cert_path, key_path, cert_base64))
 }
 
 fn service_principal_state_path(state_dir: &Path) -> PathBuf {
@@ -487,7 +640,7 @@ fn load_runtime_credential_state(
 fn check_runtime_ready(
     state_dir: &Path,
 ) -> Result<(RuntimeConfig, RuntimeCredentialState), CompanionError> {
-    let runtime_config = load_runtime_config()?;
+    let runtime_config = load_runtime_config(state_dir)?;
     let runtime_state = load_runtime_credential_state(state_dir)?;
     let _ = load_certificate_thumbprint(&runtime_state.certificate_path)?;
     let _ = load_signing_key(&runtime_state.private_key_path)?;
@@ -496,42 +649,6 @@ fn check_runtime_ready(
         &runtime_state.private_key_path,
     )?;
     Ok((runtime_config, runtime_state))
-}
-
-fn bootstrap_provider_and_config(
-    args: &BootstrapAuthArgs,
-) -> Result<(Provider, DeviceFlowConfig), CompanionError> {
-    validate_device_client_id(&args.device_client_id)?;
-    validate_device_scopes(&args.device_scopes)?;
-
-    let device_client_id = args.device_client_id.trim().to_string();
-    let device_scopes: Vec<String> = args
-        .device_scopes
-        .iter()
-        .map(|scope| scope.trim().to_string())
-        .collect();
-
-    let config = DeviceFlowConfig::new()
-        .client_id(device_client_id)
-        .scopes(device_scopes.clone())
-        .poll_interval(Duration::from_secs(args.poll_interval_secs))
-        .max_attempts(args.max_attempts);
-
-    match (&args.device_auth_url, &args.device_token_url) {
-        (Some(device_auth_url), Some(device_token_url)) => {
-            let provider = GenericProviderConfig::new(
-                Url::parse(device_auth_url)?,
-                Url::parse(device_token_url)?,
-                "Microsoft test override".to_string(),
-            )
-            .with_default_scopes(device_scopes);
-            Ok((Provider::Generic, config.generic_provider(provider)))
-        }
-        (None, None) => Ok((Provider::Microsoft, config)),
-        _ => Err(CompanionError::Config(
-            "device auth and token endpoint overrides must be provided together".to_string(),
-        )),
-    }
 }
 
 fn load_certificate_thumbprint(certificate_path: &Path) -> Result<String, CompanionError> {
@@ -730,6 +847,87 @@ fn validate_certificate_matches_private_key(
         )));
     }
     Ok(())
+}
+
+fn parse_bicep_outputs(
+    json: &str,
+) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
+    let outputs: BicepOutputs = serde_json::from_str(json).map_err(|e| {
+        CompanionError::Config(format!("failed to parse Bicep deployment outputs: {e}"))
+    })?;
+
+    let bootstrap_values: BicepBootstrapValues =
+        serde_json::from_value(outputs.companion_bootstrap_values.value).map_err(|e| {
+            CompanionError::Config(format!("failed to parse companionBootstrapValues: {e}"))
+        })?;
+
+    let sp = ServicePrincipalStateFile {
+        tenant_id: bootstrap_values
+            .tenant_id
+            .value
+            .as_str()
+            .ok_or_else(|| CompanionError::Config("tenantId must be a string".into()))?
+            .to_string(),
+        client_id: bootstrap_values
+            .client_id
+            .value
+            .as_str()
+            .ok_or_else(|| CompanionError::Config("clientId must be a string".into()))?
+            .to_string(),
+        certificate_path: CERT_PEM_FILENAME.to_string(),
+        private_key_path: KEY_PEM_FILENAME.to_string(),
+    };
+
+    let sb = ServiceBusConfigFile {
+        namespace: bootstrap_values
+            .service_bus_namespace
+            .value
+            .as_str()
+            .ok_or_else(|| CompanionError::Config("serviceBusNamespace must be a string".into()))?
+            .to_string(),
+        upstream_queue: bootstrap_values
+            .upstream_queue
+            .value
+            .as_str()
+            .ok_or_else(|| CompanionError::Config("upstreamQueue must be a string".into()))?
+            .to_string(),
+        downstream_queue: bootstrap_values
+            .downstream_queue
+            .value
+            .as_str()
+            .ok_or_else(|| CompanionError::Config("downstreamQueue must be a string".into()))?
+            .to_string(),
+    };
+
+    Ok((sp, sb))
+}
+
+fn build_az_bootstrap_script() -> String {
+    r#"set -eu
+az login --use-device-code --output none >&2
+if [ -n "${SONDE_AZURE_SUBSCRIPTION_ID:-}" ]; then
+    az account set --subscription "$SONDE_AZURE_SUBSCRIPTION_ID" >&2
+fi
+az deployment sub create \
+    --location "$SONDE_AZURE_LOCATION" \
+    --template-file /bicep/main.bicep \
+    --parameters companionCertificateBase64="$COMPANION_CERT_BASE64" \
+    --parameters project_name="$SONDE_AZURE_PROJECT_NAME" \
+    --query 'properties.outputs' \
+    --output json"#
+        .to_string()
+}
+
+fn build_container_env(cert_base64: &str, args: &BootstrapArgs) -> Vec<String> {
+    let mut env = vec![
+        format!("SONDE_AZURE_LOCATION={}", args.azure_location),
+        format!("SONDE_AZURE_PROJECT_NAME={}", args.azure_project_name),
+        format!("COMPANION_CERT_BASE64={cert_base64}"),
+    ];
+    if let Some(sub_id) = &args.azure_subscription_id {
+        env.push(format!("SONDE_AZURE_SUBSCRIPTION_ID={sub_id}"));
+    }
+    env
 }
 
 fn downstream_body_to_connector_payload(body: &[u8]) -> Result<Vec<u8>, CompanionError> {
@@ -1158,6 +1356,204 @@ async fn run(connector_socket: &str, state_dir: &Path) -> Result<(), CompanionEr
     run_with_factory(connector_socket, state_dir, &AzServiceBusTransportFactory).await
 }
 
+async fn copy_files_to_container(
+    docker: &Docker,
+    container_id: &str,
+    staging_dir: &Path,
+) -> Result<(), CompanionError> {
+    let mut archive = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut archive);
+        let bicep_path = Path::new(BUNDLED_BICEP_PATH);
+        if !bicep_path.is_dir() {
+            return Err(CompanionError::Config(format!(
+                "bundled Bicep path not found: {}",
+                bicep_path.display()
+            )));
+        }
+        builder.append_dir_all("bicep", bicep_path).map_err(|e| {
+            CompanionError::Config(format!("failed to add Bicep files to archive: {e}"))
+        })?;
+
+        let cert_path = staging_dir.join(CERT_PEM_FILENAME);
+        if !cert_path.is_file() {
+            return Err(CompanionError::Config(format!(
+                "generated certificate file not found: {}",
+                cert_path.display()
+            )));
+        }
+        builder
+            .append_path_with_name(&cert_path, format!("cert/{CERT_PEM_FILENAME}"))
+            .map_err(|e| {
+                CompanionError::Config(format!("failed to add certificate to archive: {e}"))
+            })?;
+        builder.finish().map_err(|e| {
+            CompanionError::Config(format!("failed to finalize tar archive: {e}"))
+        })?;
+    }
+
+    let upload_options = UploadToContainerOptionsBuilder::default()
+        .path("/")
+        .build();
+
+    docker
+        .upload_to_container(container_id, Some(upload_options), body_full(archive.into()))
+        .await
+        .map_err(|e| CompanionError::Config(format!("failed to copy files to container: {e}")))?;
+
+    Ok(())
+}
+
+async fn stream_container_output(
+    docker: &Docker,
+    container_id: &str,
+    admin_socket: &str,
+) -> Result<String, CompanionError> {
+    use regex::Regex;
+
+    let log_opts = LogsOptionsBuilder::default()
+        .follow(true)
+        .stdout(true)
+        .stderr(true)
+        .build();
+
+    let mut logs = docker.logs(container_id, Some(log_opts));
+    let mut stdout_buffer = String::new();
+    let device_code_re =
+        Regex::new(r"enter the code ([A-Z0-9-]+) to authenticate").expect("valid device code regex");
+    let mut device_code_displayed = false;
+
+    while let Some(result) = logs.next().await {
+        match result {
+            Ok(LogOutput::StdOut { message }) => {
+                let text = String::from_utf8_lossy(&message);
+                stdout_buffer.push_str(&text);
+            }
+            Ok(LogOutput::StdErr { message }) => {
+                let text = String::from_utf8_lossy(&message);
+                eprint!("{text}");
+
+                if !device_code_displayed {
+                    if let Some(captures) = device_code_re.captures(&text) {
+                        if let Some(code) = captures.get(1) {
+                            let device_code = code.as_str().to_string();
+                            eprintln!("Detected device code: {device_code}");
+                            if let Err(e) = display_message(
+                                admin_socket,
+                                vec!["Azure login".to_string(), device_code],
+                            )
+                            .await
+                            {
+                                return Err(CompanionError::Config(format!(
+                                    "failed to display device code on modem: {e}"
+                                )));
+                            }
+                            device_code_displayed = true;
+                        }
+                    }
+                }
+            }
+            Ok(LogOutput::Console { message }) => {
+                let text = String::from_utf8_lossy(&message);
+                stdout_buffer.push_str(&text);
+            }
+            Ok(LogOutput::StdIn { .. }) => {}
+            Err(e) => {
+                return Err(CompanionError::Config(format!(
+                    "failed to read container output: {e}"
+                )));
+            }
+        }
+    }
+
+    Ok(stdout_buffer)
+}
+
+async fn run_bootstrap_deployment(
+    admin_socket: &str,
+    staging_dir: &Path,
+    cert_base64: &str,
+    args: &BootstrapArgs,
+) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
+    let docker = Docker::connect_with_local_defaults()
+        .map_err(|e| CompanionError::Config(format!("failed to connect to Docker daemon: {e}")))?;
+
+    eprintln!("Pulling Azure CLI container image...");
+    let pull_opts = CreateImageOptionsBuilder::default()
+        .from_image(AZURE_CLI_IMAGE)
+        .build();
+    let mut pull_stream = docker.create_image(Some(pull_opts), None, None);
+    while let Some(result) = pull_stream.next().await {
+        result.map_err(|e| CompanionError::Config(format!("failed to pull Azure CLI image: {e}")))?;
+    }
+
+    let bootstrap_script = build_az_bootstrap_script();
+    let env_vars = build_container_env(cert_base64, args);
+    let container_name = format!("sonde-bootstrap-{}", Uuid::new_v4());
+    let container = docker
+        .create_container(
+            Some(
+                CreateContainerOptionsBuilder::default()
+                    .name(&container_name)
+                    .build(),
+            ),
+            ContainerCreateBody {
+                image: Some(AZURE_CLI_IMAGE.to_string()),
+                cmd: Some(vec!["sh".to_string(), "-c".to_string(), bootstrap_script]),
+                env: Some(env_vars),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| CompanionError::Config(format!("failed to create Azure CLI container: {e}")))?;
+    let container_id = container.id;
+
+    let bootstrap_result = async {
+        copy_files_to_container(&docker, &container_id, staging_dir).await?;
+        docker
+            .start_container(&container_id, None)
+            .await
+            .map_err(|e| CompanionError::Config(format!("failed to start Azure CLI container: {e}")))?;
+
+        let stdout_output = stream_container_output(&docker, &container_id, admin_socket).await?;
+        let wait_options = WaitContainerOptionsBuilder::default()
+            .condition("not-running")
+            .build();
+        let mut wait_stream = docker.wait_container(&container_id, Some(wait_options));
+        let exit_result = wait_stream.next().await;
+
+        match exit_result {
+            Some(Ok(result)) if result.status_code == 0 => {}
+            Some(Ok(result)) => {
+                return Err(CompanionError::Config(format!(
+                    "Azure CLI container exited with non-zero status: {}",
+                    result.status_code
+                )));
+            }
+            Some(Err(e)) => {
+                return Err(CompanionError::Config(format!(
+                    "failed to wait for Azure CLI container: {e}"
+                )));
+            }
+            None => {
+                return Err(CompanionError::Config(
+                    "Azure CLI container wait stream ended unexpectedly".into(),
+                ));
+            }
+        }
+
+        parse_bicep_outputs(&stdout_output)
+    }
+    .await;
+
+    let remove_options = RemoveContainerOptionsBuilder::default().force(true).build();
+    let _ = docker
+        .remove_container(&container_id, Some(remove_options))
+        .await;
+
+    bootstrap_result
+}
+
 async fn display_message(admin_socket: &str, lines: Vec<String>) -> Result<(), CompanionError> {
     validate_display_lines(&lines)?;
     let mut client = connect_admin(admin_socket).await?;
@@ -1167,44 +1563,63 @@ async fn display_message(admin_socket: &str, lines: Vec<String>) -> Result<(), C
     Ok(())
 }
 
-async fn bootstrap_auth(
+async fn display_progress(admin_socket: &str, msg: &str) {
+    if let Err(e) = display_message(admin_socket, vec![msg.to_string()]).await {
+        eprintln!("warning: failed to update modem display: {e}");
+    }
+}
+
+async fn bootstrap(
     admin_socket: &str,
     state_dir: &Path,
-    args: BootstrapAuthArgs,
+    args: BootstrapArgs,
 ) -> Result<(), CompanionError> {
     std::fs::create_dir_all(state_dir)?;
 
-    let (provider, config) = bootstrap_provider_and_config(&args)?;
-    let mut flow = DeviceFlow::new(provider, config)?;
-    let auth = flow.initialize().await?;
+    let staging_dir = prepare_staging_dir(state_dir)?;
 
-    eprintln!(
-        "Azure device auth required. Open {} and enter code {}",
-        auth.verification_uri(),
-        auth.user_code()
-    );
-    if let Some(verification_uri_complete) = auth.verification_uri_complete() {
-        eprintln!("Complete verification URL: {verification_uri_complete}");
+    display_progress(admin_socket, "Generating cert...").await;
+    eprintln!("Generating ECDSA P-256 self-signed certificate");
+    let (_cert_path, _key_path, cert_base64) = match generate_certificate(&staging_dir) {
+        Ok(result) => result,
+        Err(e) => {
+            cleanup_staging(&staging_dir);
+            display_progress(admin_socket, "Bootstrap failed").await;
+            return Err(e);
+        }
+    };
+
+    display_progress(admin_socket, "Authenticating...").await;
+    eprintln!("Starting Azure CLI container for device-code auth and Bicep deployment");
+    let (sp_state, sb_config) =
+        match run_bootstrap_deployment(admin_socket, &staging_dir, &cert_base64, &args).await {
+            Ok(result) => result,
+            Err(e) => {
+                cleanup_staging(&staging_dir);
+                display_progress(admin_socket, "Bootstrap failed").await;
+                return Err(e);
+            }
+        };
+
+    display_progress(admin_socket, "Writing config...").await;
+    eprintln!("Writing runtime artifacts to state volume");
+
+    let sp_path = staging_dir.join(SERVICE_PRINCIPAL_STATE_FILENAME);
+    let sp_json = serde_json::to_string_pretty(&sp_state)?;
+    std::fs::write(&sp_path, sp_json.as_bytes())?;
+
+    let sb_path = staging_dir.join(SERVICE_BUS_CONFIG_FILENAME);
+    let sb_json = serde_json::to_string_pretty(&sb_config)?;
+    std::fs::write(&sb_path, sb_json.as_bytes())?;
+
+    if let Err(e) = commit_staging(&staging_dir, state_dir) {
+        cleanup_staging(&staging_dir);
+        display_progress(admin_socket, "Bootstrap failed").await;
+        return Err(e);
     }
 
-    display_message(
-        admin_socket,
-        vec!["Azure login".to_string(), auth.user_code().to_string()],
-    )
-    .await?;
-
-    let token = flow.poll_for_token().await?;
-    if let Some(expires_in) = token.expires_in {
-        eprintln!(
-            "Azure device auth succeeded; received temporary {} token valid for {} seconds",
-            token.token_type, expires_in
-        );
-    } else {
-        eprintln!(
-            "Azure device auth succeeded; received temporary {} token",
-            token.token_type
-        );
-    }
+    display_progress(admin_socket, "Bootstrap complete").await;
+    eprintln!("Bootstrap completed successfully");
 
     Ok(())
 }
@@ -1213,9 +1628,7 @@ async fn run_cli() -> Result<(), CompanionError> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => run(&cli.connector_socket, &cli.state_dir).await?,
-        Command::BootstrapAuth(args) => {
-            bootstrap_auth(&cli.admin_socket, &cli.state_dir, args).await?
-        }
+        Command::Bootstrap(args) => bootstrap(&cli.admin_socket, &cli.state_dir, args).await?,
         Command::DisplayMessage { lines } => display_message(&cli.admin_socket, lines).await?,
         Command::CheckRuntimeReady => {
             check_runtime_ready(&cli.state_dir)?;
@@ -1235,17 +1648,19 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        bootstrap_provider_and_config, check_runtime_ready, downstream_body_to_connector_payload,
-        load_runtime_config, load_signing_key, pump_downstream_once, pump_upstream_once,
-        read_framed, resolve_state_relative_path, validate_device_client_id,
-        validate_device_scopes, validate_display_lines, write_framed, BootstrapAuthArgs,
-        ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
-        RuntimeCredentialState, ServicePrincipalStateFile, UpstreamPublisher,
-        CONNECTOR_MAX_FRAME_LENGTH,
+        check_runtime_ready, cleanup_staging, commit_staging, downstream_body_to_connector_payload,
+        generate_certificate, load_runtime_config, load_signing_key, parse_bicep_outputs,
+        prepare_staging_dir, pump_downstream_once, pump_upstream_once, read_framed,
+        resolve_state_relative_path, validate_certificate_matches_private_key,
+        validate_display_lines, write_framed, ClientAssertionCredential, CompanionError,
+        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState,
+        ServiceBusConfigFile, ServicePrincipalStateFile, UpstreamPublisher,
+        CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME,
+        SERVICE_BUS_CONFIG_FILENAME,
     };
     use azure_core::credentials::TokenCredential;
+    use base64::Engine as _;
     use jsonwebtoken::{Algorithm, EncodingKey};
-    use oauth_device_flows::Provider;
     use std::collections::VecDeque;
     use std::path::Path;
     use std::path::PathBuf;
@@ -1268,20 +1683,11 @@ mod tests {
     use tokio::sync::{Mutex, Notify};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+    use x509_cert::der::Decode;
+    use x509_cert::Certificate;
 
     fn lines(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| (*s).to_string()).collect()
-    }
-
-    fn bootstrap_args() -> BootstrapAuthArgs {
-        BootstrapAuthArgs {
-            device_client_id: "client-id".to_string(),
-            device_scopes: vec!["scope-a".to_string()],
-            poll_interval_secs: 5,
-            max_attempts: 60,
-            device_auth_url: None,
-            device_token_url: None,
-        }
     }
 
     fn write_service_principal_state(temp: &TempDir) -> PathBuf {
@@ -1371,6 +1777,19 @@ mod tests {
             ],
             test,
         );
+    }
+
+    fn write_service_bus_config(temp: &TempDir, namespace: &str, upstream: &str, downstream: &str) {
+        let config = ServiceBusConfigFile {
+            namespace: namespace.to_string(),
+            upstream_queue: upstream.to_string(),
+            downstream_queue: downstream.to_string(),
+        };
+        std::fs::write(
+            temp.path().join(SERVICE_BUS_CONFIG_FILENAME),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
     }
 
     #[derive(Default)]
@@ -1749,46 +2168,151 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_auth_requires_at_least_one_scope() {
-        assert!(validate_device_scopes(&[]).is_err());
-        assert!(validate_device_scopes(&["scope".to_string()]).is_ok());
+    fn test_generate_certificate() {
+        let temp = TempDir::new().unwrap();
+        let (cert_path, key_path, cert_base64) = generate_certificate(temp.path()).unwrap();
+
+        assert_eq!(cert_path, temp.path().join(CERT_PEM_FILENAME));
+        assert_eq!(key_path, temp.path().join(KEY_PEM_FILENAME));
+        assert!(cert_path.is_file());
+        assert!(key_path.is_file());
+
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(cert_base64)
+            .unwrap();
+        let cert_file = std::fs::File::open(&cert_path).unwrap();
+        let mut reader = std::io::BufReader::new(cert_file);
+        let cert_der = rustls_pemfile::certs(&mut reader)
+            .next()
+            .transpose()
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded, cert_der.as_ref());
+
+        let certificate = Certificate::from_der(cert_der.as_ref()).unwrap();
+        assert_ne!(
+            certificate.tbs_certificate.validity.not_before,
+            certificate.tbs_certificate.validity.not_after
+        );
+        let (algorithm, _) = load_signing_key(&key_path).unwrap();
+        assert_eq!(algorithm, Algorithm::ES256);
+        validate_certificate_matches_private_key(&cert_path, &key_path).unwrap();
     }
 
     #[test]
-    fn bootstrap_auth_rejects_blank_scope_entries() {
-        assert!(validate_device_scopes(&[" ".to_string()]).is_err());
-        assert!(validate_device_scopes(&["scope".to_string(), "".to_string()]).is_err());
+    fn test_load_runtime_config_from_file() {
+        let temp = TempDir::new().unwrap();
+        write_service_bus_config(&temp, "file.servicebus.windows.net", "file-up", "file-down");
+
+        temp_env::with_vars_unset(
+            [
+                "SONDE_AZURE_SERVICEBUS_NAMESPACE",
+                "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE",
+                "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+            ],
+            || {
+                let config = load_runtime_config(temp.path()).unwrap();
+                assert_eq!(
+                    config,
+                    RuntimeConfig {
+                        namespace: "file.servicebus.windows.net".to_string(),
+                        upstream_queue: "file-up".to_string(),
+                        downstream_queue: "file-down".to_string(),
+                    }
+                );
+            },
+        );
     }
 
     #[test]
-    fn bootstrap_auth_requires_non_empty_client_id() {
-        assert!(validate_device_client_id("").is_err());
-        assert!(validate_device_client_id("   ").is_err());
-        assert!(validate_device_client_id("client-id").is_ok());
+    fn test_load_runtime_config_env_overrides_file() {
+        let temp = TempDir::new().unwrap();
+        write_service_bus_config(&temp, "file.servicebus.windows.net", "file-up", "file-down");
+
+        temp_env::with_vars(
+            [
+                (
+                    "SONDE_AZURE_SERVICEBUS_NAMESPACE",
+                    Some("env.servicebus.windows.net"),
+                ),
+                ("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE", Some("env-up")),
+                (
+                    "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+                    Some("env-down"),
+                ),
+            ],
+            || {
+                let config = load_runtime_config(temp.path()).unwrap();
+                assert_eq!(
+                    config,
+                    RuntimeConfig {
+                        namespace: "env.servicebus.windows.net".to_string(),
+                        upstream_queue: "env-up".to_string(),
+                        downstream_queue: "env-down".to_string(),
+                    }
+                );
+            },
+        );
     }
 
     #[test]
-    fn bootstrap_auth_uses_microsoft_provider_by_default() {
-        let (provider, _config) = bootstrap_provider_and_config(&bootstrap_args()).unwrap();
-        assert_eq!(provider, Provider::Microsoft);
+    fn test_parse_bicep_outputs() {
+        let json = r#"{
+            "companionBootstrapValues": {
+                "value": {
+                    "tenantId": { "value": "11111111-1111-1111-1111-111111111111" },
+                    "clientId": { "value": "22222222-2222-2222-2222-222222222222" },
+                    "serviceBusNamespace": { "value": "example.servicebus.windows.net" },
+                    "upstreamQueue": { "value": "upstream" },
+                    "downstreamQueue": { "value": "downstream" }
+                }
+            }
+        }"#;
+
+        let (sp, sb) = parse_bicep_outputs(json).unwrap();
+        assert_eq!(
+            sp,
+            ServicePrincipalStateFile {
+                tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                certificate_path: CERT_PEM_FILENAME.to_string(),
+                private_key_path: KEY_PEM_FILENAME.to_string(),
+            }
+        );
+        assert_eq!(
+            sb,
+            ServiceBusConfigFile {
+                namespace: "example.servicebus.windows.net".to_string(),
+                upstream_queue: "upstream".to_string(),
+                downstream_queue: "downstream".to_string(),
+            }
+        );
     }
 
     #[test]
-    fn bootstrap_auth_accepts_explicit_endpoint_overrides() {
-        let mut args = bootstrap_args();
-        args.device_auth_url = Some("http://127.0.0.1/device".to_string());
-        args.device_token_url = Some("http://127.0.0.1/token".to_string());
+    fn test_staged_commit() {
+        let temp = TempDir::new().unwrap();
+        let staging_dir = prepare_staging_dir(temp.path()).unwrap();
+        std::fs::write(staging_dir.join(CERT_PEM_FILENAME), b"new-cert").unwrap();
+        std::fs::write(staging_dir.join(KEY_PEM_FILENAME), b"new-key").unwrap();
+        std::fs::write(temp.path().join(CERT_PEM_FILENAME), b"old-cert").unwrap();
 
-        let (provider, _config) = bootstrap_provider_and_config(&args).unwrap();
-        assert_eq!(provider, Provider::Generic);
+        commit_staging(&staging_dir, temp.path()).unwrap();
+
+        assert_eq!(std::fs::read(temp.path().join(CERT_PEM_FILENAME)).unwrap(), b"new-cert");
+        assert_eq!(std::fs::read(temp.path().join(KEY_PEM_FILENAME)).unwrap(), b"new-key");
+        assert!(!staging_dir.exists());
     }
 
     #[test]
-    fn bootstrap_auth_rejects_partial_endpoint_override() {
-        let mut args = bootstrap_args();
-        args.device_auth_url = Some("http://127.0.0.1/device".to_string());
+    fn test_staged_cleanup() {
+        let temp = TempDir::new().unwrap();
+        let staging_dir = prepare_staging_dir(temp.path()).unwrap();
+        std::fs::write(staging_dir.join(CERT_PEM_FILENAME), b"temp-cert").unwrap();
 
-        assert!(bootstrap_provider_and_config(&args).is_err());
+        cleanup_staging(&staging_dir);
+
+        assert!(!staging_dir.exists());
     }
 
     #[test]
@@ -1800,7 +2324,8 @@ mod tests {
                 "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
             ],
             || {
-                let err = load_runtime_config().unwrap_err();
+                let temp = TempDir::new().unwrap();
+                let err = load_runtime_config(temp.path()).unwrap_err();
                 assert!(matches!(err, CompanionError::Config(_)));
             },
         );

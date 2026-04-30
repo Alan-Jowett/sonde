@@ -4,9 +4,9 @@
 
 > **Document status:** Draft
 > **Scope:** Validation for the Azure companion container, bootstrap-state
-> detection, gateway admin/connector integration, and Azure Service Bus bridge.
-> The internals of Azure provisioning that create the runtime certificate and
-> broker resources are outside this document's scope.
+> detection, gateway admin/connector integration, provisioning orchestration
+> (certificate generation, Bicep deployment via Docker API, runtime artifact
+> creation), and Azure Service Bus bridge.
 > **Audience:** Implementers and reviewers validating the Azure companion
 > bootstrap and runtime bridge behavior.
 > **Related:** [azure-provisioning-validation.md](azure-provisioning-validation.md),
@@ -25,7 +25,7 @@
 **Procedure:**
 1. Build the Azure companion Docker image from the repository Dockerfile.
 2. Run `docker run --rm <image> sonde-azure-companion --help`.
-3. Run `docker run --rm <image> sonde-azure-companion bootstrap-auth --help`.
+3. Run `docker run --rm <image> sonde-azure-companion bootstrap --help`.
 4. Run `docker run --rm <image> sonde-azure-companion run --help`.
 5. Assert: all commands succeed.
 
@@ -40,7 +40,7 @@
 2. Provide valid queue configuration to the bootstrap script.
 3. Invoke the Azure companion bootstrap entrypoint with that directory mounted as the state volume.
 4. Assert: the bootstrap path runs before the long-running runtime starts.
-5. Assert: the bootstrap path invokes the Rust `bootstrap-auth` flow and requests a device code from the configured OAuth endpoint.
+5. Assert: the bootstrap path invokes the Rust `bootstrap` flow and requests a device code from the configured OAuth endpoint.
 
 ---
 
@@ -219,3 +219,199 @@
 3. Start the runtime in the container with the concrete `azservicebus` transport selected and with a deliberately unreachable or test-only Service Bus endpoint.
 4. Assert: the runtime reaches the concrete Azure transport initialization path and fails, if it fails, with an Azure transport/connectivity error rather than a missing binary, missing dynamic library, or unsupported-platform error.
 5. Assert: the runtime does not fall back to device-code login in this bootstrap-complete case.
+
+---
+
+### T-AZC-0400  Bootstrap generates ECDSA P-256 self-signed certificate
+
+**Validates:** AZC-0400
+
+**Procedure:**
+1. Start the bootstrap subcommand with device-flow and Bicep deployment stubbed.
+2. Assert: bootstrap creates `cert.pem` and `key.pem` in the mounted state volume.
+3. Parse the generated `cert.pem` and assert: the certificate uses ECDSA P-256 key algorithm.
+4. Assert: the certificate's validity period is approximately 2 years from the generation time.
+5. Assert: the certificate is self-signed (issuer equals subject).
+6. Assert: the DER-encoded public material can be base64-encoded without error.
+
+---
+
+### T-AZC-0401  Bootstrap uses Bollard to run Azure CLI container
+
+**Validates:** AZC-0401, AZC-0402
+
+**Procedure:**
+1. Start the bootstrap subcommand with a mock Docker API server (Bollard supports custom connection).
+2. Assert: bootstrap sends Docker API requests to create and start a container using the pinned Azure CLI image digest.
+3. Assert: bootstrap does not invoke the `docker` CLI binary.
+4. Assert: the container creation request includes bind mounts for the bundled Bicep files and generated certificate.
+5. Assert: bootstrap captures the container's stdout output containing Bicep deployment JSON.
+6. Assert: bootstrap removes the container after completion.
+
+---
+
+### T-AZC-0402  Companion image bundles Bicep files
+
+**Validates:** AZC-0402
+
+**Procedure:**
+1. Build the Azure companion Docker image.
+2. Run `docker run --rm <image> ls /opt/sonde/deploy/bicep/`.
+3. Assert: the listing includes `main.bicep`, `bicepconfig.json`, and the `modules/` directory.
+4. Assert: the `modules/` directory contains the expected Bicep module files.
+
+---
+
+### T-AZC-0403  Bootstrap writes service-principal.json from Bicep outputs
+
+**Validates:** AZC-0403
+
+**Procedure:**
+1. Run the bootstrap subcommand with device-flow stubbed to succeed and Bicep deployment stubbed to return known output values (tenantId, clientId, namespace, queue names).
+2. Assert: `service-principal.json` exists in the state volume after bootstrap completes.
+3. Parse `service-principal.json` and assert: it contains `tenant_id`, `client_id`, `certificate_path`, and `private_key_path`.
+4. Assert: `tenant_id` and `client_id` match the stubbed Bicep output values.
+5. Assert: `certificate_path` and `private_key_path` are relative paths that resolve to existing PEM files in the state volume.
+6. Assert: `check-runtime-ready` succeeds after bootstrap completes.
+
+---
+
+### T-AZC-0404  Bootstrap persists Service Bus configuration
+
+**Validates:** AZC-0404
+
+**Procedure:**
+1. Run the bootstrap subcommand with stubbed Bicep outputs containing known namespace and queue names.
+2. Assert: the Service Bus namespace, upstream queue, and downstream queue values are persisted in the state volume.
+3. Restart the container without the Service Bus environment variables.
+4. Assert: the runtime can read the persisted configuration and startup succeeds (or reaches the Azure transport path).
+
+---
+
+### T-AZC-0405  Bootstrap displays progress on modem
+
+**Validates:** AZC-0405
+
+**Procedure:**
+1. Start a test gateway exposing the admin socket and instrument the admin `ShowModemDisplayMessage` RPC.
+2. Run the bootstrap subcommand with device-flow and Bicep deployment stubbed.
+3. Assert: at least four distinct modem display updates are received during bootstrap.
+4. Assert: the updates include messages for authentication, certificate generation, deployment, and completion phases.
+5. Assert: each phase also emits a corresponding stderr log message.
+6. Run the bootstrap subcommand with a forced failure in the Bicep deployment phase.
+7. Assert: the modem displays an error indication before bootstrap exits.
+
+---
+
+### T-AZC-0406  Bootstrap fails if Docker socket is inaccessible
+
+**Validates:** AZC-0406
+
+**Procedure:**
+1. Start the bootstrap subcommand without the Docker socket mounted.
+2. Assert: bootstrap fails with a non-zero exit status.
+3. Assert: the error message identifies the inaccessible Docker socket as the cause.
+4. Assert: bootstrap does not hang indefinitely waiting for Docker connectivity.
+
+---
+
+### T-AZC-0407  Re-bootstrap on already-provisioned system succeeds
+
+**Validates:** AZC-0407
+
+**Procedure:**
+1. Run bootstrap to completion with stubbed services, creating all runtime artifacts.
+2. Record the certificate fingerprint and `service-principal.json` content.
+3. Re-run bootstrap with the same stubbed services.
+4. Assert: bootstrap completes successfully.
+5. Assert: the certificate PEM file has been regenerated (different fingerprint).
+6. Assert: `service-principal.json` has been rewritten.
+7. Assert: `check-runtime-ready` succeeds after re-bootstrap.
+
+---
+
+### T-AZC-0408  Bootstrap accepts optional subscription ID
+
+**Validates:** AZC-0408
+
+**Procedure:**
+1. Run bootstrap with `SONDE_AZURE_SUBSCRIPTION_ID` set to a known value.
+2. Assert: the Bicep deployment command within the Azure CLI container targets the specified subscription.
+3. Run bootstrap without `SONDE_AZURE_SUBSCRIPTION_ID`.
+4. Assert: the Bicep deployment uses the default subscription from the device-login session.
+
+---
+
+### T-AZC-0409  Failed re-bootstrap preserves previous working state
+
+**Validates:** AZC-0407, AZC-0403
+
+**Procedure:**
+1. Run bootstrap to completion with stubbed services, creating all runtime artifacts.
+2. Record the content of `service-principal.json`, `cert.pem`, and `key.pem`.
+3. Re-run bootstrap with the Bicep deployment phase stubbed to fail.
+4. Assert: bootstrap exits with a non-zero status.
+5. Assert: the previous `service-principal.json`, `cert.pem`, and `key.pem` are unchanged.
+6. Assert: `check-runtime-ready` still succeeds with the previous artifacts.
+7. Assert: no `.staging/` directory remains in the state volume.
+
+---
+
+### T-AZC-0410  Bootstrap fails cleanly on image pull failure
+
+**Validates:** AZC-0401, AZC-0405
+
+**Procedure:**
+1. Start bootstrap with Bollard configured to reject the image pull (simulated network failure).
+2. Assert: bootstrap fails with a non-zero exit status.
+3. Assert: the error message identifies the image pull failure.
+4. Assert: the modem displays an error indication.
+5. Assert: no Azure CLI container is left running.
+
+---
+
+### T-AZC-0411  Bootstrap fails cleanly on container start failure
+
+**Validates:** AZC-0401, AZC-0406
+
+**Procedure:**
+1. Start bootstrap with a mock Docker API that accepts container creation but rejects the start request.
+2. Assert: bootstrap fails with a non-zero exit status.
+3. Assert: bootstrap cleans up the created-but-unstarted container.
+4. Assert: previous state volume contents are preserved.
+
+---
+
+### T-AZC-0412  Bootstrap fails cleanly on state volume write failure
+
+**Validates:** AZC-0403, AZC-0407
+
+**Procedure:**
+1. Start bootstrap with a state volume configured to reject writes (read-only mount or simulated disk-full).
+2. Assert: bootstrap fails with a non-zero exit status.
+3. Assert: the error message identifies the write failure.
+4. Assert: no partial artifacts are left in the state volume.
+
+---
+
+### T-AZC-0413  Private key file permissions
+
+**Validates:** AZC-0400
+
+**Procedure:**
+1. Run bootstrap to completion.
+2. Inspect the file permissions of `key.pem` in the state volume.
+3. Assert: the private key file has owner-only read permissions (mode 0600 or equivalent).
+4. Assert: the certificate file (`cert.pem`) is world-readable.
+
+---
+
+### T-AZC-0414  Access token is not logged
+
+**Validates:** AZC-0401
+
+**Procedure:**
+1. Run bootstrap with a stubbed device-flow that returns a known token value.
+2. Capture all stderr and stdout output from the bootstrap process.
+3. Assert: the access token value does not appear in any log output.
+4. Assert: the access token is not persisted to any file in the state volume.

@@ -119,6 +119,18 @@ fn active_gpio_settle_ms(board_layout: &BoardLayout) -> u32 {
     }
 }
 
+struct ActiveGpioGuard(*mut dyn Hal);
+
+impl Drop for ActiveGpioGuard {
+    fn drop(&mut self) {
+        // SAFETY: the guard is created from `hal` in `run_wake_cycle`, and
+        // the referenced HAL outlives the guard's scope.
+        unsafe {
+            (*self.0).enter_idle_gpio_state();
+        }
+    }
+}
+
 /// Outcome of a wake cycle.
 #[derive(Debug, PartialEq)]
 pub enum WakeCycleOutcome {
@@ -1030,6 +1042,7 @@ where
     }
 
     hal.enter_active_gpio_state();
+    let _active_gpio_guard = ActiveGpioGuard(hal as *mut dyn Hal);
     clock.delay_ms(active_gpio_settle_ms(board_layout));
     let current_battery_mv = capture_current_cycle_battery(hal, board_layout);
     if let Err(e) = storage.write_last_battery_mv(current_battery_mv) {
@@ -1141,8 +1154,6 @@ where
 
         flush_trace_log(&trace_log);
     }
-    hal.enter_idle_gpio_state();
-
     // 10. Determine sleep duration
     if sleep_mgr.will_wake_early() {
         if let Err(err) = storage.set_early_wake_flag() {
@@ -1504,6 +1515,82 @@ mod tests {
                 .battery_mv,
             expected_battery_mv as u16
         );
+    }
+
+    #[test]
+    fn run_wake_cycle_restores_idle_gpio_state_on_map_allocation_failure() {
+        let psk = [0x43u8; 32];
+        let sha = crate::crypto::SoftwareSha256;
+        let aead = crate::node_aead::NodeAead;
+        let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+        let command_frame = {
+            let payload_cbor = GatewayMessage::Command {
+                starting_seq: 1,
+                timestamp_ms: 1000,
+                payload: CommandPayload::Nop,
+                blob: None,
+            }
+            .encode()
+            .unwrap();
+            let header = FrameHeader {
+                key_hint,
+                msg_type: MSG_COMMAND,
+                nonce: 1,
+            };
+            sonde_protocol::encode_frame(&header, &payload_cbor, &psk, &aead, &sha).unwrap()
+        };
+        let mut transport = MockTransport::new();
+        transport.queue_response(Some(command_frame));
+
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![sonde_protocol::MapDef {
+                map_type: 1,
+                key_size: 4,
+                value_size: 16,
+                max_entries: 512,
+            }],
+            map_initial_data: vec![Vec::new()],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.programs[0] = Some(image_cbor);
+        storage.active_partition = 0;
+
+        let mut hal = MockHal {
+            adc_result: 2048,
+            ..Default::default()
+        };
+        let mut rng = MockRng(0);
+        let clock = MockClock::default();
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(8);
+        let mut async_queue = AsyncQueue::new();
+        let board_layout = BoardLayout {
+            i2c0_sda: Some(6),
+            i2c0_scl: Some(7),
+            one_wire_data: Some(3),
+            battery_adc: Some(2),
+            sensor_enable: Some(4),
+        };
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &board_layout,
+            &mut interp,
+            &mut map_storage,
+            &sha,
+            &aead,
+            &mut async_queue,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert_eq!(hal.gpio_state_transitions, vec!["active", "idle"]);
     }
 
     // --- Mock BPF interpreter ---

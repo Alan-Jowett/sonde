@@ -151,6 +151,23 @@ impl EspHal {
         }
     }
 
+    fn set_input_pull_up(pin: i32) {
+        unsafe {
+            let err =
+                esp_idf_sys::gpio_set_direction(pin, esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_set_direction({pin}, INPUT) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_set_pull_mode(
+                pin,
+                esp_idf_sys::gpio_pull_mode_t_GPIO_PULLUP_ONLY,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_set_pull_mode({pin}, PULLUP_ONLY) failed: {err}");
+            }
+        }
+    }
+
     fn configure_sleep_input_no_pull(pin: i32) {
         unsafe {
             let err = esp_idf_sys::gpio_sleep_sel_en(pin);
@@ -460,13 +477,13 @@ impl hal::Hal for EspHal {
             Self::set_output_level(sensor_enable as i32, 0);
         }
         if let Some(i2c0_sda) = self.board_layout.i2c0_sda {
-            Self::set_output_level(i2c0_sda as i32, 1);
+            Self::set_input_pull_up(i2c0_sda as i32);
         }
         if let Some(i2c0_scl) = self.board_layout.i2c0_scl {
-            Self::set_output_level(i2c0_scl as i32, 1);
+            Self::set_input_pull_up(i2c0_scl as i32);
         }
         if let Some(one_wire_data) = self.board_layout.one_wire_data {
-            Self::set_output_level(one_wire_data as i32, 1);
+            Self::set_input_pull_up(one_wire_data as i32);
         }
         if let Some(battery_adc) = self.board_layout.battery_adc {
             Self::set_input_no_pull(battery_adc as i32);

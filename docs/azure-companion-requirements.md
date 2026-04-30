@@ -457,11 +457,10 @@ directly through the Bollard crate.
 1. Bootstrap uses the Bollard crate to create and run an Azure CLI container for Bicep deployment.
 2. Bootstrap does not invoke the `docker` CLI binary or shell out to any Docker command.
 3. The Azure CLI container image is pinned by digest for reproducible provisioning.
-4. Bootstrap mounts the bundled Bicep files and generated certificate into the Azure CLI container.
-5. Bootstrap passes the device-login access token to the Azure CLI container for `az` authentication via a non-interactive mechanism.
+4. Bootstrap uploads the bundled Bicep files and generated certificate into the Azure CLI container before running `az deployment`.
+5. Bootstrap authenticates by running `az login --use-device-code` inside the Azure CLI container and parsing the emitted device code for modem display.
 6. Bootstrap captures the Bicep deployment JSON outputs from the container's stdout.
-7. The access token MUST NOT be logged to stdout/stderr or persisted to any file.
-8. Bootstrap cleans up the Azure CLI container after completion, regardless of success or failure.
+7. Bootstrap cleans up the Azure CLI container after completion, regardless of success or failure.
 
 ---
 

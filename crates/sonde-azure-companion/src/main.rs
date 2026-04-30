@@ -394,7 +394,11 @@ fn load_runtime_config(state_dir: &Path) -> Result<RuntimeConfig, CompanionError
         .ok()
         .filter(|v| !v.trim().is_empty());
 
-    let file_config = load_service_bus_config_file(state_dir).ok();
+    let file_config = match load_service_bus_config_file(state_dir) {
+        Ok(config) => Some(config),
+        Err(CompanionError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err),
+    };
 
     let namespace = namespace_env
         .or_else(|| file_config.as_ref().map(|c| c.namespace.clone()))
@@ -1416,6 +1420,7 @@ async fn stream_container_output(
 
     let mut logs = docker.logs(container_id, Some(log_opts));
     let mut stdout_buffer = String::new();
+    let mut stderr_buffer = String::new();
     let device_code_re = Regex::new(r"enter the code ([A-Z0-9-]+) to authenticate")
         .expect("valid device code regex");
     let mut device_code_displayed = false;
@@ -1429,9 +1434,15 @@ async fn stream_container_output(
             Ok(LogOutput::StdErr { message }) => {
                 let text = String::from_utf8_lossy(&message);
                 eprint!("{text}");
+                stderr_buffer.push_str(&text);
+                const MAX_STDERR_BUFFER_LEN: usize = 4096;
+                if stderr_buffer.len() > MAX_STDERR_BUFFER_LEN {
+                    let trim_start = stderr_buffer.len() - MAX_STDERR_BUFFER_LEN;
+                    stderr_buffer.drain(..trim_start);
+                }
 
                 if !device_code_displayed {
-                    if let Some(captures) = device_code_re.captures(&text) {
+                    if let Some(captures) = device_code_re.captures(&stderr_buffer) {
                         if let Some(code) = captures.get(1) {
                             let device_code = code.as_str().to_string();
                             eprintln!("Detected device code: {device_code}");

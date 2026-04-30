@@ -25,6 +25,50 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         exit 1
     fi
 
+    host_json_string() {
+        key="$1"
+        file="$2"
+        sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$file" | head -n 1
+    }
+
+    host_runtime_ready() {
+        service_principal_path="$state_dir/service-principal.json"
+        if [ ! -f "$service_principal_path" ]; then
+            return 1
+        fi
+
+        cert_rel="$(host_json_string certificate_path "$service_principal_path")"
+        key_rel="$(host_json_string private_key_path "$service_principal_path")"
+        if [ -z "$cert_rel" ] || [ -z "$key_rel" ]; then
+            return 1
+        fi
+        if [ ! -f "$state_dir/$cert_rel" ] || [ ! -f "$state_dir/$key_rel" ]; then
+            return 1
+        fi
+
+        if [ -f "$state_dir/service-bus.json" ]; then
+            return 0
+        fi
+
+        [ -n "${SONDE_AZURE_SERVICEBUS_NAMESPACE:-}" ] &&
+            [ -n "${SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE:-}" ] &&
+            [ -n "${SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE:-}" ]
+    }
+
+    enable_docker_mount=0
+    if [ "$#" -gt 0 ] && [ "$1" = "bootstrap" ]; then
+        enable_docker_mount=1
+    elif [ "${SONDE_AZURE_COMPANION_ENABLE_DOCKER:-0}" = "1" ]; then
+        enable_docker_mount=1
+    elif ! host_runtime_ready; then
+        enable_docker_mount=1
+    fi
+
+    docker_mount_args=""
+    if [ "$enable_docker_mount" -eq 1 ]; then
+        docker_mount_args="-v /var/run/docker.sock:/var/run/docker.sock"
+    fi
+
     exec docker run --rm \
         --name "${SONDE_AZURE_COMPANION_CONTAINER_NAME:-sonde-azure-companion}" \
         -e SONDE_AZURE_COMPANION_IN_CONTAINER=1 \
@@ -40,7 +84,7 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         -v "$state_dir:$container_state_dir" \
         -v "$admin_socket_path:$container_admin_socket_path" \
         -v "$connector_socket_path:$container_connector_socket_path" \
-        -v /var/run/docker.sock:/var/run/docker.sock \
+        $docker_mount_args \
         "$image" "$@"
 fi
 

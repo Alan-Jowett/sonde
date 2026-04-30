@@ -40,7 +40,7 @@
 2. Provide valid queue configuration to the bootstrap script.
 3. Invoke the Azure companion bootstrap entrypoint with that directory mounted as the state volume.
 4. Assert: the bootstrap path runs before the long-running runtime starts.
-5. Assert: the bootstrap path invokes the Rust `bootstrap` flow and requests a device code from the configured OAuth endpoint.
+5. Assert: the bootstrap path invokes the Rust `bootstrap` flow, parses the device code from Azure CLI stderr, and forwards it to the modem display.
 
 ---
 
@@ -244,7 +244,7 @@
 1. Start the bootstrap subcommand with a mock Docker API server (Bollard supports custom connection).
 2. Assert: bootstrap sends Docker API requests to create and start a container using the pinned Azure CLI image digest.
 3. Assert: bootstrap does not invoke the `docker` CLI binary.
-4. Assert: the container creation request includes bind mounts for the bundled Bicep files and generated certificate.
+4. Assert: bootstrap uploads the bundled Bicep files and generated certificate into the Azure CLI container with Docker archive upload APIs before running the deployment.
 5. Assert: bootstrap captures the container's stdout output containing Bicep deployment JSON.
 6. Assert: bootstrap removes the container after completion.
 

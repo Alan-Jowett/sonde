@@ -274,16 +274,15 @@ impl EspHal {
         self.adc_calibration_attempted = true;
 
         unsafe {
-            let config = esp_idf_sys::adc_cali_line_fitting_config_t {
+            let config = esp_idf_sys::adc_cali_curve_fitting_config_t {
                 unit_id: esp_idf_sys::adc_unit_t_ADC_UNIT_1,
                 atten: esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11,
                 bitwidth: esp_idf_sys::adc_bits_width_t_ADC_WIDTH_BIT_12,
-                default_vref: 0,
             };
             let mut handle: esp_idf_sys::adc_cali_handle_t = ptr::null_mut();
-            let err = esp_idf_sys::adc_cali_create_scheme_line_fitting(&config, &mut handle);
+            let err = esp_idf_sys::adc_cali_create_scheme_curve_fitting(&config, &mut handle);
             if err != esp_idf_sys::ESP_OK as i32 {
-                warn!("adc_cali_create_scheme_line_fitting failed: {err}");
+                warn!("adc_cali_create_scheme_curve_fitting failed: {err}");
                 return false;
             }
             self.adc_calibration_handle = handle;
@@ -527,9 +526,9 @@ impl hal::Hal for EspHal {
         if !self.adc_calibration_handle.is_null() {
             unsafe {
                 let err =
-                    esp_idf_sys::adc_cali_delete_scheme_line_fitting(self.adc_calibration_handle);
+                    esp_idf_sys::adc_cali_delete_scheme_curve_fitting(self.adc_calibration_handle);
                 if err != esp_idf_sys::ESP_OK as i32 {
-                    warn!("adc_cali_delete_scheme_line_fitting failed: {err}");
+                    warn!("adc_cali_delete_scheme_curve_fitting failed: {err}");
                 }
             }
             self.adc_calibration_handle = ptr::null_mut();

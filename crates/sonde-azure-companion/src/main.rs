@@ -1005,6 +1005,19 @@ fn extract_device_code(stderr_buffer: &str) -> Option<String> {
         })
 }
 
+fn trim_buffer_to_max_len(buffer: &mut String, max_len: usize) {
+    if buffer.len() <= max_len {
+        return;
+    }
+
+    let target_start = buffer.len() - max_len;
+    let trim_start = buffer
+        .char_indices()
+        .find_map(|(idx, _)| (idx >= target_start).then_some(idx))
+        .unwrap_or(buffer.len());
+    buffer.drain(..trim_start);
+}
+
 fn build_container_env(cert_base64: &str, args: &BootstrapArgs) -> Vec<String> {
     let mut env = vec![
         format!("SONDE_AZURE_LOCATION={}", args.azure_location),
@@ -1447,11 +1460,11 @@ async fn copy_files_to_container(
     docker: &Docker,
     container_id: &str,
     staging_dir: &Path,
+    bicep_path: &Path,
 ) -> Result<(), CompanionError> {
     let mut archive = Vec::new();
     {
         let mut builder = tar::Builder::new(&mut archive);
-        let bicep_path = Path::new(BUNDLED_BICEP_PATH);
         if !bicep_path.is_dir() {
             return Err(CompanionError::Config(format!(
                 "bundled Bicep path not found: {}",
@@ -1521,10 +1534,7 @@ async fn stream_container_output(
                 eprint!("{text}");
                 stderr_buffer.push_str(&text);
                 const MAX_STDERR_BUFFER_LEN: usize = 4096;
-                if stderr_buffer.len() > MAX_STDERR_BUFFER_LEN {
-                    let trim_start = stderr_buffer.len() - MAX_STDERR_BUFFER_LEN;
-                    stderr_buffer.drain(..trim_start);
-                }
+                trim_buffer_to_max_len(&mut stderr_buffer, MAX_STDERR_BUFFER_LEN);
 
                 if !deployment_displayed
                     && stderr_buffer.contains("__SONDE_AZURE_DEPLOYMENT_START__")
@@ -1585,6 +1595,25 @@ async fn run_bootstrap_deployment_with_docker(
     cert_base64: &str,
     args: &BootstrapArgs,
 ) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
+    run_bootstrap_deployment_with_docker_and_bicep_dir(
+        docker,
+        admin_socket,
+        staging_dir,
+        cert_base64,
+        args,
+        Path::new(BUNDLED_BICEP_PATH),
+    )
+    .await
+}
+
+async fn run_bootstrap_deployment_with_docker_and_bicep_dir(
+    docker: &Docker,
+    admin_socket: &str,
+    staging_dir: &Path,
+    cert_base64: &str,
+    args: &BootstrapArgs,
+    bicep_path: &Path,
+) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
     eprintln!("Pulling Azure CLI container image...");
     let pull_opts = CreateImageOptionsBuilder::default()
         .from_image(AZURE_CLI_IMAGE)
@@ -1619,7 +1648,7 @@ async fn run_bootstrap_deployment_with_docker(
     let container_id = container.id;
 
     let bootstrap_result = async {
-        copy_files_to_container(docker, &container_id, staging_dir).await?;
+        copy_files_to_container(docker, &container_id, staging_dir, bicep_path).await?;
         docker
             .start_container(&container_id, None)
             .await
@@ -1778,12 +1807,12 @@ mod tests {
         load_runtime_config, load_runtime_credential_state, load_signing_key, parse_bicep_outputs,
         prepare_staging_dir, pump_downstream_once, pump_upstream_once, read_framed,
         resolve_effective_state_dir, resolve_state_relative_path,
-        run_bootstrap_deployment_with_docker, validate_display_lines, write_framed,
-        ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
-        RuntimeCredentialState, ServiceBusConfigFile, ServicePrincipalStateFile, UpstreamPublisher,
-        ACTIVE_STATE_FILENAME, BUNDLED_BICEP_PATH, CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH,
-        KEY_PEM_FILENAME, SERVICE_BUS_CONFIG_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME,
-        STATE_GENERATION_PREFIX,
+        run_bootstrap_deployment_with_docker_and_bicep_dir, trim_buffer_to_max_len,
+        validate_display_lines, write_framed, ClientAssertionCredential, CompanionError,
+        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState, ServiceBusConfigFile,
+        ServicePrincipalStateFile, UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME,
+        CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME, SERVICE_BUS_CONFIG_FILENAME,
+        SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX,
     };
     use azure_core::credentials::TokenCredential;
     #[cfg(unix)]
@@ -2502,6 +2531,15 @@ mod tests {
     }
 
     #[test]
+    fn trim_buffer_to_max_len_preserves_utf8_boundaries() {
+        let mut buffer = "a🙂".repeat(2_000);
+        trim_buffer_to_max_len(&mut buffer, 4_096);
+        assert!(buffer.len() <= 4_096);
+        assert!(std::str::from_utf8(buffer.as_bytes()).is_ok());
+        assert!(buffer.ends_with("a🙂"));
+    }
+
+    #[test]
     fn test_parse_bicep_outputs() {
         let json = r#"{
             "companionBootstrapValues": {
@@ -2690,31 +2728,29 @@ mod tests {
         let docker = Docker::connect_with_http(&server.uri(), 120, API_DEFAULT_VERSION).unwrap();
         let temp = TempDir::new().unwrap();
         std::fs::write(temp.path().join(CERT_PEM_FILENAME), b"test-cert").unwrap();
-        let bundled_bicep_dir = Path::new(BUNDLED_BICEP_PATH);
-        std::fs::create_dir_all(bundled_bicep_dir).unwrap();
-        let bundled_bicep_file = bundled_bicep_dir.join("main.bicep");
-        let created_bicep_file = !bundled_bicep_file.exists();
-        if created_bicep_file {
-            std::fs::write(&bundled_bicep_file, b"targetScope = 'subscription'\n").unwrap();
-        }
+        let bicep_dir = temp.path().join("bicep");
+        std::fs::create_dir_all(&bicep_dir).unwrap();
+        std::fs::write(
+            bicep_dir.join("main.bicep"),
+            b"targetScope = 'subscription'\n",
+        )
+        .unwrap();
         let args = super::BootstrapArgs {
             azure_location: "westus2".to_string(),
             azure_project_name: "sonde".to_string(),
             azure_subscription_id: None,
         };
 
-        let err = run_bootstrap_deployment_with_docker(
+        let err = run_bootstrap_deployment_with_docker_and_bicep_dir(
             &docker,
             "/tmp/unused-admin.sock",
             temp.path(),
             "dummy-cert-base64",
             &args,
+            &bicep_dir,
         )
         .await
         .unwrap_err();
-        if created_bicep_file {
-            let _ = std::fs::remove_file(&bundled_bicep_file);
-        }
         assert!(matches!(err, CompanionError::Config(_)));
 
         let requests = server.received_requests().await.unwrap();

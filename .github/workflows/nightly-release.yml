@@ -43,6 +43,12 @@ jobs:
             exit 0
           fi
 
+          if [[ "${GITHUB_RUN_ATTEMPT:-1}" != "1" ]]; then
+            echo "Scheduled rerun detected (attempt ${GITHUB_RUN_ATTEMPT}); continuing with build."
+            echo "run_builds=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if ! PREVIOUS_SHA="$(
             gh api "repos/${{ github.repository }}/releases?per_page=100" \
               --jq '[.[] | select(.prerelease and (.tag_name | startswith("nightly-"))) ] | sort_by(.created_at) | last | .target_commitish // ""'

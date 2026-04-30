@@ -3,8 +3,10 @@
 #
 # Nightly release orchestrator: calls each build workflow, collects their
 # artifacts, and publishes a dated GitHub pre-release so testers always have
-# fresh binaries.  Dev-container workflows run on their own schedule (05:00-
-# 05:30 UTC) so images are up-to-date before firmware builds start here.
+# fresh binaries. Scheduled runs skip the build fan-out when the previous
+# nightly already targets the current commit. Dev-container workflows run on
+# their own schedule (05:00-05:30 UTC) so images are up-to-date before
+# firmware builds start here.
 
 name: Nightly Release
 
@@ -21,14 +23,57 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  should-run:
+    name: Check nightly commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      run-builds: ${{ steps.decision.outputs.run-builds }}
+    steps:
+      - name: Decide whether to build
+        id: decision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" != "schedule" ]]; then
+            echo "run-builds=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PREVIOUS_SHA="$(
+            gh api "repos/${{ github.repository }}/releases?per_page=100" \
+              --jq '[.[] | select(.prerelease and (.tag_name | startswith("nightly-"))) ] | sort_by(.created_at) | last | .target_commitish // ""'
+          )"
+
+          if [[ -z "$PREVIOUS_SHA" ]]; then
+            echo "No prior nightly release found; continuing."
+            echo "run-builds=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$PREVIOUS_SHA" == "${GITHUB_SHA}" ]]; then
+            echo "Latest nightly release already targets ${GITHUB_SHA}; skipping scheduled build."
+            echo "run-builds=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Latest nightly release targets ${PREVIOUS_SHA}; current commit is ${GITHUB_SHA}."
+          echo "run-builds=true" >> "$GITHUB_OUTPUT"
+
   # ── Build workflows (run in parallel) ──────────────────────────────
   gateway:
     name: Gateway
+    needs: [should-run]
+    if: needs.should-run.outputs.run-builds == 'true'
     uses: ./.github/workflows/ci.yml
 
   gateway-container:
     name: Gateway container
-    needs: [modem-firmware]
+    needs: [should-run, modem-firmware]
+    if: needs.should-run.outputs.run-builds == 'true'
     uses: ./.github/workflows/gateway-container.yml
     permissions:
       contents: read
@@ -36,25 +81,34 @@ jobs:
 
   node-firmware:
     name: Node firmware
+    needs: [should-run]
+    if: needs.should-run.outputs.run-builds == 'true'
     uses: ./.github/workflows/esp32.yml
 
   modem-firmware:
     name: Modem firmware
+    needs: [should-run]
+    if: needs.should-run.outputs.run-builds == 'true'
     uses: ./.github/workflows/esp32-modem.yml
 
   desktop:
     name: Desktop apps
+    needs: [should-run]
+    if: needs.should-run.outputs.run-builds == 'true'
     uses: ./.github/workflows/tauri-desktop.yml
 
   android:
     name: Android APK
+    needs: [should-run]
+    if: needs.should-run.outputs.run-builds == 'true'
     uses: ./.github/workflows/tauri-android.yml
     secrets: inherit
 
   # ── Installer builds (depend on gateway binaries) ───────────────
   installer-linux:
     name: Linux installer (.deb)
-    needs: [gateway]
+    needs: [should-run, gateway]
+    if: needs.should-run.outputs.run-builds == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -89,6 +143,8 @@ jobs:
 
   installer-linux-arm64:
     name: Linux installer (.deb arm64)
+    needs: [should-run]
+    if: needs.should-run.outputs.run-builds == 'true'
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -138,7 +194,8 @@ jobs:
 
   installer-windows:
     name: Windows installer (.msi)
-    needs: [gateway]
+    needs: [should-run, gateway]
+    if: needs.should-run.outputs.run-builds == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -192,7 +249,8 @@ jobs:
   # ── Publish release ────────────────────────────────────────────────
   release:
     name: Publish nightly
-    needs: [gateway, gateway-container, node-firmware, modem-firmware, desktop, android, installer-linux, installer-linux-arm64, installer-windows]
+    needs: [should-run, gateway, gateway-container, node-firmware, modem-firmware, desktop, android, installer-linux, installer-linux-arm64, installer-windows]
+    if: needs.should-run.outputs.run-builds == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

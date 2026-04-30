@@ -18,8 +18,7 @@ use bollard::container::LogOutput;
 use bollard::models::ContainerCreateBody;
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, LogsOptionsBuilder,
-    RemoveContainerOptionsBuilder, UploadToContainerOptionsBuilder,
-    WaitContainerOptionsBuilder,
+    RemoveContainerOptionsBuilder, UploadToContainerOptionsBuilder, WaitContainerOptionsBuilder,
 };
 use bollard::{body_full, Docker};
 use clap::{Args, Parser, Subcommand};
@@ -465,15 +464,12 @@ fn commit_staging(staging_dir: &Path, state_dir: &Path) -> Result<(), CompanionE
     let commit_result: Result<(), CompanionError> = (|| {
         for (_, dest) in &staged_files {
             if dest.exists() {
-                let backup_path = backup_dir.join(
-                    dest.file_name()
-                        .ok_or_else(|| {
-                            CompanionError::Config(format!(
-                                "staged destination had no file name: {}",
-                                dest.display()
-                            ))
-                        })?,
-                );
+                let backup_path = backup_dir.join(dest.file_name().ok_or_else(|| {
+                    CompanionError::Config(format!(
+                        "staged destination had no file name: {}",
+                        dest.display()
+                    ))
+                })?);
                 std::fs::rename(dest, &backup_path)?;
                 backed_up.push((backup_path, dest.clone()));
             }
@@ -517,9 +513,8 @@ fn generate_certificate(staging_dir: &Path) -> Result<(PathBuf, PathBuf, String)
         CompanionError::Config(format!("failed to generate ECDSA P-256 key pair: {e}"))
     })?;
 
-    let mut params = CertificateParams::new(Vec::<String>::new()).map_err(|e| {
-        CompanionError::Config(format!("failed to create certificate params: {e}"))
-    })?;
+    let mut params = CertificateParams::new(Vec::<String>::new())
+        .map_err(|e| CompanionError::Config(format!("failed to create certificate params: {e}")))?;
     params
         .distinguished_name
         .push(rcgen::DnType::CommonName, "sonde-azure-companion");
@@ -1387,17 +1382,19 @@ async fn copy_files_to_container(
             .map_err(|e| {
                 CompanionError::Config(format!("failed to add certificate to archive: {e}"))
             })?;
-        builder.finish().map_err(|e| {
-            CompanionError::Config(format!("failed to finalize tar archive: {e}"))
-        })?;
+        builder
+            .finish()
+            .map_err(|e| CompanionError::Config(format!("failed to finalize tar archive: {e}")))?;
     }
 
-    let upload_options = UploadToContainerOptionsBuilder::default()
-        .path("/")
-        .build();
+    let upload_options = UploadToContainerOptionsBuilder::default().path("/").build();
 
     docker
-        .upload_to_container(container_id, Some(upload_options), body_full(archive.into()))
+        .upload_to_container(
+            container_id,
+            Some(upload_options),
+            body_full(archive.into()),
+        )
         .await
         .map_err(|e| CompanionError::Config(format!("failed to copy files to container: {e}")))?;
 
@@ -1419,8 +1416,8 @@ async fn stream_container_output(
 
     let mut logs = docker.logs(container_id, Some(log_opts));
     let mut stdout_buffer = String::new();
-    let device_code_re =
-        Regex::new(r"enter the code ([A-Z0-9-]+) to authenticate").expect("valid device code regex");
+    let device_code_re = Regex::new(r"enter the code ([A-Z0-9-]+) to authenticate")
+        .expect("valid device code regex");
     let mut device_code_displayed = false;
 
     while let Some(result) = logs.next().await {
@@ -1484,7 +1481,8 @@ async fn run_bootstrap_deployment(
         .build();
     let mut pull_stream = docker.create_image(Some(pull_opts), None, None);
     while let Some(result) = pull_stream.next().await {
-        result.map_err(|e| CompanionError::Config(format!("failed to pull Azure CLI image: {e}")))?;
+        result
+            .map_err(|e| CompanionError::Config(format!("failed to pull Azure CLI image: {e}")))?;
     }
 
     let bootstrap_script = build_az_bootstrap_script();
@@ -1505,7 +1503,9 @@ async fn run_bootstrap_deployment(
             },
         )
         .await
-        .map_err(|e| CompanionError::Config(format!("failed to create Azure CLI container: {e}")))?;
+        .map_err(|e| {
+            CompanionError::Config(format!("failed to create Azure CLI container: {e}"))
+        })?;
     let container_id = container.id;
 
     let bootstrap_result = async {
@@ -1513,7 +1513,9 @@ async fn run_bootstrap_deployment(
         docker
             .start_container(&container_id, None)
             .await
-            .map_err(|e| CompanionError::Config(format!("failed to start Azure CLI container: {e}")))?;
+            .map_err(|e| {
+                CompanionError::Config(format!("failed to start Azure CLI container: {e}"))
+            })?;
 
         let stdout_output = stream_container_output(&docker, &container_id, admin_socket).await?;
         let wait_options = WaitContainerOptionsBuilder::default()
@@ -1653,10 +1655,9 @@ mod tests {
         prepare_staging_dir, pump_downstream_once, pump_upstream_once, read_framed,
         resolve_state_relative_path, validate_certificate_matches_private_key,
         validate_display_lines, write_framed, ClientAssertionCredential, CompanionError,
-        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState,
-        ServiceBusConfigFile, ServicePrincipalStateFile, UpstreamPublisher,
-        CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME,
-        SERVICE_BUS_CONFIG_FILENAME,
+        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState, ServiceBusConfigFile,
+        ServicePrincipalStateFile, UpstreamPublisher, CERT_PEM_FILENAME,
+        CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME, SERVICE_BUS_CONFIG_FILENAME,
     };
     use azure_core::credentials::TokenCredential;
     use base64::Engine as _;
@@ -2236,10 +2237,7 @@ mod tests {
                     Some("env.servicebus.windows.net"),
                 ),
                 ("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE", Some("env-up")),
-                (
-                    "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
-                    Some("env-down"),
-                ),
+                ("SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE", Some("env-down")),
             ],
             || {
                 let config = load_runtime_config(temp.path()).unwrap();
@@ -2299,8 +2297,14 @@ mod tests {
 
         commit_staging(&staging_dir, temp.path()).unwrap();
 
-        assert_eq!(std::fs::read(temp.path().join(CERT_PEM_FILENAME)).unwrap(), b"new-cert");
-        assert_eq!(std::fs::read(temp.path().join(KEY_PEM_FILENAME)).unwrap(), b"new-key");
+        assert_eq!(
+            std::fs::read(temp.path().join(CERT_PEM_FILENAME)).unwrap(),
+            b"new-cert"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join(KEY_PEM_FILENAME)).unwrap(),
+            b"new-key"
+        );
         assert!(!staging_dir.exists());
     }
 

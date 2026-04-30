@@ -141,7 +141,10 @@ fn container_ready_state_skips_bootstrap_and_runs() {
     let output = cmd.output().unwrap();
     assert!(output.status.success(), "runtime start failed: {output:?}");
     assert_eq!(
-        fs::read_to_string(&wrapper_log).unwrap().lines().collect::<Vec<_>>(),
+        fs::read_to_string(&wrapper_log)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
         vec![format!(
             "run {} {} {}",
             temp.path().join("admin.sock").display(),
@@ -293,7 +296,10 @@ fn host_bootstrap_does_not_require_removed_device_env() {
 
     let output = cmd.output().unwrap();
     assert!(output.status.success(), "host bootstrap failed: {output:?}");
-    assert!(docker_log.exists(), "docker should still be invoked by the host wrapper");
+    assert!(
+        docker_log.exists(),
+        "docker should still be invoked by the host wrapper"
+    );
 }
 
 #[test]

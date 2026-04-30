@@ -6,11 +6,12 @@
 > **Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771),
 > connector redesign discovery review, and Azure Service Bus discovery review.
 > **Scope:** This document covers the Azure companion container, bootstrap-state
-> detection, bootstrap-trigger behavior, and the long-running Azure Service Bus
-> runtime bridge between `sonde-gateway` and an external Azure control plane.
-> The internal Azure provisioning workflow that creates the runtime certificate
-> and private key, Entra application/service principal, and Service Bus
-> resources is out of scope for this document.
+> detection, bootstrap-trigger behavior, the integrated Azure provisioning
+> orchestration (certificate generation, Bicep deployment via Docker API, and
+> runtime artifact creation), and the long-running Azure Service Bus runtime
+> bridge between `sonde-gateway` and an external Azure control plane.
+> The Bicep module definitions themselves are specified in
+> [azure-provisioning-requirements.md](azure-provisioning-requirements.md).
 > **Related:** [azure-provisioning-requirements.md](azure-provisioning-requirements.md),
 > [gateway-companion-api.md](gateway-companion-api.md),
 > [gateway-requirements.md](gateway-requirements.md),
@@ -25,8 +26,8 @@
 | **Azure companion** | The Rust process that runs in its own container and integrates with `sonde-gateway` through the local admin API for bootstrap-only operator-visible actions and the local connector API for long-running runtime traffic. |
 | **State volume** | A mounted persistent directory reserved for Azure companion bootstrap output and other local provisioning artifacts. |
 | **Provisioning artifacts** | The local certificate PEM, private-key PEM, and related companion-owned state that indicate Azure bootstrap has already completed. |
-| **Queue configuration** | The Azure Service Bus namespace and the names of the upstream and downstream queues, supplied explicitly to the companion through configuration rather than hard-coded in the image. |
-| **Bootstrap-complete state** | The condition where the required provisioning artifacts exist and the required queue configuration is present, allowing the companion to skip bootstrap and start runtime directly. |
+| **Queue configuration** | The Azure Service Bus namespace and the names of the upstream and downstream queues, supplied to the companion through either environment variables or a persisted configuration file (`service-bus.json`) written by bootstrap. Both sources are valid; persisted configuration is the primary source after bootstrap, and environment variables may override it. |
+| **Bootstrap-complete state** | The condition where the required provisioning artifacts exist and the required queue configuration is present (from either source), allowing the companion to skip bootstrap and start runtime directly. |
 | **Transparent connector payload** | A Service Bus message body that carries the raw Sonde connector payload bytes unchanged. |
 
 ---
@@ -131,24 +132,29 @@ companion MUST enter the bootstrap workflow instead of normal runtime mode.
 
 ---
 
-### AZC-0201  Device-code bootstrap entry
+### AZC-0201  Unified bootstrap subcommand
 
 **Priority:** Must
 **Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), discovery review
 
 **Description:**
-When bootstrap is required, the Azure companion MUST begin bootstrap by
-obtaining Azure authentication through Azure device-code login using an
-in-process Rust device-flow client rather than shelling out to Azure CLI. The
-Azure-side provisioning workflow that consumes that bootstrap authentication is
-outside this document's scope.
+When bootstrap is required, the Azure companion MUST provide a single unified
+`bootstrap` subcommand that performs the entire provisioning lifecycle:
+certificate generation, device-code authentication (inside the Azure CLI
+container), Bicep deployment via the Docker API, and local runtime artifact
+creation. The earlier `bootstrap-auth` subcommand is retired and replaced by
+this unified command. Device-code authentication occurs inside the
+digest-pinned Azure CLI container via `az login --use-device-code`; the Rust
+companion monitors the container output to extract the device code and display
+it on the modem.
 
 **Acceptance criteria:**
 
-1. Missing bootstrap-complete state causes the companion bootstrap path to invoke Azure device-code login without requiring a local browser on the gateway host.
-2. The login flow waits for successful operator completion before reporting bootstrap success.
-3. If Azure device-code login fails, bootstrap exits with a non-zero status and does not report success.
+1. Missing bootstrap-complete state causes the companion bootstrap path to invoke the unified `bootstrap` subcommand.
+2. The `bootstrap` subcommand performs device-code login, certificate generation, Bicep deployment, and runtime artifact creation in sequence.
+3. If any phase of the unified bootstrap fails, the subcommand exits with a non-zero status and does not report success.
 4. Successful device-code login alone is not treated as bootstrap completion; the bootstrap path reports success only after bootstrap-complete state has been established.
+5. The earlier `bootstrap-auth` subcommand name is no longer accepted.
 
 ---
 
@@ -158,11 +164,13 @@ outside this document's scope.
 **Source:** Discovery review, GW-0809
 
 **Description:**
-When Azure device-code login produces a device code, the Rust bootstrap flow MUST
-request a modem display update through the gateway admin API. The displayed
-message MUST include a short prompt and the exact device code. The Azure
-companion MUST NOT attempt raw modem control or bypass the gateway's display
-ownership rules.
+When the Azure CLI container's `az login --use-device-code` produces a device
+code in its output, the Rust bootstrap flow MUST extract the code and request
+a modem display update through the gateway admin API. The displayed message
+MUST include a short prompt and the exact device code. The Azure companion
+MUST NOT attempt raw modem control or bypass the gateway's display ownership
+rules. Because the Azure CLI container image is pinned by digest, the output
+format is a known quantity for the pinned version.
 
 **Acceptance criteria:**
 
@@ -259,14 +267,17 @@ The Azure companion MUST require explicit configuration for the Azure Service
 Bus namespace plus the names of exactly two queues: one upstream queue for
 gateway-originated connector messages and one downstream queue for cloud-issued
 desired-state messages. These values MUST NOT be hard-coded in the container
-image.
+image. Configuration MAY be supplied through environment variables or through a
+persisted configuration file (`service-bus.json`) written by the bootstrap
+workflow. Environment variables, if set, override persisted file values.
 
 **Acceptance criteria:**
 
-1. Runtime startup requires explicit namespace configuration.
-2. Runtime startup requires explicit configuration for one upstream queue and one downstream queue.
+1. Runtime startup requires namespace configuration from either environment variables or a persisted configuration file.
+2. Runtime startup requires configuration for one upstream queue and one downstream queue from either source.
 3. The upstream and downstream queues are independently configurable.
 4. The image does not hard-code environment-specific queue names or namespace values.
+5. Environment variables override values from the persisted configuration file when both are present.
 
 ---
 
@@ -403,3 +414,192 @@ logging, process status, or both.
 1. Detected upstream publish failures are surfaced through logging, process status, or both.
 2. Detected downstream receive, settlement, or local connector write failures are surfaced through logging, process status, or both.
 3. The runtime design does not silently claim success after a detected broker or local connector failure.
+
+---
+
+## 6  Bootstrap provisioning orchestration
+
+### AZC-0400  Self-signed certificate generation
+
+**Priority:** Must
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), discovery review
+
+**Description:**
+The unified `bootstrap` subcommand MUST generate a self-signed ECDSA P-256
+X.509 certificate and corresponding private key in Rust for use as the Entra
+application credential. The certificate and private key MUST be written to the
+mounted state volume as PEM files.
+
+**Acceptance criteria:**
+
+1. Bootstrap generates an ECDSA P-256 key pair and self-signed X.509 certificate without requiring external tooling.
+2. The generated certificate has a default validity period of 2 years from the time of generation.
+3. The certificate PEM and private-key PEM are written to the mounted state volume.
+4. The certificate's DER-encoded public material can be base64-encoded and passed to the Bicep deployment's `companionCertificateBase64` parameter.
+5. Re-running bootstrap regenerates the certificate and private key.
+6. The private-key PEM file MUST be written with owner-only read permissions (mode 0600).
+
+---
+
+### AZC-0401  Bicep deployment via Docker API
+
+**Priority:** Must
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), discovery review
+
+**Description:**
+The unified `bootstrap` subcommand MUST execute the Bicep deployment by using
+the Bollard Rust Docker SDK to run the Azure CLI container image. The bootstrap
+MUST NOT shell out to the Docker CLI binary; it MUST use the Docker Engine API
+directly through the Bollard crate.
+
+**Acceptance criteria:**
+
+1. Bootstrap uses the Bollard crate to create and run an Azure CLI container for Bicep deployment.
+2. Bootstrap does not invoke the `docker` CLI binary or shell out to any Docker command.
+3. The Azure CLI container image is pinned by digest for reproducible provisioning.
+4. Bootstrap uploads the bundled Bicep files and generated certificate into the Azure CLI container before running `az deployment`.
+5. Bootstrap authenticates by running `az login --use-device-code` inside the Azure CLI container and parsing the emitted device code for modem display.
+6. Bootstrap captures the Bicep deployment JSON outputs from the container's stdout.
+7. Bootstrap cleans up the Azure CLI container after completion, regardless of success or failure.
+
+---
+
+### AZC-0402  Bundled Bicep files in companion image
+
+**Priority:** Must
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), discovery review
+
+**Description:**
+The Azure companion container image MUST bundle the Bicep deployment files from
+`deploy/bicep/` at build time so the bootstrap subcommand can mount them into
+the Azure CLI container without relying on host-side file access.
+
+**Acceptance criteria:**
+
+1. The Azure companion Dockerfile copies `deploy/bicep/` into the image at a fixed path.
+2. The bundled Bicep files include the top-level `main.bicep`, all module files, and `bicepconfig.json`.
+3. Bootstrap references the bundled path when mounting Bicep files into the Azure CLI container.
+
+---
+
+### AZC-0403  Runtime artifact creation from Bicep outputs
+
+**Priority:** Must
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), AZP-0203
+
+**Description:**
+After successful Bicep deployment, the unified `bootstrap` subcommand MUST
+create the local runtime artifacts expected by `sonde-azure-companion run`:
+`service-principal.json` containing the Entra tenant ID, client ID, and
+relative paths to the certificate and private-key PEM files already written to
+the state volume.
+
+**Acceptance criteria:**
+
+1. Bootstrap writes `service-principal.json` to the mounted state volume after successful Bicep deployment.
+2. The `service-principal.json` contains `tenant_id`, `client_id`, `certificate_path`, and `private_key_path` fields.
+3. The `tenant_id` and `client_id` values are extracted from the Bicep deployment outputs.
+4. The `certificate_path` and `private_key_path` values are relative paths within the state volume pointing to the generated PEM files.
+5. The resulting state satisfies the `check-runtime-ready` validation without manual intervention.
+
+---
+
+### AZC-0404  Service Bus configuration from Bicep outputs
+
+**Priority:** Must
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), AZC-0302
+
+**Description:**
+After successful Bicep deployment, the unified `bootstrap` subcommand MUST
+persist or surface the Service Bus namespace and queue names so the companion
+runtime can use them without requiring the operator to manually extract and
+supply them.
+
+**Acceptance criteria:**
+
+1. Bootstrap extracts the Service Bus namespace, upstream queue name, and downstream queue name from the Bicep deployment outputs.
+2. Bootstrap writes or persists these values so they are available at the next container startup.
+3. The runtime can read the persisted queue configuration without requiring the operator to re-enter it manually.
+
+---
+
+### AZC-0405  Bootstrap progress display
+
+**Priority:** Must
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), AZC-0202
+
+**Description:**
+The unified `bootstrap` subcommand MUST report progress for each major phase
+on both the modem display (via the gateway admin API) and stderr. The phases
+include authentication, certificate generation, Azure deployment, and
+completion.
+
+**Acceptance criteria:**
+
+1. Each major bootstrap phase updates the modem display with a short status message via the admin `ShowModemDisplayMessage` RPC.
+2. Each major bootstrap phase logs a status message to stderr.
+3. The authentication phase displays the device code as defined by AZC-0202.
+4. Bootstrap completion displays a success message on the modem display.
+5. Bootstrap failure displays an error indication on the modem display before exiting.
+
+---
+
+### AZC-0406  Docker socket access
+
+**Priority:** Must
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), discovery review
+
+**Description:**
+The Azure companion container MUST have access to the Docker Engine API so the
+Bollard crate can create and manage the Azure CLI container during bootstrap.
+The Docker socket MUST be bind-mounted from the host into the companion
+container.
+
+**Acceptance criteria:**
+
+1. The bootstrap entrypoint script bind-mounts the Docker socket from the host into the companion container.
+2. Bollard auto-detects the Docker socket path inside the container.
+3. If the Docker socket is not accessible, bootstrap fails with a clear error message identifying the missing socket.
+
+---
+
+### AZC-0407  Idempotent re-bootstrap
+
+**Priority:** Must
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771) AC-2, AZP-0300
+
+**Description:**
+Re-running the unified `bootstrap` subcommand on an already-provisioned system
+MUST be safe. Bootstrap MUST re-generate the certificate, re-run the Bicep
+deployment, and re-write the runtime artifacts. The Bicep deployment is
+inherently idempotent; certificate regeneration updates the Entra application
+credential. Bootstrap MUST use a staging approach so that a failed re-bootstrap
+does not corrupt the existing working state.
+
+**Acceptance criteria:**
+
+1. Re-running bootstrap on a system with existing provisioning artifacts succeeds without errors.
+2. Re-bootstrap regenerates the certificate and private key.
+3. Re-bootstrap re-runs the Bicep deployment with the new certificate.
+4. Re-bootstrap updates `service-principal.json` with any changed values.
+5. The runtime can start successfully after re-bootstrap.
+6. If re-bootstrap fails at any phase after authentication, the previous working state remains intact.
+7. No staging artifacts remain in the state volume after a failed re-bootstrap.
+
+---
+
+### AZC-0408  Azure subscription selection
+
+**Priority:** Should
+**Source:** Discovery review
+
+**Description:**
+The unified `bootstrap` subcommand SHOULD allow the operator to specify which
+Azure subscription to target for the Bicep deployment. If not specified, the
+deployment SHOULD use the default subscription from the device-login session.
+
+**Acceptance criteria:**
+
+1. Bootstrap accepts an optional Azure subscription ID via environment variable.
+2. If specified, the Bicep deployment targets that subscription.
+3. If not specified, the Bicep deployment uses the device-login session's default subscription.

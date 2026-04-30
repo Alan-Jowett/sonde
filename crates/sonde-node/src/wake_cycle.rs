@@ -1011,7 +1011,7 @@ where
         }
     }
 
-    // 9. BPF execution
+    // 9. Current-cycle battery capture and optional BPF execution
     let resident_installed_this_cycle = loaded_program.as_ref().is_some_and(|p| !p.is_ephemeral);
 
     if loaded_program.is_none() {
@@ -1019,6 +1019,32 @@ where
             loaded_program = ProgramStore::<S>::decode_image(&raw, program_hash);
         }
     }
+
+    hal.enter_active_gpio_state();
+    clock.delay_ms(BUS_STABILIZE_MS);
+    let current_battery_mv = capture_current_cycle_battery(hal, board_layout);
+    if let Err(e) = storage.write_last_battery_mv(current_battery_mv) {
+        log::warn!("failed to persist battery reading for next wake: {}", e);
+    }
+
+    let elapsed_since_command = clock.elapsed_ms().saturating_sub(command_received_at);
+    let battery_mv_clamped = if current_battery_mv > u16::MAX as u32 {
+        u16::MAX
+    } else {
+        current_battery_mv as u16
+    };
+    let ctx = SondeContext {
+        timestamp: timestamp_ms.saturating_add(elapsed_since_command),
+        battery_mv: battery_mv_clamped,
+        firmware_abi_version: u16::try_from(FIRMWARE_ABI_VERSION)
+            .expect("FIRMWARE_ABI_VERSION must fit in u16"),
+        wake_reason: sleep_mgr.wake_reason() as u8,
+        _padding: [0; 3],
+        data_start: command_blob.as_ref().map_or(0, |b| b.as_ptr() as u64),
+        data_end: command_blob
+            .as_ref()
+            .map_or(0, |b| unsafe { b.as_ptr().add(b.len()) } as u64),
+    };
 
     if let Some(program) = loaded_program {
         let program_class = if program.is_ephemeral {
@@ -1041,32 +1067,6 @@ where
         let map_ptrs = map_storage.map_pointers().to_vec();
 
         let mut trace_log = Vec::new();
-        hal.enter_active_gpio_state();
-        clock.delay_ms(BUS_STABILIZE_MS);
-        let current_battery_mv = capture_current_cycle_battery(hal, board_layout);
-        if let Err(e) = storage.write_last_battery_mv(current_battery_mv) {
-            log::warn!("failed to persist battery reading for next wake: {}", e);
-        }
-
-        let elapsed_since_command = clock.elapsed_ms().saturating_sub(command_received_at);
-        let battery_mv_clamped = if current_battery_mv > u16::MAX as u32 {
-            u16::MAX
-        } else {
-            current_battery_mv as u16
-        };
-        let ctx = SondeContext {
-            timestamp: timestamp_ms.saturating_add(elapsed_since_command),
-            battery_mv: battery_mv_clamped,
-            firmware_abi_version: u16::try_from(FIRMWARE_ABI_VERSION)
-                .expect("FIRMWARE_ABI_VERSION must fit in u16"),
-            wake_reason: sleep_mgr.wake_reason() as u8,
-            _padding: [0; 3],
-            data_start: command_blob.as_ref().map_or(0, |b| b.as_ptr() as u64),
-            data_end: command_blob
-                .as_ref()
-                .map_or(0, |b| unsafe { b.as_ptr().add(b.len()) } as u64),
-        };
-
         let exec_result = {
             // SAFETY: all referenced objects are alive on this stack frame
             // and will not be moved until `_guard` is dropped below.
@@ -1124,8 +1124,6 @@ where
                 }
             }
         };
-        hal.enter_idle_gpio_state();
-
         match &exec_result {
             Ok(rc) => log::info!("BPF execution completed rc={}", rc),
             Err(err) => log::info!("BPF execution failed: {}", err),
@@ -1134,6 +1132,7 @@ where
 
         flush_trace_log(&trace_log);
     }
+    hal.enter_idle_gpio_state();
 
     // 10. Determine sleep duration
     if sleep_mgr.will_wake_early() {

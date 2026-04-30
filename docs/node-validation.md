@@ -194,8 +194,12 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Boot node with erased program partitions.
-2. Capture WAKE.
-3. Assert: `program_hash` is zero-length.
+2. Complete one full wake cycle through `COMMAND` processing.
+3. Assert: `program_hash` is zero-length in the captured WAKE.
+4. Assert: the node stores the measured battery value (or fallback `3300` mV when `battery_adc` is unassigned) in RTC-retained state for the next wake.
+5. Trigger the next wake cycle and capture WAKE.
+6. Assert: `program_hash` is still zero-length.
+7. Assert: `battery_mv` equals the value stored from the prior wake cycle.
 
 ---
 

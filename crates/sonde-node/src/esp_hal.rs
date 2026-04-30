@@ -194,10 +194,6 @@ impl EspHal {
             if err != esp_idf_sys::ESP_OK as i32 {
                 warn!("gpio_sleep_set_pull_mode({pin}, FLOATING) failed: {err}");
             }
-            let err = esp_idf_sys::gpio_hold_en(pin);
-            if err != esp_idf_sys::ESP_OK as i32 {
-                warn!("gpio_hold_en({pin}) failed: {err}");
-            }
             let err = esp_idf_sys::gpio_set_level(pin, if level != 0 { 1 } else { 0 });
             if err != esp_idf_sys::ESP_OK as i32 {
                 warn!("gpio_set_level({pin}, {level}) failed: {err}");

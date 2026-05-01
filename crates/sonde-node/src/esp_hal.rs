@@ -75,13 +75,6 @@ pub struct EspHal {
 }
 
 impl EspHal {
-    fn approximate_adc_mv(raw: i32) -> i32 {
-        const ADC_APPROX_FULL_SCALE_MV: i64 = 2500;
-        const ADC_APPROX_RAW_MAX: i64 = 2047;
-
-        ((raw as i64).saturating_mul(ADC_APPROX_FULL_SCALE_MV) / ADC_APPROX_RAW_MAX) as i32
-    }
-
     /// Create a new HAL with the current wake cycle's provisioned board layout.
     pub fn new(board_layout: BoardLayout) -> Self {
         let mut hal = Self {
@@ -588,11 +581,7 @@ impl hal::Hal for EspHal {
             return (raw, raw);
         }
         if !self.ensure_adc_calibration(channel) {
-            let approx_mv = Self::approximate_adc_mv(raw);
-            warn!(
-                "using approximate ADC conversion for channel {channel} after calibration setup failed: raw={raw} approx_mv={approx_mv}"
-            );
-            return (raw, approx_mv);
+            return (raw, -1);
         }
 
         let mut mv = 0i32;
@@ -604,11 +593,8 @@ impl hal::Hal for EspHal {
             )
         };
         if err != esp_idf_sys::ESP_OK as i32 {
-            let approx_mv = Self::approximate_adc_mv(raw);
-            warn!(
-                "adc_cali_raw_to_voltage failed for channel {channel}: {err}; using approximate conversion raw={raw} approx_mv={approx_mv}"
-            );
-            return (raw, approx_mv);
+            warn!("adc_cali_raw_to_voltage failed for channel {channel}: {err}");
+            return (raw, -1);
         }
 
         (raw, mv)
@@ -661,20 +647,5 @@ impl hal::Hal for EspHal {
 
     fn prepare_for_sleep(&mut self) {
         self.enter_idle_gpio_state();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::EspHal;
-
-    #[test]
-    fn approximate_adc_mv_matches_generic_hal_formula() {
-        assert_eq!(EspHal::approximate_adc_mv(0), 0);
-        assert_eq!(EspHal::approximate_adc_mv(2047), 2500);
-        assert_eq!(
-            EspHal::approximate_adc_mv(2232),
-            ((2232i64 * 2500) / 2047) as i32
-        );
     }
 }

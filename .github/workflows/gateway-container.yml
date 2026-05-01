@@ -209,7 +209,7 @@ jobs:
             expected="$(sha256sum ".artifacts/test-programs/${file}" | awk '{print $1}')"
             actual="$(
               docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
-                "sha256sum /usr/local/share/sonde/test-programs/${file} | awk '{print \\\$1}'"
+                "sha256sum /usr/local/share/sonde/test-programs/${file} | awk \"{print \\\$1}\""
             )"
             test "$actual" = "$expected"
           done < expected-files.txt

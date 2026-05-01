@@ -136,7 +136,7 @@ The state machine has five main states plus two alternate boot paths. Starting f
 5. **Await COMMAND**: Wait up to 200 ms for a response. On timeout, back off for 400 ms before retrying, up to 4 total attempts. If all attempts fail, sleep.
 6. **Verify COMMAND**: Decrypt via AES-256-GCM. Verify echoed nonce matches. Decode CBOR. Extract `starting_seq` and `timestamp_ms`.
 6b. **Downlink data extraction**: If the COMMAND is NOP and contains a `blob` field (CBOR key 10), the firmware copies the blob into a RAM buffer and sets `sonde_context.data_start` / `data_end` to point to it. If no `blob` is present, both fields are set to 0.
-7. **Capture current-cycle battery value**: Using the provisioned board layout (§10.3), optionally assert the active-low `sensor_enable` GPIO, wait for the sensor rail / bus settle time, capture the current-cycle battery value from the provisioned `battery_adc` pin (or use the fallback `3300` mV when no ADC pin is assigned), and store the value in RTC-retained state for the next wake.
+7. **Prepare the active GPIO state and capture current-cycle battery value**: Using the provisioned board layout (§10.3), drive `sensor_enable` low, release the provisioned I2C and 1-Wire data pins high via pull-ups, configure `battery_adc` as an input, then wait for the rail to settle. The canonical carrier board's `VBAT_SENSE` network includes a 100 nF filter capacitor behind a 100 kΩ / 100 kΩ divider, so firmware waits 50 ms when `battery_adc` is provisioned there; layouts without battery sensing still use a 1 ms bus-stabilization delay. The firmware then captures the current-cycle battery value from the provisioned `battery_adc` pin (or uses the explicit failure fallback `0` mV when no ADC pin is assigned or the configured pin is unsupported) and stores the value in RTC-retained state for the next wake. This battery-capture step happens on every successful non-reboot wake cycle, even if no resident BPF program is installed.
 8. **Dispatch command**:
    - `NOP` → drain remaining async queue (previous-cycle blobs not piggybacked on WAKE) as individual APP_DATA frames, then proceed to BPF execution. Blobs queued by BPF in the current cycle remain in the queue for piggybacking on the next WAKE.
    - `UPDATE_PROGRAM` / `RUN_EPHEMERAL` → clear async queue (old program's blobs are invalid), enter chunked transfer.
@@ -517,7 +517,7 @@ pub struct BoardLayout {
     pub i2c0_scl: Option<u8>,
     pub one_wire_data: Option<u8>,
     pub battery_adc: Option<u8>,
-    pub sensor_enable: Option<u8>, // active-low when present
+    pub sensor_enable: Option<u8>, // driven high in idle, low only during the active BPF window
 }
 ```
 
@@ -551,11 +551,12 @@ The flag for `WAKE_EARLY` is stored in RTC SRAM and cleared after reading.
 
 ### 11.3  GPIO sleep preparation
 
-Before entering deep sleep, `prepare_for_sleep()` is called to eliminate GPIO leakage current (ND-1013).
+Before entering deep sleep, `prepare_for_sleep()` is called to restore the provisioned idle GPIO baseline (ND-1013).
 
-1. Enumerate all assigned GPIOs from the effective `BoardLayout` (`i2c0_sda`, `i2c0_scl`, `one_wire_data`, `battery_adc`, `sensor_enable`) and return them to input mode with output drive disabled and all pull resistors removed.
-2. Enumerate any GPIOs that were configured as outputs by BPF helper calls (`gpio_write`) during the current wake cycle and return them to the same high-impedance input state.
-3. Skip RTC-domain pins required for wake-up sources (e.g., pairing button GPIO) — these must retain their configured state.
+1. Delete the I2C driver if it was installed, then restore assigned GPIOs from the effective `BoardLayout` to their idle baseline: `i2c0_sda`, `i2c0_scl`, and `one_wire_data` become high-impedance inputs with pull resistors removed; `battery_adc` becomes an input with pull resistors removed; and `sensor_enable` is driven high.
+2. Immediately before the battery-capture / optional-BPF window, switch to the active GPIO baseline: `sensor_enable` low, provisioned I2C and 1-Wire data pins released high via pull-ups, and `battery_adc` left as an input. After the required settle delay (50 ms on the canonical carrier board when battery sensing is provisioned, otherwise 1 ms), capture the current-cycle battery value. If a program is loaded, run the BPF interpreter using that same-cycle reading.
+3. After the battery-capture / optional-BPF window, restore the idle baseline on every exit path. Any GPIOs that were configured as outputs by BPF helper calls and are not part of the provisioned board layout are also returned to the same high-impedance input state.
+4. Skip RTC-domain pins required for wake-up sources (e.g., pairing button GPIO) — these must retain their configured state.
 
 **Implementation notes:**
 

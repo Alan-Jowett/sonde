@@ -7,10 +7,12 @@
 //! `std::thread::sleep` for delays (portable across ESP-IDF versions).
 //!
 //! The HAL uses raw `esp_idf_sys` APIs for I2C, GPIO, and ADC access.
-//! I2C bus 0 is initialized on construction using the command-builder
-//! API (`i2c_cmd_link_create` / `i2c_master_cmd_begin`), which is
-//! available in all ESP-IDF versions. SPI is left as a stub until
-//! device-specific CS pin configuration is available.
+//! I2C bus 0 is initialized lazily on the first transaction so wake-time
+//! pin preparation can leave provisioned pins in their safe default state.
+//! SPI is left as a stub until device-specific CS pin configuration is
+//! available.
+
+use core::ptr;
 
 use crate::hal;
 use log::warn;
@@ -55,19 +57,21 @@ impl crate::traits::Clock for EspClock {
 
 /// Real ESP32 HAL backed by ESP-IDF sys APIs.
 ///
-/// Initializes I2C bus 0 on construction using caller-supplied pin
-/// assignments (typically loaded from NVS with a compiled-in default
-/// fallback by higher-level code; see ND-0608). Additional buses and
-/// SPI are left as stubs until needed. GPIO and ADC use direct
-/// ESP-IDF calls with no pre-initialization.
+/// Initializes the provisioned GPIOs into their idle state on
+/// construction. I2C bus 0 is still initialized lazily on the first
+/// transaction so the wake-time baseline does not grab the bus pins.
+/// Additional buses and SPI are left as stubs until needed. GPIO and
+/// ADC use direct ESP-IDF calls with no pre-initialization.
 pub struct EspHal {
     i2c0_initialized: bool,
     board_layout: BoardLayout,
-    adc_width_configured: bool,
+    adc_oneshot_unit: esp_idf_sys::adc_oneshot_unit_handle_t,
     /// Bitmask of GPIO pins already configured as output.
     gpio_output_configured: u64,
-    /// Bitmask of ADC channels already configured with attenuation.
-    adc_channels_configured: u32,
+    /// Bitmask of ADC1 channels already configured for oneshot reads.
+    adc_oneshot_channels_configured: u32,
+    /// Per-channel curve-fitting calibration handles for ADC1 channels 0-4.
+    adc_cali_handles: [esp_idf_sys::adc_cali_handle_t; 5],
 }
 
 impl EspHal {
@@ -76,15 +80,12 @@ impl EspHal {
         let mut hal = Self {
             i2c0_initialized: false,
             board_layout,
-            adc_width_configured: false,
+            adc_oneshot_unit: ptr::null_mut(),
             gpio_output_configured: 0,
-            adc_channels_configured: 0,
+            adc_oneshot_channels_configured: 0,
+            adc_cali_handles: [ptr::null_mut(); 5],
         };
-        if let (Some(i2c0_sda), Some(i2c0_scl)) =
-            (hal.board_layout.i2c0_sda, hal.board_layout.i2c0_scl)
-        {
-            hal.init_i2c0(i2c0_sda as i32, i2c0_scl as i32);
-        }
+        hal::Hal::enter_idle_gpio_state(&mut hal);
         hal
     }
 
@@ -117,17 +118,28 @@ impl EspHal {
     }
 
     /// Map a BPF handle bus number to an ESP-IDF I2C port.
-    /// Returns `None` if the bus is not initialized.
-    fn i2c_port(&self, bus: u16) -> Option<esp_idf_sys::i2c_port_t> {
+    /// Lazily initializes the bus on first use when the paired board layout
+    /// provides pins for it.
+    fn i2c_port(&mut self, bus: u16) -> Option<esp_idf_sys::i2c_port_t> {
         match bus {
-            0 if self.i2c0_initialized => Some(esp_idf_sys::i2c_port_t_I2C_NUM_0),
+            0 => {
+                if !self.i2c0_initialized {
+                    let (Some(i2c0_sda), Some(i2c0_scl)) =
+                        (self.board_layout.i2c0_sda, self.board_layout.i2c0_scl)
+                    else {
+                        return None;
+                    };
+                    self.init_i2c0(i2c0_sda as i32, i2c0_scl as i32);
+                }
+                self.i2c0_initialized
+                    .then_some(esp_idf_sys::i2c_port_t_I2C_NUM_0)
+            }
             _ => None,
         }
     }
 
-    fn set_high_z_input(pin: i32) {
+    fn set_input_no_pull(pin: i32) {
         unsafe {
-            esp_idf_sys::gpio_reset_pin(pin);
             let err =
                 esp_idf_sys::gpio_set_direction(pin, esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT);
             if err != esp_idf_sys::ESP_OK as i32 {
@@ -142,6 +154,262 @@ impl EspHal {
                 warn!("gpio_pulldown_dis({pin}) failed: {err}");
             }
         }
+    }
+
+    fn set_input_pull_up(pin: i32) {
+        unsafe {
+            let err =
+                esp_idf_sys::gpio_set_direction(pin, esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_set_direction({pin}, INPUT) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_set_pull_mode(
+                pin,
+                esp_idf_sys::gpio_pull_mode_t_GPIO_PULLUP_ONLY,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_set_pull_mode({pin}, PULLUP_ONLY) failed: {err}");
+            }
+        }
+    }
+
+    fn configure_sleep_input_no_pull(pin: i32) {
+        unsafe {
+            let err = esp_idf_sys::gpio_sleep_sel_en(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_sel_en({pin}) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_sleep_set_direction(
+                pin,
+                esp_idf_sys::gpio_mode_t_GPIO_MODE_DISABLE,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_set_direction({pin}, DISABLE) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_sleep_set_pull_mode(
+                pin,
+                esp_idf_sys::gpio_pull_mode_t_GPIO_FLOATING,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_set_pull_mode({pin}, FLOATING) failed: {err}");
+            }
+        }
+    }
+
+    fn configure_sleep_output(pin: i32, level: u32) {
+        unsafe {
+            let err = esp_idf_sys::gpio_sleep_sel_en(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_sel_en({pin}) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_sleep_set_direction(
+                pin,
+                esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_set_direction({pin}, OUTPUT) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_sleep_set_pull_mode(
+                pin,
+                esp_idf_sys::gpio_pull_mode_t_GPIO_FLOATING,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_sleep_set_pull_mode({pin}, FLOATING) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_set_level(pin, if level != 0 { 1 } else { 0 });
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_set_level({pin}, {level}) failed: {err}");
+            }
+        }
+    }
+
+    fn set_output_level(pin: i32, level: u32) {
+        unsafe {
+            let err = esp_idf_sys::gpio_reset_pin(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_reset_pin({pin}) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_set_direction(
+                pin,
+                esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT_OUTPUT,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_set_direction({pin}, INPUT_OUTPUT) failed: {err}");
+                return;
+            }
+            let err = esp_idf_sys::gpio_pullup_dis(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_pullup_dis({pin}) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_pulldown_dis(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_pulldown_dis({pin}) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_set_level(pin, if level != 0 { 1 } else { 0 });
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_set_level({pin}, {level}) failed: {err}");
+            }
+        }
+    }
+
+    fn set_idle_inputs(board_layout: &BoardLayout) {
+        if let Some(battery_adc) = board_layout.battery_adc {
+            Self::set_input_no_pull(battery_adc as i32);
+            Self::configure_sleep_input_no_pull(battery_adc as i32);
+        }
+        if let Some(one_wire_data) = board_layout.one_wire_data {
+            Self::set_input_no_pull(one_wire_data as i32);
+            Self::configure_sleep_input_no_pull(one_wire_data as i32);
+        }
+        if let Some(i2c0_sda) = board_layout.i2c0_sda {
+            Self::set_input_no_pull(i2c0_sda as i32);
+            Self::configure_sleep_input_no_pull(i2c0_sda as i32);
+        }
+        if let Some(i2c0_scl) = board_layout.i2c0_scl {
+            Self::set_input_no_pull(i2c0_scl as i32);
+            Self::configure_sleep_input_no_pull(i2c0_scl as i32);
+        }
+    }
+
+    fn delete_oneshot_unit(unit: esp_idf_sys::adc_oneshot_unit_handle_t) {
+        if unit.is_null() {
+            return;
+        }
+        let err = unsafe { esp_idf_sys::adc_oneshot_del_unit(unit) };
+        if err != esp_idf_sys::ESP_OK as i32 {
+            warn!("adc_oneshot_del_unit failed: {err}");
+        }
+    }
+
+    fn delete_curve_fitting_calibration(handle: esp_idf_sys::adc_cali_handle_t) {
+        if handle.is_null() {
+            return;
+        }
+        let err = unsafe { esp_idf_sys::adc_cali_delete_scheme_curve_fitting(handle) };
+        if err != esp_idf_sys::ESP_OK as i32 {
+            warn!("adc_cali_delete_scheme_curve_fitting failed: {err}");
+        }
+    }
+
+    fn ensure_adc_oneshot_unit(&mut self) -> bool {
+        if !self.adc_oneshot_unit.is_null() {
+            return true;
+        }
+
+        unsafe {
+            let mut unit_config: esp_idf_sys::adc_oneshot_unit_init_cfg_t = core::mem::zeroed();
+            unit_config.unit_id = esp_idf_sys::adc_unit_t_ADC_UNIT_1;
+            let err = esp_idf_sys::adc_oneshot_new_unit(&unit_config, &mut self.adc_oneshot_unit);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("adc_oneshot_new_unit failed: {err}");
+                self.adc_oneshot_unit = ptr::null_mut();
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn ensure_adc_oneshot_channel(&mut self, channel: u32) -> bool {
+        const ADC_ONESHOT_ATTEN: esp_idf_sys::adc_atten_t =
+            esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11;
+        const ADC_ONESHOT_BITWIDTH: esp_idf_sys::adc_bitwidth_t =
+            esp_idf_sys::adc_bitwidth_t_ADC_BITWIDTH_12;
+
+        if channel > 4 {
+            warn!("adc_oneshot invalid ADC1 channel: {channel}");
+            return false;
+        }
+        if !self.ensure_adc_oneshot_unit() {
+            return false;
+        }
+        if self.adc_oneshot_channels_configured & (1u32 << channel) != 0 {
+            return true;
+        }
+
+        unsafe {
+            let mut chan_config: esp_idf_sys::adc_oneshot_chan_cfg_t = core::mem::zeroed();
+            chan_config.atten = ADC_ONESHOT_ATTEN;
+            chan_config.bitwidth = ADC_ONESHOT_BITWIDTH;
+            let err = esp_idf_sys::adc_oneshot_config_channel(
+                self.adc_oneshot_unit,
+                channel as esp_idf_sys::adc_channel_t,
+                &chan_config,
+            );
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("adc_oneshot_config_channel failed for channel {channel}: {err}");
+                return false;
+            }
+            self.adc_oneshot_channels_configured |= 1u32 << channel;
+        }
+
+        true
+    }
+
+    fn ensure_adc_calibration(&mut self, channel: u32) -> bool {
+        const ADC_ONESHOT_ATTEN: esp_idf_sys::adc_atten_t =
+            esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11;
+        const ADC_ONESHOT_BITWIDTH: esp_idf_sys::adc_bitwidth_t =
+            esp_idf_sys::adc_bitwidth_t_ADC_BITWIDTH_12;
+
+        if channel > 4 {
+            warn!("adc calibration invalid ADC1 channel: {channel}");
+            return false;
+        }
+        if !self.adc_cali_handles[channel as usize].is_null() {
+            return true;
+        }
+        if !self.ensure_adc_oneshot_channel(channel) {
+            return false;
+        }
+
+        unsafe {
+            let mut cali_config: esp_idf_sys::adc_cali_curve_fitting_config_t = core::mem::zeroed();
+            cali_config.unit_id = esp_idf_sys::adc_unit_t_ADC_UNIT_1;
+            cali_config.chan = channel as esp_idf_sys::adc_channel_t;
+            cali_config.atten = ADC_ONESHOT_ATTEN;
+            cali_config.bitwidth = ADC_ONESHOT_BITWIDTH;
+            let mut handle: esp_idf_sys::adc_cali_handle_t = ptr::null_mut();
+            let err = esp_idf_sys::adc_cali_create_scheme_curve_fitting(&cali_config, &mut handle);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("adc_cali_create_scheme_curve_fitting failed for channel {channel}: {err}");
+                return false;
+            }
+            self.adc_cali_handles[channel as usize] = handle;
+        }
+
+        true
+    }
+
+    fn adc_read_raw_oneshot(&mut self, channel: u32) -> i32 {
+        if !self.ensure_adc_oneshot_channel(channel) {
+            return -1;
+        }
+
+        let mut raw = 0i32;
+        let err = unsafe {
+            esp_idf_sys::adc_oneshot_read(
+                self.adc_oneshot_unit,
+                channel as esp_idf_sys::adc_channel_t,
+                &mut raw,
+            )
+        };
+        if err != esp_idf_sys::ESP_OK as i32 {
+            warn!("adc_oneshot_read failed for channel {channel}: {err}");
+            return -1;
+        }
+
+        raw
+    }
+
+    fn reset_adc_state(&mut self) {
+        for handle in &mut self.adc_cali_handles {
+            Self::delete_curve_fitting_calibration(*handle);
+            *handle = ptr::null_mut();
+        }
+        Self::delete_oneshot_unit(self.adc_oneshot_unit);
+        self.adc_oneshot_unit = ptr::null_mut();
+        self.adc_oneshot_channels_configured = 0;
     }
 }
 
@@ -299,37 +567,40 @@ impl hal::Hal for EspHal {
     }
 
     fn adc_read(&mut self, channel: u32) -> i32 {
-        // ESP32-C3 exposes ADC1 channels 0-4 on GPIO0-4. GPIO5 is ADC2 and
-        // is not handled by this ADC1-only path.
-        if channel > 4 {
-            return -1;
-        }
-        unsafe {
-            if !self.adc_width_configured {
-                let err =
-                    esp_idf_sys::adc1_config_width(esp_idf_sys::adc_bits_width_t_ADC_WIDTH_BIT_12);
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    return -1;
-                }
-                self.adc_width_configured = true;
-            }
-            // Configure channel attenuation once per channel.
-            if self.adc_channels_configured & (1u32 << channel) == 0 {
-                let err = esp_idf_sys::adc1_config_channel_atten(
-                    channel,
-                    esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11,
-                );
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    return -1;
-                }
-                self.adc_channels_configured |= 1u32 << channel;
-            }
-            esp_idf_sys::adc1_get_raw(channel)
-        }
+        self.adc_read_raw_oneshot(channel)
     }
 
-    fn prepare_for_sleep(&mut self) {
-        // 1. Delete the I2C driver if it was installed.
+    fn adc_read_mv(&mut self, channel: u32) -> i32 {
+        let (_, mv) = self.adc_read_diagnostics(channel);
+        mv
+    }
+
+    fn adc_read_diagnostics(&mut self, channel: u32) -> (i32, i32) {
+        let raw = self.adc_read_raw_oneshot(channel);
+        if raw < 0 {
+            return (raw, raw);
+        }
+        if !self.ensure_adc_calibration(channel) {
+            return (raw, -1);
+        }
+
+        let mut mv = 0i32;
+        let err = unsafe {
+            esp_idf_sys::adc_cali_raw_to_voltage(
+                self.adc_cali_handles[channel as usize],
+                raw,
+                &mut mv,
+            )
+        };
+        if err != esp_idf_sys::ESP_OK as i32 {
+            warn!("adc_cali_raw_to_voltage failed for channel {channel}: {err}");
+            return (raw, -1);
+        }
+
+        (raw, mv)
+    }
+
+    fn enter_idle_gpio_state(&mut self) {
         if self.i2c0_initialized {
             let err = unsafe { esp_idf_sys::i2c_driver_delete(esp_idf_sys::i2c_port_t_I2C_NUM_0) };
             if err == esp_idf_sys::ESP_OK as i32 {
@@ -339,21 +610,42 @@ impl hal::Hal for EspHal {
             }
         }
 
-        // 2. Return all provisioned bus/control pins and any BPF-configured
-        //    outputs to a high-impedance input state.
         let mut mask = self.gpio_output_configured;
-        for pin in self.board_layout.assigned_pins().into_iter().flatten() {
-            mask |= 1u64 << pin;
-        }
         while mask != 0 {
             let pin = mask.trailing_zeros();
-            Self::set_high_z_input(pin as i32);
+            Self::set_input_no_pull(pin as i32);
             mask &= !(1u64 << pin);
         }
-        self.gpio_output_configured = 0;
 
-        // 3. Clear ADC tracking so a fresh wake cycle re-configures.
-        self.adc_width_configured = false;
-        self.adc_channels_configured = 0;
+        Self::set_idle_inputs(&self.board_layout);
+        if let Some(sensor_enable) = self.board_layout.sensor_enable {
+            Self::set_output_level(sensor_enable as i32, 1);
+            Self::configure_sleep_output(sensor_enable as i32, 1);
+        }
+
+        self.gpio_output_configured = 0;
+        self.reset_adc_state();
+    }
+
+    fn enter_active_gpio_state(&mut self) {
+        if let Some(sensor_enable) = self.board_layout.sensor_enable {
+            Self::set_output_level(sensor_enable as i32, 0);
+        }
+        if let Some(i2c0_sda) = self.board_layout.i2c0_sda {
+            Self::set_input_pull_up(i2c0_sda as i32);
+        }
+        if let Some(i2c0_scl) = self.board_layout.i2c0_scl {
+            Self::set_input_pull_up(i2c0_scl as i32);
+        }
+        if let Some(one_wire_data) = self.board_layout.one_wire_data {
+            Self::set_input_pull_up(one_wire_data as i32);
+        }
+        if let Some(battery_adc) = self.board_layout.battery_adc {
+            Self::set_input_no_pull(battery_adc as i32);
+        }
+    }
+
+    fn prepare_for_sleep(&mut self) {
+        self.enter_idle_gpio_state();
     }
 }

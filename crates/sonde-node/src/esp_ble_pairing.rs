@@ -412,6 +412,9 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {}
+
 /// Fallback encryption check for when `on_authentication_complete` doesn't
 /// fire (e.g., esp32-nimble build that doesn't dispatch ENC_CHANGE event 38).
 /// Returns `true` only if the link is encrypted AND MTU is acceptable,

@@ -194,8 +194,12 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Boot node with erased program partitions.
-2. Capture WAKE.
-3. Assert: `program_hash` is zero-length.
+2. Complete one full wake cycle through `COMMAND` processing.
+3. Assert: `program_hash` is zero-length in the captured WAKE.
+4. Assert: the node stores the measured battery value (or fallback `0` mV when `battery_adc` is unassigned) in RTC-retained state for the next wake.
+5. Trigger the next wake cycle and capture WAKE.
+6. Assert: `program_hash` is still zero-length.
+7. Assert: `battery_mv` equals the value stored from the prior wake cycle.
 
 ---
 
@@ -1408,9 +1412,11 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 2. Install a BPF program that calls `gpio_write` on an additional output GPIO (e.g., GPIO 7).
 3. Run a complete wake cycle so that I2C and GPIO peripherals are active.
 4. Assert: `prepare_for_sleep()` is called before deep sleep entry.
-5. Assert: provisioned I2C, 1-Wire, battery ADC, and sensor-enable GPIOs are returned to high-impedance input state with no pull resistors.
-6. Assert: the BPF-configured output GPIO is returned to high-impedance input state.
-7. Assert: the RTC wake-up GPIO (pairing button) retains its configured state.
+5. Assert: provisioned `i2c0_sda`, `i2c0_scl`, and `one_wire_data` GPIOs are returned to high-impedance input state with no pull resistors.
+6. Assert: the provisioned `battery_adc` GPIO is returned to input mode with no pull resistors.
+7. Assert: the provisioned `sensor_enable` GPIO is driven high.
+8. Assert: the BPF-configured output GPIO is returned to high-impedance input state.
+9. Assert: the RTC wake-up GPIO (pairing button) retains its configured state.
 
 ---
 
@@ -1960,8 +1966,9 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Provision a board layout with `sensor_enable=4` and `battery_adc=2`.
 2. Run a wake cycle with instrumentation on GPIO4 transitions.
-3. Assert: GPIO4 is not asserted before `COMMAND` is successfully received.
-4. Assert: GPIO4 is driven active before post-WAKE command work / BPF execution begins.
+3. Assert: GPIO4 stays high until the BPF execution window begins.
+4. Assert: GPIO4 is driven low before the configured settle delay and battery sample.
+5. Assert: GPIO4 returns high immediately after BPF execution ends.
 
 ---
 
@@ -1973,7 +1980,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Provision a board layout with `sensor_enable=4` and `battery_adc=2`.
 2. Configure mock ADC reading to 3125 mV equivalent.
 3. Run a wake cycle through `COMMAND` processing and BPF execution.
-4. Assert: the firmware waits for the fixed `SENSOR_SETTLE_MS` delay (10 ms) before sampling.
+4. Assert: the firmware waits for the configured settle delay before sampling (`50` ms on the canonical carrier board when `battery_adc` is provisioned, otherwise `1` ms).
 5. Assert: the current-cycle `sonde_context.battery_mv` and `get_battery_mv()` value are 3125.
 6. Assert: 3125 mV is stored in RTC-retained state for the next wake.
 

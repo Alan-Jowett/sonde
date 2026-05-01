@@ -51,13 +51,67 @@ pub trait Hal {
     /// Returns the ADC reading on success, negative on error.
     fn adc_read(&mut self, channel: u32) -> i32;
 
+    /// Read an ADC channel and convert it to millivolts.
+    ///
+    /// The default implementation matches the effective ESP32-C3 ADC1 raw
+    /// range observed by this firmware path.
+    fn adc_read_mv(&mut self, channel: u32) -> i32 {
+        const ADC_APPROX_FULL_SCALE_MV: i64 = 2500;
+        const ADC_APPROX_RAW_MAX: i64 = 2047;
+
+        let raw = self.adc_read(channel);
+        if raw < 0 {
+            return raw;
+        }
+
+        ((raw as i64).saturating_mul(ADC_APPROX_FULL_SCALE_MV) / ADC_APPROX_RAW_MAX) as i32
+    }
+
+    /// Read an ADC channel and return both the raw code and converted millivolts.
+    ///
+    /// The default implementation uses a single raw sample and the same
+    /// conversion used by `adc_read_mv` so callers can log the exact sample
+    /// used for higher-level calculations.
+    fn adc_read_diagnostics(&mut self, channel: u32) -> (i32, i32) {
+        const ADC_APPROX_FULL_SCALE_MV: i64 = 2500;
+        const ADC_APPROX_RAW_MAX: i64 = 2047;
+
+        let raw = self.adc_read(channel);
+        if raw < 0 {
+            return (raw, raw);
+        }
+
+        let mv =
+            ((raw as i64).saturating_mul(ADC_APPROX_FULL_SCALE_MV) / ADC_APPROX_RAW_MAX) as i32;
+        (raw, mv)
+    }
+
+    /// Enter the paired board layout's idle GPIO state.
+    ///
+    /// In the idle state, provisioned I2C, 1-Wire, and battery-sense pins
+    /// are high-impedance inputs with no pull resistors, while the
+    /// provisioned `sensor_enable` pin is driven high so the sensor rail is off.
+    ///
+    /// The default implementation is a no-op (suitable for test mocks).
+    fn enter_idle_gpio_state(&mut self) {}
+
+    /// Enter the paired board layout's active GPIO state for BPF execution.
+    ///
+    /// In the active state, the provisioned `sensor_enable` pin is driven low
+    /// so the sensor rail is on, the provisioned I2C and 1-Wire pins are
+    /// configured as inputs with pull-ups enabled, and the provisioned
+    /// battery-sense pin is configured as an input with no pull resistors.
+    ///
+    /// The default implementation is a no-op (suitable for test mocks).
+    fn enter_active_gpio_state(&mut self) {}
+
     /// Prepare hardware for deep sleep by placing all peripherals and
     /// GPIOs into low-power states.
     ///
     /// Implementations should:
     /// - Deinitialize bus peripherals (I2C, SPI) to release their pins
-    /// - Reset GPIO pins configured during the wake cycle to disabled
-    ///   (no input buffer, no output driver, no pull resistors)
+    /// - Reset GPIO pins configured during the wake cycle
+    /// - Restore the paired board layout's idle GPIO state
     /// - Clear ADC configuration
     ///
     /// This must be called immediately before entering deep sleep to

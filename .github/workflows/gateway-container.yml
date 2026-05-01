@@ -199,20 +199,22 @@ jobs:
       - name: Smoke test — BPF artifact hashes match same-run downloads
         run: |
           set -euo pipefail
-          find .artifacts/test-programs -maxdepth 1 -name '*.o' -printf '%f\n' | sort > expected-files.txt
+          (
+            cd .artifacts/test-programs
+            set -- *.o
+            test -e "$1"
+            sha256sum "$@" | while read -r sum file; do
+              printf '%s %s\n' "$file" "$sum"
+            done | sort
+          ) > expected-hashes.txt
           docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
-            'set -- /usr/local/share/sonde/test-programs/*.o
+            'cd /usr/local/share/sonde/test-programs
+             set -- *.o
              test -e "$1"
-             for f in "$@"; do basename "$f"; done | sort' > actual-files.txt
-          diff -u expected-files.txt actual-files.txt
-          while IFS= read -r file; do
-            expected="$(sha256sum ".artifacts/test-programs/${file}" | awk '{print $1}')"
-            actual="$(
-              docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
-                "sha256sum /usr/local/share/sonde/test-programs/${file} | awk \"{print \\\$1}\""
-            )"
-            test "$actual" = "$expected"
-          done < expected-files.txt
+             sha256sum "$@" | while read -r sum file; do
+               printf "%s %s\n" "$file" "$sum"
+             done | sort' > actual-hashes.txt
+          diff -u expected-hashes.txt actual-hashes.txt
 
       # Push the per-arch image with a temporary tag (consumed by the
       # manifest job). Include the workflow run ID so overlapping runs

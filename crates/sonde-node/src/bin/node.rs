@@ -170,8 +170,6 @@ fn main() {
             &mut map_storage,
             button_held,
             diag_transport.as_mut(),
-            &mut pairing_hal,
-            &pairing_board_layout,
         ) {
             Ok(()) => {
                 info!("BLE pairing mode exited — rebooting");

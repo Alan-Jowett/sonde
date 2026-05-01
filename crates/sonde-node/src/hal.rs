@@ -98,9 +98,9 @@ pub trait Hal {
     /// Enter the paired board layout's active GPIO state for BPF execution.
     ///
     /// In the active state, the provisioned `sensor_enable` pin is driven low
-    /// so the sensor rail is on, the provisioned I2C and 1-Wire pins are driven
-    /// high, and the provisioned battery-sense pin is configured as an input
-    /// with no pull resistors.
+    /// so the sensor rail is on, the provisioned I2C and 1-Wire pins are
+    /// configured as inputs with pull-ups enabled, and the provisioned
+    /// battery-sense pin is configured as an input with no pull resistors.
     ///
     /// The default implementation is a no-op (suitable for test mocks).
     fn enter_active_gpio_state(&mut self) {}

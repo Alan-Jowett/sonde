@@ -38,12 +38,10 @@ use crate::ble_pairing::{
     BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
 };
 use crate::error::NodeResult;
-use crate::esp_hal::EspHal;
 use crate::esp_transport::EspNowTransport;
-use crate::hal::Hal;
 use crate::map_storage::MapStorage;
 use crate::traits::PlatformStorage;
-use sonde_protocol::{BoardLayout, BLE_DIAG_RELAY_REQUEST};
+use sonde_protocol::BLE_DIAG_RELAY_REQUEST;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,7 +55,6 @@ const NODE_COMMAND_UUID: BleUuid = BleUuid::Uuid16(0xFE51);
 
 /// Polling interval for the main loop waiting for disconnect.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
-const BATTERY_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -85,8 +82,6 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     map_storage: &mut MapStorage,
     button_held: bool,
     mut transport: Option<&mut EspNowTransport>,
-    hal: &mut EspHal,
-    board_layout: &BoardLayout,
 ) -> NodeResult<()> {
     let paired_on_entry = storage.read_key().is_some();
 
@@ -259,14 +254,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     info!("BLE Node Provisioning Service registered (UUID 0xFE50, ND-0902)");
 
     // --- Main loop: poll for writes and disconnects ---
-    let mut last_battery_log_at_ms: Option<u64> = None;
     loop {
-        let now_ms = (unsafe { esp_idf_sys::esp_timer_get_time() } as u64) / 1000;
-        if should_log_pairing_battery(now_ms, last_battery_log_at_ms) {
-            log_pairing_battery_sample(hal, board_layout);
-            last_battery_log_at_ms = Some(now_ms);
-        }
-
         // Check for disconnect.
         if let Ok(d) = disconnected.lock() {
             if *d {
@@ -424,64 +412,8 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     Ok(())
 }
 
-fn should_log_pairing_battery(now_ms: u64, last_log_at_ms: Option<u64>) -> bool {
-    match last_log_at_ms {
-        None => true,
-        Some(last) => now_ms.saturating_sub(last) >= BATTERY_LOG_INTERVAL.as_millis() as u64,
-    }
-}
-
-fn log_pairing_battery_sample(hal: &mut EspHal, board_layout: &BoardLayout) {
-    let Some(battery_pin) = board_layout.battery_adc else {
-        return;
-    };
-    if !matches!(battery_pin, 0..=4) {
-        warn!(
-            "BLE: pairing battery sample skipped because GPIO{} is not ADC1-capable on ESP32-C3",
-            battery_pin
-        );
-        return;
-    }
-
-    let channel = battery_pin as u32;
-    let (raw, sensed_mv) = hal.adc_read_diagnostics(channel);
-    if raw < 0 {
-        warn!(
-            "BLE: pairing oneshot battery sample failed gpio={} channel={}",
-            battery_pin, channel
-        );
-        return;
-    }
-    if sensed_mv < 0 {
-        warn!(
-            "BLE: pairing oneshot battery sample raw-only gpio={} channel={} raw={}",
-            battery_pin, channel, raw
-        );
-        return;
-    }
-
-    let battery_mv = (sensed_mv as u32).saturating_mul(2);
-    warn!(
-        "BLE: pairing oneshot battery sample gpio={} channel={} raw={} sensed_mv={} battery_mv={}",
-        battery_pin, channel, raw, sensed_mv, battery_mv
-    );
-}
-
 #[cfg(test)]
-mod tests {
-    use super::should_log_pairing_battery;
-
-    #[test]
-    fn pairing_battery_logs_immediately() {
-        assert!(should_log_pairing_battery(1000, None));
-    }
-
-    #[test]
-    fn pairing_battery_logs_after_interval() {
-        assert!(!should_log_pairing_battery(1500, Some(1000)));
-        assert!(should_log_pairing_battery(2000, Some(1000)));
-    }
-}
+mod tests {}
 
 /// Fallback encryption check for when `on_authentication_complete` doesn't
 /// fire (e.g., esp32-nimble build that doesn't dispatch ENC_CHANGE event 38).

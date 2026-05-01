@@ -107,7 +107,7 @@ fn capture_current_cycle_battery(hal: &mut dyn Hal, board_layout: &BoardLayout) 
     }
 
     let battery_mv = (sensed_mv as u32).saturating_mul(BATTERY_DIVIDER_RATIO);
-    log::warn!(
+    log::debug!(
         "battery ADC sample gpio={} channel={} raw={} sensed_mv={} battery_mv={}",
         battery_pin,
         channel,
@@ -119,23 +119,41 @@ fn capture_current_cycle_battery(hal: &mut dyn Hal, board_layout: &BoardLayout) 
 }
 
 fn active_gpio_settle_ms(board_layout: &BoardLayout) -> u32 {
-    if board_layout.battery_adc.is_some() {
+    if board_layout
+        .battery_adc
+        .and_then(gpio_to_adc_channel)
+        .is_some()
+    {
         BATTERY_DIVIDER_SETTLE_MS
     } else {
         SENSOR_BUS_STABILIZE_MS
     }
 }
 
-struct ActiveGpioGuard(*mut dyn Hal);
-
-impl Drop for ActiveGpioGuard {
-    fn drop(&mut self) {
-        // SAFETY: the guard is created from `hal` in `run_wake_cycle`, and
-        // the referenced HAL outlives the guard's scope.
-        unsafe {
-            (*self.0).enter_idle_gpio_state();
-        }
+fn persist_current_cycle_battery<S: PlatformStorage>(
+    hal: &mut dyn Hal,
+    storage: &mut S,
+    board_layout: &BoardLayout,
+) -> u32 {
+    let current_battery_mv = capture_current_cycle_battery(hal, board_layout);
+    if let Err(e) = storage.write_last_battery_mv(current_battery_mv) {
+        log::warn!("failed to persist battery reading for next wake: {}", e);
     }
+    current_battery_mv
+}
+
+fn capture_battery_then_sleep<S: PlatformStorage>(
+    hal: &mut dyn Hal,
+    clock: &dyn Clock,
+    storage: &mut S,
+    board_layout: &BoardLayout,
+    sleep_mgr: &SleepManager,
+) -> WakeCycleOutcome {
+    hal.enter_active_gpio_state();
+    clock.delay_ms(active_gpio_settle_ms(board_layout));
+    let _ = persist_current_cycle_battery(hal, storage, board_layout);
+    hal.enter_idle_gpio_state();
+    log_and_sleep(sleep_mgr)
 }
 
 /// Outcome of a wake cycle.
@@ -1017,7 +1035,13 @@ where
                             )
                             .is_err()
                             {
-                                return log_and_sleep(&sleep_mgr);
+                                return capture_battery_then_sleep(
+                                    hal,
+                                    clock,
+                                    storage,
+                                    board_layout,
+                                    &sleep_mgr,
+                                );
                             }
 
                             if !is_ephemeral {
@@ -1027,13 +1051,25 @@ where
                         }
                         Err(e) => {
                             log::warn!("program install failed: {}", e);
-                            return log_and_sleep(&sleep_mgr);
+                            return capture_battery_then_sleep(
+                                hal,
+                                clock,
+                                storage,
+                                board_layout,
+                                &sleep_mgr,
+                            );
                         }
                     }
                 }
                 Err(e) => {
                     log::warn!("chunk transfer failed: {}", e);
-                    return log_and_sleep(&sleep_mgr);
+                    return capture_battery_then_sleep(
+                        hal,
+                        clock,
+                        storage,
+                        board_layout,
+                        &sleep_mgr,
+                    );
                 }
             }
         }
@@ -1048,32 +1084,22 @@ where
         }
     }
 
-    hal.enter_active_gpio_state();
-    let _active_gpio_guard = ActiveGpioGuard(hal as *mut dyn Hal);
-    clock.delay_ms(active_gpio_settle_ms(board_layout));
-    let current_battery_mv = capture_current_cycle_battery(hal, board_layout);
-    if let Err(e) = storage.write_last_battery_mv(current_battery_mv) {
-        log::warn!("failed to persist battery reading for next wake: {}", e);
+    if let Some(program) = loaded_program.as_ref() {
+        if program.is_ephemeral {
+            if !program.map_defs.is_empty() {
+                return capture_battery_then_sleep(hal, clock, storage, board_layout, &sleep_mgr);
+            }
+        } else if resident_installed_this_cycle || !map_storage.layout_matches(&program.map_defs) {
+            if map_storage.allocate(&program.map_defs).is_err() {
+                return capture_battery_then_sleep(hal, clock, storage, board_layout, &sleep_mgr);
+            }
+            map_storage.apply_initial_data(&program.map_initial_data);
+        }
     }
 
-    let elapsed_since_command = clock.elapsed_ms().saturating_sub(command_received_at);
-    let battery_mv_clamped = if current_battery_mv > u16::MAX as u32 {
-        u16::MAX
-    } else {
-        current_battery_mv as u16
-    };
-    let ctx = SondeContext {
-        timestamp: timestamp_ms.saturating_add(elapsed_since_command),
-        battery_mv: battery_mv_clamped,
-        firmware_abi_version: u16::try_from(FIRMWARE_ABI_VERSION)
-            .expect("FIRMWARE_ABI_VERSION must fit in u16"),
-        wake_reason: sleep_mgr.wake_reason() as u8,
-        _padding: [0; 3],
-        data_start: command_blob.as_ref().map_or(0, |b| b.as_ptr() as u64),
-        data_end: command_blob
-            .as_ref()
-            .map_or(0, |b| unsafe { b.as_ptr().add(b.len()) } as u64),
-    };
+    hal.enter_active_gpio_state();
+    clock.delay_ms(active_gpio_settle_ms(board_layout));
+    let current_battery_mv = persist_current_cycle_battery(hal, storage, board_layout);
 
     if let Some(program) = loaded_program {
         let program_class = if program.is_ephemeral {
@@ -1082,16 +1108,24 @@ where
             ProgramClass::Resident
         };
 
-        if program.is_ephemeral {
-            if !program.map_defs.is_empty() {
-                return log_and_sleep(&sleep_mgr);
-            }
-        } else if resident_installed_this_cycle || !map_storage.layout_matches(&program.map_defs) {
-            if map_storage.allocate(&program.map_defs).is_err() {
-                return log_and_sleep(&sleep_mgr);
-            }
-            map_storage.apply_initial_data(&program.map_initial_data);
-        }
+        let elapsed_since_command = clock.elapsed_ms().saturating_sub(command_received_at);
+        let battery_mv_clamped = if current_battery_mv > u16::MAX as u32 {
+            u16::MAX
+        } else {
+            current_battery_mv as u16
+        };
+        let ctx = SondeContext {
+            timestamp: timestamp_ms.saturating_add(elapsed_since_command),
+            battery_mv: battery_mv_clamped,
+            firmware_abi_version: u16::try_from(FIRMWARE_ABI_VERSION)
+                .expect("FIRMWARE_ABI_VERSION must fit in u16"),
+            wake_reason: sleep_mgr.wake_reason() as u8,
+            _padding: [0; 3],
+            data_start: command_blob.as_ref().map_or(0, |b| b.as_ptr() as u64),
+            data_end: command_blob
+                .as_ref()
+                .map_or(0, |b| unsafe { b.as_ptr().add(b.len()) } as u64),
+        };
 
         let map_ptrs = map_storage.map_pointers().to_vec();
 
@@ -1161,6 +1195,7 @@ where
 
         flush_trace_log(&trace_log);
     }
+    hal.enter_idle_gpio_state();
     // 10. Determine sleep duration
     if sleep_mgr.will_wake_early() {
         if let Err(err) = storage.set_early_wake_flag() {
@@ -1598,6 +1633,21 @@ mod tests {
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         assert_eq!(hal.gpio_state_transitions, vec!["active", "idle"]);
+        let expected_battery_mv = ((2048u32 * 2500) / 2047) * BATTERY_DIVIDER_RATIO;
+        assert_eq!(storage.last_battery_mv, Some(expected_battery_mv));
+    }
+
+    #[test]
+    fn unsupported_battery_gpio_uses_short_stabilization_delay() {
+        let layout = BoardLayout {
+            i2c0_sda: Some(6),
+            i2c0_scl: Some(7),
+            one_wire_data: Some(3),
+            battery_adc: Some(5),
+            sensor_enable: Some(4),
+        };
+
+        assert_eq!(active_gpio_settle_ms(&layout), SENSOR_BUS_STABILIZE_MS);
     }
 
     // --- Mock BPF interpreter ---

@@ -246,6 +246,14 @@ impl EspHal {
         }
     }
 
+    fn log_gpio_level(pin: i32, phase: &str, target_level: u32) {
+        let observed_level = unsafe { esp_idf_sys::gpio_get_level(pin) };
+        warn!(
+            "sensor_enable gpio={} phase={} target_level={} observed_level={}",
+            pin, phase, target_level, observed_level
+        );
+    }
+
     fn set_idle_inputs(board_layout: &BoardLayout) {
         if let Some(battery_adc) = board_layout.battery_adc {
             Self::set_input_no_pull(battery_adc as i32);
@@ -617,7 +625,9 @@ impl hal::Hal for EspHal {
         Self::set_idle_inputs(&self.board_layout);
         if let Some(sensor_enable) = self.board_layout.sensor_enable {
             Self::set_output_level(sensor_enable as i32, 1);
+            Self::log_gpio_level(sensor_enable as i32, "idle-live", 1);
             Self::configure_sleep_output(sensor_enable as i32, 1);
+            Self::log_gpio_level(sensor_enable as i32, "idle-sleep", 1);
         }
 
         self.gpio_output_configured = 0;
@@ -627,6 +637,7 @@ impl hal::Hal for EspHal {
     fn enter_active_gpio_state(&mut self) {
         if let Some(sensor_enable) = self.board_layout.sensor_enable {
             Self::set_output_level(sensor_enable as i32, 0);
+            Self::log_gpio_level(sensor_enable as i32, "active-live", 0);
         }
         if let Some(i2c0_sda) = self.board_layout.i2c0_sda {
             Self::set_input_pull_up(i2c0_sda as i32);

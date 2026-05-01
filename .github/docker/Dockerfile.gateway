@@ -3,8 +3,9 @@
 #
 # Multi-stage Dockerfile for the sonde-gateway container image.
 # Produces a minimal Alpine-based image containing sonde-gateway,
-# sonde-admin, the sensor handler binaries, espflash, and the
-# bundled modem firmware images prepared by gateway-container.yml.
+# sonde-admin, the sensor handler binaries, espflash, the bundled
+# BPF test-program artifacts, and the modem firmware images prepared
+# by gateway-container.yml.
 #
 # Published to ghcr.io/alan-jowett/sonde-gateway by the
 # gateway-container.yml CI workflow (GW-1800).
@@ -14,6 +15,8 @@
 #   # Requires modem artifacts at:
 #   #   .artifacts/modem-firmware/flash_image.bin
 #   #   .artifacts/modem-firmware-verbose/flash_image.bin
+#   # and BPF test-program artifacts at:
+#   #   .artifacts/test-programs/*.o
 #
 # Run:
 #   docker run -d \
@@ -48,6 +51,7 @@ FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d650
 # Non-root user for the gateway process (GW-1802 AC3).
 RUN addgroup -S sonde && adduser -S sonde -G sonde \
     && mkdir -p /var/lib/sonde \
+       /usr/local/share/sonde/test-programs \
        /usr/local/share/sonde/firmware/modem/default \
        /usr/local/share/sonde/firmware/modem/verbose \
     && chown sonde:sonde /var/lib/sonde
@@ -57,6 +61,7 @@ COPY --from=builder /src/target/release/sonde-gateway      /usr/local/bin/
 COPY --from=builder /src/target/release/sonde-admin         /usr/local/bin/
 COPY --from=builder /src/target/release/sonde-sht40-handler /usr/local/bin/
 COPY --from=builder /src/target/release/sonde-tmp102-handler /usr/local/bin/
+COPY .artifacts/test-programs/*.o /usr/local/share/sonde/test-programs/
 COPY .artifacts/modem-firmware/flash_image.bin /usr/local/share/sonde/firmware/modem/default/flash_image.bin
 COPY .artifacts/modem-firmware-verbose/flash_image.bin /usr/local/share/sonde/firmware/modem/verbose/flash_image.bin
 

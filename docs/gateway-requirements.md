@@ -2312,14 +2312,14 @@ The gateway MUST log `DIAG_REQUEST` reception and `DIAG_REPLY` transmission at `
 **Source:** Issue #780
 
 **Description:**  
-The CI MUST produce a multi-architecture Docker container image (`linux/amd64` + `linux/arm64`) published to `ghcr.io/alan-jowett/sonde-gateway`. The image MUST be based on Alpine Linux (musl libc) for minimal size. A multi-stage build ensures the final image contains no Rust toolchain or source code, and no build artifacts other than the intentionally bundled runtime assets described by GW-1804. Each architecture MUST be built natively on a per-arch GitHub runner (no QEMU cross-compilation).
+The CI MUST produce a multi-architecture Docker container image (`linux/amd64` + `linux/arm64`) published to `ghcr.io/alan-jowett/sonde-gateway`. The image MUST be based on Alpine Linux (musl libc) for minimal size. A multi-stage build ensures the final image contains no Rust toolchain or source code, and no build artifacts other than the intentionally bundled runtime assets described by GW-1804 and GW-1805. Each architecture MUST be built natively on a per-arch GitHub runner (no QEMU cross-compilation).
 
 **Acceptance criteria:**
 
 1. The image is based on Alpine Linux (musl libc).
-2. The image contains `sonde-gateway`, `sonde-admin`, `sonde-sht40-handler`, `sonde-tmp102-handler`, and `espflash`.
+2. The image contains `sonde-gateway`, `sonde-admin`, `sonde-sht40-handler`, `sonde-tmp102-handler`, `espflash`, and the bundled BPF test-program artifacts required by GW-1805.
 3. `docker manifest inspect` shows both `linux/amd64` and `linux/arm64` platforms.
-4. The final image contains no Rust toolchain or source code, and no build artifacts other than the intentionally bundled modem flash images required by GW-1804.
+4. The final image contains no Rust toolchain or source code, and no build artifacts other than the intentionally bundled modem flash images required by GW-1804 and the compiled BPF test-program artifacts required by GW-1805.
 5. Each architecture is built on a native runner (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`).
 6. Per-arch images pass smoke tests (binary execution, linkage verification) before any public tag is created.
 
@@ -2349,7 +2349,7 @@ Container images MUST follow a consistent tagging strategy. Release builds (git 
 **Source:** Issue #780
 
 **Description:**  
-The container image MUST be configured for production use. The `ENTRYPOINT` is `sonde-gateway` with a default `CMD` that points the database to the declared volume, selects `/dev/ttyACM0` as the default modem path, and uses the `env` key provider that is suitable for container deployments. A `VOLUME` at `/var/lib/sonde` is declared for database persistence. The gateway runs as a non-root `sonde` user inside the container. The `--key-provider file` and `--key-provider env` backends work without D-Bus. The image MUST also expose the bundled modem flash images at stable in-image paths so an operator can invoke `espflash` manually from the container when needed.
+The container image MUST be configured for production use. The `ENTRYPOINT` is `sonde-gateway` with a default `CMD` that points the database to the declared volume, selects `/dev/ttyACM0` as the default modem path, and uses the `env` key provider that is suitable for container deployments. A `VOLUME` at `/var/lib/sonde` is declared for database persistence. The gateway runs as a non-root `sonde` user inside the container. The `--key-provider file` and `--key-provider env` backends work without D-Bus. The image MUST also expose the bundled modem flash images and bundled BPF test-program artifacts at stable in-image paths so an operator can invoke `espflash` manually from the container when needed and ingest/inspect the test programs without rebuilding them locally.
 
 **Acceptance criteria:**
 
@@ -2361,6 +2361,7 @@ The container image MUST be configured for production use. The `ENTRYPOINT` is `
 6. Serial device access requires the operator to pass `--device` and `--group-add` at `docker run` time.
 7. The default modem flash image is available at `/usr/local/share/sonde/firmware/modem/default/flash_image.bin`.
 8. The verbose modem flash image is available at `/usr/local/share/sonde/firmware/modem/verbose/flash_image.bin`.
+9. The bundled compiled BPF test programs are available under `/usr/local/share/sonde/test-programs/`.
 
 ---
 
@@ -2397,6 +2398,42 @@ The gateway container image MUST bundle the modem flashing assets needed for man
 3. The image contains the verbose merged modem flash image.
 4. The default and verbose files bundled into the image are byte-identical to the `modem-firmware` and `modem-firmware-verbose` artifacts produced for the same workflow run as the container image build.
 5. The container's default startup path remains `sonde-gateway`; using the bundled flashing assets requires an operator to invoke `espflash` manually.
+
+---
+
+### GW-1805  Bundled BPF test-program assets
+
+**Priority:** Must
+**Source:** User request
+
+**Description:**
+The gateway container image MUST bundle the compiled BPF test-program artifacts from `test-programs/` at stable in-image paths. These bundled `.o` files are operator/test assets rather than runtime dependencies of `sonde-gateway`; the default container startup path remains unchanged. The bundled BPF artifacts MUST come from the same git revision and workflow run as the nightly/release build that produced the container image.
+
+**Acceptance criteria:**
+
+1. The container image contains the compiled `.o` outputs for the supported BPF test programs from `test-programs/`.
+2. The bundled BPF artifacts are readable by the container's default non-root `sonde` user.
+3. The bundled BPF artifacts are available under a stable in-image directory rooted at `/usr/local/share/sonde/test-programs/`.
+4. The bundled BPF artifacts come from the same git revision and workflow run as the container image build.
+5. Bundling the BPF artifacts does not change the container's default startup path; operators access them via explicit entrypoint override or by copying them out of the image.
+
+---
+
+### GW-1806  Nightly release sensor assets
+
+**Priority:** Must
+**Source:** User request
+
+**Description:**
+The nightly/release orchestrator workflow MUST build and publish standalone sensor-support assets in addition to the existing gateway/admin binaries, firmware, apps, installers, and container image. These assets include the Rust handler binaries `sonde-tmp102-handler` and `sonde-sht40-handler` for both `linux/amd64` and `linux/arm64`, plus the compiled BPF test-program artifacts from `test-programs/` built once as arch-independent outputs. The published release assets and intermediate workflow artifacts MUST use distinct names that avoid architecture collisions.
+
+**Acceptance criteria:**
+
+1. The nightly/release workflow publishes `sonde-tmp102-handler` and `sonde-sht40-handler` for both `linux/amd64` and `linux/arm64`.
+2. The nightly/release workflow publishes the compiled BPF test-program `.o` artifacts from `test-programs/` once as arch-independent outputs.
+3. Release asset names distinguish amd64 and arm64 handler binaries without collisions.
+4. The release notes / asset manifest enumerate the handler binaries and bundled BPF test-program assets.
+5. The gateway container build can consume the same-run BPF test-program artifacts when producing the container image for that workflow execution.
 
 ---
 
@@ -2532,3 +2569,5 @@ The gateway container image MUST bundle the modem flashing assets needed for man
 | GW-1802 | Container runtime configuration | Must |
 | GW-1803 | Optional secret-service dependency | Must |
 | GW-1804 | Bundled modem flashing assets | Must |
+| GW-1805 | Bundled BPF test-program assets | Must |
+| GW-1806 | Nightly release sensor assets | Must |

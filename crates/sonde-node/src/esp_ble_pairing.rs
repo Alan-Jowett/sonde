@@ -38,8 +38,8 @@ use crate::ble_pairing::{
     BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
 };
 use crate::error::NodeResult;
+use crate::esp_hal::EspHal;
 use crate::esp_transport::EspNowTransport;
-use crate::hal::Hal;
 use crate::map_storage::MapStorage;
 use crate::traits::PlatformStorage;
 use sonde_protocol::{BoardLayout, BLE_DIAG_RELAY_REQUEST};
@@ -84,7 +84,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     map_storage: &mut MapStorage,
     button_held: bool,
     mut transport: Option<&mut EspNowTransport>,
-    hal: &mut dyn Hal,
+    hal: &mut EspHal,
     board_layout: &BoardLayout,
 ) -> NodeResult<()> {
     let paired_on_entry = storage.read_key().is_some();
@@ -430,31 +430,38 @@ fn should_log_pairing_battery(now_ms: u64, last_log_at_ms: Option<u64>) -> bool 
     }
 }
 
-fn log_pairing_battery_sample(hal: &mut dyn Hal, board_layout: &BoardLayout) {
+fn log_pairing_battery_sample(hal: &mut EspHal, board_layout: &BoardLayout) {
     let Some(battery_pin) = board_layout.battery_adc else {
         return;
     };
     if !matches!(battery_pin, 0..=4) {
         warn!(
-            "BLE: pairing battery sample skipped because GPIO{} is not ADC-capable on ESP32-C3",
+            "BLE: pairing battery sample skipped because GPIO{} is not ADC1-capable on ESP32-C3",
             battery_pin
         );
         return;
     }
 
     let channel = battery_pin as u32;
-    let (raw, sensed_mv) = hal.adc_read_diagnostics(channel);
+    let (raw, sensed_mv) = hal.adc_read_oneshot_diagnostics(channel);
+    if raw < 0 {
+        warn!(
+            "BLE: pairing oneshot battery sample failed gpio={} channel={}",
+            battery_pin, channel
+        );
+        return;
+    }
     if sensed_mv < 0 {
         warn!(
-            "BLE: pairing battery sample failed gpio={} channel={}",
-            battery_pin, channel
+            "BLE: pairing oneshot battery sample raw-only gpio={} channel={} raw={}",
+            battery_pin, channel, raw
         );
         return;
     }
 
     let battery_mv = (sensed_mv as u32).saturating_mul(2);
     warn!(
-        "BLE: pairing battery sample gpio={} channel={} raw={} sensed_mv={} battery_mv={}",
+        "BLE: pairing oneshot battery sample gpio={} channel={} raw={} sensed_mv={} battery_mv={}",
         battery_pin, channel, raw, sensed_mv, battery_mv
     );
 }

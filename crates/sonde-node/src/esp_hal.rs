@@ -66,9 +66,6 @@ pub struct EspHal {
     i2c0_initialized: bool,
     board_layout: BoardLayout,
     adc_width_configured: bool,
-    adc_calibration_handle: esp_idf_sys::adc_cali_handle_t,
-    adc_calibration_channel: Option<u32>,
-    adc_calibration_attempted: bool,
     /// Bitmask of GPIO pins already configured as output.
     gpio_output_configured: u64,
     /// Bitmask of ADC channels already configured with attenuation.
@@ -82,9 +79,6 @@ impl EspHal {
             i2c0_initialized: false,
             board_layout,
             adc_width_configured: false,
-            adc_calibration_handle: ptr::null_mut(),
-            adc_calibration_channel: None,
-            adc_calibration_attempted: false,
             gpio_output_configured: 0,
             adc_channels_configured: 0,
         };
@@ -268,43 +262,102 @@ impl EspHal {
         }
     }
 
-    fn ensure_adc_calibration(&mut self, channel: u32) -> bool {
-        if self.adc_calibration_attempted && self.adc_calibration_channel == Some(channel) {
-            return !self.adc_calibration_handle.is_null();
+    fn delete_oneshot_unit(unit: esp_idf_sys::adc_oneshot_unit_handle_t) {
+        if unit.is_null() {
+            return;
+        }
+        let err = unsafe { esp_idf_sys::adc_oneshot_del_unit(unit) };
+        if err != esp_idf_sys::ESP_OK as i32 {
+            warn!("adc_oneshot_del_unit failed: {err}");
+        }
+    }
+
+    fn delete_curve_fitting_calibration(handle: esp_idf_sys::adc_cali_handle_t) {
+        if handle.is_null() {
+            return;
+        }
+        let err = unsafe { esp_idf_sys::adc_cali_delete_scheme_curve_fitting(handle) };
+        if err != esp_idf_sys::ESP_OK as i32 {
+            warn!("adc_cali_delete_scheme_curve_fitting failed: {err}");
+        }
+    }
+
+    /// Read an ADC1 channel via the official ESP-IDF oneshot + calibration path.
+    ///
+    /// This is currently used only for pairing-mode diagnostics so we can
+    /// compare the official driver path against the legacy wake-cycle path
+    /// without changing normal wake behavior yet.
+    pub fn adc_read_oneshot_diagnostics(&mut self, channel: u32) -> (i32, i32) {
+        const ADC_ONESHOT_ATTEN: esp_idf_sys::adc_atten_t =
+            esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11;
+        const ADC_ONESHOT_BITWIDTH: esp_idf_sys::adc_bitwidth_t =
+            esp_idf_sys::adc_bitwidth_t_ADC_BITWIDTH_12;
+
+        if channel > 4 {
+            warn!("adc_oneshot_read invalid ADC1 channel: {channel}");
+            return (-1, -1);
         }
 
-        if !self.adc_calibration_handle.is_null() {
-            unsafe {
-                let err =
-                    esp_idf_sys::adc_cali_delete_scheme_curve_fitting(self.adc_calibration_handle);
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    warn!("adc_cali_delete_scheme_curve_fitting failed: {err}");
-                }
-            }
-            self.adc_calibration_handle = ptr::null_mut();
-            self.adc_calibration_channel = None;
-        }
-
-        self.adc_calibration_attempted = true;
+        let adc_channel = channel as esp_idf_sys::adc_channel_t;
+        let mut unit: esp_idf_sys::adc_oneshot_unit_handle_t = ptr::null_mut();
+        let mut cali_handle: esp_idf_sys::adc_cali_handle_t = ptr::null_mut();
 
         unsafe {
-            let config = esp_idf_sys::adc_cali_curve_fitting_config_t {
-                unit_id: esp_idf_sys::adc_unit_t_ADC_UNIT_1,
-                chan: channel,
-                atten: esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11,
-                bitwidth: esp_idf_sys::adc_bits_width_t_ADC_WIDTH_BIT_12,
-            };
-            let mut handle: esp_idf_sys::adc_cali_handle_t = ptr::null_mut();
-            let err = esp_idf_sys::adc_cali_create_scheme_curve_fitting(&config, &mut handle);
+            let mut unit_config: esp_idf_sys::adc_oneshot_unit_init_cfg_t = core::mem::zeroed();
+            unit_config.unit_id = esp_idf_sys::adc_unit_t_ADC_UNIT_1;
+            let err = esp_idf_sys::adc_oneshot_new_unit(&unit_config, &mut unit);
             if err != esp_idf_sys::ESP_OK as i32 {
-                warn!("adc_cali_create_scheme_curve_fitting failed: {err}");
-                return false;
+                warn!("adc_oneshot_new_unit failed for channel {channel}: {err}");
+                return (-1, -1);
             }
-            self.adc_calibration_handle = handle;
-            self.adc_calibration_channel = Some(channel);
-        }
 
-        true
+            let mut chan_config: esp_idf_sys::adc_oneshot_chan_cfg_t = core::mem::zeroed();
+            chan_config.atten = ADC_ONESHOT_ATTEN;
+            chan_config.bitwidth = ADC_ONESHOT_BITWIDTH;
+            let err = esp_idf_sys::adc_oneshot_config_channel(unit, adc_channel, &chan_config);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("adc_oneshot_config_channel failed for channel {channel}: {err}");
+                Self::delete_oneshot_unit(unit);
+                return (-1, -1);
+            }
+
+            let mut raw = 0i32;
+            let err = esp_idf_sys::adc_oneshot_read(unit, adc_channel, &mut raw);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("adc_oneshot_read failed for channel {channel}: {err}");
+                Self::delete_oneshot_unit(unit);
+                return (-1, -1);
+            }
+
+            let mut cali_config: esp_idf_sys::adc_cali_curve_fitting_config_t = core::mem::zeroed();
+            cali_config.unit_id = esp_idf_sys::adc_unit_t_ADC_UNIT_1;
+            #[cfg(esp_idf_version_at_least_5_1_1)]
+            {
+                cali_config.chan = adc_channel;
+            }
+            cali_config.atten = ADC_ONESHOT_ATTEN;
+            cali_config.bitwidth = ADC_ONESHOT_BITWIDTH;
+            let err =
+                esp_idf_sys::adc_cali_create_scheme_curve_fitting(&cali_config, &mut cali_handle);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("adc_cali_create_scheme_curve_fitting failed for channel {channel}: {err}");
+                Self::delete_oneshot_unit(unit);
+                return (raw, -1);
+            }
+
+            let mut mv = 0i32;
+            let err = esp_idf_sys::adc_cali_raw_to_voltage(cali_handle, raw, &mut mv);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("adc_cali_raw_to_voltage failed for channel {channel}: {err}");
+                Self::delete_curve_fitting_calibration(cali_handle);
+                Self::delete_oneshot_unit(unit);
+                return (raw, -1);
+            }
+
+            Self::delete_curve_fitting_calibration(cali_handle);
+            Self::delete_oneshot_unit(unit);
+            (raw, mv)
+        }
     }
 }
 
@@ -491,33 +544,6 @@ impl hal::Hal for EspHal {
         }
     }
 
-    fn adc_read_mv(&mut self, channel: u32) -> i32 {
-        let (_, mv) = self.adc_read_diagnostics(channel);
-        mv
-    }
-
-    fn adc_read_diagnostics(&mut self, channel: u32) -> (i32, i32) {
-        let raw = self.adc_read(channel);
-        if raw < 0 {
-            return (raw, raw);
-        }
-
-        if !self.ensure_adc_calibration(channel) {
-            return (raw, hal::Hal::adc_read_mv(self, channel));
-        }
-
-        unsafe {
-            let mut mv = 0i32;
-            let err =
-                esp_idf_sys::adc_cali_raw_to_voltage(self.adc_calibration_handle, raw, &mut mv);
-            if err != esp_idf_sys::ESP_OK as i32 {
-                warn!("adc_cali_raw_to_voltage failed: {err}");
-                return (raw, hal::Hal::adc_read_mv(self, channel));
-            }
-            (raw, mv)
-        }
-    }
-
     fn enter_idle_gpio_state(&mut self) {
         if self.i2c0_initialized {
             let err = unsafe { esp_idf_sys::i2c_driver_delete(esp_idf_sys::i2c_port_t_I2C_NUM_0) };
@@ -544,18 +570,6 @@ impl hal::Hal for EspHal {
         self.gpio_output_configured = 0;
         self.adc_width_configured = false;
         self.adc_channels_configured = 0;
-        if !self.adc_calibration_handle.is_null() {
-            unsafe {
-                let err =
-                    esp_idf_sys::adc_cali_delete_scheme_curve_fitting(self.adc_calibration_handle);
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    warn!("adc_cali_delete_scheme_curve_fitting failed: {err}");
-                }
-            }
-            self.adc_calibration_handle = ptr::null_mut();
-        }
-        self.adc_calibration_channel = None;
-        self.adc_calibration_attempted = false;
     }
 
     fn enter_active_gpio_state(&mut self) {

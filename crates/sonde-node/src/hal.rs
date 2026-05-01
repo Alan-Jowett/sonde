@@ -53,12 +53,11 @@ pub trait Hal {
 
     /// Read an ADC channel and convert it to millivolts.
     ///
-    /// The default implementation uses the legacy fixed-scale approximation
-    /// that existing tests and simple mocks rely on. Platform HALs should
-    /// override this with a calibrated conversion when available.
+    /// The default implementation matches the effective ESP32-C3 ADC1 raw
+    /// range observed by this firmware path.
     fn adc_read_mv(&mut self, channel: u32) -> i32 {
         const ADC_APPROX_FULL_SCALE_MV: i64 = 2500;
-        const ADC_APPROX_RAW_MAX: i64 = 4095;
+        const ADC_APPROX_RAW_MAX: i64 = 2047;
 
         let raw = self.adc_read(channel);
         if raw < 0 {
@@ -70,12 +69,12 @@ pub trait Hal {
 
     /// Read an ADC channel and return both the raw code and converted millivolts.
     ///
-    /// The default implementation uses a single raw sample and the default
-    /// `adc_read_mv` approximation so callers can log the exact sample used
-    /// for higher-level calculations.
+    /// The default implementation uses a single raw sample and the same
+    /// conversion used by `adc_read_mv` so callers can log the exact sample
+    /// used for higher-level calculations.
     fn adc_read_diagnostics(&mut self, channel: u32) -> (i32, i32) {
         const ADC_APPROX_FULL_SCALE_MV: i64 = 2500;
-        const ADC_APPROX_RAW_MAX: i64 = 4095;
+        const ADC_APPROX_RAW_MAX: i64 = 2047;
 
         let raw = self.adc_read(channel);
         if raw < 0 {

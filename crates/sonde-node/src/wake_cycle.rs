@@ -1434,7 +1434,7 @@ mod tests {
         assert_eq!(hal.adc_reads, vec![2]);
         assert_eq!(
             battery_mv,
-            ((2048u32 * 2500) / 4095) * BATTERY_DIVIDER_RATIO
+            ((2048u32 * 2500) / 2047) * BATTERY_DIVIDER_RATIO
         );
     }
 
@@ -1505,7 +1505,7 @@ mod tests {
             &mut async_queue,
         );
 
-        let expected_battery_mv = ((2048u32 * 2500) / 4095) * BATTERY_DIVIDER_RATIO;
+        let expected_battery_mv = ((2048u32 * 2500) / 2047) * BATTERY_DIVIDER_RATIO;
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         assert_eq!(hal.gpio_state_transitions, vec!["active", "idle"]);

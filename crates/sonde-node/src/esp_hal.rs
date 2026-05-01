@@ -492,13 +492,18 @@ impl hal::Hal for EspHal {
     }
 
     fn adc_read_mv(&mut self, channel: u32) -> i32 {
+        let (_, mv) = self.adc_read_diagnostics(channel);
+        mv
+    }
+
+    fn adc_read_diagnostics(&mut self, channel: u32) -> (i32, i32) {
         let raw = self.adc_read(channel);
         if raw < 0 {
-            return raw;
+            return (raw, raw);
         }
 
         if !self.ensure_adc_calibration(channel) {
-            return hal::Hal::adc_read_mv(self, channel);
+            return (raw, hal::Hal::adc_read_mv(self, channel));
         }
 
         unsafe {
@@ -507,9 +512,9 @@ impl hal::Hal for EspHal {
                 esp_idf_sys::adc_cali_raw_to_voltage(self.adc_calibration_handle, raw, &mut mv);
             if err != esp_idf_sys::ESP_OK as i32 {
                 warn!("adc_cali_raw_to_voltage failed: {err}");
-                return hal::Hal::adc_read_mv(self, channel);
+                return (raw, hal::Hal::adc_read_mv(self, channel));
             }
-            mv
+            (raw, mv)
         }
     }
 

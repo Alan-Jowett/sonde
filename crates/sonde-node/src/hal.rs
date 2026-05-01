@@ -68,6 +68,25 @@ pub trait Hal {
         ((raw as i64).saturating_mul(ADC_APPROX_FULL_SCALE_MV) / ADC_APPROX_RAW_MAX) as i32
     }
 
+    /// Read an ADC channel and return both the raw code and converted millivolts.
+    ///
+    /// The default implementation uses a single raw sample and the default
+    /// `adc_read_mv` approximation so callers can log the exact sample used
+    /// for higher-level calculations.
+    fn adc_read_diagnostics(&mut self, channel: u32) -> (i32, i32) {
+        const ADC_APPROX_FULL_SCALE_MV: i64 = 2500;
+        const ADC_APPROX_RAW_MAX: i64 = 4095;
+
+        let raw = self.adc_read(channel);
+        if raw < 0 {
+            return (raw, raw);
+        }
+
+        let mv =
+            ((raw as i64).saturating_mul(ADC_APPROX_FULL_SCALE_MV) / ADC_APPROX_RAW_MAX) as i32;
+        (raw, mv)
+    }
+
     /// Enter the paired board layout's idle GPIO state.
     ///
     /// In the idle state, provisioned I2C, 1-Wire, and battery-sense pins

@@ -95,7 +95,7 @@ fn capture_current_cycle_battery(hal: &mut dyn Hal, board_layout: &BoardLayout) 
         return BATTERY_FALLBACK_MV;
     };
 
-    let sensed_mv = hal.adc_read_mv(channel);
+    let (raw, sensed_mv) = hal.adc_read_diagnostics(channel);
     if sensed_mv < 0 {
         log::warn!(
             "battery ADC sample failed on GPIO {} (channel {}); using fallback {} mV",
@@ -106,7 +106,16 @@ fn capture_current_cycle_battery(hal: &mut dyn Hal, board_layout: &BoardLayout) 
         return BATTERY_FALLBACK_MV;
     }
 
-    (sensed_mv as u32).saturating_mul(BATTERY_DIVIDER_RATIO)
+    let battery_mv = (sensed_mv as u32).saturating_mul(BATTERY_DIVIDER_RATIO);
+    log::warn!(
+        "battery ADC sample gpio={} channel={} raw={} sensed_mv={} battery_mv={}",
+        battery_pin,
+        channel,
+        raw,
+        sensed_mv,
+        battery_mv
+    );
+    battery_mv
 }
 
 fn active_gpio_settle_ms(board_layout: &BoardLayout) -> u32 {

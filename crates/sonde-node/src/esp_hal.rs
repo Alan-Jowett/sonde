@@ -249,10 +249,12 @@ impl EspHal {
             if err != esp_idf_sys::ESP_OK as i32 {
                 warn!("gpio_reset_pin({pin}) failed: {err}");
             }
-            let err =
-                esp_idf_sys::gpio_set_direction(pin, esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT);
+            let err = esp_idf_sys::gpio_set_direction(
+                pin,
+                esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT_OUTPUT,
+            );
             if err != esp_idf_sys::ESP_OK as i32 {
-                warn!("gpio_set_direction({pin}, OUTPUT) failed: {err}");
+                warn!("gpio_set_direction({pin}, INPUT_OUTPUT) failed: {err}");
                 return;
             }
             let err = esp_idf_sys::gpio_pullup_dis(pin);

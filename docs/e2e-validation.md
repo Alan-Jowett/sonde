@@ -181,14 +181,14 @@ impl E2eNode {
 
 **Procedure:**
 1. Node runs `run_wake_cycle()`.
-2. Node sends WAKE with `program_hash = []`, `battery_mv = 3300`.
+2. Node sends WAKE with `program_hash = []`, `battery_mv = 0`.
 3. Gateway receives WAKE, creates session, responds with COMMAND(NOP).
 4. Node receives COMMAND, verifies AEAD authentication, proceeds to BPF execution (no program → skip).
 5. Node sleeps.
 
 **Assertions:**
 - `run_wake_cycle()` returns `Sleep { seconds: 60 }`.
-- Gateway's `NodeRecord.last_battery_mv` updated to 3300.
+- Gateway's `NodeRecord.last_battery_mv` updated to 0.
 - Gateway's `NodeRecord.firmware_abi_version` updated.
 - Gateway runtime `last_seen` updated.
 

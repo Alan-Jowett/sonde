@@ -1474,7 +1474,7 @@ mod tests {
     }
 
     #[test]
-    fn run_wake_cycle_enters_active_gpio_state_only_for_bpf_execution() {
+    fn run_wake_cycle_enters_active_gpio_state_for_battery_capture_and_optional_bpf_execution() {
         let psk = [0x42u8; 32];
         let sha = crate::crypto::SoftwareSha256;
         let aead = crate::node_aead::NodeAead;

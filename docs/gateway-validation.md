@@ -3616,9 +3616,9 @@ A configurable stub handler process (or in-process mock) that:
 
 ## 17  Container image tests
 
-### T-1800  Container image contains expected binaries and flashing tool
+### T-1800  Container image contains expected binaries, flashing tool, and bundled BPF assets
 
-**Traces to:** GW-1800 (AC-2, AC-4), GW-1804 (AC-1)
+**Traces to:** GW-1800 (AC-2, AC-4), GW-1804 (AC-1), GW-1805 (AC-1)
 
 **Preconditions:** Container image built from `Dockerfile.gateway` for the native architecture.
 
@@ -3628,10 +3628,11 @@ A configurable stub handler process (or in-process mock) that:
 3. Run `docker run --rm --entrypoint sonde-sht40-handler <image> --version`.
 4. Run `docker run --rm --entrypoint sonde-tmp102-handler <image> --version`.
 5. Run `docker run --rm --entrypoint espflash <image> --help`.
+6. Run `docker run --rm --entrypoint sh <image> -c 'find /usr/local/share/sonde/test-programs -maxdepth 1 -name "*.o" | grep -q .'`.
 
 **Expected:**
-1. All five commands exit 0; the four Sonde binaries print version strings and `espflash` prints help text.
-2. No Rust toolchain or source code is present in the image; the only non-binary build outputs present are the intentionally bundled modem flash images.
+1. All six commands exit 0; the four Sonde binaries print version strings, `espflash` prints help text, and at least one bundled BPF test-program object is present.
+2. No Rust toolchain or source code is present in the image; the only non-binary build outputs present are the intentionally bundled modem flash images and compiled BPF test-program objects.
 
 ---
 
@@ -3702,6 +3703,24 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1802b  Container exposes bundled BPF test-program paths
+
+**Traces to:** GW-1802 (AC-9), GW-1805 (AC-1, AC-2, AC-3)
+
+**Preconditions:** Container image built.
+
+**Steps:**
+1. Run `docker run --rm --entrypoint sh <image> -c 'test -d /usr/local/share/sonde/test-programs'`.
+2. Run `docker run --rm --entrypoint sh <image> -c 'find /usr/local/share/sonde/test-programs -maxdepth 1 -name "*.o" | grep -q .'`.
+3. Run `docker run --rm --entrypoint sh <image> -c 'find /usr/local/share/sonde/test-programs -maxdepth 1 -name "*.o" -readable | grep -q .'`.
+
+**Expected:**
+1. The stable bundled BPF directory exists at `/usr/local/share/sonde/test-programs`.
+2. The directory contains compiled `.o` test-program artifacts.
+3. The bundled `.o` files are readable by the container's default non-root user.
+
+---
+
 ### T-1803  Build without keyring feature
 
 **Traces to:** GW-1803 (AC-1, AC-2, AC-4, AC-5)
@@ -3767,6 +3786,44 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1806a  Bundled BPF test programs match same-run CI artifacts
+
+**Traces to:** GW-1805 (AC-4), GW-1806 (AC-5)
+
+**Preconditions:** A workflow run has produced the compiled BPF test-program artifact set and the container image for the same commit/tag.
+
+**Steps:**
+1. Download the compiled BPF test-program artifact set from the same workflow run that produced the container image.
+2. Extract `/usr/local/share/sonde/test-programs/` from the container image.
+3. Compare the file list and SHA-256 hashes of the downloaded `.o` files against the in-image copies.
+
+**Expected:**
+1. The same set of `.o` filenames exists in both locations.
+2. Each in-image `.o` file is byte-identical to the same-run workflow artifact.
+3. The compared artifacts and image were all produced by the same workflow run.
+
+---
+
+### T-1807  Nightly release publishes sensor handlers and BPF test programs
+
+**Traces to:** GW-1806 (AC-1, AC-2, AC-3, AC-4)
+
+**Preconditions:** `nightly-release.yml` run completed successfully.
+
+**Steps:**
+1. Inspect the workflow artifacts and/or GitHub release assets produced by the run.
+2. Verify separate Linux handler assets exist for amd64 and arm64 for both `sonde-sht40-handler` and `sonde-tmp102-handler`.
+3. Verify the compiled arch-independent BPF test-program artifact set is present.
+4. Inspect the generated release notes / asset manifest.
+
+**Expected:**
+1. Distinct amd64 and arm64 assets exist for both Rust handler binaries.
+2. A compiled BPF `.o` artifact set from `test-programs/` is present exactly once as an arch-independent asset group.
+3. Asset names distinguish architectures without collisions.
+4. The release notes / asset manifest enumerate the handler binaries and BPF test-program assets.
+
+---
+
 | GW-1306 | T-1306a, T-1306b, T-1306c, T-1306d |
 | GW-1307 | T-1307a, T-1307b, T-1307c, T-1307d, T-1307e, T-1307f, T-1307g, T-1307h, T-1307i |
 | GW-1308 | T-1308 |
@@ -3795,6 +3852,8 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1706 | T-1711 |
 | GW-1800 | T-1800, T-1804, T-1805 |
 | GW-1801 | T-1801, T-1801a, T-1804 |
-| GW-1802 | T-1802, T-1802a |
+| GW-1802 | T-1802, T-1802a, T-1802b |
 | GW-1803 | T-1803 |
 | GW-1804 | T-1800, T-1802a, T-1806 |
+| GW-1805 | T-1800, T-1802b, T-1806a |
+| GW-1806 | T-1806a, T-1807 |

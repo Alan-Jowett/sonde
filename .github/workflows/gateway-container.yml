@@ -31,10 +31,41 @@ jobs:
     name: Build modem firmware (same run)
     uses: ./.github/workflows/esp32-modem.yml
 
+  # Standalone dispatches also need same-run compiled BPF test-program artifacts.
+  # workflow_call executions expect the caller to upload a bpf-test-programs artifact.
+  bpf-test-programs:
+    if: github.event_name == 'workflow_dispatch'
+    name: Build BPF test programs (same run)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang make
+
+      - name: Build BPF test programs
+        run: make -C test-programs
+
+      - name: Stage BPF test programs
+        run: |
+          mkdir -p artifact-staging
+          cp test-programs/*.o artifact-staging/
+
+      - name: Upload BPF test programs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bpf-test-programs
+          path: artifact-staging/*
+          if-no-files-found: error
+          retention-days: 7
+
   # ── Per-architecture native builds ────────────────────────────────
   build:
-    needs: [modem-firmware]
-    if: ${{ always() && (needs.modem-firmware.result == 'success' || needs.modem-firmware.result == 'skipped') }}
+    needs: [modem-firmware, bpf-test-programs]
+    if: ${{ always() && (needs.modem-firmware.result == 'success' || needs.modem-firmware.result == 'skipped') && (needs.bpf-test-programs.result == 'success' || needs.bpf-test-programs.result == 'skipped') }}
     strategy:
       matrix:
         include:
@@ -62,6 +93,12 @@ jobs:
         with:
           name: modem-firmware-verbose
           path: .artifacts/modem-firmware-verbose
+
+      - name: Download BPF test-program artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bpf-test-programs
+          path: .artifacts/test-programs
 
       - name: Log in to GitHub Container Registry
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
@@ -94,6 +131,8 @@ jobs:
           docker run --rm --entrypoint sonde-sht40-handler ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} --version
           docker run --rm --entrypoint sonde-tmp102-handler ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} --version
           docker run --rm --entrypoint espflash ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} --help
+          docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
+            'find /usr/local/share/sonde/test-programs -maxdepth 1 -name "*.o" | grep -q .'
 
       - name: Smoke test — runtime defaults
         run: |
@@ -126,7 +165,15 @@ jobs:
         run: |
           docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
             'test -r /usr/local/share/sonde/firmware/modem/default/flash_image.bin \
-             && test -r /usr/local/share/sonde/firmware/modem/verbose/flash_image.bin'
+              && test -r /usr/local/share/sonde/firmware/modem/verbose/flash_image.bin'
+
+      - name: Smoke test — bundled BPF test programs
+        run: |
+          docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
+            'test -d /usr/local/share/sonde/test-programs \
+             && set -- /usr/local/share/sonde/test-programs/*.o \
+             && test -e "$1" \
+             && for f in "$@"; do test -r "$f"; done'
 
       - name: Smoke test — runtime image excludes Rust toolchain and source tree
         run: |
@@ -148,6 +195,24 @@ jobs:
           )
           test "$default_actual" = "$default_expected"
           test "$verbose_actual" = "$verbose_expected"
+
+      - name: Smoke test — BPF artifact hashes match same-run downloads
+        run: |
+          set -euo pipefail
+          find .artifacts/test-programs -maxdepth 1 -name '*.o' -printf '%f\n' | sort > expected-files.txt
+          docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
+            'set -- /usr/local/share/sonde/test-programs/*.o
+             test -e "$1"
+             for f in "$@"; do basename "$f"; done | sort' > actual-files.txt
+          diff -u expected-files.txt actual-files.txt
+          while IFS= read -r file; do
+            expected="$(sha256sum ".artifacts/test-programs/${file}" | awk '{print $1}')"
+            actual="$(
+              docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
+                "sha256sum /usr/local/share/sonde/test-programs/${file} | awk '{print \\\$1}'"
+            )"
+            test "$actual" = "$expected"
+          done < expected-files.txt
 
       # Push the per-arch image with a temporary tag (consumed by the
       # manifest job). Include the workflow run ID so overlapping runs

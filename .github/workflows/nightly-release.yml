@@ -80,9 +80,84 @@ jobs:
     if: needs.should_run.outputs.run_builds == 'true'
     uses: ./.github/workflows/ci.yml
 
+  bpf-test-programs:
+    name: BPF test programs
+    needs: [should_run]
+    if: needs.should_run.outputs.run_builds == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang make
+
+      - name: Build BPF test programs
+        run: make -C test-programs
+
+      - name: Stage BPF test programs
+        run: |
+          mkdir -p artifact-staging
+          cp test-programs/*.o artifact-staging/
+
+      - name: Upload BPF test programs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bpf-test-programs
+          path: artifact-staging/*
+          if-no-files-found: error
+          retention-days: 7
+
+  sensor-handlers:
+    name: Sensor handlers (${{ matrix.arch }})
+    needs: [should_run]
+    if: needs.should_run.outputs.run_builds == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            artifact: sensor-handlers-linux-amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: sensor-handlers-linux-arm64
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          key: ${{ matrix.arch }}-sensor-handlers
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libudev-dev
+
+      - name: Build sensor handlers
+        run: cargo build --release -p sonde-sht40-handler -p sonde-tmp102-handler
+
+      - name: Stage sensor handlers
+        run: |
+          mkdir -p artifact-staging
+          cp target/release/sonde-sht40-handler artifact-staging/
+          cp target/release/sonde-tmp102-handler artifact-staging/
+
+      - name: Upload sensor handlers
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: artifact-staging/*
+          if-no-files-found: error
+          retention-days: 7
+
   gateway-container:
     name: Gateway container
-    needs: [should_run, modem-firmware]
+    needs: [should_run, modem-firmware, bpf-test-programs]
     if: needs.should_run.outputs.run_builds == 'true'
     uses: ./.github/workflows/gateway-container.yml
     permissions:
@@ -259,7 +334,7 @@ jobs:
   # ── Publish release ────────────────────────────────────────────────
   release:
     name: Publish nightly
-    needs: [should_run, gateway, gateway-container, node-firmware, modem-firmware, desktop, android, installer-linux, installer-linux-arm64, installer-windows]
+    needs: [should_run, gateway, bpf-test-programs, sensor-handlers, gateway-container, node-firmware, modem-firmware, desktop, android, installer-linux, installer-linux-arm64, installer-windows]
     if: needs.should_run.outputs.run_builds == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -299,10 +374,15 @@ jobs:
           cp artifacts/gateway-linux-x86_64/sonde-admin     release-assets/sonde-admin
           cp artifacts/gateway-linux-arm64/sonde-gateway    release-assets/sonde-gateway-arm64
           cp artifacts/gateway-linux-arm64/sonde-admin      release-assets/sonde-admin-arm64
+          cp artifacts/sensor-handlers-linux-amd64/sonde-sht40-handler  release-assets/sonde-sht40-handler
+          cp artifacts/sensor-handlers-linux-amd64/sonde-tmp102-handler release-assets/sonde-tmp102-handler
+          cp artifacts/sensor-handlers-linux-arm64/sonde-sht40-handler  release-assets/sonde-sht40-handler-arm64
+          cp artifacts/sensor-handlers-linux-arm64/sonde-tmp102-handler release-assets/sonde-tmp102-handler-arm64
           cp artifacts/gateway-windows-x86_64/sonde-gateway.exe release-assets/sonde-gateway.exe
           cp artifacts/gateway-windows-x86_64/sonde-admin.exe   release-assets/sonde-admin.exe
           cp artifacts/node-firmware/flash_image.bin        release-assets/node-flash_image.bin
           cp artifacts/modem-firmware/flash_image.bin       release-assets/modem-flash_image.bin
+          tar -C artifacts/bpf-test-programs -czf release-assets/sonde-bpf-test-programs.tar.gz .
           for f in artifacts/sonde-pair-windows/*; do cp -r "$f" release-assets/; done
           for f in artifacts/sonde-pair-linux/*;   do cp -r "$f" release-assets/; done
           for f in artifacts/sonde-pair-android-debug/*; do cp -r "$f" release-assets/; done
@@ -323,10 +403,15 @@ jobs:
           | Admin CLI (Linux x86_64) | `sonde-admin` |
           | Gateway (Linux arm64) | `sonde-gateway-arm64` |
           | Admin CLI (Linux arm64) | `sonde-admin-arm64` |
+          | SHT40 handler (Linux x86_64) | `sonde-sht40-handler` |
+          | TMP102 handler (Linux x86_64) | `sonde-tmp102-handler` |
+          | SHT40 handler (Linux arm64) | `sonde-sht40-handler-arm64` |
+          | TMP102 handler (Linux arm64) | `sonde-tmp102-handler-arm64` |
           | Gateway (Windows x86_64) | `sonde-gateway.exe` |
           | Admin CLI (Windows) | `sonde-admin.exe` |
           | ESP32-C3 Node firmware | `node-flash_image.bin` |
           | ESP32-S3 Modem firmware | `modem-flash_image.bin` |
+          | BPF test programs | `sonde-bpf-test-programs.tar.gz` |
           | Desktop — Windows | `*.exe` |
           | Desktop — Linux | `*.deb` |
           | Android APK (debug) | `*-debug.apk` |

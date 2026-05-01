@@ -151,6 +151,12 @@ fn main() {
             button_held
         );
 
+        let pairing_board_layout = storage
+            .read_board_layout()
+            .unwrap_or(sonde_protocol::BoardLayout::SONDE_SENSOR_NODE_REV_A);
+        let mut pairing_hal = EspHal::new(pairing_board_layout);
+        pairing_hal.enter_active_gpio_state();
+
         // Try to initialize ESP-NOW for diagnostic relay (ND-1100).
         // If this fails, BLE pairing still works — just without RSSI diagnostics.
         // Use stored channel if available; the relay handler switches to the
@@ -164,6 +170,8 @@ fn main() {
             &mut map_storage,
             button_held,
             diag_transport.as_mut(),
+            &mut pairing_hal,
+            &pairing_board_layout,
         ) {
             Ok(()) => {
                 info!("BLE pairing mode exited — rebooting");
@@ -173,6 +181,7 @@ fn main() {
                 // BLE GATT server not yet implemented — deep sleep to conserve
                 // battery until firmware is updated with BLE support.
                 warn!("BLE pairing mode failed: {} — entering deep sleep", e);
+                pairing_hal.prepare_for_sleep();
                 sleep_ctrl.enter_deep_sleep(60);
             }
         }

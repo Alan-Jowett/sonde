@@ -65,11 +65,13 @@ impl crate::traits::Clock for EspClock {
 pub struct EspHal {
     i2c0_initialized: bool,
     board_layout: BoardLayout,
-    adc_width_configured: bool,
+    adc_oneshot_unit: esp_idf_sys::adc_oneshot_unit_handle_t,
     /// Bitmask of GPIO pins already configured as output.
     gpio_output_configured: u64,
-    /// Bitmask of ADC channels already configured with attenuation.
-    adc_channels_configured: u32,
+    /// Bitmask of ADC1 channels already configured for oneshot reads.
+    adc_oneshot_channels_configured: u32,
+    /// Per-channel curve-fitting calibration handles for ADC1 channels 0-4.
+    adc_cali_handles: [esp_idf_sys::adc_cali_handle_t; 5],
 }
 
 impl EspHal {
@@ -78,9 +80,10 @@ impl EspHal {
         let mut hal = Self {
             i2c0_initialized: false,
             board_layout,
-            adc_width_configured: false,
+            adc_oneshot_unit: ptr::null_mut(),
             gpio_output_configured: 0,
-            adc_channels_configured: 0,
+            adc_oneshot_channels_configured: 0,
+            adc_cali_handles: [ptr::null_mut(); 5],
         };
         hal::Hal::enter_idle_gpio_state(&mut hal);
         hal
@@ -282,82 +285,128 @@ impl EspHal {
         }
     }
 
-    /// Read an ADC1 channel via the official ESP-IDF oneshot + calibration path.
-    ///
-    /// This is currently used only for pairing-mode diagnostics so we can
-    /// compare the official driver path against the legacy wake-cycle path
-    /// without changing normal wake behavior yet.
-    pub fn adc_read_oneshot_diagnostics(&mut self, channel: u32) -> (i32, i32) {
+    fn ensure_adc_oneshot_unit(&mut self) -> bool {
+        if !self.adc_oneshot_unit.is_null() {
+            return true;
+        }
+
+        unsafe {
+            let mut unit_config: esp_idf_sys::adc_oneshot_unit_init_cfg_t = core::mem::zeroed();
+            unit_config.unit_id = esp_idf_sys::adc_unit_t_ADC_UNIT_1;
+            let err = esp_idf_sys::adc_oneshot_new_unit(&unit_config, &mut self.adc_oneshot_unit);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("adc_oneshot_new_unit failed: {err}");
+                self.adc_oneshot_unit = ptr::null_mut();
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn ensure_adc_oneshot_channel(&mut self, channel: u32) -> bool {
         const ADC_ONESHOT_ATTEN: esp_idf_sys::adc_atten_t =
             esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11;
         const ADC_ONESHOT_BITWIDTH: esp_idf_sys::adc_bitwidth_t =
             esp_idf_sys::adc_bitwidth_t_ADC_BITWIDTH_12;
 
         if channel > 4 {
-            warn!("adc_oneshot_read invalid ADC1 channel: {channel}");
-            return (-1, -1);
+            warn!("adc_oneshot invalid ADC1 channel: {channel}");
+            return false;
+        }
+        if !self.ensure_adc_oneshot_unit() {
+            return false;
+        }
+        if self.adc_oneshot_channels_configured & (1u32 << channel) != 0 {
+            return true;
         }
 
-        let adc_channel = channel as esp_idf_sys::adc_channel_t;
-        let mut unit: esp_idf_sys::adc_oneshot_unit_handle_t = ptr::null_mut();
-        let mut cali_handle: esp_idf_sys::adc_cali_handle_t = ptr::null_mut();
-
         unsafe {
-            let mut unit_config: esp_idf_sys::adc_oneshot_unit_init_cfg_t = core::mem::zeroed();
-            unit_config.unit_id = esp_idf_sys::adc_unit_t_ADC_UNIT_1;
-            let err = esp_idf_sys::adc_oneshot_new_unit(&unit_config, &mut unit);
-            if err != esp_idf_sys::ESP_OK as i32 {
-                warn!("adc_oneshot_new_unit failed for channel {channel}: {err}");
-                return (-1, -1);
-            }
-
             let mut chan_config: esp_idf_sys::adc_oneshot_chan_cfg_t = core::mem::zeroed();
             chan_config.atten = ADC_ONESHOT_ATTEN;
             chan_config.bitwidth = ADC_ONESHOT_BITWIDTH;
-            let err = esp_idf_sys::adc_oneshot_config_channel(unit, adc_channel, &chan_config);
+            let err = esp_idf_sys::adc_oneshot_config_channel(
+                self.adc_oneshot_unit,
+                channel as esp_idf_sys::adc_channel_t,
+                &chan_config,
+            );
             if err != esp_idf_sys::ESP_OK as i32 {
                 warn!("adc_oneshot_config_channel failed for channel {channel}: {err}");
-                Self::delete_oneshot_unit(unit);
-                return (-1, -1);
+                return false;
             }
+            self.adc_oneshot_channels_configured |= 1u32 << channel;
+        }
 
-            let mut raw = 0i32;
-            let err = esp_idf_sys::adc_oneshot_read(unit, adc_channel, &mut raw);
-            if err != esp_idf_sys::ESP_OK as i32 {
-                warn!("adc_oneshot_read failed for channel {channel}: {err}");
-                Self::delete_oneshot_unit(unit);
-                return (-1, -1);
-            }
+        true
+    }
 
+    fn ensure_adc_calibration(&mut self, channel: u32) -> bool {
+        const ADC_ONESHOT_ATTEN: esp_idf_sys::adc_atten_t =
+            esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11;
+        const ADC_ONESHOT_BITWIDTH: esp_idf_sys::adc_bitwidth_t =
+            esp_idf_sys::adc_bitwidth_t_ADC_BITWIDTH_12;
+
+        if channel > 4 {
+            warn!("adc calibration invalid ADC1 channel: {channel}");
+            return false;
+        }
+        if !self.adc_cali_handles[channel as usize].is_null() {
+            return true;
+        }
+        if !self.ensure_adc_oneshot_channel(channel) {
+            return false;
+        }
+
+        unsafe {
             let mut cali_config: esp_idf_sys::adc_cali_curve_fitting_config_t = core::mem::zeroed();
             cali_config.unit_id = esp_idf_sys::adc_unit_t_ADC_UNIT_1;
             #[cfg(esp_idf_version_at_least_5_1_1)]
             {
-                cali_config.chan = adc_channel;
+                cali_config.chan = channel as esp_idf_sys::adc_channel_t;
             }
             cali_config.atten = ADC_ONESHOT_ATTEN;
             cali_config.bitwidth = ADC_ONESHOT_BITWIDTH;
-            let err =
-                esp_idf_sys::adc_cali_create_scheme_curve_fitting(&cali_config, &mut cali_handle);
+            let mut handle: esp_idf_sys::adc_cali_handle_t = ptr::null_mut();
+            let err = esp_idf_sys::adc_cali_create_scheme_curve_fitting(&cali_config, &mut handle);
             if err != esp_idf_sys::ESP_OK as i32 {
                 warn!("adc_cali_create_scheme_curve_fitting failed for channel {channel}: {err}");
-                Self::delete_oneshot_unit(unit);
-                return (raw, -1);
+                return false;
             }
-
-            let mut mv = 0i32;
-            let err = esp_idf_sys::adc_cali_raw_to_voltage(cali_handle, raw, &mut mv);
-            if err != esp_idf_sys::ESP_OK as i32 {
-                warn!("adc_cali_raw_to_voltage failed for channel {channel}: {err}");
-                Self::delete_curve_fitting_calibration(cali_handle);
-                Self::delete_oneshot_unit(unit);
-                return (raw, -1);
-            }
-
-            Self::delete_curve_fitting_calibration(cali_handle);
-            Self::delete_oneshot_unit(unit);
-            (raw, mv)
+            self.adc_cali_handles[channel as usize] = handle;
         }
+
+        true
+    }
+
+    fn adc_read_raw_oneshot(&mut self, channel: u32) -> i32 {
+        if !self.ensure_adc_oneshot_channel(channel) {
+            return -1;
+        }
+
+        let mut raw = 0i32;
+        let err = unsafe {
+            esp_idf_sys::adc_oneshot_read(
+                self.adc_oneshot_unit,
+                channel as esp_idf_sys::adc_channel_t,
+                &mut raw,
+            )
+        };
+        if err != esp_idf_sys::ESP_OK as i32 {
+            warn!("adc_oneshot_read failed for channel {channel}: {err}");
+            return -1;
+        }
+
+        raw
+    }
+
+    fn reset_adc_state(&mut self) {
+        for handle in &mut self.adc_cali_handles {
+            Self::delete_curve_fitting_calibration(*handle);
+            *handle = ptr::null_mut();
+        }
+        Self::delete_oneshot_unit(self.adc_oneshot_unit);
+        self.adc_oneshot_unit = ptr::null_mut();
+        self.adc_oneshot_channels_configured = 0;
     }
 }
 
@@ -515,33 +564,37 @@ impl hal::Hal for EspHal {
     }
 
     fn adc_read(&mut self, channel: u32) -> i32 {
-        // ESP32-C3 exposes ADC1 channels 0-4 on GPIO0-4. GPIO5 is ADC2 and
-        // is not handled by this ADC1-only path.
-        if channel > 4 {
-            return -1;
+        self.adc_read_raw_oneshot(channel)
+    }
+
+    fn adc_read_mv(&mut self, channel: u32) -> i32 {
+        let (_, mv) = self.adc_read_diagnostics(channel);
+        mv
+    }
+
+    fn adc_read_diagnostics(&mut self, channel: u32) -> (i32, i32) {
+        let raw = self.adc_read_raw_oneshot(channel);
+        if raw < 0 {
+            return (raw, raw);
         }
-        unsafe {
-            if !self.adc_width_configured {
-                let err =
-                    esp_idf_sys::adc1_config_width(esp_idf_sys::adc_bits_width_t_ADC_WIDTH_BIT_12);
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    return -1;
-                }
-                self.adc_width_configured = true;
-            }
-            // Configure channel attenuation once per channel.
-            if self.adc_channels_configured & (1u32 << channel) == 0 {
-                let err = esp_idf_sys::adc1_config_channel_atten(
-                    channel,
-                    esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11,
-                );
-                if err != esp_idf_sys::ESP_OK as i32 {
-                    return -1;
-                }
-                self.adc_channels_configured |= 1u32 << channel;
-            }
-            esp_idf_sys::adc1_get_raw(channel)
+        if !self.ensure_adc_calibration(channel) {
+            return (raw, -1);
         }
+
+        let mut mv = 0i32;
+        let err = unsafe {
+            esp_idf_sys::adc_cali_raw_to_voltage(
+                self.adc_cali_handles[channel as usize],
+                raw,
+                &mut mv,
+            )
+        };
+        if err != esp_idf_sys::ESP_OK as i32 {
+            warn!("adc_cali_raw_to_voltage failed for channel {channel}: {err}");
+            return (raw, -1);
+        }
+
+        (raw, mv)
     }
 
     fn enter_idle_gpio_state(&mut self) {
@@ -568,8 +621,7 @@ impl hal::Hal for EspHal {
         }
 
         self.gpio_output_configured = 0;
-        self.adc_width_configured = false;
-        self.adc_channels_configured = 0;
+        self.reset_adc_state();
     }
 
     fn enter_active_gpio_state(&mut self) {

@@ -40,6 +40,7 @@ use crate::ble_pairing::{
 use crate::error::NodeResult;
 use crate::esp_hal::EspHal;
 use crate::esp_transport::EspNowTransport;
+use crate::hal::Hal;
 use crate::map_storage::MapStorage;
 use crate::traits::PlatformStorage;
 use sonde_protocol::{BoardLayout, BLE_DIAG_RELAY_REQUEST};
@@ -443,7 +444,7 @@ fn log_pairing_battery_sample(hal: &mut EspHal, board_layout: &BoardLayout) {
     }
 
     let channel = battery_pin as u32;
-    let (raw, sensed_mv) = hal.adc_read_oneshot_diagnostics(channel);
+    let (raw, sensed_mv) = hal.adc_read_diagnostics(channel);
     if raw < 0 {
         warn!(
             "BLE: pairing oneshot battery sample failed gpio={} channel={}",

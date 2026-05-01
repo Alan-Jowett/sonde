@@ -35,7 +35,9 @@ const RESPONSE_TIMEOUT_MS: u32 = 200;
 const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
 const BATTERY_FALLBACK_MV: u32 = 3300;
 const SENSOR_BUS_STABILIZE_MS: u32 = 1;
-const BATTERY_DIVIDER_SETTLE_MS: u32 = 50;
+// Temporary debug delay to allow probing `VBAT_SENSE` on hardware before the
+// wake-cycle ADC sample is taken.
+const BATTERY_DIVIDER_SETTLE_MS: u32 = 10_000;
 const BATTERY_DIVIDER_RATIO: u32 = 2;
 
 /// Default map budget in bytes (~4 KB for ESP32-C3 after firmware overhead).

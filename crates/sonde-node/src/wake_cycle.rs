@@ -107,7 +107,7 @@ fn capture_current_cycle_battery(hal: &mut dyn Hal, board_layout: &BoardLayout) 
     }
 
     let battery_mv = (sensed_mv as u32).saturating_mul(BATTERY_DIVIDER_RATIO);
-    log::debug!(
+    log::info!(
         "battery ADC sample gpio={} channel={} raw={} sensed_mv={} battery_mv={}",
         battery_pin,
         channel,

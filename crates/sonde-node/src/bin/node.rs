@@ -173,6 +173,7 @@ fn main() {
         ) {
             Ok(()) => {
                 info!("BLE pairing mode exited — rebooting");
+                pairing_hal.prepare_for_sleep();
                 sleep_ctrl.reboot();
             }
             Err(e) => {

@@ -223,8 +223,38 @@ impl EspHal {
         }
     }
 
+    fn enable_sleep_hold(pin: i32) {
+        unsafe {
+            let err = esp_idf_sys::gpio_hold_en(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_hold_en({pin}) failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_deep_sleep_hold_en();
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_deep_sleep_hold_en() failed: {err}");
+            }
+        }
+    }
+
+    fn disable_sleep_hold(pin: i32) {
+        unsafe {
+            let err = esp_idf_sys::gpio_deep_sleep_hold_dis();
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_deep_sleep_hold_dis() failed: {err}");
+            }
+            let err = esp_idf_sys::gpio_hold_dis(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_hold_dis({pin}) failed: {err}");
+            }
+        }
+    }
+
     fn set_output_level(pin: i32, level: u32) {
         unsafe {
+            let err = esp_idf_sys::gpio_reset_pin(pin);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                warn!("gpio_reset_pin({pin}) failed: {err}");
+            }
             let err =
                 esp_idf_sys::gpio_set_direction(pin, esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT);
             if err != esp_idf_sys::ESP_OK as i32 {
@@ -624,9 +654,11 @@ impl hal::Hal for EspHal {
 
         Self::set_idle_inputs(&self.board_layout);
         if let Some(sensor_enable) = self.board_layout.sensor_enable {
+            Self::disable_sleep_hold(sensor_enable as i32);
             Self::set_output_level(sensor_enable as i32, 1);
             Self::log_gpio_level(sensor_enable as i32, "idle-live", 1);
             Self::configure_sleep_output(sensor_enable as i32, 1);
+            Self::enable_sleep_hold(sensor_enable as i32);
             Self::log_gpio_level(sensor_enable as i32, "idle-sleep", 1);
         }
 
@@ -636,6 +668,7 @@ impl hal::Hal for EspHal {
 
     fn enter_active_gpio_state(&mut self) {
         if let Some(sensor_enable) = self.board_layout.sensor_enable {
+            Self::disable_sleep_hold(sensor_enable as i32);
             Self::set_output_level(sensor_enable as i32, 0);
             Self::log_gpio_level(sensor_enable as i32, "active-live", 0);
         }

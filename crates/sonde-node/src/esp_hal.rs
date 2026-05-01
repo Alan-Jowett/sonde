@@ -229,19 +229,13 @@ impl EspHal {
             if err != esp_idf_sys::ESP_OK as i32 {
                 warn!("gpio_hold_en({pin}) failed: {err}");
             }
-            let err = esp_idf_sys::gpio_deep_sleep_hold_en();
-            if err != esp_idf_sys::ESP_OK as i32 {
-                warn!("gpio_deep_sleep_hold_en() failed: {err}");
-            }
+            esp_idf_sys::gpio_deep_sleep_hold_en();
         }
     }
 
     fn disable_sleep_hold(pin: i32) {
         unsafe {
-            let err = esp_idf_sys::gpio_deep_sleep_hold_dis();
-            if err != esp_idf_sys::ESP_OK as i32 {
-                warn!("gpio_deep_sleep_hold_dis() failed: {err}");
-            }
+            esp_idf_sys::gpio_deep_sleep_hold_dis();
             let err = esp_idf_sys::gpio_hold_dis(pin);
             if err != esp_idf_sys::ESP_OK as i32 {
                 warn!("gpio_hold_dis({pin}) failed: {err}");
@@ -398,10 +392,7 @@ impl EspHal {
         unsafe {
             let mut cali_config: esp_idf_sys::adc_cali_curve_fitting_config_t = core::mem::zeroed();
             cali_config.unit_id = esp_idf_sys::adc_unit_t_ADC_UNIT_1;
-            #[cfg(esp_idf_version_at_least_5_1_1)]
-            {
-                cali_config.chan = channel as esp_idf_sys::adc_channel_t;
-            }
+            cali_config.chan = channel as esp_idf_sys::adc_channel_t;
             cali_config.atten = ADC_ONESHOT_ATTEN;
             cali_config.bitwidth = ADC_ONESHOT_BITWIDTH;
             let mut handle: esp_idf_sys::adc_cali_handle_t = ptr::null_mut();

@@ -33,7 +33,7 @@ const RESPONSE_TIMEOUT_MS: u32 = 200;
 
 /// Default instruction budget for BPF execution.
 const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
-const BATTERY_FALLBACK_MV: u32 = 3300;
+const BATTERY_FALLBACK_MV: u32 = 0;
 const SENSOR_BUS_STABILIZE_MS: u32 = 1;
 const BATTERY_DIVIDER_SETTLE_MS: u32 = 50;
 const BATTERY_DIVIDER_RATIO: u32 = 2;

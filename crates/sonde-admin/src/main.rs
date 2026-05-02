@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use sonde_admin::format_epoch_ms;
 use sonde_admin::grpc_client::AdminClient;
 use sonde_admin::pb;
+use sonde_gateway::normalize_display_filename;
 
 #[derive(Parser)]
 #[command(name = "sonde-admin", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("SONDE_GIT_COMMIT"), ")"), about = "Sonde gateway administration CLI")]
@@ -382,11 +383,12 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     if json {
                         print_json(&nodes.iter().map(node_to_json).collect::<Vec<_>>())?;
                     } else {
-                        let program_names =
-                            load_program_name_map_for_display(client, cli.verbose).await;
                         if nodes.is_empty() {
                             println!("No nodes registered.");
+                            return Ok(());
                         }
+                        let program_names =
+                            load_program_name_map_for_display(client, cli.verbose).await;
                         for n in &nodes {
                             print_node(n, &program_names, cli.verbose);
                         }
@@ -912,19 +914,6 @@ async fn load_program_name_map(
             normalize_display_filename(&program.source_filename).map(|name| (program.hash, name))
         })
         .collect())
-}
-
-fn normalize_display_filename(source_filename: &Option<String>) -> Option<String> {
-    let trimmed = source_filename
-        .as_deref()?
-        .trim_end_matches(['/', '\\'])
-        .rsplit(['/', '\\'])
-        .next()?;
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }
 
 fn program_name_map_for_display(

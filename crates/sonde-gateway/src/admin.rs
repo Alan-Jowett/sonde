@@ -12,6 +12,7 @@ use zeroize::Zeroizing;
 
 use crate::ble_pairing::BlePairingController;
 use crate::display_control::{StatusPageCycle, StatusPageScrollTask};
+use crate::display_filename::normalize_display_filename;
 use crate::engine::PendingCommand;
 use crate::handler::HandlerConfig;
 use crate::handler::HandlerRouter;
@@ -230,19 +231,6 @@ fn fmt_hex(bytes: &[u8]) -> String {
         write!(s, "{b:02x}").expect("write to String is infallible");
     }
     s
-}
-
-fn normalize_display_filename(source_filename: &Option<String>) -> Option<String> {
-    let trimmed = source_filename
-        .as_deref()?
-        .trim_end_matches(['/', '\\'])
-        .rsplit(['/', '\\'])
-        .next()?;
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }
 
 /// SHA-256 hash length in bytes.

@@ -25,6 +25,7 @@ use sonde_gateway::display_control::{
     StatusPageScrollTask, BUTTON_EXIT_REASON_DISPLAY_DURATION, NODE_STATUS_SCROLL_INTERVAL,
     NODE_STATUS_SCROLL_STEP_PX, STATUS_PAGE_TIMEOUT,
 };
+use sonde_gateway::display_filename::normalize_display_filename;
 use sonde_gateway::engine::{resolve_espnow_channel, Gateway, PendingCommand};
 use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
 use sonde_gateway::key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeyProviderError};
@@ -163,19 +164,6 @@ fn build_program_name_map(programs: &[ProgramDisplayRecord]) -> HashMap<Vec<u8>,
                 .map(|name| (program.hash.clone(), name))
         })
         .collect()
-}
-
-fn normalize_display_filename(source_filename: &Option<String>) -> Option<String> {
-    let trimmed = source_filename
-        .as_deref()?
-        .trim_end_matches(['/', '\\'])
-        .rsplit(['/', '\\'])
-        .next()?;
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }
 
 fn format_program_identifier(hash: &[u8], program_names: &HashMap<Vec<u8>, String>) -> String {

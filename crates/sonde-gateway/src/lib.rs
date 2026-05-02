@@ -8,6 +8,7 @@ pub mod connector;
 pub mod crypto;
 pub mod display_banner;
 pub mod display_control;
+pub mod display_filename;
 pub mod engine;
 pub mod gateway_identity;
 pub mod handler;
@@ -28,6 +29,7 @@ pub use admin::AdminService;
 pub use aead::GatewayAead;
 pub use connector::{ConnectorEventHub, ConnectorPayloadOrigin, ConnectorService};
 pub use crypto::RustCryptoSha256;
+pub use display_filename::normalize_display_filename;
 pub use engine::{resolve_espnow_channel, Gateway, PendingCommand};
 pub use gateway_identity::{GatewayIdentity, IdentityError};
 pub use handler::{

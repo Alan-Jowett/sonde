@@ -158,12 +158,23 @@ fn build_program_name_map(programs: &[ProgramRecord]) -> HashMap<Vec<u8>, String
     programs
         .iter()
         .filter_map(|program| {
-            program
-                .source_filename
-                .as_ref()
-                .map(|name| (program.hash.clone(), name.clone()))
+            normalize_display_filename(&program.source_filename)
+                .map(|name| (program.hash.clone(), name))
         })
         .collect()
+}
+
+fn normalize_display_filename(source_filename: &Option<String>) -> Option<String> {
+    let trimmed = source_filename
+        .as_deref()?
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()?;
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn format_program_identifier(hash: &[u8], program_names: &HashMap<Vec<u8>, String>) -> String {
@@ -2135,14 +2146,12 @@ mod tests {
     fn node_status_lines_prefer_source_filename_and_fall_back_to_hash() {
         let named_node = make_rich_node("named", 1, 0x31, 1_700_000_000);
         let fallback_node = make_rich_node("fallback", 2, 0x41, 1_700_000_060);
-        let named_assigned = named_node.assigned_program_hash.clone().unwrap();
-        let named_current = named_node.current_program_hash.clone().unwrap();
         let fallback_assigned = fallback_node.assigned_program_hash.clone().unwrap();
         let fallback_current = fallback_node.current_program_hash.clone().unwrap();
 
-        let program_names = HashMap::from([
-            (named_assigned.clone(), "a.o".to_string()),
-            (named_current.clone(), "b.o".to_string()),
+        let program_names = build_program_name_map(&[
+            make_program_record(0x31, Some("C:\\captures\\a.o")),
+            make_program_record(0x32, Some("/tmp/b.o")),
         ]);
 
         let lines =
@@ -2172,8 +2181,8 @@ mod tests {
     async fn render_status_page_nodes_prefers_program_source_filename() {
         let storage = Arc::new(InMemoryStorage::new());
         let node = make_rich_node("named", 1, 0x31, 1_700_000_000);
-        let assigned_program = make_program_record(0x31, Some("a.o"));
-        let current_program = make_program_record(0x32, Some("b.o"));
+        let assigned_program = make_program_record(0x31, Some("C:\\captures\\a.o"));
+        let current_program = make_program_record(0x32, Some("/tmp/b.o"));
         storage.store_program(&assigned_program).await.unwrap();
         storage.store_program(&current_program).await.unwrap();
         storage.upsert_node(&node).await.unwrap();

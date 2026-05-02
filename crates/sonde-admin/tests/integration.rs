@@ -571,7 +571,12 @@ async fn cli_node_status_prefers_source_filename() {
     let fallback_hash_hex = hex::encode(&fallback_hash);
     let named_hash_hex = hex::encode(&named_hash);
 
-    seed_program(&storage, named_hash.clone(), Some("temp-reader.o")).await;
+    seed_program(
+        &storage,
+        named_hash.clone(),
+        Some(r"C:\captures\temp-reader.o"),
+    )
+    .await;
     seed_program(&storage, fallback_hash.clone(), None).await;
     seed_node_with_programs(
         &storage,
@@ -664,7 +669,7 @@ async fn cli_node_status_verbose_shows_hash() {
     let named_hash = vec![0x33; 32];
     let named_hash_hex = hex::encode(&named_hash);
 
-    seed_program(&storage, named_hash.clone(), Some("temp-reader.o")).await;
+    seed_program(&storage, named_hash.clone(), Some("/tmp/temp-reader.o")).await;
     seed_node_with_programs(
         &storage,
         "named-node",

@@ -908,8 +908,23 @@ async fn load_program_name_map(
     let programs = client.list_programs().await?;
     Ok(programs
         .into_iter()
-        .filter_map(|program| program.source_filename.map(|name| (program.hash, name)))
+        .filter_map(|program| {
+            normalize_display_filename(&program.source_filename).map(|name| (program.hash, name))
+        })
         .collect())
+}
+
+fn normalize_display_filename(source_filename: &Option<String>) -> Option<String> {
+    let trimmed = source_filename
+        .as_deref()?
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()?;
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn program_name_map_for_display(

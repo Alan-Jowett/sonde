@@ -47,6 +47,7 @@ const diagBleLabel = document.getElementById("diag-ble-label");
 const diagEspNowIndicator = document.getElementById("diag-espnow-indicator");
 const diagEspNowValue = document.getElementById("diag-espnow-value");
 const diagEspNowLabel = document.getElementById("diag-espnow-label");
+const signalNodeAddress = document.getElementById("signal-node-address");
 const signalStatus = document.getElementById("signal-status");
 const btnSignalAbort = document.getElementById("btn-signal-abort");
 const btnSignalRecheck = document.getElementById("btn-signal-recheck");
@@ -267,6 +268,10 @@ function updateSignalCheckIndicators(diagRssi = null, signalQuality = null) {
   diagEspNowIndicator.className = `rssi-indicator ${quality.cls}`;
 }
 
+function updateSignalCheckNodeIdentity() {
+  signalNodeAddress.textContent = selectedAddressNode || "--";
+}
+
 function resetSignalCheckView() {
   diagCurrentPromise = null;
   signalReadyForProceed = false;
@@ -386,6 +391,7 @@ function selectNodeDevice(address, rssi) {
   for (const li of deviceListNode.children) li.classList.toggle("selected", li.dataset.address === address);
   updateBleSelectionIndicator(rssi);
   updateSignalCheckIndicators(null);
+  updateSignalCheckNodeIdentity();
   btnConnectNode.disabled = busy || !address;
 }
 
@@ -411,10 +417,11 @@ function cleanupScanPage(pageIndex, preserveNodeSelection) {
       selectedNodeBleRssi = null;
       btnConnectNode.disabled = true;
       updateBleSelectionIndicator(null);
+      updateSignalCheckNodeIdentity();
+      renderDevices(deviceListNode, [], false);
     }
     btnScanStartNode.disabled = false;
     btnScanStopNode.disabled = true;
-    renderDevices(deviceListNode, [], false);
   }
 }
 
@@ -436,6 +443,7 @@ async function startScan() {
       selectedNodeBleRssi = null;
       btnConnectNode.disabled = true;
       updateBleSelectionIndicator(null);
+      updateSignalCheckNodeIdentity();
       btnScanStartNode.disabled = true;
       btnScanStopNode.disabled = false;
     }
@@ -523,7 +531,7 @@ async function runSignalCheck() {
   showStatus(signalStatus, "Running ESP-NOW signal check… The node will disconnect and reconnect automatically.");
   diagCurrentPromise = (async () => {
     try {
-      const result = await invoke("check_rssi");
+      const result = await invoke("check_rssi", { address: selectedAddressNode });
       if (navigator_.current !== 4) return;
       updateSignalCheckIndicators(result.rssiDbm, result.signalQuality);
       showStatus(signalStatus, `Signal check complete: ${result.rssiDbm} dBm via ESP-NOW`);
@@ -643,6 +651,7 @@ async function clearPairing() {
     selectedAddressNode = null;
     selectedNodeBleRssi = null;
     updateBleSelectionIndicator(null);
+    updateSignalCheckNodeIdentity();
     resetSignalCheckView();
     await refreshPairingStatus();
     navigator_.goTo(0);
@@ -696,6 +705,7 @@ btnProvisionAnother.addEventListener("click", () => {
   selectedAddressNode = null;
   selectedNodeBleRssi = null;
   updateBleSelectionIndicator(null);
+  updateSignalCheckNodeIdentity();
   resetSignalCheckView();
   renderDevices(deviceListNode, [], false);
   navigator_.goTo(3);
@@ -714,5 +724,6 @@ window.addEventListener("popstate", (event) => {
 });
 
 initBoardSelect();
+updateSignalCheckNodeIdentity();
 resetSignalCheckView();
 refreshPairingStatus().then(() => navigator_.restore());

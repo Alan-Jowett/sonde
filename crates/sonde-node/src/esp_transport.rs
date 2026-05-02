@@ -409,7 +409,7 @@ impl crate::traits::Transport for EspNowTransport {
                     .copied()
                     .map(u32::from)
                     .unwrap_or(u32::MAX);
-                log::info!(
+                log::debug!(
                     "ESP-NOW recv pop len={} msg_type={} timeout_ms={}",
                     len,
                     format_msg_type(msg_type),
@@ -425,7 +425,7 @@ impl crate::traits::Transport for EspNowTransport {
                 if full_drops > 0 {
                     log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
                 }
-                log::info!("ESP-NOW recv timeout timeout_ms={}", timeout_ms);
+                log::debug!("ESP-NOW recv timeout timeout_ms={}", timeout_ms);
                 return Ok(None);
             }
             let remaining = deadline - now;

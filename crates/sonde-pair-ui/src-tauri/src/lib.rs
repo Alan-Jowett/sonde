@@ -16,6 +16,7 @@
 //! non-Send futures from [`sonde_pair::transport::BleTransport`] work on
 //! the tokio multi-threaded runtime.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -138,6 +139,84 @@ fn parse_address(s: &str) -> Result<[u8; 6], String> {
     Ok(addr)
 }
 
+async fn stop_and_discard_scanner<T>(
+    scanner_slot: &Mutex<Option<DeviceScanner<T>>>,
+) -> Result<(), String>
+where
+    T: BleTransport + Send + 'static,
+{
+    let scanner = scanner_slot.lock().unwrap().take();
+    if let Some(scanner) = scanner {
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                let mut scanner = scanner;
+                scanner.stop().await.map_err(|e| e.to_string())
+            })
+        })
+        .await
+        .map_err(|e| format!("task panicked: {e}"))??;
+    }
+    Ok(())
+}
+
+async fn reuse_or_connect_session<T, F, Fut>(
+    existing: Option<ConnectedNodeSession<T>>,
+    addr: [u8; 6],
+    create_transport: F,
+) -> Result<ConnectedNodeSession<T>, PairingError>
+where
+    T: BleTransport,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T, PairingError>>,
+{
+    if let Some(mut session) = existing {
+        if session.address == addr {
+            return Ok(session);
+        }
+        let _ = session.transport.disconnect().await;
+    }
+
+    let mut transport = create_transport().await?;
+    transport.set_defer_bonding(true);
+    let mtu_result = transport.connect(&addr).await;
+    transport.set_defer_bonding(false);
+    let mtu = mtu_result?;
+    if mtu < BLE_MTU_MIN {
+        transport.disconnect().await.ok();
+        return Err(PairingError::MtuTooLow {
+            device: format_address(&addr),
+            negotiated: mtu,
+            required: BLE_MTU_MIN,
+        });
+    }
+    Ok(ConnectedNodeSession {
+        address: addr,
+        transport,
+    })
+}
+
+async fn finalize_signal_check<T: BleTransport>(
+    mut session: ConnectedNodeSession<T>,
+    outcome: Result<phase2::DiagnosticResult, PairingError>,
+) -> (
+    Option<ConnectedNodeSession<T>>,
+    Result<DiagnosticInfo, PairingError>,
+) {
+    match outcome {
+        Ok(diag) => (
+            Some(session),
+            Ok(DiagnosticInfo {
+                rssi_dbm: diag.rssi_dbm,
+                signal_quality: diag.signal_quality,
+            }),
+        ),
+        Err(e) => {
+            let _ = session.transport.disconnect().await;
+            (None, Err(e))
+        }
+    }
+}
+
 fn resolve_legacy_i2c_layout(
     i2c_sda: Option<u8>,
     i2c_scl: Option<u8>,
@@ -246,7 +325,7 @@ fn load_pairing_artifacts(state: &AppState) -> Result<Arc<phase1::PairingArtifac
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn start_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    *state.scanner.lock().unwrap() = None;
+    stop_and_discard_scanner(&state.scanner).await?;
     *state.phase.lock().unwrap() = "Scanning".into();
 
     let scanner = tokio::task::spawn_blocking(|| {
@@ -320,7 +399,7 @@ async fn pair_gateway(
     phone_label: String,
     _force: Option<bool>,
 ) -> Result<(), String> {
-    *state.scanner.lock().unwrap() = None;
+    stop_and_discard_scanner(&state.scanner).await?;
 
     let addr = match parse_address(&address) {
         Ok(a) => a,
@@ -377,7 +456,7 @@ async fn provision_node(
     i2c_sda: Option<u8>,
     i2c_scl: Option<u8>,
 ) -> Result<String, String> {
-    *state.scanner.lock().unwrap() = None;
+    stop_and_discard_scanner(&state.scanner).await?;
 
     let addr = match parse_address(&address) {
         Ok(a) => a,
@@ -461,7 +540,7 @@ async fn connect_node(
     state: tauri::State<'_, AppState>,
     address: String,
 ) -> Result<ConnectedNodeInfo, String> {
-    *state.scanner.lock().unwrap() = None;
+    stop_and_discard_scanner(&state.scanner).await?;
 
     let addr = parse_address(&address).map_err(|e| {
         *state.phase.lock().unwrap() = format!("Error: {e}");
@@ -473,30 +552,7 @@ async fn connect_node(
     let result: Result<ConnectedNodeSession<BtleplugTransport>, PairingError> =
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
-                if let Some(mut session) = existing {
-                    if session.address == addr {
-                        return Ok(session);
-                    }
-                    let _ = session.transport.disconnect().await;
-                }
-
-                let mut transport = BtleplugTransport::new().await?;
-                transport.set_defer_bonding(true);
-                let mtu_result = transport.connect(&addr).await;
-                transport.set_defer_bonding(false);
-                let mtu = mtu_result?;
-                if mtu < BLE_MTU_MIN {
-                    transport.disconnect().await.ok();
-                    return Err(PairingError::MtuTooLow {
-                        device: format_address(&addr),
-                        negotiated: mtu,
-                        required: BLE_MTU_MIN,
-                    });
-                }
-                Ok::<_, PairingError>(ConnectedNodeSession {
-                    address: addr,
-                    transport,
-                })
+                reuse_or_connect_session(existing, addr, || BtleplugTransport::new()).await
             })
         })
         .await
@@ -519,59 +575,47 @@ async fn connect_node(
 
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
-async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo, String> {
+async fn check_rssi(
+    state: tauri::State<'_, AppState>,
+    address: String,
+) -> Result<DiagnosticInfo, String> {
     let artifacts = load_pairing_artifacts(&state)?;
-    let session = state
-        .connected_node
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or_else(|| "No connected node session".to_string())?;
+    let addr = parse_address(&address).map_err(|e| {
+        *state.phase.lock().unwrap() = format!("Error: {e}");
+        e
+    })?;
+    let session = state.connected_node.lock().unwrap().take();
     let cancel = Arc::new(AtomicBool::new(false));
     *state.signal_check_cancel.lock().unwrap() = Some(cancel.clone());
     *state.phase.lock().unwrap() = "Signal Check".into();
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async move {
+            let session =
+                reuse_or_connect_session(session, addr, || BtleplugTransport::new()).await?;
             let mut session = session;
-            let outcome = phase2::check_rssi(
-                &mut session.transport,
-                &artifacts,
-                &session.address,
-                cancel.as_ref(),
-            )
-            .await;
-            (session, outcome)
+            let outcome =
+                phase2::check_rssi(&mut session.transport, &artifacts, &addr, cancel.as_ref())
+                    .await;
+            Ok::<_, PairingError>(finalize_signal_check(session, outcome).await)
         })
     })
     .await
     .map_err(|e| format!("task panicked: {e}"))?;
 
-    let (session, outcome) = result;
+    let (session, outcome) = result.map_err(|e| e.to_string())?;
     *state.signal_check_cancel.lock().unwrap() = None;
+    *state.connected_node.lock().unwrap() = session;
     match outcome {
         Ok(diag) => {
-            *state.connected_node.lock().unwrap() = Some(session);
             *state.phase.lock().unwrap() = "Connected".into();
-            Ok(DiagnosticInfo {
-                rssi_dbm: diag.rssi_dbm,
-                signal_quality: diag.signal_quality,
-            })
+            Ok(diag)
         }
         Err(PairingError::Cancelled { .. }) => {
-            tokio::task::spawn_blocking(move || {
-                tokio::runtime::Handle::current().block_on(async move {
-                    let mut session = session;
-                    let _ = session.transport.disconnect().await;
-                })
-            })
-            .await
-            .map_err(|e| format!("task panicked: {e}"))?;
             *state.phase.lock().unwrap() = "Idle".into();
             Err("signal check cancelled".into())
         }
         Err(e) => {
-            *state.connected_node.lock().unwrap() = Some(session);
             let msg = e.to_string();
             *state.phase.lock().unwrap() = format!("Error: {msg}");
             Err(msg)
@@ -653,7 +697,7 @@ async fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> 
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn start_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    *state.scanner.lock().unwrap() = None;
+    stop_and_discard_scanner(&state.scanner).await?;
     *state.phase.lock().unwrap() = "Scanning".into();
 
     let scanner = tokio::task::spawn_blocking(|| {
@@ -727,7 +771,7 @@ async fn pair_gateway(
     phone_label: String,
     _force: Option<bool>,
 ) -> Result<(), String> {
-    *state.scanner.lock().unwrap() = None;
+    stop_and_discard_scanner(&state.scanner).await?;
 
     let addr = match parse_address(&address) {
         Ok(a) => a,
@@ -798,7 +842,7 @@ async fn provision_node(
     i2c_sda: Option<u8>,
     i2c_scl: Option<u8>,
 ) -> Result<String, String> {
-    *state.scanner.lock().unwrap() = None;
+    stop_and_discard_scanner(&state.scanner).await?;
 
     let addr = match parse_address(&address) {
         Ok(a) => a,
@@ -882,7 +926,7 @@ async fn connect_node(
     state: tauri::State<'_, AppState>,
     address: String,
 ) -> Result<ConnectedNodeInfo, String> {
-    *state.scanner.lock().unwrap() = None;
+    stop_and_discard_scanner(&state.scanner).await?;
 
     let addr = parse_address(&address).map_err(|e| {
         *state.phase.lock().unwrap() = format!("Error: {e}");
@@ -894,30 +938,10 @@ async fn connect_node(
     let result: Result<ConnectedNodeSession<AndroidBleTransport>, PairingError> =
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
-                if let Some(mut session) = existing {
-                    if session.address == addr {
-                        return Ok(session);
-                    }
-                    let _ = session.transport.disconnect().await;
-                }
-
-                let mut transport = AndroidBleTransport::from_cached_vm()?;
-                transport.set_defer_bonding(true);
-                let mtu_result = transport.connect(&addr).await;
-                transport.set_defer_bonding(false);
-                let mtu = mtu_result?;
-                if mtu < BLE_MTU_MIN {
-                    transport.disconnect().await.ok();
-                    return Err(PairingError::MtuTooLow {
-                        device: format_address(&addr),
-                        negotiated: mtu,
-                        required: BLE_MTU_MIN,
-                    });
-                }
-                Ok::<_, PairingError>(ConnectedNodeSession {
-                    address: addr,
-                    transport,
+                reuse_or_connect_session(existing, addr, || async {
+                    AndroidBleTransport::from_cached_vm()
                 })
+                .await
             })
         })
         .await
@@ -940,59 +964,49 @@ async fn connect_node(
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo, String> {
+async fn check_rssi(
+    state: tauri::State<'_, AppState>,
+    address: String,
+) -> Result<DiagnosticInfo, String> {
     let artifacts = load_pairing_artifacts(&state)?;
-    let session = state
-        .connected_node
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or_else(|| "No connected node session".to_string())?;
+    let addr = parse_address(&address).map_err(|e| {
+        *state.phase.lock().unwrap() = format!("Error: {e}");
+        e
+    })?;
+    let session = state.connected_node.lock().unwrap().take();
     let cancel = Arc::new(AtomicBool::new(false));
     *state.signal_check_cancel.lock().unwrap() = Some(cancel.clone());
     *state.phase.lock().unwrap() = "Signal Check".into();
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async move {
+            let session = reuse_or_connect_session(session, addr, || async {
+                AndroidBleTransport::from_cached_vm()
+            })
+            .await?;
             let mut session = session;
-            let outcome = phase2::check_rssi(
-                &mut session.transport,
-                &artifacts,
-                &session.address,
-                cancel.as_ref(),
-            )
-            .await;
-            (session, outcome)
+            let outcome =
+                phase2::check_rssi(&mut session.transport, &artifacts, &addr, cancel.as_ref())
+                    .await;
+            Ok::<_, PairingError>(finalize_signal_check(session, outcome).await)
         })
     })
     .await
     .map_err(|e| format!("task panicked: {e}"))?;
 
-    let (session, outcome) = result;
+    let (session, outcome) = result.map_err(|e| e.to_string())?;
     *state.signal_check_cancel.lock().unwrap() = None;
+    *state.connected_node.lock().unwrap() = session;
     match outcome {
         Ok(diag) => {
-            *state.connected_node.lock().unwrap() = Some(session);
             *state.phase.lock().unwrap() = "Connected".into();
-            Ok(DiagnosticInfo {
-                rssi_dbm: diag.rssi_dbm,
-                signal_quality: diag.signal_quality,
-            })
+            Ok(diag)
         }
         Err(PairingError::Cancelled { .. }) => {
-            tokio::task::spawn_blocking(move || {
-                tokio::runtime::Handle::current().block_on(async move {
-                    let mut session = session;
-                    let _ = session.transport.disconnect().await;
-                })
-            })
-            .await
-            .map_err(|e| format!("task panicked: {e}"))?;
             *state.phase.lock().unwrap() = "Idle".into();
             Err("signal check cancelled".into())
         }
         Err(e) => {
-            *state.connected_node.lock().unwrap() = Some(session);
             let msg = e.to_string();
             *state.phase.lock().unwrap() = format!("Error: {msg}");
             Err(msg)
@@ -1260,6 +1274,99 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sonde_pair::error::PairingError;
+    use sonde_pair::transport::{BleTransport, MockBleTransport};
+    use sonde_pair::types::{PairingMethod, ScannedDevice};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    struct CountingTransport {
+        inner: MockBleTransport,
+        disconnects: Arc<AtomicUsize>,
+        stop_scans: Arc<AtomicUsize>,
+    }
+
+    impl CountingTransport {
+        fn new(mtu: u16, disconnects: Arc<AtomicUsize>, stop_scans: Arc<AtomicUsize>) -> Self {
+            Self {
+                inner: MockBleTransport::new(mtu),
+                disconnects,
+                stop_scans,
+            }
+        }
+    }
+
+    impl BleTransport for CountingTransport {
+        fn start_scan(
+            &mut self,
+            service_uuids: &[u128],
+        ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
+            self.inner.start_scan(service_uuids)
+        }
+
+        fn stop_scan(&mut self) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
+            self.stop_scans.fetch_add(1, AtomicOrdering::Relaxed);
+            self.inner.stop_scan()
+        }
+
+        fn get_discovered_devices(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ScannedDevice>, PairingError>> + '_>> {
+            self.inner.get_discovered_devices()
+        }
+
+        fn connect(
+            &mut self,
+            address: &[u8; 6],
+        ) -> Pin<Box<dyn Future<Output = Result<u16, PairingError>> + '_>> {
+            self.inner.connect(address)
+        }
+
+        fn disconnect(&mut self) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
+            self.disconnects.fetch_add(1, AtomicOrdering::Relaxed);
+            self.inner.disconnect()
+        }
+
+        fn write_characteristic(
+            &mut self,
+            service: u128,
+            characteristic: u128,
+            data: &[u8],
+        ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
+            self.inner
+                .write_characteristic(service, characteristic, data)
+        }
+
+        fn read_indication(
+            &mut self,
+            service: u128,
+            characteristic: u128,
+            timeout_ms: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PairingError>> + '_>> {
+            self.inner
+                .read_indication(service, characteristic, timeout_ms)
+        }
+
+        fn pairing_method(&self) -> Option<PairingMethod> {
+            self.inner.pairing_method()
+        }
+
+        fn set_defer_bonding(&mut self, defer: bool) {
+            self.inner.set_defer_bonding(defer);
+        }
+    }
+
+    fn run_async_test<F>(future: F)
+    where
+        F: Future<Output = ()>,
+    {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future);
+    }
 
     #[test]
     fn resolve_legacy_i2c_layout_both_present() {
@@ -1338,5 +1445,101 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("ADC-capable"));
+    }
+
+    #[test]
+    fn stop_and_discard_scanner_stops_active_scan() {
+        run_async_test(async {
+            let disconnects = Arc::new(AtomicUsize::new(0));
+            let stop_scans = Arc::new(AtomicUsize::new(0));
+            let transport = CountingTransport::new(247, disconnects, stop_scans.clone());
+            let mut scanner = DeviceScanner::new(transport);
+            scanner.start().await.unwrap();
+            let scanner_slot = Mutex::new(Some(scanner));
+
+            stop_and_discard_scanner(&scanner_slot).await.unwrap();
+
+            assert!(scanner_slot.lock().unwrap().is_none());
+            assert_eq!(stop_scans.load(AtomicOrdering::Relaxed), 1);
+        });
+    }
+
+    #[test]
+    fn reuse_or_connect_session_reuses_matching_session() {
+        run_async_test(async {
+            let disconnects = Arc::new(AtomicUsize::new(0));
+            let stop_scans = Arc::new(AtomicUsize::new(0));
+            let transport = CountingTransport::new(247, disconnects.clone(), stop_scans);
+            let existing = ConnectedNodeSession {
+                address: [0xAA; 6],
+                transport,
+            };
+
+            let session = reuse_or_connect_session(Some(existing), [0xAA; 6], || async {
+                Ok(CountingTransport::new(
+                    247,
+                    Arc::new(AtomicUsize::new(0)),
+                    Arc::new(AtomicUsize::new(0)),
+                ))
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(session.address, [0xAA; 6]);
+            assert_eq!(disconnects.load(AtomicOrdering::Relaxed), 0);
+        });
+    }
+
+    #[test]
+    fn reuse_or_connect_session_disconnects_stale_session() {
+        run_async_test(async {
+            let old_disconnects = Arc::new(AtomicUsize::new(0));
+            let old_stop_scans = Arc::new(AtomicUsize::new(0));
+            let mut old_transport =
+                CountingTransport::new(247, old_disconnects.clone(), old_stop_scans);
+            old_transport.inner.connected = true;
+            let existing = ConnectedNodeSession {
+                address: [0x11; 6],
+                transport: old_transport,
+            };
+            let new_disconnects = Arc::new(AtomicUsize::new(0));
+            let new_stop_scans = Arc::new(AtomicUsize::new(0));
+
+            let session = reuse_or_connect_session(Some(existing), [0x22; 6], || async {
+                Ok(CountingTransport::new(
+                    247,
+                    new_disconnects.clone(),
+                    new_stop_scans.clone(),
+                ))
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(old_disconnects.load(AtomicOrdering::Relaxed), 1);
+            assert_eq!(session.address, [0x22; 6]);
+            assert!(session.transport.inner.connected);
+        });
+    }
+
+    #[test]
+    fn finalize_signal_check_drops_failed_session() {
+        run_async_test(async {
+            let disconnects = Arc::new(AtomicUsize::new(0));
+            let stop_scans = Arc::new(AtomicUsize::new(0));
+            let session = ConnectedNodeSession {
+                address: [0xAA; 6],
+                transport: CountingTransport::new(247, disconnects.clone(), stop_scans),
+            };
+
+            let (session, outcome) = finalize_signal_check(
+                session,
+                Err(PairingError::DiagnosticFailed("reconnect failed".into())),
+            )
+            .await;
+
+            assert!(session.is_none());
+            assert!(matches!(outcome, Err(PairingError::DiagnosticFailed(_))));
+            assert_eq!(disconnects.load(AtomicOrdering::Relaxed), 1);
+        });
     }
 }

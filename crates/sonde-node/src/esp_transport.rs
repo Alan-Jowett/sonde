@@ -176,8 +176,12 @@ unsafe extern "C" fn raw_recv_cb(
         state.last_len.store(len as u32, Ordering::Relaxed);
         state.last_msg_type.store(msg_type, Ordering::Relaxed);
         let (last_src_mac_hi, last_src_mac_lo) = pack_mac_words(src_addr);
-        state.last_src_mac_hi.store(last_src_mac_hi, Ordering::Relaxed);
-        state.last_src_mac_lo.store(last_src_mac_lo, Ordering::Relaxed);
+        state
+            .last_src_mac_hi
+            .store(last_src_mac_hi, Ordering::Relaxed);
+        state
+            .last_src_mac_lo
+            .store(last_src_mac_lo, Ordering::Relaxed);
         state.last_rssi_dbm.store(rssi_dbm, Ordering::Relaxed);
         let enqueued = {
             // Match try_lock errors explicitly: recover on Poisoned so

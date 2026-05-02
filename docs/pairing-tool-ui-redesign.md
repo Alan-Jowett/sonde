@@ -195,7 +195,7 @@ node→gateway ESP-NOW RSSI before provisioning.
 - Progress steps with animated indicators:
   1. "Connecting to node…" (spinner)
   2. "Provisioning…" (spinner)
-  2. "Waiting for acknowledgment…" (spinner)
+  3. "Waiting for acknowledgment…" (spinner)
 - On success:
   - Green checkmark animation
   - Node details: ID, key hint, channel

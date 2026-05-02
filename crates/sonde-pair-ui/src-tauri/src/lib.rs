@@ -20,10 +20,11 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
+use sonde_pair::error::PairingError;
 use sonde_pair::phase1::PairingProgress;
 use sonde_pair::rng::OsRng;
 use sonde_pair::transport::BleTransport;
-use sonde_pair::types::{BoardLayout, ScannedDevice};
+use sonde_pair::types::{BoardLayout, ScannedDevice, BLE_MTU_MIN};
 use sonde_pair::{phase1, phase2};
 
 #[cfg(not(target_os = "android"))]
@@ -467,7 +468,7 @@ async fn connect_node(
     let existing = state.connected_node.lock().unwrap().take();
     *state.phase.lock().unwrap() = "Connecting".into();
 
-    let result: Result<ConnectedNodeSession<BtleplugTransport>, sonde_pair::error::PairingError> =
+    let result: Result<ConnectedNodeSession<BtleplugTransport>, PairingError> =
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
                 if let Some(mut session) = existing {
@@ -479,8 +480,18 @@ async fn connect_node(
 
                 let mut transport = BtleplugTransport::new().await?;
                 transport.set_defer_bonding(true);
-                transport.connect(&addr).await?;
-                Ok::<_, sonde_pair::error::PairingError>(ConnectedNodeSession {
+                let mtu_result = transport.connect(&addr).await;
+                transport.set_defer_bonding(false);
+                let mtu = mtu_result?;
+                if mtu < BLE_MTU_MIN {
+                    transport.disconnect().await.ok();
+                    return Err(PairingError::MtuTooLow {
+                        device: format_address(&addr),
+                        negotiated: mtu,
+                        required: BLE_MTU_MIN,
+                    });
+                }
+                Ok::<_, PairingError>(ConnectedNodeSession {
                     address: addr,
                     transport,
                 })
@@ -506,13 +517,13 @@ async fn connect_node(
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo, String> {
+    let artifacts = load_pairing_artifacts(&state)?;
     let session = state
         .connected_node
         .lock()
         .unwrap()
         .take()
         .ok_or_else(|| "No connected node session".to_string())?;
-    let artifacts = load_pairing_artifacts(&state)?;
     *state.phase.lock().unwrap() = "Signal Check".into();
 
     let result = tokio::task::spawn_blocking(move || {
@@ -847,7 +858,7 @@ async fn connect_node(
     let existing = state.connected_node.lock().unwrap().take();
     *state.phase.lock().unwrap() = "Connecting".into();
 
-    let result: Result<ConnectedNodeSession<AndroidBleTransport>, sonde_pair::error::PairingError> =
+    let result: Result<ConnectedNodeSession<AndroidBleTransport>, PairingError> =
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
                 if let Some(mut session) = existing {
@@ -859,8 +870,18 @@ async fn connect_node(
 
                 let mut transport = AndroidBleTransport::from_cached_vm()?;
                 transport.set_defer_bonding(true);
-                transport.connect(&addr).await?;
-                Ok::<_, sonde_pair::error::PairingError>(ConnectedNodeSession {
+                let mtu_result = transport.connect(&addr).await;
+                transport.set_defer_bonding(false);
+                let mtu = mtu_result?;
+                if mtu < BLE_MTU_MIN {
+                    transport.disconnect().await.ok();
+                    return Err(PairingError::MtuTooLow {
+                        device: format_address(&addr),
+                        negotiated: mtu,
+                        required: BLE_MTU_MIN,
+                    });
+                }
+                Ok::<_, PairingError>(ConnectedNodeSession {
                     address: addr,
                     transport,
                 })
@@ -886,13 +907,13 @@ async fn connect_node(
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo, String> {
+    let artifacts = load_pairing_artifacts(&state)?;
     let session = state
         .connected_node
         .lock()
         .unwrap()
         .take()
         .ok_or_else(|| "No connected node session".to_string())?;
-    let artifacts = load_pairing_artifacts(&state)?;
     *state.phase.lock().unwrap() = "Signal Check".into();
 
     let result = tokio::task::spawn_blocking(move || {

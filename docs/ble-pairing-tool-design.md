@@ -893,7 +893,7 @@ Each wizard page is a `<section class="page">` element in `index.html` with a pa
 | 2 | `page-gateway-scan` | Scan controls, device list, phone label, pair button | Gateway |
 | 3 | `page-gateway-done` | Pairing success, channel/key hint info | Gateway |
 | 4 | `page-node-scan` | Scan controls, device list, BLE RSSI indicator, Connect button | Node |
-| 5 | `page-node-diagnostic` | Connected-node identity, live ESP-NOW RSSI / signal quality, proceed / abort controls | Node |
+| 5 | `page-signal-check` | Connected-node identity, live ESP-NOW RSSI / signal quality, proceed / abort controls | Node |
 | 6 | `page-node-provision` | Node ID, board selector, provision button | Node |
 | 7 | `page-done` | Success summary, "Provision Another" button | Done |
 
@@ -976,9 +976,9 @@ The indicator shows the numeric RSSI value and a text label ("Good", "Marginal",
 
 ### Connected node session and ESP-NOW signal check
 
-After the installer selects a node on page 4 and presses **Connect**, the frontend invokes a new Tauri `connect_node(address)` command.  This command creates or reuses a `BleTransport`, connects to the selected node, negotiates MTU ≥ 247, enforces LESC requirements, and stores the connected node session in `AppState`.
+After the installer selects a node on page 4 and presses **Connect**, the frontend invokes a new Tauri `connect_node(address)` command.  This command creates or reuses a `BleTransport`, connects to the selected node, validates the negotiated MTU is at least 247, and stores the connected node session in `AppState`.
 
-Page 5 (`page-node-diagnostic`) is shown only after `connect_node()` succeeds.  On entry, the frontend starts a single-flight diagnostic loop driven by a new Tauri `check_rssi()` command backed by `sonde_pair::phase2::check_rssi()`.  The loop waits for each diagnostic to complete before scheduling the next one; when the previous request completed quickly, the next request starts about 1000 ms later.  The loop never overlaps requests because `ble-pairing-protocol.md` §6a still permits multi-second diagnostic latency on timeout/retry paths.
+Page 5 (`page-signal-check`) is shown only after `connect_node()` succeeds.  On entry, the frontend starts a single-flight diagnostic loop driven by a new Tauri `check_rssi()` command backed by `sonde_pair::phase2::check_rssi()`.  The loop waits for each diagnostic to complete before scheduling the next one; when the previous request completed quickly, the next request starts about 1000 ms later.  The loop never overlaps requests because `ble-pairing-protocol.md` §6a still permits multi-second diagnostic latency on timeout/retry paths.
 
 The page 5 UI shows:
 

@@ -220,6 +220,17 @@ function classifyRssi(rssi) {
   return { label: "Bad", cls: "rssi--bad" };
 }
 
+function classifySignalQuality(signalQuality) {
+  switch (signalQuality) {
+    case 0:
+      return { label: "Good", cls: "rssi--good" };
+    case 1:
+      return { label: "Marginal", cls: "rssi--marginal" };
+    default:
+      return { label: "Bad", cls: "rssi--bad" };
+  }
+}
+
 function setIndicator(panel, valueEl, labelEl, rssi, waitingLabel = "--") {
   if (rssi == null) {
     valueEl.textContent = "--";
@@ -243,9 +254,16 @@ function updateBleSelectionIndicator(rssi) {
   setIndicator(rssiIndicator, rssiValue, rssiLabel, rssi);
 }
 
-function updateSignalCheckIndicators(diagRssi = null) {
+function updateSignalCheckIndicators(diagRssi = null, signalQuality = null) {
   setIndicator(diagBleIndicator, diagBleValue, diagBleLabel, selectedNodeBleRssi, "Waiting");
-  setIndicator(diagEspNowIndicator, diagEspNowValue, diagEspNowLabel, diagRssi, "Waiting");
+  if (diagRssi == null || signalQuality == null) {
+    setIndicator(diagEspNowIndicator, diagEspNowValue, diagEspNowLabel, null, "Waiting");
+    return;
+  }
+  const quality = classifySignalQuality(signalQuality);
+  diagEspNowValue.textContent = `${diagRssi} dBm`;
+  diagEspNowLabel.textContent = quality.label;
+  diagEspNowIndicator.className = `rssi-indicator ${quality.cls}`;
 }
 
 function resetSignalCheckView() {
@@ -513,7 +531,7 @@ async function runSignalCheckLoop() {
   diagCurrentPromise = (async () => {
     try {
       const result = await invoke("check_rssi");
-      updateSignalCheckIndicators(result.rssiDbm);
+      updateSignalCheckIndicators(result.rssiDbm, result.signalQuality);
       showStatus(signalStatus, `Last update: ${result.rssiDbm} dBm via ESP-NOW`);
       btnSignalProceed.disabled = false;
     } catch (e) {
@@ -533,19 +551,17 @@ async function connectNode() {
   clearError();
   if (scanning) await stopScan();
   setBusy(true);
-  navigator_.next();
   resetSignalCheckView();
   updateSignalCheckIndicators(null);
-  showStatus(signalStatus, "Connecting to node…");
   try {
     await invoke("connect_node", { address: selectedAddressNode });
+    navigator_.next();
     signalLoopEnabled = true;
     btnSignalProceed.disabled = false;
     showStatus(signalStatus, "Running ESP-NOW signal check…");
     setBusy(false);
     runSignalCheckLoop();
   } catch (e) {
-    navigator_.back();
     showError(e);
     setBusy(false);
   }

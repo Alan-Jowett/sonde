@@ -1340,7 +1340,7 @@ TestNode {
 
 **Procedure:**
 1. Launch the pairing tool.
-2. Assert: 7 `<section>` elements with IDs `page-welcome`, `page-gateway-scan`, `page-gateway-done`, `page-node-scan`, `page-node-diagnostic`, `page-node-provision`, `page-done` exist in the DOM.
+2. Assert: 7 `<section>` elements with IDs `page-welcome`, `page-gateway-scan`, `page-gateway-done`, `page-node-scan`, `page-signal-check`, `page-node-provision`, `page-done` exist in the DOM.
 3. Assert: exactly one page is visible; the other 6 are hidden.
 
 ---
@@ -1609,7 +1609,7 @@ TestNode {
 3. Select a node device.
 4. Assert: the **Connect** action becomes enabled.
 5. Click **Connect** and allow the BLE connection to succeed.
-6. Assert: page 5 (`page-node-diagnostic`) becomes visible.
+6. Assert: page 5 (`page-signal-check`) becomes visible.
 7. Assert: page 5 shows the connected node identity and an initial diagnostic status.
 
 ---

@@ -189,6 +189,28 @@ to avoid collisions when tests run in parallel.
 3. Assert: stderr shows summary line + hint "run with --verbose".
 4. Re-invoke with `--verbose`.
 5. Assert: stderr shows the full multi-line error.
+
+---
+
+### T-0109a  Verbose node-status output includes hashes alongside filenames
+
+**Validates:** ADMIN-0105, ADMIN-0200, ADMIN-0201, ADMIN-0403
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server with node state such that a node's assigned/current
+   program hashes reference a stored program record with
+   `source_filename = "temp-reader.o"`.
+2. Invoke `sonde-admin --verbose node list`.
+3. Assert: the node's assigned/current program fields include both
+   `temp-reader.o` and the underlying hash.
+4. Invoke `sonde-admin --verbose node get <node-id>`.
+5. Assert: the assigned/current program fields include both
+   `temp-reader.o` and the underlying hash.
+6. Invoke `sonde-admin --verbose status <node-id>`.
+7. Assert: the current program field includes both `temp-reader.o` and the
+   underlying hash.
+
 ---
 
 ## 4  Node management tests
@@ -217,6 +239,26 @@ to avoid collisions when tests run in parallel.
 4. Assert: list contains one node with matching ID and key_hint.
 5. Call `get_node("test-node")`.
 6. Assert: returned node matches.
+
+---
+
+### T-0201a  Human-readable `node list` and `node get` prefer `source_filename` and fall back to hash
+
+**Validates:** ADMIN-0200, ADMIN-0201
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server with two nodes whose assigned/current program hashes
+   reference stored program records:
+   - node A has `source_filename = "temp-reader.o"`.
+   - node B has no `source_filename`.
+2. Invoke `sonde-admin node list`.
+3. Assert: node A's assigned/current program fields show `temp-reader.o`,
+   never a full path.
+4. Assert: node B's assigned/current program fields show the hash.
+5. Invoke `sonde-admin node get <node-a-id>`.
+6. Assert: node A's assigned/current program fields show `temp-reader.o`,
+   never a full path.
 
 ---
 
@@ -346,6 +388,25 @@ to avoid collisions when tests run in parallel.
 2. Call `get_node_status(node_id)`.
 3. Assert: returned status contains the node ID.
 4. Assert: `has_active_session` is `false` (no WAKE has occurred).
+
+---
+
+### T-0403a  Human-readable `status` prefers `source_filename` and falls back to hash
+
+**Validates:** ADMIN-0403
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server with two nodes whose current program hashes reference
+   stored program records:
+   - node A has `source_filename = "temp-reader.o"`.
+   - node B has no `source_filename`.
+2. Invoke `sonde-admin status <node-a-id>`.
+3. Assert: the current program field shows `temp-reader.o`, never a full path.
+4. Invoke `sonde-admin status <node-b-id>`.
+5. Assert: the current program field shows the hash.
+6. Invoke `sonde-admin --format json status <node-a-id>`.
+7. Assert: JSON output remains hash-based.
 
 ---
 

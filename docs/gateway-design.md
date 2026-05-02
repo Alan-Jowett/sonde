@@ -423,8 +423,10 @@ pub enum VerificationProfile {
 The `source_filename` is operator-supplied metadata: the original source filename
 (basename, not full path) passed to `IngestProgram`. It is stored in the `programs`
 table as a nullable `TEXT` column (`source_filename TEXT`) and returned in
-`ListPrograms` responses. It does NOT affect the program hash — the hash covers
-only the CBOR image.
+`ListPrograms` responses. Human-facing node-status renderers may also use this
+basename as the default program identifier, falling back to the hash when the
+metadata is absent. It does NOT affect the program hash — the hash covers only
+the CBOR image.
 
 ### 8.2  Program ingestion
 
@@ -1253,7 +1255,7 @@ The passkey screen has priority over the generic connected state until Numeric C
 
 Outside an active BLE pairing session, `EVENT_BUTTON(BUTTON_SHORT)` advances the modem display through a gateway-owned sequence of status pages. The gateway chooses the sequence contents and renders each page into the same 128×64 framebuffer format used for the default banner and pairing screens.
 
-The default page sequence remains `[Channel, Nodes]`. The `Channel` page uses the existing centered two-line renderer. The `Nodes` page uses a node-status renderer that shows the operational node details most useful on the display: node ID, assigned/current program hashes, battery, last seen, and schedule, with nodes ordered by `node_id`, `key_hint` intentionally omitted, and `No nodes registered.` shown when the registry is empty. `last seen` is converted to the host's local timezone and formatted with locale-style date/time output rather than fixed UTC text. On the display, each field is formatted as a left-aligned property line followed by a left-aligned `- value` line so property names and values remain distinguishable on the small screen.
+The default page sequence remains `[Channel, Nodes]`. The `Channel` page uses the existing centered two-line renderer. The `Nodes` page uses a node-status renderer that shows the operational node details most useful on the display: node ID, assigned/current program identifiers, battery, last seen, and schedule, with nodes ordered by `node_id`, `key_hint` intentionally omitted, and `No nodes registered.` shown when the registry is empty. For assigned/current programs, the renderer resolves the default identifier from the stored `source_filename` basename when available and falls back to the hash when the metadata is absent. `last seen` is converted to the host's local timezone and formatted with locale-style date/time output rather than fixed UTC text. On the display, each field is formatted as a left-aligned property line followed by a left-aligned `- value` line so property names and values remain distinguishable on the small screen.
 
 The gateway tracks the status-page cycle as a cursor over the configured page sequence (`StatusPageCycle { next_page_index }` in `bin/gateway.rs`) together with a monotonically increasing `display_generation` used to invalidate older timeout tasks. When the active page is `Nodes`, the gateway also tracks node-page-local scroll state: the current vertical window offset and whether an autonomous 50 ms scroll ticker is active for the current display generation.
 

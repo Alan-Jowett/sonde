@@ -29,6 +29,7 @@ use sonde_gateway::engine::{resolve_espnow_channel, Gateway, PendingCommand};
 use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
 use sonde_gateway::key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeyProviderError};
 use sonde_gateway::modem::UsbEspNowTransport;
+use sonde_gateway::program::ProgramRecord;
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
@@ -153,7 +154,29 @@ fn push_wrapped_property_value(lines: &mut Vec<String>, property: &str, value: &
     }
 }
 
-fn build_node_status_lines(nodes: &[NodeRecord]) -> Vec<String> {
+fn build_program_name_map(programs: &[ProgramRecord]) -> HashMap<Vec<u8>, String> {
+    programs
+        .iter()
+        .filter_map(|program| {
+            program
+                .source_filename
+                .as_ref()
+                .map(|name| (program.hash.clone(), name.clone()))
+        })
+        .collect()
+}
+
+fn format_program_identifier(hash: &[u8], program_names: &HashMap<Vec<u8>, String>) -> String {
+    program_names
+        .get(hash)
+        .cloned()
+        .unwrap_or_else(|| hex::encode(hash))
+}
+
+fn build_node_status_lines(
+    nodes: &[NodeRecord],
+    program_names: &HashMap<Vec<u8>, String>,
+) -> Vec<String> {
     if nodes.is_empty() {
         return vec!["No nodes registered.".to_string()];
     }
@@ -168,10 +191,18 @@ fn build_node_status_lines(nodes: &[NodeRecord]) -> Vec<String> {
         }
         push_wrapped_property_value(&mut lines, "node id", &node.node_id);
         if let Some(hash) = node.assigned_program_hash.as_ref() {
-            push_wrapped_property_value(&mut lines, "assigned program", &hex::encode(hash));
+            push_wrapped_property_value(
+                &mut lines,
+                "assigned program",
+                &format_program_identifier(hash, program_names),
+            );
         }
         if let Some(hash) = node.current_program_hash.as_ref() {
-            push_wrapped_property_value(&mut lines, "current program", &hex::encode(hash));
+            push_wrapped_property_value(
+                &mut lines,
+                "current program",
+                &format_program_identifier(hash, program_names),
+            );
         }
         if let Some(mv) = node.last_battery_mv {
             push_wrapped_property_value(&mut lines, "battery", &format!("{mv} mV"));
@@ -212,9 +243,19 @@ async fn render_status_page(
             RenderedStatusPage::Static(Box::new(render_display_message(&line_refs)))
         }
         StatusPage::Nodes => match storage.list_nodes().await {
-            Ok(nodes) => RenderedStatusPage::Scrollable(render_status_text_page(
-                &build_node_status_lines(&nodes),
-            )),
+            Ok(nodes) => {
+                let program_names = match storage.list_programs().await {
+                    Ok(programs) => build_program_name_map(&programs),
+                    Err(e) => {
+                        warn!(error = %e, "failed to load programs for node status page");
+                        HashMap::new()
+                    }
+                };
+                RenderedStatusPage::Scrollable(render_status_text_page(&build_node_status_lines(
+                    &nodes,
+                    &program_names,
+                )))
+            }
             Err(e) => {
                 warn!(error = %e, "failed to load nodes for status page");
                 RenderedStatusPage::Static(Box::new(render_display_message(&["Nodes", "Error"])))
@@ -2003,12 +2044,23 @@ mod tests {
         node
     }
 
+    fn make_program_record(hash_fill: u8, source_filename: Option<&str>) -> ProgramRecord {
+        ProgramRecord {
+            hash: vec![hash_fill; 32],
+            image: vec![hash_fill, hash_fill.saturating_add(1)],
+            size: 2,
+            verification_profile: sonde_gateway::program::VerificationProfile::Resident,
+            abi_version: None,
+            source_filename: source_filename.map(str::to_string),
+        }
+    }
+
     #[test]
     fn node_status_lines_sort_nodes_and_omit_absent_fields() {
         let node_a = NodeRecord::new("a".to_string(), 1, [0x11; 32]);
         let node_b = make_rich_node("b", 2, 0x22, 1_700_000_000);
 
-        let lines = build_node_status_lines(&[node_b.clone(), node_a.clone()]);
+        let lines = build_node_status_lines(&[node_b.clone(), node_a.clone()], &HashMap::new());
         let a_index = lines
             .iter()
             .position(|line| line == "- a")
@@ -2074,9 +2126,71 @@ mod tests {
     #[test]
     fn empty_node_status_lines_show_empty_registry_message() {
         assert_eq!(
-            build_node_status_lines(&[] as &[NodeRecord]),
+            build_node_status_lines(&[] as &[NodeRecord], &HashMap::new()),
             vec!["No nodes registered.".to_string()]
         );
+    }
+
+    #[test]
+    fn node_status_lines_prefer_source_filename_and_fall_back_to_hash() {
+        let named_node = make_rich_node("named", 1, 0x31, 1_700_000_000);
+        let fallback_node = make_rich_node("fallback", 2, 0x41, 1_700_000_060);
+        let named_assigned = named_node.assigned_program_hash.clone().unwrap();
+        let named_current = named_node.current_program_hash.clone().unwrap();
+        let fallback_assigned = fallback_node.assigned_program_hash.clone().unwrap();
+        let fallback_current = fallback_node.current_program_hash.clone().unwrap();
+
+        let program_names = HashMap::from([
+            (named_assigned.clone(), "a.o".to_string()),
+            (named_current.clone(), "b.o".to_string()),
+        ]);
+
+        let lines =
+            build_node_status_lines(&[fallback_node.clone(), named_node.clone()], &program_names);
+
+        assert!(
+            lines.iter().any(|line| line == "- a.o"),
+            "assigned program should use source_filename basename when available"
+        );
+        assert!(
+            lines.iter().any(|line| line == "- b.o"),
+            "current program should use source_filename basename when available"
+        );
+        assert_eq!(
+            format_program_identifier(&fallback_assigned, &program_names),
+            hex::encode(&fallback_assigned),
+            "assigned program should fall back to hash when filename metadata is absent"
+        );
+        assert_eq!(
+            format_program_identifier(&fallback_current, &program_names),
+            hex::encode(&fallback_current),
+            "current program should fall back to hash when filename metadata is absent"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_status_page_nodes_prefers_program_source_filename() {
+        let storage = Arc::new(InMemoryStorage::new());
+        let node = make_rich_node("named", 1, 0x31, 1_700_000_000);
+        let assigned_program = make_program_record(0x31, Some("a.o"));
+        let current_program = make_program_record(0x32, Some("b.o"));
+        storage.store_program(&assigned_program).await.unwrap();
+        storage.store_program(&current_program).await.unwrap();
+        storage.upsert_node(&node).await.unwrap();
+        let storage: Arc<dyn Storage> = storage;
+
+        let rendered = render_status_page(&storage, 6, StatusPage::Nodes).await;
+        let expected = render_status_text_page(&build_node_status_lines(
+            &[node],
+            &build_program_name_map(&[assigned_program, current_program]),
+        ));
+
+        match rendered {
+            RenderedStatusPage::Scrollable(framebuffer) => {
+                assert_eq!(framebuffer.visible_window(0), expected.visible_window(0));
+            }
+            RenderedStatusPage::Static(_) => panic!("nodes page should be scrollable"),
+        }
     }
 
     async fn open_button_pairing_for_test(
@@ -2556,8 +2670,10 @@ mod tests {
             }
         });
         let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
-        let expected_nodes_page =
-            render_status_text_page(&build_node_status_lines(&[] as &[NodeRecord]));
+        let expected_nodes_page = render_status_text_page(&build_node_status_lines(
+            &[] as &[NodeRecord],
+            &HashMap::new(),
+        ));
         assert_eq!(framebuffer, expected_nodes_page.visible_window(0));
         assert!(second_press.await.unwrap());
         assert_no_stream_data_while_time_paused(
@@ -2594,8 +2710,10 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
-        let expected_page =
-            render_status_text_page(&build_node_status_lines(&[node_a.clone(), node_b.clone()]));
+        let expected_page = render_status_text_page(&build_node_status_lines(
+            &[node_a.clone(), node_b.clone()],
+            &HashMap::new(),
+        ));
         assert!(expected_page.is_scrollable(), "rich node page must scroll");
 
         tokio::time::pause();
@@ -2659,8 +2777,10 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
-        let expected_nodes_page =
-            render_status_text_page(&build_node_status_lines(&[node_a.clone(), node_b.clone()]));
+        let expected_nodes_page = render_status_text_page(&build_node_status_lines(
+            &[node_a.clone(), node_b.clone()],
+            &HashMap::new(),
+        ));
 
         tokio::time::pause();
         for _ in 0..2 {
@@ -2738,7 +2858,10 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
-        let expected_page = render_status_text_page(&build_node_status_lines(&[] as &[NodeRecord]));
+        let expected_page = render_status_text_page(&build_node_status_lines(
+            &[] as &[NodeRecord],
+            &HashMap::new(),
+        ));
         assert!(
             !expected_page.is_scrollable(),
             "empty state should be static"

@@ -22,7 +22,7 @@ who sets up the entire site:
 3. Pair the phone with the gateway
 4. Download the node plan (bundle manifest)
 5. Walk through each node: view setup instructions, connect sensors,
-   pair, check signal quality, provision
+   pair, connect over BLE, check ESP-NOW signal quality, provision
 6. Track progress across all nodes at the site
 
 ## Workflow Overview
@@ -48,17 +48,21 @@ who sets up the entire site:
     │             │     - Setup media (photos/videos from bundle)
     │             │
     │  4. Pair &  │  ← Scan for node BLE service
-    │     RSSI    │     Select physical device
-    │             │     Live RSSI signal quality indicator
-    │             │     "Signal good — ready to provision"
+    │     Connect │     Select physical device
+    │             │     BLE RSSI signal quality indicator
+    │             │     Connect to the node over BLE
     │             │
-    │  5. Prov-   │  ← Progress: Connect → Provision → ACK
+    │  5. Signal  │  ← Live ESP-NOW node→gateway RSSI
+    │     Check   │     Adjust orientation/position
+    │             │     Proceed or abort
+    │             │
+    │  6. Prov-   │  ← Progress: Provision → ACK
     │     ision   │     Success/failure with actionable errors
     │             │     "Next Node" returns to step 2
     └─────────────┘
           ▼
 ┌─────────────────────┐
-│  6. All Done        │  Summary: "8/8 nodes provisioned."
+│  7. All Done        │  Summary: "8/8 nodes provisioned."
 │                     │  List of all nodes with final status.
 └─────────────────────┘
 ```
@@ -135,31 +139,55 @@ before initiating the wireless pairing.
 - The checklist is informational (not enforced by the app)
 - Pin config is displayed for reference; validated during provisioning
 
-### Step 4 — Pair & Signal Check
+### Step 4 — Pair & Connect
 
-**Purpose:** Find the physical node via BLE and verify RF signal
-quality before committing to provisioning.
+**Purpose:** Find the physical node via BLE and verify BLE link quality
+before establishing a connected node session.
 
 **UI elements:**
 - Auto-start BLE scan for node provisioning service UUID
 - List of discovered nodes with:
   - Device address
   - Signal strength (animated bars)
-- Tap to select → show detailed RSSI panel:
-  - **Live RSSI gauge** (good ≥ −60 dBm / marginal −60 to −75 dBm / bad < −75 dBm)
-  - "Move the node closer" warning if signal is bad
-  - RSSI history graph (last 10 seconds)
-- "Signal Good — Provision" button → Step 5
-  - Enabled when RSSI is good or marginal (≥ −75 dBm)
-  - "Provision Anyway" override shown when RSSI is bad (< −75 dBm)
+- Tap to select → show detailed BLE RSSI panel:
+  - **Live BLE RSSI gauge** (good ≥ −60 dBm / marginal −60 to −75 dBm / bad < −75 dBm)
+  - Signal strength for selecting the best nearby node to connect to
+- "Connect" button → Step 5
 
 **Backend requirements:**
 - Existing `start_scan()` / `get_devices()` Tauri commands
 - RSSI data from scan results (already available)
-- **New (future):** DIAG_REQUEST/DIAG_REPLY for gateway-side RSSI
-  measurement (protocol already defined, not yet in pairing tool)
+- **New:** `connect_node()` Tauri command that establishes BLE connection
+  and MTU negotiation before entering Step 5
 
-### Step 5 — Provision
+### Step 5 — ESP-NOW Signal Check
+
+**Purpose:** Use the node as a BLE-connected relay to measure the
+node→gateway ESP-NOW RSSI before provisioning.
+
+**UI elements:**
+- Connected node identity
+- Live ESP-NOW RSSI readout and signal quality label
+- Status text for `checking`, timeout, or channel-error outcomes
+- Guidance that the installer can move or re-orient the node and watch
+  the readout update
+- "Proceed to Provision" button → Step 6
+- "Abort" / "Disconnect" button → back to Step 4
+
+**Behavior notes:**
+- The diagnostic starts automatically after BLE connection succeeds.
+- The tool updates after each completed diagnostic result and targets a
+  1-second cadence only when replies are fast; protocol timeouts remain
+  governed by `ble-pairing-protocol.md` §6a.
+- The diagnostic is informational only: bad signal or timeout does not
+  block proceeding.
+
+**Backend requirements:**
+- Existing `sonde-pair::phase2::check_rssi()` core flow
+- **New:** Tauri command surface for `check_rssi()` and connected-node
+  session management
+
+### Step 6 — Provision
 
 **Purpose:** Execute the Phase 2 provisioning protocol.
 
@@ -167,7 +195,7 @@ quality before committing to provisioning.
 - Progress steps with animated indicators:
   1. "Connecting to node…" (spinner)
   2. "Provisioning…" (spinner)
-  3. "Waiting for acknowledgment…" (spinner)
+  2. "Waiting for acknowledgment…" (spinner)
 - On success:
   - Green checkmark animation
   - Node details: ID, key hint, channel
@@ -184,7 +212,7 @@ quality before committing to provisioning.
   and forward `PinConfig` from the bundle manifest (the current command
   does not support passing pin config)
 
-### Step 6 — All Done
+### Step 7 — All Done
 
 **Purpose:** Summary and completion confirmation.
 
@@ -212,7 +240,7 @@ quality before committing to provisioning.
 The current `index.html` is a single-page layout. The redesign uses
 client-side page routing (hash-based or simple show/hide of `<section>`
 elements). No framework dependency is required — vanilla JS with a
-simple state machine is sufficient for 6 pages.
+simple state machine is sufficient for 7 pages.
 
 **Suggested approach:**
 - Each step is a `<section class="page" id="page-N">` element
@@ -225,6 +253,9 @@ simple state machine is sufficient for 6 pages.
 Most backend commands already exist:
 - `start_scan()`, `stop_scan()`, `get_devices()` — scanning
 - `pair_gateway()` — Phase 1
+- `connect_node()` — establish the connected node session for Step 5
+- `check_rssi()` — run one node↔gateway diagnostic over the connected BLE session
+- `disconnect_node()` — release the connected node session when aborting
 - `provision_node()` — Phase 2
 - `get_pairing_status()` — status check
 

@@ -79,7 +79,7 @@
       </div>
     </section>
 
-    <!-- Page 4: Node Scan & RSSI (PT-1217, PT-1221) -->
+    <!-- Page 4: Node Scan & BLE RSSI (PT-1217, PT-1221) -->
     <section class="page" id="page-node-scan">
       <div class="card">
         <h2>Node Scan</h2>
@@ -92,16 +92,45 @@
         </ul>
       </div>
       <div id="rssi-panel" class="card hidden">
-        <h2>Signal Quality</h2>
+        <h2>BLE Signal Quality</h2>
         <div class="rssi-indicator" id="rssi-indicator">
           <span class="rssi-value" id="rssi-value">--</span>
           <span class="rssi-label" id="rssi-label">--</span>
         </div>
       </div>
-      <button id="btn-to-provision" disabled>Continue to Provision</button>
+      <button id="btn-connect-node" disabled>Connect</button>
     </section>
 
-    <!-- Page 5: Node Provision (PT-1217) -->
+    <!-- Page 5: Signal Check (PT-1217, PT-1223, PT-1224, PT-1225) -->
+    <section class="page" id="page-signal-check">
+      <div class="card">
+        <h2>Signal Check</h2>
+        <div class="signal-grid">
+          <div>
+            <h3>BLE RSSI</h3>
+            <div class="rssi-indicator" id="diag-ble-indicator">
+              <span class="rssi-value" id="diag-ble-value">--</span>
+              <span class="rssi-label" id="diag-ble-label">--</span>
+            </div>
+          </div>
+          <div>
+            <h3>ESP-NOW RSSI</h3>
+            <div class="rssi-indicator" id="diag-espnow-indicator">
+              <span class="rssi-value" id="diag-espnow-value">--</span>
+              <span class="rssi-label" id="diag-espnow-label">Waiting</span>
+            </div>
+          </div>
+        </div>
+        <div id="signal-status" class="status-text hidden"></div>
+        <p class="signal-note">This check is informational only. You can continue even if the node reports weak signal or the diagnostic times out.</p>
+        <div class="btn-row">
+          <button id="btn-signal-abort" class="btn-danger">Abort</button>
+          <button id="btn-signal-proceed" disabled>Proceed to Provision</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Page 6: Node Provision (PT-1217) -->
     <section class="page" id="page-node-provision">
       <div class="card">
         <h2>Node Provisioning</h2>
@@ -144,7 +173,7 @@
       </div>
     </section>
 
-    <!-- Page 6: Done (PT-1217) -->
+    <!-- Page 7: Done (PT-1217) -->
     <section class="page" id="page-done">
       <div class="card">
         <h2>Provisioning Complete</h2>

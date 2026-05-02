@@ -1201,7 +1201,7 @@ A "Custom" option MUST also be available, which reveals editable fields for the 
 **Source:** pairing-tool-ui-redesign.md §Phase A, issue #673
 
 **Description:**  
-The UI MUST be organized as a multi-page wizard with 6 pages, each implemented as a `<section>` element.  Client-side routing uses show/hide logic managed by a `Navigator` class.  No server-side routing or SPA framework is required.
+The UI MUST be organized as a multi-page wizard with 7 pages, each implemented as a `<section>` element.  Client-side routing uses show/hide logic managed by a `Navigator` class.  No server-side routing or SPA framework is required.
 
 The page layout is:
 
@@ -1210,9 +1210,10 @@ The page layout is:
 | 1 | Welcome / Status | Pairing status check; "Get Started" (unpaired) or "Provision Node" (paired) | Gateway |
 | 2 | Gateway Scan & Pair | Scan controls, device list, phone label input, pair button | Gateway |
 | 3 | Pairing Complete | Success confirmation, channel and key hint info | Gateway |
-| 4 | Node Scan & RSSI | Scan for nodes, device list, live RSSI indicator | Node |
-| 5 | Node Provision | Node ID input, board selector, provision button, progress | Node |
-| 6 | Done | Success summary, "Provision Another" button | Done |
+| 4 | Node Scan & BLE RSSI | Scan for nodes, device list, BLE RSSI indicator, Connect button | Node |
+| 5 | Node Signal Check | Connected-node identity, live ESP-NOW RSSI / signal quality, proceed / abort controls | Node |
+| 6 | Node Provision | Node ID input, board selector, provision button, progress | Node |
+| 7 | Done | Success summary, "Provision Another" button | Done |
 
 **Acceptance criteria:**
 
@@ -1220,7 +1221,7 @@ The page layout is:
 2. Each page is a `<section>` element with a unique `id` attribute.
 3. Navigation between pages is managed by a `Navigator` class in JavaScript.
 4. Navigation follows a linear forward/backward flow between adjacent pages, except that the navigator MAY skip ahead to the earliest valid page permitted by the current pairing state (e.g., page 1 → page 4 when the gateway is already paired).  Arbitrary random access to later pages is not allowed.
-5. All existing functionality (scan, pair, provision, status, diagnostics) works through the multi-page flow.
+5. All existing functionality (scan, pair, ESP-NOW signal check, provision, status, diagnostics) works through the multi-page flow.
 
 ---
 
@@ -1234,7 +1235,7 @@ The UI MUST display a stepper bar at the top of every page showing three phases:
 
 **Acceptance criteria:**
 
-1. The stepper bar is visible on all 6 pages.
+1. The stepper bar is visible on all 7 pages.
 2. The stepper shows exactly three steps: Gateway, Node, Done.
 3. The currently active phase is visually distinct (highlighted).
 4. Completed phases are visually marked as done (e.g., checkmark).
@@ -1253,9 +1254,9 @@ The UI MUST persist the current page index to `localStorage` so that the wizard 
 **Acceptance criteria:**
 
 1. On page transition, the current page index (0-based) is saved to `localStorage`.
-2. On app launch, the saved page index is read and the corresponding page is displayed, provided the page's prerequisites are met (e.g., pairing artifacts for pages 3–6).
+2. On app launch, the saved page index is read and the corresponding page is displayed, provided the page's prerequisites are met (e.g., pairing artifacts for pages 3–7).
 3. If `localStorage` is empty, contains an invalid page index, or the saved page's prerequisites are not met, the app navigates to the earliest valid page (page 1 if unpaired, page 4 if already paired).
-4. The selected BLE node address is ephemeral and is never persisted across restarts.  Page 5 (Node Provision) requires a selected node address; page 6 (Done) requires in-memory provisioning-success context.  Both are ephemeral.  If the saved page is 5 or 6, the app MUST fall back to page 4 (Node Scan) if page 4's prerequisites are met (i.e., the app is paired); otherwise, the app MUST fall back to the earliest valid page as defined in AC 3.
+4. The selected BLE node address and any active BLE node connection are ephemeral and are never persisted across restarts.  Pages 5–7 require ephemeral connected-node or provisioning-success context.  If the saved page is 5, 6, or 7, the app MUST fall back to page 4 (Node Scan) if page 4's prerequisites are met (i.e., the app is paired); otherwise, the app MUST fall back to the earliest valid page as defined in AC 3.
 
 ---
 
@@ -1271,24 +1272,24 @@ Additionally, a visible back arrow button MUST be rendered in the header bar on 
 
 **Acceptance criteria:**
 
-1. Pressing back on pages 2–6 navigates to the previous page.
+1. Pressing back on pages 2–7 navigates to the previous page.
 2. Pressing back on page 1 does nothing (the app does not exit).
 3. Back navigation uses the History API (`pushState`/`popstate`) with a sentinel state at the bottom of the history stack.  When the app restores to page N on launch, all intermediate pages (1 through N) MUST be pushed into history so that back navigation traverses each page in sequence.  On encountering the sentinel, the app MUST update the visible UI to page 1 (Welcome) and MUST re-establish a no-exit state so that further back actions while on page 1 remain on page 1 and do not navigate away.
 4. The stepper bar updates correctly on back navigation.
 5. Navigating back from a scan page stops any active scan and clears the selected device.
-6. A back arrow button is visible in the header on pages 2–6.
+6. A back arrow button is visible in the header on pages 2–7.
 7. The back arrow button is hidden on page 1 (Welcome).
 8. Clicking the back arrow navigates to the previous page (same behavior as AC 1).
 
 ---
 
-### PT-1221  RSSI signal quality indicator
+### PT-1221  BLE RSSI signal quality indicator
 
 **Priority:** Must  
 **Source:** pairing-tool-ui-redesign.md §Step 4, issue #673
 
 **Description:**  
-The Node Scan page (page 4) MUST display a visual RSSI signal quality indicator for the selected BLE device.  The indicator uses three quality levels based on protocol-defined thresholds:
+The Node Scan page (page 4) MUST display a visual BLE RSSI signal quality indicator for the selected device while the installer is choosing which node to connect to.  The indicator uses three quality levels based on protocol-defined thresholds:
 
 | Level | RSSI Range | Visual |
 |-------|-----------|--------|
@@ -1298,7 +1299,7 @@ The Node Scan page (page 4) MUST display a visual RSSI signal quality indicator 
 
 **Acceptance criteria:**
 
-1. The RSSI indicator is displayed on page 4 when a device is selected.
+1. The BLE RSSI indicator is displayed on page 4 when a device is selected.
 2. Good signal (≥ −60 dBm) shows a green indicator.
 3. Marginal signal (−75 ≤ RSSI < −60 dBm) shows a yellow/amber indicator.
 4. Bad signal (< −75 dBm) shows a red indicator.
@@ -1320,6 +1321,60 @@ The UI SHOULD use CSS transitions for page changes.  Forward navigation slides t
 2. Back navigation animates the page sliding in from the left.
 3. The transition duration is ≤ 300 ms.
 4. Navigation remains functional if CSS transitions are disabled (graceful degradation).
+
+---
+
+### PT-1223  Pre-provision ESP-NOW signal-check step
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §6a, USER-REQUEST
+
+**Description:**  
+After the installer selects a node on page 4 and clicks **Connect**, the tool MUST establish the BLE connection to the node and then transition to a dedicated page 5 signal-check step before provisioning.  This step is distinct from the page 4 BLE RSSI view and exists to show the node↔gateway ESP-NOW diagnostic results.
+
+**Acceptance criteria:**
+
+1. Page 4 includes a **Connect** action that is disabled until a node device is selected.
+2. A successful BLE connection transitions the UI from page 4 to page 5.
+3. A failed BLE connection leaves the installer on page 4 and displays an actionable error.
+4. Page 5 displays the connected node identity and the current ESP-NOW diagnostic status.
+5. Page 5 provides controls to proceed to page 6 (Provision) or abort and return to page 4.
+
+---
+
+### PT-1224  Live ESP-NOW diagnostic polling
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §6a, USER-REQUEST
+
+**Description:**  
+While page 5 is active and the node BLE connection remains established, the tool MUST run the pairing-time ESP-NOW RSSI diagnostic repeatedly and update the UI after each completed diagnostic result.  The tool targets a 1000 ms cadence between completed checks when responses are fast, but it MUST preserve the existing protocol timing from ble-pairing-protocol.md §6a and MUST NOT overlap diagnostic requests.
+
+**Acceptance criteria:**
+
+1. Entering page 5 automatically starts the first diagnostic check.
+2. The tool never has more than one diagnostic request in flight at a time.
+3. On a successful diagnostic result, page 5 shows the gateway-measured RSSI in dBm and the signal-quality assessment (`good`, `marginal`, or `bad`).
+4. When the previous diagnostic completes quickly, the next diagnostic starts about 1000 ms after completion.
+5. When a diagnostic times out or returns a channel error, page 5 shows an actionable status message and remains on the signal-check step.
+6. Leaving page 5 stops the repeating diagnostic loop.
+
+---
+
+### PT-1225  Informational-only ESP-NOW guidance
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §6a.4, USER-REQUEST
+
+**Description:**  
+The page 5 ESP-NOW diagnostic is advisory only.  The tool MUST let the installer decide whether to proceed with provisioning or abort after reviewing the live node↔gateway signal readings.  The tool MUST NOT automatically block or force provisioning based on signal quality or diagnostic failures.
+
+**Acceptance criteria:**
+
+1. A `bad` ESP-NOW signal result does not automatically start provisioning and does not force the installer off page 5.
+2. The control to proceed to page 6 remains available after any completed diagnostic result, including `bad` signal, timeout, or channel-error outcomes.
+3. The installer can abort from page 5 and return to page 4 without provisioning the node.
+4. Proceeding from page 5 to page 6 does not require an additional override dialog solely because the last diagnostic result was `bad`.
 
 ---
 
@@ -1402,5 +1457,8 @@ The UI SHOULD use CSS transitions for page changes.  Forward navigation slides t
 | PT-1218 | Stepper progress bar | Active |
 | PT-1219 | Wizard page persistence | Active |
 | PT-1220 | Back navigation | Active |
-| PT-1221 | RSSI signal quality indicator | Active |
+| PT-1221 | BLE RSSI signal quality indicator | Active |
 | PT-1222 | Page transition animations | Active |
+| PT-1223 | Pre-provision ESP-NOW signal-check step | Active |
+| PT-1224 | Live ESP-NOW diagnostic polling | Active |
+| PT-1225 | Informational-only ESP-NOW guidance | Active |

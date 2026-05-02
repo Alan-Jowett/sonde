@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
 use sonde_pair::phase1::PairingProgress;
 use sonde_pair::rng::OsRng;
+use sonde_pair::transport::BleTransport;
 use sonde_pair::types::{BoardLayout, ScannedDevice};
 use sonde_pair::{phase1, phase2};
 
@@ -44,10 +45,19 @@ struct AppState {
     scanner: Mutex<Option<DeviceScanner<BtleplugTransport>>>,
     #[cfg(target_os = "android")]
     scanner: Mutex<Option<DeviceScanner<AndroidBleTransport>>>,
+    #[cfg(not(target_os = "android"))]
+    connected_node: Mutex<Option<ConnectedNodeSession<BtleplugTransport>>>,
+    #[cfg(target_os = "android")]
+    connected_node: Mutex<Option<ConnectedNodeSession<AndroidBleTransport>>>,
     phase: Arc<Mutex<String>>,
     logs: Arc<Mutex<Vec<String>>>,
     /// Phase 1 AEAD artifacts, held in memory for Phase 2 provisioning.
     pairing_artifacts: Mutex<Option<Arc<phase1::PairingArtifacts>>>,
+}
+
+struct ConnectedNodeSession<T> {
+    address: [u8; 6],
+    transport: T,
 }
 
 /// Reports Phase 1 sub-phase transitions to the UI via the shared `phase` mutex.
@@ -77,6 +87,18 @@ struct DeviceInfo {
 struct PairingStatus {
     paired: bool,
     gateway_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ConnectedNodeInfo {
+    address: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticInfo {
+    rssi_dbm: i8,
+    signal_quality: u8,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -176,6 +198,42 @@ fn device_to_info(d: &ScannedDevice) -> DeviceInfo {
             None => "Unknown".into(),
         },
     }
+}
+
+#[cfg(not(target_os = "android"))]
+fn load_pairing_artifacts(state: &AppState) -> Result<Arc<phase1::PairingArtifacts>, String> {
+    let mut guard = state.pairing_artifacts.lock().unwrap();
+    if guard.is_none() {
+        let store = FilePairingStore::new().map_err(|e| e.to_string())?;
+        match store.load_artifacts() {
+            Ok(Some(loaded)) => {
+                *guard = Some(Arc::new(loaded));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("failed to load pairing artifacts: {e}")),
+        }
+    }
+    guard
+        .clone()
+        .ok_or_else(|| "Not paired — run pair_gateway first".to_string())
+}
+
+#[cfg(target_os = "android")]
+fn load_pairing_artifacts(state: &AppState) -> Result<Arc<phase1::PairingArtifacts>, String> {
+    let mut guard = state.pairing_artifacts.lock().unwrap();
+    if guard.is_none() {
+        let store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
+        match store.load_artifacts() {
+            Ok(Some(loaded)) => {
+                *guard = Some(Arc::new(loaded));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("failed to load pairing artifacts: {e}")),
+        }
+    }
+    guard
+        .clone()
+        .ok_or_else(|| "Not paired — run pair_gateway first".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -327,41 +385,55 @@ async fn provision_node(
     };
 
     let board_layout = resolve_board_layout(board_layout, i2c_sda, i2c_scl)?;
-
-    // Load artifacts from in-memory cache, falling back to file store.
-    let artifacts = {
-        let mut guard = state.pairing_artifacts.lock().unwrap();
-        if guard.is_none() {
-            let store = FilePairingStore::new().map_err(|e| e.to_string())?;
-            match store.load_artifacts() {
-                Ok(Some(loaded)) => {
-                    *guard = Some(Arc::new(loaded));
-                }
-                Ok(None) => {}
-                Err(e) => return Err(format!("failed to load pairing artifacts: {e}")),
-            }
-        }
-        guard
-            .clone()
-            .ok_or_else(|| "Not paired — run pair_gateway first".to_string())?
-    };
+    let artifacts = load_pairing_artifacts(&state)?;
 
     *state.phase.lock().unwrap() = "Provisioning".into();
-
+    let session = state.connected_node.lock().unwrap().take();
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
-            let mut transport = BtleplugTransport::new().await?;
             let rng = OsRng;
-            phase2::provision_node(
-                &mut transport,
-                &artifacts,
-                &rng,
-                &addr,
-                &node_id,
-                &[],
-                board_layout,
-            )
-            .await
+            match session {
+                Some(mut session) if session.address == addr => {
+                    let result = phase2::provision_connected_node(
+                        &mut session.transport,
+                        &artifacts,
+                        &rng,
+                        &node_id,
+                        &[],
+                        board_layout,
+                    )
+                    .await;
+                    let _ = session.transport.disconnect().await;
+                    result
+                }
+                Some(mut session) => {
+                    let _ = session.transport.disconnect().await;
+                    let mut transport = BtleplugTransport::new().await?;
+                    phase2::provision_node(
+                        &mut transport,
+                        &artifacts,
+                        &rng,
+                        &addr,
+                        &node_id,
+                        &[],
+                        board_layout,
+                    )
+                    .await
+                }
+                None => {
+                    let mut transport = BtleplugTransport::new().await?;
+                    phase2::provision_node(
+                        &mut transport,
+                        &artifacts,
+                        &rng,
+                        &addr,
+                        &node_id,
+                        &[],
+                        board_layout,
+                    )
+                    .await
+                }
+            }
         })
     })
     .await
@@ -378,6 +450,116 @@ async fn provision_node(
             Err(msg)
         }
     }
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+async fn connect_node(
+    state: tauri::State<'_, AppState>,
+    address: String,
+) -> Result<ConnectedNodeInfo, String> {
+    *state.scanner.lock().unwrap() = None;
+
+    let addr = parse_address(&address).map_err(|e| {
+        *state.phase.lock().unwrap() = format!("Error: {e}");
+        e
+    })?;
+    let existing = state.connected_node.lock().unwrap().take();
+    *state.phase.lock().unwrap() = "Connecting".into();
+
+    let result: Result<ConnectedNodeSession<BtleplugTransport>, sonde_pair::error::PairingError> =
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                if let Some(mut session) = existing {
+                    if session.address == addr {
+                        return Ok(session);
+                    }
+                    let _ = session.transport.disconnect().await;
+                }
+
+                let mut transport = BtleplugTransport::new().await?;
+                transport.set_defer_bonding(true);
+                transport.connect(&addr).await?;
+                Ok::<_, sonde_pair::error::PairingError>(ConnectedNodeSession {
+                    address: addr,
+                    transport,
+                })
+            })
+        })
+        .await
+        .map_err(|e| format!("task panicked: {e}"))?;
+
+    match result {
+        Ok(session) => {
+            *state.connected_node.lock().unwrap() = Some(session);
+            *state.phase.lock().unwrap() = "Connected".into();
+            Ok(ConnectedNodeInfo { address })
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            *state.phase.lock().unwrap() = format!("Error: {msg}");
+            Err(msg)
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo, String> {
+    let session = state
+        .connected_node
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or_else(|| "No connected node session".to_string())?;
+    let artifacts = load_pairing_artifacts(&state)?;
+    *state.phase.lock().unwrap() = "Signal Check".into();
+
+    let result = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async move {
+            let mut session = session;
+            let outcome = phase2::check_rssi(&mut session.transport, &artifacts).await;
+            (session, outcome)
+        })
+    })
+    .await
+    .map_err(|e| format!("task panicked: {e}"))?;
+
+    let (session, outcome) = result;
+    *state.connected_node.lock().unwrap() = Some(session);
+    match outcome {
+        Ok(diag) => {
+            *state.phase.lock().unwrap() = "Connected".into();
+            Ok(DiagnosticInfo {
+                rssi_dbm: diag.rssi_dbm,
+                signal_quality: diag.signal_quality,
+            })
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            *state.phase.lock().unwrap() = format!("Error: {msg}");
+            Err(msg)
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+async fn disconnect_node(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let session = state.connected_node.lock().unwrap().take();
+    if let Some(session) = session {
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                let mut session = session;
+                session.transport.disconnect().await
+            })
+        })
+        .await
+        .map_err(|e| format!("task panicked: {e}"))?
+        .map_err(|e| e.to_string())?;
+    }
+    *state.phase.lock().unwrap() = "Idle".into();
+    Ok(())
 }
 
 #[cfg(not(target_os = "android"))]
@@ -400,7 +582,19 @@ fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus
 
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
-fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
+async fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let session = state.connected_node.lock().unwrap().take();
+    if let Some(session) = session {
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                let mut session = session;
+                session.transport.disconnect().await
+            })
+        })
+        .await
+        .map_err(|e| format!("task panicked: {e}"))?
+        .map_err(|e| e.to_string())?;
+    }
     *state.pairing_artifacts.lock().unwrap() = None;
     let store = FilePairingStore::new().map_err(|e| e.to_string())?;
     store.clear().map_err(|e| e.to_string())?;
@@ -571,41 +765,55 @@ async fn provision_node(
     };
 
     let board_layout = resolve_board_layout(board_layout, i2c_sda, i2c_scl)?;
-
-    // Load artifacts from in-memory cache, falling back to Android secure storage.
-    let artifacts = {
-        let mut guard = state.pairing_artifacts.lock().unwrap();
-        if guard.is_none() {
-            let store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
-            match store.load_artifacts() {
-                Ok(Some(loaded)) => {
-                    *guard = Some(Arc::new(loaded));
-                }
-                Ok(None) => {}
-                Err(e) => return Err(format!("failed to load pairing artifacts: {e}")),
-            }
-        }
-        guard
-            .clone()
-            .ok_or_else(|| "Not paired — run pair_gateway first".to_string())?
-    };
+    let artifacts = load_pairing_artifacts(&state)?;
 
     *state.phase.lock().unwrap() = "Provisioning".into();
-
+    let session = state.connected_node.lock().unwrap().take();
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
-            let mut transport = AndroidBleTransport::from_cached_vm()?;
             let rng = OsRng;
-            phase2::provision_node(
-                &mut transport,
-                &artifacts,
-                &rng,
-                &addr,
-                &node_id,
-                &[],
-                board_layout,
-            )
-            .await
+            match session {
+                Some(mut session) if session.address == addr => {
+                    let result = phase2::provision_connected_node(
+                        &mut session.transport,
+                        &artifacts,
+                        &rng,
+                        &node_id,
+                        &[],
+                        board_layout,
+                    )
+                    .await;
+                    let _ = session.transport.disconnect().await;
+                    result
+                }
+                Some(mut session) => {
+                    let _ = session.transport.disconnect().await;
+                    let mut transport = AndroidBleTransport::from_cached_vm()?;
+                    phase2::provision_node(
+                        &mut transport,
+                        &artifacts,
+                        &rng,
+                        &addr,
+                        &node_id,
+                        &[],
+                        board_layout,
+                    )
+                    .await
+                }
+                None => {
+                    let mut transport = AndroidBleTransport::from_cached_vm()?;
+                    phase2::provision_node(
+                        &mut transport,
+                        &artifacts,
+                        &rng,
+                        &addr,
+                        &node_id,
+                        &[],
+                        board_layout,
+                    )
+                    .await
+                }
+            }
         })
     })
     .await
@@ -622,6 +830,116 @@ async fn provision_node(
             Err(msg)
         }
     }
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn connect_node(
+    state: tauri::State<'_, AppState>,
+    address: String,
+) -> Result<ConnectedNodeInfo, String> {
+    *state.scanner.lock().unwrap() = None;
+
+    let addr = parse_address(&address).map_err(|e| {
+        *state.phase.lock().unwrap() = format!("Error: {e}");
+        e
+    })?;
+    let existing = state.connected_node.lock().unwrap().take();
+    *state.phase.lock().unwrap() = "Connecting".into();
+
+    let result: Result<ConnectedNodeSession<AndroidBleTransport>, sonde_pair::error::PairingError> =
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                if let Some(mut session) = existing {
+                    if session.address == addr {
+                        return Ok(session);
+                    }
+                    let _ = session.transport.disconnect().await;
+                }
+
+                let mut transport = AndroidBleTransport::from_cached_vm()?;
+                transport.set_defer_bonding(true);
+                transport.connect(&addr).await?;
+                Ok::<_, sonde_pair::error::PairingError>(ConnectedNodeSession {
+                    address: addr,
+                    transport,
+                })
+            })
+        })
+        .await
+        .map_err(|e| format!("task panicked: {e}"))?;
+
+    match result {
+        Ok(session) => {
+            *state.connected_node.lock().unwrap() = Some(session);
+            *state.phase.lock().unwrap() = "Connected".into();
+            Ok(ConnectedNodeInfo { address })
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            *state.phase.lock().unwrap() = format!("Error: {msg}");
+            Err(msg)
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo, String> {
+    let session = state
+        .connected_node
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or_else(|| "No connected node session".to_string())?;
+    let artifacts = load_pairing_artifacts(&state)?;
+    *state.phase.lock().unwrap() = "Signal Check".into();
+
+    let result = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async move {
+            let mut session = session;
+            let outcome = phase2::check_rssi(&mut session.transport, &artifacts).await;
+            (session, outcome)
+        })
+    })
+    .await
+    .map_err(|e| format!("task panicked: {e}"))?;
+
+    let (session, outcome) = result;
+    *state.connected_node.lock().unwrap() = Some(session);
+    match outcome {
+        Ok(diag) => {
+            *state.phase.lock().unwrap() = "Connected".into();
+            Ok(DiagnosticInfo {
+                rssi_dbm: diag.rssi_dbm,
+                signal_quality: diag.signal_quality,
+            })
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            *state.phase.lock().unwrap() = format!("Error: {msg}");
+            Err(msg)
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn disconnect_node(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let session = state.connected_node.lock().unwrap().take();
+    if let Some(session) = session {
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                let mut session = session;
+                session.transport.disconnect().await
+            })
+        })
+        .await
+        .map_err(|e| format!("task panicked: {e}"))?
+        .map_err(|e| e.to_string())?;
+    }
+    *state.phase.lock().unwrap() = "Idle".into();
+    Ok(())
 }
 
 #[cfg(target_os = "android")]
@@ -644,7 +962,19 @@ fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
+async fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let session = state.connected_node.lock().unwrap().take();
+    if let Some(session) = session {
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                let mut session = session;
+                session.transport.disconnect().await
+            })
+        })
+        .await
+        .map_err(|e| format!("task panicked: {e}"))?
+        .map_err(|e| e.to_string())?;
+    }
     let mut store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
     store.clear().map_err(|e| e.to_string())?;
     *state.pairing_artifacts.lock().unwrap() = None;
@@ -803,6 +1133,7 @@ pub fn run() {
 
     let state = AppState {
         scanner: Mutex::new(None),
+        connected_node: Mutex::new(None),
         phase: Arc::new(Mutex::new("Idle".into())),
         logs,
         pairing_artifacts: Mutex::new(None),
@@ -815,6 +1146,9 @@ pub fn run() {
             stop_scan,
             get_devices,
             pair_gateway,
+            connect_node,
+            check_rssi,
+            disconnect_node,
             provision_node,
             get_phase,
             get_pairing_status,

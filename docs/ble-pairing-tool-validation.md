@@ -267,8 +267,8 @@ TestNode {
 
 **Procedure:**
 1. Launch the pairing tool.
-2. Assert: the UI shows a multi-page wizard flow with 6 pages.
-3. Navigate through all pages and assert: scan toggle, device list, device select, pair action, node ID input, board selector, status area, and error display are present on the appropriate pages.
+2. Assert: the UI shows a multi-page wizard flow with 7 pages.
+3. Navigate through all pages and assert: scan toggle, device list, device select, connect action, ESP-NOW signal-check view, node ID input, board selector, status area, and error display are present on the appropriate pages.
 4. Assert: the UI does not include management, monitoring, or telemetry features.
 
 ---
@@ -283,7 +283,7 @@ TestNode {
 3. Assert: Gateway step is active on pages 1–3.
 4. Navigate to page 4.
 5. Assert: Gateway step is marked done; Node step is active.
-6. Navigate to page 6.
+6. Navigate to page 7.
 7. Assert: Gateway and Node steps are marked done; Done step is active.
 8. Assert: stepper steps are not clickable.
 
@@ -1333,15 +1333,15 @@ TestNode {
 
 ## 13  Multi-page wizard navigation tests
 
-### T-PT-1217a  Six pages rendered and only one visible at a time
+### T-PT-1217a  Seven pages rendered and only one visible at a time
 
 **Validates:** PT-1217 (AC 1, 2)  
 **Type:** Manual / platform test
 
 **Procedure:**
 1. Launch the pairing tool.
-2. Assert: 6 `<section>` elements with IDs `page-welcome`, `page-gateway-scan`, `page-gateway-done`, `page-node-scan`, `page-node-provision`, `page-done` exist in the DOM.
-3. Assert: exactly one page is visible; the other 5 are hidden.
+2. Assert: 7 `<section>` elements with IDs `page-welcome`, `page-gateway-scan`, `page-gateway-done`, `page-node-scan`, `page-node-diagnostic`, `page-node-provision`, `page-done` exist in the DOM.
+3. Assert: exactly one page is visible; the other 6 are hidden.
 
 ---
 
@@ -1353,7 +1353,7 @@ TestNode {
 **Procedure:**
 1. Launch the pairing tool on page 1.
 2. Complete gateway pairing (or simulate via mock) and navigate forward through each page.
-3. Assert: each page becomes visible in order (1 → 2 → 3 → 4 → 5 → 6).
+3. Assert: each page becomes visible in order (1 → 2 → 3 → 4 → 5 → 6 → 7).
 4. Assert: the previous page is hidden when the next page becomes visible.
 
 ---
@@ -1365,8 +1365,8 @@ TestNode {
 
 **Procedure:**
 1. Launch the pairing tool.
-2. Complete a full workflow: check status (page 1) → scan and pair gateway (page 2) → confirm pairing (page 3) → scan and select node (page 4) → provision node (page 5) → view success (page 6).
-3. Assert: all Tauri commands (`start_scan`, `pair_gateway`, `provision_node`, `get_pairing_status`) are invoked correctly and produce the expected results.
+2. Complete a full workflow: check status (page 1) → scan and pair gateway (page 2) → confirm pairing (page 3) → scan and select node (page 4) → connect and view signal check (page 5) → provision node (page 6) → view success (page 7).
+3. Assert: all Tauri commands (`start_scan`, `pair_gateway`, `connect_node`, `check_rssi`, `provision_node`, `get_pairing_status`) are invoked correctly and produce the expected results.
 
 ---
 
@@ -1393,7 +1393,7 @@ TestNode {
 2. Assert: Gateway step has `step--active` class; Node and Done are dimmed.
 3. Navigate to page 4 (Node Scan).
 4. Assert: Gateway step has `step--done` class; Node step has `step--active` class; Done is dimmed.
-5. Navigate to page 6 (Done).
+5. Navigate to page 7 (Done).
 6. Assert: Gateway and Node steps have `step--done` class; Done step has `step--active` class.
 
 ---
@@ -1425,12 +1425,15 @@ TestNode {
 7. Clear pairing artifacts and set `localStorage.setItem('sonde-pair-page', '4')`.
 8. Reload the app.
 9. Assert: page 1 (Welcome) is visible (prerequisites not met, redirects to earliest valid page).
-10. With pairing artifacts present, set `localStorage.setItem('sonde-pair-page', '4')` (0-based index for Node Provision page).
+10. With pairing artifacts present, set `localStorage.setItem('sonde-pair-page', '4')` (0-based index for Node Signal Check page).
 11. Reload the app.
-12. Assert: page 4 (Node Scan) is visible — the provision page requires an ephemeral selected-node address; the app falls back to the node scan page (PT-1219 AC 4).
-13. With pairing artifacts present, set `localStorage.setItem('sonde-pair-page', '5')` (0-based index for Done page).
+12. Assert: page 4 (Node Scan) is visible — the signal-check page requires an ephemeral connected-node session; the app falls back to the node scan page (PT-1219 AC 4).
+13. With pairing artifacts present, set `localStorage.setItem('sonde-pair-page', '5')` (0-based index for Node Provision page).
 14. Reload the app.
-15. Assert: page 4 (Node Scan) is visible — the done page requires ephemeral provisioning-success context; the app falls back to the node scan page (PT-1219 AC 4).
+15. Assert: page 4 (Node Scan) is visible — the provision page requires an ephemeral connected-node session; the app falls back to the node scan page (PT-1219 AC 4).
+16. With pairing artifacts present, set `localStorage.setItem('sonde-pair-page', '6')` (0-based index for Done page).
+17. Reload the app.
+18. Assert: page 4 (Node Scan) is visible — the done page requires ephemeral provisioning-success context; the app falls back to the node scan page (PT-1219 AC 4).
 
 ---
 
@@ -1499,7 +1502,7 @@ TestNode {
 
 ---
 
-### T-PT-1221a  RSSI indicator shows correct quality level
+### T-PT-1221a  BLE RSSI indicator shows correct quality level
 
 **Validates:** PT-1221 (AC 1–4)  
 **Type:** Manual / platform test
@@ -1507,15 +1510,15 @@ TestNode {
 **Procedure:**
 1. Navigate to page 4 (Node Scan) and start a scan.
 2. Mock a device with RSSI = −50 dBm and select it.
-3. Assert: RSSI indicator shows "Good" with green styling (`rssi--good` class).
+3. Assert: the BLE RSSI indicator shows "Good" with green styling (`rssi--good` class).
 4. Update mock device RSSI to −65 dBm.
-5. Assert: RSSI indicator shows "Marginal" with amber styling (`rssi--marginal` class).
+5. Assert: the BLE RSSI indicator shows "Marginal" with amber styling (`rssi--marginal` class).
 6. Update mock device RSSI to −80 dBm.
-7. Assert: RSSI indicator shows "Bad" with red styling (`rssi--bad` class).
+7. Assert: the BLE RSSI indicator shows "Bad" with red styling (`rssi--bad` class).
 
 ---
 
-### T-PT-1221b  RSSI indicator updates on poll interval
+### T-PT-1221b  BLE RSSI indicator updates on poll interval
 
 **Validates:** PT-1221 (AC 5)  
 **Type:** Manual / platform test
@@ -1524,11 +1527,11 @@ TestNode {
 1. Navigate to page 4, start a scan, and select a device.
 2. Change the mock device RSSI from −50 to −80 dBm.
 3. Wait for 1 device poll cycle (≤ 1.5 s).
-4. Assert: the RSSI indicator updates from "Good" to "Bad".
+4. Assert: the BLE RSSI indicator updates from "Good" to "Bad".
 
 ---
 
-### T-PT-1221c  RSSI boundary values classified correctly
+### T-PT-1221c  BLE RSSI boundary values classified correctly
 
 **Validates:** PT-1221 (AC 2, 3, 4)  
 **Type:** Manual / platform test
@@ -1536,11 +1539,11 @@ TestNode {
 **Procedure:**
 1. Navigate to page 4, start a scan, and select a device.
 2. Set mock device RSSI to exactly −60 dBm.
-3. Assert: RSSI indicator shows "Good" (≥ −60 threshold is inclusive).
+3. Assert: the BLE RSSI indicator shows "Good" (≥ −60 threshold is inclusive).
 4. Set mock device RSSI to exactly −75 dBm.
-5. Assert: RSSI indicator shows "Marginal" (−75 ≤ x < −60, −75 is inclusive).
+5. Assert: the BLE RSSI indicator shows "Marginal" (−75 ≤ x < −60, −75 is inclusive).
 6. Set mock device RSSI to −76 dBm.
-7. Assert: RSSI indicator shows "Bad".
+7. Assert: the BLE RSSI indicator shows "Bad".
 
 ---
 
@@ -1592,6 +1595,124 @@ TestNode {
 1. Disable CSS transitions (e.g., via `* { transition: none !important; }`).
 2. Navigate forward and backward through all pages.
 3. Assert: all pages display correctly; no visual glitches or stuck states.
+
+---
+
+### T-PT-1223a  Connect action transitions from BLE scan to signal-check page
+
+**Validates:** PT-1223 (AC 1, 2, 4)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Navigate to page 4 (Node Scan) with no device selected.
+2. Assert: the **Connect** action is disabled.
+3. Select a node device.
+4. Assert: the **Connect** action becomes enabled.
+5. Click **Connect** and allow the BLE connection to succeed.
+6. Assert: page 5 (`page-node-diagnostic`) becomes visible.
+7. Assert: page 5 shows the connected node identity and an initial diagnostic status.
+
+---
+
+### T-PT-1223b  Connect failure leaves installer on scan page
+
+**Validates:** PT-1223 (AC 3)  
+**Type:** CI / mock transport test
+
+**Procedure:**
+1. Configure the mock transport so node connection fails with a recoverable error.
+2. Navigate to page 4, select a node device, and click **Connect**.
+3. Assert: page 4 remains visible.
+4. Assert: the UI shows an actionable error message explaining the connection failure.
+
+---
+
+### T-PT-1224a  ESP-NOW diagnostic result updates signal-check page
+
+**Validates:** PT-1224 (AC 1, 3)  
+**Type:** CI / mock transport test
+
+**Procedure:**
+1. Connect to a node and enter page 5.
+2. Configure the mock transport so `check_rssi()` returns a successful diagnostic result with RSSI = −67 dBm and `signal_quality = marginal`.
+3. Wait for the first diagnostic cycle to complete.
+4. Assert: page 5 shows `−67 dBm`.
+5. Assert: page 5 labels the result as `Marginal`.
+
+---
+
+### T-PT-1224b  ESP-NOW diagnostic loop is single-flight
+
+**Validates:** PT-1224 (AC 2, 4, 6)  
+**Type:** CI / mock transport test
+
+**Procedure:**
+1. Enter page 5 with a mock `check_rssi()` implementation that delays completion.
+2. While the first diagnostic is still in flight, observe the frontend scheduling state for the next poll.
+3. Assert: no second diagnostic request is issued before the first completes.
+4. Let the first diagnostic complete quickly.
+5. Assert: the next diagnostic begins about 1000 ms after completion.
+6. Navigate away from page 5.
+7. Assert: no further diagnostic requests are issued.
+
+---
+
+### T-PT-1224c  Diagnostic timeout or channel error remains on signal-check page
+
+**Validates:** PT-1224 (AC 5)  
+**Type:** CI / mock transport test
+
+**Procedure:**
+1. Enter page 5 with a mock `check_rssi()` implementation that returns a timeout error.
+2. Wait for the diagnostic cycle to complete.
+3. Assert: page 5 remains visible.
+4. Assert: the UI shows an actionable timeout status.
+5. Re-run the diagnostic with a mock `check_rssi()` implementation that returns a channel error.
+6. Assert: page 5 remains visible.
+7. Assert: the UI shows an actionable channel-error status.
+8. Assert: provisioning has not started automatically.
+
+---
+
+### T-PT-1225a  Bad ESP-NOW signal does not block proceed
+
+**Validates:** PT-1223 (AC 5), PT-1225 (AC 1, 2, 4)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Enter page 5 and provide a completed diagnostic result with `signal_quality = bad`.
+2. Assert: the page remains on the signal-check step.
+3. Assert: the **Proceed to Provision** action is still enabled.
+4. Click **Proceed to Provision**.
+5. Assert: page 6 (Node Provision) becomes visible without any additional override dialog.
+
+---
+
+### T-PT-1225b  Abort from signal-check page returns to BLE scan
+
+**Validates:** PT-1223 (AC 5), PT-1225 (AC 3)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Enter page 5 with an active connected-node session.
+2. Click **Abort** or **Disconnect**.
+3. Assert: page 4 (Node Scan) becomes visible.
+4. Assert: the BLE connection to the node is released.
+5. Assert: no provisioning write is sent.
+
+---
+
+### T-PT-1225c  Timeout does not disable proceed
+
+**Validates:** PT-1225 (AC 2)  
+**Type:** CI / mock transport test
+
+**Procedure:**
+1. Enter page 5 with a mock `check_rssi()` implementation that returns a timeout error.
+2. Wait for the diagnostic cycle to complete.
+3. Assert: the **Proceed to Provision** action remains enabled.
+4. Click **Proceed to Provision**.
+5. Assert: page 6 (Node Provision) becomes visible.
 
 ---
 
@@ -1704,7 +1825,7 @@ TestNode {
 | T-PT-1216e | PT-1216, PT-0409 | Provision with partial I2C layout rejected |
 | T-PT-1216f | PT-1216 | Espressif preset remains available |
 | T-PT-1216g | PT-1216 | Tauri provision_node command accepts structured board layout |
-| T-PT-1217a | PT-1217 | Six pages rendered and only one visible at a time |
+| T-PT-1217a | PT-1217 | Seven pages rendered and only one visible at a time |
 | T-PT-1217b | PT-1217 | Forward navigation through all pages |
 | T-PT-1217c | PT-1217 | Existing functionality works through wizard flow |
 | T-PT-1218a | PT-1218 | Stepper bar shows three phases |
@@ -1716,9 +1837,17 @@ TestNode {
 | T-PT-1220c | PT-1220 | Scan stopped when navigating away from scan page |
 | T-PT-1220d | PT-1220 | Visible back button in header (desktop) |
 | T-PT-1220e | PT-1220 | Back navigation works after app restore to mid-flow page |
-| T-PT-1221a | PT-1221 | RSSI indicator shows correct quality level |
-| T-PT-1221b | PT-1221 | RSSI indicator updates on poll interval |
-| T-PT-1221c | PT-1221 | RSSI boundary values classified correctly |
+| T-PT-1221a | PT-1221 | BLE RSSI indicator shows correct quality level |
+| T-PT-1221b | PT-1221 | BLE RSSI indicator updates on poll interval |
+| T-PT-1221c | PT-1221 | BLE RSSI boundary values classified correctly |
 | T-PT-1222a | PT-1222 | Page transition animation (forward) |
 | T-PT-1222b | PT-1222 | Page transition animation (back) |
 | T-PT-1222c | PT-1222 | Navigation works without CSS transitions |
+| T-PT-1223a | PT-1223 | Connect action transitions from BLE scan to signal-check page |
+| T-PT-1223b | PT-1223 | Connect failure leaves installer on scan page |
+| T-PT-1224a | PT-1224 | ESP-NOW diagnostic result updates signal-check page |
+| T-PT-1224b | PT-1224 | ESP-NOW diagnostic loop is single-flight |
+| T-PT-1224c | PT-1224 | Diagnostic timeout or channel error remains on signal-check page |
+| T-PT-1225a | PT-1225 | Bad ESP-NOW signal does not block proceed |
+| T-PT-1225b | PT-1225 | Abort from signal-check page returns to BLE scan |
+| T-PT-1225c | PT-1225 | Timeout does not disable proceed |

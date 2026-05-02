@@ -55,6 +55,54 @@ pub async fn provision_node(
     sensors: &[crate::types::SensorDescriptor],
     board_layout: Option<BoardLayout>,
 ) -> Result<NodeProvisionResult, PairingError> {
+    // Step 6: Connect to node
+    // Defer createBond() until after the GATT connect latch.  The node
+    // calls ble_gap_security_initiate() in its on_connect callback;
+    // calling createBond() before the latch causes a dual-initiation race
+    // that confuses NimBLE's SMP state machine.  Deferring createBond()
+    // to after the latch is the standard Android BLE flow and works
+    // correctly with the node's Just Works pairing.
+    transport.set_defer_bonding(true);
+    debug!(address = ?device_address, "connecting to node (AEAD provision)");
+    let mtu_result = transport.connect(device_address).await;
+    // Reset defer-bonding hint immediately (one-shot) so any subsequent
+    // connection on the same transport uses the default bonding flow.
+    transport.set_defer_bonding(false);
+    let mtu = mtu_result?;
+    if mtu < BLE_MTU_MIN {
+        transport.disconnect().await.ok();
+        return Err(PairingError::MtuTooLow {
+            device: format_device_address(device_address),
+            negotiated: mtu,
+            required: BLE_MTU_MIN,
+        });
+    }
+    debug!(address = ?device_address, mtu, "connected to node");
+
+    // Note: enforce_lesc() is intentionally NOT called for node connections.
+    // The node uses LESC Just Works (ND-0904) because it has no display or
+    // input for Numeric Comparison.  PT-0904 (LESC Numeric Comparison
+    // enforcement) applies only to the modem connection in Phase 1.
+    // LESC Just Works still provides link-layer encryption but does not
+    // protect against active MITM — this residual risk is accepted for
+    // headless nodes per the protocol spec (ble-pairing-protocol.md §8.2).
+
+    let result =
+        provision_connected_node(transport, artifacts, rng, node_id, sensors, board_layout).await;
+
+    transport.disconnect().await.ok();
+    result
+}
+
+/// Provision a node over an already-connected BLE session.
+pub async fn provision_connected_node(
+    transport: &mut dyn BleTransport,
+    artifacts: &crate::phase1::PairingArtifacts,
+    rng: &dyn RngProvider,
+    node_id: &str,
+    sensors: &[crate::types::SensorDescriptor],
+    board_layout: Option<BoardLayout>,
+) -> Result<NodeProvisionResult, PairingError> {
     // Step 1: Validate node_id
     validate_node_id(node_id)?;
 
@@ -88,41 +136,9 @@ pub async fn provision_node(
     // Step 5: Encrypt with phone_psk and wrap in ESP-NOW AEAD PEER_REQUEST frame.
     let encrypted_frame = crypto::encrypt_pairing_request(&artifacts.phone_psk, &cbor)?;
 
-    // Step 6: Connect to node
-    // Defer createBond() until after the GATT connect latch.  The node
-    // calls ble_gap_security_initiate() in its on_connect callback;
-    // calling createBond() before the latch causes a dual-initiation race
-    // that confuses NimBLE's SMP state machine.  Deferring createBond()
-    // to after the latch is the standard Android BLE flow and works
-    // correctly with the node's Just Works pairing.
-    transport.set_defer_bonding(true);
-    debug!(address = ?device_address, "connecting to node (AEAD provision)");
-    let mtu_result = transport.connect(device_address).await;
-    // Reset defer-bonding hint immediately (one-shot) so any subsequent
-    // connection on the same transport uses the default bonding flow.
-    transport.set_defer_bonding(false);
-    let mtu = mtu_result?;
-    if mtu < BLE_MTU_MIN {
-        transport.disconnect().await.ok();
-        return Err(PairingError::MtuTooLow {
-            device: format_device_address(device_address),
-            negotiated: mtu,
-            required: BLE_MTU_MIN,
-        });
-    }
-    debug!(address = ?device_address, mtu, "connected to node");
-
-    // Note: enforce_lesc() is intentionally NOT called for node connections.
-    // The node uses LESC Just Works (ND-0904) because it has no display or
-    // input for Numeric Comparison.  PT-0904 (LESC Numeric Comparison
-    // enforcement) applies only to the modem connection in Phase 1.
-    // LESC Just Works still provides link-layer encryption but does not
-    // protect against active MITM — this residual risk is accepted for
-    // headless nodes per the protocol spec (ble-pairing-protocol.md §8.2).
-
     // Step 7: Build NODE_PROVISION payload (AEAD format per spec §6.6):
     // node_key_hint(2) || node_psk(32) || rf_channel(1) || payload_len(2) || encrypted_payload
-    let result = do_provision_node(
+    do_provision_node(
         transport,
         node_key_hint,
         &node_psk,
@@ -130,10 +146,7 @@ pub async fn provision_node(
         &encrypted_frame,
         board_layout,
     )
-    .await;
-
-    transport.disconnect().await.ok();
-    result
+    .await
 }
 
 /// Inner implementation for AEAD node provisioning.
@@ -424,6 +437,42 @@ mod tests {
             37 + payload_len,
             "body length must be exactly 37 + payload_len when no pin config"
         );
+    }
+
+    #[tokio::test]
+    async fn provision_connected_node_happy_path() {
+        use crate::phase1::PairingArtifacts;
+
+        let artifacts = PairingArtifacts {
+            phone_psk: Zeroizing::new([0x55u8; 32]),
+            phone_key_hint: compute_key_hint(&[0x55u8; 32]),
+            rf_channel: 6,
+            phone_label: "test".into(),
+        };
+
+        let rng = MockRng::new([0x42u8; 32]);
+
+        let ack_body = [0x00u8];
+        let mut ack_envelope = Vec::new();
+        ack_envelope.push(NODE_ACK);
+        ack_envelope.extend_from_slice(&(ack_body.len() as u16).to_be_bytes());
+        ack_envelope.extend_from_slice(&ack_body);
+
+        let mut transport = MockBleTransport::new(247);
+        transport.connected = true;
+        transport.queue_response(Ok(ack_envelope));
+
+        let result =
+            provision_connected_node(&mut transport, &artifacts, &rng, "test-node", &[], None)
+                .await;
+
+        assert!(
+            result.is_ok(),
+            "provision_connected_node should succeed: {result:?}"
+        );
+        assert_eq!(result.unwrap().status, NodeAckStatus::Success);
+        assert_eq!(transport.written.len(), 1);
+        assert_eq!(transport.disconnect_count, 0);
     }
 
     #[tokio::test]

@@ -409,6 +409,22 @@ label {
   border: 1px solid var(--error);
 }
 
+.signal-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.signal-grid h3 {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.signal-note {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
 /* Success info */
 .success-info {
   padding: 10px 0;

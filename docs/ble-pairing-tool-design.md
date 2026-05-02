@@ -159,7 +159,7 @@ The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairin
 
 ### 4.3  Phase 2 state machine — Node provisioning
 
-The Phase 2 state machine implements the node provisioning flow from [ble-pairing-protocol.md §6](ble-pairing-protocol.md).  `provision_node()` takes a `BleTransport`, `PairingArtifacts` (from Phase 1), `RngProvider`, device address, operator-supplied `node_id`, sensor descriptors, and an optional `BoardLayout`, and returns `Result<NodeProvisionResult, PairingError>`.
+The Phase 2 state machine implements the node provisioning flow from [ble-pairing-protocol.md §6](ble-pairing-protocol.md).  `provision_node()` takes a `BleTransport`, `PairingArtifacts` (from Phase 1), `RngProvider`, device address, operator-supplied `node_id`, sensor descriptors, and an optional `BoardLayout`, and returns `Result<NodeProvisionResult, PairingError>`.  The same connected-node transport is also used by `check_rssi()` during the pre-provision signal-check step from [ble-pairing-protocol.md §6a](ble-pairing-protocol.md#6a--pairing-time-rssi-diagnostic).
 
 ```
 ┌─────────────┐
@@ -792,7 +792,9 @@ pub fn decode_envelope(data: &[u8]) -> Result<(u8, &[u8]), PairingError> {
 | ~~`GW_INFO_RESPONSE`~~ | ~~`0x81`~~ | ~~GW → Phone~~ | ~~Gateway Command~~ — **RETIRED** (issue #495) |
 | `PHONE_REGISTERED` | `0x82` | GW → Phone | Gateway Command |
 | `NODE_PROVISION` | `0x01` | Phone → Node | Node Command |
+| `DIAG_RELAY_REQUEST` | `0x02` | Phone → Node | Node Command |
 | `NODE_ACK` | `0x81` | Node → Phone | Node Command |
+| `DIAG_RELAY_RESPONSE` | `0x82` | Node → Phone | Node Command |
 | `ERROR` | `0xFF` | Either | Either |
 
 ---
@@ -877,7 +879,7 @@ When provided, `boardLayout` contains nullable fields for `i2cSda`, `i2cScl`, `o
 
 ---
 
-## 12.2  Multi-page wizard navigation (PT-1217–PT-1222)
+## 12.2  Multi-page wizard navigation (PT-1217–PT-1225)
 
 The pairing tool UI uses a multi-page wizard flow instead of a single-page layout.  All navigation is client-side — no server-side routing or SPA framework.
 
@@ -890,9 +892,10 @@ Each wizard page is a `<section class="page">` element in `index.html` with a pa
 | 1 | `page-welcome` | Pairing status; "Get Started" or "Provision Node" | Gateway |
 | 2 | `page-gateway-scan` | Scan controls, device list, phone label, pair button | Gateway |
 | 3 | `page-gateway-done` | Pairing success, channel/key hint info | Gateway |
-| 4 | `page-node-scan` | Scan controls, device list, RSSI indicator | Node |
-| 5 | `page-node-provision` | Node ID, board selector, provision button | Node |
-| 6 | `page-done` | Success summary, "Provision Another" button | Done |
+| 4 | `page-node-scan` | Scan controls, device list, BLE RSSI indicator, Connect button | Node |
+| 5 | `page-node-diagnostic` | Connected-node identity, live ESP-NOW RSSI / signal quality, proceed / abort controls | Node |
+| 6 | `page-node-provision` | Node ID, board selector, provision button | Node |
+| 7 | `page-done` | Success summary, "Provision Another" button | Done |
 
 ### Navigator class
 
@@ -913,15 +916,15 @@ class Navigator {
 
 **Page transitions:** `goTo()` applies CSS classes (`slide-in-right` for forward, `slide-in-left` for back) to animate the transition.  Transitions are ≤ 300 ms.  The previous page gets `slide-out-left` or `slide-out-right` respectively.
 
-**Persistence:** `goTo()` saves `currentPage` (0-based) to `localStorage` key `sonde-pair-page`.  `restore()` reads this key on startup, validates prerequisites (pairing artifacts for pages 3–6; non-ephemeral context for pages 5–6), and navigates to the saved page or the earliest valid page if prerequisites are missing.  Pages 5–6 (Node Provision, Done) require ephemeral state (selected node address and provisioning-success context respectively) that cannot survive a restart; if the saved page is 5 or 6, `restore()` falls back to page 4 (Node Scan).  Invalid or out-of-range values default to the earliest valid page (page 1 if unpaired, page 4 if paired).  After determining the target page N, `restore()` pushes all intermediate states (pages 1 through N) into the history stack so that back navigation traverses each page in sequence.
+**Persistence:** `goTo()` saves `currentPage` (0-based) to `localStorage` key `sonde-pair-page`.  `restore()` reads this key on startup, validates prerequisites (pairing artifacts for pages 3–7; non-ephemeral context for pages 5–7), and navigates to the saved page or the earliest valid page if prerequisites are missing.  Pages 5–7 (Node Signal Check, Node Provision, Done) require ephemeral connected-node or provisioning-success context that cannot survive a restart; if the saved page is 5, 6, or 7, `restore()` falls back to page 4 (Node Scan).  Invalid or out-of-range values default to the earliest valid page (page 1 if unpaired, page 4 if paired).  After determining the target page N, `restore()` pushes all intermediate states (pages 1 through N) into the history stack so that back navigation traverses each page in sequence.
 
 ### Stepper bar
 
 A horizontal stepper bar in `<header>` with three steps:
 
 1. **Gateway** — active during pages 1–3
-2. **Node** — active during pages 4–5
-3. **Done** — active on page 6
+2. **Node** — active during pages 4–6
+3. **Done** — active on page 7
 
 Each step element uses CSS classes:
 - `step--active` — currently active phase (filled/highlighted)
@@ -942,7 +945,7 @@ On Android, the Tauri WebView dispatches hardware-back as a browser back event, 
 
 A `←` back arrow button is rendered inside the `<header>` element, to the left of the app title.  The button:
 
-- Is hidden on page 1 (Welcome) and visible on pages 2–6.
+- Is hidden on page 1 (Welcome) and visible on pages 2–7.
 - Calls `history.back()` on click, which triggers the existing `popstate` handler and correctly pops the history stack (matching PT-1220's "same as platform back action" semantics).
 - Uses `id="btn-back"` and is styled as a borderless icon button that blends with the header.
 
@@ -957,9 +960,9 @@ When navigating away from a scan page (page 2 or page 4):
 
 When navigating to a scan page, the scan does NOT auto-start — the user must explicitly press "Start Scan".  This prevents unexpected BLE activity and battery drain.
 
-### RSSI signal quality indicator
+### BLE RSSI signal quality indicator
 
-Page 4 (Node Scan) displays a visual signal quality indicator for the selected device.  The indicator is a `<div class="rssi-indicator">` element that updates on each device poll (1.5 s interval).
+Page 4 (Node Scan) displays a visual BLE RSSI signal quality indicator for the selected device while the installer is deciding which node to connect to.  The indicator is a `<div class="rssi-indicator">` element that updates on each device poll (1.5 s interval).
 
 RSSI thresholds (per protocol):
 
@@ -970,6 +973,21 @@ RSSI thresholds (per protocol):
 | Bad | < −75 dBm | `rssi--bad` | Red (`#e74c3c`) |
 
 The indicator shows the numeric RSSI value and a text label ("Good", "Marginal", "Bad").
+
+### Connected node session and ESP-NOW signal check
+
+After the installer selects a node on page 4 and presses **Connect**, the frontend invokes a new Tauri `connect_node(address)` command.  This command creates or reuses a `BleTransport`, connects to the selected node, negotiates MTU ≥ 247, enforces LESC requirements, and stores the connected node session in `AppState`.
+
+Page 5 (`page-node-diagnostic`) is shown only after `connect_node()` succeeds.  On entry, the frontend starts a single-flight diagnostic loop driven by a new Tauri `check_rssi()` command backed by `sonde_pair::phase2::check_rssi()`.  The loop waits for each diagnostic to complete before scheduling the next one; when the previous request completed quickly, the next request starts about 1000 ms later.  The loop never overlaps requests because `ble-pairing-protocol.md` §6a still permits multi-second diagnostic latency on timeout/retry paths.
+
+The page 5 UI shows:
+
+- Connected node identity (address / advertised name if available)
+- Current diagnostic state (`checking`, `good`, `marginal`, `bad`, `timeout`, `channel error`)
+- Last successful gateway-measured RSSI in dBm and signal-quality label
+- A **Proceed to Provision** action and an **Abort / Disconnect** action
+
+The ESP-NOW diagnostic is informational only.  A `bad` result, timeout, or channel error leaves the installer on page 5 with the proceed action still available.  The abort action invokes `disconnect_node()` to release the BLE session and returns to page 4.  Proceeding to page 6 stops the diagnostic loop and calls `provision_node(address, nodeId, boardLayout?)`; when an active connected-node session exists for `address`, the backend reuses that session instead of reconnecting.
 
 ### Verbose diagnostic mode
 
@@ -1033,7 +1051,7 @@ Platform-specific BLE transport and storage implementations, plus the Tauri UI s
 |---|---|---|---|
 | P4.1 | `BtleplugTransport` | `BleTransport` implementation for Windows/Linux/macOS using `btleplug` | Manual BLE hardware test |
 | P4.2 | `FilePairingStore` | JSON file storage for Windows/Linux/macOS with restricted permissions | Unit tests + manual |
-| P4.3 | Tauri UI | Scan toggle, device list, pair button, node_id input, status area, error display | Manual test, PT-1206 |
+| P4.3 | Tauri UI | Scan toggle, device list, connect button, BLE RSSI, ESP-NOW diagnostic page, node_id input, status area, error display | Manual test, PT-1206 |
 
 **Exit criteria (P4):** Phase 1 and Phase 2 work end-to-end on physical hardware (Windows, Android) against a real gateway and node.  All PT-1206 manual test scenarios pass.
 
@@ -1113,6 +1131,6 @@ No log event at any level may include key material: PSKs, ephemeral private keys
 | §11 RNG provider | PT-0901, PT-0903 |
 | §12 Input validation | PT-0403, PT-0406, PT-0409 |
 | §12.1 Board selector UI | PT-1216, PT-1214, PT-0700 |
-| §12.2 Multi-page wizard navigation | PT-0700, PT-0701, PT-1217–PT-1222 |
+| §12.2 Multi-page wizard navigation | PT-0700, PT-0701, PT-1217–PT-1225 |
 | §13 Implementation order | PT-0700, PT-0701, PT-0702, PT-1200–PT-1206 |
 | §14 Diagnostic logging | PT-0702, PT-0900, PT-1207–PT-1212 |

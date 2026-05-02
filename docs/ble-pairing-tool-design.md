@@ -159,7 +159,7 @@ The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairin
 
 ### 4.3  Phase 2 state machine — Node provisioning
 
-The Phase 2 state machine implements the node provisioning flow from [ble-pairing-protocol.md §6](ble-pairing-protocol.md).  `provision_node()` takes a `BleTransport`, `PairingArtifacts` (from Phase 1), `RngProvider`, device address, operator-supplied `node_id`, sensor descriptors, and an optional `BoardLayout`, and returns `Result<NodeProvisionResult, PairingError>`.  The same connected-node transport is also used by `check_rssi()` during the pre-provision signal-check step from [ble-pairing-protocol.md §6a](ble-pairing-protocol.md#6a--pairing-time-rssi-diagnostic).
+The Phase 2 state machine implements the node provisioning flow from [ble-pairing-protocol.md §6](ble-pairing-protocol.md). `provision_node()` takes a `BleTransport`, `PairingArtifacts` (from Phase 1), `RngProvider`, device address, operator-supplied `node_id`, sensor descriptors, and an optional `BoardLayout`, and returns `Result<NodeProvisionResult, PairingError>`. The same connected-node transport is also used by the asynchronous pre-provision signal-check flow from [ble-pairing-protocol.md §6a](ble-pairing-protocol.md#6a--pairing-time-rssi-diagnostic), which performs a start / reconnect / fetch cycle before provisioning.
 
 ```
 ┌─────────────┐
@@ -792,9 +792,11 @@ pub fn decode_envelope(data: &[u8]) -> Result<(u8, &[u8]), PairingError> {
 | ~~`GW_INFO_RESPONSE`~~ | ~~`0x81`~~ | ~~GW → Phone~~ | ~~Gateway Command~~ — **RETIRED** (issue #495) |
 | `PHONE_REGISTERED` | `0x82` | GW → Phone | Gateway Command |
 | `NODE_PROVISION` | `0x01` | Phone → Node | Node Command |
-| `DIAG_RELAY_REQUEST` | `0x02` | Phone → Node | Node Command |
+| `START_DIAG_RELAY` | `0x02` | Phone → Node | Node Command |
+| `FETCH_DIAG_RESULT` | `0x03` | Phone → Node | Node Command |
 | `NODE_ACK` | `0x81` | Node → Phone | Node Command |
-| `DIAG_RELAY_RESPONSE` | `0x82` | Node → Phone | Node Command |
+| `DIAG_RELAY_ACK` | `0x82` | Node → Phone | Node Command |
+| `DIAG_RELAY_RESULT` | `0x83` | Node → Phone | Node Command |
 | `ERROR` | `0xFF` | Either | Either |
 
 ---
@@ -978,16 +980,26 @@ The indicator shows the numeric RSSI value and a text label ("Good", "Marginal",
 
 After the installer selects a node on page 4 and presses **Connect**, the frontend invokes a new Tauri `connect_node(address)` command.  This command creates or reuses a `BleTransport`, connects to the selected node, validates the negotiated MTU is at least 247, and stores the connected node session in `AppState`.
 
-Page 5 (`page-signal-check`) is shown only after `connect_node()` succeeds.  On entry, the frontend starts a single-flight diagnostic loop driven by a new Tauri `check_rssi()` command backed by `sonde_pair::phase2::check_rssi()`.  The loop waits for each diagnostic to complete before scheduling the next one; when the previous request completed quickly, the next request starts about 1000 ms later.  The loop never overlaps requests because `ble-pairing-protocol.md` §6a still permits multi-second diagnostic latency on timeout/retry paths.
+Page 5 (`page-signal-check`) is shown only after `connect_node()` succeeds. On entry, the frontend starts **one** asynchronous diagnostic cycle driven by a Tauri command that wraps the full protocol sequence from `ble-pairing-protocol.md` §6a:
+
+1. build and send `START_DIAG_RELAY`
+2. wait for `DIAG_RELAY_ACK`
+3. treat the subsequent BLE disconnect as expected
+4. automatically reconnect to the same node when it resumes advertising
+5. send `FETCH_DIAG_RESULT`
+6. decrypt and return the result
+
+The frontend does not run a continuous polling loop on page 5. After a diagnostic completes, page 5 remains idle until the installer explicitly presses **Check Again**. Only one diagnostic cycle may be in flight at a time.
 
 The page 5 UI shows:
 
 - Connected node identity (address / advertised name if available)
-- Current diagnostic state (`checking`, `good`, `marginal`, `bad`, `timeout`, `channel error`)
+- Current diagnostic state (`starting`, `waiting for reconnect`, `reconnecting`, `fetching result`, `good`, `marginal`, `bad`, `timeout`, `channel error`)
 - Last successful gateway-measured RSSI in dBm and signal-quality label
+- A **Check Again** action once the previous diagnostic has completed
 - A **Proceed to Provision** action and an **Abort / Disconnect** action
 
-The ESP-NOW diagnostic is informational only.  A `bad` result, timeout, or channel error leaves the installer on page 5 with the proceed action still available.  The abort action invokes `disconnect_node()` to release the BLE session and returns to page 4.  Proceeding to page 6 stops the diagnostic loop and calls `provision_node(address, nodeId, boardLayout?)`; when an active connected-node session exists for `address`, the backend reuses that session instead of reconnecting.
+The ESP-NOW diagnostic is informational only. A `bad` result, timeout, or channel error leaves the installer on page 5 with the proceed action still available. The abort action invokes `disconnect_node()` to release the BLE session and returns to page 4. Proceeding to page 6 calls `provision_node(address, nodeId, boardLayout?)`; when an active connected-node session exists for `address`, the backend reuses the **reconnected** session from the completed diagnostic cycle instead of reconnecting again.
 
 ### Verbose diagnostic mode
 

@@ -19,8 +19,10 @@ pub mod traits;
 
 pub use aead_codec::{build_gcm_nonce, decode_frame, encode_frame, open_frame, DecodedFrame};
 pub use ble_envelope::{
-    decode_diag_relay_request, decode_diag_relay_response, encode_ble_envelope,
-    encode_diag_relay_request, encode_diag_relay_response, parse_ble_envelope,
+    decode_diag_relay_ack, decode_diag_relay_request, decode_diag_relay_response,
+    decode_diag_relay_result, decode_start_diag_relay, encode_ble_envelope, encode_diag_relay_ack,
+    encode_diag_relay_request, encode_diag_relay_response, encode_diag_relay_result,
+    encode_start_diag_relay, parse_ble_envelope,
 };
 pub use board_layout::{
     decode_board_layout_cbor, encode_board_layout_cbor, BoardLayout, BOARD_LAYOUT_KEY_BATTERY_ADC,

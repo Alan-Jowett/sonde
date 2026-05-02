@@ -10,20 +10,35 @@ use crate::transport::BleTransport;
 use crate::types::*;
 use crate::validation::{compute_key_hint, validate_node_id};
 use sonde_protocol::encode_board_layout_cbor;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use tracing::{debug, info, trace};
 use zeroize::Zeroizing;
 
 /// NODE_ACK indication timeout in milliseconds (PT-1002).
 const NODE_ACK_TIMEOUT_MS: u64 = 5_000;
 
-/// DIAG_RELAY_RESPONSE indication timeout in milliseconds (PT-1303).
-const DIAG_RELAY_TIMEOUT_MS: u64 = 10_000;
+/// START_DIAG_RELAY acknowledgement timeout in milliseconds.
+const DIAG_RELAY_ACK_TIMEOUT_MS: u64 = 5_000;
+
+/// FETCH_DIAG_RESULT indication timeout in milliseconds.
+const DIAG_RELAY_FETCH_TIMEOUT_MS: u64 = 5_000;
+
+/// Maximum time to wait for the node to resume advertising after an accepted diagnostic.
+const DIAG_RELAY_RECONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Delay between reconnect attempts during an in-flight diagnostic.
+const DIAG_RELAY_RECONNECT_POLL: Duration = Duration::from_millis(250);
 
 /// Map a BLE provisioning message type byte to its spec name (PT-0702).
 fn msg_type_name(t: u8) -> &'static str {
     match t {
         NODE_PROVISION => "NODE_PROVISION",
         NODE_ACK => "NODE_ACK",
+        sonde_protocol::BLE_START_DIAG_RELAY => "START_DIAG_RELAY",
+        sonde_protocol::BLE_FETCH_DIAG_RESULT => "FETCH_DIAG_RESULT",
+        sonde_protocol::BLE_DIAG_RELAY_ACK => "DIAG_RELAY_ACK",
+        sonde_protocol::BLE_DIAG_RELAY_RESULT => "DIAG_RELAY_RESULT",
         MSG_ERROR => "ERROR",
         _ => "UNKNOWN",
     }
@@ -284,56 +299,111 @@ pub struct DiagnosticResult {
 pub async fn check_rssi(
     transport: &mut dyn BleTransport,
     artifacts: &crate::phase1::PairingArtifacts,
+    device_address: &[u8; 6],
+    cancelled: &AtomicBool,
 ) -> Result<DiagnosticResult, PairingError> {
-    // 1. Build DIAG_REQUEST frame (PT-1301).
+    check_cancelled(cancelled)?;
     let (diag_frame, request_nonce) =
         crate::crypto::build_diag_request_frame(&artifacts.phone_psk)?;
 
-    // 2. Wrap in DIAG_RELAY_REQUEST BLE envelope (PT-1302).
-    let relay_body = sonde_protocol::encode_diag_relay_request(artifacts.rf_channel, &diag_frame)
+    let relay_body = sonde_protocol::encode_start_diag_relay(artifacts.rf_channel, &diag_frame)
         .map_err(|e| PairingError::DiagnosticFailed(format!("relay encode: {}", e)))?;
     let envelope =
-        sonde_protocol::encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_REQUEST, &relay_body)
+        sonde_protocol::encode_ble_envelope(sonde_protocol::BLE_START_DIAG_RELAY, &relay_body)
             .ok_or_else(|| PairingError::DiagnosticFailed("BLE envelope too large".into()))?;
 
-    // 3. Write to node BLE characteristic.
     transport
         .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &envelope)
         .await?;
 
-    // 4. Wait for DIAG_RELAY_RESPONSE (timeout per PT-1303).
     let response = transport
-        .read_indication(NODE_SERVICE_UUID, NODE_COMMAND_UUID, DIAG_RELAY_TIMEOUT_MS)
+        .read_indication(
+            NODE_SERVICE_UUID,
+            NODE_COMMAND_UUID,
+            DIAG_RELAY_ACK_TIMEOUT_MS,
+        )
         .await?;
-
-    // 5. Parse BLE envelope.
     let (msg_type, body) = sonde_protocol::parse_ble_envelope(&response).ok_or_else(|| {
         PairingError::InvalidResponse {
             msg_type: 0,
             reason: "malformed BLE envelope".into(),
         }
     })?;
-    if msg_type != sonde_protocol::BLE_DIAG_RELAY_RESPONSE {
+    if msg_type != sonde_protocol::BLE_DIAG_RELAY_ACK {
         return Err(PairingError::InvalidResponse {
             msg_type,
             reason: format!(
-                "expected DIAG_RELAY_RESPONSE (0x82), got 0x{:02x}",
-                msg_type
+                "expected DIAG_RELAY_ACK (0x{:02x}), got 0x{msg_type:02x}",
+                sonde_protocol::BLE_DIAG_RELAY_ACK
             ),
         });
     }
+    let status =
+        sonde_protocol::decode_diag_relay_ack(body).map_err(|e| PairingError::InvalidResponse {
+            msg_type,
+            reason: format!("decode relay ack: {}", e),
+        })?;
+    match status {
+        sonde_protocol::DIAG_RELAY_ACK_ACCEPTED => {}
+        sonde_protocol::DIAG_RELAY_ACK_BUSY => {
+            return Err(PairingError::DiagnosticFailed(
+                "node is busy with a previous diagnostic result — retry after reconnect".into(),
+            ));
+        }
+        sonde_protocol::DIAG_RELAY_ACK_INVALID => {
+            return Err(PairingError::DiagnosticFailed(
+                "node rejected the diagnostic request — verify RF channel and payload".into(),
+            ));
+        }
+        other => {
+            return Err(PairingError::DiagnosticFailed(format!(
+                "unknown diagnostic acknowledgement: 0x{other:02x}"
+            )));
+        }
+    }
 
-    // 6. Parse relay response status.
-    let (status, payload) = sonde_protocol::decode_diag_relay_response(body).map_err(|e| {
+    check_cancelled(cancelled)?;
+    transport.disconnect().await.ok();
+    reconnect_after_diag(transport, device_address, cancelled).await?;
+
+    let fetch_envelope =
+        sonde_protocol::encode_ble_envelope(sonde_protocol::BLE_FETCH_DIAG_RESULT, &[])
+            .ok_or_else(|| PairingError::DiagnosticFailed("BLE envelope too large".into()))?;
+    transport
+        .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &fetch_envelope)
+        .await?;
+
+    let response = transport
+        .read_indication(
+            NODE_SERVICE_UUID,
+            NODE_COMMAND_UUID,
+            DIAG_RELAY_FETCH_TIMEOUT_MS,
+        )
+        .await?;
+    let (msg_type, body) = sonde_protocol::parse_ble_envelope(&response).ok_or_else(|| {
+        PairingError::InvalidResponse {
+            msg_type: 0,
+            reason: "malformed BLE envelope".into(),
+        }
+    })?;
+    if msg_type != sonde_protocol::BLE_DIAG_RELAY_RESULT {
+        return Err(PairingError::InvalidResponse {
+            msg_type,
+            reason: format!(
+                "expected DIAG_RELAY_RESULT (0x{:02x}), got 0x{msg_type:02x}",
+                sonde_protocol::BLE_DIAG_RELAY_RESULT
+            ),
+        });
+    }
+    let (status, payload) = sonde_protocol::decode_diag_relay_result(body).map_err(|e| {
         PairingError::InvalidResponse {
             msg_type,
-            reason: format!("decode relay response: {}", e),
+            reason: format!("decode relay result: {}", e),
         }
     })?;
 
     match status {
-        sonde_protocol::DIAG_RELAY_STATUS_OK => {
-            // 7. Decrypt DIAG_REPLY (PT-1303 AC-2).
+        sonde_protocol::DIAG_RELAY_RESULT_OK => {
             let (rssi_dbm, signal_quality) =
                 crate::crypto::decrypt_diag_reply(payload, &artifacts.phone_psk, request_nonce)?;
             Ok(DiagnosticResult {
@@ -341,16 +411,63 @@ pub async fn check_rssi(
                 signal_quality,
             })
         }
-        sonde_protocol::DIAG_RELAY_STATUS_TIMEOUT => Err(PairingError::DiagnosticFailed(
+        sonde_protocol::DIAG_RELAY_RESULT_TIMEOUT => Err(PairingError::DiagnosticFailed(
             "no response from gateway — verify gateway is running and modem is connected".into(),
         )),
-        sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR => Err(PairingError::DiagnosticFailed(
+        sonde_protocol::DIAG_RELAY_RESULT_CHANNEL_ERROR => Err(PairingError::DiagnosticFailed(
             "channel error — verify RF channel configuration".into(),
         )),
+        sonde_protocol::DIAG_RELAY_RESULT_NO_RESULT => Err(PairingError::DiagnosticFailed(
+            "node has no completed diagnostic result — retry the signal check".into(),
+        )),
         other => Err(PairingError::DiagnosticFailed(format!(
-            "unknown relay status: 0x{:02x}",
-            other
+            "unknown relay result status: 0x{other:02x}"
         ))),
+    }
+}
+
+fn check_cancelled(cancelled: &AtomicBool) -> Result<(), PairingError> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(PairingError::Cancelled {
+            operation: "signal check",
+        });
+    }
+    Ok(())
+}
+
+async fn reconnect_after_diag(
+    transport: &mut dyn BleTransport,
+    device_address: &[u8; 6],
+    cancelled: &AtomicBool,
+) -> Result<(), PairingError> {
+    let deadline = Instant::now() + DIAG_RELAY_RECONNECT_TIMEOUT;
+    let device = format_device_address(device_address);
+    loop {
+        check_cancelled(cancelled)?;
+        transport.set_defer_bonding(true);
+        let mtu_result = transport.connect(device_address).await;
+        transport.set_defer_bonding(false);
+        match mtu_result {
+            Ok(mtu) => {
+                if mtu < BLE_MTU_MIN {
+                    transport.disconnect().await.ok();
+                    return Err(PairingError::MtuTooLow {
+                        device,
+                        negotiated: mtu,
+                        required: BLE_MTU_MIN,
+                    });
+                }
+                return Ok(());
+            }
+            Err(_) if Instant::now() < deadline => std::thread::sleep(DIAG_RELAY_RECONNECT_POLL),
+            Err(_) => {
+                return Err(PairingError::Timeout {
+                    device: Some(device),
+                    operation: "diagnostic reconnect",
+                    duration_secs: DIAG_RELAY_RECONNECT_TIMEOUT.as_secs(),
+                });
+            }
+        }
     }
 }
 
@@ -811,46 +928,99 @@ mod tests {
     #[tokio::test]
     async fn check_rssi_timeout_status() {
         let artifacts = mock_artifacts();
+        let cancelled = AtomicBool::new(false);
 
-        let relay_body = sonde_protocol::encode_diag_relay_response(
-            sonde_protocol::DIAG_RELAY_STATUS_TIMEOUT,
+        let ack_body =
+            sonde_protocol::encode_diag_relay_ack(sonde_protocol::DIAG_RELAY_ACK_ACCEPTED).unwrap();
+        let ack_response =
+            sonde_protocol::encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_ACK, &ack_body)
+                .unwrap();
+        let relay_body = sonde_protocol::encode_diag_relay_result(
+            sonde_protocol::DIAG_RELAY_RESULT_TIMEOUT,
             &[],
         )
         .unwrap();
-        let ble_response = sonde_protocol::encode_ble_envelope(
-            sonde_protocol::BLE_DIAG_RELAY_RESPONSE,
-            &relay_body,
-        )
-        .unwrap();
+        let ble_response =
+            sonde_protocol::encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_RESULT, &relay_body)
+                .unwrap();
 
         let mut transport = MockBleTransport::new(247);
+        transport.connected = true;
+        transport.queue_response(Ok(ack_response));
         transport.queue_response(Ok(ble_response));
 
-        let result = check_rssi(&mut transport, &artifacts).await;
+        let result = check_rssi(&mut transport, &artifacts, &[0xAA; 6], &cancelled).await;
         assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
-        assert_eq!(transport.written.len(), 1);
+        assert_eq!(transport.written.len(), 2);
+        assert_eq!(transport.disconnect_count, 1);
     }
 
     #[tokio::test]
     async fn check_rssi_channel_error_status() {
         let artifacts = mock_artifacts();
+        let cancelled = AtomicBool::new(false);
 
-        let relay_body = sonde_protocol::encode_diag_relay_response(
-            sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR,
+        let ack_body =
+            sonde_protocol::encode_diag_relay_ack(sonde_protocol::DIAG_RELAY_ACK_ACCEPTED).unwrap();
+        let ack_response =
+            sonde_protocol::encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_ACK, &ack_body)
+                .unwrap();
+        let relay_body = sonde_protocol::encode_diag_relay_result(
+            sonde_protocol::DIAG_RELAY_RESULT_CHANNEL_ERROR,
             &[],
         )
         .unwrap();
-        let ble_response = sonde_protocol::encode_ble_envelope(
-            sonde_protocol::BLE_DIAG_RELAY_RESPONSE,
-            &relay_body,
+        let ble_response =
+            sonde_protocol::encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_RESULT, &relay_body)
+                .unwrap();
+
+        let mut transport = MockBleTransport::new(247);
+        transport.connected = true;
+        transport.queue_response(Ok(ack_response));
+        transport.queue_response(Ok(ble_response));
+
+        let result = check_rssi(&mut transport, &artifacts, &[0xAA; 6], &cancelled).await;
+        assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
+    }
+
+    #[tokio::test]
+    async fn check_rssi_reconnects_and_fetches_result() {
+        let artifacts = mock_artifacts();
+        let cancelled = AtomicBool::new(false);
+        let ack_body =
+            sonde_protocol::encode_diag_relay_ack(sonde_protocol::DIAG_RELAY_ACK_ACCEPTED).unwrap();
+        let ack_response =
+            sonde_protocol::encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_ACK, &ack_body)
+                .unwrap();
+        let result_body = sonde_protocol::encode_diag_relay_result(
+            sonde_protocol::DIAG_RELAY_RESULT_NO_RESULT,
+            &[],
+        )
+        .unwrap();
+        let result_response = sonde_protocol::encode_ble_envelope(
+            sonde_protocol::BLE_DIAG_RELAY_RESULT,
+            &result_body,
         )
         .unwrap();
 
         let mut transport = MockBleTransport::new(247);
-        transport.queue_response(Ok(ble_response));
+        transport.connected = true;
+        transport.queue_response(Ok(ack_response));
+        transport.queue_response(Ok(result_response));
 
-        let result = check_rssi(&mut transport, &artifacts).await;
+        let result = check_rssi(&mut transport, &artifacts, &[0xAA; 6], &cancelled).await;
+
         assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
+        assert_eq!(transport.disconnect_count, 1);
+        assert_eq!(transport.written.len(), 2);
+        assert_eq!(
+            transport.written[0].2[0],
+            sonde_protocol::BLE_START_DIAG_RELAY
+        );
+        assert_eq!(
+            transport.written[1].2[0],
+            sonde_protocol::BLE_FETCH_DIAG_RESULT
+        );
     }
 
     /// Validates: PT-1214 AC2 — board layout CBOR deterministic encoding.

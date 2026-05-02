@@ -16,6 +16,7 @@
 //! non-Send futures from [`sonde_pair::transport::BleTransport`] work on
 //! the tokio multi-threaded runtime.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,7 @@ struct AppState {
     connected_node: Mutex<Option<ConnectedNodeSession<BtleplugTransport>>>,
     #[cfg(target_os = "android")]
     connected_node: Mutex<Option<ConnectedNodeSession<AndroidBleTransport>>>,
+    signal_check_cancel: Mutex<Option<Arc<AtomicBool>>>,
     phase: Arc<Mutex<String>>,
     logs: Arc<Mutex<Vec<String>>>,
     /// Phase 1 AEAD artifacts, held in memory for Phase 2 provisioning.
@@ -503,6 +505,7 @@ async fn connect_node(
     match result {
         Ok(session) => {
             *state.connected_node.lock().unwrap() = Some(session);
+            *state.signal_check_cancel.lock().unwrap() = None;
             *state.phase.lock().unwrap() = "Connected".into();
             Ok(ConnectedNodeInfo { address })
         }
@@ -524,12 +527,20 @@ async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo,
         .unwrap()
         .take()
         .ok_or_else(|| "No connected node session".to_string())?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    *state.signal_check_cancel.lock().unwrap() = Some(cancel.clone());
     *state.phase.lock().unwrap() = "Signal Check".into();
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async move {
             let mut session = session;
-            let outcome = phase2::check_rssi(&mut session.transport, &artifacts).await;
+            let outcome = phase2::check_rssi(
+                &mut session.transport,
+                &artifacts,
+                &session.address,
+                cancel.as_ref(),
+            )
+            .await;
             (session, outcome)
         })
     })
@@ -537,16 +548,30 @@ async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo,
     .map_err(|e| format!("task panicked: {e}"))?;
 
     let (session, outcome) = result;
-    *state.connected_node.lock().unwrap() = Some(session);
+    *state.signal_check_cancel.lock().unwrap() = None;
     match outcome {
         Ok(diag) => {
+            *state.connected_node.lock().unwrap() = Some(session);
             *state.phase.lock().unwrap() = "Connected".into();
             Ok(DiagnosticInfo {
                 rssi_dbm: diag.rssi_dbm,
                 signal_quality: diag.signal_quality,
             })
         }
+        Err(PairingError::Cancelled { .. }) => {
+            tokio::task::spawn_blocking(move || {
+                tokio::runtime::Handle::current().block_on(async move {
+                    let mut session = session;
+                    let _ = session.transport.disconnect().await;
+                })
+            })
+            .await
+            .map_err(|e| format!("task panicked: {e}"))?;
+            *state.phase.lock().unwrap() = "Idle".into();
+            Err("signal check cancelled".into())
+        }
         Err(e) => {
+            *state.connected_node.lock().unwrap() = Some(session);
             let msg = e.to_string();
             *state.phase.lock().unwrap() = format!("Error: {msg}");
             Err(msg)
@@ -557,6 +582,9 @@ async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo,
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn disconnect_node(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state.signal_check_cancel.lock().unwrap().as_ref() {
+        cancel.store(true, Ordering::Relaxed);
+    }
     let session = state.connected_node.lock().unwrap().take();
     if let Some(session) = session {
         tokio::task::spawn_blocking(move || {
@@ -569,6 +597,7 @@ async fn disconnect_node(state: tauri::State<'_, AppState>) -> Result<(), String
         .map_err(|e| format!("task panicked: {e}"))?
         .map_err(|e| e.to_string())?;
     }
+    *state.signal_check_cancel.lock().unwrap() = None;
     *state.phase.lock().unwrap() = "Idle".into();
     Ok(())
 }
@@ -594,6 +623,9 @@ fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state.signal_check_cancel.lock().unwrap().as_ref() {
+        cancel.store(true, Ordering::Relaxed);
+    }
     let session = state.connected_node.lock().unwrap().take();
     if let Some(session) = session {
         tokio::task::spawn_blocking(move || {
@@ -606,6 +638,7 @@ async fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> 
         .map_err(|e| format!("task panicked: {e}"))?
         .map_err(|e| e.to_string())?;
     }
+    *state.signal_check_cancel.lock().unwrap() = None;
     *state.pairing_artifacts.lock().unwrap() = None;
     let store = FilePairingStore::new().map_err(|e| e.to_string())?;
     store.clear().map_err(|e| e.to_string())?;
@@ -893,6 +926,7 @@ async fn connect_node(
     match result {
         Ok(session) => {
             *state.connected_node.lock().unwrap() = Some(session);
+            *state.signal_check_cancel.lock().unwrap() = None;
             *state.phase.lock().unwrap() = "Connected".into();
             Ok(ConnectedNodeInfo { address })
         }
@@ -914,12 +948,20 @@ async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo,
         .unwrap()
         .take()
         .ok_or_else(|| "No connected node session".to_string())?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    *state.signal_check_cancel.lock().unwrap() = Some(cancel.clone());
     *state.phase.lock().unwrap() = "Signal Check".into();
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async move {
             let mut session = session;
-            let outcome = phase2::check_rssi(&mut session.transport, &artifacts).await;
+            let outcome = phase2::check_rssi(
+                &mut session.transport,
+                &artifacts,
+                &session.address,
+                cancel.as_ref(),
+            )
+            .await;
             (session, outcome)
         })
     })
@@ -927,16 +969,30 @@ async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo,
     .map_err(|e| format!("task panicked: {e}"))?;
 
     let (session, outcome) = result;
-    *state.connected_node.lock().unwrap() = Some(session);
+    *state.signal_check_cancel.lock().unwrap() = None;
     match outcome {
         Ok(diag) => {
+            *state.connected_node.lock().unwrap() = Some(session);
             *state.phase.lock().unwrap() = "Connected".into();
             Ok(DiagnosticInfo {
                 rssi_dbm: diag.rssi_dbm,
                 signal_quality: diag.signal_quality,
             })
         }
+        Err(PairingError::Cancelled { .. }) => {
+            tokio::task::spawn_blocking(move || {
+                tokio::runtime::Handle::current().block_on(async move {
+                    let mut session = session;
+                    let _ = session.transport.disconnect().await;
+                })
+            })
+            .await
+            .map_err(|e| format!("task panicked: {e}"))?;
+            *state.phase.lock().unwrap() = "Idle".into();
+            Err("signal check cancelled".into())
+        }
         Err(e) => {
+            *state.connected_node.lock().unwrap() = Some(session);
             let msg = e.to_string();
             *state.phase.lock().unwrap() = format!("Error: {msg}");
             Err(msg)
@@ -947,6 +1003,9 @@ async fn check_rssi(state: tauri::State<'_, AppState>) -> Result<DiagnosticInfo,
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn disconnect_node(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state.signal_check_cancel.lock().unwrap().as_ref() {
+        cancel.store(true, Ordering::Relaxed);
+    }
     let session = state.connected_node.lock().unwrap().take();
     if let Some(session) = session {
         tokio::task::spawn_blocking(move || {
@@ -959,6 +1018,7 @@ async fn disconnect_node(state: tauri::State<'_, AppState>) -> Result<(), String
         .map_err(|e| format!("task panicked: {e}"))?
         .map_err(|e| e.to_string())?;
     }
+    *state.signal_check_cancel.lock().unwrap() = None;
     *state.phase.lock().unwrap() = "Idle".into();
     Ok(())
 }
@@ -984,6 +1044,9 @@ fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state.signal_check_cancel.lock().unwrap().as_ref() {
+        cancel.store(true, Ordering::Relaxed);
+    }
     let session = state.connected_node.lock().unwrap().take();
     if let Some(session) = session {
         tokio::task::spawn_blocking(move || {
@@ -998,6 +1061,7 @@ async fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> 
     }
     let mut store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
     store.clear().map_err(|e| e.to_string())?;
+    *state.signal_check_cancel.lock().unwrap() = None;
     *state.pairing_artifacts.lock().unwrap() = None;
     *state.phase.lock().unwrap() = "Idle".into();
     Ok(())
@@ -1015,6 +1079,13 @@ fn get_phase(state: tauri::State<'_, AppState>) -> String {
 #[tauri::command]
 fn get_logs(state: tauri::State<'_, AppState>) -> Vec<String> {
     std::mem::take(&mut *state.logs.lock().unwrap())
+}
+
+#[tauri::command]
+fn cancel_signal_check(state: tauri::State<'_, AppState>) {
+    if let Some(cancel) = state.signal_check_cancel.lock().unwrap().as_ref() {
+        cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1155,6 +1226,7 @@ pub fn run() {
     let state = AppState {
         scanner: Mutex::new(None),
         connected_node: Mutex::new(None),
+        signal_check_cancel: Mutex::new(None),
         phase: Arc::new(Mutex::new("Idle".into())),
         logs,
         pairing_artifacts: Mutex::new(None),
@@ -1175,6 +1247,7 @@ pub fn run() {
             get_pairing_status,
             clear_pairing,
             get_logs,
+            cancel_signal_check,
         ])
         .run(tauri::generate_context!())
         .expect("error running Sonde Pairing Tool");

@@ -273,53 +273,63 @@ pub fn handle_node_provision<S: PlatformStorage>(
 // Diagnostic relay (ble-pairing-protocol.md §6a, ND-1100 through ND-1106)
 // ---------------------------------------------------------------------------
 
-/// Parsed DIAG_RELAY_REQUEST parameters.
+/// Parsed START_DIAG_RELAY parameters.
 pub struct DiagRelayParams {
     pub rf_channel: u8,
     pub payload: Vec<u8>,
 }
 
-/// Parse and validate a DIAG_RELAY_REQUEST BLE envelope body.
-///
-/// Returns `Ok(params)` on success, or `Err(encoded_error_response)` if
-/// the request is invalid (bad channel or payload size).
-pub fn handle_diag_relay_request(body: &[u8]) -> Result<DiagRelayParams, Vec<u8>> {
-    use sonde_protocol::{
-        decode_diag_relay_request, BLE_DIAG_RELAY_RESPONSE, DIAG_RELAY_STATUS_CHANNEL_ERROR,
-        MAX_FRAME_SIZE,
-    };
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiagRelayResult {
+    Success(Vec<u8>),
+    Timeout,
+    ChannelError,
+}
 
-    let (rf_channel, payload) = decode_diag_relay_request(body).map_err(|_| {
-        encode_ble_envelope(
-            BLE_DIAG_RELAY_RESPONSE,
-            &encode_diag_relay_status(DIAG_RELAY_STATUS_CHANNEL_ERROR),
-        )
-        .expect("error response fits")
-    })?;
-
-    if !(1..=13).contains(&rf_channel) || payload.is_empty() || payload.len() > MAX_FRAME_SIZE {
-        return Err(encode_ble_envelope(
-            BLE_DIAG_RELAY_RESPONSE,
-            &encode_diag_relay_status(DIAG_RELAY_STATUS_CHANNEL_ERROR),
-        )
-        .expect("error response fits"));
+impl DiagRelayResult {
+    fn status(&self) -> u8 {
+        match self {
+            Self::Success(_) => sonde_protocol::DIAG_RELAY_RESULT_OK,
+            Self::Timeout => sonde_protocol::DIAG_RELAY_RESULT_TIMEOUT,
+            Self::ChannelError => sonde_protocol::DIAG_RELAY_RESULT_CHANNEL_ERROR,
+        }
     }
+}
 
+/// Parse and validate a START_DIAG_RELAY BLE envelope body.
+pub fn handle_start_diag_relay(body: &[u8]) -> Result<DiagRelayParams, u8> {
+    use sonde_protocol::{decode_start_diag_relay, MAX_FRAME_SIZE};
+
+    let (rf_channel, payload) =
+        decode_start_diag_relay(body).map_err(|_| sonde_protocol::DIAG_RELAY_ACK_INVALID)?;
+    if !(1..=13).contains(&rf_channel) || payload.is_empty() || payload.len() > MAX_FRAME_SIZE {
+        return Err(sonde_protocol::DIAG_RELAY_ACK_INVALID);
+    }
     Ok(DiagRelayParams {
         rf_channel,
         payload: payload.to_vec(),
     })
 }
 
-fn encode_diag_relay_status(status: u8) -> Vec<u8> {
-    sonde_protocol::encode_diag_relay_response(status, &[]).unwrap_or_default()
+/// Encode a DIAG_RELAY_ACK BLE envelope.
+pub fn encode_diag_relay_ack(status: u8) -> Vec<u8> {
+    let body = sonde_protocol::encode_diag_relay_ack(status).unwrap_or_default();
+    encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_ACK, &body).unwrap_or_default()
 }
 
-/// Encode a DIAG_RELAY_RESPONSE BLE envelope.
-pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Vec<u8> {
-    let body = sonde_protocol::encode_diag_relay_response(status, payload)
-        .unwrap_or_else(|_| encode_diag_relay_status(status));
-    encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_RESPONSE, &body).unwrap_or_default()
+/// Encode a DIAG_RELAY_RESULT BLE envelope.
+pub fn encode_diag_relay_result(result: Option<&DiagRelayResult>) -> Vec<u8> {
+    let (status, payload) = match result {
+        Some(DiagRelayResult::Success(payload)) => {
+            (sonde_protocol::DIAG_RELAY_RESULT_OK, payload.as_slice())
+        }
+        Some(other) => (other.status(), &[][..]),
+        None => (sonde_protocol::DIAG_RELAY_RESULT_NO_RESULT, &[][..]),
+    };
+    let body = sonde_protocol::encode_diag_relay_result(status, payload).unwrap_or_else(|_| {
+        sonde_protocol::encode_diag_relay_result(status, &[]).unwrap_or_default()
+    });
+    encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_RESULT, &body).unwrap_or_default()
 }
 
 /// Execute the diagnostic relay: broadcast on ESP-NOW, listen for DIAG_REPLY.
@@ -336,7 +346,7 @@ pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Vec<u8> {
 pub fn do_diag_relay<T: crate::traits::Transport>(
     transport: &mut T,
     params: &DiagRelayParams,
-) -> Vec<u8> {
+) -> DiagRelayResult {
     const DIAG_MAX_RETRIES: u32 = 3;
     const DIAG_RETRY_DELAY_MS: u64 = 200;
     const DIAG_LISTEN_TIMEOUT_MS: u32 = 2000;
@@ -392,10 +402,7 @@ pub fn do_diag_relay<T: crate::traits::Transport>(
                                     raw.len(),
                                     msg_type
                                 );
-                                return encode_diag_relay_response(
-                                    sonde_protocol::DIAG_RELAY_STATUS_OK,
-                                    &raw,
-                                );
+                                return DiagRelayResult::Success(raw);
                             }
                             log::info!(
                                 "BLE: diagnostic relay ignoring frame attempt={} len={} msg_type=0x{:02x}",
@@ -445,10 +452,7 @@ pub fn do_diag_relay<T: crate::traits::Transport>(
                             raw.len(),
                             msg_type
                         );
-                        return encode_diag_relay_response(
-                            sonde_protocol::DIAG_RELAY_STATUS_OK,
-                            &raw,
-                        );
+                        return DiagRelayResult::Success(raw);
                     }
                     log::info!(
                         "BLE: diagnostic relay ignoring frame attempt={} len={} msg_type=0x{:02x}",
@@ -482,7 +486,7 @@ pub fn do_diag_relay<T: crate::traits::Transport>(
         }
     }
 
-    encode_diag_relay_response(sonde_protocol::DIAG_RELAY_STATUS_TIMEOUT, &[])
+    DiagRelayResult::Timeout
 }
 
 // ---------------------------------------------------------------------------

@@ -1330,7 +1330,7 @@ The UI SHOULD use CSS transitions for page changes.  Forward navigation slides t
 **Source:** ble-pairing-protocol.md §6a, USER-REQUEST
 
 **Description:**  
-After the installer selects a node on page 4 and clicks **Connect**, the tool MUST establish the BLE connection to the node and then transition to a dedicated page 5 signal-check step before provisioning.  This step is distinct from the page 4 BLE RSSI view and exists to show the node↔gateway ESP-NOW diagnostic results.
+After the installer selects a node on page 4 and clicks **Connect**, the tool MUST establish the BLE connection to the node and then transition to a dedicated page 5 signal-check step before provisioning. This step is distinct from the page 4 BLE RSSI view and exists to show the node↔gateway ESP-NOW diagnostic results. Because the ESP32-C3 diagnostic flow intentionally drops BLE while the node performs ESP-NOW receive, page 5 MUST treat a disconnect during an accepted diagnostic run as an expected part of the workflow rather than a terminal error.
 
 **Acceptance criteria:**
 
@@ -1338,26 +1338,29 @@ After the installer selects a node on page 4 and clicks **Connect**, the tool MU
 2. A successful BLE connection transitions the UI from page 4 to page 5.
 3. A failed BLE connection leaves the installer on page 4 and displays an actionable error.
 4. Page 5 displays the connected node identity and the current ESP-NOW diagnostic status.
-5. Page 5 provides controls to proceed to page 6 (Provision) or abort and return to page 4.
+5. After an accepted diagnostic start request, the expected node-initiated BLE disconnect does not eject the installer from page 5 or surface as a fatal connection error.
+6. After the tool reconnects and fetches the diagnostic result, the resulting BLE session remains available for page 6 (Provision).
+7. Page 5 provides controls to proceed to page 6 (Provision) or abort and return to page 4.
 
 ---
 
-### PT-1224  Live ESP-NOW diagnostic polling
+### PT-1224  Async ESP-NOW diagnostic handoff
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §6a, USER-REQUEST
 
 **Description:**  
-While page 5 is active and the node BLE connection remains established, the tool MUST run the pairing-time ESP-NOW RSSI diagnostic repeatedly and update the UI after each completed diagnostic result.  The tool targets a 1000 ms cadence between completed checks when responses are fast, but it MUST preserve the existing protocol timing from ble-pairing-protocol.md §6a and MUST NOT overlap diagnostic requests.
+Page 5 runs the pairing-time ESP-NOW RSSI diagnostic as a **single asynchronous cycle**: start diagnostic over BLE, accept the expected BLE disconnect while the node runs ESP-NOW with BLE disabled, automatically reconnect to the same node, explicitly fetch the completed result, and update the UI. Entering page 5 starts one diagnostic automatically; additional diagnostics require an explicit re-check action. The tool MUST NOT overlap diagnostic requests or continuously repeat disconnect/reconnect cycles in the background.
 
 **Acceptance criteria:**
 
-1. Entering page 5 automatically starts the first diagnostic check.
-2. The tool never has more than one diagnostic request in flight at a time.
-3. On a successful diagnostic result, page 5 shows the gateway-measured RSSI in dBm and the signal-quality assessment (`good`, `marginal`, or `bad`).
-4. When the previous diagnostic completes quickly, the next diagnostic starts about 1000 ms after completion.
+1. Entering page 5 automatically starts exactly one diagnostic cycle.
+2. The tool never has more than one diagnostic cycle in flight at a time.
+3. After an accepted start request, the tool automatically reconnects to the same node and explicitly fetches the completed result.
+4. On a successful diagnostic result, page 5 shows the gateway-measured RSSI in dBm and the signal-quality assessment (`good`, `marginal`, or `bad`).
 5. When a diagnostic times out or returns a channel error, page 5 shows an actionable status message and remains on the signal-check step.
-6. Leaving page 5 stops the repeating diagnostic loop.
+6. Completing a diagnostic does not automatically start another one; page 5 exposes an explicit re-check action for additional runs.
+7. Leaving page 5 stops any reconnect attempt or in-flight diagnostic cycle.
 
 ---
 
@@ -1367,14 +1370,15 @@ While page 5 is active and the node BLE connection remains established, the tool
 **Source:** ble-pairing-protocol.md §6a.4, USER-REQUEST
 
 **Description:**  
-The page 5 ESP-NOW diagnostic is advisory only.  The tool MUST let the installer decide whether to proceed with provisioning or abort after reviewing the live node↔gateway signal readings.  The tool MUST NOT automatically block or force provisioning based on signal quality or diagnostic failures.
+The page 5 ESP-NOW diagnostic is advisory only. The tool MUST let the installer decide whether to proceed with provisioning, re-run the signal check, or abort after reviewing the most recently fetched node↔gateway signal result. The tool MUST NOT automatically block or force provisioning based on signal quality or diagnostic failures.
 
 **Acceptance criteria:**
 
 1. A `bad` ESP-NOW signal result does not automatically start provisioning and does not force the installer off page 5.
 2. The control to proceed to page 6 remains available after any completed diagnostic result, including `bad` signal, timeout, or channel-error outcomes.
 3. The installer can abort from page 5 and return to page 4 without provisioning the node.
-4. Proceeding from page 5 to page 6 does not require an additional override dialog solely because the last diagnostic result was `bad`.
+4. The tool provides an explicit re-check action after any completed diagnostic result.
+5. Proceeding from page 5 to page 6 does not require an additional override dialog solely because the last diagnostic result was `bad`.
 
 ---
 
@@ -1460,5 +1464,5 @@ The page 5 ESP-NOW diagnostic is advisory only.  The tool MUST let the installer
 | PT-1221 | BLE RSSI signal quality indicator | Active |
 | PT-1222 | Page transition animations | Active |
 | PT-1223 | Pre-provision ESP-NOW signal-check step | Active |
-| PT-1224 | Live ESP-NOW diagnostic polling | Active |
+| PT-1224 | Async ESP-NOW diagnostic handoff | Active |
 | PT-1225 | Informational-only ESP-NOW guidance | Active |

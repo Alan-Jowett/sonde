@@ -164,6 +164,9 @@ pub enum PairingError {
     #[error("diagnostic failed: {0}")]
     DiagnosticFailed(String),
 
+    #[error("{operation} cancelled")]
+    Cancelled { operation: &'static str },
+
     #[error("BLE pairing used insecure method `{method}` — Numeric Comparison (LESC) is required")]
     InsecurePairingMethod { method: PairingMethod },
 

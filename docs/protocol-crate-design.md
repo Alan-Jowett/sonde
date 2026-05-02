@@ -111,15 +111,23 @@ pub const SIGNAL_QUALITY_BAD: u8 = 2;
 
 // BLE envelope message types (Node Command characteristic — separate from ESP-NOW msg_types)
 pub const BLE_NODE_PROVISION: u8 = 0x01;
-pub const BLE_DIAG_RELAY_REQUEST: u8 = 0x02;
+pub const BLE_START_DIAG_RELAY: u8 = 0x02;
+pub const BLE_FETCH_DIAG_RESULT: u8 = 0x03;
 pub const BLE_NODE_ACK: u8 = 0x81;
-pub const BLE_DIAG_RELAY_RESPONSE: u8 = 0x82;
+pub const BLE_DIAG_RELAY_ACK: u8 = 0x82;
+pub const BLE_DIAG_RELAY_RESULT: u8 = 0x83;
 pub const BLE_ERROR: u8 = 0xFF;
 
-// DIAG_RELAY_RESPONSE status codes
-pub const DIAG_RELAY_STATUS_OK: u8 = 0x00;
-pub const DIAG_RELAY_STATUS_TIMEOUT: u8 = 0x01;
-pub const DIAG_RELAY_STATUS_CHANNEL_ERROR: u8 = 0x02;
+// DIAG_RELAY_ACK status codes
+pub const DIAG_RELAY_ACK_ACCEPTED: u8 = 0x00;
+pub const DIAG_RELAY_ACK_BUSY: u8 = 0x01;
+pub const DIAG_RELAY_ACK_INVALID: u8 = 0x02;
+
+// DIAG_RELAY_RESULT status codes
+pub const DIAG_RELAY_RESULT_OK: u8 = 0x00;
+pub const DIAG_RELAY_RESULT_TIMEOUT: u8 = 0x01;
+pub const DIAG_RELAY_RESULT_CHANNEL_ERROR: u8 = 0x02;
+pub const DIAG_RELAY_RESULT_NO_RESULT: u8 = 0x03;
 
 // CBOR integer keys (program image — separate keyspace)
 pub const IMG_KEY_BYTECODE: u64 = 1;
@@ -547,9 +555,9 @@ Implements a minimal Type-Length-Value envelope used for BLE GATT messages in th
 
 ## 12  Diagnostic message codec
 
-Implements encoding and decoding for `DIAG_REQUEST` (`msg_type` 0x06) and `DIAG_REPLY` (`msg_type` 0x85) messages, and for the BLE `DIAG_RELAY_REQUEST` / `DIAG_RELAY_RESPONSE` envelopes.
+Implements encoding and decoding for `DIAG_REQUEST` (`msg_type` 0x06) and `DIAG_REPLY` (`msg_type` 0x85) messages, and for the BLE `START_DIAG_RELAY` / `DIAG_RELAY_ACK` / `DIAG_RELAY_RESULT` envelopes.
 
-> **Requirements:** ND-1100 (BLE diagnostic relay command), GW-1700 (DIAG_REQUEST reception), GW-1704 (DIAG_REPLY construction), PT-1301 (diagnostic request construction), PT-1302 (BLE diagnostic relay).
+> **Requirements:** ND-1100 (asynchronous BLE diagnostic commands), GW-1700 (DIAG_REQUEST reception), GW-1704 (DIAG_REPLY construction), PT-1301 (diagnostic request construction), PT-1302 (BLE diagnostic relay).
 
 ### 12.1  ESP-NOW diagnostic messages
 
@@ -561,7 +569,7 @@ Encoding and decoding are handled by the existing `NodeMessage::encode/decode` a
 
 The BLE envelope for diagnostic relay uses the same `TYPE | LEN | BODY` format as other BLE messages (§11). The body formats are:
 
-**DIAG_RELAY_REQUEST (type 0x02):**
+**START_DIAG_RELAY (type 0x02):**
 
 ```
 rf_channel: u8      // WiFi channel 1–13
@@ -569,17 +577,31 @@ payload_len: u16 BE // Length of ESP-NOW frame
 payload: [u8]       // Complete DIAG_REQUEST ESP-NOW frame
 ```
 
-**DIAG_RELAY_RESPONSE (type 0x82):**
+**FETCH_DIAG_RESULT (type 0x03):**
 
 ```
-status: u8          // 0x00=ok, 0x01=timeout, 0x02=channel_error
+// empty body
+```
+
+**DIAG_RELAY_ACK (type 0x82):**
+
+```
+status: u8          // 0x00=accepted, 0x01=busy, 0x02=invalid_request
+```
+
+**DIAG_RELAY_RESULT (type 0x83):**
+
+```
+status: u8          // 0x00=ok, 0x01=timeout, 0x02=channel_error, 0x03=no_result
 payload_len: u16 BE // Length of ESP-NOW reply (0 if status ≠ 0x00)
 payload: [u8]       // Raw DIAG_REPLY ESP-NOW frame (if status=0x00)
 ```
 
 **Public API:**
 
-- `encode_diag_relay_request(rf_channel: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_REQUEST` body. Validates `rf_channel` ∈ 1–13 and `payload.len()` ≤ `MAX_FRAME_SIZE`. Wrap the returned body with `encode_ble_envelope(...)` to produce the full BLE `TYPE | LEN | BODY` message.
-- `decode_diag_relay_request(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `DIAG_RELAY_REQUEST` body, returning `(rf_channel, payload)`. Validates channel range, payload size, and rejects trailing bytes.
-- `encode_diag_relay_response(status: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_RESPONSE` body. Enforces payload must be empty for non-OK status. Wrap the returned body with `encode_ble_envelope(...)` to produce the full BLE message.
-- `decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `DIAG_RELAY_RESPONSE` body, returning `(status, payload)`. Rejects truncated and trailing-byte inputs.
+- `encode_start_diag_relay(rf_channel: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `START_DIAG_RELAY` body. Validates `rf_channel` ∈ 1–13 and `payload.len()` ≤ `MAX_FRAME_SIZE`. Wrap the returned body with `encode_ble_envelope(...)` to produce the full BLE `TYPE | LEN | BODY` message.
+- `decode_start_diag_relay(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `START_DIAG_RELAY` body, returning `(rf_channel, payload)`. Validates channel range, payload size, and rejects trailing bytes.
+- `encode_diag_relay_ack(status: u8) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_ACK` body.
+- `decode_diag_relay_ack(body: &[u8]) -> Result<u8, DecodeError>` — decode a `DIAG_RELAY_ACK` body.
+- `encode_diag_relay_result(status: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_RESULT` body. Enforces payload must be empty for non-OK status. Wrap the returned body with `encode_ble_envelope(...)` to produce the full BLE message.
+- `decode_diag_relay_result(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `DIAG_RELAY_RESULT` body, returning `(status, payload)`. Rejects truncated and trailing-byte inputs.

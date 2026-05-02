@@ -1629,45 +1629,57 @@ TestNode {
 
 ### T-PT-1224a  ESP-NOW diagnostic result updates signal-check page
 
-**Validates:** PT-1224 (AC 1, 3)  
+**Validates:** PT-1224 (AC 1, 3, 4)  
 **Type:** CI / mock transport test
 
 **Procedure:**
 1. Connect to a node and enter page 5.
-2. Configure the mock transport so `check_rssi()` returns a successful diagnostic result with RSSI = −67 dBm and `signal_quality = marginal`.
+2. Configure the mock transport so the diagnostic start is accepted, the node disconnects intentionally, the tool reconnects automatically, and `FETCH_DIAG_RESULT` returns RSSI = −67 dBm with `signal_quality = marginal`.
 3. Wait for the first diagnostic cycle to complete.
 4. Assert: page 5 shows `−67 dBm`.
 5. Assert: page 5 labels the result as `Marginal`.
 
 ---
 
-### T-PT-1224b  ESP-NOW diagnostic loop is single-flight
+### T-PT-1224b  Expected disconnect triggers automatic reconnect and fetch
 
-**Validates:** PT-1224 (AC 2, 4, 6)  
+**Validates:** PT-1223 (AC 5, 6), PT-1224 (AC 2, 3)  
 **Type:** CI / mock transport test
 
 **Procedure:**
-1. Enter page 5 with a mock `check_rssi()` implementation that delays completion.
-2. While the first diagnostic is still in flight, observe the frontend scheduling state for the next poll.
-3. Assert: no second diagnostic request is issued before the first completes.
-4. Let the first diagnostic complete quickly.
-5. Assert: the next diagnostic begins about 1000 ms after completion.
-6. Navigate away from page 5.
-7. Assert: no further diagnostic requests are issued.
+1. Enter page 5 with a mock transport that accepts `START_DIAG_RELAY` and then disconnects BLE as part of the diagnostic flow.
+2. Assert: the UI stays on page 5 and shows an in-progress reconnect state rather than a fatal BLE error.
+3. Let the tool reconnect automatically.
+4. Assert: the tool sends `FETCH_DIAG_RESULT` after reconnect.
+5. Assert: the reconnected BLE session remains available after the result is fetched.
 
 ---
 
-### T-PT-1224c  Diagnostic timeout or channel error remains on signal-check page
+### T-PT-1224c  Diagnostic completion does not auto-repeat
 
-**Validates:** PT-1224 (AC 5)  
+**Validates:** PT-1224 (AC 6, 7), PT-1225 (AC 4)  
 **Type:** CI / mock transport test
 
 **Procedure:**
-1. Enter page 5 with a mock `check_rssi()` implementation that returns a timeout error.
+1. Enter page 5 and let the initial diagnostic cycle complete.
+2. Observe the frontend state for 2 additional seconds.
+3. Assert: no second diagnostic cycle is started automatically.
+4. Click **Check Again**.
+5. Assert: exactly one new diagnostic cycle starts.
+
+---
+
+### T-PT-1224d  Diagnostic timeout or channel error remains on signal-check page
+
+**Validates:** PT-1224 (AC 5), PT-1225 (AC 1, 2)  
+**Type:** CI / mock transport test
+
+**Procedure:**
+1. Enter page 5 with a mock diagnostic flow that returns `DIAG_RELAY_RESULT(status=timeout)`.
 2. Wait for the diagnostic cycle to complete.
 3. Assert: page 5 remains visible.
 4. Assert: the UI shows an actionable timeout status.
-5. Re-run the diagnostic with a mock `check_rssi()` implementation that returns a channel error.
+5. Re-run the diagnostic with a mock flow that returns `DIAG_RELAY_RESULT(status=channel error)`.
 6. Assert: page 5 remains visible.
 7. Assert: the UI shows an actionable channel-error status.
 8. Assert: provisioning has not started automatically.
@@ -1676,7 +1688,7 @@ TestNode {
 
 ### T-PT-1225a  Bad ESP-NOW signal does not block proceed
 
-**Validates:** PT-1223 (AC 5), PT-1225 (AC 1, 2, 4)  
+**Validates:** PT-1223 (AC 7), PT-1225 (AC 1, 2, 5)  
 **Type:** Manual / platform test
 
 **Procedure:**
@@ -1690,7 +1702,7 @@ TestNode {
 
 ### T-PT-1225b  Abort from signal-check page returns to BLE scan
 
-**Validates:** PT-1223 (AC 5), PT-1225 (AC 3)  
+**Validates:** PT-1223 (AC 7), PT-1225 (AC 3)  
 **Type:** Manual / platform test
 
 **Procedure:**
@@ -1708,11 +1720,23 @@ TestNode {
 **Type:** CI / mock transport test
 
 **Procedure:**
-1. Enter page 5 with a mock `check_rssi()` implementation that returns a timeout error.
-2. Wait for the diagnostic cycle to complete.
-3. Assert: the **Proceed to Provision** action remains enabled.
-4. Click **Proceed to Provision**.
-5. Assert: page 6 (Node Provision) becomes visible.
+1. Enter page 5 with a completed diagnostic timeout result.
+2. Assert: the **Proceed to Provision** action remains enabled.
+3. Click **Proceed to Provision**.
+4. Assert: page 6 (Node Provision) becomes visible.
+
+---
+
+### T-PT-1225d  Completed diagnostic exposes explicit re-check action
+
+**Validates:** PT-1225 (AC 4)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Enter page 5 and let the automatic diagnostic complete.
+2. Assert: a **Check Again** action is visible.
+3. Click **Check Again**.
+4. Assert: a new diagnostic cycle starts without leaving page 5.
 
 ---
 
@@ -1846,8 +1870,10 @@ TestNode {
 | T-PT-1223a | PT-1223 | Connect action transitions from BLE scan to signal-check page |
 | T-PT-1223b | PT-1223 | Connect failure leaves installer on scan page |
 | T-PT-1224a | PT-1224 | ESP-NOW diagnostic result updates signal-check page |
-| T-PT-1224b | PT-1224 | ESP-NOW diagnostic loop is single-flight |
-| T-PT-1224c | PT-1224 | Diagnostic timeout or channel error remains on signal-check page |
+| T-PT-1224b | PT-1224 | Expected disconnect triggers automatic reconnect and fetch |
+| T-PT-1224c | PT-1224 | Diagnostic completion does not auto-repeat |
+| T-PT-1224d | PT-1224 | Diagnostic timeout or channel error remains on signal-check page |
 | T-PT-1225a | PT-1225 | Bad ESP-NOW signal does not block proceed |
 | T-PT-1225b | PT-1225 | Abort from signal-check page returns to BLE scan |
 | T-PT-1225c | PT-1225 | Timeout does not disable proceed |
+| T-PT-1225d | PT-1225 | Completed diagnostic exposes explicit re-check action |

@@ -967,12 +967,13 @@ On a valid NODE_PROVISION the node MUST write the node PSK (NVS key `psk`), key 
 **Source:** ble-pairing-protocol.md §8.2, steps 5–6
 
 **Description:**  
-The node MUST remain in BLE pairing mode after a successful NODE_PROVISION (allowing re-provision on error) and MUST reboot when the BLE connection disconnects.
+The node MUST remain in BLE pairing mode after a successful NODE_PROVISION (allowing re-provision on error). On an ordinary BLE disconnect, the node MUST return from pairing mode and reboot. However, the pairing-time diagnostic flow (ND-1100–ND-1106) MAY intentionally suspend BLE, run ESP-NOW, and resume BLE advertising **without** rebooting.
 
 **Acceptance criteria:**
 
 1. A second NODE_PROVISION can be sent on the same BLE connection after a successful first provision.
-2. The node reboots when the BLE connection is terminated.
+2. The node reboots when an ordinary BLE connection is terminated.
+3. An intentional diagnostic BLE suspend/resume path does not reboot the node.
 
 ---
 
@@ -1446,52 +1447,55 @@ The node MUST log the WiFi / ESP-NOW channel number at boot using `warn!()` leve
 
 ## 12  Diagnostic relay
 
-### ND-1100  BLE diagnostic relay command
+### ND-1100  Asynchronous BLE diagnostic commands
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §6a, protocol.md §5.8
 
 **Description:**  
-In BLE pairing mode, the node MUST accept `DIAG_RELAY_REQUEST` (BLE envelope type `0x02`) on the Node Command characteristic. The node MUST NOT require provisioning to have completed — the diagnostic relay is available as soon as BLE pairing mode is active.
+In BLE pairing mode, the node MUST accept `START_DIAG_RELAY` (BLE envelope type `0x02`) and `FETCH_DIAG_RESULT` (BLE envelope type `0x03`) on the Node Command characteristic. The node MUST NOT require provisioning to have completed — the diagnostic relay is available as soon as BLE pairing mode is active.
 
 **Acceptance criteria:**
 
-1. `DIAG_RELAY_REQUEST` messages are accepted on the Node Command characteristic while in BLE pairing mode.
-2. The node parses `rf_channel` (1 byte), `payload_len` (2 bytes BE), and `payload` (variable) from the BLE envelope body.
-3. The node rejects requests with `rf_channel` outside 1–13 by sending `DIAG_RELAY_RESPONSE(status=0x02)`.
-4. The node rejects requests with `payload_len` = 0 or `payload_len` > 250 by sending `DIAG_RELAY_RESPONSE(status=0x02)`.
+1. `START_DIAG_RELAY` and `FETCH_DIAG_RESULT` messages are accepted on the Node Command characteristic while in BLE pairing mode.
+2. For `START_DIAG_RELAY`, the node parses `rf_channel` (1 byte), `payload_len` (2 bytes BE), and `payload` (variable) from the BLE envelope body.
+3. The node rejects `START_DIAG_RELAY` requests with `rf_channel` outside 1–13 by sending `DIAG_RELAY_ACK(status=0x02)`.
+4. The node rejects `START_DIAG_RELAY` requests with `payload_len` = 0 or `payload_len` > 250 by sending `DIAG_RELAY_ACK(status=0x02)`.
+5. While a diagnostic is already running or a completed result is still pending fetch, the node rejects new `START_DIAG_RELAY` requests with `DIAG_RELAY_ACK(status=0x01)`.
 
 ---
 
-### ND-1101  Diagnostic ESP-NOW broadcast
+### ND-1101  Diagnostic BLE suspend and resume
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §6a.3, protocol.md §6.6
 
 **Description:**  
-Upon receiving a valid `DIAG_RELAY_REQUEST`, the node MUST temporarily tune the ESP-NOW radio to the specified `rf_channel` and broadcast the `payload` as a raw ESP-NOW frame using the broadcast MAC address (`FF:FF:FF:FF:FF:FF`). The node MUST NOT decrypt or interpret the payload.
+Upon receiving a valid `START_DIAG_RELAY`, the node MUST acknowledge the request over BLE, then intentionally disable BLE and stop advertising **without rebooting**, perform the diagnostic, and finally re-enable BLE advertising so the pairing tool can reconnect.
 
 **Acceptance criteria:**
 
-1. The node tunes to the specified `rf_channel` before transmitting.
-2. The payload is transmitted verbatim as a broadcast ESP-NOW frame.
-3. The node does not attempt to decrypt, parse, or validate the payload contents.
+1. The node sends `DIAG_RELAY_ACK(status=0x00)` before disabling BLE.
+2. After the acknowledgement is delivered, the node disables BLE and stops advertising without rebooting.
+3. After the diagnostic completes, the node re-enables BLE advertising and remains in pairing mode awaiting reconnect.
 
 ---
 
-### ND-1102  Diagnostic reply reception
+### ND-1102  Diagnostic ESP-NOW broadcast and reply reception
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §6a.3, protocol.md §5.9
 
 **Description:**  
-After broadcasting the diagnostic payload, the node MUST listen for an inbound ESP-NOW frame whose `msg_type` byte (header offset 2) is `0x85` (`DIAG_REPLY`). The node identifies reply frames by inspecting the plaintext `msg_type` byte in the frame header — no decryption is required.
+After accepting `START_DIAG_RELAY`, the node MUST temporarily tune the ESP-NOW radio to the specified `rf_channel`, broadcast the `payload` as a raw ESP-NOW frame using the broadcast MAC address (`FF:FF:FF:FF:FF:FF`), and listen for an inbound ESP-NOW frame whose `msg_type` byte (header offset 2) is `0x85` (`DIAG_REPLY`). The node identifies reply frames by inspecting the plaintext `msg_type` byte in the frame header — no decryption is required.
 
 **Acceptance criteria:**
 
-1. The node accepts inbound ESP-NOW frames with `msg_type` = `0x85` as diagnostic replies.
-2. The node ignores inbound frames with any other `msg_type` during the listen window.
-3. The node does not decrypt or validate the reply payload.
+1. The node tunes to the specified `rf_channel` before transmitting.
+2. The payload is transmitted verbatim as a broadcast ESP-NOW frame.
+3. The node accepts inbound ESP-NOW frames with `msg_type` = `0x85` as diagnostic replies.
+4. The node ignores inbound frames with any other `msg_type` during the listen window.
+5. The node does not decrypt, parse, or validate either the request payload or the reply payload contents.
 
 ---
 
@@ -1512,34 +1516,37 @@ The node MUST retry the ESP-NOW broadcast up to **3 times** with a **200 ms** ba
 
 ---
 
-### ND-1104  Diagnostic timeout handling
+### ND-1104  Diagnostic result persistence and fetch
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §6a.6
 
 **Description:**  
-If no `DIAG_REPLY` is received after all retry attempts, the node MUST send `DIAG_RELAY_RESPONSE(status=0x01, payload_len=0)` to the pairing tool via BLE indication.
+When the diagnostic finishes, the node MUST store the completed result in pairing-session state and return it only after the pairing tool reconnects and sends `FETCH_DIAG_RESULT`. The result MAY be `success`, `timeout`, or `channel error`.
 
 **Acceptance criteria:**
 
-1. After 3 failed retry attempts, the node sends `DIAG_RELAY_RESPONSE` with status `0x01` (timeout).
-2. The `payload_len` is 0 and no payload is included in the timeout response.
+1. After a successful diagnostic reply, the node stores the raw `DIAG_REPLY` frame until `FETCH_DIAG_RESULT` is received.
+2. After 3 failed retry attempts, the node stores `DIAG_RELAY_RESULT(status=0x01)` with `payload_len=0`.
+3. If the diagnostic fails because the radio/channel operation could not be executed, the node stores `DIAG_RELAY_RESULT(status=0x02)` with `payload_len=0`.
+4. On `FETCH_DIAG_RESULT`, the node returns the stored result via `DIAG_RELAY_RESULT`.
+5. After a successful result delivery, the stored diagnostic result is cleared so later fetches do not return stale data.
 
 ---
 
-### ND-1105  Diagnostic BLE response forwarding
+### ND-1105  Diagnostic pairing-mode continuity
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §6a.3
 
 **Description:**  
-When a `DIAG_REPLY` frame is received, the node MUST forward the raw frame to the pairing tool as `DIAG_RELAY_RESPONSE(status=0x00, payload=<raw frame>)` via a BLE indication on the Node Command characteristic.
+The asynchronous diagnostic flow MUST keep the node in BLE pairing mode across the intentional BLE suspend/reconnect cycle. Completing a diagnostic MUST NOT force a reboot or exit from pairing mode, and the node MUST remain ready for either another diagnostic run or `NODE_PROVISION` after the result is fetched.
 
 **Acceptance criteria:**
 
-1. The raw `DIAG_REPLY` ESP-NOW frame is forwarded verbatim in the `DIAG_RELAY_RESPONSE` payload.
-2. The BLE indication uses envelope type `0x82`.
-3. The response status is `0x00` (success).
+1. The node does not reboot when it intentionally suspends BLE for a diagnostic.
+2. After the pairing tool reconnects and fetches the result, BLE remains connected and functional for `NODE_PROVISION`.
+3. The node can accept another diagnostic request after the previous result has been fetched.
 
 ---
 
@@ -1554,8 +1561,8 @@ After a diagnostic relay completes (whether by receiving a reply or exhausting r
 **Acceptance criteria:**
 
 1. The radio channel is restored to its pre-diagnostic value after the relay completes.
-2. BLE connectivity is maintained throughout the diagnostic relay operation.
-3. The node remains in BLE pairing mode after the diagnostic completes and can accept further `DIAG_RELAY_REQUEST` or `NODE_PROVISION` commands.
+2. The node remains in BLE pairing mode after the diagnostic completes.
+3. After reconnect, the node can accept further diagnostic commands or `NODE_PROVISION`.
 
 ---
 
@@ -1645,10 +1652,10 @@ After a diagnostic relay completes (whether by receiving a reply or exhausting r
 | ND-1014 | Error diagnostic observability | Must |
 | ND-1015 | Boot version visibility | Must |
 | ND-1016 | ESP-NOW channel logging at boot | Must |
-| ND-1100 | BLE diagnostic relay command | Must |
-| ND-1101 | Diagnostic ESP-NOW broadcast | Must |
-| ND-1102 | Diagnostic reply reception | Must |
+| ND-1100 | Asynchronous BLE diagnostic commands | Must |
+| ND-1101 | Diagnostic BLE suspend and resume | Must |
+| ND-1102 | Diagnostic ESP-NOW broadcast and reply reception | Must |
 | ND-1103 | Diagnostic retry behavior | Must |
-| ND-1104 | Diagnostic timeout handling | Must |
-| ND-1105 | Diagnostic BLE response forwarding | Must |
+| ND-1104 | Diagnostic result persistence and fetch | Must |
+| ND-1105 | Diagnostic pairing-mode continuity | Must |
 | ND-1106 | Diagnostic radio state restoration | Must |

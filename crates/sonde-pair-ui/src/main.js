@@ -49,6 +49,7 @@ const diagEspNowValue = document.getElementById("diag-espnow-value");
 const diagEspNowLabel = document.getElementById("diag-espnow-label");
 const signalStatus = document.getElementById("signal-status");
 const btnSignalAbort = document.getElementById("btn-signal-abort");
+const btnSignalRecheck = document.getElementById("btn-signal-recheck");
 const btnSignalProceed = document.getElementById("btn-signal-proceed");
 
 const nodeId = document.getElementById("node-id");
@@ -78,8 +79,8 @@ let pollTimer = null;
 let logTimer = null;
 let busy = false;
 let isPaired = false;
-let signalLoopEnabled = false;
 let diagCurrentPromise = null;
+let signalReadyForProceed = false;
 
 const BOARD_PRESETS = {
   rev_a: {
@@ -172,7 +173,6 @@ class Navigator {
       cleanupScanPage(pageIndex, preserveNodeSelection);
     }
     if (pageIndex === 4 && !preserveConnection) {
-      stopSignalLoop();
       invoke("disconnect_node").catch(() => {});
       resetSignalCheckView();
     }
@@ -207,7 +207,8 @@ function setBusy(value) {
   btnProvision.disabled = value || !selectedAddressNode;
   btnConnectNode.disabled = value || !selectedAddressNode;
   btnSignalAbort.disabled = value;
-  btnSignalProceed.disabled = value || !selectedAddressNode || !signalLoopEnabled;
+  btnSignalRecheck.disabled = value || !selectedAddressNode || !!diagCurrentPromise;
+  btnSignalProceed.disabled = value || !selectedAddressNode || !signalReadyForProceed;
   btnScanStartGw.disabled = value || scanning;
   btnScanStopGw.disabled = value || !scanning || navigator_.current !== 1;
   btnScanStartNode.disabled = value || scanning;
@@ -267,10 +268,11 @@ function updateSignalCheckIndicators(diagRssi = null, signalQuality = null) {
 }
 
 function resetSignalCheckView() {
-  signalLoopEnabled = false;
   diagCurrentPromise = null;
+  signalReadyForProceed = false;
   updateSignalCheckIndicators(null);
   hideStatus(signalStatus);
+  btnSignalRecheck.disabled = true;
   btnSignalProceed.disabled = true;
 }
 
@@ -513,37 +515,33 @@ async function pairGateway() {
   }
 }
 
-function stopSignalLoop() {
-  signalLoopEnabled = false;
-}
-
-async function waitForCurrentDiagnostic() {
-  if (diagCurrentPromise) {
-    try {
-      await diagCurrentPromise;
-    } catch (_) {
-    }
-  }
-}
-
-async function runSignalCheckLoop() {
-  if (!signalLoopEnabled) return;
+async function runSignalCheck() {
+  if (diagCurrentPromise) return;
+  signalReadyForProceed = false;
+  btnSignalRecheck.disabled = true;
+  btnSignalProceed.disabled = true;
+  showStatus(signalStatus, "Running ESP-NOW signal check… The node will disconnect and reconnect automatically.");
   diagCurrentPromise = (async () => {
     try {
       const result = await invoke("check_rssi");
+      if (navigator_.current !== 4) return;
       updateSignalCheckIndicators(result.rssiDbm, result.signalQuality);
-      showStatus(signalStatus, `Last update: ${result.rssiDbm} dBm via ESP-NOW`);
-      btnSignalProceed.disabled = false;
+      showStatus(signalStatus, `Signal check complete: ${result.rssiDbm} dBm via ESP-NOW`);
+      signalReadyForProceed = true;
     } catch (e) {
-      showStatus(signalStatus, `Diagnostic unavailable: ${e}`);
-      btnSignalProceed.disabled = false;
+      if (String(e) !== "signal check cancelled" && navigator_.current === 4) {
+        showStatus(signalStatus, `Diagnostic unavailable: ${e}`);
+        signalReadyForProceed = true;
+      }
     } finally {
       diagCurrentPromise = null;
+      if (navigator_.current === 4) {
+        btnSignalRecheck.disabled = false;
+        btnSignalProceed.disabled = !signalReadyForProceed;
+      }
     }
   })();
-
   await diagCurrentPromise;
-  if (signalLoopEnabled) setTimeout(runSignalCheckLoop, 1000);
 }
 
 async function connectNode() {
@@ -556,11 +554,8 @@ async function connectNode() {
   try {
     await invoke("connect_node", { address: selectedAddressNode });
     navigator_.next();
-    signalLoopEnabled = true;
-    btnSignalProceed.disabled = false;
-    showStatus(signalStatus, "Running ESP-NOW signal check…");
     setBusy(false);
-    runSignalCheckLoop();
+    runSignalCheck();
   } catch (e) {
     showError(e);
     setBusy(false);
@@ -570,8 +565,7 @@ async function connectNode() {
 async function abortSignalCheck() {
   clearError();
   setBusy(true);
-  stopSignalLoop();
-  await waitForCurrentDiagnostic();
+  await invoke("cancel_signal_check").catch(() => {});
   try {
     await invoke("disconnect_node");
   } catch (e) {
@@ -585,12 +579,9 @@ async function abortSignalCheck() {
 
 async function proceedFromSignalCheck() {
   clearError();
-  setBusy(true);
-  stopSignalLoop();
-  await waitForCurrentDiagnostic();
+  if (diagCurrentPromise) return;
   btnProvision.disabled = !selectedAddressNode;
   navigator_.next();
-  setBusy(false);
 }
 
 async function provisionNode() {
@@ -646,8 +637,6 @@ async function refreshPairingStatus() {
 
 async function clearPairing() {
   clearError();
-  stopSignalLoop();
-  await waitForCurrentDiagnostic();
   try {
     await invoke("clear_pairing");
     isPaired = false;
@@ -696,6 +685,7 @@ btnScanStartNode.addEventListener("click", startScan);
 btnScanStopNode.addEventListener("click", stopScan);
 btnConnectNode.addEventListener("click", connectNode);
 btnSignalAbort.addEventListener("click", abortSignalCheck);
+btnSignalRecheck.addEventListener("click", runSignalCheck);
 btnSignalProceed.addEventListener("click", proceedFromSignalCheck);
 btnProvision.addEventListener("click", provisionNode);
 boardSelect.addEventListener("change", () => {

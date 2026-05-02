@@ -668,10 +668,10 @@ phone connects → server calls ble_gap_security_initiate() → LESC pairing →
     ↓
 buffered GATT write flushed (if any) → handle_node_provision() → NODE_ACK indicate
     ↓
-phone disconnects → return → reboot (ND-0907)
+ordinary phone disconnects → return → reboot (ND-0907)
 ```
 
-The main loop polls for pending GATT writes and disconnection events at 100 ms intervals. On disconnect, the function returns and the caller reboots into normal wake-cycle mode with the newly provisioned credentials.
+The main loop polls for pending GATT writes and disconnection events at 100 ms intervals. On an ordinary disconnect, the function returns and the caller reboots into normal wake-cycle mode with the newly provisioned credentials. The asynchronous diagnostic flow in §15.8 is the exception: it intentionally suspends BLE, completes the radio relay, and resumes advertising without returning from pairing mode.
 
 ### 15.6  Platform-independent handler
 
@@ -722,18 +722,28 @@ If WAKE fails (no response or AEAD decryption failure) after `reg_complete` is s
 
 ### 15.8  Diagnostic relay (pre-provisioning)
 
-> **Requirements:** ND-1100 (BLE diagnostic relay command), ND-1101 (diagnostic ESP-NOW broadcast), ND-1102 (diagnostic reply reception), ND-1103 (diagnostic retry behavior), ND-1104 (diagnostic timeout handling), ND-1105 (diagnostic BLE response forwarding), ND-1106 (diagnostic radio state restoration).
+> **Requirements:** ND-1100 (asynchronous BLE diagnostic commands), ND-1101 (diagnostic BLE suspend and resume), ND-1102 (diagnostic ESP-NOW broadcast and reply reception), ND-1103 (diagnostic retry behavior), ND-1104 (diagnostic result persistence and fetch), ND-1105 (diagnostic pairing-mode continuity), ND-1106 (diagnostic radio state restoration).
 
-While in BLE pairing mode (before `NODE_PROVISION` is received), the node can act as a **dumb radio relay** for pairing-time diagnostics. The pairing tool uses this to measure the node→gateway RF link quality before committing to provisioning.
+While in BLE pairing mode (before `NODE_PROVISION` is received), the node can act as a **dumb radio relay** for pairing-time diagnostics. Because ESP32-C3 cannot reliably perform BLE and ESP-NOW receive concurrently, the relay runs as an asynchronous suspend/reconnect cycle rather than a synchronous same-connection response.
 
 **BLE command handling (ND-1100):**
 
-The node's BLE GATT handler processes `DIAG_RELAY_REQUEST` (envelope type `0x02`) on the Node Command characteristic:
+The node's BLE GATT handler processes two diagnostic commands on the Node Command characteristic:
 
-1. Parse the envelope body: `rf_channel` (1 byte), `payload_len` (2 bytes BE), `payload` (variable).
-2. Validate: `rf_channel` ∈ 1–13 and 0 < `payload_len` ≤ 250. On validation failure → respond with `DIAG_RELAY_RESPONSE(status=0x02)`.
+1. `START_DIAG_RELAY` (envelope type `0x02`) with body `rf_channel` + `payload_len` + `payload`
+2. `FETCH_DIAG_RESULT` (envelope type `0x03`) with an empty body
 
-**ESP-NOW relay (ND-1101, ND-1102):**
+For `START_DIAG_RELAY`, the node validates `rf_channel` ∈ 1–13 and 0 < `payload_len` ≤ 250. On validation failure it sends `DIAG_RELAY_ACK(status=0x02)`. If a prior diagnostic is already running or a completed result has not yet been fetched, it sends `DIAG_RELAY_ACK(status=0x01)`. Otherwise it sends `DIAG_RELAY_ACK(status=0x00)` and transitions into the diagnostic execution path.
+
+**BLE suspend / resume (ND-1101, ND-1105):**
+
+1. Deliver `DIAG_RELAY_ACK(status=0x00)` while BLE is still active.
+2. After the indication is acknowledged, stop advertising and tear down BLE without returning from `run_ble_pairing_mode()`.
+3. Execute the diagnostic with BLE absent.
+4. Restart advertising after the diagnostic completes and wait for the phone to reconnect.
+5. After reconnect, respond to `FETCH_DIAG_RESULT` and keep BLE active so provisioning can continue on the same session.
+
+**ESP-NOW relay (ND-1102, ND-1103):**
 
 1. Save the current ESP-NOW channel (if any).
 2. Tune the ESP-NOW radio to `rf_channel`.
@@ -741,23 +751,21 @@ The node's BLE GATT handler processes `DIAG_RELAY_REQUEST` (envelope type `0x02`
 4. Listen for inbound ESP-NOW frames.
 5. Accept the first frame whose `msg_type` byte (header offset 2) = `0x85` (`DIAG_REPLY`).
 6. Ignore frames with any other `msg_type`.
+7. Retry up to 3 retransmissions with 200 ms backoff and a 2-second listen window per attempt.
 
-**Retry behavior (ND-1103):**
+**Result persistence and fetch (ND-1104):**
 
-Matches the WAKE cycle retry parameters:
-- Up to 3 retransmissions.
-- 200 ms backoff between attempts.
-- 2-second listen window per attempt.
-- A reply received during any attempt terminates the loop.
+When the diagnostic finishes, the node stores one completed result in pairing-session state:
 
-**Response (ND-1104, ND-1105):**
+- success with raw `DIAG_REPLY` frame
+- timeout after all retries
+- channel/radio execution error
 
-- On reply received: send `DIAG_RELAY_RESPONSE(status=0x00, payload=<raw DIAG_REPLY frame>)` via BLE indication.
-- On timeout after all retries: send `DIAG_RELAY_RESPONSE(status=0x01, payload_len=0)`.
+On `FETCH_DIAG_RESULT`, the node sends `DIAG_RELAY_RESULT(...)` via BLE indication. After a successful result delivery, it clears the stored result so future fetches cannot return stale data.
 
 **Radio state restoration (ND-1106):**
 
-After the relay completes, restore the ESP-NOW channel to its previous value. The node remains in BLE pairing mode and can accept further diagnostic relay requests or proceed to `NODE_PROVISION`.
+After the relay completes, restore the ESP-NOW channel to its previous value before restarting BLE advertising.
 
 ---
 

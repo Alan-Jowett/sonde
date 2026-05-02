@@ -108,12 +108,28 @@ pub const SIGNAL_QUALITY_BAD: u8 = 2;
 
 // BLE envelope message types (Node Command characteristic)
 pub const BLE_NODE_PROVISION: u8 = 0x01;
-pub const BLE_DIAG_RELAY_REQUEST: u8 = 0x02;
+pub const BLE_START_DIAG_RELAY: u8 = 0x02;
+pub const BLE_FETCH_DIAG_RESULT: u8 = 0x03;
 pub const BLE_NODE_ACK: u8 = 0x81;
-pub const BLE_DIAG_RELAY_RESPONSE: u8 = 0x82;
+pub const BLE_DIAG_RELAY_ACK: u8 = 0x82;
+pub const BLE_DIAG_RELAY_RESULT: u8 = 0x83;
 pub const BLE_ERROR: u8 = 0xFF;
 
-// DIAG_RELAY_RESPONSE status codes
-pub const DIAG_RELAY_STATUS_OK: u8 = 0x00;
-pub const DIAG_RELAY_STATUS_TIMEOUT: u8 = 0x01;
-pub const DIAG_RELAY_STATUS_CHANNEL_ERROR: u8 = 0x02;
+// DIAG_RELAY_ACK status codes
+pub const DIAG_RELAY_ACK_ACCEPTED: u8 = 0x00;
+pub const DIAG_RELAY_ACK_BUSY: u8 = 0x01;
+pub const DIAG_RELAY_ACK_INVALID: u8 = 0x02;
+
+// DIAG_RELAY_RESULT status codes
+pub const DIAG_RELAY_RESULT_OK: u8 = 0x00;
+pub const DIAG_RELAY_RESULT_TIMEOUT: u8 = 0x01;
+pub const DIAG_RELAY_RESULT_CHANNEL_ERROR: u8 = 0x02;
+pub const DIAG_RELAY_RESULT_NO_RESULT: u8 = 0x03;
+
+// Legacy aliases retained while downstream callers migrate to the split
+// async diagnostic start / ack / result model.
+pub const BLE_DIAG_RELAY_REQUEST: u8 = BLE_START_DIAG_RELAY;
+pub const BLE_DIAG_RELAY_RESPONSE: u8 = BLE_DIAG_RELAY_RESULT;
+pub const DIAG_RELAY_STATUS_OK: u8 = DIAG_RELAY_RESULT_OK;
+pub const DIAG_RELAY_STATUS_TIMEOUT: u8 = DIAG_RELAY_RESULT_TIMEOUT;
+pub const DIAG_RELAY_STATUS_CHANNEL_ERROR: u8 = DIAG_RELAY_RESULT_CHANNEL_ERROR;

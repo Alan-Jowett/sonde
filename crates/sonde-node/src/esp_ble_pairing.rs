@@ -65,7 +65,7 @@ enum PendingIndication {
     DiagResult { clear_on_success: bool },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum SessionExit {
     Disconnect,
     StartDiagnostic(DiagRelayParams),

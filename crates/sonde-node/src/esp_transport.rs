@@ -9,7 +9,7 @@
 //! callback, eliminating per-frame heap allocation from the WiFi task
 //! context.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
@@ -111,30 +111,31 @@ struct RecvState {
     enqueued_count: AtomicU32,
     last_len: AtomicU32,
     last_msg_type: AtomicU32,
-    last_src_mac: AtomicU64,
+    last_src_mac_hi: AtomicU32,
+    last_src_mac_lo: AtomicU32,
     last_rssi_dbm: AtomicI32,
 }
 
 /// Global callback state — set once during [`EspNowTransport::new`].
 static RECV_STATE: std::sync::OnceLock<RecvState> = std::sync::OnceLock::new();
 
-fn pack_mac(mac: [u8; 6]) -> u64 {
-    ((mac[0] as u64) << 40)
-        | ((mac[1] as u64) << 32)
-        | ((mac[2] as u64) << 24)
-        | ((mac[3] as u64) << 16)
-        | ((mac[4] as u64) << 8)
-        | (mac[5] as u64)
+fn pack_mac_words(mac: [u8; 6]) -> (u32, u32) {
+    let hi = ((mac[0] as u32) << 24)
+        | ((mac[1] as u32) << 16)
+        | ((mac[2] as u32) << 8)
+        | (mac[3] as u32);
+    let lo = ((mac[4] as u32) << 8) | (mac[5] as u32);
+    (hi, lo)
 }
 
-fn unpack_mac(packed: u64) -> [u8; 6] {
+fn unpack_mac_words(hi: u32, lo: u32) -> [u8; 6] {
     [
-        ((packed >> 40) & 0xFF) as u8,
-        ((packed >> 32) & 0xFF) as u8,
-        ((packed >> 24) & 0xFF) as u8,
-        ((packed >> 16) & 0xFF) as u8,
-        ((packed >> 8) & 0xFF) as u8,
-        (packed & 0xFF) as u8,
+        ((hi >> 24) & 0xFF) as u8,
+        ((hi >> 16) & 0xFF) as u8,
+        ((hi >> 8) & 0xFF) as u8,
+        (hi & 0xFF) as u8,
+        ((lo >> 8) & 0xFF) as u8,
+        (lo & 0xFF) as u8,
     ]
 }
 
@@ -174,9 +175,9 @@ unsafe extern "C" fn raw_recv_cb(
         state.callback_count.fetch_add(1, Ordering::Relaxed);
         state.last_len.store(len as u32, Ordering::Relaxed);
         state.last_msg_type.store(msg_type, Ordering::Relaxed);
-        state
-            .last_src_mac
-            .store(pack_mac(src_addr), Ordering::Relaxed);
+        let (last_src_mac_hi, last_src_mac_lo) = pack_mac_words(src_addr);
+        state.last_src_mac_hi.store(last_src_mac_hi, Ordering::Relaxed);
+        state.last_src_mac_lo.store(last_src_mac_lo, Ordering::Relaxed);
         state.last_rssi_dbm.store(rssi_dbm, Ordering::Relaxed);
         let enqueued = {
             // Match try_lock errors explicitly: recover on Poisoned so
@@ -289,7 +290,8 @@ impl EspNowTransport {
                 enqueued_count: AtomicU32::new(0),
                 last_len: AtomicU32::new(0),
                 last_msg_type: AtomicU32::new(u32::MAX),
-                last_src_mac: AtomicU64::new(0),
+                last_src_mac_hi: AtomicU32::new(0),
+                last_src_mac_lo: AtomicU32::new(0),
                 last_rssi_dbm: AtomicI32::new(i32::MIN),
             })
             .map_err(|_| NodeError::Transport("recv callback already registered"))?;
@@ -322,7 +324,10 @@ impl EspNowTransport {
             let contention_drops = state.contention_drops.load(Ordering::Relaxed);
             let last_len = state.last_len.load(Ordering::Relaxed);
             let last_msg_type = state.last_msg_type.load(Ordering::Relaxed);
-            let last_src_mac = unpack_mac(state.last_src_mac.load(Ordering::Relaxed));
+            let last_src_mac = unpack_mac_words(
+                state.last_src_mac_hi.load(Ordering::Relaxed),
+                state.last_src_mac_lo.load(Ordering::Relaxed),
+            );
             let last_rssi_dbm = state.last_rssi_dbm.load(Ordering::Relaxed);
             log::info!(
                 "ESP-NOW diag snapshot label=\"{}\" callback_count={} enqueued_count={} ring_count={} contention_drops={} full_drops={} last_len={} last_msg_type={} last_src={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} last_rssi_dbm={}",

@@ -274,6 +274,7 @@ pub fn handle_node_provision<S: PlatformStorage>(
 // ---------------------------------------------------------------------------
 
 /// Parsed START_DIAG_RELAY parameters.
+#[derive(Debug)]
 pub struct DiagRelayParams {
     pub rf_channel: u8,
     pub payload: Vec<u8>,

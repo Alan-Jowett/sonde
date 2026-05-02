@@ -351,7 +351,12 @@ pub fn do_diag_relay<T: crate::traits::Transport>(
             }
         }
 
-        if transport.send(&params.payload).is_err() {
+        if let Err(err) = transport.send(&params.payload) {
+            log::warn!(
+                "BLE: DIAG relay send failed attempt={} error={}",
+                attempt + 1,
+                err
+            );
             continue;
         }
 
@@ -367,30 +372,100 @@ pub fn do_diag_relay<T: crate::traits::Transport>(
                 let before = std::time::Instant::now();
                 match transport.recv(remaining_ms) {
                     Ok(Some(raw)) => {
-                        if raw.len() >= 3
-                            && raw[sonde_protocol::OFFSET_MSG_TYPE]
-                                == sonde_protocol::MSG_DIAG_REPLY
-                        {
-                            return encode_diag_relay_response(
-                                sonde_protocol::DIAG_RELAY_STATUS_OK,
-                                &raw,
+                        if raw.len() >= 3 {
+                            let msg_type = raw[sonde_protocol::OFFSET_MSG_TYPE];
+                            if msg_type == sonde_protocol::MSG_DIAG_REPLY {
+                                log::info!(
+                                    "BLE: DIAG_REPLY received attempt={} len={} msg_type=0x{:02x}",
+                                    attempt + 1,
+                                    raw.len(),
+                                    msg_type
+                                );
+                                return encode_diag_relay_response(
+                                    sonde_protocol::DIAG_RELAY_STATUS_OK,
+                                    &raw,
+                                );
+                            }
+                            log::info!(
+                                "BLE: diagnostic relay ignoring frame attempt={} len={} msg_type=0x{:02x}",
+                                attempt + 1,
+                                raw.len(),
+                                msg_type
+                            );
+                        } else {
+                            log::info!(
+                                "BLE: diagnostic relay ignoring short frame attempt={} len={}",
+                                attempt + 1,
+                                raw.len()
                             );
                         }
                         let elapsed = before.elapsed().as_millis() as u32;
                         remaining_ms = remaining_ms.saturating_sub(elapsed.max(1));
                     }
-                    _ => break,
+                    Ok(None) => {
+                        log::info!(
+                            "BLE: diagnostic relay listen timeout attempt={} window_ms={}",
+                            attempt + 1,
+                            remaining_ms
+                        );
+                        break;
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "BLE: diagnostic relay recv failed attempt={} error={}",
+                            attempt + 1,
+                            err
+                        );
+                        break;
+                    }
                 }
             }
         }
         #[cfg(not(feature = "esp"))]
         {
             // In test builds, recv returns immediately; single attempt per retry.
-            if let Ok(Some(raw)) = transport.recv(DIAG_LISTEN_TIMEOUT_MS) {
-                if raw.len() >= 3
-                    && raw[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_DIAG_REPLY
-                {
-                    return encode_diag_relay_response(sonde_protocol::DIAG_RELAY_STATUS_OK, &raw);
+            match transport.recv(DIAG_LISTEN_TIMEOUT_MS) {
+                Ok(Some(raw)) if raw.len() >= 3 => {
+                    let msg_type = raw[sonde_protocol::OFFSET_MSG_TYPE];
+                    if msg_type == sonde_protocol::MSG_DIAG_REPLY {
+                        log::info!(
+                            "BLE: DIAG_REPLY received attempt={} len={} msg_type=0x{:02x}",
+                            attempt + 1,
+                            raw.len(),
+                            msg_type
+                        );
+                        return encode_diag_relay_response(
+                            sonde_protocol::DIAG_RELAY_STATUS_OK,
+                            &raw,
+                        );
+                    }
+                    log::info!(
+                        "BLE: diagnostic relay ignoring frame attempt={} len={} msg_type=0x{:02x}",
+                        attempt + 1,
+                        raw.len(),
+                        msg_type
+                    );
+                }
+                Ok(Some(raw)) => {
+                    log::info!(
+                        "BLE: diagnostic relay ignoring short frame attempt={} len={}",
+                        attempt + 1,
+                        raw.len()
+                    );
+                }
+                Ok(None) => {
+                    log::info!(
+                        "BLE: diagnostic relay listen timeout attempt={} window_ms={}",
+                        attempt + 1,
+                        DIAG_LISTEN_TIMEOUT_MS
+                    );
+                }
+                Err(err) => {
+                    log::warn!(
+                        "BLE: diagnostic relay recv failed attempt={} error={}",
+                        attempt + 1,
+                        err
+                    );
                 }
             }
         }

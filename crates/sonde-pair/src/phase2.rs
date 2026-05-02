@@ -24,6 +24,9 @@ const DIAG_RELAY_ACK_TIMEOUT_MS: u64 = 5_000;
 /// FETCH_DIAG_RESULT indication timeout in milliseconds.
 const DIAG_RELAY_FETCH_TIMEOUT_MS: u64 = 5_000;
 
+/// Poll interval for cancellation-aware diagnostic indication waits.
+const DIAG_RELAY_READ_POLL_MS: u64 = 250;
+
 /// Maximum time to wait for the node to resume advertising after an accepted diagnostic.
 const DIAG_RELAY_RECONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -316,13 +319,14 @@ pub async fn check_rssi(
         .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &envelope)
         .await?;
 
-    let response = transport
-        .read_indication(
-            NODE_SERVICE_UUID,
-            NODE_COMMAND_UUID,
-            DIAG_RELAY_ACK_TIMEOUT_MS,
-        )
-        .await?;
+    let response = read_indication_with_cancellation(
+        transport,
+        NODE_SERVICE_UUID,
+        NODE_COMMAND_UUID,
+        DIAG_RELAY_ACK_TIMEOUT_MS,
+        cancelled,
+    )
+    .await?;
     let (msg_type, body) = sonde_protocol::parse_ble_envelope(&response).ok_or_else(|| {
         PairingError::InvalidResponse {
             msg_type: 0,
@@ -373,13 +377,14 @@ pub async fn check_rssi(
         .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &fetch_envelope)
         .await?;
 
-    let response = transport
-        .read_indication(
-            NODE_SERVICE_UUID,
-            NODE_COMMAND_UUID,
-            DIAG_RELAY_FETCH_TIMEOUT_MS,
-        )
-        .await?;
+    let response = read_indication_with_cancellation(
+        transport,
+        NODE_SERVICE_UUID,
+        NODE_COMMAND_UUID,
+        DIAG_RELAY_FETCH_TIMEOUT_MS,
+        cancelled,
+    )
+    .await?;
     let (msg_type, body) = sonde_protocol::parse_ble_envelope(&response).ok_or_else(|| {
         PairingError::InvalidResponse {
             msg_type: 0,
@@ -433,6 +438,32 @@ fn check_cancelled(cancelled: &AtomicBool) -> Result<(), PairingError> {
         });
     }
     Ok(())
+}
+
+async fn read_indication_with_cancellation(
+    transport: &mut dyn BleTransport,
+    service: u128,
+    characteristic: u128,
+    total_timeout_ms: u64,
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, PairingError> {
+    let deadline = Instant::now() + Duration::from_millis(total_timeout_ms);
+    loop {
+        check_cancelled(cancelled)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let timeout_ms = remaining.as_millis().min(DIAG_RELAY_READ_POLL_MS as u128) as u64;
+        match transport
+            .read_indication(service, characteristic, timeout_ms.max(1))
+            .await
+        {
+            Ok(response) => return Ok(response),
+            Err(PairingError::IndicationTimeout { device: _ }) if Instant::now() < deadline => {}
+            Err(PairingError::IndicationTimeout { device }) => {
+                return Err(PairingError::IndicationTimeout { device });
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 async fn reconnect_after_diag(

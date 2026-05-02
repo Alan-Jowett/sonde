@@ -392,12 +392,19 @@ fn run_ble_pairing_session<S: PlatformStorage>(
                     };
                     Some((kind, payload))
                 }
-                Some((msg_type, _)) if msg_type == BLE_FETCH_DIAG_RESULT => {
-                    let clear_on_success = stored_diag_result.is_some();
-                    Some((
-                        PendingIndication::DiagResult { clear_on_success },
-                        encode_diag_relay_result(stored_diag_result.as_ref()),
-                    ))
+                Some((msg_type, body)) if msg_type == BLE_FETCH_DIAG_RESULT => {
+                    if !body.is_empty() {
+                        Some((
+                            PendingIndication::DiagAckRejected,
+                            encode_diag_relay_ack(sonde_protocol::DIAG_RELAY_ACK_INVALID),
+                        ))
+                    } else {
+                        let clear_on_success = stored_diag_result.is_some();
+                        Some((
+                            PendingIndication::DiagResult { clear_on_success },
+                            encode_diag_relay_result(stored_diag_result.as_ref()),
+                        ))
+                    }
                 }
                 Some((msg_type, _)) => {
                     warn!(

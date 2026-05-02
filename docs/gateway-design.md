@@ -421,8 +421,9 @@ pub enum VerificationProfile {
 ```
 
 The `source_filename` is operator-supplied metadata: the original source filename
-(basename, not full path) passed to `IngestProgram`. It is stored in the `programs`
-table as a nullable `TEXT` column (`source_filename TEXT`) and returned in
+passed to `IngestProgram`. The gateway strips any path components and stores only
+the basename in the `programs` table as a nullable `TEXT` column
+(`source_filename TEXT`), then returns that normalized basename in
 `ListPrograms` responses. Human-facing node-status renderers may also use this
 basename as the default program identifier, falling back to the hash when the
 metadata is absent. It does NOT affect the program hash — the hash covers only

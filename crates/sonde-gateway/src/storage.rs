@@ -43,6 +43,13 @@ pub struct HandlerRecord {
     pub reply_timeout_ms: Option<u64>,
 }
 
+/// Lightweight program metadata for human-facing displays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramDisplayRecord {
+    pub hash: Vec<u8>,
+    pub source_filename: Option<String>,
+}
+
 /// Abstract storage backend for node registry and program library.
 #[async_trait]
 pub trait Storage: Send + Sync {
@@ -62,6 +69,19 @@ pub trait Storage: Send + Sync {
     async fn store_program(&self, record: &ProgramRecord) -> Result<(), StorageError>;
     async fn delete_program(&self, hash: &[u8]) -> Result<(), StorageError>;
     async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError>;
+    async fn list_program_display_records(
+        &self,
+    ) -> Result<Vec<ProgramDisplayRecord>, StorageError> {
+        Ok(self
+            .list_programs()
+            .await?
+            .into_iter()
+            .map(|program| ProgramDisplayRecord {
+                hash: program.hash,
+                source_filename: program.source_filename,
+            })
+            .collect())
+    }
 
     /// Atomically replace all nodes and programs with the given sets.
     ///
@@ -259,6 +279,19 @@ impl Storage for InMemoryStorage {
     async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError> {
         let programs = self.programs.read().await;
         Ok(programs.values().cloned().collect())
+    }
+
+    async fn list_program_display_records(
+        &self,
+    ) -> Result<Vec<ProgramDisplayRecord>, StorageError> {
+        let programs = self.programs.read().await;
+        Ok(programs
+            .values()
+            .map(|program| ProgramDisplayRecord {
+                hash: program.hash.clone(),
+                source_filename: program.source_filename.clone(),
+            })
+            .collect())
     }
 
     // ── Gateway identity ───────────────────────────────────────

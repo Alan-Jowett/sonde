@@ -15,7 +15,7 @@ use crate::gateway_identity::GatewayIdentity;
 use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
 use crate::program::{ProgramRecord, VerificationProfile};
 use crate::registry::{BatteryReading, NodeRecord, SensorDescriptor};
-use crate::storage::{Storage, StorageError};
+use crate::storage::{ProgramDisplayRecord, Storage, StorageError};
 
 /// Encrypted PSK blob length: 12-byte nonce + 32-byte ciphertext + 16-byte GCM tag = 60 bytes.
 const ENCRYPTED_PSK_LEN: usize = 12 + 32 + 16;
@@ -1135,6 +1135,29 @@ impl Storage for SqliteStorage {
                     size,
                     verification_profile: parse_profile(&profile_str)?,
                     abi_version,
+                    source_filename,
+                });
+            }
+            Ok(programs)
+        })
+        .await
+    }
+
+    async fn list_program_display_records(
+        &self,
+    ) -> Result<Vec<ProgramDisplayRecord>, StorageError> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT hash, source_filename FROM programs")
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(map_err)?;
+            let mut programs = Vec::new();
+            for row in rows {
+                let (hash, source_filename): (Vec<u8>, Option<String>) = row.map_err(map_err)?;
+                programs.push(ProgramDisplayRecord {
+                    hash,
                     source_filename,
                 });
             }

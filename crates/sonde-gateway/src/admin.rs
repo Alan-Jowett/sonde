@@ -232,6 +232,19 @@ fn fmt_hex(bytes: &[u8]) -> String {
     s
 }
 
+fn normalize_display_filename(source_filename: &Option<String>) -> Option<String> {
+    let trimmed = source_filename
+        .as_deref()?
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()?;
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// SHA-256 hash length in bytes.
 const PROGRAM_HASH_LEN: usize = 32;
 
@@ -706,7 +719,7 @@ impl GatewayAdmin for AdminService {
         };
 
         record.abi_version = req.abi_version;
-        record.source_filename = req.source_filename.clone();
+        record.source_filename = normalize_display_filename(&req.source_filename);
         let hash_hex = fmt_hex(&record.hash);
         let resp = IngestProgramResponse {
             program_hash: record.hash.clone(),

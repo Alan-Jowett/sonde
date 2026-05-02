@@ -283,7 +283,12 @@ async fn grpc_ingest_list_program() {
 
     // Profile 1 = Resident (sonde_admin::pb::VerificationProfile::Resident).
     let (hash, size) = client
-        .ingest_program(cbor.clone(), 1, None, None)
+        .ingest_program(
+            cbor.clone(),
+            1,
+            None,
+            Some(r"C:\captures\temp-reader.o".to_string()),
+        )
         .await
         .unwrap();
     assert!(!hash.is_empty(), "program hash must not be empty");
@@ -292,6 +297,10 @@ async fn grpc_ingest_list_program() {
     let programs = client.list_programs().await.unwrap();
     assert_eq!(programs.len(), 1);
     assert_eq!(programs[0].hash, hash);
+    assert_eq!(
+        programs[0].source_filename.as_deref(),
+        Some("temp-reader.o")
+    );
 }
 
 /// Test: list_programs on a fresh gateway returns empty.

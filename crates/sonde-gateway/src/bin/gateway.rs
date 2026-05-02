@@ -29,11 +29,12 @@ use sonde_gateway::engine::{resolve_espnow_channel, Gateway, PendingCommand};
 use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
 use sonde_gateway::key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeyProviderError};
 use sonde_gateway::modem::UsbEspNowTransport;
+#[cfg(test)]
 use sonde_gateway::program::ProgramRecord;
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
-use sonde_gateway::storage::Storage;
+use sonde_gateway::storage::{ProgramDisplayRecord, Storage};
 use sonde_gateway::transport::Transport;
 use sonde_gateway::{AdminService, ConnectorService};
 use zeroize::Zeroizing;
@@ -154,7 +155,7 @@ fn push_wrapped_property_value(lines: &mut Vec<String>, property: &str, value: &
     }
 }
 
-fn build_program_name_map(programs: &[ProgramRecord]) -> HashMap<Vec<u8>, String> {
+fn build_program_name_map(programs: &[ProgramDisplayRecord]) -> HashMap<Vec<u8>, String> {
     programs
         .iter()
         .filter_map(|program| {
@@ -255,7 +256,13 @@ async fn render_status_page(
         }
         StatusPage::Nodes => match storage.list_nodes().await {
             Ok(nodes) => {
-                let program_names = match storage.list_programs().await {
+                if nodes.is_empty() {
+                    return RenderedStatusPage::Scrollable(render_status_text_page(
+                        &build_node_status_lines(&nodes, &HashMap::new()),
+                    ));
+                }
+
+                let program_names = match storage.list_program_display_records().await {
                     Ok(programs) => build_program_name_map(&programs),
                     Err(e) => {
                         warn!(error = %e, "failed to load programs for node status page");
@@ -2150,8 +2157,14 @@ mod tests {
         let fallback_current = fallback_node.current_program_hash.clone().unwrap();
 
         let program_names = build_program_name_map(&[
-            make_program_record(0x31, Some("C:\\captures\\a.o")),
-            make_program_record(0x32, Some("/tmp/b.o")),
+            ProgramDisplayRecord {
+                hash: vec![0x31; 32],
+                source_filename: Some("C:\\captures\\a.o".to_string()),
+            },
+            ProgramDisplayRecord {
+                hash: vec![0x32; 32],
+                source_filename: Some("/tmp/b.o".to_string()),
+            },
         ]);
 
         let lines =
@@ -2191,7 +2204,16 @@ mod tests {
         let rendered = render_status_page(&storage, 6, StatusPage::Nodes).await;
         let expected = render_status_text_page(&build_node_status_lines(
             &[node],
-            &build_program_name_map(&[assigned_program, current_program]),
+            &build_program_name_map(&[
+                ProgramDisplayRecord {
+                    hash: assigned_program.hash.clone(),
+                    source_filename: assigned_program.source_filename.clone(),
+                },
+                ProgramDisplayRecord {
+                    hash: current_program.hash.clone(),
+                    source_filename: current_program.source_filename.clone(),
+                },
+            ]),
         ));
 
         match rendered {

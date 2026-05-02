@@ -272,7 +272,7 @@ The gateway MUST accept BPF programs as pre-compiled ELF files. On ingestion, th
 4. The gateway rejects files that are not valid BPF ELF binaries with a clear diagnostic.
 5. The gateway does not depend on LLVM, clang, or any compiler toolchain at build time or runtime.
 6. Chunk serving (GW-0300) reads from the pre-built CBOR image with no additional processing.
-7. When an optional `source_filename` is provided with the ingestion request, the gateway stores it alongside the program record for display in human-facing program and node-status surfaces. The stored value is the basename supplied by the caller, not a full path.
+7. When an optional `source_filename` is provided with the ingestion request, the gateway stores it alongside the program record for display in human-facing program and node-status surfaces. The gateway strips any path components and stores only the basename, never a full path.
 
 ---
 

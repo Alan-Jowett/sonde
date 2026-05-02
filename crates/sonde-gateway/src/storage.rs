@@ -7,6 +7,7 @@ use std::fmt;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
+use crate::display_filename::normalize_display_filename;
 use crate::gateway_identity::GatewayIdentity;
 use crate::phone_trust::PhonePskRecord;
 use crate::program::ProgramRecord;
@@ -266,7 +267,9 @@ impl Storage for InMemoryStorage {
 
     async fn store_program(&self, record: &ProgramRecord) -> Result<(), StorageError> {
         let mut programs = self.programs.write().await;
-        programs.insert(record.hash.clone(), record.clone());
+        let mut stored = record.clone();
+        stored.source_filename = normalize_display_filename(&stored.source_filename);
+        programs.insert(stored.hash.clone(), stored);
         Ok(())
     }
 

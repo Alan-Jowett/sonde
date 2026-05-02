@@ -9,7 +9,7 @@
 //! callback, eliminating per-frame heap allocation from the WiFi task
 //! context.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
@@ -107,10 +107,36 @@ struct RecvState {
     rx_ring: Arc<Mutex<RxRing>>,
     condvar: Arc<Condvar>,
     contention_drops: AtomicU32,
+    callback_count: AtomicU32,
+    enqueued_count: AtomicU32,
+    last_len: AtomicU32,
+    last_msg_type: AtomicU32,
+    last_src_mac: AtomicU64,
+    last_rssi_dbm: AtomicI32,
 }
 
 /// Global callback state — set once during [`EspNowTransport::new`].
 static RECV_STATE: std::sync::OnceLock<RecvState> = std::sync::OnceLock::new();
+
+fn pack_mac(mac: [u8; 6]) -> u64 {
+    ((mac[0] as u64) << 40)
+        | ((mac[1] as u64) << 32)
+        | ((mac[2] as u64) << 24)
+        | ((mac[3] as u64) << 16)
+        | ((mac[4] as u64) << 8)
+        | (mac[5] as u64)
+}
+
+fn unpack_mac(packed: u64) -> [u8; 6] {
+    [
+        ((packed >> 40) & 0xFF) as u8,
+        ((packed >> 32) & 0xFF) as u8,
+        ((packed >> 24) & 0xFF) as u8,
+        ((packed >> 16) & 0xFF) as u8,
+        ((packed >> 8) & 0xFF) as u8,
+        (packed & 0xFF) as u8,
+    ]
+}
 
 /// Raw ESP-NOW receive callback — copies frame data into the ring buffer.
 ///
@@ -124,12 +150,34 @@ unsafe extern "C" fn raw_recv_cb(
     if recv_info.is_null() || data.is_null() || data_len <= 0 {
         return;
     }
+    let info = unsafe { &*recv_info };
+    if info.src_addr.is_null() {
+        return;
+    }
+    let src_addr = unsafe { *(info.src_addr as *const [u8; 6]) };
     let len = data_len as usize;
     if len > ESPNOW_MAX_DATA_SIZE {
         return;
     }
     let payload = unsafe { core::slice::from_raw_parts(data, len) };
+    let msg_type = payload
+        .get(sonde_protocol::OFFSET_MSG_TYPE)
+        .copied()
+        .map(u32::from)
+        .unwrap_or(u32::MAX);
+    let rssi_dbm = if info.rx_ctrl.is_null() {
+        i32::MIN
+    } else {
+        unsafe { (*info.rx_ctrl).rssi() as i32 }
+    };
     if let Some(state) = RECV_STATE.get() {
+        state.callback_count.fetch_add(1, Ordering::Relaxed);
+        state.last_len.store(len as u32, Ordering::Relaxed);
+        state.last_msg_type.store(msg_type, Ordering::Relaxed);
+        state
+            .last_src_mac
+            .store(pack_mac(src_addr), Ordering::Relaxed);
+        state.last_rssi_dbm.store(rssi_dbm, Ordering::Relaxed);
         let enqueued = {
             // Match try_lock errors explicitly: recover on Poisoned so
             // RX doesn't go permanently silent, only count WouldBlock
@@ -143,6 +191,7 @@ unsafe extern "C" fn raw_recv_cb(
                 Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
             };
             if guard.push(payload) {
+                state.enqueued_count.fetch_add(1, Ordering::Relaxed);
                 true
             } else {
                 guard.drop_count = guard.drop_count.saturating_add(1);
@@ -154,6 +203,14 @@ unsafe extern "C" fn raw_recv_cb(
         if enqueued {
             state.condvar.notify_one();
         }
+    }
+}
+
+fn format_msg_type(msg_type: u32) -> String {
+    if msg_type == u32::MAX {
+        "none".to_string()
+    } else {
+        format!("0x{:02x}", msg_type as u8)
     }
 }
 
@@ -228,6 +285,12 @@ impl EspNowTransport {
                 rx_ring: Arc::clone(&rx_ring),
                 condvar: Arc::clone(&rx_condvar),
                 contention_drops: AtomicU32::new(0),
+                callback_count: AtomicU32::new(0),
+                enqueued_count: AtomicU32::new(0),
+                last_len: AtomicU32::new(0),
+                last_msg_type: AtomicU32::new(u32::MAX),
+                last_src_mac: AtomicU64::new(0),
+                last_rssi_dbm: AtomicI32::new(i32::MIN),
             })
             .map_err(|_| NodeError::Transport("recv callback already registered"))?;
         unsafe {
@@ -242,6 +305,51 @@ impl EspNowTransport {
             rx_condvar,
             poison_warned: AtomicBool::new(false),
         })
+    }
+
+    pub fn log_recv_debug_snapshot(&self, label: &str) {
+        let ring = match self.rx_ring.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let ring_count = ring.count;
+        let full_drops = ring.drop_count;
+        drop(ring);
+
+        if let Some(state) = RECV_STATE.get() {
+            let callback_count = state.callback_count.load(Ordering::Relaxed);
+            let enqueued_count = state.enqueued_count.load(Ordering::Relaxed);
+            let contention_drops = state.contention_drops.load(Ordering::Relaxed);
+            let last_len = state.last_len.load(Ordering::Relaxed);
+            let last_msg_type = state.last_msg_type.load(Ordering::Relaxed);
+            let last_src_mac = unpack_mac(state.last_src_mac.load(Ordering::Relaxed));
+            let last_rssi_dbm = state.last_rssi_dbm.load(Ordering::Relaxed);
+            log::info!(
+                "ESP-NOW diag snapshot label=\"{}\" callback_count={} enqueued_count={} ring_count={} contention_drops={} full_drops={} last_len={} last_msg_type={} last_src={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} last_rssi_dbm={}",
+                label,
+                callback_count,
+                enqueued_count,
+                ring_count,
+                contention_drops,
+                full_drops,
+                last_len,
+                format_msg_type(last_msg_type),
+                last_src_mac[0],
+                last_src_mac[1],
+                last_src_mac[2],
+                last_src_mac[3],
+                last_src_mac[4],
+                last_src_mac[5],
+                last_rssi_dbm
+            );
+        } else {
+            log::info!(
+                "ESP-NOW diag snapshot label=\"{}\" recv_state=uninitialized ring_count={} full_drops={}",
+                label,
+                ring_count,
+                full_drops
+            );
+        }
     }
 }
 
@@ -287,6 +395,17 @@ impl crate::traits::Transport for EspNowTransport {
                 if full_drops > 0 {
                     log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
                 }
+                let msg_type = buf
+                    .get(sonde_protocol::OFFSET_MSG_TYPE)
+                    .copied()
+                    .map(u32::from)
+                    .unwrap_or(u32::MAX);
+                log::info!(
+                    "ESP-NOW recv pop len={} msg_type={} timeout_ms={}",
+                    len,
+                    format_msg_type(msg_type),
+                    timeout_ms
+                );
                 return Ok(Some(buf[..len].to_vec()));
             }
             let now = Instant::now();
@@ -297,6 +416,7 @@ impl crate::traits::Transport for EspNowTransport {
                 if full_drops > 0 {
                     log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
                 }
+                log::info!("ESP-NOW recv timeout timeout_ms={}", timeout_ms);
                 return Ok(None);
             }
             let remaining = deadline - now;

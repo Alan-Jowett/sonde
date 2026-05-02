@@ -351,6 +351,16 @@ pub fn do_diag_relay<T: crate::traits::Transport>(
             }
         }
 
+        log::info!(
+            "BLE: DIAG relay attempt={} send_len={} send_msg_type=0x{:02x}",
+            attempt + 1,
+            params.payload.len(),
+            params
+                .payload
+                .get(sonde_protocol::OFFSET_MSG_TYPE)
+                .copied()
+                .unwrap_or(0)
+        );
         if let Err(err) = transport.send(&params.payload) {
             log::warn!(
                 "BLE: DIAG relay send failed attempt={} error={}",
@@ -359,6 +369,7 @@ pub fn do_diag_relay<T: crate::traits::Transport>(
             );
             continue;
         }
+        log::info!("BLE: DIAG relay send queued attempt={}", attempt + 1);
 
         // Listen for DIAG_REPLY (msg_type 0x85 at header byte offset 2),
         // ignoring other msg_types until the per-attempt listen window expires.

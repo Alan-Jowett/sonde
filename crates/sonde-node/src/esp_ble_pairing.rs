@@ -167,19 +167,6 @@ fn run_ble_pairing_session<S: PlatformStorage>(
         if let Ok(mut h) = handle_connect.lock() {
             *h = Some(desc.conn_handle());
         }
-        let conn_handle = desc.conn_handle();
-        let rc = unsafe { esp_idf_sys::ble_gap_security_initiate(conn_handle) };
-        if rc == 0 {
-            info!(
-                "BLE: server-initiated security for conn_handle={}",
-                conn_handle
-            );
-        } else {
-            warn!(
-                "BLE: server-initiated security failed for conn_handle={} rc={}",
-                conn_handle, rc
-            );
-        }
     });
 
     let disc_disconnect = Arc::clone(&disconnected);
@@ -539,7 +526,7 @@ fn execute_diag_relay<S: PlatformStorage>(
 mod tests {}
 
 /// Fallback encryption check for when `on_authentication_complete` doesn't
-/// fire (e.g., esp32-nimble build that doesn't dispatch ENC_CHANGE event 38).
+/// fire (e.g., an `esp32-nimble` build that misses some newer GAP events).
 /// Returns `true` only if the link is encrypted AND MTU is acceptable,
 /// promoting `authenticated` to `true`.  Returns `false` if not encrypted,
 /// not connected, or MTU is too low (disconnects in that case).

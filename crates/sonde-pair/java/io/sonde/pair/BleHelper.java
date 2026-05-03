@@ -90,10 +90,10 @@ public class BleHelper {
     private volatile boolean bondReceiverRegistered;
     private volatile BluetoothDevice bondTarget;
     // When true, createBond() is called AFTER the GATT connect latch
-    // instead of before it.  Used for node connections where the node
-    // calls ble_gap_security_initiate() in on_connect — calling
-    // createBond() before the latch causes a dual-initiation race that
-    // confuses NimBLE's SMP state machine.
+    // instead of before it. Used for node connections, which use the
+    // standard Android client-driven bonding flow for headless Just Works
+    // pairing. Calling createBond() before the latch caused repeated
+    // connect/disconnect churn on some C3 nodes.
     private volatile boolean deferBonding;
 
     // --- Pairing method observation (PT-0904) -----------------------------
@@ -509,10 +509,10 @@ public class BleHelper {
     /**
      * When set, {@link #connect} calls {@code createBond()} after the GATT
      * connect latch (the original Android BLE flow) instead of before it.
-     * Used for node connections where the node calls
-     * {@code ble_gap_security_initiate()} in its {@code on_connect} callback;
-     * calling {@code createBond()} before the latch causes a dual-initiation
-     * race that confuses NimBLE's SMP state machine.
+     * Used for node connections, which use the standard Android client-driven
+     * bonding flow for headless Just Works pairing. Calling
+     * {@code createBond()} before the latch caused repeated
+     * connect/disconnect churn on some C3 nodes.
      */
     public void setDeferBonding(boolean defer) {
         this.deferBonding = defer;
@@ -623,11 +623,10 @@ public class BleHelper {
         //
         // When deferBondingForThisConnect is TRUE (node / Phase 2):
         //   Wait for the GATT connect latch first, THEN call createBond().
-        //   The node calls ble_gap_security_initiate() in on_connect and
-        //   expects the client to participate in SMP for on_authentication_complete
-        //   to fire.  Calling createBond() before the latch causes dual-initiation
-        //   that confuses NimBLE's SMP state machine.  Calling it after the latch
-        //   is the standard Android BLE flow and works correctly with Just Works.
+        //   The node uses standard Android client-driven bonding for headless
+        //   Just Works pairing. Calling createBond() before the latch caused
+        //   repeated connect/disconnect churn on some C3 nodes; calling it
+        //   after the latch follows the normal Android BLE flow.
         if (!deferBondingForThisConnect) {
             callCreateBond(device);
         }

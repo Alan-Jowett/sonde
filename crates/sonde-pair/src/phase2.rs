@@ -74,12 +74,10 @@ pub async fn provision_node(
     board_layout: Option<BoardLayout>,
 ) -> Result<NodeProvisionResult, PairingError> {
     // Step 6: Connect to node
-    // Defer createBond() until after the GATT connect latch.  The node
-    // calls ble_gap_security_initiate() in its on_connect callback;
-    // calling createBond() before the latch causes a dual-initiation race
-    // that confuses NimBLE's SMP state machine.  Deferring createBond()
-    // to after the latch is the standard Android BLE flow and works
-    // correctly with the node's Just Works pairing.
+    // Defer createBond() until after the GATT connect latch. Node pairing
+    // uses the standard Android client-driven bonding flow for headless
+    // Just Works pairing; calling createBond() before the latch caused
+    // repeated connect/disconnect churn on some C3 nodes.
     transport.set_defer_bonding(true);
     debug!(address = ?device_address, "connecting to node (AEAD provision)");
     let mtu_result = transport.connect(device_address).await;

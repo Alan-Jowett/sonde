@@ -667,7 +667,8 @@ impl GatewayAdmin for AdminService {
 
         let is_elf = req.image_data.len() >= 4 && &req.image_data[..4] == b"\x7fELF";
 
-        let source_filename = req.source_filename.clone();
+        let display_source_filename = normalize_display_filename(&req.source_filename);
+        let display_source = display_source_filename.as_deref().unwrap_or("<unknown>");
         let image_size = req.image_data.len();
 
         let mut record = if is_elf {
@@ -677,8 +678,7 @@ impl GatewayAdmin for AdminService {
                     Status::invalid_argument(format!(
                         "program ingestion failed (source: {}, size: {} bytes): {e}; \
                          check that the BPF program compiles for the sonde target",
-                        source_filename.as_deref().unwrap_or("<unknown>"),
-                        image_size,
+                        display_source, image_size,
                     ))
                 })?
         } else if cfg!(debug_assertions) {
@@ -690,8 +690,7 @@ impl GatewayAdmin for AdminService {
                 .map_err(|e| {
                     Status::invalid_argument(format!(
                         "unverified program ingestion failed (source: {}, size: {} bytes): {e}",
-                        source_filename.as_deref().unwrap_or("<unknown>"),
-                        image_size,
+                        display_source, image_size,
                     ))
                 })?
         } else {
@@ -701,8 +700,7 @@ impl GatewayAdmin for AdminService {
                 "program ingestion failed (source: {}, size: {} bytes): \
                  non-ELF program images are not accepted in this build; \
                  submit an ELF binary so the gateway can verify it with Prevail",
-                source_filename.as_deref().unwrap_or("<unknown>"),
-                image_size,
+                display_source, image_size,
             )));
         };
 
@@ -717,7 +715,7 @@ impl GatewayAdmin for AdminService {
             storage_err_with_context(
                 &format!(
                     "store program (hash: {hash_hex}, source: {})",
-                    source_filename.as_deref().unwrap_or("<unknown>"),
+                    display_source,
                 ),
                 e,
             )

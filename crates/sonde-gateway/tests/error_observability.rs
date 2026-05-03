@@ -46,7 +46,7 @@ async fn t1307a_ingest_empty_image_includes_context() {
             image_data: vec![],
             verification_profile: 1, // RESIDENT
             abi_version: None,
-            source_filename: Some("test.o".to_string()),
+            source_filename: Some(r"C:\captures\test.o".to_string()),
         }))
         .await
         .unwrap_err();
@@ -58,6 +58,10 @@ async fn t1307a_ingest_empty_image_includes_context() {
     assert!(
         msg.contains("test.o") || msg.contains("source"),
         "error should include source filename, got: {msg}"
+    );
+    assert!(
+        !msg.contains(r"c:\captures\test.o"),
+        "error should not leak the full source path, got: {msg}"
     );
 }
 

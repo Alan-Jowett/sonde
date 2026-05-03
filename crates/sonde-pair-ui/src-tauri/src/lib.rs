@@ -552,7 +552,7 @@ async fn connect_node(
     let result: Result<ConnectedNodeSession<BtleplugTransport>, PairingError> =
         tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
-                reuse_or_connect_session(existing, addr, || BtleplugTransport::new()).await
+                reuse_or_connect_session(existing, addr, BtleplugTransport::new).await
             })
         })
         .await
@@ -591,8 +591,7 @@ async fn check_rssi(
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async move {
-            let session =
-                reuse_or_connect_session(session, addr, || BtleplugTransport::new()).await?;
+            let session = reuse_or_connect_session(session, addr, BtleplugTransport::new).await?;
             let mut session = session;
             let outcome =
                 phase2::check_rssi(&mut session.transport, &artifacts, &addr, cancel.as_ref())

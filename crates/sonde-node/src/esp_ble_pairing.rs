@@ -134,6 +134,7 @@ fn run_ble_pairing_session<S: PlatformStorage>(
     let pending_write: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
     let disconnected = Arc::new(Mutex::new(false));
     let authenticated = Arc::new(Mutex::new(false));
+    let session_authenticated = Arc::new(Mutex::new(false));
     let conn_handle: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
     let notify_pending: Arc<Mutex<Option<PendingIndication>>> = Arc::new(Mutex::new(None));
     let notify_complete: Arc<Mutex<Option<(PendingIndication, bool)>>> = Arc::new(Mutex::new(None));
@@ -142,7 +143,9 @@ fn run_ble_pairing_session<S: PlatformStorage>(
     let ble_device = BLEDevice::take();
     ble_device
         .security()
-        .set_auth(AuthReq::all())
+        // Headless nodes use LESC Just Works: require bonding + secure
+        // connections, but not MITM / Numeric Comparison.
+        .set_auth(AuthReq::Bond | AuthReq::Sc)
         .set_io_cap(SecurityIOCap::NoInputNoOutput);
 
     let ble_server = ble_device.get_server();
@@ -165,17 +168,23 @@ fn run_ble_pairing_session<S: PlatformStorage>(
             *h = Some(desc.conn_handle());
         }
         let conn_handle = desc.conn_handle();
-        unsafe {
-            esp_idf_sys::ble_gap_security_initiate(conn_handle);
+        let rc = unsafe { esp_idf_sys::ble_gap_security_initiate(conn_handle) };
+        if rc == 0 {
+            info!(
+                "BLE: server-initiated security for conn_handle={}",
+                conn_handle
+            );
+        } else {
+            warn!(
+                "BLE: server-initiated security failed for conn_handle={} rc={}",
+                conn_handle, rc
+            );
         }
-        info!(
-            "BLE: server-initiated security for conn_handle={}",
-            conn_handle
-        );
     });
 
     let disc_disconnect = Arc::clone(&disconnected);
     let auth_disconnect = Arc::clone(&authenticated);
+    let session_auth_disconnect = Arc::clone(&session_authenticated);
     let handle_disconnect = Arc::clone(&conn_handle);
     ble_server.on_disconnect(move |desc, _reason| {
         info!("BLE: client disconnected addr={:?}", desc.address());
@@ -188,9 +197,13 @@ fn run_ble_pairing_session<S: PlatformStorage>(
         if let Ok(mut h) = handle_disconnect.lock() {
             *h = None;
         }
+        if !session_auth_disconnect.lock().map(|a| *a).unwrap_or(false) {
+            info!("BLE: unauthenticated disconnect -- remaining in pairing mode");
+        }
     });
 
     let auth_complete = Arc::clone(&authenticated);
+    let session_auth_complete = Arc::clone(&session_authenticated);
     ble_server.on_authentication_complete(move |server, desc, result| {
         if result.is_ok() {
             let mtu = desc.mtu();
@@ -203,6 +216,9 @@ fn run_ble_pairing_session<S: PlatformStorage>(
             } else {
                 info!("BLE: LESC pairing complete, MTU={}", mtu);
                 if let Ok(mut a) = auth_complete.lock() {
+                    *a = true;
+                }
+                if let Ok(mut a) = session_auth_complete.lock() {
                     *a = true;
                 }
             }
@@ -325,10 +341,14 @@ fn run_ble_pairing_session<S: PlatformStorage>(
             }
         }
 
-        if let Ok(d) = disconnected.lock() {
+        if let Ok(mut d) = disconnected.lock() {
             if *d {
-                let _ = BLEDevice::deinit_full();
-                return Ok(SessionExit::Disconnect);
+                let saw_authenticated = session_authenticated.lock().map(|a| *a).unwrap_or(false);
+                if saw_authenticated {
+                    let _ = BLEDevice::deinit_full();
+                    return Ok(SessionExit::Disconnect);
+                }
+                *d = false;
             }
         }
 

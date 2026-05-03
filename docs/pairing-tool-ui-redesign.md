@@ -167,18 +167,20 @@ node→gateway ESP-NOW RSSI before provisioning.
 
 **UI elements:**
 - Connected node identity
-- Live ESP-NOW RSSI readout and signal quality label
+- ESP-NOW RSSI readout and signal quality label for the most recent completed check
 - Status text for `checking`, timeout, or channel-error outcomes
-- Guidance that the installer can move or re-orient the node and watch
-  the readout update
+- Guidance that the installer can move or re-orient the node and run
+  another check
 - "Proceed to Provision" button → Step 6
+- "Check Again" button → repeat the diagnostic
 - "Abort" / "Disconnect" button → back to Step 4
 
 **Behavior notes:**
 - The diagnostic starts automatically after BLE connection succeeds.
-- The tool updates after each completed diagnostic result and targets a
-  1-second cadence only when replies are fast; protocol timeouts remain
-  governed by `ble-pairing-protocol.md` §6a.
+- The tool runs one asynchronous diagnostic cycle per request and shows
+  the most recent completed result. Additional checks require an explicit
+  installer action via "Check Again"; protocol timeouts remain governed by
+  `ble-pairing-protocol.md` §6a.
 - The diagnostic is informational only: bad signal or timeout does not
   block proceeding.
 

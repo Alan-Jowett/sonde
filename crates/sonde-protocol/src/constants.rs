@@ -126,10 +126,9 @@ pub const DIAG_RELAY_RESULT_TIMEOUT: u8 = 0x01;
 pub const DIAG_RELAY_RESULT_CHANNEL_ERROR: u8 = 0x02;
 pub const DIAG_RELAY_RESULT_NO_RESULT: u8 = 0x03;
 
-// Legacy aliases retained while downstream callers migrate to the split
-// async diagnostic start / ack / result model.
+// Legacy aliases retained only where the split async diagnostic model
+// preserved the underlying wire value.
 pub const BLE_DIAG_RELAY_REQUEST: u8 = BLE_START_DIAG_RELAY;
-pub const BLE_DIAG_RELAY_RESPONSE: u8 = BLE_DIAG_RELAY_RESULT;
 pub const DIAG_RELAY_STATUS_OK: u8 = DIAG_RELAY_RESULT_OK;
 pub const DIAG_RELAY_STATUS_TIMEOUT: u8 = DIAG_RELAY_RESULT_TIMEOUT;
 pub const DIAG_RELAY_STATUS_CHANNEL_ERROR: u8 = DIAG_RELAY_RESULT_CHANNEL_ERROR;

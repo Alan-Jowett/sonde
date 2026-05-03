@@ -198,10 +198,20 @@ where
 async fn finalize_signal_check<T: BleTransport>(
     mut session: ConnectedNodeSession<T>,
     outcome: Result<phase2::DiagnosticResult, PairingError>,
+    cancelled: &AtomicBool,
 ) -> (
     Option<ConnectedNodeSession<T>>,
     Result<DiagnosticInfo, PairingError>,
 ) {
+    if cancelled.load(Ordering::Relaxed) {
+        let _ = session.transport.disconnect().await;
+        return (
+            None,
+            Err(PairingError::Cancelled {
+                operation: "signal check",
+            }),
+        );
+    }
     match outcome {
         Ok(diag) => (
             Some(session),
@@ -209,6 +219,13 @@ async fn finalize_signal_check<T: BleTransport>(
                 rssi_dbm: diag.rssi_dbm,
                 signal_quality: diag.signal_quality,
             }),
+        ),
+        Err(PairingError::DiagnosticFailed(message)) => {
+            (Some(session), Err(PairingError::DiagnosticFailed(message)))
+        }
+        Err(PairingError::InvalidResponse { msg_type, reason }) => (
+            Some(session),
+            Err(PairingError::InvalidResponse { msg_type, reason }),
         ),
         Err(e) => {
             let _ = session.transport.disconnect().await;
@@ -596,7 +613,7 @@ async fn check_rssi(
             let outcome =
                 phase2::check_rssi(&mut session.transport, &artifacts, &addr, cancel.as_ref())
                     .await;
-            Ok::<_, PairingError>(finalize_signal_check(session, outcome).await)
+            Ok::<_, PairingError>(finalize_signal_check(session, outcome, cancel.as_ref()).await)
         })
     })
     .await
@@ -987,7 +1004,7 @@ async fn check_rssi(
             let outcome =
                 phase2::check_rssi(&mut session.transport, &artifacts, &addr, cancel.as_ref())
                     .await;
-            Ok::<_, PairingError>(finalize_signal_check(session, outcome).await)
+            Ok::<_, PairingError>(finalize_signal_check(session, outcome, cancel.as_ref()).await)
         })
     })
     .await
@@ -1521,10 +1538,11 @@ mod tests {
     }
 
     #[test]
-    fn finalize_signal_check_drops_failed_session() {
+    fn finalize_signal_check_retains_session_for_diagnostic_failure() {
         run_async_test(async {
             let disconnects = Arc::new(AtomicUsize::new(0));
             let stop_scans = Arc::new(AtomicUsize::new(0));
+            let cancelled = AtomicBool::new(false);
             let session = ConnectedNodeSession {
                 address: [0xAA; 6],
                 transport: CountingTransport::new(247, disconnects.clone(), stop_scans),
@@ -1532,12 +1550,40 @@ mod tests {
 
             let (session, outcome) = finalize_signal_check(
                 session,
-                Err(PairingError::DiagnosticFailed("reconnect failed".into())),
+                Err(PairingError::DiagnosticFailed("timed out".into())),
+                &cancelled,
+            )
+            .await;
+
+            assert!(session.is_some());
+            assert!(matches!(outcome, Err(PairingError::DiagnosticFailed(_))));
+            assert_eq!(disconnects.load(AtomicOrdering::Relaxed), 0);
+        });
+    }
+
+    #[test]
+    fn finalize_signal_check_drops_session_when_cancelled_late() {
+        run_async_test(async {
+            let disconnects = Arc::new(AtomicUsize::new(0));
+            let stop_scans = Arc::new(AtomicUsize::new(0));
+            let cancelled = AtomicBool::new(true);
+            let session = ConnectedNodeSession {
+                address: [0xAA; 6],
+                transport: CountingTransport::new(247, disconnects.clone(), stop_scans),
+            };
+
+            let (session, outcome) = finalize_signal_check(
+                session,
+                Ok(phase2::DiagnosticResult {
+                    rssi_dbm: -55,
+                    signal_quality: 0,
+                }),
+                &cancelled,
             )
             .await;
 
             assert!(session.is_none());
-            assert!(matches!(outcome, Err(PairingError::DiagnosticFailed(_))));
+            assert!(matches!(outcome, Err(PairingError::Cancelled { .. })));
             assert_eq!(disconnects.load(AtomicOrdering::Relaxed), 1);
         });
     }

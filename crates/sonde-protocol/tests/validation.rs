@@ -2839,9 +2839,9 @@ fn test_p116_diag_relay_response_round_trip() {
     // status=OK with non-empty payload
     let payload = [0xABu8; 30];
     let body = encode_diag_relay_response(DIAG_RELAY_STATUS_OK, &payload).unwrap();
-    let envelope = encode_ble_envelope(BLE_DIAG_RELAY_RESPONSE, &body).unwrap();
+    let envelope = encode_ble_envelope(BLE_DIAG_RELAY_RESULT, &body).unwrap();
     let (msg_type, decoded_body) = parse_ble_envelope(&envelope).unwrap();
-    assert_eq!(msg_type, BLE_DIAG_RELAY_RESPONSE);
+    assert_eq!(msg_type, BLE_DIAG_RELAY_RESULT);
     let (status, decoded_payload) = decode_diag_relay_response(decoded_body).unwrap();
     assert_eq!(status, DIAG_RELAY_STATUS_OK);
     assert_eq!(decoded_payload, &payload);

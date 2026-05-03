@@ -579,13 +579,9 @@ async fn cli_node_status_prefers_source_filename() {
     let fallback_hash = vec![0x22; 32];
     let fallback_hash_hex = hex::encode(&fallback_hash);
     let named_hash_hex = hex::encode(&named_hash);
+    let full_source_path = r"C:\captures\temp-reader.o";
 
-    seed_program(
-        &storage,
-        named_hash.clone(),
-        Some(r"C:\captures\temp-reader.o"),
-    )
-    .await;
+    seed_program(&storage, named_hash.clone(), Some(full_source_path)).await;
     seed_program(&storage, fallback_hash.clone(), None).await;
     seed_node_with_programs(
         &storage,
@@ -622,6 +618,10 @@ async fn cli_node_status_prefers_source_filename() {
         !list_stdout.contains(&named_hash_hex),
         "default node list should hide the hash when source_filename exists: {list_stdout}"
     );
+    assert!(
+        !list_stdout.contains(full_source_path),
+        "node list should not render the full source path: {list_stdout}"
+    );
 
     let get_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
         .args(["--socket", &endpoint, "node", "get", "named-node"])
@@ -637,6 +637,10 @@ async fn cli_node_status_prefers_source_filename() {
         !get_stdout.contains(&named_hash_hex),
         "default node get should hide the hash when source_filename exists: {get_stdout}"
     );
+    assert!(
+        !get_stdout.contains(full_source_path),
+        "node get should not render the full source path: {get_stdout}"
+    );
 
     let status_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
         .args(["--socket", &endpoint, "status", "named-node"])
@@ -651,6 +655,10 @@ async fn cli_node_status_prefers_source_filename() {
     assert!(
         !status_stdout.contains(&named_hash_hex),
         "default status should hide the hash when source_filename exists: {status_stdout}"
+    );
+    assert!(
+        !status_stdout.contains(full_source_path),
+        "status should not render the full source path: {status_stdout}"
     );
 
     let json_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))

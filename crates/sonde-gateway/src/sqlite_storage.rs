@@ -9,14 +9,14 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use async_trait::async_trait;
 use rusqlite::{params, Connection, OptionalExtension};
+use sonde_protocol::normalize_display_filename;
 use zeroize::Zeroizing;
 
-use crate::display_filename::normalize_display_filename;
 use crate::gateway_identity::GatewayIdentity;
 use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
 use crate::program::{ProgramRecord, VerificationProfile};
 use crate::registry::{BatteryReading, NodeRecord, SensorDescriptor};
-use crate::storage::{ProgramDisplayRecord, Storage, StorageError};
+use crate::storage::{ProgramDisplayRecord, ProgramSummaryRecord, Storage, StorageError};
 
 /// Encrypted PSK blob length: 12-byte nonce + 32-byte ciphertext + 16-byte GCM tag = 60 bytes.
 const ENCRYPTED_PSK_LEN: usize = 12 + 32 + 16;
@@ -244,13 +244,40 @@ fn decrypt_phone_psk(
 }
 
 fn migrate_program_source_filenames(conn: &mut Connection) -> Result<(), StorageError> {
+    let needs_migration: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM programs
+                WHERE source_filename IS NOT NULL
+                  AND (
+                    instr(source_filename, '/') > 0
+                    OR instr(source_filename, char(92)) > 0
+                    OR source_filename GLOB '[A-Za-z]:'
+                  )
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(map_err)?;
+    if !needs_migration {
+        return Ok(());
+    }
+
     let tx = conn
         .transaction()
         .map_err(|e| StorageError::Internal(format!("begin source_filename migration tx: {e}")))?;
 
     let rows: Vec<(Vec<u8>, Option<String>)> = {
         let mut stmt = tx
-            .prepare("SELECT hash, source_filename FROM programs")
+            .prepare(
+                "SELECT hash, source_filename FROM programs
+                 WHERE source_filename IS NOT NULL
+                   AND (
+                     instr(source_filename, '/') > 0
+                     OR instr(source_filename, char(92)) > 0
+                     OR source_filename GLOB '[A-Za-z]:'
+                   )",
+            )
             .map_err(map_err)?;
         let rows = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -1171,6 +1198,43 @@ impl Storage for SqliteStorage {
                     verification_profile: parse_profile(&profile_str)?,
                     abi_version,
                     source_filename,
+                });
+            }
+            Ok(programs)
+        })
+        .await
+    }
+
+    async fn list_program_summary_records(
+        &self,
+    ) -> Result<Vec<ProgramSummaryRecord>, StorageError> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT hash, size, verification_profile, abi_version, source_filename FROM programs",
+                )
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let profile_str: String = row.get(2)?;
+                    Ok((row.get(0)?, row.get(1)?, profile_str, row.get(3)?, row.get(4)?))
+                })
+                .map_err(map_err)?;
+            let mut programs = Vec::new();
+            for row in rows {
+                let (hash, size, profile_str, abi_version, source_filename): (
+                    Vec<u8>,
+                    u32,
+                    String,
+                    Option<u32>,
+                    Option<String>,
+                ) = row.map_err(map_err)?;
+                programs.push(ProgramSummaryRecord {
+                    hash,
+                    size,
+                    verification_profile: parse_profile(&profile_str)?,
+                    abi_version,
+                    source_filename: normalize_display_filename(&source_filename),
                 });
             }
             Ok(programs)

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
+use sonde_protocol::normalize_display_filename;
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 use tracing::warn;
@@ -12,7 +13,6 @@ use zeroize::Zeroizing;
 
 use crate::ble_pairing::BlePairingController;
 use crate::display_control::{StatusPageCycle, StatusPageScrollTask};
-use crate::display_filename::normalize_display_filename;
 use crate::engine::PendingCommand;
 use crate::handler::HandlerConfig;
 use crate::handler::HandlerRouter;
@@ -729,7 +729,11 @@ impl GatewayAdmin for AdminService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ListProgramsResponse>, Status> {
-        let mut programs = self.storage.list_programs().await.map_err(storage_err)?;
+        let mut programs = self
+            .storage
+            .list_program_summary_records()
+            .await
+            .map_err(storage_err)?;
         programs.sort_by(|a, b| a.hash.cmp(&b.hash));
         let programs = programs
             .iter()

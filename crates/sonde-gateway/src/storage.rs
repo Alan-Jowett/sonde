@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::fmt;
 
 use async_trait::async_trait;
+use sonde_protocol::normalize_display_filename;
 use tokio::sync::RwLock;
 
-use crate::display_filename::normalize_display_filename;
 use crate::gateway_identity::GatewayIdentity;
 use crate::phone_trust::PhonePskRecord;
 use crate::program::ProgramRecord;
@@ -51,6 +51,16 @@ pub struct ProgramDisplayRecord {
     pub source_filename: Option<String>,
 }
 
+/// Program metadata for admin/program listings without loading image blobs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgramSummaryRecord {
+    pub hash: Vec<u8>,
+    pub size: u32,
+    pub verification_profile: crate::program::VerificationProfile,
+    pub abi_version: Option<u32>,
+    pub source_filename: Option<String>,
+}
+
 /// Abstract storage backend for node registry and program library.
 #[async_trait]
 pub trait Storage: Send + Sync {
@@ -70,6 +80,22 @@ pub trait Storage: Send + Sync {
     async fn store_program(&self, record: &ProgramRecord) -> Result<(), StorageError>;
     async fn delete_program(&self, hash: &[u8]) -> Result<(), StorageError>;
     async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError>;
+    async fn list_program_summary_records(
+        &self,
+    ) -> Result<Vec<ProgramSummaryRecord>, StorageError> {
+        Ok(self
+            .list_programs()
+            .await?
+            .into_iter()
+            .map(|program| ProgramSummaryRecord {
+                hash: program.hash,
+                size: program.size,
+                verification_profile: program.verification_profile,
+                abi_version: program.abi_version,
+                source_filename: program.source_filename,
+            })
+            .collect())
+    }
     async fn list_program_display_records(
         &self,
     ) -> Result<Vec<ProgramDisplayRecord>, StorageError> {
@@ -282,6 +308,22 @@ impl Storage for InMemoryStorage {
     async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError> {
         let programs = self.programs.read().await;
         Ok(programs.values().cloned().collect())
+    }
+
+    async fn list_program_summary_records(
+        &self,
+    ) -> Result<Vec<ProgramSummaryRecord>, StorageError> {
+        let programs = self.programs.read().await;
+        Ok(programs
+            .values()
+            .map(|program| ProgramSummaryRecord {
+                hash: program.hash.clone(),
+                size: program.size,
+                verification_profile: program.verification_profile.clone(),
+                abi_version: program.abi_version,
+                source_filename: program.source_filename.clone(),
+            })
+            .collect())
     }
 
     async fn list_program_display_records(

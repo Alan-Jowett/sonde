@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use sonde_admin::format_epoch_ms;
 use sonde_admin::grpc_client::AdminClient;
 use sonde_admin::pb;
-use sonde_gateway::normalize_display_filename;
+use sonde_protocol::normalize_display_filename;
 
 #[derive(Parser)]
 #[command(name = "sonde-admin", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("SONDE_GIT_COMMIT"), ")"), about = "Sonde gateway administration CLI")]

@@ -144,7 +144,42 @@
       </div>
     </section>
 
-    <!-- Page 6: Done (PT-1217) -->
+    <!-- Page 6: Diagnostic Review -->
+    <section class="page" id="page-diagnostic-review">
+      <div class="card">
+        <h2>Diagnostic Review</h2>
+        <div id="diagnostic-summary" class="status-text"></div>
+        <div id="diagnostic-metrics" class="diagnostic-metrics hidden">
+          <div class="diagnostic-metric">
+            <span class="diagnostic-label">Gateway RSSI</span>
+            <span id="diagnostic-gateway-rssi" class="diagnostic-value">--</span>
+          </div>
+          <div class="diagnostic-metric">
+            <span class="diagnostic-label">Signal Quality</span>
+            <span id="diagnostic-signal-quality" class="diagnostic-value">--</span>
+          </div>
+          <div class="diagnostic-metric">
+            <span class="diagnostic-label">Node Reply RSSI</span>
+            <span id="diagnostic-node-rssi" class="diagnostic-value">--</span>
+          </div>
+          <div class="diagnostic-metric">
+            <span class="diagnostic-label">Attempts</span>
+            <span id="diagnostic-attempt-count" class="diagnostic-value">--</span>
+          </div>
+          <div class="diagnostic-metric">
+            <span class="diagnostic-label">Elapsed</span>
+            <span id="diagnostic-elapsed-ms" class="diagnostic-value">--</span>
+          </div>
+        </div>
+        <div id="diagnostic-action-status" class="status-text hidden"></div>
+        <div class="btn-row">
+          <button id="btn-diagnostic-continue">Continue</button>
+          <button id="btn-diagnostic-cancel" class="btn-danger">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Page 7: Done (PT-1217) -->
     <section class="page" id="page-done">
       <div class="card">
         <h2>Provisioning Complete</h2>

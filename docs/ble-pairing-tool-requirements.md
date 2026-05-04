@@ -570,6 +570,38 @@ The pairing tool's core API MUST model pre-provisioning tests as a generic comma
 
 ---
 
+### PT-0416  Automatic diagnostic step before provisioning
+
+**Priority:** Must  
+**Source:** USER-REQUEST (actual pairing-tool validation flow)
+
+**Description:**  
+When the tool is about to provision an unpaired node and valid Phase 1 artifacts are available, it MUST automatically run the initial `DIAG_FRAME` pre-provisioning test before sending `NODE_PROVISION`. This automatic diagnostic step applies to both desktop and Android pairing-tool flows; the operator must not need a separate hidden or developer-only action to trigger it.
+
+**Acceptance criteria:**
+
+1. After the operator starts node provisioning, the tool automatically starts the `DIAG_FRAME` pre-provisioning test before any `NODE_PROVISION` write.
+2. The same automatic diagnostic step is part of both desktop and Android pairing-tool flows.
+3. If the automatic diagnostic step cannot start because Phase 1 artifacts are unavailable, the tool fails with the existing Phase 1 prerequisite error instead of silently skipping the test.
+
+---
+
+### PT-0417  Operator confirmation after automatic diagnostic
+
+**Priority:** Must  
+**Source:** USER-REQUEST (automatic but skippable with explicit continue)
+
+**Description:**  
+After an automatic pre-provisioning diagnostic completes, the tool MUST pause the provisioning flow and require an explicit operator decision before proceeding. On success, the tool presents the diagnostic result and waits for confirmation to continue. On failure, the tool presents the failure and offers an explicit **continue anyway** path; diagnostic failure does not permanently block provisioning, but provisioning MUST NOT continue automatically after either success or failure.
+
+**Acceptance criteria:**
+
+1. A successful automatic diagnostic displays the result and requires explicit operator confirmation before the tool sends `NODE_PROVISION`.
+2. A failed automatic diagnostic displays the failure and requires an explicit **continue anyway** action before the tool sends `NODE_PROVISION`.
+3. The tool does not proceed from the diagnostic step to provisioning automatically, regardless of whether the diagnostic succeeded or failed.
+
+---
+
 ## 7  Error handling
 
 ### PT-0500  Error classification
@@ -1459,6 +1491,8 @@ The UI SHOULD use CSS transitions for page changes.  Forward navigation slides t
 | PT-0413 | Diagnostic result interpretation | Active |
 | PT-0414 | One-command-per-run semantics | Active |
 | PT-0415 | Generic pre-provisioning test-command model | Active |
+| PT-0416 | Automatic diagnostic step before provisioning | Active |
+| PT-0417 | Operator confirmation after automatic diagnostic | Active |
 | PT-0500 | Error classification | Active |
 | PT-0501 | Actionable error messages | Active |
 | PT-0502 | No partial state on failure | Active |

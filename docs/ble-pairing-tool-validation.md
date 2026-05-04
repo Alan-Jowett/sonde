@@ -739,6 +739,42 @@ TestNode {
 
 ---
 
+### T-PT-322  Automatic diagnostic runs before provisioning
+
+**Validates:** PT-0416
+
+**Procedure:**
+1. Pre-load the pairing tool with valid Phase 1 artifacts and select a node in the Tauri UI flow.
+2. Enter valid node-provisioning inputs and press the provision action once.
+3. Assert: the tool starts the automatic `DIAG_FRAME` pre-provisioning test before any `NODE_PROVISION` write.
+4. Assert: the same sequencing is present in both desktop and Android pairing-tool backends.
+
+---
+
+### T-PT-323  Successful automatic diagnostic requires explicit continue
+
+**Validates:** PT-0417
+
+**Procedure:**
+1. Configure the mock node to return a successful automatic diagnostic result.
+2. Start the node-provisioning flow in the Tauri UI.
+3. Assert: the tool displays the successful diagnostic result on the diagnostic review step.
+4. Assert: no `NODE_PROVISION` write is sent until the operator explicitly selects **Continue**.
+
+---
+
+### T-PT-324  Failed automatic diagnostic requires explicit continue-anyway
+
+**Validates:** PT-0417
+
+**Procedure:**
+1. Configure the mock node to return a failed automatic diagnostic result.
+2. Start the node-provisioning flow in the Tauri UI.
+3. Assert: the tool displays the failure on the diagnostic review step and does not send `NODE_PROVISION` automatically.
+4. Assert: provisioning proceeds only after the operator explicitly selects **Continue Anyway**.
+
+---
+
 ## 6  Error handling tests
 
 ### T-PT-400  Error classification (device/transport/protocol)
@@ -1731,6 +1767,9 @@ TestNode {
 | T-PT-319 | PT-0413 | Successful diagnostic result combines gateway and node metadata |
 | T-PT-320 | PT-0414 | Repeated sampling requires separate runs |
 | T-PT-321 | PT-0415 | Generic pre-provisioning test command uses explicit discriminator |
+| T-PT-322 | PT-0416 | Automatic diagnostic runs before provisioning |
+| T-PT-323 | PT-0417 | Successful automatic diagnostic requires explicit continue |
+| T-PT-324 | PT-0417 | Failed automatic diagnostic requires explicit continue-anyway |
 | T-PT-400 | PT-0500 | Error classification |
 | T-PT-401 | PT-0501 | Actionable error messages |
 | T-PT-402 | PT-0502 | No partial state persisted on failure |

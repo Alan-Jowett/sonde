@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
 use sonde_pair::phase1::PairingProgress;
 use sonde_pair::rng::OsRng;
-use sonde_pair::types::{BoardLayout, ScannedDevice};
+use sonde_pair::types::{BoardLayout, DiagnosticResult, ScannedDevice};
 use sonde_pair::{phase1, phase2};
 
 #[cfg(not(target_os = "android"))]
@@ -77,6 +77,18 @@ struct DeviceInfo {
 struct PairingStatus {
     paired: bool,
     gateway_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticReview {
+    success: bool,
+    summary: String,
+    gateway_rssi_dbm: Option<i8>,
+    signal_quality: Option<String>,
+    node_reply_rssi_dbm: Option<i8>,
+    attempt_count: Option<u64>,
+    elapsed_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -176,6 +188,85 @@ fn device_to_info(d: &ScannedDevice) -> DeviceInfo {
             None => "Unknown".into(),
         },
     }
+}
+
+fn signal_quality_label(signal_quality: u8) -> String {
+    match signal_quality {
+        sonde_protocol::SIGNAL_QUALITY_GOOD => "Good".into(),
+        sonde_protocol::SIGNAL_QUALITY_MARGINAL => "Marginal".into(),
+        sonde_protocol::SIGNAL_QUALITY_BAD => "Bad".into(),
+        other => format!("Unknown ({other})"),
+    }
+}
+
+fn diagnostic_review_success(result: &DiagnosticResult) -> DiagnosticReview {
+    DiagnosticReview {
+        success: true,
+        summary: format!(
+            "Gateway RSSI {} dBm, node reply RSSI {} dBm, {} attempt(s), {} ms",
+            result.gateway_rssi_dbm,
+            result.node_reply_rssi_dbm,
+            result.attempt_count,
+            result.elapsed_ms
+        ),
+        gateway_rssi_dbm: Some(result.gateway_rssi_dbm),
+        signal_quality: Some(signal_quality_label(result.signal_quality)),
+        node_reply_rssi_dbm: Some(result.node_reply_rssi_dbm),
+        attempt_count: Some(result.attempt_count),
+        elapsed_ms: Some(result.elapsed_ms),
+    }
+}
+
+fn diagnostic_review_failure(message: String) -> DiagnosticReview {
+    DiagnosticReview {
+        success: false,
+        summary: message,
+        gateway_rssi_dbm: None,
+        signal_quality: None,
+        node_reply_rssi_dbm: None,
+        attempt_count: None,
+        elapsed_ms: None,
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn load_cached_artifacts(
+    state: &tauri::State<'_, AppState>,
+) -> Result<Arc<phase1::PairingArtifacts>, String> {
+    let mut guard = state.pairing_artifacts.lock().unwrap();
+    if guard.is_none() {
+        let store = FilePairingStore::new().map_err(|e| e.to_string())?;
+        match store.load_artifacts() {
+            Ok(Some(loaded)) => {
+                *guard = Some(Arc::new(loaded));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("failed to load pairing artifacts: {e}")),
+        }
+    }
+    guard
+        .clone()
+        .ok_or_else(|| "Not paired — run pair_gateway first".to_string())
+}
+
+#[cfg(target_os = "android")]
+fn load_cached_artifacts(
+    state: &tauri::State<'_, AppState>,
+) -> Result<Arc<phase1::PairingArtifacts>, String> {
+    let mut guard = state.pairing_artifacts.lock().unwrap();
+    if guard.is_none() {
+        let store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
+        match store.load_artifacts() {
+            Ok(Some(loaded)) => {
+                *guard = Some(Arc::new(loaded));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("failed to load pairing artifacts: {e}")),
+        }
+    }
+    guard
+        .clone()
+        .ok_or_else(|| "Not paired — run pair_gateway first".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -329,22 +420,7 @@ async fn provision_node(
     let board_layout = resolve_board_layout(board_layout, i2c_sda, i2c_scl)?;
 
     // Load artifacts from in-memory cache, falling back to file store.
-    let artifacts = {
-        let mut guard = state.pairing_artifacts.lock().unwrap();
-        if guard.is_none() {
-            let store = FilePairingStore::new().map_err(|e| e.to_string())?;
-            match store.load_artifacts() {
-                Ok(Some(loaded)) => {
-                    *guard = Some(Arc::new(loaded));
-                }
-                Ok(None) => {}
-                Err(e) => return Err(format!("failed to load pairing artifacts: {e}")),
-            }
-        }
-        guard
-            .clone()
-            .ok_or_else(|| "Not paired — run pair_gateway first".to_string())?
-    };
+    let artifacts = load_cached_artifacts(&state)?;
 
     *state.phase.lock().unwrap() = "Provisioning".into();
 
@@ -376,6 +452,43 @@ async fn provision_node(
             let msg = e.to_string();
             *state.phase.lock().unwrap() = format!("Error: {msg}");
             Err(msg)
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+async fn run_pre_provisioning_diagnostic(
+    state: tauri::State<'_, AppState>,
+    address: String,
+) -> Result<DiagnosticReview, String> {
+    let addr = match parse_address(&address) {
+        Ok(a) => a,
+        Err(e) => {
+            *state.phase.lock().unwrap() = format!("Error: {e}");
+            return Err(e);
+        }
+    };
+    let artifacts = load_cached_artifacts(&state)?;
+    *state.phase.lock().unwrap() = "Running diagnostic".into();
+
+    let result = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async {
+            let mut transport = BtleplugTransport::new().await?;
+            phase2::check_rssi_with_artifacts(&mut transport, &artifacts, &addr).await
+        })
+    })
+    .await
+    .map_err(|e| format!("task panicked: {e}"))?;
+
+    match result {
+        Ok(result) => {
+            *state.phase.lock().unwrap() = "Diagnostic ready".into();
+            Ok(diagnostic_review_success(&result))
+        }
+        Err(e) => {
+            *state.phase.lock().unwrap() = "Diagnostic failed".into();
+            Ok(diagnostic_review_failure(e.to_string()))
         }
     }
 }
@@ -573,22 +686,7 @@ async fn provision_node(
     let board_layout = resolve_board_layout(board_layout, i2c_sda, i2c_scl)?;
 
     // Load artifacts from in-memory cache, falling back to Android secure storage.
-    let artifacts = {
-        let mut guard = state.pairing_artifacts.lock().unwrap();
-        if guard.is_none() {
-            let store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
-            match store.load_artifacts() {
-                Ok(Some(loaded)) => {
-                    *guard = Some(Arc::new(loaded));
-                }
-                Ok(None) => {}
-                Err(e) => return Err(format!("failed to load pairing artifacts: {e}")),
-            }
-        }
-        guard
-            .clone()
-            .ok_or_else(|| "Not paired — run pair_gateway first".to_string())?
-    };
+    let artifacts = load_cached_artifacts(&state)?;
 
     *state.phase.lock().unwrap() = "Provisioning".into();
 
@@ -620,6 +718,43 @@ async fn provision_node(
             let msg = e.to_string();
             *state.phase.lock().unwrap() = format!("Error: {msg}");
             Err(msg)
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn run_pre_provisioning_diagnostic(
+    state: tauri::State<'_, AppState>,
+    address: String,
+) -> Result<DiagnosticReview, String> {
+    let addr = match parse_address(&address) {
+        Ok(a) => a,
+        Err(e) => {
+            *state.phase.lock().unwrap() = format!("Error: {e}");
+            return Err(e);
+        }
+    };
+    let artifacts = load_cached_artifacts(&state)?;
+    *state.phase.lock().unwrap() = "Running diagnostic".into();
+
+    let result = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async {
+            let mut transport = AndroidBleTransport::from_cached_vm()?;
+            phase2::check_rssi_with_artifacts(&mut transport, &artifacts, &addr).await
+        })
+    })
+    .await
+    .map_err(|e| format!("task panicked: {e}"))?;
+
+    match result {
+        Ok(result) => {
+            *state.phase.lock().unwrap() = "Diagnostic ready".into();
+            Ok(diagnostic_review_success(&result))
+        }
+        Err(e) => {
+            *state.phase.lock().unwrap() = "Diagnostic failed".into();
+            Ok(diagnostic_review_failure(e.to_string()))
         }
     }
 }
@@ -815,6 +950,7 @@ pub fn run() {
             stop_scan,
             get_devices,
             pair_gateway,
+            run_pre_provisioning_diagnostic,
             provision_node,
             get_phase,
             get_pairing_status,

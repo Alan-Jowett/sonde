@@ -15,6 +15,7 @@ serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["sync"] }
 tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_info"] }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+sonde-protocol = { path = "../../sonde-protocol" }
 
 # Desktop: use btleplug BLE transport and JSON file store
 [target.'cfg(not(target_os = "android"))'.dependencies.sonde-pair]

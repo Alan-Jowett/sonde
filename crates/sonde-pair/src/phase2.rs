@@ -424,16 +424,11 @@ pub async fn run_pre_provisioning_test(
 }
 
 /// Perform the rebooted pre-provisioning RSSI diagnostic.
-pub async fn check_rssi(
+pub async fn check_rssi_with_artifacts(
     transport: &mut dyn BleTransport,
-    store: &dyn PairingStore,
+    artifacts: &crate::phase1::PairingArtifacts,
     device_address: &[u8; 6],
 ) -> Result<DiagnosticResult, PairingError> {
-    let artifacts = store.load_artifacts()?.ok_or_else(|| {
-        PairingError::DiagnosticFailed(
-            "complete Phase 1 gateway pairing first to obtain a phone PSK".into(),
-        )
-    })?;
     let (diag_frame, request_nonce) =
         crate::crypto::build_diag_request_frame(&artifacts.phone_psk)?;
     let command = PreProvisioningTestCommand {
@@ -443,7 +438,7 @@ pub async fn check_rssi(
     };
 
     let result =
-        run_pre_provisioning_test_with_artifacts(transport, &artifacts, device_address, &command)
+        run_pre_provisioning_test_with_artifacts(transport, artifacts, device_address, &command)
             .await?;
 
     match result.status {
@@ -486,6 +481,20 @@ pub async fn check_rssi(
             "unknown TEST_RESULT status: 0x{other:02x}"
         ))),
     }
+}
+
+/// Perform the rebooted pre-provisioning RSSI diagnostic.
+pub async fn check_rssi(
+    transport: &mut dyn BleTransport,
+    store: &dyn PairingStore,
+    device_address: &[u8; 6],
+) -> Result<DiagnosticResult, PairingError> {
+    let artifacts = store.load_artifacts()?.ok_or_else(|| {
+        PairingError::DiagnosticFailed(
+            "complete Phase 1 gateway pairing first to obtain a phone PSK".into(),
+        )
+    })?;
+    check_rssi_with_artifacts(transport, &artifacts, device_address).await
 }
 
 #[cfg(test)]

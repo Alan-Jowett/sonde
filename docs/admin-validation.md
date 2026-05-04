@@ -423,7 +423,7 @@ to avoid collisions when tests run in parallel.
 
 ---
 
-### T-0403a  Human-readable `status` prefers `source_filename` and falls back to hash
+### T-0403b  Human-readable `status` prefers `source_filename` and falls back to hash
 
 **Validates:** ADMIN-0403
 **Category:** New automated (CLI process test)

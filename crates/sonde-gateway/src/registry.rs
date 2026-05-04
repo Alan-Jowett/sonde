@@ -51,8 +51,9 @@ pub struct NodeRecord {
     pub sensors: Vec<SensorDescriptor>,
     /// Phone ID that registered this node (audit trail). Set during BLE pairing.
     pub registered_by_phone_id: Option<u32>,
-    /// Historical battery voltage readings retained only for backward-compatible
-    /// decoding of legacy state. New gateway code does not append to this list.
+    /// Historical battery voltage readings retained only for struct/schema
+    /// compatibility with legacy battery-persistence code paths. New gateway
+    /// code does not populate or append to this list.
     pub battery_history: Vec<BatteryReading>,
 }
 
@@ -78,7 +79,7 @@ impl NodeRecord {
         }
     }
 
-    /// Update runtime battery, ABI, and firmware version fields (called on each WAKE).
+    /// Update runtime battery plus durable firmware metadata from a WAKE.
     pub fn update_telemetry(
         &mut self,
         battery_mv: u32,

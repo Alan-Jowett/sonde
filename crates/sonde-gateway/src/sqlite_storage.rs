@@ -942,6 +942,45 @@ impl Storage for SqliteStorage {
         .await
     }
 
+    async fn update_node_wake_metadata(
+        &self,
+        node_id: &str,
+        firmware_abi_version: u32,
+        firmware_version: &str,
+    ) -> Result<(), StorageError> {
+        let node_id = node_id.to_string();
+        let firmware_version = firmware_version.to_string();
+        self.with_conn(move |conn| {
+            let rows = conn
+                .execute(
+                    "UPDATE nodes
+                     SET firmware_abi_version = ?1,
+                         firmware_version = ?2
+                     WHERE node_id = ?3
+                       AND (firmware_abi_version IS NOT ?1 OR firmware_version IS NOT ?2)",
+                    params![firmware_abi_version, firmware_version, node_id],
+                )
+                .map_err(map_err)?;
+            if rows > 0 {
+                return Ok(());
+            }
+            let exists = conn
+                .query_row(
+                    "SELECT 1 FROM nodes WHERE node_id = ?1",
+                    params![node_id],
+                    |_row| Ok(()),
+                )
+                .optional()
+                .map_err(map_err)?;
+            if exists.is_some() {
+                Ok(())
+            } else {
+                Err(StorageError::NotFound(format!("node `{node_id}`")))
+            }
+        })
+        .await
+    }
+
     async fn insert_node_if_not_exists(&self, record: &NodeRecord) -> Result<bool, StorageError> {
         let record = record.clone();
         let mk = self.master_key.clone();
@@ -2525,6 +2564,63 @@ mod tests {
             .unwrap();
         assert_eq!(stored_battery, Some(3300));
         assert_eq!(stored_history_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_update_node_wake_metadata_preserves_psk_ciphertext() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+        let node = make_node("wake-meta", 0xBC);
+        store.upsert_node(&node).await.unwrap();
+
+        let initial_psk: Vec<u8> = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT psk FROM nodes WHERE node_id = 'wake-meta'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(map_err)
+            })
+            .await
+            .unwrap();
+
+        store
+            .update_node_wake_metadata("wake-meta", 7, "1.2.3")
+            .await
+            .unwrap();
+
+        let after_first: (Vec<u8>, Option<u32>, Option<String>) = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT psk, firmware_abi_version, firmware_version FROM nodes WHERE node_id = 'wake-meta'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(map_err)
+            })
+            .await
+            .unwrap();
+        assert_eq!(after_first.0, initial_psk);
+        assert_eq!(after_first.1, Some(7));
+        assert_eq!(after_first.2.as_deref(), Some("1.2.3"));
+
+        store
+            .update_node_wake_metadata("wake-meta", 7, "1.2.3")
+            .await
+            .unwrap();
+
+        let after_second: (Vec<u8>, Option<u32>, Option<String>) = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT psk, firmware_abi_version, firmware_version FROM nodes WHERE node_id = 'wake-meta'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(map_err)
+            })
+            .await
+            .unwrap();
+        assert_eq!(after_second, after_first);
     }
 
     // ── Gateway config (GW-0808) ───────────────────────────────

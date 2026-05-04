@@ -875,10 +875,13 @@ impl Gateway {
             _ => {}
         }
 
-        // 4. Update durable registry metadata and runtime observations.
+        // 4. Update durable firmware metadata and runtime observations.
+        let _ = self
+            .storage
+            .update_node_wake_metadata(&node.node_id, firmware_abi_version, &firmware_version)
+            .await;
         let mut updated_node = node.clone();
         updated_node.update_telemetry(battery_mv, firmware_abi_version, firmware_version);
-        let _ = self.storage.upsert_node(&updated_node).await;
         let observed_at = SystemTime::now();
         self.session_manager
             .record_last_seen(&node.node_id, observed_at)

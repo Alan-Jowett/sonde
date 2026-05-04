@@ -667,8 +667,8 @@ impl GatewayAdmin for AdminService {
 
         let is_elf = req.image_data.len() >= 4 && &req.image_data[..4] == b"\x7fELF";
 
-        let display_source_filename = normalize_display_filename(&req.source_filename);
-        let display_source = display_source_filename.as_deref().unwrap_or("<unknown>");
+        let normalized_source_filename = normalize_display_filename(&req.source_filename);
+        let display_source = normalized_source_filename.as_deref().unwrap_or("<unknown>");
         let image_size = req.image_data.len();
 
         let mut record = if is_elf {
@@ -705,13 +705,14 @@ impl GatewayAdmin for AdminService {
         };
 
         record.abi_version = req.abi_version;
-        record.source_filename = normalize_display_filename(&req.source_filename);
+        record.source_filename = normalized_source_filename;
         let hash_hex = fmt_hex(&record.hash);
         let resp = IngestProgramResponse {
             program_hash: record.hash.clone(),
             program_size: record.size,
         };
         self.storage.store_program(&record).await.map_err(|e| {
+            let display_source = record.source_filename.as_deref().unwrap_or("<unknown>");
             storage_err_with_context(
                 &format!(
                     "store program (hash: {hash_hex}, source: {})",

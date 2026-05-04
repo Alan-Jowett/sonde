@@ -54,7 +54,6 @@ crates/sonde-pair/
     ├── discovery.rs            # BLE scan logic, device filtering, scan lifecycle
     ├── phase1.rs               # Phase 1 state machine (gateway pairing)
     ├── phase2.rs               # Phase 2 state machine (node provisioning)
-    ├── preprovision_test.rs    # Rebooted pre-provisioning test flow
     ├── crypto.rs               # AES-256-GCM, SHA-256, pairing AEAD codec
     ├── envelope.rs             # BLE message envelope (TYPE + LEN + BODY) encode/decode
     ├── cbor.rs                 # PairingRequest CBOR construction (deterministic encoding)
@@ -210,7 +209,7 @@ The Phase 2 state machine implements the node provisioning flow from [ble-pairin
 
 ### 4.4  Pre-provisioning test state machine
 
-The pre-provisioning test flow is implemented as a separate async state machine in `preprovision_test.rs`. It takes a `BleTransport`, `PairingArtifacts` (from Phase 1), a device address, and a generic `PreprovisionTestCommand`, and returns a structured retained-result value. The initial concrete command is `PreprovisionTestCommand::DiagFrame`.
+The pre-provisioning test flow is implemented in `phase2.rs` alongside the rest of the node-facing Phase 2 logic. It takes a `BleTransport`, `PairingArtifacts` (from Phase 1), a device address, and a generic `PreProvisioningTestCommand`, and returns a structured retained-result value. The initial concrete command uses `test_type = PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME`.
 
 ```text
 ┌─────────────┐

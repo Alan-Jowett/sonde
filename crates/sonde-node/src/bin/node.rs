@@ -251,8 +251,8 @@ fn main() {
                     sleep_ctrl.reboot();
                 }
                 Err(e) => {
-                    // BLE GATT server not yet implemented — deep sleep to conserve
-                    // battery until firmware is updated with BLE support.
+                    // BLE pairing mode failed to initialize or run. Enter deep
+                    // sleep to conserve battery until the operator retries.
                     warn!("BLE pairing mode failed: {} — entering deep sleep", e);
                     pairing_hal.prepare_for_sleep();
                     sleep_ctrl.enter_deep_sleep(60);

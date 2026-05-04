@@ -356,7 +356,10 @@ pub fn execute_staged_test_command<S: PlatformStorage, T: Transport, C: crate::t
         },
     };
 
-    storage.write_test_result(&result)?;
+    if let Err(err) = storage.write_test_result(&result) {
+        let _ = storage.clear_staged_test_command();
+        return Err(err);
+    }
     storage.clear_staged_test_command()?;
     Ok(Some(result))
 }
@@ -1628,6 +1631,41 @@ mod tests {
         assert_eq!(result.attempt_count, 4);
         assert_eq!(transport.send_calls, 4);
         assert_eq!(*clock.delays_ms.borrow(), vec![200, 200, 200]);
+    }
+
+    #[test]
+    fn execute_staged_test_command_clears_staged_command_when_result_write_fails() {
+        let mut storage = MockStorage::new();
+        storage.fail_write_test_result = true;
+        storage.staged_test_command = Some(StagedTestCommand {
+            test_type: sonde_protocol::TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(6),
+            payload: vec![0x42; 50],
+        });
+        let reply = crate::traits::ReceivedFrame {
+            data: vec![
+                0x12,
+                0x34,
+                sonde_protocol::MSG_DIAG_REPLY,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+            ],
+            rssi_dbm: Some(-67),
+        };
+        let mut transport = MockTransport::new(vec![Some(reply)]);
+        let clock = MockClock::default();
+
+        let err = execute_staged_test_command(&mut storage, &mut transport, &clock).unwrap_err();
+
+        assert!(matches!(err, NodeError::StorageError(_)));
+        assert!(storage.read_staged_test_command().is_none());
+        assert!(storage.read_test_result().is_none());
     }
 
     #[test]

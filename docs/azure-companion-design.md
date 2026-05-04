@@ -60,7 +60,7 @@ The long-running binary is named `sonde-azure-companion`.
 
 ## 3  Runtime architecture
 
-> **Requirements:** AZC-0100, AZC-0101, AZC-0102, AZC-0301, AZC-0302, AZC-0303, AZC-0304, AZC-0305
+> **Requirements:** AZC-0100, AZC-0101, AZC-0102, AZC-0301, AZC-0302, AZC-0303, AZC-0304, AZC-0305, AZC-0310, AZC-0311
 
 ### 3.1  Process model
 
@@ -117,6 +117,39 @@ Startup follows this decision:
 
 When bootstrap is entered, the unified `bootstrap` subcommand orchestrates the
 full provisioning lifecycle as described in section 4.2.
+
+---
+
+### 3.4  Live Azure CI runtime topology
+
+The live Azure validation workflow uses a narrower runtime topology than a full
+gateway deployment. It starts the real `sonde-azure-companion` runtime against:
+
+1. a local connector harness that speaks the framed connector protocol, and
+2. the disposable Azure Service Bus namespace and queues created earlier in the
+   same workflow run.
+
+The harness is sufficient because the purpose of this workflow is to validate
+the Azure companion's cloud bridge contract at the connector boundary, not to
+re-validate gateway startup, modem ownership, or admin gRPC behavior.
+
+### 3.5  Live validation sequence
+
+Within the single manually triggered workflow, the live validation sequence is:
+
+1. provision the disposable Azure stack,
+2. derive runtime configuration from the deployment outputs,
+3. start the local connector harness,
+4. start the real `sonde-azure-companion` runtime in bootstrap-complete mode,
+5. inject representative upstream connector payloads through the harness and
+   assert they reach the upstream queue unchanged,
+6. enqueue representative downstream desired-state payloads in Azure Service Bus
+   and assert they are delivered unchanged to the harness, and
+7. assert that downstream settlement happens only after the harness accepts the
+   local handoff.
+
+This sequence keeps live Azure validation focused on the real Service Bus
+transport and the runtime bridge semantics already defined in section 5.
 
 ---
 

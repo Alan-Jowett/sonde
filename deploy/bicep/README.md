@@ -105,3 +105,22 @@ az group delete --name <resource-group-name> --yes --no-wait
 This removes the Azure resource-plane stack. If you also want to remove the
 Entra application and service principal, delete those identity objects
 explicitly after teardown.
+
+## Live CI prerequisites
+
+The repository's on-demand Azure live-validation workflow reads its target from
+repository or environment variables rather than hard-coding a subscription into
+the workflow file. A typical setup provides:
+
+- `SONDE_AZURE_CI_CLIENT_ID`
+- `SONDE_AZURE_CI_TENANT_ID`
+- `SONDE_AZURE_CI_SUBSCRIPTION_ID`
+- `SONDE_AZURE_CI_RESOURCE_GROUP`
+- optional `SONDE_AZURE_CI_LOCATION`
+- optional `SONDE_AZURE_CI_PROJECT_NAME`
+
+The workflow uses GitHub OIDC for Azure login. The configured identity needs:
+
+- permission to create, inspect, and delete the dedicated disposable CI resource group,
+- permission to deploy the Bicep stack in that subscription, and
+- Microsoft Graph permissions required by `modules/companion-identity.bicep` to create the Entra application and service principal used by `sonde-azure-companion`.

@@ -222,6 +222,47 @@
 
 ---
 
+### T-AZC-0116  Live Azure workflow publishes upstream payloads through the real bridge
+
+**Validates:** AZC-0310, AZC-0311
+
+**Procedure:**
+1. Dispatch the live Azure validation workflow after provisioning a disposable Azure stack.
+2. Start the real `sonde-azure-companion` runtime in bootstrap-complete mode against the workflow's connector harness.
+3. Inject at least one representative upstream connector payload through the harness.
+4. Read the configured upstream Service Bus queue.
+5. Assert: the queue receives the raw connector payload bytes unchanged.
+6. Assert: the runtime under test is the real `sonde-azure-companion`, not a broker mock.
+
+---
+
+### T-AZC-0117  Live Azure workflow delivers downstream desired state unchanged
+
+**Validates:** AZC-0310, AZC-0311
+
+**Procedure:**
+1. Dispatch the live Azure validation workflow after provisioning a disposable Azure stack.
+2. Start the real `sonde-azure-companion` runtime against the connector harness.
+3. Enqueue a representative raw desired-state connector payload into the configured downstream Service Bus queue.
+4. Observe the payload received by the connector harness.
+5. Assert: the harness receives the raw payload bytes unchanged.
+6. Assert: the workflow does not require a full `sonde-gateway` process to validate this handoff.
+
+---
+
+### T-AZC-0118  Live Azure workflow settles downstream messages only after local handoff
+
+**Validates:** AZC-0311
+
+**Procedure:**
+1. Dispatch the live Azure validation workflow with a connector harness that can delay or reject local writes.
+2. Enqueue one desired-state message in the downstream queue.
+3. In the success sub-case, allow the harness write to complete and assert the Service Bus message is then settled successfully.
+4. In the failure sub-case, force the harness write to fail and assert the message is not reported as successfully processed.
+5. Assert: detected transport or local handoff failure is surfaced in workflow logs or process status.
+
+---
+
 ### T-AZC-0400  Bootstrap generates ECDSA P-256 self-signed certificate
 
 **Validates:** AZC-0400

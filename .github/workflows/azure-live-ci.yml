@@ -1,0 +1,173 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+
+name: Azure Live CI
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: azure-live-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  azure-live:
+    name: Provision and validate Azure companion
+    runs-on: ubuntu-latest
+    env:
+      AZURE_CLIENT_ID: ${{ vars.SONDE_AZURE_CI_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.SONDE_AZURE_CI_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.SONDE_AZURE_CI_SUBSCRIPTION_ID }}
+      SONDE_AZURE_CI_RESOURCE_GROUP: ${{ vars.SONDE_AZURE_CI_RESOURCE_GROUP }}
+      SONDE_AZURE_CI_LOCATION: ${{ vars.SONDE_AZURE_CI_LOCATION }}
+      SONDE_AZURE_CI_PROJECT_NAME: ${{ vars.SONDE_AZURE_CI_PROJECT_NAME }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Validate required Azure CI variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID SONDE_AZURE_CI_RESOURCE_GROUP; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name must be configured as a repository or environment variable"
+              exit 1
+            fi
+          done
+          echo "SONDE_AZURE_CI_LOCATION=${SONDE_AZURE_CI_LOCATION:-eastus}" >> "$GITHUB_ENV"
+          echo "SONDE_AZURE_CI_PROJECT_NAME=${SONDE_AZURE_CI_PROJECT_NAME:-sonde-ci}" >> "$GITHUB_ENV"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install build and validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          python3 -m pip install --upgrade pip
+          python3 -m pip install azure-identity azure-servicebus
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          key: azure-live-ci
+
+      - name: Build Azure companion
+        run: cargo build --locked -p sonde-azure-companion
+
+      - name: Preflight-delete disposable resource group
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(az group exists --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --output tsv)" = "true" ]; then
+            az group delete --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --yes
+          fi
+          for _ in $(seq 1 90); do
+            if [ "$(az group exists --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --output tsv)" = "false" ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::resource group $SONDE_AZURE_CI_RESOURCE_GROUP was not deleted before provisioning"
+          exit 1
+
+      - name: Generate runtime certificate and deploy disposable stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .azure-live-state
+          openssl ecparam -name prime256v1 -genkey -noout -out .azure-live-state/key.pem
+          chmod 600 .azure-live-state/key.pem
+          openssl req -new -x509 \
+            -key .azure-live-state/key.pem \
+            -out .azure-live-state/cert.pem \
+            -days 730 \
+            -subj "/CN=sonde-azure-live-ci"
+          CERT_BASE64="$(openssl x509 -in .azure-live-state/cert.pem -outform der | base64 -w0)"
+          az deployment sub create \
+            --location "$SONDE_AZURE_CI_LOCATION" \
+            --template-file ./deploy/bicep/main.bicep \
+            --parameters resource_group_name="$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --parameters project_name="$SONDE_AZURE_CI_PROJECT_NAME" \
+            --parameters companionCertificateBase64="$CERT_BASE64" \
+            --output json > .azure-live-state/deployment.json
+
+      - name: Write Azure companion runtime state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          state_dir = Path(".azure-live-state")
+          deployment = json.loads((state_dir / "deployment.json").read_text(encoding="utf-8"))
+          outputs = deployment["properties"]["outputs"]
+          bootstrap = outputs["companionBootstrapValues"]["value"]
+          namespace = bootstrap["serviceBusNamespace"]
+          if not namespace.endswith(".servicebus.windows.net"):
+              namespace = f"{namespace}.servicebus.windows.net"
+          service_principal = {
+              "tenant_id": bootstrap["tenantId"],
+              "client_id": bootstrap["clientId"],
+              "certificate_path": "cert.pem",
+              "private_key_path": "key.pem",
+          }
+          service_bus = {
+              "namespace": namespace,
+              "upstream_queue": bootstrap["upstreamQueue"],
+              "downstream_queue": bootstrap["downstreamQueue"],
+          }
+          (state_dir / "service-principal.json").write_text(
+              json.dumps(service_principal), encoding="utf-8"
+          )
+          (state_dir / "service-bus.json").write_text(
+              json.dumps(service_bus), encoding="utf-8"
+          )
+          PY
+
+      - name: Run live Azure companion validation
+        run: |
+          python3 ./deploy/azure-companion/live_ci.py \
+            --companion-bin ./target/debug/sonde-azure-companion \
+            --state-dir ./.azure-live-state \
+            --connector-socket /tmp/sonde-azure-live-ci.sock \
+            --namespace "$(python3 -c "import json; print(json.load(open('.azure-live-state/service-bus.json'))['namespace'])")" \
+            --upstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/service-bus.json'))['upstream_queue'])")" \
+            --downstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/service-bus.json'))['downstream_queue'])")"
+
+      - name: Upload Azure live artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: azure-live-ci-artifacts
+          path: .azure-live-state
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Teardown disposable resource group
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(az group exists --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --output tsv)" = "true" ]; then
+            az group delete --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --yes
+          fi
+          for _ in $(seq 1 90); do
+            if [ "$(az group exists --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --output tsv)" = "false" ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::resource group $SONDE_AZURE_CI_RESOURCE_GROUP still exists after teardown"
+          exit 1

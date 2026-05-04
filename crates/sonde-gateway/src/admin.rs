@@ -181,14 +181,18 @@ pub(crate) fn system_time_to_millis(t: std::time::SystemTime) -> Option<u64> {
         .map(|d| d.as_millis() as u64)
 }
 
-fn node_to_info(n: &NodeRecord, last_seen: Option<std::time::SystemTime>) -> NodeInfo {
+fn node_to_info(
+    n: &NodeRecord,
+    last_seen: Option<std::time::SystemTime>,
+    last_battery_mv: Option<u32>,
+) -> NodeInfo {
     let last_seen_ms = last_seen.and_then(system_time_to_millis);
     NodeInfo {
         node_id: n.node_id.clone(),
         key_hint: n.key_hint as u32,
         assigned_program_hash: n.assigned_program_hash.clone().unwrap_or_default(),
         current_program_hash: n.current_program_hash.clone().unwrap_or_default(),
-        last_battery_mv: n.last_battery_mv,
+        last_battery_mv,
         last_firmware_abi_version: n.firmware_abi_version,
         last_seen_ms,
         schedule_interval_s: Some(n.schedule_interval_s),
@@ -415,10 +419,11 @@ pub(crate) async fn get_node_status_impl(
         .get_last_seen(node_id)
         .await
         .and_then(system_time_to_millis);
+    let battery_mv = session_manager.get_battery_mv(node_id).await;
     Ok(NodeStatusSnapshot {
         node_id: node.node_id,
         current_program_hash: node.current_program_hash.unwrap_or_default(),
-        battery_mv: node.last_battery_mv,
+        battery_mv,
         firmware_abi_version: node.firmware_abi_version,
         last_seen_ms,
         has_active_session,
@@ -507,9 +512,16 @@ impl GatewayAdmin for AdminService {
     ) -> Result<Response<ListNodesResponse>, Status> {
         let nodes = list_nodes_impl(&self.storage).await?;
         let last_seen = self.session_manager.snapshot_last_seen().await;
+        let battery_mv = self.session_manager.snapshot_battery_mv().await;
         let mut nodes: Vec<_> = nodes
             .iter()
-            .map(|node| node_to_info(node, last_seen.get(&node.node_id).copied()))
+            .map(|node| {
+                node_to_info(
+                    node,
+                    last_seen.get(&node.node_id).copied(),
+                    battery_mv.get(&node.node_id).copied(),
+                )
+            })
             .collect();
         nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
         Ok(Response::new(ListNodesResponse { nodes }))
@@ -522,7 +534,8 @@ impl GatewayAdmin for AdminService {
         let node_id = &request.get_ref().node_id;
         let node = get_node_impl(&self.storage, node_id).await?;
         let last_seen = self.session_manager.get_last_seen(node_id).await;
-        Ok(Response::new(node_to_info(&node, last_seen)))
+        let battery_mv = self.session_manager.get_battery_mv(node_id).await;
+        Ok(Response::new(node_to_info(&node, last_seen, battery_mv)))
     }
 
     async fn register_node(
@@ -603,6 +616,7 @@ impl GatewayAdmin for AdminService {
         // continue communicating after removal.
         self.session_manager.remove_session(node_id).await;
         self.session_manager.clear_last_seen(node_id).await;
+        self.session_manager.clear_battery_mv(node_id).await;
 
         Ok(Response::new(Empty {}))
     }
@@ -646,6 +660,7 @@ impl GatewayAdmin for AdminService {
         // immediately treated as unknown (GW-0705 AC1).
         self.session_manager.remove_session(node_id).await;
         self.session_manager.clear_last_seen(node_id).await;
+        self.session_manager.clear_battery_mv(node_id).await;
 
         // Clear any pending commands for the removed node.
         self.pending_commands.write().await.remove(node_id);
@@ -1079,6 +1094,7 @@ impl GatewayAdmin for AdminService {
         // Clear any pending commands queued for the old node set.
         self.pending_commands.write().await.clear();
         self.session_manager.clear_all_last_seen().await;
+        self.session_manager.clear_all_battery_mv().await;
 
         Ok(Response::new(Empty {}))
     }

@@ -875,13 +875,42 @@ impl Gateway {
             _ => {}
         }
 
-        // 4. Update registry (battery_mv, firmware_abi_version, firmware_version)
+        // 4. Update durable firmware metadata and runtime observations.
+        let metadata_persisted = match self
+            .storage
+            .update_node_wake_metadata(&node.node_id, firmware_abi_version, &firmware_version)
+            .await
+        {
+            Ok(()) => true,
+            Err(crate::storage::StorageError::NotFound(_)) => {
+                warn!(
+                    node_id = %node.node_id,
+                    "dropping WAKE runtime observation because node disappeared before metadata update",
+                );
+                self.session_manager.clear_last_seen(&node.node_id).await;
+                self.session_manager.clear_battery_mv(&node.node_id).await;
+                false
+            }
+            Err(e) => {
+                warn!(
+                    node_id = %node.node_id,
+                    error = %e,
+                    "failed to persist WAKE firmware metadata",
+                );
+                false
+            }
+        };
         let mut updated_node = node.clone();
         updated_node.update_telemetry(battery_mv, firmware_abi_version, firmware_version);
-        let _ = self.storage.upsert_node(&updated_node).await;
-        self.session_manager
-            .record_last_seen(&node.node_id, SystemTime::now())
-            .await;
+        if metadata_persisted {
+            let observed_at = SystemTime::now();
+            self.session_manager
+                .record_last_seen(&node.node_id, observed_at)
+                .await;
+            self.session_manager
+                .record_battery_mv(&node.node_id, battery_mv)
+                .await;
+        }
 
         self.connector_event_hub.emit_actual_state_for_node(
             node.node_id.clone(),

@@ -72,6 +72,16 @@ pub trait Storage: Send + Sync {
     async fn get_node(&self, node_id: &str) -> Result<Option<NodeRecord>, StorageError>;
     async fn get_nodes_by_key_hint(&self, key_hint: u16) -> Result<Vec<NodeRecord>, StorageError>;
     async fn upsert_node(&self, record: &NodeRecord) -> Result<(), StorageError>;
+    /// Persist only the durable metadata reported in a WAKE.
+    ///
+    /// Implementations must not rewrite unrelated fields such as the encrypted
+    /// PSK when only firmware metadata is being refreshed.
+    async fn update_node_wake_metadata(
+        &self,
+        node_id: &str,
+        firmware_abi_version: u32,
+        firmware_version: &str,
+    ) -> Result<(), StorageError>;
     /// Insert a node only if no node with the same `node_id` exists.
     ///
     /// Returns `true` if the node was inserted, `false` if it already existed.
@@ -232,6 +242,14 @@ impl InMemoryStorage {
             handlers: RwLock::new(Vec::new()),
         }
     }
+
+    fn stored_node_record(record: &NodeRecord) -> NodeRecord {
+        let mut stored = record.clone();
+        stored.last_battery_mv = None;
+        stored.last_seen = None;
+        stored.battery_history.clear();
+        stored
+    }
 }
 
 impl Default for InMemoryStorage {
@@ -265,7 +283,27 @@ impl Storage for InMemoryStorage {
 
     async fn upsert_node(&self, record: &NodeRecord) -> Result<(), StorageError> {
         let mut nodes = self.nodes.write().await;
-        nodes.insert(record.node_id.clone(), record.clone());
+        nodes.insert(record.node_id.clone(), Self::stored_node_record(record));
+        Ok(())
+    }
+
+    async fn update_node_wake_metadata(
+        &self,
+        node_id: &str,
+        firmware_abi_version: u32,
+        firmware_version: &str,
+    ) -> Result<(), StorageError> {
+        let mut nodes = self.nodes.write().await;
+        let node = nodes
+            .get_mut(node_id)
+            .ok_or_else(|| StorageError::NotFound(format!("node `{node_id}`")))?;
+        if node.firmware_abi_version == Some(firmware_abi_version)
+            && node.firmware_version.as_deref() == Some(firmware_version)
+        {
+            return Ok(());
+        }
+        node.firmware_abi_version = Some(firmware_abi_version);
+        node.firmware_version = Some(firmware_version.to_string());
         Ok(())
     }
 
@@ -275,7 +313,7 @@ impl Storage for InMemoryStorage {
         match nodes.entry(record.node_id.clone()) {
             Entry::Occupied(_) => Ok(false),
             Entry::Vacant(e) => {
-                e.insert(record.clone());
+                e.insert(Self::stored_node_record(record));
                 Ok(true)
             }
         }

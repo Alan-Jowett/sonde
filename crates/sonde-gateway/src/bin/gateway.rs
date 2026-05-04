@@ -224,8 +224,25 @@ fn build_node_status_lines(
     lines
 }
 
+async fn node_status_nodes(
+    storage: &Arc<dyn Storage>,
+    session_manager: Option<&Arc<SessionManager>>,
+) -> Result<Vec<NodeRecord>, sonde_gateway::storage::StorageError> {
+    let mut nodes = storage.list_nodes().await?;
+    if let Some(session_manager) = session_manager {
+        let last_seen = session_manager.snapshot_last_seen().await;
+        let battery_mv = session_manager.snapshot_battery_mv().await;
+        for node in &mut nodes {
+            node.last_seen = last_seen.get(&node.node_id).copied();
+            node.last_battery_mv = battery_mv.get(&node.node_id).copied();
+        }
+    }
+    Ok(nodes)
+}
+
 async fn render_status_page(
     storage: &Arc<dyn Storage>,
+    session_manager: Option<&Arc<SessionManager>>,
     default_channel: u8,
     page: StatusPage,
 ) -> RenderedStatusPage {
@@ -242,7 +259,7 @@ async fn render_status_page(
             let line_refs = [lines[0].as_str(), lines[1].as_str()];
             RenderedStatusPage::Static(Box::new(render_display_message(&line_refs)))
         }
-        StatusPage::Nodes => match storage.list_nodes().await {
+        StatusPage::Nodes => match node_status_nodes(storage, session_manager).await {
             Ok(nodes) => {
                 if nodes.is_empty() {
                     return RenderedStatusPage::Scrollable(render_status_text_page(
@@ -550,10 +567,12 @@ async fn complete_button_pairing_success(
     schedule_button_pairing_banner_restore(transport, controller, display_generation);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_idle_button_short_event(
     transport: &Arc<UsbEspNowTransport>,
     controller: &Arc<sonde_gateway::ble_pairing::BlePairingController>,
     storage: &Arc<dyn Storage>,
+    session_manager: &Arc<SessionManager>,
     default_channel: u8,
     display_generation: &Arc<AtomicU64>,
     status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
@@ -571,7 +590,8 @@ async fn handle_idle_button_short_event(
         cycle.next_page_index = (cycle.next_page_index + 1) % StatusPage::ALL.len();
         page
     };
-    let rendered_page = render_status_page(storage, default_channel, page).await;
+    let rendered_page =
+        render_status_page(storage, Some(session_manager), default_channel, page).await;
     let initial_frame = rendered_page.initial_frame();
     let initial_send_ok = match transport.send_display_frame(initial_frame).await {
         Ok(()) => true,
@@ -1162,6 +1182,7 @@ async fn run_gateway(
         // rather than capturing the CLI startup value.
         let ble_channel = channel_for_transport;
         let ble_ctrl = Arc::clone(&ble_controller);
+        let ble_session_manager = Arc::clone(&session_manager);
         let mut ble_loop = tokio::spawn(async move {
             use sonde_gateway::ble_pairing::{handle_ble_recv, PairingOrigin};
             use sonde_gateway::modem::BleEvent;
@@ -1398,6 +1419,7 @@ async fn run_gateway(
                                     &ble_transport,
                                     &ble_ctrl,
                                     &ble_storage,
+                                    &ble_session_manager,
                                     ble_channel,
                                     &display_generation,
                                     &status_page_cycle,
@@ -2050,6 +2072,19 @@ mod tests {
         node
     }
 
+    async fn seed_runtime_observation(session_manager: &Arc<SessionManager>, node: &NodeRecord) {
+        if let Some(last_seen) = node.last_seen {
+            session_manager
+                .record_last_seen(&node.node_id, last_seen)
+                .await;
+        }
+        if let Some(battery_mv) = node.last_battery_mv {
+            session_manager
+                .record_battery_mv(&node.node_id, battery_mv)
+                .await;
+        }
+    }
+
     fn make_program_record(hash_fill: u8, source_filename: Option<&str>) -> ProgramRecord {
         ProgramRecord {
             hash: vec![hash_fill; 32],
@@ -2181,15 +2216,18 @@ mod tests {
     #[tokio::test]
     async fn render_status_page_nodes_prefers_program_source_filename() {
         let storage = Arc::new(InMemoryStorage::new());
+        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(60)));
         let node = make_rich_node("named", 1, 0x31, 1_700_000_000);
         let assigned_program = make_program_record(0x31, Some("C:\\captures\\a.o"));
         let current_program = make_program_record(0x32, Some("/tmp/b.o"));
         storage.store_program(&assigned_program).await.unwrap();
         storage.store_program(&current_program).await.unwrap();
         storage.upsert_node(&node).await.unwrap();
+        seed_runtime_observation(&session_manager, &node).await;
         let storage: Arc<dyn Storage> = storage;
 
-        let rendered = render_status_page(&storage, 6, StatusPage::Nodes).await;
+        let rendered =
+            render_status_page(&storage, Some(&session_manager), 6, StatusPage::Nodes).await;
         let expected = render_status_text_page(&build_node_status_lines(
             &[node],
             &build_program_name_map(&[
@@ -2203,6 +2241,37 @@ mod tests {
                 },
             ]),
         ));
+
+        match rendered {
+            RenderedStatusPage::Scrollable(framebuffer) => {
+                assert_eq!(framebuffer.visible_window(0), expected.visible_window(0));
+            }
+            RenderedStatusPage::Static(_) => panic!("nodes page should be scrollable"),
+        }
+    }
+
+    #[tokio::test]
+    async fn render_status_page_nodes_uses_runtime_observations() {
+        let storage = Arc::new(InMemoryStorage::new());
+        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(60)));
+        let mut node = NodeRecord::new("runtime".to_string(), 1, [0x11; 32]);
+        node.schedule_interval_s = 120;
+        storage.upsert_node(&node).await.unwrap();
+        let storage: Arc<dyn Storage> = storage;
+
+        let observed_at = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        session_manager
+            .record_last_seen("runtime", observed_at)
+            .await;
+        session_manager.record_battery_mv("runtime", 3300).await;
+
+        let rendered =
+            render_status_page(&storage, Some(&session_manager), 6, StatusPage::Nodes).await;
+        let mut expected_node = node.clone();
+        expected_node.last_seen = Some(observed_at);
+        expected_node.last_battery_mv = Some(3300);
+        let expected =
+            render_status_text_page(&build_node_status_lines(&[expected_node], &HashMap::new()));
 
         match rendered {
             RenderedStatusPage::Scrollable(framebuffer) => {
@@ -2630,6 +2699,7 @@ mod tests {
         let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let status_page_scroll_task: StatusPageScrollTask = Arc::new(tokio::sync::Mutex::new(None));
         let storage = Arc::new(InMemoryStorage::new());
+        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(60)));
         storage.set_config("espnow_channel", "11").await.unwrap();
         let storage: Arc<dyn Storage> = storage;
         let mut decoder = FrameDecoder::new();
@@ -2640,6 +2710,7 @@ mod tests {
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
             let storage = Arc::clone(&storage);
+            let session_manager = Arc::clone(&session_manager);
             let display_generation = Arc::clone(&display_generation);
             let status_page_cycle = Arc::clone(&status_page_cycle);
             let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
@@ -2648,6 +2719,7 @@ mod tests {
                     &transport,
                     &controller,
                     &storage,
+                    &session_manager,
                     6,
                     &display_generation,
                     &status_page_cycle,
@@ -2672,6 +2744,7 @@ mod tests {
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
             let storage = Arc::clone(&storage);
+            let session_manager = Arc::clone(&session_manager);
             let display_generation = Arc::clone(&display_generation);
             let status_page_cycle = Arc::clone(&status_page_cycle);
             let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
@@ -2680,6 +2753,7 @@ mod tests {
                     &transport,
                     &controller,
                     &storage,
+                    &session_manager,
                     6,
                     &display_generation,
                     &status_page_cycle,
@@ -2720,11 +2794,14 @@ mod tests {
         let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let status_page_scroll_task: StatusPageScrollTask = Arc::new(tokio::sync::Mutex::new(None));
         let storage = Arc::new(InMemoryStorage::new());
+        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(60)));
         storage.set_config("espnow_channel", "11").await.unwrap();
         let node_a = make_rich_node("node-a", 0x1001, 0x41, 1_700_000_000);
         let node_b = make_rich_node("node-b", 0x1002, 0x52, 1_700_000_060);
         storage.upsert_node(&node_a).await.unwrap();
         storage.upsert_node(&node_b).await.unwrap();
+        seed_runtime_observation(&session_manager, &node_a).await;
+        seed_runtime_observation(&session_manager, &node_b).await;
         let storage: Arc<dyn Storage> = storage;
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
@@ -2744,6 +2821,7 @@ mod tests {
                 let transport = Arc::clone(&transport);
                 let controller = Arc::clone(&controller);
                 let storage = Arc::clone(&storage);
+                let session_manager = Arc::clone(&session_manager);
                 let display_generation = Arc::clone(&display_generation);
                 let status_page_cycle = Arc::clone(&status_page_cycle);
                 let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
@@ -2752,6 +2830,7 @@ mod tests {
                         &transport,
                         &controller,
                         &storage,
+                        &session_manager,
                         6,
                         &display_generation,
                         &status_page_cycle,
@@ -2787,11 +2866,14 @@ mod tests {
         let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let status_page_scroll_task: StatusPageScrollTask = Arc::new(tokio::sync::Mutex::new(None));
         let storage = Arc::new(InMemoryStorage::new());
+        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(60)));
         storage.set_config("espnow_channel", "11").await.unwrap();
         let node_a = make_rich_node("node-a", 0x1001, 0x41, 1_700_000_000);
         let node_b = make_rich_node("node-b", 0x1002, 0x52, 1_700_000_060);
         storage.upsert_node(&node_a).await.unwrap();
         storage.upsert_node(&node_b).await.unwrap();
+        seed_runtime_observation(&session_manager, &node_a).await;
+        seed_runtime_observation(&session_manager, &node_b).await;
         let storage: Arc<dyn Storage> = storage;
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
@@ -2807,6 +2889,7 @@ mod tests {
                 let transport = Arc::clone(&transport);
                 let controller = Arc::clone(&controller);
                 let storage = Arc::clone(&storage);
+                let session_manager = Arc::clone(&session_manager);
                 let display_generation = Arc::clone(&display_generation);
                 let status_page_cycle = Arc::clone(&status_page_cycle);
                 let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
@@ -2815,6 +2898,7 @@ mod tests {
                         &transport,
                         &controller,
                         &storage,
+                        &session_manager,
                         6,
                         &display_generation,
                         &status_page_cycle,
@@ -2842,6 +2926,7 @@ mod tests {
                 let transport = Arc::clone(&transport);
                 let controller = Arc::clone(&controller);
                 let storage = Arc::clone(&storage);
+                let session_manager = Arc::clone(&session_manager);
                 let display_generation = Arc::clone(&display_generation);
                 let status_page_cycle = Arc::clone(&status_page_cycle);
                 let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
@@ -2850,6 +2935,7 @@ mod tests {
                         &transport,
                         &controller,
                         &storage,
+                        &session_manager,
                         6,
                         &display_generation,
                         &status_page_cycle,
@@ -2872,6 +2958,7 @@ mod tests {
         let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let status_page_scroll_task: StatusPageScrollTask = Arc::new(tokio::sync::Mutex::new(None));
         let storage = Arc::new(InMemoryStorage::new());
+        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(60)));
         storage.set_config("espnow_channel", "11").await.unwrap();
         let storage: Arc<dyn Storage> = storage;
         let mut decoder = FrameDecoder::new();
@@ -2895,6 +2982,7 @@ mod tests {
                 let transport = Arc::clone(&transport);
                 let controller = Arc::clone(&controller);
                 let storage = Arc::clone(&storage);
+                let session_manager = Arc::clone(&session_manager);
                 let display_generation = Arc::clone(&display_generation);
                 let status_page_cycle = Arc::clone(&status_page_cycle);
                 let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
@@ -2903,6 +2991,7 @@ mod tests {
                         &transport,
                         &controller,
                         &storage,
+                        &session_manager,
                         6,
                         &display_generation,
                         &status_page_cycle,
@@ -2934,6 +3023,7 @@ mod tests {
         let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
         let status_page_scroll_task: StatusPageScrollTask = Arc::new(tokio::sync::Mutex::new(None));
         let storage = Arc::new(InMemoryStorage::new());
+        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(60)));
         storage.set_config("espnow_channel", "11").await.unwrap();
         let storage: Arc<dyn Storage> = storage;
         let mut decoder = FrameDecoder::new();
@@ -2944,6 +3034,7 @@ mod tests {
             let transport = Arc::clone(&transport);
             let controller = Arc::clone(&controller);
             let storage = Arc::clone(&storage);
+            let session_manager = Arc::clone(&session_manager);
             let display_generation = Arc::clone(&display_generation);
             let status_page_cycle = Arc::clone(&status_page_cycle);
             let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
@@ -2952,6 +3043,7 @@ mod tests {
                     &transport,
                     &controller,
                     &storage,
+                    &session_manager,
                     6,
                     &display_generation,
                     &status_page_cycle,

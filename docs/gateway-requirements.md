@@ -757,12 +757,22 @@ On receiving a `WAKE` message, the gateway MUST compare the node's reported `pro
 **Source:** README § Wake handshake
 
 **Description:**  
-The gateway SHOULD record the `battery_mv` value from each `WAKE` message for monitoring and operational visibility.
+The gateway SHOULD treat the `battery_mv` value from each `WAKE` message as
+runtime telemetry for operator visibility and upstream monitoring. To reduce
+durable-storage churn on microSD-backed gateways, the gateway MUST NOT persist
+new `battery_mv` readings or local battery-history series in durable storage.
+Instead, the latest battery reading remains available only in runtime state
+during the current gateway process and is exported upstream through the
+connector actual-state path (GW-0812) for long-term monitoring/storage.
 
 **Acceptance criteria:**
 
-1. The most recent `battery_mv` reading is stored per node.
-2. Historical battery data is available for trend analysis.
+1. After a valid `WAKE`, the latest `battery_mv` reading is available from
+   runtime state for local status surfaces in the current gateway process.
+2. Processing `WAKE` messages does not write new `battery_mv` readings or local
+   battery-history samples into durable gateway storage.
+3. After a gateway restart, battery is absent from local status until the node
+   completes another `WAKE`.
 
 ---
 
@@ -1042,7 +1052,16 @@ The connector API MUST accept control-plane desired-state messages addressed to 
 **Source:** User-requested gateway/control-plane reconciliation model
 
 **Description:**  
-The gateway MUST emit upstream control-plane messages that describe actual gateway and node state changes relevant to reconciliation. For nodes, this includes the state learned when the gateway accepts and processes an authenticated `WAKE`, such as `node_id`, current and assigned program hashes when known, `battery_mv`, firmware ABI/version data, and a reception timestamp encoded as Unix time in milliseconds. These upstream messages are produced only after the gateway has updated its latest-known actual state for the affected entity.
+The gateway MUST emit upstream control-plane messages that describe actual
+gateway and node state changes relevant to reconciliation. For nodes, this
+includes the state learned when the gateway accepts and processes an
+authenticated `WAKE`, such as `node_id`, current and assigned program hashes
+when known, `battery_mv`, firmware ABI/version data, and a reception timestamp
+encoded as Unix time in milliseconds. `battery_mv` remains part of the emitted
+actual-state record even though battery telemetry is runtime-only locally and is
+not durably persisted under GW-0702. These upstream messages are produced only
+after the gateway has updated its latest-known actual state for the affected
+entity.
 
 **Acceptance criteria:**
 
@@ -1260,7 +1279,25 @@ Whenever the gateway re-initializes the modem after a serial reconnect or warm r
 **Source:** Issue #798
 
 **Description:**
-While no BLE pairing session is active, the gateway SHOULD interpret `EVENT_BUTTON(BUTTON_SHORT)` as a request to advance the modem display to the next gateway-owned status page. The gateway owns status-page selection and framebuffer rendering; the modem continues to render only the received framebuffer bytes. The default status-page sequence consists of a `Channel` page and a `Nodes` page. The `Nodes` page text output MUST show the key operational node details in `node_id` order: `node_id`, assigned/current program identifiers, battery, last seen, and schedule, with optional fields omitted when absent. For assigned/current programs, the default display identifier is the stored `source_filename` basename when available; otherwise the hash is shown. `key_hint` MUST NOT be shown on the display page. The `last seen` value MUST be rendered in local time using the host locale's date/time presentation rather than fixed UTC text. On the display, each field is rendered as a left-aligned property line followed by a left-aligned `- value` line so properties and values are visually distinct. An empty node registry MUST display `No nodes registered.`
+While no BLE pairing session is active, the gateway SHOULD interpret
+`EVENT_BUTTON(BUTTON_SHORT)` as a request to advance the modem display to the
+next gateway-owned status page. The gateway owns status-page selection and
+framebuffer rendering; the modem continues to render only the received
+framebuffer bytes. The default status-page sequence consists of a `Channel`
+page and a `Nodes` page. The `Nodes` page text output MUST show the key
+operational node details in `node_id` order: `node_id`, assigned/current
+program identifiers, battery, last seen, and schedule, with optional fields
+omitted when absent. Battery and last seen are runtime-only observation fields:
+they are absent until the node completes a `WAKE` in the current gateway
+process and disappear again after gateway restart until the next `WAKE`. For
+assigned/current programs, the default display identifier is the stored
+`source_filename` basename when available; otherwise the hash is shown.
+`key_hint` MUST NOT be shown on the display page. The `last seen` value MUST be
+rendered in local time using the host locale's date/time presentation rather
+than fixed UTC text. On the display, each field is rendered as a left-aligned
+property line followed by a left-aligned `- value` line so properties and
+values are visually distinct. An empty node registry MUST display `No nodes
+registered.`
 
 **Acceptance criteria:**
 

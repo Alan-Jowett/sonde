@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 use crate::gateway_identity::GatewayIdentity;
 use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
 use crate::program::{ProgramRecord, VerificationProfile};
-use crate::registry::{BatteryReading, NodeRecord, SensorDescriptor};
+use crate::registry::{NodeRecord, SensorDescriptor};
 use crate::storage::{ProgramDisplayRecord, ProgramSummaryRecord, Storage, StorageError};
 
 /// Encrypted PSK blob length: 12-byte nonce + 32-byte ciphertext + 16-byte GCM tag = 60 bytes.
@@ -809,105 +809,15 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         schedule_interval_s,
         firmware_abi_version: row.get(7)?,
         firmware_version,
-        last_battery_mv: row.get(8)?,
+        last_battery_mv: None,
         last_seen: None,
         rf_channel,
         sensors: sensors_json
             .map(|j| sensors_from_json(&j))
             .unwrap_or_default(),
         registered_by_phone_id,
-        // Battery history is loaded separately from the battery_readings table.
         battery_history: Vec::new(),
     })
-}
-
-/// Load battery history for a node from the `battery_readings` table,
-/// ordered oldest-first, capped to the most recent 100 entries.
-fn load_battery_history(conn: &Connection, node_id: &str) -> rusqlite::Result<Vec<BatteryReading>> {
-    // Fetch only the most recent MAX entries in SQL to avoid loading the
-    // entire table into memory. The subquery selects rows newest-first with
-    // a LIMIT, then the outer query re-orders oldest-first.
-    const MAX: usize = 100;
-    let mut stmt = conn.prepare(
-        "SELECT timestamp_epoch_s, battery_mv FROM ( \
-             SELECT timestamp_epoch_s, battery_mv FROM battery_readings \
-             WHERE node_id = ?1 ORDER BY timestamp_epoch_s DESC LIMIT ?2 \
-         ) ORDER BY timestamp_epoch_s ASC",
-    )?;
-    let rows = stmt.query_map(params![node_id, MAX as i64], |row| {
-        let ts: i64 = row.get(0)?;
-        let mv: u32 = row.get(1)?;
-        Ok(BatteryReading {
-            timestamp: epoch_s_to_system_time(ts),
-            battery_mv: mv,
-        })
-    })?;
-    let mut history = Vec::new();
-    for r in rows {
-        history.push(r?);
-    }
-    Ok(history)
-}
-
-/// Persist battery readings for a node incrementally, pruning to the most
-/// recent 100. Only new readings (those with a timestamp newer than the
-/// latest stored entry) are inserted, and excess older rows are pruned
-/// afterwards. This avoids a full delete-and-rewrite on every upsert.
-fn save_battery_history(
-    conn: &Connection,
-    node_id: &str,
-    history: &[BatteryReading],
-) -> Result<(), StorageError> {
-    // Determine the latest timestamp already stored so we can skip duplicates.
-    let max_ts: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(timestamp_epoch_s) FROM battery_readings WHERE node_id = ?1",
-            params![node_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(map_err)?
-        // `optional()` returns `None` when no rows match; `row.get(0)` may
-        // return `Ok(None)` when the MAX is NULL (no rows), so flatten.
-        .flatten();
-
-    let mut stmt = conn
-        .prepare(
-            "INSERT INTO battery_readings (node_id, timestamp_epoch_s, battery_mv) \
-             VALUES (?1, ?2, ?3)",
-        )
-        .map_err(map_err)?;
-
-    // Only persist the most recent 100 readings from the in-memory history,
-    // and skip any that are already stored.
-    const MAX: usize = 100;
-    let start = history.len().saturating_sub(MAX);
-    for reading in &history[start..] {
-        let ts = system_time_to_epoch_s(&reading.timestamp);
-        if max_ts.is_none_or(|max| ts > max) {
-            stmt.execute(params![node_id, ts, reading.battery_mv])
-                .map_err(map_err)?;
-        }
-    }
-
-    // Prune older rows so that at most 100 readings remain for this node.
-    conn.execute(
-        "DELETE FROM battery_readings \
-          WHERE node_id = ?1 \
-            AND timestamp_epoch_s < ( \
-              SELECT MIN(timestamp_epoch_s) FROM ( \
-                SELECT timestamp_epoch_s \
-                  FROM battery_readings \
-                 WHERE node_id = ?1 \
-                 ORDER BY timestamp_epoch_s DESC \
-                 LIMIT 100 \
-              ) \
-            )",
-        params![node_id],
-    )
-    .map_err(map_err)?;
-
-    Ok(())
 }
 
 #[async_trait]
@@ -930,10 +840,7 @@ impl Storage for SqliteStorage {
                 .map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
-                let mut node = row.map_err(map_err)?;
-                node.battery_history =
-                    load_battery_history(conn, &node.node_id).map_err(map_err)?;
-                nodes.push(node);
+                nodes.push(row.map_err(map_err)?);
             }
             Ok(nodes)
         })
@@ -956,13 +863,7 @@ impl Storage for SqliteStorage {
                 )
                 .optional()
                 .map_err(map_err)?;
-            if let Some(mut node) = maybe_node {
-                node.battery_history =
-                    load_battery_history(conn, &node.node_id).map_err(map_err)?;
-                Ok(Some(node))
-            } else {
-                Ok(None)
-            }
+            Ok(maybe_node)
         })
         .await
     }
@@ -984,10 +885,7 @@ impl Storage for SqliteStorage {
                 .map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
-                let mut node = row.map_err(map_err)?;
-                node.battery_history =
-                    load_battery_history(conn, &node.node_id).map_err(map_err)?;
-                nodes.push(node);
+                nodes.push(row.map_err(map_err)?);
             }
             Ok(nodes)
         })
@@ -1015,7 +913,6 @@ impl Storage for SqliteStorage {
                  desired_schedule_interval_s = excluded.desired_schedule_interval_s, \
                  schedule_interval_s = excluded.schedule_interval_s, \
                  firmware_abi_version = excluded.firmware_abi_version, \
-                 last_battery_mv = excluded.last_battery_mv, \
                  last_seen_epoch_s = excluded.last_seen_epoch_s, \
                  rf_channel = excluded.rf_channel, \
                  sensors_json = excluded.sensors_json, \
@@ -1030,7 +927,7 @@ impl Storage for SqliteStorage {
                     record.desired_schedule_interval_s,
                     record.schedule_interval_s,
                     record.firmware_abi_version,
-                    record.last_battery_mv,
+                    Option::<u32>::None,
                     Option::<i64>::None,
                     record.rf_channel.map(|c| c as u32),
                     sensors_json,
@@ -1039,9 +936,47 @@ impl Storage for SqliteStorage {
                 ],
             )
             .map_err(map_err)?;
-            save_battery_history(&tx, &record.node_id, &record.battery_history)?;
             tx.commit().map_err(map_err)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn update_node_wake_metadata(
+        &self,
+        node_id: &str,
+        firmware_abi_version: u32,
+        firmware_version: &str,
+    ) -> Result<(), StorageError> {
+        let node_id = node_id.to_string();
+        let firmware_version = firmware_version.to_string();
+        self.with_conn(move |conn| {
+            let rows = conn
+                .execute(
+                    "UPDATE nodes
+                     SET firmware_abi_version = ?1,
+                         firmware_version = ?2
+                     WHERE node_id = ?3
+                       AND (firmware_abi_version IS NOT ?1 OR firmware_version IS NOT ?2)",
+                    params![firmware_abi_version, firmware_version, node_id],
+                )
+                .map_err(map_err)?;
+            if rows > 0 {
+                return Ok(());
+            }
+            let exists = conn
+                .query_row(
+                    "SELECT 1 FROM nodes WHERE node_id = ?1",
+                    params![node_id],
+                    |_row| Ok(()),
+                )
+                .optional()
+                .map_err(map_err)?;
+            if exists.is_some() {
+                Ok(())
+            } else {
+                Err(StorageError::NotFound(format!("node `{node_id}`")))
+            }
         })
         .await
     }
@@ -1068,7 +1003,7 @@ impl Storage for SqliteStorage {
                         record.desired_schedule_interval_s,
                         record.schedule_interval_s,
                         record.firmware_abi_version,
-                        record.last_battery_mv,
+                        Option::<u32>::None,
                         Option::<i64>::None,
                         record.rf_channel.map(|c| c as u32),
                         sensors_json,
@@ -1315,19 +1250,12 @@ impl Storage for SqliteStorage {
                             record.desired_schedule_interval_s,
                             record.schedule_interval_s,
                             record.firmware_abi_version,
-                            record.last_battery_mv,
+                            Option::<u32>::None,
                             Option::<i64>::None,
                             record.firmware_version,
                         ],
                     )
                     .map_err(map_err)?;
-
-                    // Repopulate battery history (cascade-deleted with the
-                    // old nodes row above). Without this, imported bundles
-                    // silently lose battery readings.
-                    if !record.battery_history.is_empty() {
-                        save_battery_history(conn, &record.node_id, &record.battery_history)?;
-                    }
                 }
                 Ok(())
             })();
@@ -2093,7 +2021,7 @@ mod tests {
         assert_eq!(fetched.desired_schedule_interval_s, Some(120));
         assert_eq!(fetched.schedule_interval_s, 120);
         assert_eq!(fetched.key_hint, 2);
-        assert_eq!(fetched.last_battery_mv, Some(3300));
+        assert_eq!(fetched.last_battery_mv, None);
     }
 
     /// GW-0601a migration: existing databases with plaintext 32-byte PSK blobs
@@ -2583,56 +2511,116 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_battery_history_roundtrip_and_pruning() {
+    async fn test_legacy_battery_storage_is_ignored_and_preserved() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
-
-        let mut node = make_node("batt1", 0xBB);
-
-        // Populate history with 3 readings.
-        let ts_base = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        node.battery_history = vec![
-            BatteryReading {
-                timestamp: ts_base,
-                battery_mv: 3300,
-            },
-            BatteryReading {
-                timestamp: ts_base + Duration::from_secs(60),
-                battery_mv: 3250,
-            },
-            BatteryReading {
-                timestamp: ts_base + Duration::from_secs(120),
-                battery_mv: 3200,
-            },
-        ];
-
+        let node = make_node("batt1", 0xBB);
         store.upsert_node(&node).await.unwrap();
 
-        // Reload and verify round-trip.
-        let loaded = store.get_node("batt1").await.unwrap().unwrap();
-        assert_eq!(loaded.battery_history.len(), 3);
-        assert_eq!(loaded.battery_history[0].battery_mv, 3300);
-        assert_eq!(loaded.battery_history[2].battery_mv, 3200);
-        // Ordering must be ascending by timestamp.
-        assert!(loaded.battery_history[0].timestamp < loaded.battery_history[1].timestamp);
-        assert!(loaded.battery_history[1].timestamp < loaded.battery_history[2].timestamp);
-
-        // Now verify pruning: insert 105 readings, only the most recent 100
-        // should survive.
-        node.battery_history = (0..105)
-            .map(|i| BatteryReading {
-                timestamp: ts_base + Duration::from_secs(200 + i * 10),
-                battery_mv: 3000 + i as u32,
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE nodes SET last_battery_mv = 3300 WHERE node_id = 'batt1'",
+                    [],
+                )
+                .map_err(map_err)?;
+                conn.execute(
+                    "INSERT INTO battery_readings (node_id, timestamp_epoch_s, battery_mv) \
+                     VALUES ('batt1', 1700000000, 3300)",
+                    [],
+                )
+                .map_err(map_err)?;
+                Ok(())
             })
-            .collect();
-
-        store.upsert_node(&node).await.unwrap();
+            .await
+            .unwrap();
 
         let loaded = store.get_node("batt1").await.unwrap().unwrap();
-        assert_eq!(loaded.battery_history.len(), 100);
-        // The first reading should correspond to index 5 of the original 105
-        // (the oldest 5 were pruned).
-        assert_eq!(loaded.battery_history[0].battery_mv, 3005);
-        assert_eq!(loaded.battery_history[99].battery_mv, 3104);
+        assert_eq!(loaded.last_battery_mv, None);
+        assert!(loaded.battery_history.is_empty());
+
+        let mut updated = loaded.clone();
+        updated.schedule_interval_s = 120;
+        store.upsert_node(&updated).await.unwrap();
+
+        let (stored_battery, stored_history_count): (Option<u32>, i64) = store
+            .with_conn(|conn| {
+                let stored_battery = conn
+                    .query_row(
+                        "SELECT last_battery_mv FROM nodes WHERE node_id = 'batt1'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_err)?;
+                let stored_history_count = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM battery_readings WHERE node_id = 'batt1'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_err)?;
+                Ok((stored_battery, stored_history_count))
+            })
+            .await
+            .unwrap();
+        assert_eq!(stored_battery, Some(3300));
+        assert_eq!(stored_history_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_update_node_wake_metadata_preserves_psk_ciphertext() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+        let node = make_node("wake-meta", 0xBC);
+        store.upsert_node(&node).await.unwrap();
+
+        let initial_psk: Vec<u8> = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT psk FROM nodes WHERE node_id = 'wake-meta'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(map_err)
+            })
+            .await
+            .unwrap();
+
+        store
+            .update_node_wake_metadata("wake-meta", 7, "1.2.3")
+            .await
+            .unwrap();
+
+        let after_first: (Vec<u8>, Option<u32>, Option<String>) = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT psk, firmware_abi_version, firmware_version FROM nodes WHERE node_id = 'wake-meta'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(map_err)
+            })
+            .await
+            .unwrap();
+        assert_eq!(after_first.0, initial_psk);
+        assert_eq!(after_first.1, Some(7));
+        assert_eq!(after_first.2.as_deref(), Some("1.2.3"));
+
+        store
+            .update_node_wake_metadata("wake-meta", 7, "1.2.3")
+            .await
+            .unwrap();
+
+        let after_second: (Vec<u8>, Option<u32>, Option<String>) = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT psk, firmware_abi_version, firmware_version FROM nodes WHERE node_id = 'wake-meta'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(map_err)
+            })
+            .await
+            .unwrap();
+        assert_eq!(after_second, after_first);
     }
 
     // ── Gateway config (GW-0808) ───────────────────────────────

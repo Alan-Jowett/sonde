@@ -72,6 +72,7 @@ pub struct Session {
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, Session>>,
     last_seen: RwLock<HashMap<String, SystemTime>>,
+    last_battery_mv: RwLock<HashMap<String, u32>>,
     timeout: Duration,
     /// Held as a write-lock during state import to prevent new sessions
     /// from being created while the storage is being replaced.  Normal
@@ -85,6 +86,7 @@ impl SessionManager {
         Self {
             sessions: RwLock::new(HashMap::new()),
             last_seen: RwLock::new(HashMap::new()),
+            last_battery_mv: RwLock::new(HashMap::new()),
             timeout,
             import_lock: RwLock::new(()),
         }
@@ -174,9 +176,27 @@ impl SessionManager {
         self.last_seen.read().await.get(node_id).copied()
     }
 
+    /// Record the most recent battery reading observed during WAKE handling.
+    pub async fn record_battery_mv(&self, node_id: &str, battery_mv: u32) {
+        self.last_battery_mv
+            .write()
+            .await
+            .insert(node_id.to_string(), battery_mv);
+    }
+
+    /// Get the runtime battery reading for a node, if any.
+    pub async fn get_battery_mv(&self, node_id: &str) -> Option<u32> {
+        self.last_battery_mv.read().await.get(node_id).copied()
+    }
+
     /// Return a snapshot of runtime last-seen timestamps keyed by node ID.
     pub async fn snapshot_last_seen(&self) -> HashMap<String, SystemTime> {
         self.last_seen.read().await.clone()
+    }
+
+    /// Return a snapshot of runtime battery readings keyed by node ID.
+    pub async fn snapshot_battery_mv(&self) -> HashMap<String, u32> {
+        self.last_battery_mv.read().await.clone()
     }
 
     /// Remove the runtime last-seen timestamp for a node.
@@ -184,9 +204,19 @@ impl SessionManager {
         self.last_seen.write().await.remove(node_id);
     }
 
+    /// Remove the runtime battery reading for a node.
+    pub async fn clear_battery_mv(&self, node_id: &str) {
+        self.last_battery_mv.write().await.remove(node_id);
+    }
+
     /// Remove all runtime last-seen timestamps.
     pub async fn clear_all_last_seen(&self) {
         self.last_seen.write().await.clear();
+    }
+
+    /// Remove all runtime battery readings.
+    pub async fn clear_all_battery_mv(&self) {
+        self.last_battery_mv.write().await.clear();
     }
 
     /// Remove all sessions that have exceeded the configured timeout.

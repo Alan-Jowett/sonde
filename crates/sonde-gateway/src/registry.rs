@@ -3,9 +3,6 @@
 
 use std::time::SystemTime;
 
-/// Maximum number of battery readings to retain per node (GW-0702 AC2).
-const MAX_BATTERY_HISTORY: usize = 100;
-
 /// A timestamped battery voltage reading.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatteryReading {
@@ -30,8 +27,9 @@ pub struct SensorDescriptor {
 }
 
 /// Node record. The `node_id` is an admin-assigned opaque identifier used to
-/// correlate a node across sessions and handler API calls. The `last_seen`
-/// field is runtime-only and is not persisted by durable storage backends.
+/// correlate a node across sessions and handler API calls. The `last_seen` and
+/// `last_battery_mv` fields are runtime-only overlays and are not persisted by
+/// durable storage backends.
 #[derive(Debug, Clone)]
 pub struct NodeRecord {
     pub node_id: String,
@@ -46,6 +44,8 @@ pub struct NodeRecord {
     pub schedule_interval_s: u32,
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
+    /// Most recent WAKE battery reading observed by the current gateway process.
+    /// Durable storage backends intentionally do not persist this field.
     pub last_battery_mv: Option<u32>,
     pub last_seen: Option<SystemTime>,
     /// RF channel the node operates on (1–13). Set during BLE pairing.
@@ -54,7 +54,9 @@ pub struct NodeRecord {
     pub sensors: Vec<SensorDescriptor>,
     /// Phone ID that registered this node (audit trail). Set during BLE pairing.
     pub registered_by_phone_id: Option<u32>,
-    /// Historical battery voltage readings (GW-0702 AC2). Most recent last.
+    /// Historical battery voltage readings retained only for struct/schema
+    /// compatibility with legacy battery-persistence code paths. New gateway
+    /// code does not populate or append to this list.
     pub battery_history: Vec<BatteryReading>,
 }
 
@@ -80,7 +82,11 @@ impl NodeRecord {
         }
     }
 
-    /// Update battery, ABI, and firmware version fields (called on each WAKE).
+    /// Update the in-memory WAKE overlay on a `NodeRecord`.
+    ///
+    /// This caches the runtime-only battery reading plus the latest firmware
+    /// metadata in a cloned record used by admin/connector shaping. Durable
+    /// persistence of firmware metadata is handled separately by storage.
     pub fn update_telemetry(
         &mut self,
         battery_mv: u32,
@@ -90,17 +96,6 @@ impl NodeRecord {
         self.last_battery_mv = Some(battery_mv);
         self.firmware_abi_version = Some(firmware_abi_version);
         self.firmware_version = Some(firmware_version);
-        let now = SystemTime::now();
-
-        // GW-0702 AC2: maintain battery history, capped at MAX_BATTERY_HISTORY.
-        self.battery_history.push(BatteryReading {
-            timestamp: now,
-            battery_mv,
-        });
-        if self.battery_history.len() > MAX_BATTERY_HISTORY {
-            let excess = self.battery_history.len() - MAX_BATTERY_HISTORY;
-            self.battery_history.drain(..excess);
-        }
     }
 
     /// Mark the node's current program hash (called on PROGRAM_ACK).

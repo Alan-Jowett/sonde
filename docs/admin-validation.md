@@ -262,6 +262,23 @@ to avoid collisions when tests run in parallel.
 
 ---
 
+### T-0201b  `node list` and `node get` show runtime-only battery
+
+**Validates:** ADMIN-0200, ADMIN-0201
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server with a registered node and process a valid WAKE carrying `battery_mv = 3300`.
+2. Invoke `sonde-admin node list`.
+3. Assert: the node entry includes `3300 mV`.
+4. Invoke `sonde-admin node get <node-id>`.
+5. Assert: the node detail output includes `3300 mV`.
+6. Restart the gateway against the same database without another WAKE.
+7. Invoke `sonde-admin node list` and `node get <node-id>` again.
+8. Assert: battery is omitted until the node completes another WAKE.
+
+---
+
 ### T-0202  Register node — invalid PSK length
 
 **Validates:** ADMIN-0202
@@ -391,7 +408,22 @@ to avoid collisions when tests run in parallel.
 
 ---
 
-### T-0403a  Human-readable `status` prefers `source_filename` and falls back to hash
+### T-0403a  `status` shows runtime-only battery
+
+**Validates:** ADMIN-0403
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server with a registered node and process a valid WAKE carrying `battery_mv = 3300`.
+2. Invoke `sonde-admin status <node-id>`.
+3. Assert: the text output includes `3300 mV`.
+4. Restart the gateway against the same database without another WAKE.
+5. Invoke `sonde-admin status <node-id>` again.
+6. Assert: battery is omitted until the node completes another WAKE.
+
+---
+
+### T-0403b  Human-readable `status` prefers `source_filename` and falls back to hash
 
 **Validates:** ADMIN-0403
 **Category:** New automated (CLI process test)

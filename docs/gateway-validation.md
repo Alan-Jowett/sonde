@@ -105,7 +105,8 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Send a WAKE with `firmware_abi_version=1`, `program_hash=<known_hash>`, `battery_mv=3300`, `firmware_version="0.6.0"`.
 2. Assert: gateway responds with a COMMAND.
-3. Assert: the node's registry entry is updated with the received `firmware_abi_version`, `battery_mv`, and `firmware_version`.
+3. Assert: the node's durable registry entry is updated with the received `firmware_abi_version` and `firmware_version`.
+4. Assert: the gateway's runtime node-observation state records `battery_mv = 3300`.
 
 ---
 
@@ -1178,9 +1179,10 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Send WAKE with `battery_mv = 3300`.
-2. Assert: node registry entry `last_battery_mv = 3300`.
-3. Send WAKE with `battery_mv = 2900`.
-4. Assert: updated to `2900`.
+2. Assert: the gateway's runtime node-observation state reports `last_battery_mv = 3300`.
+3. Assert: local node-status surfaces in the same gateway process can display `3300 mV`.
+4. Restart the gateway against the same database without sending another WAKE.
+5. Assert: battery is absent from local node-status surfaces until the next WAKE.
 
 ---
 
@@ -1206,7 +1208,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-0705  Battery historical data
+### T-0705  Battery telemetry is not durably persisted
 
 **Validates:** GW-0702
 
@@ -1214,8 +1216,9 @@ A configurable stub handler process (or in-process mock) that:
 1. Send WAKE with `battery_mv = 3300`.
 2. Send WAKE with `battery_mv = 3100`.
 3. Send WAKE with `battery_mv = 2900`.
-4. Assert: storage retains all three readings (not just the latest).
-5. Assert: readings can be queried in chronological order for trend analysis.
+4. Restart the gateway against the same database.
+5. Assert: the reloaded durable node record does not restore a battery value or local battery history.
+6. Assert: battery becomes available again only after a new WAKE is processed.
 
 ---
 

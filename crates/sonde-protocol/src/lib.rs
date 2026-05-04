@@ -15,6 +15,7 @@ pub mod header;
 pub mod messages;
 pub mod modem;
 pub mod program_image;
+pub mod source_filename;
 pub mod traits;
 
 pub use aead_codec::{build_gcm_nonce, decode_frame, encode_frame, open_frame, DecodedFrame};
@@ -33,6 +34,7 @@ pub use error::{DecodeError, EncodeError};
 pub use header::FrameHeader;
 pub use messages::{CommandPayload, GatewayMessage, NodeMessage};
 pub use program_image::{program_hash, MapDef, ProgramImage};
+pub use source_filename::normalize_display_filename;
 pub use traits::{AeadProvider, Sha256Provider};
 
 /// Derive the 2-byte key hint from a PSK.

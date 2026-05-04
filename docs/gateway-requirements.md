@@ -272,7 +272,7 @@ The gateway MUST accept BPF programs as pre-compiled ELF files. On ingestion, th
 4. The gateway rejects files that are not valid BPF ELF binaries with a clear diagnostic.
 5. The gateway does not depend on LLVM, clang, or any compiler toolchain at build time or runtime.
 6. Chunk serving (GW-0300) reads from the pre-built CBOR image with no additional processing.
-7. When an optional `source_filename` is provided with the ingestion request, the gateway stores it alongside the program record for display in program listings.
+7. When an optional `source_filename` is provided with the ingestion request, the gateway stores it alongside the program record for display in human-facing program and node-status surfaces. The gateway strips any path components and stores only the basename, never a full path.
 
 ---
 
@@ -317,6 +317,7 @@ The gateway MUST identify programs by the SHA-256 hash of their CBOR-encoded pro
 2. The gateway compares this hash with the `program_hash` reported by a node to determine whether an update is needed.
 3. Identical program content (bytecode + maps) always produces the same hash.
 4. When listing programs, the gateway includes the `source_filename` (if present) alongside hash, size, and verification profile.
+5. Human-facing status renderers MAY use `source_filename` as the default program identifier when present, but program identity and machine-facing APIs remain hash-based.
 
 ---
 
@@ -1259,15 +1260,16 @@ Whenever the gateway re-initializes the modem after a serial reconnect or warm r
 **Source:** Issue #798
 
 **Description:**
-While no BLE pairing session is active, the gateway SHOULD interpret `EVENT_BUTTON(BUTTON_SHORT)` as a request to advance the modem display to the next gateway-owned status page. The gateway owns status-page selection and framebuffer rendering; the modem continues to render only the received framebuffer bytes. The default status-page sequence consists of a `Channel` page and a `Nodes` page. The `Nodes` page text output MUST show the key operational node details in `node_id` order: `node_id`, assigned/current program hashes, battery, last seen, and schedule, with optional fields omitted when absent. `key_hint` MUST NOT be shown on the display page. The `last seen` value MUST be rendered in local time using the host locale's date/time presentation rather than fixed UTC text. On the display, each field is rendered as a left-aligned property line followed by a left-aligned `- value` line so properties and values are visually distinct. An empty node registry MUST display `No nodes registered.`
+While no BLE pairing session is active, the gateway SHOULD interpret `EVENT_BUTTON(BUTTON_SHORT)` as a request to advance the modem display to the next gateway-owned status page. The gateway owns status-page selection and framebuffer rendering; the modem continues to render only the received framebuffer bytes. The default status-page sequence consists of a `Channel` page and a `Nodes` page. The `Nodes` page text output MUST show the key operational node details in `node_id` order: `node_id`, assigned/current program identifiers, battery, last seen, and schedule, with optional fields omitted when absent. For assigned/current programs, the default display identifier is the stored `source_filename` basename when available; otherwise the hash is shown. `key_hint` MUST NOT be shown on the display page. The `last seen` value MUST be rendered in local time using the host locale's date/time presentation rather than fixed UTC text. On the display, each field is rendered as a left-aligned property line followed by a left-aligned `- value` line so properties and values are visually distinct. An empty node registry MUST display `No nodes registered.`
 
 **Acceptance criteria:**
 
 1. A `BUTTON_SHORT` event received while no BLE pairing session is active causes the gateway to send a new reliable display transfer for the next status page.
 2. Consecutive short presses advance through the configured status-page sequence in order; the default sequence remains `Channel` followed by `Nodes`.
-3. The `Nodes` page renders `node_id`, assigned/current program hashes, battery, last seen, and schedule in `node_id` order, omits absent optional fields, excludes `key_hint`, and uses a left-aligned property line followed by a `- value` line for each displayed field.
-4. When the node registry is empty, the `Nodes` page displays `No nodes registered.`
-5. Status-page framebuffer generation remains gateway-owned; the modem receives only opaque framebuffer data.
+3. The `Nodes` page renders `node_id`, assigned/current program identifiers, battery, last seen, and schedule in `node_id` order, omits absent optional fields, excludes `key_hint`, and uses a left-aligned property line followed by a `- value` line for each displayed field.
+4. When a program record has `source_filename`, the `Nodes` page uses that basename as the program identifier and never renders a full path; otherwise it renders the hash.
+5. When the node registry is empty, the `Nodes` page displays `No nodes registered.`
+6. Status-page framebuffer generation remains gateway-owned; the modem receives only opaque framebuffer data.
 
 ---
 

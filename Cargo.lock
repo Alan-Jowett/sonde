@@ -6491,6 +6491,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sonde-gateway",
+ "sonde-protocol",
  "tokio",
  "tokio-stream",
  "tonic",

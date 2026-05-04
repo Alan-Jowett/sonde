@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
+use sonde_protocol::normalize_display_filename;
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 use tracing::warn;
@@ -666,7 +667,8 @@ impl GatewayAdmin for AdminService {
 
         let is_elf = req.image_data.len() >= 4 && &req.image_data[..4] == b"\x7fELF";
 
-        let source_filename = req.source_filename.clone();
+        let normalized_source_filename = normalize_display_filename(&req.source_filename);
+        let display_source = normalized_source_filename.as_deref().unwrap_or("<unknown>");
         let image_size = req.image_data.len();
 
         let mut record = if is_elf {
@@ -676,8 +678,7 @@ impl GatewayAdmin for AdminService {
                     Status::invalid_argument(format!(
                         "program ingestion failed (source: {}, size: {} bytes): {e}; \
                          check that the BPF program compiles for the sonde target",
-                        source_filename.as_deref().unwrap_or("<unknown>"),
-                        image_size,
+                        display_source, image_size,
                     ))
                 })?
         } else if cfg!(debug_assertions) {
@@ -689,8 +690,7 @@ impl GatewayAdmin for AdminService {
                 .map_err(|e| {
                     Status::invalid_argument(format!(
                         "unverified program ingestion failed (source: {}, size: {} bytes): {e}",
-                        source_filename.as_deref().unwrap_or("<unknown>"),
-                        image_size,
+                        display_source, image_size,
                     ))
                 })?
         } else {
@@ -700,23 +700,23 @@ impl GatewayAdmin for AdminService {
                 "program ingestion failed (source: {}, size: {} bytes): \
                  non-ELF program images are not accepted in this build; \
                  submit an ELF binary so the gateway can verify it with Prevail",
-                source_filename.as_deref().unwrap_or("<unknown>"),
-                image_size,
+                display_source, image_size,
             )));
         };
 
         record.abi_version = req.abi_version;
-        record.source_filename = req.source_filename.clone();
+        record.source_filename = normalized_source_filename;
         let hash_hex = fmt_hex(&record.hash);
         let resp = IngestProgramResponse {
             program_hash: record.hash.clone(),
             program_size: record.size,
         };
         self.storage.store_program(&record).await.map_err(|e| {
+            let display_source = record.source_filename.as_deref().unwrap_or("<unknown>");
             storage_err_with_context(
                 &format!(
                     "store program (hash: {hash_hex}, source: {})",
-                    source_filename.as_deref().unwrap_or("<unknown>"),
+                    display_source,
                 ),
                 e,
             )
@@ -728,7 +728,11 @@ impl GatewayAdmin for AdminService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ListProgramsResponse>, Status> {
-        let mut programs = self.storage.list_programs().await.map_err(storage_err)?;
+        let mut programs = self
+            .storage
+            .list_program_summary_records()
+            .await
+            .map_err(storage_err)?;
         programs.sort_by(|a, b| a.hash.cmp(&b.hash));
         let programs = programs
             .iter()

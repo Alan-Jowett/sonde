@@ -147,7 +147,7 @@ prevents accidental execution in scripts that forget to pass `--yes`.
 
 ---
 
-### ADMIN-0105  Verbose error diagnostics
+### ADMIN-0105  Verbose diagnostics
 
 **Priority:** Should
 **Source:** GW-1305 (verifier diagnostics)
@@ -158,13 +158,17 @@ contains multi-line diagnostics (e.g., Prevail verifier invariants), the
 default (non-verbose) output shows only the summary line and first error, plus
 a hint to re-run with `--verbose`. In verbose mode, the full error message is
 displayed. Single-line error messages are always displayed in full regardless
-of `--verbose`.
+of `--verbose`. For human-readable node-status commands, verbose mode also
+shows the authoritative program hash alongside any human-friendly filename
+identifier derived from stored program metadata.
 
 **Acceptance criteria:**
 
 1. Without `--verbose`, multi-line gRPC errors show summary + first error + hint.
 2. With `--verbose`, multi-line gRPC errors show the complete message.
 3. Single-line errors display identically in both modes.
+4. For human-readable node-status output, `--verbose` includes the underlying
+   program hash alongside the displayed filename when a filename is available.
 
 ---
 
@@ -212,8 +216,12 @@ rather than crashing.
 
 **Description:**
 `sonde-admin node list` MUST list all registered nodes. Text output shows
-node ID, key hint, assigned/current program hashes, battery, last seen when
-known, and schedule. An empty registry displays "No nodes registered."
+node ID, key hint, assigned/current program identifiers, battery, last seen
+when known, and schedule. For assigned/current programs, the default
+human-readable identifier is the stored `source_filename` basename when
+available; otherwise the hash is shown. In `--verbose` mode, human-readable
+output also shows the corresponding hash. JSON output remains hash-based. An
+empty registry displays "No nodes registered."
 
 **Acceptance criteria:**
 
@@ -221,6 +229,11 @@ known, and schedule. An empty registry displays "No nodes registered."
 2. JSON mode returns an array of node objects.
 3. Empty registry prints "No nodes registered." in text mode.
 4. Optional fields such as battery and last seen are omitted from text output when absent.
+5. Default text output shows `source_filename` basenames for assigned/current
+   programs when available, never full paths, and falls back to the hash when
+   filename metadata is unavailable.
+6. `--verbose` text output includes the underlying assigned/current program
+   hashes alongside any displayed filename.
 
 ---
 
@@ -230,12 +243,21 @@ known, and schedule. An empty registry displays "No nodes registered."
 **Source:** GW-0801
 
 **Description:**
-`sonde-admin node get <node-id>` MUST display details for a single node.
+`sonde-admin node get <node-id>` MUST display details for a single node. In
+human-readable output, assigned/current programs use the stored
+`source_filename` basename when available and fall back to the hash when no
+filename metadata exists. `--verbose` also shows the corresponding hash. JSON
+output remains hash-based.
 
 **Acceptance criteria:**
 
 1. Returns node details matching the specified ID.
 2. Non-existent node ID returns a gRPC error.
+3. Default text output uses the stored `source_filename` basename for any
+   assigned/current program when available, never a full path, and otherwise
+   shows the hash.
+4. `--verbose` text output includes the underlying assigned/current program
+   hashes alongside any displayed filename.
 
 ---
 
@@ -414,16 +436,24 @@ diagnostic program for a node. The program hash is hex-decoded.
 
 **Description:**
 `sonde-admin status <node-id>` MUST display the current status of a node
-including: node ID, current program hash, battery voltage (mV), firmware ABI
-version, runtime last seen timestamp (formatted per ADMIN-0107), and active
-session indicator. `last seen` is absent until the node completes a WAKE in
-the current gateway process.
+including: node ID, current program identifier, battery voltage (mV), firmware
+ABI version, runtime last seen timestamp (formatted per ADMIN-0107), and
+active session indicator. In default human-readable output, the current
+program identifier is the stored `source_filename` basename when available,
+otherwise the hash. `--verbose` also shows the current program hash. JSON
+output remains hash-based. `last seen` is absent until the node completes a
+WAKE in the current gateway process.
 
 **Acceptance criteria:**
 
 1. Displays all status fields.
 2. Optional fields (battery, ABI, last seen) are omitted from text output when absent.
 3. JSON mode includes all fields with null for absent optional values.
+4. Default text output uses the stored `source_filename` basename for the
+   current program when available, never a full path, and otherwise shows the
+   hash.
+5. `--verbose` text output includes the current program hash alongside any
+   displayed filename.
 
 ---
 

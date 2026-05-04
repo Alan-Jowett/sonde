@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use async_trait::async_trait;
+use sonde_protocol::normalize_display_filename;
 use tokio::sync::RwLock;
 
 use crate::gateway_identity::GatewayIdentity;
@@ -43,6 +44,26 @@ pub struct HandlerRecord {
     pub reply_timeout_ms: Option<u64>,
 }
 
+/// Lightweight program metadata for human-facing displays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramDisplayRecord {
+    pub hash: Vec<u8>,
+    pub source_filename: Option<String>,
+}
+
+/// Program metadata for admin/program listings.
+///
+/// Backends can override `list_program_summary_records()` to avoid loading image
+/// blobs when serving metadata-only listings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgramSummaryRecord {
+    pub hash: Vec<u8>,
+    pub size: u32,
+    pub verification_profile: crate::program::VerificationProfile,
+    pub abi_version: Option<u32>,
+    pub source_filename: Option<String>,
+}
+
 /// Abstract storage backend for node registry and program library.
 #[async_trait]
 pub trait Storage: Send + Sync {
@@ -62,6 +83,35 @@ pub trait Storage: Send + Sync {
     async fn store_program(&self, record: &ProgramRecord) -> Result<(), StorageError>;
     async fn delete_program(&self, hash: &[u8]) -> Result<(), StorageError>;
     async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError>;
+    async fn list_program_summary_records(
+        &self,
+    ) -> Result<Vec<ProgramSummaryRecord>, StorageError> {
+        Ok(self
+            .list_programs()
+            .await?
+            .into_iter()
+            .map(|program| ProgramSummaryRecord {
+                hash: program.hash,
+                size: program.size,
+                verification_profile: program.verification_profile,
+                abi_version: program.abi_version,
+                source_filename: program.source_filename,
+            })
+            .collect())
+    }
+    async fn list_program_display_records(
+        &self,
+    ) -> Result<Vec<ProgramDisplayRecord>, StorageError> {
+        Ok(self
+            .list_programs()
+            .await?
+            .into_iter()
+            .map(|program| ProgramDisplayRecord {
+                hash: program.hash,
+                source_filename: program.source_filename,
+            })
+            .collect())
+    }
 
     /// Atomically replace all nodes and programs with the given sets.
     ///
@@ -246,7 +296,9 @@ impl Storage for InMemoryStorage {
 
     async fn store_program(&self, record: &ProgramRecord) -> Result<(), StorageError> {
         let mut programs = self.programs.write().await;
-        programs.insert(record.hash.clone(), record.clone());
+        let mut stored = record.clone();
+        stored.source_filename = normalize_display_filename(&stored.source_filename);
+        programs.insert(stored.hash.clone(), stored);
         Ok(())
     }
 
@@ -259,6 +311,35 @@ impl Storage for InMemoryStorage {
     async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError> {
         let programs = self.programs.read().await;
         Ok(programs.values().cloned().collect())
+    }
+
+    async fn list_program_summary_records(
+        &self,
+    ) -> Result<Vec<ProgramSummaryRecord>, StorageError> {
+        let programs = self.programs.read().await;
+        Ok(programs
+            .values()
+            .map(|program| ProgramSummaryRecord {
+                hash: program.hash.clone(),
+                size: program.size,
+                verification_profile: program.verification_profile.clone(),
+                abi_version: program.abi_version,
+                source_filename: program.source_filename.clone(),
+            })
+            .collect())
+    }
+
+    async fn list_program_display_records(
+        &self,
+    ) -> Result<Vec<ProgramDisplayRecord>, StorageError> {
+        let programs = self.programs.read().await;
+        Ok(programs
+            .values()
+            .map(|program| ProgramDisplayRecord {
+                hash: program.hash.clone(),
+                source_filename: program.source_filename.clone(),
+            })
+            .collect())
     }
 
     // ── Gateway identity ───────────────────────────────────────

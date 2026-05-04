@@ -17,8 +17,10 @@ use tokio::sync::RwLock;
 use sonde_admin::grpc_client::AdminClient;
 use sonde_gateway::admin::AdminService;
 use sonde_gateway::engine::PendingCommand;
+use sonde_gateway::program::{ProgramRecord, VerificationProfile};
+use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
-use sonde_gateway::storage::InMemoryStorage;
+use sonde_gateway::storage::{InMemoryStorage, Storage};
 
 // ── Test harness ────────────────────────────────────────────────────────────
 
@@ -92,6 +94,66 @@ async fn start_server(test_name: &str) -> String {
             Err(e) => panic!("failed to connect to admin server: {e}"),
         }
     }
+}
+
+/// Start an admin gRPC server backed by a caller-owned storage handle.
+async fn start_server_with_storage(test_name: &str) -> (String, Arc<InMemoryStorage>) {
+    let storage = Arc::new(InMemoryStorage::new());
+    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    let admin = AdminService::new(storage.clone(), pending, session_manager);
+
+    let endpoint = unique_endpoint(test_name);
+    let server_endpoint = endpoint.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = sonde_gateway::admin::serve_admin(admin, &server_endpoint).await {
+            eprintln!("admin server ended: {e}");
+        }
+    });
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match AdminClient::connect(&endpoint).await {
+            Ok(_) => return (endpoint, storage),
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(e) => panic!("failed to connect to admin server: {e}"),
+        }
+    }
+}
+
+async fn seed_node_with_programs(
+    storage: &Arc<InMemoryStorage>,
+    node_id: &str,
+    key_hint: u16,
+    assigned_program_hash: Option<Vec<u8>>,
+    current_program_hash: Option<Vec<u8>>,
+) {
+    let mut node = NodeRecord::new(node_id.to_string(), key_hint, [0xAA; 32]);
+    node.assigned_program_hash = assigned_program_hash;
+    node.current_program_hash = current_program_hash;
+    storage.upsert_node(&node).await.unwrap();
+}
+
+async fn seed_program(
+    storage: &Arc<InMemoryStorage>,
+    hash: Vec<u8>,
+    source_filename: Option<&str>,
+) {
+    storage
+        .store_program(&ProgramRecord {
+            size: 1,
+            image: vec![0x00],
+            hash,
+            verification_profile: VerificationProfile::Resident,
+            abi_version: None,
+            source_filename: source_filename.map(str::to_string),
+        })
+        .await
+        .unwrap();
 }
 
 #[cfg(debug_assertions)]
@@ -221,7 +283,12 @@ async fn grpc_ingest_list_program() {
 
     // Profile 1 = Resident (sonde_admin::pb::VerificationProfile::Resident).
     let (hash, size) = client
-        .ingest_program(cbor.clone(), 1, None, None)
+        .ingest_program(
+            cbor.clone(),
+            1,
+            None,
+            Some(r"C:\captures\temp-reader.o".to_string()),
+        )
         .await
         .unwrap();
     assert!(!hash.is_empty(), "program hash must not be empty");
@@ -230,6 +297,10 @@ async fn grpc_ingest_list_program() {
     let programs = client.list_programs().await.unwrap();
     assert_eq!(programs.len(), 1);
     assert_eq!(programs[0].hash, hash);
+    assert_eq!(
+        programs[0].source_filename.as_deref(),
+        Some("temp-reader.o")
+    );
 }
 
 /// Test: list_programs on a fresh gateway returns empty.
@@ -497,6 +568,161 @@ async fn cli_node_list_json_output() {
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0]["node_id"], "json-node");
     assert_eq!(nodes[0]["key_hint"], 0x1234);
+}
+
+/// Test: human-readable node status prefers source_filename and falls back to hash.
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_node_status_prefers_source_filename() {
+    let (endpoint, storage) =
+        start_server_with_storage("cli_node_status_prefers_source_filename").await;
+    let named_hash = vec![0x11; 32];
+    let fallback_hash = vec![0x22; 32];
+    let fallback_hash_hex = hex::encode(&fallback_hash);
+    let named_hash_hex = hex::encode(&named_hash);
+    let full_source_path = r"C:\captures\temp-reader.o";
+
+    seed_program(&storage, named_hash.clone(), Some(full_source_path)).await;
+    seed_program(&storage, fallback_hash.clone(), None).await;
+    seed_node_with_programs(
+        &storage,
+        "named-node",
+        0x1001,
+        Some(named_hash.clone()),
+        Some(named_hash.clone()),
+    )
+    .await;
+    seed_node_with_programs(
+        &storage,
+        "fallback-node",
+        0x1002,
+        Some(fallback_hash.clone()),
+        Some(fallback_hash.clone()),
+    )
+    .await;
+
+    let list_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args(["--socket", &endpoint, "node", "list"])
+        .output()
+        .expect("failed to run sonde-admin node list");
+    assert!(list_output.status.success(), "node list should succeed");
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        list_stdout.contains("temp-reader.o"),
+        "named program should use source_filename: {list_stdout}"
+    );
+    assert!(
+        list_stdout.contains(&fallback_hash_hex),
+        "missing source_filename should fall back to hash: {list_stdout}"
+    );
+    assert!(
+        !list_stdout.contains(&named_hash_hex),
+        "default node list should hide the hash when source_filename exists: {list_stdout}"
+    );
+    assert!(
+        !list_stdout.contains(full_source_path),
+        "node list should not render the full source path: {list_stdout}"
+    );
+
+    let get_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args(["--socket", &endpoint, "node", "get", "named-node"])
+        .output()
+        .expect("failed to run sonde-admin node get");
+    assert!(get_output.status.success(), "node get should succeed");
+    let get_stdout = String::from_utf8_lossy(&get_output.stdout);
+    assert!(
+        get_stdout.contains("temp-reader.o"),
+        "node get should use source_filename: {get_stdout}"
+    );
+    assert!(
+        !get_stdout.contains(&named_hash_hex),
+        "default node get should hide the hash when source_filename exists: {get_stdout}"
+    );
+    assert!(
+        !get_stdout.contains(full_source_path),
+        "node get should not render the full source path: {get_stdout}"
+    );
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args(["--socket", &endpoint, "status", "named-node"])
+        .output()
+        .expect("failed to run sonde-admin status");
+    assert!(status_output.status.success(), "status should succeed");
+    let status_stdout = String::from_utf8_lossy(&status_output.stdout);
+    assert!(
+        status_stdout.contains("temp-reader.o"),
+        "status should use source_filename: {status_stdout}"
+    );
+    assert!(
+        !status_stdout.contains(&named_hash_hex),
+        "default status should hide the hash when source_filename exists: {status_stdout}"
+    );
+    assert!(
+        !status_stdout.contains(full_source_path),
+        "status should not render the full source path: {status_stdout}"
+    );
+
+    let json_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args([
+            "--socket",
+            &endpoint,
+            "--format",
+            "json",
+            "status",
+            "named-node",
+        ])
+        .output()
+        .expect("failed to run sonde-admin status --format json");
+    assert!(json_output.status.success(), "JSON status should succeed");
+    let json_stdout = String::from_utf8_lossy(&json_output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json_stdout).expect("stdout must be valid JSON");
+    assert_eq!(parsed["current_program_hash"], named_hash_hex);
+}
+
+/// Test: verbose node status includes hashes alongside source_filename.
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_node_status_verbose_shows_hash() {
+    let (endpoint, storage) = start_server_with_storage("cli_node_status_verbose_shows_hash").await;
+    let named_hash = vec![0x33; 32];
+    let named_hash_hex = hex::encode(&named_hash);
+
+    seed_program(&storage, named_hash.clone(), Some("/tmp/temp-reader.o")).await;
+    seed_node_with_programs(
+        &storage,
+        "named-node",
+        0x2001,
+        Some(named_hash.clone()),
+        Some(named_hash.clone()),
+    )
+    .await;
+
+    for args in [
+        vec!["--socket", &endpoint, "--verbose", "node", "list"],
+        vec![
+            "--socket",
+            &endpoint,
+            "--verbose",
+            "node",
+            "get",
+            "named-node",
+        ],
+        vec!["--socket", &endpoint, "--verbose", "status", "named-node"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+            .args(&args)
+            .output()
+            .expect("failed to run verbose sonde-admin command");
+        assert!(output.status.success(), "verbose command should succeed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("temp-reader.o"),
+            "verbose output should still show source_filename: {stdout}"
+        );
+        assert!(
+            stdout.contains(&named_hash_hex),
+            "verbose output should show the underlying hash: {stdout}"
+        );
+    }
 }
 
 /// Test: non-interactive `node remove` refuses to proceed without `--yes`.

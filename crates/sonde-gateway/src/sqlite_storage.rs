@@ -9,13 +9,14 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use async_trait::async_trait;
 use rusqlite::{params, Connection, OptionalExtension};
+use sonde_protocol::normalize_display_filename;
 use zeroize::Zeroizing;
 
 use crate::gateway_identity::GatewayIdentity;
 use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
 use crate::program::{ProgramRecord, VerificationProfile};
 use crate::registry::{BatteryReading, NodeRecord, SensorDescriptor};
-use crate::storage::{Storage, StorageError};
+use crate::storage::{ProgramDisplayRecord, ProgramSummaryRecord, Storage, StorageError};
 
 /// Encrypted PSK blob length: 12-byte nonce + 32-byte ciphertext + 16-byte GCM tag = 60 bytes.
 const ENCRYPTED_PSK_LEN: usize = 12 + 32 + 16;
@@ -240,6 +241,65 @@ fn decrypt_phone_psk(
         .as_slice()
         .try_into()
         .map_err(|_| StorageError::Internal("decrypted phone psk is not 32 bytes".into()))
+}
+
+fn migrate_program_source_filenames(conn: &mut Connection) -> Result<(), StorageError> {
+    let needs_migration: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM programs
+                WHERE source_filename IS NOT NULL
+                  AND (
+                    instr(source_filename, '/') > 0
+                    OR instr(source_filename, char(92)) > 0
+                    OR source_filename GLOB '[A-Za-z]:*'
+                  )
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(map_err)?;
+    if !needs_migration {
+        return Ok(());
+    }
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| StorageError::Internal(format!("begin source_filename migration tx: {e}")))?;
+
+    let rows: Vec<(Vec<u8>, Option<String>)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT hash, source_filename FROM programs
+                 WHERE source_filename IS NOT NULL
+                   AND (
+                     instr(source_filename, '/') > 0
+                     OR instr(source_filename, char(92)) > 0
+                     OR source_filename GLOB '[A-Za-z]:*'
+                    )",
+            )
+            .map_err(map_err)?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(map_err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_err)?;
+        rows
+    };
+
+    for (hash, source_filename) in rows {
+        let normalized = normalize_display_filename(&source_filename);
+        if normalized != source_filename {
+            tx.execute(
+                "UPDATE programs SET source_filename = ?1 WHERE hash = ?2",
+                params![normalized, hash],
+            )
+            .map_err(map_err)?;
+        }
+    }
+
+    tx.commit()
+        .map_err(|e| StorageError::Internal(format!("commit source_filename migration tx: {e}")))
 }
 
 /// Re-encrypt any legacy plaintext PSK blobs left over from pre-GW-0601a
@@ -523,6 +583,7 @@ impl SqliteStorage {
                     })?;
             }
         }
+        migrate_program_source_filenames(&mut conn)?;
         // Migration: add BLE pairing columns to nodes table if they don't exist.
         // Each column is checked and added independently to handle partial migrations.
         {
@@ -1064,7 +1125,8 @@ impl Storage for SqliteStorage {
     }
 
     async fn store_program(&self, record: &ProgramRecord) -> Result<(), StorageError> {
-        let record = record.clone();
+        let mut record = record.clone();
+        record.source_filename = normalize_display_filename(&record.source_filename);
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO programs (hash, image, size, verification_profile, abi_version, source_filename) \
@@ -1143,6 +1205,66 @@ impl Storage for SqliteStorage {
         .await
     }
 
+    async fn list_program_summary_records(
+        &self,
+    ) -> Result<Vec<ProgramSummaryRecord>, StorageError> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT hash, size, verification_profile, abi_version, source_filename FROM programs",
+                )
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let profile_str: String = row.get(2)?;
+                    Ok((row.get(0)?, row.get(1)?, profile_str, row.get(3)?, row.get(4)?))
+                })
+                .map_err(map_err)?;
+            let mut programs = Vec::new();
+            for row in rows {
+                let (hash, size, profile_str, abi_version, source_filename): (
+                    Vec<u8>,
+                    u32,
+                    String,
+                    Option<u32>,
+                    Option<String>,
+                ) = row.map_err(map_err)?;
+                programs.push(ProgramSummaryRecord {
+                    hash,
+                    size,
+                    verification_profile: parse_profile(&profile_str)?,
+                    abi_version,
+                    source_filename: normalize_display_filename(&source_filename),
+                });
+            }
+            Ok(programs)
+        })
+        .await
+    }
+
+    async fn list_program_display_records(
+        &self,
+    ) -> Result<Vec<ProgramDisplayRecord>, StorageError> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT hash, source_filename FROM programs")
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(map_err)?;
+            let mut programs = Vec::new();
+            for row in rows {
+                let (hash, source_filename): (Vec<u8>, Option<String>) = row.map_err(map_err)?;
+                programs.push(ProgramDisplayRecord {
+                    hash,
+                    source_filename: normalize_display_filename(&source_filename),
+                });
+            }
+            Ok(programs)
+        })
+        .await
+    }
+
     async fn replace_state(
         &self,
         nodes: &[NodeRecord],
@@ -1159,6 +1281,8 @@ impl Storage for SqliteStorage {
                 conn.execute("DELETE FROM programs", []).map_err(map_err)?;
 
                 for record in &programs {
+                    let normalized_source_filename =
+                        normalize_display_filename(&record.source_filename);
                     conn.execute(
                         "INSERT INTO programs (hash, image, size, verification_profile, abi_version, source_filename) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1168,7 +1292,7 @@ impl Storage for SqliteStorage {
                             record.size,
                             profile_to_str(&record.verification_profile),
                             record.abi_version,
-                            &record.source_filename,
+                            &normalized_source_filename,
                         ],
                     )
                     .map_err(map_err)?;
@@ -1820,7 +1944,7 @@ mod tests {
 
         // Program with a source filename.
         let mut prog_with = make_program(0x10);
-        prog_with.source_filename = Some("tmp102_sensor.o".to_string());
+        prog_with.source_filename = Some(r"C:\captures\tmp102_sensor.o".to_string());
         store.store_program(&prog_with).await.unwrap();
 
         let fetched = store.get_program(&prog_with.hash).await.unwrap().unwrap();
@@ -1846,6 +1970,62 @@ mod tests {
             with_fn[0].source_filename.as_deref(),
             Some("tmp102_sensor.o")
         );
+    }
+
+    #[tokio::test]
+    async fn test_program_source_filename_migrates_legacy_paths_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("program-source-filename-migration.db");
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute(
+                "INSERT INTO programs (hash, image, size, verification_profile, abi_version, source_filename) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    vec![0x55u8; 32],
+                    vec![0x01u8, 0x02u8],
+                    2u32,
+                    "Resident",
+                    Option::<u32>::None,
+                    r"C:\captures\legacy-program.o",
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO programs (hash, image, size, verification_profile, abi_version, source_filename) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    vec![0x66u8; 32],
+                    vec![0x03u8, 0x04u8],
+                    2u32,
+                    "Resident",
+                    Option::<u32>::None,
+                    "C:drive-relative.o",
+                ],
+            )
+            .unwrap();
+        }
+
+        let store = SqliteStorage::open(&path, test_key()).unwrap();
+        let programs = store.list_programs().await.unwrap();
+        assert_eq!(programs.len(), 2);
+        let filenames: Vec<_> = programs
+            .iter()
+            .map(|program| program.source_filename.as_deref())
+            .collect();
+        assert!(filenames.contains(&Some("legacy-program.o")));
+        assert!(filenames.contains(&Some("drive-relative.o")));
+
+        let display_records = store.list_program_display_records().await.unwrap();
+        assert_eq!(display_records.len(), 2);
+        let display_filenames: Vec<_> = display_records
+            .iter()
+            .map(|program| program.source_filename.as_deref())
+            .collect();
+        assert!(display_filenames.contains(&Some("legacy-program.o")));
+        assert!(display_filenames.contains(&Some("drive-relative.o")));
     }
 
     #[tokio::test]

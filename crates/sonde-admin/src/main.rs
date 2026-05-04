@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::process;
 
@@ -9,6 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use sonde_admin::format_epoch_ms;
 use sonde_admin::grpc_client::AdminClient;
 use sonde_admin::pb;
+use sonde_protocol::normalize_display_filename;
 
 #[derive(Parser)]
 #[command(name = "sonde-admin", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("SONDE_GIT_COMMIT"), ")"), about = "Sonde gateway administration CLI")]
@@ -383,9 +385,12 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     } else {
                         if nodes.is_empty() {
                             println!("No nodes registered.");
+                            return Ok(());
                         }
+                        let program_names =
+                            load_program_name_map_for_display(client, cli.verbose).await;
                         for n in &nodes {
-                            print_node(n);
+                            print_node(n, &program_names, cli.verbose);
                         }
                     }
                 }
@@ -394,7 +399,9 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     if json {
                         print_json(&node_to_json(&node))?;
                     } else {
-                        print_node(&node);
+                        let program_names =
+                            load_program_name_map_for_display(client, cli.verbose).await;
+                        print_node(&node, &program_names, cli.verbose);
                     }
                 }
                 NodeAction::Register {
@@ -580,8 +587,16 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     "has_active_session": status.has_active_session,
                 }))?;
             } else {
+                let program_names = load_program_name_map_for_display(client, cli.verbose).await;
                 println!("Node:     {}", status.node_id);
-                println!("Program:  {}", hex::encode(&status.current_program_hash));
+                println!(
+                    "Program:  {}",
+                    format_program_identifier(
+                        &status.current_program_hash,
+                        &program_names,
+                        cli.verbose,
+                    )
+                );
                 if let Some(mv) = status.battery_mv {
                     println!("Battery:  {mv} mV");
                 }
@@ -889,13 +904,69 @@ fn print_json(value: &impl serde::Serialize) -> Result<(), serde_json::Error> {
     Ok(())
 }
 
-fn print_node(n: &pb::NodeInfo) {
+async fn load_program_name_map(
+    client: &mut AdminClient,
+) -> Result<HashMap<Vec<u8>, String>, tonic::Status> {
+    let programs = client.list_programs().await?;
+    Ok(programs
+        .into_iter()
+        .filter_map(|program| {
+            normalize_display_filename(&program.source_filename).map(|name| (program.hash, name))
+        })
+        .collect())
+}
+
+fn program_name_map_for_display(
+    result: Result<HashMap<Vec<u8>, String>, tonic::Status>,
+    verbose: bool,
+) -> HashMap<Vec<u8>, String> {
+    match result {
+        Ok(program_names) => program_names,
+        Err(error) => {
+            if verbose {
+                eprintln!("Warning: failed to load program metadata; showing hashes only: {error}");
+            } else {
+                eprintln!(
+                    "Warning: failed to load program metadata; showing hashes only. Run with --verbose for details."
+                );
+            }
+            HashMap::new()
+        }
+    }
+}
+
+async fn load_program_name_map_for_display(
+    client: &mut AdminClient,
+    verbose: bool,
+) -> HashMap<Vec<u8>, String> {
+    program_name_map_for_display(load_program_name_map(client).await, verbose)
+}
+
+fn format_program_identifier(
+    hash: &[u8],
+    program_names: &HashMap<Vec<u8>, String>,
+    verbose: bool,
+) -> String {
+    match program_names.get(hash) {
+        Some(name) if verbose => format!("{} ({})", name, hex::encode(hash)),
+        Some(name) => name.clone(),
+        None => hex::encode(hash),
+    }
+}
+
+fn print_node(n: &pb::NodeInfo, program_names: &HashMap<Vec<u8>, String>, verbose: bool) {
     println!("  {} (key_hint={})", n.node_id, n.key_hint);
     if !n.assigned_program_hash.is_empty() {
-        println!("    assigned: {}", hex::encode(&n.assigned_program_hash));
+        println!(
+            "    assigned: {}",
+            format_program_identifier(&n.assigned_program_hash, program_names, verbose)
+        );
     }
     if !n.current_program_hash.is_empty() {
-        println!("    current:  {}", hex::encode(&n.current_program_hash));
+        println!(
+            "    current:  {}",
+            format_program_identifier(&n.current_program_hash, program_names, verbose)
+        );
     }
     if let Some(mv) = n.last_battery_mv {
         println!("    battery:  {mv} mV");
@@ -926,5 +997,20 @@ fn profile_name(v: i32) -> &'static str {
         1 => "resident",
         2 => "ephemeral",
         _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn program_name_map_for_display_falls_back_to_empty_map() {
+        let program_names = program_name_map_for_display(
+            Err(tonic::Status::internal("program metadata unavailable")),
+            false,
+        );
+
+        assert!(program_names.is_empty());
     }
 }

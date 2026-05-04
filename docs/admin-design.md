@@ -106,7 +106,7 @@ platform stream in `hyper_util::rt::TokioIo` for HTTP/2 framing.
 | `--socket` | `String` | Platform-dependent (see §4.1) | Gateway endpoint |
 | `--format` | `text \| json` | `text` | Output format |
 | `--yes` / `-y` | `bool` | `false` | Skip confirmation prompts |
-| `--verbose` / `-v` | `bool` | `false` | Show full error diagnostics |
+| `--verbose` / `-v` | `bool` | `false` | Show full error diagnostics and extra node-status hash detail |
 
 ### 5.2  Subcommand tree
 
@@ -186,20 +186,36 @@ or out-of-range values produce `<invalid timestamp: {value}>`.
 ### 6.3  Hex encoding
 
 Program hashes and PSKs are displayed as lowercase hex strings via
-`hex::encode()`.
+`hex::encode()` whenever a hash is shown.
 
 ### 6.4  Node display
 
-The `print_node()` helper displays: node ID, key hint, assigned program hash,
-current program hash, battery (mV), last seen (formatted), and schedule
-interval. Optional fields are omitted when absent.
+The `print_node()` helper displays: node ID, key hint, assigned/current
+program identifiers, battery (mV), last seen (formatted), and schedule
+interval. For human-readable output, assigned/current program identifiers are
+resolved from stored program metadata: use the program's `source_filename`
+basename when available, otherwise display the hash. In `--verbose` mode, show
+the hash alongside any displayed filename. Optional fields are omitted when
+absent. JSON output remains hash-based.
+
+To preserve the existing hash-based admin API, human-readable node-status
+commands resolve filenames client-side. The CLI fetches the node-oriented RPC
+response (`ListNodes`, `GetNode`, or `GetNodeStatus`) and, for text output
+only, also queries `ListPrograms` to build a hash → `source_filename` map. It
+then renders each assigned/current program field as:
+
+1. `source_filename` basename when present in the program map
+2. otherwise the hash from the node-oriented RPC response
+
+JSON output does not perform this substitution and continues to serialize the
+hash fields returned by the node-oriented RPC response.
 
 ### 6.5  Command → RPC → output matrix
 
 | Command | gRPC RPC | Confirmation | JSON fields | Text format |
 |---------|----------|-------------|-------------|-------------|
-| `node list` | `ListNodes` | — | `[{node_id, key_hint, ...}]` | Per-node detail block |
-| `node get` | `GetNode` | — | `{node_id, key_hint, ...}` | Detail block |
+| `node list` | `ListNodes` | — | `[{node_id, key_hint, ...}]` | Per-node detail block (filenames by default; hashes also with `--verbose`) |
+| `node get` | `GetNode` | — | `{node_id, key_hint, ...}` | Detail block (filenames by default; hashes also with `--verbose`) |
 | `node register` | `RegisterNode` | — | `{node_id}` | "Registered node: {id}" |
 | `node remove` | `RemoveNode` | Yes | `{removed}` | "Removed node: {id}" |
 | `node factory-reset` | `FactoryReset` | Yes | `{factory_reset}` | "Factory reset node: {id}" |
@@ -210,7 +226,7 @@ interval. Optional fields are omitted when absent.
 | `schedule set` | `SetSchedule` | — | `{node_id, interval_s}` | "Set schedule for {id}: {s}s" |
 | `reboot` | `QueueReboot` | — | `{queued, node_id}` | "Queued reboot for node: {id}" |
 | `ephemeral` | `QueueEphemeral` | — | `{queued, node_id, program_hash}` | "Queued ephemeral program ..." |
-| `status` | `GetNodeStatus` | — | `{node_id, current_program_hash, ...}` | Multi-line status |
+| `status` | `GetNodeStatus` | — | `{node_id, current_program_hash, ...}` | Multi-line status (filename by default; hash also with `--verbose`) |
 | `state export` | `ExportState` | — | `{exported_bytes, file}` | "Exported {n} bytes to {file}" |
 | `state import` | `ImportState` | Yes | `{imported: true, file}` | "Imported state from {file}" |
 | `modem status` | `GetModemStatus` | — | `{channel, tx_count, ...}` | Multi-line status |

@@ -1597,6 +1597,42 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0816a  Admin CLI human-readable node-status output prefers `source_filename` and falls back to hash
+
+**Validates:** ADMIN-0200, ADMIN-0201, ADMIN-0403, GW-0400, GW-0402
+
+**Procedure:**
+1. Start a gateway instance with the admin socket enabled.
+2. Arrange node state for two nodes so human-readable node-status commands exercise both resolution paths:
+   - node A has assigned/current program hashes that reference a stored program record with `source_filename = "temp-reader.o"`.
+   - node B has assigned/current program hashes that reference a stored program record with no `source_filename`.
+3. Run `sonde-admin node list`.
+4. Assert: node A's assigned/current program fields show `temp-reader.o`, never a full path.
+5. Assert: node B's assigned/current program fields show the hash because filename metadata is unavailable.
+6. Run `sonde-admin node get <node-a-id>`.
+7. Assert: assigned/current program fields show `temp-reader.o`, never a full path.
+8. Run `sonde-admin status <node-a-id>`.
+9. Assert: the current program field shows `temp-reader.o`, never a full path.
+10. Run `sonde-admin --format json node get <node-a-id>` and `sonde-admin --format json status <node-a-id>`.
+11. Assert: JSON output remains hash-based.
+
+---
+
+### T-0816b  Admin CLI verbose node-status output includes hashes alongside filenames
+
+**Validates:** ADMIN-0105, ADMIN-0200, ADMIN-0201, ADMIN-0403
+
+**Procedure:**
+1. Start a gateway instance with node state matching T-0816a, including a node whose program record has `source_filename = "temp-reader.o"`.
+2. Run `sonde-admin --verbose node list`.
+3. Assert: for the filename-backed node, assigned/current program fields include both `temp-reader.o` and the underlying hash.
+4. Run `sonde-admin --verbose node get <node-a-id>`.
+5. Assert: assigned/current program fields include both `temp-reader.o` and the underlying hash.
+6. Run `sonde-admin --verbose status <node-a-id>`.
+7. Assert: the current program field includes both `temp-reader.o` and the underlying hash.
+
+---
+
 ### T-0817  Admin CLI error handling
 
 **Validates:** GW-0806
@@ -1910,10 +1946,11 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Start a gateway instance with a mock modem and complete the startup handshake.
-2. Populate storage with at least two nodes whose metadata exercises optional fields: assigned/current program hashes, battery, last seen, and schedule on one node, and at least one omitted optional field on another.
+2. Populate storage with at least two nodes whose metadata exercises optional fields: assigned/current program identifiers, battery, last seen, and schedule on one node, and at least one omitted optional field on another. At least one displayed program must have `source_filename` metadata and at least one displayed program must exercise hash fallback.
 3. Inject `EVENT_BUTTON(BUTTON_SHORT)` twice while no BLE pairing session is active so the second page shown is `Nodes`.
 4. Reassemble the first visible `Nodes` page framebuffer.
-5. Assert: the rendered text uses `node_id`, assigned/current program hashes, battery, last seen, and schedule in `node_id` order; omits absent optional fields; excludes `key_hint`; formats `last seen` in local time with locale-style date/time output; and renders each displayed field as a left-aligned property line followed by a left-aligned `- value` line.
+5. Assert: the rendered text uses `node_id`, assigned/current program identifiers, battery, last seen, and schedule in `node_id` order; omits absent optional fields; excludes `key_hint`; formats `last seen` in local time with locale-style date/time output; and renders each displayed field as a left-aligned property line followed by a left-aligned `- value` line.
+6. Assert: when a displayed program has `source_filename`, the rendered identifier is that basename and never a full path; when `source_filename` is absent, the rendered identifier is the hash.
 
 ---
 
@@ -3128,8 +3165,8 @@ A configurable stub handler process (or in-process mock) that:
 1. Exit code 0.
 2. `sonde-admin program list` shows the ingested program.
 3. `sonde-admin handler list` shows the configured handler.
-4. `sonde-admin node get sensor-1` shows `assigned_program_hash` matching the program.
-5. `sonde-admin node get sensor-2` shows `assigned_program_hash` matching the program.
+4. `sonde-admin --verbose node get sensor-1` shows the assigned program hash matching the deployed program.
+5. `sonde-admin --verbose node get sensor-2` shows the assigned program hash matching the deployed program.
 6. Output includes deploy summary with counts.
 
 ---

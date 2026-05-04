@@ -557,7 +557,7 @@ Implements a minimal Type-Length-Value envelope used for BLE GATT messages in th
 
 Implements encoding and decoding for `DIAG_REQUEST` (`msg_type` 0x06) and `DIAG_REPLY` (`msg_type` 0x85) messages, and for the BLE `RUN_TEST_COMMAND` / `RUN_TEST_ACK` / `READ_TEST_RESULT` / `TEST_RESULT` envelopes.
 
-> **Requirements:** ND-1100 (BLE diagnostic relay command), GW-1700 (DIAG_REQUEST reception), GW-1704 (DIAG_REPLY construction), PT-1301 (diagnostic request construction), PT-1302 (BLE diagnostic relay).
+> **Requirements:** ND-1100 (Generic BLE pre-provisioning test command), ND-1101 (Test-command acknowledgement and staging), ND-1104 (Latest-result retention and explicit readback), ND-1105 (Diagnostic result contents), ND-1107 (Test-command format extensibility), GW-1700 (DIAG_REQUEST reception), GW-1704 (DIAG_REPLY construction), PT-0411 (RUN_TEST_COMMAND construction and acknowledgement), PT-0412 (Explicit pre-provisioning test-result readback), PT-0413 (Diagnostic result interpretation), PT-0415 (Generic pre-provisioning test-command model).
 
 ### 12.1  ESP-NOW diagnostic messages
 
@@ -608,8 +608,8 @@ Deterministic CBOR map:
 
 **Public API:**
 
-- `encode_run_test_command(test_type: u64, rf_channel: Option<u8>, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `RUN_TEST_COMMAND` body. For the initial `DIAG_FRAME` test type, validates `rf_channel` ∈ 1–13 and `payload.len()` ≤ `MAX_FRAME_SIZE`. Wrap the returned body with `encode_ble_envelope(...)` to produce the full BLE `TYPE | LEN | BODY` message.
-- `decode_run_test_command(body: &[u8]) -> Result<RunTestCommand<'_>, DecodeError>` — decode a `RUN_TEST_COMMAND` body, validating required fields, channel range for `DIAG_FRAME`, payload size, and rejecting trailing bytes.
+- `encode_run_test_command(test_type: u64, rf_channel: Option<u8>, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `RUN_TEST_COMMAND` body. For the initial `DIAG_FRAME` test type, validates that `rf_channel` is present and in 1–13, `payload` is non-empty, and `payload.len()` ≤ `MAX_FRAME_SIZE`. Wrap the returned body with `encode_ble_envelope(...)` to produce the full BLE `TYPE | LEN | BODY` message.
+- `decode_run_test_command(body: &[u8]) -> Result<RunTestCommand, DecodeError>` — decode a `RUN_TEST_COMMAND` body into an owned `RunTestCommand`, validating required fields, channel range for `DIAG_FRAME`, non-empty `payload`, payload size, and rejecting trailing bytes.
 - `encode_run_test_ack(status: u8) -> Result<Vec<u8>, EncodeError>` — encode a `RUN_TEST_ACK` body.
 - `decode_run_test_ack(body: &[u8]) -> Result<u8, DecodeError>` — decode a `RUN_TEST_ACK` body.
 - `encode_read_test_result() -> Vec<u8>` — encode an empty `READ_TEST_RESULT` body.

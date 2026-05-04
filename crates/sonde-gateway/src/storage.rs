@@ -51,7 +51,10 @@ pub struct ProgramDisplayRecord {
     pub source_filename: Option<String>,
 }
 
-/// Program metadata for admin/program listings without loading image blobs.
+/// Program metadata for admin/program listings.
+///
+/// Backends can override `list_program_summary_records()` to avoid loading image
+/// blobs when serving metadata-only listings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProgramSummaryRecord {
     pub hash: Vec<u8>,

@@ -252,7 +252,7 @@ fn migrate_program_source_filenames(conn: &mut Connection) -> Result<(), Storage
                   AND (
                     instr(source_filename, '/') > 0
                     OR instr(source_filename, char(92)) > 0
-                    OR source_filename GLOB '[A-Za-z]:'
+                    OR source_filename GLOB '[A-Za-z]:*'
                   )
             )",
             [],
@@ -275,8 +275,8 @@ fn migrate_program_source_filenames(conn: &mut Connection) -> Result<(), Storage
                    AND (
                      instr(source_filename, '/') > 0
                      OR instr(source_filename, char(92)) > 0
-                     OR source_filename GLOB '[A-Za-z]:'
-                   )",
+                     OR source_filename GLOB '[A-Za-z]:*'
+                    )",
             )
             .map_err(map_err)?;
         let rows = stmt
@@ -1993,22 +1993,39 @@ mod tests {
                 ],
             )
             .unwrap();
+            conn.execute(
+                "INSERT INTO programs (hash, image, size, verification_profile, abi_version, source_filename) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    vec![0x66u8; 32],
+                    vec![0x03u8, 0x04u8],
+                    2u32,
+                    "Resident",
+                    Option::<u32>::None,
+                    "C:drive-relative.o",
+                ],
+            )
+            .unwrap();
         }
 
         let store = SqliteStorage::open(&path, test_key()).unwrap();
         let programs = store.list_programs().await.unwrap();
-        assert_eq!(programs.len(), 1);
-        assert_eq!(
-            programs[0].source_filename.as_deref(),
-            Some("legacy-program.o")
-        );
+        assert_eq!(programs.len(), 2);
+        let filenames: Vec<_> = programs
+            .iter()
+            .map(|program| program.source_filename.as_deref())
+            .collect();
+        assert!(filenames.contains(&Some("legacy-program.o")));
+        assert!(filenames.contains(&Some("drive-relative.o")));
 
         let display_records = store.list_program_display_records().await.unwrap();
-        assert_eq!(display_records.len(), 1);
-        assert_eq!(
-            display_records[0].source_filename.as_deref(),
-            Some("legacy-program.o")
-        );
+        assert_eq!(display_records.len(), 2);
+        let display_filenames: Vec<_> = display_records
+            .iter()
+            .map(|program| program.source_filename.as_deref())
+            .collect();
+        assert!(display_filenames.contains(&Some("legacy-program.o")));
+        assert!(display_filenames.contains(&Some("drive-relative.o")));
     }
 
     #[tokio::test]

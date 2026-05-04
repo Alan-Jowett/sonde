@@ -133,7 +133,7 @@ unsafe extern "C" fn raw_recv_cb(
         return;
     }
     let payload = unsafe { core::slice::from_raw_parts(data, len) };
-    let rssi_dbm = unsafe { (*(*recv_info).rx_ctrl).rssi };
+    let rssi_dbm = unsafe { (*(*recv_info).rx_ctrl).rssi() };
     if let Some(state) = RECV_STATE.get() {
         let enqueued = {
             // Match try_lock errors explicitly: recover on Poisoned so

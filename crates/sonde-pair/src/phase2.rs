@@ -429,6 +429,12 @@ pub async fn check_rssi(
 
     match result.status {
         sonde_protocol::TEST_RESULT_OK => {
+            if result.test_type != Some(PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME) {
+                return Err(PairingError::DiagnosticFailed(format!(
+                    "unexpected test result type: {:?}",
+                    result.test_type
+                )));
+            }
             let reply_frame = result.reply_frame.as_deref().ok_or_else(|| {
                 PairingError::DiagnosticFailed("missing raw DIAG_REPLY frame".into())
             })?;
@@ -1102,6 +1108,27 @@ mod tests {
         assert_eq!(result.node_reply_rssi_dbm, -67);
         assert_eq!(result.attempt_count, 2);
         assert_eq!(result.elapsed_ms, 4_300);
+    }
+
+    #[tokio::test]
+    async fn check_rssi_rejects_unexpected_test_result_type() {
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(encode_ack_response(sonde_protocol::RUN_TEST_ACK_OK)));
+        transport.queue_response(Ok(encode_test_result_response(
+            &sonde_protocol::TestResult {
+                status: sonde_protocol::TEST_RESULT_OK,
+                test_type: Some(0x99),
+                reply_frame: Some(vec![0xAA; 32]),
+                reply_rssi_dbm: Some(-67),
+                attempt_count: 1,
+                elapsed_ms: 900,
+            },
+        )));
+        let store = mock_store();
+
+        let result = check_rssi(&mut transport, &store, &[0xAA; 6]).await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unexpected test result type"), "unexpected error: {err}");
     }
 
     #[tokio::test]

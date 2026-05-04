@@ -407,10 +407,17 @@ fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
                             && frame.data[sonde_protocol::OFFSET_MSG_TYPE]
                                 == sonde_protocol::MSG_DIAG_REPLY =>
                     {
+                        let Some(reply_rssi_dbm) = frame.rssi_dbm else {
+                            return execution_error_result(
+                                command.test_type,
+                                attempt_count,
+                                clock.elapsed_ms().saturating_sub(start_ms),
+                            );
+                        };
                         return success_result(
                             command.test_type,
                             frame.data,
-                            frame.rssi_dbm,
+                            reply_rssi_dbm,
                             attempt_count,
                             clock.elapsed_ms().saturating_sub(start_ms),
                         );
@@ -430,10 +437,17 @@ fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
                 if frame.data.len() >= sonde_protocol::HEADER_SIZE
                     && frame.data[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_DIAG_REPLY
                 {
+                    let Some(reply_rssi_dbm) = frame.rssi_dbm else {
+                        return execution_error_result(
+                            command.test_type,
+                            attempt_count,
+                            clock.elapsed_ms().saturating_sub(start_ms),
+                        );
+                    };
                     return success_result(
                         command.test_type,
                         frame.data,
-                        frame.rssi_dbm,
+                        reply_rssi_dbm,
                         attempt_count,
                         clock.elapsed_ms().saturating_sub(start_ms),
                     );
@@ -463,7 +477,7 @@ fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
 fn success_result(
     test_type: u64,
     reply_frame: Vec<u8>,
-    reply_rssi_dbm: Option<i8>,
+    reply_rssi_dbm: i8,
     attempt_count: u64,
     elapsed_ms: u64,
 ) -> sonde_protocol::TestResult {
@@ -471,7 +485,7 @@ fn success_result(
         status: sonde_protocol::TEST_RESULT_OK,
         test_type: Some(test_type),
         reply_frame: Some(reply_frame),
-        reply_rssi_dbm,
+        reply_rssi_dbm: Some(reply_rssi_dbm),
         attempt_count,
         elapsed_ms,
     }
@@ -1424,6 +1438,46 @@ mod tests {
         assert_eq!(result.test_type, Some(sonde_protocol::TEST_TYPE_DIAG_FRAME));
         assert_eq!(result.reply_frame, Some(reply.data));
         assert_eq!(result.reply_rssi_dbm, Some(-67));
+        assert_eq!(result.attempt_count, 1);
+        assert!(storage.read_staged_test_command().is_none());
+        assert_eq!(storage.read_test_result(), Some(result));
+    }
+
+    #[test]
+    fn execute_staged_test_command_rejects_success_without_reply_rssi() {
+        let mut storage = MockStorage::new();
+        storage.staged_test_command = Some(StagedTestCommand {
+            test_type: sonde_protocol::TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(6),
+            payload: vec![0x42; 50],
+        });
+        let reply = crate::traits::ReceivedFrame {
+            data: vec![
+                0x12,
+                0x34,
+                sonde_protocol::MSG_DIAG_REPLY,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+            ],
+            rssi_dbm: None,
+        };
+        let mut transport = MockTransport::new(vec![Some(reply)]);
+        let clock = MockClock::default();
+
+        let result = execute_staged_test_command(&mut storage, &mut transport, &clock)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.status, sonde_protocol::TEST_RESULT_EXECUTION_ERROR);
+        assert_eq!(result.test_type, Some(sonde_protocol::TEST_TYPE_DIAG_FRAME));
+        assert!(result.reply_frame.is_none());
+        assert!(result.reply_rssi_dbm.is_none());
         assert_eq!(result.attempt_count, 1);
         assert!(storage.read_staged_test_command().is_none());
         assert_eq!(storage.read_test_result(), Some(result));

@@ -27,8 +27,9 @@ pub struct SensorDescriptor {
 }
 
 /// Node record. The `node_id` is an admin-assigned opaque identifier used to
-/// correlate a node across sessions and handler API calls. The `last_seen`
-/// field is runtime-only and is not persisted by durable storage backends.
+/// correlate a node across sessions and handler API calls. The `last_seen` and
+/// `last_battery_mv` fields are runtime-only overlays and are not persisted by
+/// durable storage backends.
 #[derive(Debug, Clone)]
 pub struct NodeRecord {
     pub node_id: String,
@@ -43,6 +44,8 @@ pub struct NodeRecord {
     pub schedule_interval_s: u32,
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
+    /// Most recent WAKE battery reading observed by the current gateway process.
+    /// Durable storage backends intentionally do not persist this field.
     pub last_battery_mv: Option<u32>,
     pub last_seen: Option<SystemTime>,
     /// RF channel the node operates on (1–13). Set during BLE pairing.
@@ -79,7 +82,11 @@ impl NodeRecord {
         }
     }
 
-    /// Update runtime battery plus durable firmware metadata from a WAKE.
+    /// Update the in-memory WAKE overlay on a `NodeRecord`.
+    ///
+    /// This caches the runtime-only battery reading plus the latest firmware
+    /// metadata in a cloned record used by admin/connector shaping. Durable
+    /// persistence of firmware metadata is handled separately by storage.
     pub fn update_telemetry(
         &mut self,
         battery_mv: u32,

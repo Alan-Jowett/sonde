@@ -302,10 +302,19 @@ fn parse_ble_response<'a>(
 /// Run one generic pre-provisioning test using existing Phase 1 artifacts.
 pub async fn run_pre_provisioning_test_with_artifacts(
     transport: &mut dyn BleTransport,
-    _artifacts: &crate::phase1::PairingArtifacts,
+    artifacts: &crate::phase1::PairingArtifacts,
     device_address: &[u8; 6],
     command: &PreProvisioningTestCommand,
 ) -> Result<sonde_protocol::TestResult, PairingError> {
+    if command.test_type == PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME
+        && command.rf_channel != Some(artifacts.rf_channel)
+    {
+        return Err(PairingError::DiagnosticFailed(format!(
+            "DIAG_FRAME test must use Phase 1 RF channel {}",
+            artifacts.rf_channel
+        )));
+    }
+
     connect_to_node(transport, device_address).await?;
 
     let run_test_body = sonde_protocol::encode_run_test_command(
@@ -1255,6 +1264,32 @@ mod tests {
         let (_, body) = sonde_protocol::parse_ble_envelope(written).unwrap();
         let decoded = sonde_protocol::decode_run_test_command(body).unwrap();
         assert_eq!(decoded.test_type, PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME);
+    }
+
+    #[tokio::test]
+    async fn run_pre_provisioning_test_rejects_diag_frame_with_wrong_phase1_channel() {
+        let artifacts = mock_artifacts();
+        let command = PreProvisioningTestCommand {
+            test_type: PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(artifacts.rf_channel + 1),
+            payload: vec![0xAA; 32],
+        };
+        let mut transport = MockBleTransport::new(247);
+
+        let result = run_pre_provisioning_test_with_artifacts(
+            &mut transport,
+            &artifacts,
+            &[0xAA; 6],
+            &command,
+        )
+        .await;
+        let err = result.unwrap_err().to_string();
+
+        assert!(
+            err.contains("Phase 1 RF channel"),
+            "unexpected error: {err}"
+        );
+        assert!(transport.written.is_empty(), "must fail before BLE writes");
     }
 
     /// Validates: PT-1214 AC2 — board layout CBOR deterministic encoding.

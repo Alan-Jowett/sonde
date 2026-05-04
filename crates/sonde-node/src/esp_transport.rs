@@ -116,6 +116,19 @@ struct RecvState {
 /// Global callback state — set once during [`EspNowTransport::new`].
 static RECV_STATE: std::sync::OnceLock<RecvState> = std::sync::OnceLock::new();
 
+fn recv_rssi_dbm(recv_info: *const esp_idf_sys::esp_now_recv_info_t) -> Option<i8> {
+    if recv_info.is_null() {
+        return None;
+    }
+    // SAFETY: The caller supplies a valid `recv_info` pointer from ESP-IDF.
+    let rx_ctrl = unsafe { (*recv_info).rx_ctrl };
+    if rx_ctrl.is_null() {
+        return None;
+    }
+    // SAFETY: `rx_ctrl` was checked for null above and comes from ESP-IDF.
+    i8::try_from(unsafe { (*rx_ctrl).rssi() }).ok()
+}
+
 /// Raw ESP-NOW receive callback — copies frame data into the ring buffer.
 ///
 /// Uses `try_lock` to avoid blocking the ESP-NOW/WiFi task and drops
@@ -133,9 +146,8 @@ unsafe extern "C" fn raw_recv_cb(
         return;
     }
     let payload = unsafe { core::slice::from_raw_parts(data, len) };
-    let rssi_dbm = match i8::try_from(unsafe { (*(*recv_info).rx_ctrl).rssi() }) {
-        Ok(rssi_dbm) => rssi_dbm,
-        Err(_) => return,
+    let Some(rssi_dbm) = recv_rssi_dbm(recv_info) else {
+        return;
     };
     if let Some(state) = RECV_STATE.get() {
         let enqueued = {
@@ -162,6 +174,27 @@ unsafe extern "C" fn raw_recv_cb(
         if enqueued {
             state.condvar.notify_one();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recv_rssi_dbm;
+
+    #[test]
+    fn recv_rssi_dbm_rejects_null_recv_info() {
+        assert_eq!(recv_rssi_dbm(core::ptr::null()), None);
+    }
+
+    #[test]
+    fn recv_rssi_dbm_rejects_null_rx_ctrl() {
+        let recv_info = esp_idf_sys::esp_now_recv_info_t {
+            src_addr: core::ptr::null(),
+            des_addr: core::ptr::null(),
+            rx_ctrl: core::ptr::null_mut(),
+        };
+
+        assert_eq!(recv_rssi_dbm(&recv_info), None);
     }
 }
 

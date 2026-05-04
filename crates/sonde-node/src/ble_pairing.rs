@@ -287,8 +287,11 @@ pub fn encode_run_test_ack(status: u8) -> Vec<u8> {
 
 /// Encode a `TEST_RESULT` BLE envelope.
 pub fn encode_test_result_response(result: &sonde_protocol::TestResult) -> Vec<u8> {
-    let body = sonde_protocol::encode_test_result(result).unwrap_or_default();
-    encode_ble_envelope(sonde_protocol::BLE_TEST_RESULT, &body).unwrap_or_default()
+    let sanitized = sanitize_test_result(result);
+    let body = sonde_protocol::encode_test_result(&sanitized)
+        .expect("sanitize_test_result must produce an encodable TEST_RESULT");
+    encode_ble_envelope(sonde_protocol::BLE_TEST_RESULT, &body)
+        .expect("TEST_RESULT body always fits in BLE envelope")
 }
 
 /// Parse, validate, and stage a `RUN_TEST_COMMAND`.
@@ -326,14 +329,8 @@ pub fn handle_read_test_result<S: PlatformStorage>(
         .map_err(|_| "READ_TEST_RESULT body must be empty")?;
     Ok(storage
         .read_test_result()
-        .unwrap_or(sonde_protocol::TestResult {
-            status: sonde_protocol::TEST_RESULT_NO_RESULT,
-            test_type: None,
-            reply_frame: None,
-            reply_rssi_dbm: None,
-            attempt_count: 0,
-            elapsed_ms: 0,
-        }))
+        .map(|result| sanitize_test_result(&result))
+        .unwrap_or_else(no_result_result))
 }
 
 /// Execute the staged pre-provisioning test command, store the latest result,
@@ -491,6 +488,17 @@ fn success_result(
     }
 }
 
+fn no_result_result() -> sonde_protocol::TestResult {
+    sonde_protocol::TestResult {
+        status: sonde_protocol::TEST_RESULT_NO_RESULT,
+        test_type: None,
+        reply_frame: None,
+        reply_rssi_dbm: None,
+        attempt_count: 0,
+        elapsed_ms: 0,
+    }
+}
+
 fn execution_error_result(
     test_type: u64,
     attempt_count: u64,
@@ -503,6 +511,19 @@ fn execution_error_result(
         reply_rssi_dbm: None,
         attempt_count,
         elapsed_ms,
+    }
+}
+
+fn sanitize_test_result(result: &sonde_protocol::TestResult) -> sonde_protocol::TestResult {
+    if sonde_protocol::validate_test_result(result).is_ok() {
+        return result.clone();
+    }
+
+    match result.test_type {
+        Some(test_type) => {
+            execution_error_result(test_type, result.attempt_count, result.elapsed_ms)
+        }
+        None => no_result_result(),
     }
 }
 
@@ -1401,6 +1422,55 @@ mod tests {
         };
         storage.test_result = Some(retained.clone());
         assert_eq!(handle_read_test_result(&[], &storage).unwrap(), retained);
+    }
+
+    #[test]
+    fn read_test_result_sanitizes_invalid_retained_result() {
+        let mut storage = MockStorage::new();
+        storage.test_result = Some(sonde_protocol::TestResult {
+            status: sonde_protocol::TEST_RESULT_OK,
+            test_type: Some(sonde_protocol::TEST_TYPE_DIAG_FRAME),
+            reply_frame: None,
+            reply_rssi_dbm: Some(-67),
+            attempt_count: 2,
+            elapsed_ms: 1_500,
+        });
+
+        let result = handle_read_test_result(&[], &storage).unwrap();
+
+        assert_eq!(result.status, sonde_protocol::TEST_RESULT_EXECUTION_ERROR);
+        assert_eq!(result.test_type, Some(sonde_protocol::TEST_TYPE_DIAG_FRAME));
+        assert!(result.reply_frame.is_none());
+        assert!(result.reply_rssi_dbm.is_none());
+        assert_eq!(result.attempt_count, 2);
+        assert_eq!(result.elapsed_ms, 1_500);
+    }
+
+    #[test]
+    fn encode_test_result_response_sanitizes_invalid_payload() {
+        let invalid = sonde_protocol::TestResult {
+            status: sonde_protocol::TEST_RESULT_OK,
+            test_type: Some(sonde_protocol::TEST_TYPE_DIAG_FRAME),
+            reply_frame: None,
+            reply_rssi_dbm: Some(-67),
+            attempt_count: 2,
+            elapsed_ms: 1_500,
+        };
+
+        let response = encode_test_result_response(&invalid);
+        let (msg_type, body) = parse_ble_envelope(&response).unwrap();
+        let decoded = sonde_protocol::decode_test_result(body).unwrap();
+
+        assert_eq!(msg_type, sonde_protocol::BLE_TEST_RESULT);
+        assert_eq!(decoded.status, sonde_protocol::TEST_RESULT_EXECUTION_ERROR);
+        assert_eq!(
+            decoded.test_type,
+            Some(sonde_protocol::TEST_TYPE_DIAG_FRAME)
+        );
+        assert!(decoded.reply_frame.is_none());
+        assert!(decoded.reply_rssi_dbm.is_none());
+        assert_eq!(decoded.attempt_count, 2);
+        assert_eq!(decoded.elapsed_ms, 1_500);
     }
 
     #[test]

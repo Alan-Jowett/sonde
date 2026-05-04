@@ -385,6 +385,16 @@ pub async fn run_pre_provisioning_test_with_artifacts(
         }
     })?;
 
+    if result.status != sonde_protocol::TEST_RESULT_NO_RESULT
+        && result.test_type != Some(command.test_type)
+    {
+        transport.disconnect().await.ok();
+        return Err(PairingError::DiagnosticFailed(format!(
+            "unexpected test result type: {:?}",
+            result.test_type
+        )));
+    }
+
     transport.disconnect().await.ok();
     Ok(result)
 }
@@ -1132,6 +1142,44 @@ mod tests {
             err.contains("unexpected test result type"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn run_pre_provisioning_test_rejects_stale_result_type() {
+        let artifacts = mock_artifacts();
+        let command = PreProvisioningTestCommand {
+            test_type: PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(artifacts.rf_channel),
+            payload: vec![0xAA; 32],
+        };
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(encode_ack_response(sonde_protocol::RUN_TEST_ACK_OK)));
+        transport.queue_response(Ok(encode_test_result_response(
+            &sonde_protocol::TestResult {
+                status: sonde_protocol::TEST_RESULT_TIMEOUT,
+                test_type: Some(0x99),
+                reply_frame: None,
+                reply_rssi_dbm: None,
+                attempt_count: 4,
+                elapsed_ms: 8_600,
+            },
+        )));
+
+        let result = run_pre_provisioning_test_with_artifacts(
+            &mut transport,
+            &artifacts,
+            &[0xAA; 6],
+            &command,
+        )
+        .await;
+        let err = result.unwrap_err().to_string();
+
+        assert!(
+            err.contains("unexpected test result type"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(transport.written.len(), 2);
+        assert_eq!(transport.disconnect_count, 2);
     }
 
     #[tokio::test]

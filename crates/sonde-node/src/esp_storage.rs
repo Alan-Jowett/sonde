@@ -619,17 +619,21 @@ impl crate::traits::PlatformStorage for NvsStorage {
             }
             Some(result.reply_frame[..len].to_vec())
         };
-        Some(TestResult {
+        let decoded = TestResult {
             status: result.status,
             test_type: (result.test_type_present != 0).then_some(result.test_type),
             reply_frame,
             reply_rssi_dbm: (result.reply_rssi_present != 0).then_some(result.reply_rssi_dbm),
             attempt_count: result.attempt_count,
             elapsed_ms: result.elapsed_ms,
-        })
+        };
+        sonde_protocol::validate_test_result(&decoded).ok()?;
+        Some(decoded)
     }
 
     fn write_test_result(&mut self, result: &TestResult) -> NodeResult<()> {
+        sonde_protocol::validate_test_result(result)
+            .map_err(|_| NodeError::StorageError("invalid retained test result"))?;
         let reply_len = result
             .reply_frame
             .as_ref()

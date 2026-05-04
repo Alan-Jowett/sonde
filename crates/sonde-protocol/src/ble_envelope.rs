@@ -288,8 +288,8 @@ pub fn decode_read_test_result(body: &[u8]) -> Result<(), DecodeError> {
     }
 }
 
-/// Encode a `TEST_RESULT` BLE body.
-pub fn encode_test_result(result: &TestResult) -> Result<Vec<u8>, EncodeError> {
+/// Validate `TEST_RESULT` field combinations before encoding or storing.
+pub fn validate_test_result(result: &TestResult) -> Result<(), EncodeError> {
     if result.status == TEST_RESULT_OK {
         if result.reply_frame.is_none() || result.reply_rssi_dbm.is_none() {
             return Err(EncodeError::InvalidParameter(
@@ -318,6 +318,13 @@ pub fn encode_test_result(result: &TestResult) -> Result<Vec<u8>, EncodeError> {
             return Err(EncodeError::FrameTooLarge);
         }
     }
+
+    Ok(())
+}
+
+/// Encode a `TEST_RESULT` BLE body.
+pub fn encode_test_result(result: &TestResult) -> Result<Vec<u8>, EncodeError> {
+    validate_test_result(result)?;
 
     let mut pairs = vec![(TEST_RESULT_KEY_STATUS, Value::Integer(result.status.into()))];
     if let Some(test_type) = result.test_type {

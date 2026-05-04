@@ -2,7 +2,20 @@
 // Copyright (c) 2026 sonde contributors
 
 use crate::error::NodeResult;
-use sonde_protocol::BoardLayout;
+use sonde_protocol::{BoardLayout, TestResult};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceivedFrame {
+    pub data: Vec<u8>,
+    pub rssi_dbm: Option<i8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedTestCommand {
+    pub test_type: u64,
+    pub rf_channel: Option<u8>,
+    pub payload: Vec<u8>,
+}
 
 /// Radio transport for sending and receiving frames.
 pub trait Transport {
@@ -13,6 +26,16 @@ pub trait Transport {
     /// Returns `Ok(Some(data))` if a frame arrives within the timeout,
     /// `Ok(None)` if the timeout expires, or `Err` on transport failure.
     fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>>;
+
+    /// Wait for a frame together with optional receive metadata.
+    fn recv_with_metadata(&mut self, timeout_ms: u32) -> NodeResult<Option<ReceivedFrame>> {
+        self.recv(timeout_ms).map(|frame| {
+            frame.map(|data| ReceivedFrame {
+                data,
+                rssi_dbm: None,
+            })
+        })
+    }
 }
 
 /// Hardware random number generator.
@@ -183,6 +206,31 @@ pub trait PlatformStorage {
 
     /// Persist the current-cycle battery value for the next wake.
     fn write_last_battery_mv(&mut self, _battery_mv: u32) -> NodeResult<()> {
+        Ok(())
+    }
+
+    /// Read the staged pre-provisioning test command retained in RTC memory.
+    fn read_staged_test_command(&self) -> Option<StagedTestCommand> {
+        None
+    }
+
+    /// Persist a staged pre-provisioning test command in RTC memory.
+    fn write_staged_test_command(&mut self, _command: &StagedTestCommand) -> NodeResult<()> {
+        Ok(())
+    }
+
+    /// Clear any staged pre-provisioning test command.
+    fn clear_staged_test_command(&mut self) -> NodeResult<()> {
+        Ok(())
+    }
+
+    /// Read the latest retained pre-provisioning test result from RTC memory.
+    fn read_test_result(&self) -> Option<TestResult> {
+        None
+    }
+
+    /// Persist the latest retained pre-provisioning test result in RTC memory.
+    fn write_test_result(&mut self, _result: &TestResult) -> NodeResult<()> {
         Ok(())
     }
 }

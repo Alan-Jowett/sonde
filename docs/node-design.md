@@ -88,7 +88,7 @@ The wake cycle engine is the central state machine. It runs once per wake and th
 
 ### 4.1  State machine
 
-The state machine has five main states plus two alternate boot paths. Starting from BOOT, the node reads credentials from the `key` flash partition (§6.1) and the `reg_complete` flag from NVS (§6.1a) to determine the boot path (ND-0900): (1) no PSK in key partition or pairing button held ≥ 500 ms → enter BLE pairing mode (§15); (2) PSK present but `reg_complete` not set → enter PEER_REQUEST registration (§15.7); (3) PSK present and `reg_complete` set → enter WAKE SEND. WAKE SEND transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
+The state machine has five main states plus three alternate boot paths. Starting from BOOT, the node checks RTC-retained pre-provisioning test state, then reads credentials from the `key` flash partition (§6.1) and the `reg_complete` flag from NVS (§6.1a) to determine the boot path (ND-0900): (1) staged pre-provisioning test command present → enter pre-provisioning test mode (§15.8); (2) no PSK in key partition or pairing button held ≥ 500 ms → enter BLE pairing mode (§15); (3) PSK present but `reg_complete` not set → enter PEER_REQUEST registration (§15.7); (4) PSK present and `reg_complete` set → enter WAKE SEND. WAKE SEND transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
 
 ```
 ┌─────────┐
@@ -96,6 +96,7 @@ The state machine has five main states plus two alternate boot paths. Starting f
 └────┬────┘
      │ check PSK + reg_complete (ND-0900)
      │
+     ├── staged test command  → pre-provisioning test mode (§15.8)
      ├── no PSK OR button held → BLE pairing mode (§15)
      ├── PSK + no reg_complete → PEER_REQUEST (§15.7)
      │
@@ -129,7 +130,7 @@ The state machine has five main states plus two alternate boot paths. Starting f
 
 ### 4.2  Wake sequence (detailed)
 
-1. **Boot/wake**: Initialize hardware. Determine boot path per ND-0900: (1) no PSK or button held → BLE pairing mode, (2) PSK + no `reg_complete` → PEER_REQUEST registration, (3) PSK + `reg_complete` → proceed to step 2.
+1. **Boot/wake**: Initialize hardware. Determine boot path per ND-0900: (1) staged test command → pre-provisioning test mode, (2) no PSK or button held → BLE pairing mode, (3) PSK + no `reg_complete` → PEER_REQUEST registration, (4) PSK + `reg_complete` → proceed to step 2.
 2. **Generate nonce**: Hardware RNG produces a 64-bit random nonce.
 3. **Drain async queue**: Check the async queue (§8.6) from the previous cycle. If exactly 1 message is queued and it fits in the WAKE payload budget, include it as `blob` (CBOR key 10) in the WAKE message. Otherwise, `blob` is omitted and the queue is left intact for overflow drain in step 7 (NOP only).
 4. **Send WAKE**: Construct WAKE frame (`firmware_abi_version`, `program_hash`, `battery_mv`, `firmware_version`, and optionally `blob`). The `firmware_version` string is derived from `CARGO_PKG_VERSION` at compile time. `battery_mv` comes from the RTC-retained reading captured on the previous wake; if no value has been captured yet, it is `0`. AEAD-encrypt with PSK. Transmit via ESP-NOW.
@@ -641,7 +642,7 @@ The Node Provisioning Service exposes a single characteristic:
 | UUID | Property | Purpose |
 |---|---|---|
 | `0xFE50` (service) | — | Node Provisioning Service |
-| `0xFE51` (characteristic) | Write + Indicate | NODE_PROVISION (write) / NODE_ACK (indicate) |
+| `0xFE51` (characteristic) | Write + Indicate | `NODE_PROVISION`, `RUN_TEST_COMMAND`, `READ_TEST_RESULT` (write) / `NODE_ACK`, `RUN_TEST_ACK`, `TEST_RESULT` (indicate) |
 
 GATT writes received before LESC pairing completes are accepted at the ATT level but not processed immediately: the implementation buffers at most one pre-auth write in `pending_write` and defers it until authentication succeeds and the negotiated ATT MTU is ≥ 247 bytes (ND-0904). Writes that cannot be buffered (for example because a pending write is already present or the payload is invalid/too large) are rejected/ignored according to normal ATT error handling. If authentication fails, or if the post-pairing MTU negotiation results in MTU < 247, any buffered write is discarded and the connection is dropped.
 
@@ -666,20 +667,20 @@ boot → NimBLE init → GATT service register → start advertising
     ↓
 phone connects → server calls ble_gap_security_initiate() → LESC pairing → MTU exchange → auth complete
     ↓
-buffered GATT write flushed (if any) → handle_node_provision() → NODE_ACK indicate
+buffered GATT write flushed (if any) → handle_pairing_command() → NODE_ACK / RUN_TEST_ACK / TEST_RESULT indicate
     ↓
-phone disconnects → return → reboot (ND-0907)
+phone disconnects → return → reboot (ND-0907, ND-1106)
 ```
 
-The main loop polls for pending GATT writes and disconnection events at 100 ms intervals. On disconnect, the function returns and the caller reboots into normal wake-cycle mode with the newly provisioned credentials.
+The main loop polls for pending GATT writes and disconnection events at 100 ms intervals. On disconnect, the function returns and the caller reboots. Depending on retained state, the next boot may enter pre-provisioning test mode, BLE pairing mode, or the normal wake-cycle path.
 
 ### 15.6  Platform-independent handler
 
-The GATT write payload is parsed and handled by `handle_node_provision()` in the platform-independent `ble_pairing` module (ND-0905, ND-0906, ND-0908). The handler parses the five NODE_PROVISION fields (`node_key_hint`, `node_psk`, `rf_channel`, `payload_len`, `encrypted_payload`), validates `payload_len` before reading `encrypted_payload`, and persists credentials: PSK and key_hint to the `key` flash partition (§6.1), and `channel`, `peer_payload`, `reg_complete` to NVS (§6.1a, ND-0916). The `reg_complete` flag is cleared on successful provision. If any write fails, the handler responds with NODE_ACK(0x02) (ND-0908). This keeps provisioning logic testable on the host (see T-N904–T-N907). The ESP-specific `esp_ble_pairing` module handles only NimBLE initialization, GATT plumbing, and the event loop.
+The GATT write payload is parsed and handled by a platform-independent pairing-command handler in the `ble_pairing` module. `NODE_PROVISION` handling remains responsible for parsing the five provisioning fields (`node_key_hint`, `node_psk`, `rf_channel`, `payload_len`, `encrypted_payload`), validating `payload_len` before reading `encrypted_payload`, and persisting credentials: PSK and key hint to the `key` flash partition (§6.1), and `channel`, `peer_payload`, `reg_complete` to NVS (§6.1a, ND-0916). `RUN_TEST_COMMAND` handling validates and stages one pending pre-provisioning test command in RTC-retained state and returns `RUN_TEST_ACK`. `READ_TEST_RESULT` handling returns the latest retained result as `TEST_RESULT` without clearing it. This keeps provisioning and pre-provisioning test logic testable on the host. The ESP-specific `esp_ble_pairing` module handles only NimBLE initialization, GATT plumbing, and the event loop.
 
 ### 15.7  Post-provisioning registration (PEER_REQUEST / PEER_ACK)
 
-When the node boots with a PSK stored but the `reg_complete` flag not set (boot path 2, ND-0900), it enters the PEER_REQUEST registration sub-protocol. This completes the pairing handshake by registering the node with the gateway via the modem.
+When the node boots with a PSK stored but the `reg_complete` flag not set (boot path 3, ND-0900), it enters the PEER_REQUEST registration sub-protocol. This completes the pairing handshake by registering the node with the gateway via the modem.
 
 **Frame construction (ND-0909):**
 
@@ -720,44 +721,32 @@ After the first successful WAKE/COMMAND exchange (the gateway responds with a va
 
 If WAKE fails (no response or AEAD decryption failure) after `reg_complete` is set, the node clears the `reg_complete` flag and reverts to sending PEER_REQUEST on the next boot. This allows the node to re-register if the gateway lost its registration state.
 
-### 15.8  Diagnostic relay (pre-provisioning)
+### 15.8  Pre-provisioning test mode
 
-> **Requirements:** ND-1100 (BLE diagnostic relay command), ND-1101 (diagnostic ESP-NOW broadcast), ND-1102 (diagnostic reply reception), ND-1103 (diagnostic retry behavior), ND-1104 (diagnostic timeout handling), ND-1105 (diagnostic BLE response forwarding), ND-1106 (diagnostic radio state restoration).
+> **Requirements:** ND-1100 (generic BLE pre-provisioning test command), ND-1101 (test-command acknowledgement and staging), ND-1102 (pre-provisioning test-mode execution), ND-1103 (diagnostic retry behavior in test mode), ND-1104 (latest-result retention and explicit readback), ND-1105 (diagnostic result contents), ND-1106 (reboot back to BLE pairing mode after test execution), ND-1107 (test-command format extensibility).
 
-While in BLE pairing mode (before `NODE_PROVISION` is received), the node can act as a **dumb radio relay** for pairing-time diagnostics. The pairing tool uses this to measure the node→gateway RF link quality before committing to provisioning.
+The pre-provisioning test flow is split across two boots so the ESP32-C3 never needs BLE and ESP-NOW active concurrently.
 
-**BLE command handling (ND-1100):**
+**BLE-side staging (ND-1100, ND-1101, ND-1107):**
 
-The node's BLE GATT handler processes `DIAG_RELAY_REQUEST` (envelope type `0x02`) on the Node Command characteristic:
+1. While in BLE pairing mode, the GATT handler accepts `RUN_TEST_COMMAND` (envelope type `0x02`) and parses its CBOR body.
+2. The generic command format identifies the requested test by `test_type` and carries a test-specific payload as an opaque byte string.
+3. For the initial `DIAG_FRAME` test type, the handler validates `rf_channel` and payload length, stages the RF channel and payload in RTC-retained memory, and sends `RUN_TEST_ACK(status=0x00)`.
+4. Unsupported or malformed commands are rejected before reboot with a non-success acknowledgement.
 
-1. Parse the envelope body: `rf_channel` (1 byte), `payload_len` (2 bytes BE), `payload` (variable).
-2. Validate: `rf_channel` ∈ 1–13 and 0 < `payload_len` ≤ 250. On validation failure → respond with `DIAG_RELAY_RESPONSE(status=0x02)`.
+**Execution boot (ND-1102, ND-1103):**
 
-**ESP-NOW relay (ND-1101, ND-1102):**
+1. On the next boot, the firmware sees the staged command and enters pre-provisioning test mode before BLE pairing mode.
+2. For `DIAG_FRAME`, the node initializes ESP-NOW on the staged channel, broadcasts the staged `DIAG_REQUEST` frame, and listens for `DIAG_REPLY`.
+3. Retry parameters match the diagnostic specification: up to 3 retransmissions, 200 ms backoff, 2-second listen window per attempt.
+4. The node records the first successful reply frame, the receive RSSI reported by the ESP-NOW stack, the number of attempts used, and the total elapsed time.
 
-1. Save the current ESP-NOW channel (if any).
-2. Tune the ESP-NOW radio to `rf_channel`.
-3. Broadcast `payload` as a raw ESP-NOW frame to `FF:FF:FF:FF:FF:FF`.
-4. Listen for inbound ESP-NOW frames.
-5. Accept the first frame whose `msg_type` byte (header offset 2) = `0x85` (`DIAG_REPLY`).
-6. Ignore frames with any other `msg_type`.
+**Result retention and return (ND-1104, ND-1105, ND-1106):**
 
-**Retry behavior (ND-1103):**
-
-Matches the WAKE cycle retry parameters:
-- Up to 3 retransmissions.
-- 200 ms backoff between attempts.
-- 2-second listen window per attempt.
-- A reply received during any attempt terminates the loop.
-
-**Response (ND-1104, ND-1105):**
-
-- On reply received: send `DIAG_RELAY_RESPONSE(status=0x00, payload=<raw DIAG_REPLY frame>)` via BLE indication.
-- On timeout after all retries: send `DIAG_RELAY_RESPONSE(status=0x01, payload_len=0)`.
-
-**Radio state restoration (ND-1106):**
-
-After the relay completes, restore the ESP-NOW channel to its previous value. The node remains in BLE pairing mode and can accept further diagnostic relay requests or proceed to `NODE_PROVISION`.
+1. After execution completes, the node writes a single latest-result record to RTC-retained memory, clears the staged command, and reboots back into BLE pairing mode.
+2. The latest-result record is overwritten by the next accepted test run.
+3. While back in BLE pairing mode, the node serves `READ_TEST_RESULT` (envelope type `0x03`) by returning `TEST_RESULT` (envelope type `0x83`) without clearing the retained result.
+4. The node can then accept another test run or proceed to `NODE_PROVISION`.
 
 ---
 

@@ -50,6 +50,29 @@ pub struct NodeProvisionResult {
     pub status: NodeAckStatus,
 }
 
+/// Generic pre-provisioning test command staged over BLE before the node reboots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreProvisioningTestCommand {
+    pub test_type: u64,
+    pub rf_channel: Option<u8>,
+    pub payload: Vec<u8>,
+}
+
+/// Result of a successful pre-provisioning RSSI diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticResult {
+    /// Gateway-observed RSSI from the decrypted `DIAG_REPLY`.
+    pub gateway_rssi_dbm: i8,
+    /// Gateway-reported signal-quality assessment.
+    pub signal_quality: u8,
+    /// Node-observed RSSI of the received reply frame.
+    pub node_reply_rssi_dbm: i8,
+    /// Number of send/listen attempts used by the node.
+    pub attempt_count: u64,
+    /// Total node-side execution time for the test run.
+    pub elapsed_ms: u64,
+}
+
 /// Status codes from node provisioning acknowledgement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeAckStatus {
@@ -89,6 +112,8 @@ impl std::fmt::Display for NodeAckStatus {
         }
     }
 }
+
+pub const PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME: u64 = sonde_protocol::TEST_TYPE_DIAG_FRAME;
 
 /// BLE pairing method negotiated during connection (PT-0904).
 ///

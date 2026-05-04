@@ -22,6 +22,7 @@ use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWif
 use sonde_protocol::modem::ESPNOW_MAX_DATA_SIZE;
 
 use crate::error::{NodeError, NodeResult};
+use crate::traits::ReceivedFrame;
 
 /// Broadcast MAC used for all node → gateway transmissions.
 const BROADCAST_MAC: [u8; 6] = [0xFF; 6];
@@ -34,6 +35,7 @@ const RX_RING_CAP: usize = 16;
 struct FrameSlot {
     data: [u8; ESPNOW_MAX_DATA_SIZE],
     len: usize,
+    rssi_dbm: i8,
 }
 
 impl Default for FrameSlot {
@@ -41,6 +43,7 @@ impl Default for FrameSlot {
         Self {
             data: [0u8; ESPNOW_MAX_DATA_SIZE],
             len: 0,
+            rssi_dbm: 0,
         }
     }
 }
@@ -74,13 +77,14 @@ impl RxRing {
     /// is full or the payload exceeds `ESPNOW_MAX_DATA_SIZE`.
     ///
     /// No heap allocation; safe to call from the WiFi task context.
-    fn push(&mut self, payload: &[u8]) -> bool {
+    fn push(&mut self, payload: &[u8], rssi_dbm: i8) -> bool {
         if self.count >= RX_RING_CAP || payload.len() > ESPNOW_MAX_DATA_SIZE {
             return false;
         }
         let slot = &mut self.slots[self.head];
         slot.len = payload.len();
         slot.data[..payload.len()].copy_from_slice(payload);
+        slot.rssi_dbm = rssi_dbm;
         self.head = (self.head + 1) % RX_RING_CAP;
         self.count += 1;
         true
@@ -89,7 +93,7 @@ impl RxRing {
     /// Copy the oldest frame's payload into `buf`, returning the number of
     /// bytes copied. Only `data[..len]` bytes are copied under the lock,
     /// avoiding a full 250-byte memcpy. Returns `None` if the ring is empty.
-    fn pop_into(&mut self, buf: &mut [u8; ESPNOW_MAX_DATA_SIZE]) -> Option<usize> {
+    fn pop_into(&mut self, buf: &mut [u8; ESPNOW_MAX_DATA_SIZE]) -> Option<(usize, i8)> {
         if self.count == 0 {
             return None;
         }
@@ -98,7 +102,7 @@ impl RxRing {
         buf[..len].copy_from_slice(&slot.data[..len]);
         self.tail = (self.tail + 1) % RX_RING_CAP;
         self.count -= 1;
-        Some(len)
+        Some((len, slot.rssi_dbm))
     }
 }
 
@@ -129,6 +133,7 @@ unsafe extern "C" fn raw_recv_cb(
         return;
     }
     let payload = unsafe { core::slice::from_raw_parts(data, len) };
+    let rssi_dbm = unsafe { (*recv_info).rx_ctrl.rssi };
     if let Some(state) = RECV_STATE.get() {
         let enqueued = {
             // Match try_lock errors explicitly: recover on Poisoned so
@@ -142,7 +147,7 @@ unsafe extern "C" fn raw_recv_cb(
                 }
                 Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
             };
-            if guard.push(payload) {
+            if guard.push(payload, rssi_dbm) {
                 true
             } else {
                 guard.drop_count = guard.drop_count.saturating_add(1);
@@ -256,6 +261,11 @@ impl crate::traits::Transport for EspNowTransport {
     }
 
     fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+        self.recv_with_metadata(timeout_ms)
+            .map(|frame| frame.map(|frame| frame.data))
+    }
+
+    fn recv_with_metadata(&mut self, timeout_ms: u32) -> NodeResult<Option<ReceivedFrame>> {
         let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
         // Pre-allocate buffer outside the lock for pop_into to copy into.
         let mut buf = [0u8; ESPNOW_MAX_DATA_SIZE];
@@ -278,7 +288,7 @@ impl crate::traits::Transport for EspNowTransport {
             }
         };
         loop {
-            if let Some(len) = ring.pop_into(&mut buf) {
+            if let Some((len, rssi_dbm)) = ring.pop_into(&mut buf) {
                 // Re-read drop_count right before returning so drops
                 // that occurred during wait_timeout are captured.
                 let full_drops = ring.drop_count;
@@ -287,7 +297,10 @@ impl crate::traits::Transport for EspNowTransport {
                 if full_drops > 0 {
                     log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
                 }
-                return Ok(Some(buf[..len].to_vec()));
+                return Ok(Some(ReceivedFrame {
+                    data: buf[..len].to_vec(),
+                    rssi_dbm: Some(rssi_dbm),
+                }));
             }
             let now = Instant::now();
             if now >= deadline {

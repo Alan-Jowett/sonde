@@ -5,6 +5,7 @@
 //!
 //! Implements the platform-independent portion of BLE pairing mode:
 //! - NODE_PROVISION message parsing (ble-pairing-protocol.md §6.6)
+//! - `RUN_TEST_COMMAND` staging and `READ_TEST_RESULT` readback (§6a)
 //! - NVS persistence of PSK, key_hint, channel, peer_payload, reg_complete
 //! - NODE_ACK response encoding (ble-pairing-protocol.md §6.7)
 //! - Factory-reset-before-provision when the pairing button was held at boot
@@ -13,9 +14,10 @@
 //! pairing) is in `esp_ble_pairing.rs` and is only compiled with the `esp`
 //! feature.
 
+use crate::error::NodeResult;
 use crate::key_store::KeyStore;
 use crate::map_storage::MapStorage;
-use crate::traits::PlatformStorage;
+use crate::traits::{PlatformStorage, StagedTestCommand, Transport};
 use sonde_protocol::{decode_board_layout_cbor, BoardLayout};
 
 // ---------------------------------------------------------------------------
@@ -270,133 +272,212 @@ pub fn handle_node_provision<S: PlatformStorage>(
 }
 
 // ---------------------------------------------------------------------------
-// Diagnostic relay (ble-pairing-protocol.md §6a, ND-1100 through ND-1106)
+// Pre-provisioning test mode (ble-pairing-protocol.md §6a, ND-1100..ND-1107)
 // ---------------------------------------------------------------------------
 
-/// Parsed DIAG_RELAY_REQUEST parameters.
-pub struct DiagRelayParams {
-    pub rf_channel: u8,
-    pub payload: Vec<u8>,
+const TEST_MAX_RETRIES: u64 = 3;
+const TEST_RETRY_DELAY_MS: u32 = 200;
+const TEST_LISTEN_TIMEOUT_MS: u32 = 2_000;
+
+/// Encode a `RUN_TEST_ACK` BLE envelope.
+pub fn encode_run_test_ack(status: u8) -> Vec<u8> {
+    let body = sonde_protocol::encode_run_test_ack(status).unwrap_or_default();
+    encode_ble_envelope(sonde_protocol::BLE_RUN_TEST_ACK, &body).unwrap_or_default()
 }
 
-/// Parse and validate a DIAG_RELAY_REQUEST BLE envelope body.
-///
-/// Returns `Ok(params)` on success, or `Err(encoded_error_response)` if
-/// the request is invalid (bad channel or payload size).
-pub fn handle_diag_relay_request(body: &[u8]) -> Result<DiagRelayParams, Vec<u8>> {
-    use sonde_protocol::{
-        decode_diag_relay_request, BLE_DIAG_RELAY_RESPONSE, DIAG_RELAY_STATUS_CHANNEL_ERROR,
-        MAX_FRAME_SIZE,
+/// Encode a `TEST_RESULT` BLE envelope.
+pub fn encode_test_result_response(result: &sonde_protocol::TestResult) -> Vec<u8> {
+    let body = sonde_protocol::encode_test_result(result).unwrap_or_default();
+    encode_ble_envelope(sonde_protocol::BLE_TEST_RESULT, &body).unwrap_or_default()
+}
+
+/// Parse, validate, and stage a `RUN_TEST_COMMAND`.
+pub fn handle_run_test_command<S: PlatformStorage>(
+    body: &[u8],
+    storage: &mut S,
+) -> (u8, Option<StagedTestCommand>) {
+    let Ok(command) = sonde_protocol::decode_run_test_command(body) else {
+        return (sonde_protocol::RUN_TEST_ACK_INVALID, None);
     };
 
-    let (rf_channel, payload) = decode_diag_relay_request(body).map_err(|_| {
-        encode_ble_envelope(
-            BLE_DIAG_RELAY_RESPONSE,
-            &encode_diag_relay_status(DIAG_RELAY_STATUS_CHANNEL_ERROR),
-        )
-        .expect("error response fits")
-    })?;
-
-    if !(1..=13).contains(&rf_channel) || payload.is_empty() || payload.len() > MAX_FRAME_SIZE {
-        return Err(encode_ble_envelope(
-            BLE_DIAG_RELAY_RESPONSE,
-            &encode_diag_relay_status(DIAG_RELAY_STATUS_CHANNEL_ERROR),
-        )
-        .expect("error response fits"));
+    if command.test_type != sonde_protocol::TEST_TYPE_DIAG_FRAME {
+        return (sonde_protocol::RUN_TEST_ACK_UNSUPPORTED, None);
     }
 
-    Ok(DiagRelayParams {
-        rf_channel,
-        payload: payload.to_vec(),
-    })
+    let staged = StagedTestCommand {
+        test_type: command.test_type,
+        rf_channel: command.rf_channel,
+        payload: command.payload.to_vec(),
+    };
+
+    if storage.write_staged_test_command(&staged).is_err() {
+        return (sonde_protocol::RUN_TEST_ACK_INVALID, None);
+    }
+
+    (sonde_protocol::RUN_TEST_ACK_OK, Some(staged))
 }
 
-fn encode_diag_relay_status(status: u8) -> Vec<u8> {
-    sonde_protocol::encode_diag_relay_response(status, &[]).unwrap_or_default()
+/// Read the retained latest `TEST_RESULT`.
+pub fn handle_read_test_result<S: PlatformStorage>(
+    body: &[u8],
+    storage: &S,
+) -> Result<sonde_protocol::TestResult, &'static str> {
+    sonde_protocol::decode_read_test_result(body)
+        .map_err(|_| "READ_TEST_RESULT body must be empty")?;
+    Ok(storage
+        .read_test_result()
+        .unwrap_or(sonde_protocol::TestResult {
+            status: sonde_protocol::TEST_RESULT_NO_RESULT,
+            test_type: None,
+            reply_frame: None,
+            reply_rssi_dbm: None,
+            attempt_count: 0,
+            elapsed_ms: 0,
+        }))
 }
 
-/// Encode a DIAG_RELAY_RESPONSE BLE envelope.
-pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Vec<u8> {
-    let body = sonde_protocol::encode_diag_relay_response(status, payload)
-        .unwrap_or_else(|_| encode_diag_relay_status(status));
-    encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_RESPONSE, &body).unwrap_or_default()
-}
-
-/// Execute the diagnostic relay: broadcast on ESP-NOW, listen for DIAG_REPLY.
-///
-/// Retries up to 3 times with 200ms backoff and 2s listen window per attempt
-/// (matching WAKE retry parameters per ND-1103).
-///
-/// **Channel switching** (ND-1101): The caller is responsible for tuning the
-/// ESP-NOW radio to `params.rf_channel` before calling this function and
-/// restoring it afterwards (ND-1106). On ESP32, this is done in
-/// `esp_ble_pairing.rs` using `esp_wifi_set_channel()`. This function is
-/// platform-independent and operates on whatever channel the transport is
-/// currently configured for.
-pub fn do_diag_relay<T: crate::traits::Transport>(
+/// Execute the staged pre-provisioning test command, store the latest result,
+/// and clear the staged command.
+pub fn execute_staged_test_command<S: PlatformStorage, T: Transport, C: crate::traits::Clock>(
+    storage: &mut S,
     transport: &mut T,
-    params: &DiagRelayParams,
-) -> Vec<u8> {
-    const DIAG_MAX_RETRIES: u32 = 3;
-    const DIAG_RETRY_DELAY_MS: u64 = 200;
-    const DIAG_LISTEN_TIMEOUT_MS: u32 = 2000;
+    clock: &C,
+) -> NodeResult<Option<sonde_protocol::TestResult>> {
+    let Some(command) = storage.read_staged_test_command() else {
+        return Ok(None);
+    };
 
-    for attempt in 0..=DIAG_MAX_RETRIES {
+    let result = match command.test_type {
+        sonde_protocol::TEST_TYPE_DIAG_FRAME => execute_diag_frame_test(transport, clock, &command),
+        _ => sonde_protocol::TestResult {
+            status: sonde_protocol::TEST_RESULT_EXECUTION_ERROR,
+            test_type: Some(command.test_type),
+            reply_frame: None,
+            reply_rssi_dbm: None,
+            attempt_count: 0,
+            elapsed_ms: 0,
+        },
+    };
+
+    storage.write_test_result(&result)?;
+    storage.clear_staged_test_command()?;
+    Ok(Some(result))
+}
+
+fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
+    transport: &mut T,
+    clock: &C,
+    command: &StagedTestCommand,
+) -> sonde_protocol::TestResult {
+    let start_ms = clock.elapsed_ms();
+
+    let Some(rf_channel) = command.rf_channel else {
+        return execution_error_result(command.test_type, 0, 0);
+    };
+    if !(1..=13).contains(&rf_channel)
+        || command.payload.is_empty()
+        || command.payload.len() > sonde_protocol::MAX_FRAME_SIZE
+    {
+        return execution_error_result(command.test_type, 0, 0);
+    }
+
+    let mut attempt_count = 0u64;
+    for attempt in 0..=TEST_MAX_RETRIES {
         if attempt > 0 {
-            #[cfg(feature = "esp")]
-            std::thread::sleep(std::time::Duration::from_millis(DIAG_RETRY_DELAY_MS));
-            #[cfg(not(feature = "esp"))]
-            {
-                let _ = DIAG_RETRY_DELAY_MS; // avoid unused warning in tests
-            }
+            clock.delay_ms(TEST_RETRY_DELAY_MS);
         }
+        attempt_count = attempt + 1;
+        let _ = transport.send(&command.payload);
 
-        if transport.send(&params.payload).is_err() {
-            continue;
-        }
-
-        // Listen for DIAG_REPLY (msg_type 0x85 at header byte offset 2),
-        // ignoring other msg_types until the per-attempt listen window expires.
         #[cfg(feature = "esp")]
         {
-            let mut remaining_ms = DIAG_LISTEN_TIMEOUT_MS;
+            let mut remaining_ms = TEST_LISTEN_TIMEOUT_MS;
             loop {
                 if remaining_ms == 0 {
                     break;
                 }
                 let before = std::time::Instant::now();
-                match transport.recv(remaining_ms) {
-                    Ok(Some(raw)) => {
-                        if raw.len() >= 3
-                            && raw[sonde_protocol::OFFSET_MSG_TYPE]
-                                == sonde_protocol::MSG_DIAG_REPLY
-                        {
-                            return encode_diag_relay_response(
-                                sonde_protocol::DIAG_RELAY_STATUS_OK,
-                                &raw,
-                            );
-                        }
+                match transport.recv_with_metadata(remaining_ms) {
+                    Ok(Some(frame))
+                        if frame.data.len() >= sonde_protocol::HEADER_SIZE
+                            && frame.data[sonde_protocol::OFFSET_MSG_TYPE]
+                                == sonde_protocol::MSG_DIAG_REPLY =>
+                    {
+                        return success_result(
+                            command.test_type,
+                            frame.data,
+                            frame.rssi_dbm,
+                            attempt_count,
+                            clock.elapsed_ms().saturating_sub(start_ms),
+                        );
+                    }
+                    Ok(Some(_)) => {
                         let elapsed = before.elapsed().as_millis() as u32;
                         remaining_ms = remaining_ms.saturating_sub(elapsed.max(1));
                     }
-                    _ => break,
+                    Ok(None) | Err(_) => break,
                 }
             }
         }
+
         #[cfg(not(feature = "esp"))]
         {
-            // In test builds, recv returns immediately; single attempt per retry.
-            if let Ok(Some(raw)) = transport.recv(DIAG_LISTEN_TIMEOUT_MS) {
-                if raw.len() >= 3
-                    && raw[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_DIAG_REPLY
+            if let Ok(Some(frame)) = transport.recv_with_metadata(TEST_LISTEN_TIMEOUT_MS) {
+                if frame.data.len() >= sonde_protocol::HEADER_SIZE
+                    && frame.data[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_DIAG_REPLY
                 {
-                    return encode_diag_relay_response(sonde_protocol::DIAG_RELAY_STATUS_OK, &raw);
+                    return success_result(
+                        command.test_type,
+                        frame.data,
+                        frame.rssi_dbm,
+                        attempt_count,
+                        clock.elapsed_ms().saturating_sub(start_ms),
+                    );
                 }
             }
         }
     }
 
-    encode_diag_relay_response(sonde_protocol::DIAG_RELAY_STATUS_TIMEOUT, &[])
+    sonde_protocol::TestResult {
+        status: sonde_protocol::TEST_RESULT_TIMEOUT,
+        test_type: Some(command.test_type),
+        reply_frame: None,
+        reply_rssi_dbm: None,
+        attempt_count,
+        elapsed_ms: clock.elapsed_ms().saturating_sub(start_ms),
+    }
+}
+
+fn success_result(
+    test_type: u64,
+    reply_frame: Vec<u8>,
+    reply_rssi_dbm: Option<i8>,
+    attempt_count: u64,
+    elapsed_ms: u64,
+) -> sonde_protocol::TestResult {
+    sonde_protocol::TestResult {
+        status: sonde_protocol::TEST_RESULT_OK,
+        test_type: Some(test_type),
+        reply_frame: Some(reply_frame),
+        reply_rssi_dbm,
+        attempt_count,
+        elapsed_ms,
+    }
+}
+
+fn execution_error_result(
+    test_type: u64,
+    attempt_count: u64,
+    elapsed_ms: u64,
+) -> sonde_protocol::TestResult {
+    sonde_protocol::TestResult {
+        status: sonde_protocol::TEST_RESULT_EXECUTION_ERROR,
+        test_type: Some(test_type),
+        reply_frame: None,
+        reply_rssi_dbm: None,
+        attempt_count,
+        elapsed_ms,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -417,11 +498,16 @@ mod tests {
         peer_payload: Option<Vec<u8>>,
         reg_complete: bool,
         board_layout: Option<BoardLayout>,
+        staged_test_command: Option<StagedTestCommand>,
+        test_result: Option<sonde_protocol::TestResult>,
         fail_write_key: bool,
         fail_write_channel: bool,
         fail_write_peer_payload: bool,
         fail_write_reg_complete: bool,
         fail_write_board_layout: bool,
+        fail_write_staged_test_command: bool,
+        fail_write_test_result: bool,
+        fail_clear_staged_test_command: bool,
     }
 
     impl MockStorage {
@@ -432,11 +518,16 @@ mod tests {
                 peer_payload: None,
                 reg_complete: false,
                 board_layout: None,
+                staged_test_command: None,
+                test_result: None,
                 fail_write_key: false,
                 fail_write_channel: false,
                 fail_write_peer_payload: false,
                 fail_write_reg_complete: false,
                 fail_write_board_layout: false,
+                fail_write_staged_test_command: false,
+                fail_write_test_result: false,
+                fail_clear_staged_test_command: false,
             }
         }
 
@@ -542,6 +633,39 @@ mod tests {
             self.board_layout = Some(*layout);
             Ok(())
         }
+        fn read_staged_test_command(&self) -> Option<StagedTestCommand> {
+            self.staged_test_command.clone()
+        }
+        fn write_staged_test_command(&mut self, command: &StagedTestCommand) -> NodeResult<()> {
+            if self.fail_write_staged_test_command {
+                return Err(NodeError::StorageError(
+                    "injected write_staged_test_command failure",
+                ));
+            }
+            self.staged_test_command = Some(command.clone());
+            Ok(())
+        }
+        fn clear_staged_test_command(&mut self) -> NodeResult<()> {
+            if self.fail_clear_staged_test_command {
+                return Err(NodeError::StorageError(
+                    "injected clear_staged_test_command failure",
+                ));
+            }
+            self.staged_test_command = None;
+            Ok(())
+        }
+        fn read_test_result(&self) -> Option<sonde_protocol::TestResult> {
+            self.test_result.clone()
+        }
+        fn write_test_result(&mut self, result: &sonde_protocol::TestResult) -> NodeResult<()> {
+            if self.fail_write_test_result {
+                return Err(NodeError::StorageError(
+                    "injected write_test_result failure",
+                ));
+            }
+            self.test_result = Some(result.clone());
+            Ok(())
+        }
     }
 
     // --- Helper ---
@@ -553,6 +677,57 @@ mod tests {
             rf_channel: channel,
             encrypted_payload: payload.to_vec(),
             board_layout: ProvisionedBoardLayout::Absent,
+        }
+    }
+
+    #[derive(Default)]
+    struct MockClock {
+        elapsed_ms: std::cell::Cell<u64>,
+        delays_ms: std::cell::RefCell<Vec<u32>>,
+    }
+
+    impl crate::traits::Clock for MockClock {
+        fn elapsed_ms(&self) -> u64 {
+            self.elapsed_ms.get()
+        }
+
+        fn delay_ms(&self, ms: u32) {
+            self.delays_ms.borrow_mut().push(ms);
+            self.elapsed_ms
+                .set(self.elapsed_ms.get().saturating_add(ms as u64));
+        }
+    }
+
+    struct MockTransport {
+        sends: Vec<Vec<u8>>,
+        replies: std::collections::VecDeque<Option<crate::traits::ReceivedFrame>>,
+    }
+
+    impl MockTransport {
+        fn new(replies: Vec<Option<crate::traits::ReceivedFrame>>) -> Self {
+            Self {
+                sends: Vec::new(),
+                replies: replies.into(),
+            }
+        }
+    }
+
+    impl crate::traits::Transport for MockTransport {
+        fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
+            self.sends.push(frame.to_vec());
+            Ok(())
+        }
+
+        fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+            self.recv_with_metadata(timeout_ms)
+                .map(|frame| frame.map(|frame| frame.data))
+        }
+
+        fn recv_with_metadata(
+            &mut self,
+            _timeout_ms: u32,
+        ) -> NodeResult<Option<crate::traits::ReceivedFrame>> {
+            Ok(self.replies.pop_front().flatten())
         }
     }
 
@@ -1135,6 +1310,247 @@ mod tests {
             BLE_MIN_ATT_MTU, 247,
             "BLE_MIN_ATT_MTU must be 247 per ND-0904"
         );
+    }
+
+    #[test]
+    fn run_test_command_valid_is_staged() {
+        let body = sonde_protocol::encode_run_test_command(
+            sonde_protocol::TEST_TYPE_DIAG_FRAME,
+            Some(6),
+            &[0x42; 50],
+        )
+        .unwrap();
+        let mut storage = MockStorage::new();
+
+        let (status, staged) = handle_run_test_command(&body, &mut storage);
+        assert_eq!(status, sonde_protocol::RUN_TEST_ACK_OK);
+        assert_eq!(staged, storage.read_staged_test_command());
+        assert_eq!(
+            storage.read_staged_test_command().unwrap().rf_channel,
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn run_test_command_invalid_diag_frame_is_rejected() {
+        let body = sonde_protocol::encode_ble_envelope(
+            sonde_protocol::BLE_RUN_TEST_COMMAND,
+            &[0xA3, 0x01, 0x01, 0x02, 0x0E, 0x03, 0x41, 0xAA],
+        )
+        .unwrap();
+        let (_, body) = sonde_protocol::parse_ble_envelope(&body).unwrap();
+        let mut storage = MockStorage::new();
+
+        let (status, staged) = handle_run_test_command(body, &mut storage);
+        assert_eq!(status, sonde_protocol::RUN_TEST_ACK_INVALID);
+        assert!(staged.is_none());
+        assert!(storage.read_staged_test_command().is_none());
+    }
+
+    #[test]
+    fn run_test_command_unsupported_type_is_rejected() {
+        let body = sonde_protocol::encode_run_test_command(0x99, None, &[]).unwrap();
+        let mut storage = MockStorage::new();
+
+        let (status, staged) = handle_run_test_command(&body, &mut storage);
+        assert_eq!(status, sonde_protocol::RUN_TEST_ACK_UNSUPPORTED);
+        assert!(staged.is_none());
+        assert!(storage.read_staged_test_command().is_none());
+    }
+
+    #[test]
+    fn read_test_result_returns_retained_result_and_no_result_fallback() {
+        let mut storage = MockStorage::new();
+        let no_result = handle_read_test_result(&[], &storage).unwrap();
+        assert_eq!(no_result.status, sonde_protocol::TEST_RESULT_NO_RESULT);
+        assert!(no_result.test_type.is_none());
+
+        let retained = sonde_protocol::TestResult {
+            status: sonde_protocol::TEST_RESULT_TIMEOUT,
+            test_type: Some(sonde_protocol::TEST_TYPE_DIAG_FRAME),
+            reply_frame: None,
+            reply_rssi_dbm: None,
+            attempt_count: 4,
+            elapsed_ms: 8_600,
+        };
+        storage.test_result = Some(retained.clone());
+        assert_eq!(handle_read_test_result(&[], &storage).unwrap(), retained);
+    }
+
+    #[test]
+    fn execute_staged_test_command_stores_success_result() {
+        let mut storage = MockStorage::new();
+        storage.staged_test_command = Some(StagedTestCommand {
+            test_type: sonde_protocol::TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(6),
+            payload: vec![0x42; 50],
+        });
+        let reply = crate::traits::ReceivedFrame {
+            data: vec![
+                0x12,
+                0x34,
+                sonde_protocol::MSG_DIAG_REPLY,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+            ],
+            rssi_dbm: Some(-67),
+        };
+        let mut transport = MockTransport::new(vec![Some(reply.clone())]);
+        let clock = MockClock::default();
+
+        let result = execute_staged_test_command(&mut storage, &mut transport, &clock)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.status, sonde_protocol::TEST_RESULT_OK);
+        assert_eq!(result.test_type, Some(sonde_protocol::TEST_TYPE_DIAG_FRAME));
+        assert_eq!(result.reply_frame, Some(reply.data));
+        assert_eq!(result.reply_rssi_dbm, Some(-67));
+        assert_eq!(result.attempt_count, 1);
+        assert!(storage.read_staged_test_command().is_none());
+        assert_eq!(storage.read_test_result(), Some(result));
+    }
+
+    #[test]
+    fn execute_staged_test_command_times_out_after_retries() {
+        let mut storage = MockStorage::new();
+        storage.staged_test_command = Some(StagedTestCommand {
+            test_type: sonde_protocol::TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(6),
+            payload: vec![0x42; 50],
+        });
+        let mut transport = MockTransport::new(vec![None, None, None, None]);
+        let clock = MockClock::default();
+
+        let result = execute_staged_test_command(&mut storage, &mut transport, &clock)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.status, sonde_protocol::TEST_RESULT_TIMEOUT);
+        assert_eq!(result.attempt_count, 4);
+        assert_eq!(transport.sends.len(), 4);
+        assert_eq!(*clock.delays_ms.borrow(), vec![200, 200, 200]);
+    }
+
+    #[test]
+    fn execute_staged_test_command_rejects_invalid_staged_command() {
+        let mut storage = MockStorage::new();
+        storage.staged_test_command = Some(StagedTestCommand {
+            test_type: sonde_protocol::TEST_TYPE_DIAG_FRAME,
+            rf_channel: None,
+            payload: vec![0x42; 50],
+        });
+        let mut transport = MockTransport::new(vec![]);
+        let clock = MockClock::default();
+
+        let result = execute_staged_test_command(&mut storage, &mut transport, &clock)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.status, sonde_protocol::TEST_RESULT_EXECUTION_ERROR);
+        assert_eq!(result.test_type, Some(sonde_protocol::TEST_TYPE_DIAG_FRAME));
+        assert!(storage.read_staged_test_command().is_none());
+    }
+
+    #[test]
+    fn retained_result_remains_readable_until_overwritten() {
+        let mut storage = MockStorage::new();
+        let first = sonde_protocol::TestResult {
+            status: sonde_protocol::TEST_RESULT_OK,
+            test_type: Some(sonde_protocol::TEST_TYPE_DIAG_FRAME),
+            reply_frame: Some(vec![0x12, 0x34, sonde_protocol::MSG_DIAG_REPLY]),
+            reply_rssi_dbm: Some(-61),
+            attempt_count: 1,
+            elapsed_ms: 900,
+        };
+        storage.write_test_result(&first).unwrap();
+
+        assert_eq!(handle_read_test_result(&[], &storage).unwrap(), first);
+        assert_eq!(handle_read_test_result(&[], &storage).unwrap(), first);
+
+        storage.staged_test_command = Some(StagedTestCommand {
+            test_type: sonde_protocol::TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(6),
+            payload: vec![0x42; 50],
+        });
+        let reply = crate::traits::ReceivedFrame {
+            data: vec![
+                0x12,
+                0x34,
+                sonde_protocol::MSG_DIAG_REPLY,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                2,
+            ],
+            rssi_dbm: Some(-72),
+        };
+        let mut transport = MockTransport::new(vec![Some(reply.clone())]);
+        let clock = MockClock::default();
+
+        let second = execute_staged_test_command(&mut storage, &mut transport, &clock)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(handle_read_test_result(&[], &storage).unwrap(), second);
+        assert_ne!(second, first);
+    }
+
+    #[test]
+    fn node_provision_succeeds_after_test_execution() {
+        let mut storage = MockStorage::new();
+        storage.staged_test_command = Some(StagedTestCommand {
+            test_type: sonde_protocol::TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(6),
+            payload: vec![0x42; 50],
+        });
+        let reply = crate::traits::ReceivedFrame {
+            data: vec![
+                0x12,
+                0x34,
+                sonde_protocol::MSG_DIAG_REPLY,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                3,
+            ],
+            rssi_dbm: Some(-67),
+        };
+        let mut transport = MockTransport::new(vec![Some(reply)]);
+        let clock = MockClock::default();
+        let mut map_storage = MapStorage::new(1024);
+
+        execute_staged_test_command(&mut storage, &mut transport, &clock)
+            .unwrap()
+            .unwrap();
+
+        let provision = NodeProvision {
+            key_hint: 0x1234,
+            psk: [0x42; 32],
+            rf_channel: 6,
+            encrypted_payload: vec![0xAA; 32],
+            board_layout: ProvisionedBoardLayout::Absent,
+        };
+        let status =
+            handle_node_provision(&provision, &mut storage, &mut map_storage, false, false);
+        assert_eq!(status, NODE_ACK_SUCCESS);
+        assert_eq!(storage.read_key(), Some((0x1234, [0x42; 32])));
+        assert_eq!(storage.read_channel(), Some(6));
+        assert_eq!(storage.read_peer_payload(), Some(vec![0xAA; 32]));
     }
 
     // -----------------------------------------------------------------------

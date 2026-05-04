@@ -54,6 +54,7 @@ crates/sonde-pair/
     ├── discovery.rs            # BLE scan logic, device filtering, scan lifecycle
     ├── phase1.rs               # Phase 1 state machine (gateway pairing)
     ├── phase2.rs               # Phase 2 state machine (node provisioning)
+    ├── preprovision_test.rs    # Rebooted pre-provisioning test flow
     ├── crypto.rs               # AES-256-GCM, SHA-256, pairing AEAD codec
     ├── envelope.rs             # BLE message envelope (TYPE + LEN + BODY) encode/decode
     ├── cbor.rs                 # PairingRequest CBOR construction (deterministic encoding)
@@ -206,6 +207,60 @@ The Phase 2 state machine implements the node provisioning flow from [ble-pairin
 - All validation and payload construction happen *before* the BLE write.  The tool rejects invalid inputs (empty `node_id`, `rf_channel` out of range, payload > 202 bytes) without touching BLE (PT-0403, PT-0406).
 - `node_psk` is never persisted to disk.  It exists only in memory during provisioning and is zeroed via `Zeroizing` after the `NODE_PROVISION` write succeeds (PT-0408, PT-0804).
 - The pairing request payload is encrypted with `phone_psk` (AES-256-GCM, AAD = `"sonde-pairing-v2"`) and wrapped in a complete ESP-NOW `PEER_REQUEST` frame (PT-0402).
+
+### 4.4  Pre-provisioning test state machine
+
+The pre-provisioning test flow is implemented as a separate async state machine in `preprovision_test.rs`. It takes a `BleTransport`, `PairingArtifacts` (from Phase 1), a device address, and a generic `PreprovisionTestCommand`, and returns a structured retained-result value. The initial concrete command is `PreprovisionTestCommand::DiagFrame`.
+
+```text
+┌─────────────┐
+│ Prerequisite│──── no phone_psk ──► Error("complete Phase 1 first")
+│ Check       │
+└────┬────────┘
+     │ phone_psk present
+     ▼
+┌──────────────────┐
+│ Build test cmd   │──── invalid ─────► Error (before BLE)
+│ 1. Create        │
+│    DIAG_REQUEST  │
+│ 2. Wrap generic  │
+│    RUN_TEST_CMD  │
+└────┬─────────────┘
+     ▼
+┌──────────────────┐
+│ Stage command    │
+│ write RUN_TEST   │
+│ wait RUN_TEST_ACK│──── timeout 5s ──► Error("no response")
+│                  │──── ACK !0x00 ───► Error("test rejected")
+└────┬─────────────┘
+     │ ACK(0x00)
+     ▼
+┌──────────────────┐
+│ Reconnect later  │
+│ node reboots     │
+│ connect again    │
+└────┬─────────────┘
+     ▼
+┌──────────────────┐
+│ Read result      │
+│ write READ_TEST  │
+│ wait TEST_RESULT │──── timeout 5s ──► Error("result unavailable")
+└────┬─────────────┘
+     │ TEST_RESULT
+     ▼
+┌──────────────────┐
+│ Interpret        │
+│ decrypt reply    │
+│ present gateway  │
+│ + node RSSI/meta │
+└──────────────────┘
+```
+
+**Key design decisions:**
+
+- The flow is explicitly split into **stage** and **read** phases so the tool never assumes the original BLE connection will survive test execution.
+- The outer BLE workflow is generic over `test_type`; only the test-specific payload builder changes when new test kinds are added later.
+- For `DiagFrame`, the tool combines the decrypted gateway reply (`rssi_dbm`, `signal_quality`) with the node-reported reply RSSI and elapsed-time metadata from `TEST_RESULT`.
 
 ### 4.1  NODE_PROVISION body wire format
 

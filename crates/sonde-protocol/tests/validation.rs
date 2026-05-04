@@ -2794,67 +2794,74 @@ fn test_p104_ble_envelope_trailing_bytes_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// 10  DIAG relay integration tests (T-P114 – T-P116)
+// 10  Pre-provisioning test BLE integration tests (T-P114 – T-P116)
 // ---------------------------------------------------------------------------
 
-/// T-P114: DIAG_RELAY_REQUEST encode → BLE envelope → decode round-trip
+/// T-P114: RUN_TEST_COMMAND encode → BLE envelope → decode round-trip
 #[test]
-fn test_p114_diag_relay_request_round_trip() {
+fn test_p114_run_test_command_round_trip() {
     let payload = [0x42u8; 50];
-    let body = encode_diag_relay_request(6, &payload).unwrap();
-    let envelope = encode_ble_envelope(BLE_DIAG_RELAY_REQUEST, &body).unwrap();
+    let body = encode_run_test_command(TEST_TYPE_DIAG_FRAME, Some(6), &payload).unwrap();
+    let envelope = encode_ble_envelope(BLE_RUN_TEST_COMMAND, &body).unwrap();
     let (msg_type, decoded_body) = parse_ble_envelope(&envelope).unwrap();
-    assert_eq!(msg_type, BLE_DIAG_RELAY_REQUEST);
-    let (rf_channel, decoded_payload) = decode_diag_relay_request(decoded_body).unwrap();
-    assert_eq!(rf_channel, 6);
-    assert_eq!(decoded_payload, &payload);
+    assert_eq!(msg_type, BLE_RUN_TEST_COMMAND);
+    let decoded = decode_run_test_command(decoded_body).unwrap();
+    assert_eq!(decoded.test_type, TEST_TYPE_DIAG_FRAME);
+    assert_eq!(decoded.rf_channel, Some(6));
+    assert_eq!(decoded.payload, &payload);
 }
 
-/// T-P115: DIAG_RELAY_REQUEST rejects channels outside 1–13 (boundary-inclusive check)
+/// T-P115: RUN_TEST_COMMAND rejects channels outside 1–13 (boundary-inclusive check)
 #[test]
-fn test_p115_diag_relay_request_invalid_channel_rejected() {
+fn test_p115_run_test_command_invalid_channel_rejected() {
     let payload = [0x42u8; 10];
     assert!(
-        encode_diag_relay_request(0, &payload).is_err(),
+        encode_run_test_command(TEST_TYPE_DIAG_FRAME, Some(0), &payload).is_err(),
         "channel 0 must be rejected"
     );
     assert!(
-        encode_diag_relay_request(14, &payload).is_err(),
+        encode_run_test_command(TEST_TYPE_DIAG_FRAME, Some(14), &payload).is_err(),
         "channel 14 must be rejected"
     );
-    // Boundary values: channels 1 and 13 are the valid extremes
     assert!(
-        encode_diag_relay_request(1, &payload).is_ok(),
+        encode_run_test_command(TEST_TYPE_DIAG_FRAME, Some(1), &payload).is_ok(),
         "channel 1 (lower boundary) must succeed"
     );
     assert!(
-        encode_diag_relay_request(13, &payload).is_ok(),
+        encode_run_test_command(TEST_TYPE_DIAG_FRAME, Some(13), &payload).is_ok(),
         "channel 13 (upper boundary) must succeed"
     );
 }
 
-/// T-P116: DIAG_RELAY_RESPONSE — OK with payload, non-OK statuses require empty payload
+/// T-P116: RUN_TEST_ACK and TEST_RESULT round-trip
 #[test]
-fn test_p116_diag_relay_response_round_trip() {
-    // status=OK with non-empty payload
-    let payload = [0xABu8; 30];
-    let body = encode_diag_relay_response(DIAG_RELAY_STATUS_OK, &payload).unwrap();
-    let envelope = encode_ble_envelope(BLE_DIAG_RELAY_RESPONSE, &body).unwrap();
-    let (msg_type, decoded_body) = parse_ble_envelope(&envelope).unwrap();
-    assert_eq!(msg_type, BLE_DIAG_RELAY_RESPONSE);
-    let (status, decoded_payload) = decode_diag_relay_response(decoded_body).unwrap();
-    assert_eq!(status, DIAG_RELAY_STATUS_OK);
-    assert_eq!(decoded_payload, &payload);
+fn test_p116_run_test_ack_and_test_result_round_trip() {
+    let ack = encode_run_test_ack(RUN_TEST_ACK_OK).unwrap();
+    assert_eq!(decode_run_test_ack(&ack).unwrap(), RUN_TEST_ACK_OK);
 
-    // status=TIMEOUT, empty payload
-    let body_timeout = encode_diag_relay_response(DIAG_RELAY_STATUS_TIMEOUT, &[]).unwrap();
-    let (status_t, payload_t) = decode_diag_relay_response(&body_timeout).unwrap();
-    assert_eq!(status_t, DIAG_RELAY_STATUS_TIMEOUT);
-    assert!(payload_t.is_empty());
+    let success = TestResult {
+        status: TEST_RESULT_OK,
+        test_type: Some(TEST_TYPE_DIAG_FRAME),
+        reply_frame: Some(vec![0xABu8; 30]),
+        reply_rssi_dbm: Some(-64),
+        attempt_count: 2,
+        elapsed_ms: 4_100,
+    };
+    assert_eq!(
+        decode_test_result(&encode_test_result(&success).unwrap()).unwrap(),
+        success
+    );
 
-    // status=CHANNEL_ERROR, empty payload
-    let body_chan = encode_diag_relay_response(DIAG_RELAY_STATUS_CHANNEL_ERROR, &[]).unwrap();
-    let (status_c, payload_c) = decode_diag_relay_response(&body_chan).unwrap();
-    assert_eq!(status_c, DIAG_RELAY_STATUS_CHANNEL_ERROR);
-    assert!(payload_c.is_empty());
+    let timeout = TestResult {
+        status: TEST_RESULT_TIMEOUT,
+        test_type: Some(TEST_TYPE_DIAG_FRAME),
+        reply_frame: None,
+        reply_rssi_dbm: None,
+        attempt_count: 4,
+        elapsed_ms: 8_600,
+    };
+    assert_eq!(
+        decode_test_result(&encode_test_result(&timeout).unwrap()).unwrap(),
+        timeout
+    );
 }

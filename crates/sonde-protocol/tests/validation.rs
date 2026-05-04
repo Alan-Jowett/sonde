@@ -2833,6 +2833,36 @@ fn test_p115_run_test_command_invalid_channel_rejected() {
     );
 }
 
+#[test]
+fn test_p115b_run_test_command_duplicate_key_rejected() {
+    let map = vec![
+        (
+            ciborium::Value::Integer(TEST_CMD_KEY_TEST_TYPE.into()),
+            ciborium::Value::Integer(TEST_TYPE_DIAG_FRAME.into()),
+        ),
+        (
+            ciborium::Value::Integer(TEST_CMD_KEY_TEST_TYPE.into()),
+            ciborium::Value::Integer(0x99.into()),
+        ),
+        (
+            ciborium::Value::Integer(TEST_CMD_KEY_RF_CHANNEL.into()),
+            ciborium::Value::Integer(6.into()),
+        ),
+        (
+            ciborium::Value::Integer(TEST_CMD_KEY_PAYLOAD.into()),
+            ciborium::Value::Bytes(vec![0x42; 8]),
+        ),
+    ];
+    let mut body = Vec::new();
+    ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut body).unwrap();
+
+    let err = decode_run_test_command(&body).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::InvalidParameter(ref msg) if msg.contains("duplicate")),
+        "expected duplicate-key rejection, got {err:?}"
+    );
+}
+
 /// T-P116: RUN_TEST_ACK and TEST_RESULT round-trip
 #[test]
 fn test_p116_run_test_ack_and_test_result_round_trip() {

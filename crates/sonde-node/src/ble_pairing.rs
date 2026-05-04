@@ -307,7 +307,7 @@ pub fn handle_run_test_command<S: PlatformStorage>(
     let staged = StagedTestCommand {
         test_type: command.test_type,
         rf_channel: command.rf_channel,
-        payload: command.payload.to_vec(),
+        payload: command.payload,
     };
 
     if storage.write_staged_test_command(&staged).is_err() {
@@ -382,12 +382,16 @@ fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
     }
 
     let mut attempt_count = 0u64;
+    let mut send_succeeded = false;
     for attempt in 0..=TEST_MAX_RETRIES {
         if attempt > 0 {
             clock.delay_ms(TEST_RETRY_DELAY_MS);
         }
         attempt_count = attempt + 1;
-        let _ = transport.send(&command.payload);
+        if transport.send(&command.payload).is_err() {
+            continue;
+        }
+        send_succeeded = true;
 
         #[cfg(feature = "esp")]
         {
@@ -436,6 +440,14 @@ fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
                 }
             }
         }
+    }
+
+    if !send_succeeded {
+        return execution_error_result(
+            command.test_type,
+            attempt_count,
+            clock.elapsed_ms().saturating_sub(start_ms),
+        );
     }
 
     sonde_protocol::TestResult {
@@ -1456,6 +1468,42 @@ mod tests {
         assert_eq!(result.status, sonde_protocol::TEST_RESULT_EXECUTION_ERROR);
         assert_eq!(result.test_type, Some(sonde_protocol::TEST_TYPE_DIAG_FRAME));
         assert!(storage.read_staged_test_command().is_none());
+    }
+
+    #[test]
+    fn execute_staged_test_command_returns_execution_error_when_all_sends_fail() {
+        struct FailingSendTransport {
+            send_calls: usize,
+        }
+
+        impl crate::traits::Transport for FailingSendTransport {
+            fn send(&mut self, _frame: &[u8]) -> NodeResult<()> {
+                self.send_calls += 1;
+                Err(NodeError::Transport("injected send failure"))
+            }
+
+            fn recv(&mut self, _timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+                Ok(None)
+            }
+        }
+
+        let mut storage = MockStorage::new();
+        storage.staged_test_command = Some(StagedTestCommand {
+            test_type: sonde_protocol::TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(6),
+            payload: vec![0x42; 50],
+        });
+        let mut transport = FailingSendTransport { send_calls: 0 };
+        let clock = MockClock::default();
+
+        let result = execute_staged_test_command(&mut storage, &mut transport, &clock)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.status, sonde_protocol::TEST_RESULT_EXECUTION_ERROR);
+        assert_eq!(result.attempt_count, 4);
+        assert_eq!(transport.send_calls, 4);
+        assert_eq!(*clock.delays_ms.borrow(), vec![200, 200, 200]);
     }
 
     #[test]

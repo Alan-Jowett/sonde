@@ -24,7 +24,7 @@ enum BootMode {
 
 #[cfg(any(feature = "esp", test))]
 fn select_boot_mode(has_staged_test: bool, has_psk: bool, button_held: bool) -> BootMode {
-    if has_staged_test {
+    if has_staged_test && !has_psk {
         BootMode::PreProvisioningTest
     } else if !has_psk || button_held {
         BootMode::BlePairing
@@ -131,8 +131,6 @@ fn main() {
     //   4. PSK stored, reg_complete set → normal WAKE cycle
     // ---------------------------------------------------------------------------
 
-    let has_staged_test = storage.read_staged_test_command().is_some();
-
     // (2) No PSK, or pairing button held ≥ 500 ms → BLE pairing mode.
     //
     // Pairing button is GPIO 9 on the ESP32-C3 DevKitM-1 (active LOW).
@@ -168,6 +166,18 @@ fn main() {
     };
 
     let has_psk = storage.read_key().is_some();
+    let mut has_staged_test = storage.read_staged_test_command().is_some();
+    if has_staged_test && has_psk {
+        warn!("ignoring stale staged pre-provisioning test command on paired node");
+        if let Err(err) = storage.clear_staged_test_command() {
+            warn!(
+                "failed to clear stale staged pre-provisioning test command: {}",
+                err
+            );
+        } else {
+            has_staged_test = false;
+        }
+    }
 
     match select_boot_mode(has_staged_test, has_psk, button_held) {
         BootMode::PreProvisioningTest => {
@@ -337,11 +347,11 @@ mod tests {
         );
         assert_eq!(
             select_boot_mode(true, true, true),
-            BootMode::PreProvisioningTest
+            BootMode::BlePairing
         );
         assert_eq!(
             select_boot_mode(true, true, false),
-            BootMode::PreProvisioningTest
+            BootMode::WakeCycle
         );
     }
 

@@ -103,6 +103,12 @@ fn cbor_decode_map(data: &[u8]) -> Result<Vec<(u64, Value)>, DecodeError> {
                 "BLE test message key must be unsigned integer".into(),
             ));
         };
+        if decoded.iter().any(|(existing_key, _)| *existing_key == key) {
+            return Err(DecodeError::InvalidParameter(format!(
+                "duplicate BLE test message key: {}",
+                key
+            )));
+        }
         decoded.push((key, value.clone()));
     }
     Ok(decoded)

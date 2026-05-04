@@ -108,7 +108,7 @@ fn cbor_decode_map(data: &[u8]) -> Result<Vec<(u64, Value)>, DecodeError> {
     Ok(decoded)
 }
 
-fn get_field<'a>(fields: &'a [(u64, Value)], key: u64) -> Result<&'a Value, DecodeError> {
+fn get_field(fields: &[(u64, Value)], key: u64) -> Result<&Value, DecodeError> {
     fields
         .iter()
         .find(|(candidate, _)| *candidate == key)

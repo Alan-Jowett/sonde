@@ -14,6 +14,7 @@ fn main() {
     std::process::exit(1);
 }
 
+#[cfg(any(feature = "esp", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BootMode {
     PreProvisioningTest,
@@ -21,6 +22,7 @@ enum BootMode {
     WakeCycle,
 }
 
+#[cfg(any(feature = "esp", test))]
 fn select_boot_mode(has_staged_test: bool, has_psk: bool, button_held: bool) -> BootMode {
     if has_staged_test {
         BootMode::PreProvisioningTest

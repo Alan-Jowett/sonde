@@ -947,11 +947,10 @@ fn format_program_identifier(
     program_names: &HashMap<Vec<u8>, String>,
     verbose: bool,
 ) -> String {
-    let hash_hex = hex::encode(hash);
     match program_names.get(hash) {
-        Some(name) if verbose => format!("{name} ({hash_hex})"),
+        Some(name) if verbose => format!("{} ({})", name, hex::encode(hash)),
         Some(name) => name.clone(),
-        None => hash_hex,
+        None => hex::encode(hash),
     }
 }
 

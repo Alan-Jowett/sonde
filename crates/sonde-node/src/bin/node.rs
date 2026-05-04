@@ -234,18 +234,7 @@ fn main() {
             let mut pairing_hal = EspHal::new(pairing_board_layout);
             pairing_hal.enter_active_gpio_state();
 
-            // Try to initialize ESP-NOW for pre-provisioning test mode.
-            // If this fails, BLE pairing still works — just without diagnostic runs.
-            let diag_channel = storage.read_channel().unwrap_or(1);
-            let mut diag_transport =
-                EspNowTransport::new(peripherals.modem, sysloop, nvs_partition, diag_channel).ok();
-
-            match run_ble_pairing_mode(
-                &mut storage,
-                &mut map_storage,
-                button_held,
-                diag_transport.as_mut(),
-            ) {
+            match run_ble_pairing_mode(&mut storage, &mut map_storage, button_held) {
                 Ok(()) => {
                     info!("BLE pairing mode exited — rebooting");
                     pairing_hal.prepare_for_sleep();

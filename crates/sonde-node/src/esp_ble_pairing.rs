@@ -97,7 +97,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         .set_auth(AuthReq::all())
         .set_io_cap(SecurityIOCap::NoInputNoOutput);
 
-    let ble_server = ble_device.get_server();
+    let mut ble_server = ble_device.get_server();
 
     // --- Connection event ---
     let disc_connect = Arc::clone(&disconnected);
@@ -376,7 +376,7 @@ mod tests {}
 fn check_encryption_fallback(
     conn_handle: &Arc<Mutex<Option<u16>>>,
     authenticated: &Arc<Mutex<bool>>,
-    ble_server: &esp32_nimble::BLEServer,
+    ble_server: &mut esp32_nimble::BLEServer,
 ) -> bool {
     let handle = match conn_handle.lock().ok().and_then(|h| *h) {
         Some(h) => h,

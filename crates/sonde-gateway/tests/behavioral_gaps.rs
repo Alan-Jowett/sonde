@@ -1235,9 +1235,9 @@ async fn t0504_many_to_one_handler_routing() {
 
 /// After registration + WAKE, the durable node record must contain all
 /// specified persisted fields with correct values: node_id, key_hint, psk,
-/// assigned_program_hash, schedule_interval_s, firmware_abi_version,
-/// last_battery_mv, and current_program_hash (None, since it is only set via
-/// PROGRAM_ACK). Runtime `last_seen` is tracked separately.
+/// assigned_program_hash, schedule_interval_s, firmware_abi_version, and
+/// current_program_hash (None, since it is only set via PROGRAM_ACK). Battery
+/// and `last_seen` are tracked separately as runtime observations.
 #[tokio::test]
 async fn t0700_registry_entry_all_fields_present() {
     let storage = Arc::new(InMemoryStorage::new());
@@ -1285,9 +1285,8 @@ async fn t0700_registry_entry_all_fields_present() {
         "firmware_abi_version must be updated by WAKE"
     );
     assert_eq!(
-        stored.last_battery_mv,
-        Some(3700),
-        "last_battery_mv must be updated by WAKE"
+        stored.last_battery_mv, None,
+        "battery must not be durably persisted"
     );
     assert!(
         gw.session_manager()
@@ -1295,6 +1294,11 @@ async fn t0700_registry_entry_all_fields_present() {
             .await
             .is_some(),
         "runtime last_seen must be set after WAKE"
+    );
+    assert_eq!(
+        gw.session_manager().get_battery_mv("node-fields").await,
+        Some(3700),
+        "runtime battery must be updated by WAKE"
     );
     // `current_program_hash` is only set via PROGRAM_ACK, not WAKE.
     assert_eq!(

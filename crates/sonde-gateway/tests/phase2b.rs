@@ -284,11 +284,15 @@ async fn t0103_wake_reception_and_field_extraction() {
         "must respond with COMMAND"
     );
 
-    // Verify the registry was updated
+    // Verify durable metadata was updated and battery stayed runtime-only.
     let updated = storage.get_node("node-03").await.unwrap().unwrap();
     assert_eq!(updated.firmware_abi_version, Some(1));
-    assert_eq!(updated.last_battery_mv, Some(3300));
+    assert_eq!(updated.last_battery_mv, None);
     assert_eq!(updated.firmware_version, Some(TEST_FIRMWARE_VERSION.into()));
+    assert_eq!(
+        gw.session_manager().get_battery_mv("node-03").await,
+        Some(3300)
+    );
 }
 
 /// T-0104: WAKE with missing `battery_mv` rejected.
@@ -1027,14 +1031,18 @@ async fn t0603_key_hint_collision() {
     let (_, msg_a) = decode_response(&resp_a, &node_a.psk);
     assert!(matches!(msg_a, GatewayMessage::Command { .. }));
 
-    // Registry must show node A was updated, not node B
+    // Runtime observations must show node A was updated, not node B
     let updated_a = storage.get_node("node-603a").await.unwrap().unwrap();
-    assert!(updated_a.last_battery_mv.is_some());
+    assert!(updated_a.last_battery_mv.is_none());
     assert!(gw
         .session_manager()
         .get_last_seen("node-603a")
         .await
         .is_some());
+    assert_eq!(
+        gw.session_manager().get_battery_mv("node-603a").await,
+        Some(3300)
+    );
 
     // Send WAKE from node B — also must succeed
     let frame_b = node_b.build_wake(2, 1, &[0u8; 32], 3200);
@@ -1046,7 +1054,11 @@ async fn t0603_key_hint_collision() {
     assert!(matches!(msg_b, GatewayMessage::Command { .. }));
 
     let updated_b = storage.get_node("node-603b").await.unwrap().unwrap();
-    assert_eq!(updated_b.last_battery_mv, Some(3200));
+    assert_eq!(updated_b.last_battery_mv, None);
+    assert_eq!(
+        gw.session_manager().get_battery_mv("node-603b").await,
+        Some(3200)
+    );
 }
 
 /// T-0609: Unknown node — silent discard.

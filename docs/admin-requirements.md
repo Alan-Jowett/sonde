@@ -215,13 +215,15 @@ rather than crashing.
 **Source:** GW-0801
 
 **Description:**
-`sonde-admin node list` MUST list all registered nodes. Text output shows
-node ID, key hint, assigned/current program identifiers, battery, last seen
-when known, and schedule. For assigned/current programs, the default
-human-readable identifier is the stored `source_filename` basename when
-available; otherwise the hash is shown. In `--verbose` mode, human-readable
-output also shows the corresponding hash. JSON output remains hash-based. An
-empty registry displays "No nodes registered."
+`sonde-admin node list` MUST list all registered nodes. Text output shows node
+ID, key hint, assigned/current program identifiers, battery, last seen when
+known, and schedule. Battery and last seen are runtime-only observation fields:
+they are absent until the node completes a `WAKE` in the current gateway
+process and disappear again after gateway restart until the next `WAKE`. For
+assigned/current programs, the default human-readable identifier is the stored
+`source_filename` basename when available; otherwise the hash is shown. In
+`--verbose` mode, human-readable output also shows the corresponding hash. JSON
+output remains hash-based. An empty registry displays "No nodes registered."
 
 **Acceptance criteria:**
 
@@ -246,8 +248,11 @@ empty registry displays "No nodes registered."
 `sonde-admin node get <node-id>` MUST display details for a single node. In
 human-readable output, assigned/current programs use the stored
 `source_filename` basename when available and fall back to the hash when no
-filename metadata exists. `--verbose` also shows the corresponding hash. JSON
-output remains hash-based.
+filename metadata exists. Battery and last seen are runtime-only observation
+fields: they are absent until the node completes a `WAKE` in the current
+gateway process and disappear again after gateway restart until the next
+`WAKE`. `--verbose` also shows the corresponding hash. JSON output remains
+hash-based.
 
 **Acceptance criteria:**
 
@@ -441,8 +446,9 @@ ABI version, runtime last seen timestamp (formatted per ADMIN-0107), and
 active session indicator. In default human-readable output, the current
 program identifier is the stored `source_filename` basename when available,
 otherwise the hash. `--verbose` also shows the current program hash. JSON
-output remains hash-based. `last seen` is absent until the node completes a
-WAKE in the current gateway process.
+output remains hash-based. Battery and `last seen` are absent until the node
+completes a WAKE in the current gateway process and are absent again after a
+gateway restart until the next WAKE.
 
 **Acceptance criteria:**
 

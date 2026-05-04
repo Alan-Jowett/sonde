@@ -875,12 +875,16 @@ impl Gateway {
             _ => {}
         }
 
-        // 4. Update registry (battery_mv, firmware_abi_version, firmware_version)
+        // 4. Update durable registry metadata and runtime observations.
         let mut updated_node = node.clone();
         updated_node.update_telemetry(battery_mv, firmware_abi_version, firmware_version);
         let _ = self.storage.upsert_node(&updated_node).await;
+        let observed_at = SystemTime::now();
         self.session_manager
-            .record_last_seen(&node.node_id, SystemTime::now())
+            .record_last_seen(&node.node_id, observed_at)
+            .await;
+        self.session_manager
+            .record_battery_mv(&node.node_id, battery_mv)
             .await;
 
         self.connector_event_hub.emit_actual_state_for_node(

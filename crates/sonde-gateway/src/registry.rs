@@ -3,9 +3,6 @@
 
 use std::time::SystemTime;
 
-/// Maximum number of battery readings to retain per node (GW-0702 AC2).
-const MAX_BATTERY_HISTORY: usize = 100;
-
 /// A timestamped battery voltage reading.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatteryReading {
@@ -54,7 +51,8 @@ pub struct NodeRecord {
     pub sensors: Vec<SensorDescriptor>,
     /// Phone ID that registered this node (audit trail). Set during BLE pairing.
     pub registered_by_phone_id: Option<u32>,
-    /// Historical battery voltage readings (GW-0702 AC2). Most recent last.
+    /// Historical battery voltage readings retained only for backward-compatible
+    /// decoding of legacy state. New gateway code does not append to this list.
     pub battery_history: Vec<BatteryReading>,
 }
 
@@ -80,7 +78,7 @@ impl NodeRecord {
         }
     }
 
-    /// Update battery, ABI, and firmware version fields (called on each WAKE).
+    /// Update runtime battery, ABI, and firmware version fields (called on each WAKE).
     pub fn update_telemetry(
         &mut self,
         battery_mv: u32,
@@ -90,17 +88,6 @@ impl NodeRecord {
         self.last_battery_mv = Some(battery_mv);
         self.firmware_abi_version = Some(firmware_abi_version);
         self.firmware_version = Some(firmware_version);
-        let now = SystemTime::now();
-
-        // GW-0702 AC2: maintain battery history, capped at MAX_BATTERY_HISTORY.
-        self.battery_history.push(BatteryReading {
-            timestamp: now,
-            battery_mv,
-        });
-        if self.battery_history.len() > MAX_BATTERY_HISTORY {
-            let excess = self.battery_history.len() - MAX_BATTERY_HISTORY;
-            self.battery_history.drain(..excess);
-        }
     }
 
     /// Mark the node's current program hash (called on PROGRAM_ACK).

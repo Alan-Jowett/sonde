@@ -307,8 +307,8 @@ recv frame
   │     │     └── include deferred data as `blob` (key 10) in COMMAND, clear store
    │     ├── encode COMMAND response
    │     ├── send response (echoing wake nonce)
-   │     ├── update node registry (battery_mv, firmware_abi_version, firmware_version)
-   │     ├── update runtime node observations (`last_seen`)
+   │     ├── update node registry (firmware_abi_version, firmware_version)
+   │     ├── update runtime node observations (`last_seen`, `last_battery_mv`)
    │     ├── if WAKE contains `blob`:
   │     │     ├── route to handler as DATA message (§9.4)
   │     │     └── store handler reply as deferred data (§6.3a)
@@ -365,12 +365,15 @@ pub struct NodeRecord {
     pub schedule_interval_s: u32,
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
-    pub last_battery_mv: Option<u32>,
     pub admin_node_id: String,  // opaque human-readable ID for handler API
 }
 ```
 
-`NodeRecord` is used primarily for durable registry state. The Rust struct currently retains a `last_seen` field for in-memory compatibility, but it is not storage-backed, is initialized as `None` on reads/imports, and is not used as the source of truth for admin status or timeout detection. The runtime `last_seen` data lives in the separate in-memory observation map below.
+`NodeRecord` is used primarily for durable registry state. Battery telemetry is
+not part of the durable node record. The Rust implementation may retain
+in-memory compatibility fields, but neither `last_seen` nor battery telemetry
+is storage-backed or imported/exported as durable node metadata. Runtime
+observation data lives in the separate in-memory observation map below.
 
 ### 7.1a  Runtime node observations
 
@@ -379,10 +382,16 @@ The gateway maintains a separate in-memory map for per-node runtime observations
 ```rust
 pub struct RuntimeNodeState {
     pub last_seen: Option<SystemTime>,
+    pub last_battery_mv: Option<u32>,
 }
 ```
 
-The runtime state is keyed by `NodeId` and updated only after a valid `WAKE` is processed. It is cleared on gateway restart and is excluded from SQLite persistence and state export/import. Admin read paths and timeout detection merge durable `NodeRecord` data with this runtime map.
+The runtime state is keyed by `NodeId` and updated only after a valid `WAKE` is
+processed. It is cleared on gateway restart and is excluded from SQLite
+persistence and state export/import. Admin read paths, modem status-page
+rendering, and timeout detection merge durable `NodeRecord` data with this
+runtime map. The connector actual-state path emits `battery_mv` from the WAKE
+handling path directly and does not depend on durable battery storage.
 
 ### 7.2  Key lookup
 
@@ -1082,6 +1091,10 @@ For a `WAKE` carrying a piggybacked `blob`, the gateway emits the actual-state
 update first and the application-data message second. Application-data egress is
 informational only; it does not replace the existing handler reply path used for
 node `send_recv()` responses.
+
+The node actual-state payload continues to include `battery_mv` from the just-
+processed WAKE even though battery telemetry is runtime-only locally and is not
+written to durable gateway storage.
 
 ### 13A.4  External transport boundary and loss signaling
 

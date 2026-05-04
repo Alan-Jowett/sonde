@@ -69,7 +69,7 @@ async fn t0700_node_registry_persistence() {
     assert!(gone.is_none(), "node must not exist after deletion");
 }
 
-/// T-0702: Battery level tracking — update via WAKE telemetry data.
+/// T-0702: Battery telemetry is runtime-only and not durably persisted.
 #[tokio::test]
 async fn t0702_battery_level_tracking() {
     let storage = InMemoryStorage::new();
@@ -82,22 +82,22 @@ async fn t0702_battery_level_tracking() {
 
     // First WAKE: battery at 3300 mV.
     node.update_telemetry(3300, 1, "0.6.0".into());
+    assert_eq!(node.last_battery_mv, Some(3300));
     storage.upsert_node(&node).await.unwrap();
 
     let fetched = storage.get_node("node-bat").await.unwrap().unwrap();
-    assert_eq!(fetched.last_battery_mv, Some(3300));
+    assert_eq!(fetched.last_battery_mv, None);
 
     // Second WAKE: battery drops to 2900 mV.
     node.update_telemetry(2900, 1, "0.6.0".into());
+    assert_eq!(node.last_battery_mv, Some(2900));
     storage.upsert_node(&node).await.unwrap();
 
     let fetched = storage.get_node("node-bat").await.unwrap().unwrap();
-    assert_eq!(fetched.last_battery_mv, Some(2900));
+    assert_eq!(fetched.last_battery_mv, None);
 }
 
-/// T-0702b: Battery historical data retention and cap at 100 readings.
-/// Validates GW-0702 AC2: historical battery data is available for trend
-/// analysis, capped at 100 readings per node.
+/// T-0702b: Local battery history is no longer accumulated or persisted.
 #[tokio::test]
 async fn t0702b_battery_history_retention_and_cap() {
     let storage = InMemoryStorage::new();
@@ -109,35 +109,19 @@ async fn t0702b_battery_history_retention_and_cap() {
         "initial battery history must be empty"
     );
 
-    // Send 105 readings (exceeds the 100-reading cap).
+    // Send many readings; runtime history should remain empty.
     for i in 0u32..105 {
         node.update_telemetry(3000 + i, 1, "0.6.0".into());
     }
+    assert!(
+        node.battery_history.is_empty(),
+        "battery history must stay empty"
+    );
     storage.upsert_node(&node).await.unwrap();
 
     let fetched = storage.get_node("node-bat-hist").await.unwrap().unwrap();
-
-    // History must be capped at 100 readings.
-    assert_eq!(
-        fetched.battery_history.len(),
-        100,
-        "battery history must be capped at 100 readings"
-    );
-
-    // Oldest retained reading should be the 6th (index 5) since first 5 were evicted.
-    assert_eq!(
-        fetched.battery_history[0].battery_mv, 3005,
-        "oldest retained reading must be 3005 mV (first 5 evicted)"
-    );
-
-    // Most recent reading must be the last one sent.
-    assert_eq!(
-        fetched.battery_history[99].battery_mv, 3104,
-        "most recent reading must be 3104 mV"
-    );
-
-    // last_battery_mv must reflect the most recent reading.
-    assert_eq!(fetched.last_battery_mv, Some(3104));
+    assert!(fetched.battery_history.is_empty());
+    assert_eq!(fetched.last_battery_mv, None);
 }
 
 /// T-0703: Firmware ABI version tracking.

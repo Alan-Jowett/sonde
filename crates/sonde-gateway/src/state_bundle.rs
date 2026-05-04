@@ -42,7 +42,7 @@ use crate::gateway_identity::GatewayIdentity;
 use crate::handler::{HandlerConfig, ProgramMatcher};
 use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
 use crate::program::{ProgramRecord, VerificationProfile};
-use crate::registry::{BatteryReading, NodeRecord, SensorDescriptor};
+use crate::registry::{NodeRecord, SensorDescriptor};
 
 // ── Bundle constants ─────────────────────────────────────────────────────────
 
@@ -390,10 +390,6 @@ fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
             opt_u32_val(n.firmware_abi_version),
         ),
         (
-            Value::Integer(NODE_KEY_BATTERY.into()),
-            opt_u32_val(n.last_battery_mv),
-        ),
-        (
             Value::Integer(NODE_KEY_RF_CHANNEL.into()),
             match n.rf_channel {
                 Some(ch) => Value::Integer(ch.into()),
@@ -431,30 +427,6 @@ fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
             match n.registered_by_phone_id {
                 Some(id) => Value::Integer(id.into()),
                 None => Value::Null,
-            },
-        ),
-        (
-            Value::Integer(NODE_KEY_BATTERY_HISTORY.into()),
-            if n.battery_history.is_empty() {
-                Value::Null
-            } else {
-                Value::Array(
-                    n.battery_history
-                        .iter()
-                        .map(|r| {
-                            let ts: i64 = r
-                                .timestamp
-                                .duration_since(UNIX_EPOCH)
-                                .ok()
-                                .and_then(|d| i64::try_from(d.as_secs()).ok())
-                                .unwrap_or(0);
-                            Value::Array(vec![
-                                Value::Integer(ts.into()),
-                                Value::Integer(r.battery_mv.into()),
-                            ])
-                        })
-                        .collect(),
-                )
             },
         ),
         (
@@ -766,11 +738,9 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
     let mut desired_schedule_interval_s: Option<Option<u32>> = None;
     let mut schedule_interval_s: Option<u32> = None;
     let mut firmware_abi_version: Option<Option<u32>> = None;
-    let mut last_battery_mv: Option<Option<u32>> = None;
     let mut rf_channel: Option<u8> = None;
     let mut sensors: Vec<SensorDescriptor> = Vec::new();
     let mut registered_by_phone_id: Option<u32> = None;
-    let mut battery_history: Vec<BatteryReading> = Vec::new();
     let mut firmware_version: Option<String> = None;
 
     for (k, v) in map {
@@ -830,9 +800,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                 Some(NODE_KEY_FW_ABI) => {
                     firmware_abi_version = Some(opt_u32_from_cbor(v, "firmware_abi_version")?);
                 }
-                Some(NODE_KEY_BATTERY) => {
-                    last_battery_mv = Some(opt_u32_from_cbor(v, "last_battery_mv")?);
-                }
+                Some(NODE_KEY_BATTERY) => {}
                 Some(NODE_KEY_LAST_SEEN) => {
                     let _ = opt_i64_from_cbor(v, "last_seen_epoch_s")?;
                 }
@@ -902,38 +870,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                         ))
                     }
                 },
-                Some(NODE_KEY_BATTERY_HISTORY) => {
-                    if let Value::Array(arr) = v {
-                        // Cap imported history to the same limit used at runtime
-                        // to avoid excessive memory usage from large/modified bundles.
-                        const MAX_BATTERY_HISTORY: usize = 100;
-                        let start = arr.len().saturating_sub(MAX_BATTERY_HISTORY);
-                        for item in &arr[start..] {
-                            if let Value::Array(pair) = item {
-                                if pair.len() == 2 {
-                                    if let (Value::Integer(ts_int), Value::Integer(mv_int)) =
-                                        (&pair[0], &pair[1])
-                                    {
-                                        if let (Ok(ts), Ok(mv)) =
-                                            (i64::try_from(*ts_int), u32::try_from(*mv_int))
-                                        {
-                                            if ts >= 0 {
-                                                if let Some(t) = UNIX_EPOCH
-                                                    .checked_add(Duration::from_secs(ts as u64))
-                                                {
-                                                    battery_history.push(BatteryReading {
-                                                        timestamp: t,
-                                                        battery_mv: mv,
-                                                    });
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                Some(NODE_KEY_BATTERY_HISTORY) => {}
                 Some(NODE_KEY_FW_VERSION) => match v {
                     Value::Text(s) => firmware_version = Some(s),
                     Value::Null => {}
@@ -986,12 +923,12 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         schedule_interval_s,
         firmware_abi_version: firmware_abi_version.flatten(),
         firmware_version,
-        last_battery_mv: last_battery_mv.flatten(),
+        last_battery_mv: None,
         last_seen: None,
         rf_channel,
         sensors,
         registered_by_phone_id,
-        battery_history,
+        battery_history: Vec::new(),
     })
 }
 
@@ -1505,7 +1442,7 @@ mod tests {
         assert_eq!(na.psk[0], 0x34);
         assert_eq!(na.desired_schedule_interval_s, None);
         assert_eq!(na.schedule_interval_s, 120);
-        assert_eq!(na.last_battery_mv, Some(3700));
+        assert_eq!(na.last_battery_mv, None);
 
         let nb = out_nodes.iter().find(|n| n.node_id == "node-b").unwrap();
         assert_eq!(nb.key_hint, 0x5678);
@@ -1789,11 +1726,12 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_battery_history() {
+    fn roundtrip_omits_battery_telemetry() {
         use crate::registry::BatteryReading;
         use std::time::{Duration, UNIX_EPOCH};
 
         let mut node = make_node("batt-node", 0xAAAA);
+        node.last_battery_mv = Some(3300);
         node.battery_history = vec![
             BatteryReading {
                 timestamp: UNIX_EPOCH + Duration::from_secs(1700000000),
@@ -1809,8 +1747,7 @@ mod tests {
         let (nodes, _) = decrypt_state(&bundle, "batt-pass").unwrap();
 
         assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].battery_history.len(), 2);
-        assert_eq!(nodes[0].battery_history[0].battery_mv, 3300);
-        assert_eq!(nodes[0].battery_history[1].battery_mv, 3250);
+        assert_eq!(nodes[0].last_battery_mv, None);
+        assert!(nodes[0].battery_history.is_empty());
     }
 }

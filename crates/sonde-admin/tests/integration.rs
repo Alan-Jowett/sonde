@@ -125,6 +125,37 @@ async fn start_server_with_storage(test_name: &str) -> (String, Arc<InMemoryStor
     }
 }
 
+/// Start an admin gRPC server backed by caller-owned storage and runtime state.
+async fn start_server_with_runtime(
+    test_name: &str,
+) -> (String, Arc<InMemoryStorage>, Arc<SessionManager>) {
+    let storage = Arc::new(InMemoryStorage::new());
+    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    let admin = AdminService::new(storage.clone(), pending, Arc::clone(&session_manager));
+
+    let endpoint = unique_endpoint(test_name);
+    let server_endpoint = endpoint.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = sonde_gateway::admin::serve_admin(admin, &server_endpoint).await {
+            eprintln!("admin server ended: {e}");
+        }
+    });
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match AdminClient::connect(&endpoint).await {
+            Ok(_) => return (endpoint, storage, session_manager),
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(e) => panic!("failed to connect to admin server: {e}"),
+        }
+    }
+}
+
 async fn seed_node_with_programs(
     storage: &Arc<InMemoryStorage>,
     node_id: &str,
@@ -421,6 +452,29 @@ async fn grpc_get_node_status_without_session() {
     assert_eq!(status.node_id, "status-node");
     assert!(!status.has_active_session);
     assert_eq!(status.battery_mv, None);
+}
+
+/// Test: list/get/status surface runtime battery observations without durable persistence.
+#[tokio::test]
+async fn grpc_runtime_battery_is_visible_in_status_surfaces() {
+    let (endpoint, _storage, session_manager) =
+        start_server_with_runtime("runtime_battery_status").await;
+    let mut client = AdminClient::connect(&endpoint).await.unwrap();
+    client
+        .register_node("status-node", 0x5555, vec![0xBC; 32])
+        .await
+        .unwrap();
+
+    session_manager.record_battery_mv("status-node", 3300).await;
+
+    let nodes = client.list_nodes().await.unwrap();
+    assert_eq!(nodes[0].last_battery_mv, Some(3300));
+
+    let node = client.get_node("status-node").await.unwrap();
+    assert_eq!(node.last_battery_mv, Some(3300));
+
+    let status = client.get_node_status("status-node").await.unwrap();
+    assert_eq!(status.battery_mv, Some(3300));
 }
 
 // ── BLE pairing tests ───────────────────────────────────────────────────────

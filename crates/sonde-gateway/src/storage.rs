@@ -232,6 +232,14 @@ impl InMemoryStorage {
             handlers: RwLock::new(Vec::new()),
         }
     }
+
+    fn stored_node_record(record: &NodeRecord) -> NodeRecord {
+        let mut stored = record.clone();
+        stored.last_battery_mv = None;
+        stored.last_seen = None;
+        stored.battery_history.clear();
+        stored
+    }
 }
 
 impl Default for InMemoryStorage {
@@ -265,7 +273,7 @@ impl Storage for InMemoryStorage {
 
     async fn upsert_node(&self, record: &NodeRecord) -> Result<(), StorageError> {
         let mut nodes = self.nodes.write().await;
-        nodes.insert(record.node_id.clone(), record.clone());
+        nodes.insert(record.node_id.clone(), Self::stored_node_record(record));
         Ok(())
     }
 
@@ -275,7 +283,7 @@ impl Storage for InMemoryStorage {
         match nodes.entry(record.node_id.clone()) {
             Entry::Occupied(_) => Ok(false),
             Entry::Vacant(e) => {
-                e.insert(record.clone());
+                e.insert(Self::stored_node_record(record));
                 Ok(true)
             }
         }

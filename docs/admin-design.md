@@ -195,8 +195,11 @@ program identifiers, battery (mV), last seen (formatted), and schedule
 interval. For human-readable output, assigned/current program identifiers are
 resolved from stored program metadata: use the program's `source_filename`
 basename when available, otherwise display the hash. In `--verbose` mode, show
-the hash alongside any displayed filename. Optional fields are omitted when
-absent. JSON output remains hash-based.
+the hash alongside any displayed filename. Battery and last seen come from
+runtime node-status data rather than durable node storage, so they are omitted
+until the node completes a WAKE in the current gateway process and disappear
+again after gateway restart until the next WAKE. Optional fields are omitted
+when absent. JSON output remains hash-based.
 
 To preserve the existing hash-based admin API, human-readable node-status
 commands resolve filenames client-side. The CLI fetches the node-oriented RPC

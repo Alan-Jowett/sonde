@@ -1128,7 +1128,10 @@ mod tests {
 
         let result = check_rssi(&mut transport, &store, &[0xAA; 6]).await;
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("unexpected test result type"), "unexpected error: {err}");
+        assert!(
+            err.contains("unexpected test result type"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

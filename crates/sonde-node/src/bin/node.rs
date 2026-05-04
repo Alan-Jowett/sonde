@@ -345,14 +345,8 @@ mod tests {
             select_boot_mode(true, false, false),
             BootMode::PreProvisioningTest
         );
-        assert_eq!(
-            select_boot_mode(true, true, true),
-            BootMode::BlePairing
-        );
-        assert_eq!(
-            select_boot_mode(true, true, false),
-            BootMode::WakeCycle
-        );
+        assert_eq!(select_boot_mode(true, true, true), BootMode::BlePairing);
+        assert_eq!(select_boot_mode(true, true, false), BootMode::WakeCycle);
     }
 
     #[test]

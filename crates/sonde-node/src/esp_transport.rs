@@ -210,7 +210,7 @@ unsafe extern "C" fn raw_recv_cb(
         // Notify after releasing the lock to avoid waking the consumer
         // into immediate contention on the same mutex.
         if enqueued {
-            log::info!(
+            log::debug!(
                 "ESP-NOW RX enqueue: msg_type={} len={} rssi={:?}",
                 espnow_msg_type_label(payload),
                 len,
@@ -377,7 +377,7 @@ impl crate::traits::Transport for EspNowTransport {
                 if full_drops > 0 {
                     log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
                 }
-                log::info!(
+                log::debug!(
                     "ESP-NOW RX dequeue: msg_type={} len={} rssi={:?}",
                     espnow_msg_type_label(&buf[..len]),
                     len,
@@ -396,7 +396,7 @@ impl crate::traits::Transport for EspNowTransport {
                 if full_drops > 0 {
                     log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
                 }
-                log::info!("ESP-NOW RX wait timed out after {} ms", timeout_ms);
+                log::debug!("ESP-NOW RX wait timed out after {} ms", timeout_ms);
                 return Ok(None);
             }
             let remaining = deadline - now;

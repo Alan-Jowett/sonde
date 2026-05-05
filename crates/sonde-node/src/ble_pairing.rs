@@ -410,7 +410,7 @@ fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
                 let before = std::time::Instant::now();
                 match transport.recv_with_metadata(remaining_ms) {
                     Ok(Some(frame))
-                        if frame.data.len() >= sonde_protocol::HEADER_SIZE
+                        if frame.data.len() >= sonde_protocol::MIN_FRAME_SIZE
                             && frame.data[sonde_protocol::OFFSET_MSG_TYPE]
                                 == sonde_protocol::MSG_DIAG_REPLY =>
                     {
@@ -467,7 +467,7 @@ fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
         #[cfg(not(feature = "esp"))]
         {
             if let Ok(Some(frame)) = transport.recv_with_metadata(TEST_LISTEN_TIMEOUT_MS) {
-                if frame.data.len() >= sonde_protocol::HEADER_SIZE
+                if frame.data.len() >= sonde_protocol::MIN_FRAME_SIZE
                     && frame.data[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_DIAG_REPLY
                 {
                     return success_result(
@@ -1523,6 +1523,22 @@ mod tests {
                 0,
                 0,
                 1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
             ],
             rssi_dbm: Some(-67),
         };
@@ -1563,6 +1579,22 @@ mod tests {
                 0,
                 0,
                 1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
             ],
             rssi_dbm: None,
         };
@@ -1601,6 +1633,42 @@ mod tests {
         assert_eq!(result.attempt_count, 4);
         assert_eq!(transport.sends.len(), 4);
         assert_eq!(*clock.delays_ms.borrow(), vec![200, 200, 200]);
+    }
+
+    #[test]
+    fn execute_staged_test_command_rejects_truncated_diag_reply() {
+        let mut storage = MockStorage::new();
+        storage.staged_test_command = Some(StagedTestCommand {
+            test_type: sonde_protocol::TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(6),
+            payload: vec![0x42; 50],
+        });
+        let truncated_reply = crate::traits::ReceivedFrame {
+            data: vec![
+                0x12,
+                0x34,
+                sonde_protocol::MSG_DIAG_REPLY,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+            ],
+            rssi_dbm: Some(-67),
+        };
+        let mut transport = MockTransport::new(vec![Some(truncated_reply), None, None, None]);
+        let clock = MockClock::default();
+
+        let result = execute_staged_test_command(&mut storage, &mut transport, &clock)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.status, sonde_protocol::TEST_RESULT_TIMEOUT);
+        assert_eq!(result.attempt_count, 4);
+        assert_eq!(transport.sends.len(), 4);
     }
 
     #[test]

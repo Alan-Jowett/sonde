@@ -7,7 +7,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import socket
 import sys
 import time
 from pathlib import Path
@@ -114,14 +113,6 @@ class ConnectorHarness:
             self._downstream_payloads.get(), timeout=MESSAGE_TIMEOUT_SECS
         )
 
-    def reject_downstream_writes(self) -> None:
-        if self._writer is None:
-            raise RuntimeError("connector harness has no connected writer")
-        sock = self._writer.get_extra_info("socket")
-        if sock is None:
-            raise RuntimeError("connector harness socket is unavailable")
-        sock.shutdown(socket.SHUT_RD)
-
     async def close_peer(self) -> None:
         if self._writer is not None:
             self._writer.close()
@@ -219,7 +210,7 @@ async def run_failure_path(
     companion: asyncio.subprocess.Process,
 ) -> None:
     failed_handoff_payload = b"ci-live-downstream-write-failure"
-    harness.reject_downstream_writes()
+    await harness.close_peer()
     async with client.get_queue_sender(queue_name=downstream_queue) as sender:
         await sender.send_messages(ServiceBusMessage(failed_handoff_payload))
 

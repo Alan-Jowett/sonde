@@ -144,5 +144,6 @@ For destructive cleanup safety, the workflow only deletes a resource group when
 both of the following are true:
 
 - the configured resource-group name starts with the configured CI prefix (by
-  default `${SONDE_AZURE_CI_PROJECT_NAME}-ci-`), and
+  default `sonde-ci-`, or `${SONDE_AZURE_CI_PROJECT_NAME}-ci-` when the project
+  name is overridden), and
 - the existing group is tagged `sonde-ci-owner=azure-live-ci`.

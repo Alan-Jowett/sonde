@@ -20,6 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: azure-live-ci
     env:
+      SONDE_AZURE_CI_CLIENT_ID: ${{ vars.SONDE_AZURE_CI_CLIENT_ID }}
+      SONDE_AZURE_CI_TENANT_ID: ${{ vars.SONDE_AZURE_CI_TENANT_ID }}
+      SONDE_AZURE_CI_SUBSCRIPTION_ID: ${{ vars.SONDE_AZURE_CI_SUBSCRIPTION_ID }}
       AZURE_CLIENT_ID: ${{ vars.SONDE_AZURE_CI_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.SONDE_AZURE_CI_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.SONDE_AZURE_CI_SUBSCRIPTION_ID }}
@@ -35,9 +38,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          project_name="${SONDE_AZURE_CI_PROJECT_NAME:-sonde-ci}"
+          project_name="${SONDE_AZURE_CI_PROJECT_NAME:-sonde}"
           resource_group_prefix="${SONDE_AZURE_CI_RESOURCE_GROUP_PREFIX:-${project_name}-ci-}"
-          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID SONDE_AZURE_CI_RESOURCE_GROUP; do
+          for name in SONDE_AZURE_CI_CLIENT_ID SONDE_AZURE_CI_TENANT_ID SONDE_AZURE_CI_SUBSCRIPTION_ID SONDE_AZURE_CI_RESOURCE_GROUP; do
             if [ -z "${!name:-}" ]; then
               echo "::error::$name must be configured as a repository or environment variable"
               exit 1
@@ -166,6 +169,7 @@ jobs:
             --companion-bin ./target/debug/sonde-azure-companion \
             --state-dir ./.azure-live-state \
             --connector-socket /tmp/sonde-azure-live-ci.sock \
+            --connect-timeout-secs 180 \
             --message-timeout-secs 180 \
             --namespace "$(python3 -c "import json; print(json.load(open('.azure-live-state/service-bus.json'))['namespace'])")" \
             --upstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/service-bus.json'))['upstream_queue'])")" \

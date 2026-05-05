@@ -16,7 +16,6 @@ from azure.servicebus import ServiceBusMessage
 from azure.servicebus.aio import ServiceBusClient
 
 
-CONNECT_TIMEOUT_SECS = 30
 DEFAULT_MESSAGE_TIMEOUT_SECS = 180
 CONNECTOR_MAX_FRAME_LENGTH = 1_048_576
 
@@ -31,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--upstream-queue", required=True)
     parser.add_argument("--downstream-queue", required=True)
+    parser.add_argument("--connect-timeout-secs", type=int)
     parser.add_argument("--message-timeout-secs", type=int, default=DEFAULT_MESSAGE_TIMEOUT_SECS)
     return parser.parse_args()
 
@@ -101,8 +101,8 @@ class ConnectorHarness:
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
 
-    async def wait_connected(self) -> None:
-        await asyncio.wait_for(self.connected.wait(), timeout=CONNECT_TIMEOUT_SECS)
+    async def wait_connected(self, timeout_secs: int) -> None:
+        await asyncio.wait_for(self.connected.wait(), timeout=timeout_secs)
 
     async def send_upstream(self, payload: bytes) -> None:
         if self._writer is None:
@@ -230,6 +230,11 @@ async def run_failure_path(
 async def async_main() -> int:
     args = parse_args()
     namespace = normalize_namespace(args.namespace)
+    connect_timeout_secs = (
+        args.connect_timeout_secs
+        if args.connect_timeout_secs is not None
+        else args.message_timeout_secs
+    )
 
     socket_path = Path(args.connector_socket)
     socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -262,7 +267,7 @@ async def async_main() -> int:
             capture_stream("[companion stderr] ", companion.stderr, stderr_lines)
         )
 
-        await harness.wait_connected()
+        await harness.wait_connected(connect_timeout_secs)
         print("connector harness connected", flush=True)
 
         async with ServiceBusClient(namespace, credential=credential, logging_enable=False) as client:

@@ -108,9 +108,10 @@ explicitly after teardown.
 
 ## Live CI prerequisites
 
-The repository's on-demand Azure live-validation workflow reads its target from
-repository or environment variables rather than hard-coding a subscription into
-the workflow file. A typical setup provides:
+The repository's on-demand Azure live-validation workflow binds the job to the
+GitHub environment `azure-live-ci`, so its target values can come from either
+repository variables or variables defined on that environment. A typical setup
+provides:
 
 - `SONDE_AZURE_CI_CLIENT_ID`
 - `SONDE_AZURE_CI_TENANT_ID`

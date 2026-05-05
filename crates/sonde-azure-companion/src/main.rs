@@ -115,15 +115,15 @@ impl<T> AsyncIo for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 #[command(name = "sonde-azure-companion")]
 struct Cli {
     /// Gateway admin socket path (UDS on Unix, named pipe on Windows).
-    #[arg(long, env = "SONDE_GATEWAY_ADMIN_SOCKET", default_value = DEFAULT_ADMIN_SOCKET)]
+    #[arg(long, global = true, env = "SONDE_GATEWAY_ADMIN_SOCKET", default_value = DEFAULT_ADMIN_SOCKET)]
     admin_socket: String,
 
     /// Gateway connector socket path (UDS on Unix, named pipe on Windows).
-    #[arg(long, env = "SONDE_GATEWAY_CONNECTOR_SOCKET", default_value = DEFAULT_CONNECTOR_SOCKET)]
+    #[arg(long, global = true, env = "SONDE_GATEWAY_CONNECTOR_SOCKET", default_value = DEFAULT_CONNECTOR_SOCKET)]
     connector_socket: String,
 
     /// Mounted state directory reserved for bootstrap output and runtime auth material.
-    #[arg(long, env = "SONDE_AZURE_COMPANION_STATE_DIR", default_value = DEFAULT_STATE_DIR)]
+    #[arg(long, global = true, env = "SONDE_AZURE_COMPANION_STATE_DIR", default_value = DEFAULT_STATE_DIR)]
     state_dir: PathBuf,
 
     #[command(subcommand)]
@@ -1851,27 +1851,23 @@ async fn bootstrap(
 }
 
 #[cfg(windows)]
-fn build_service_launch_args() -> Vec<std::ffi::OsString> {
-    build_service_launch_args_from_iter(std::env::args_os().skip(1))
+fn build_service_launch_args(cli: &Cli) -> Vec<std::ffi::OsString> {
+    vec![
+        std::ffi::OsString::from("--admin-socket"),
+        std::ffi::OsString::from(&cli.admin_socket),
+        std::ffi::OsString::from("--connector-socket"),
+        std::ffi::OsString::from(&cli.connector_socket),
+        std::ffi::OsString::from("--state-dir"),
+        cli.state_dir.as_os_str().to_os_string(),
+        std::ffi::OsString::from("service"),
+    ]
 }
 
 #[cfg(windows)]
-fn build_service_launch_args_from_iter<I>(args: I) -> Vec<std::ffi::OsString>
-where
-    I: IntoIterator<Item = std::ffi::OsString>,
-{
-    std::iter::once(std::ffi::OsString::from("service"))
-        .chain(
-            args.into_iter()
-                .filter(|arg| arg.to_str() != Some("install")),
-        )
-        .collect()
-}
-
-#[cfg(windows)]
-fn install_service() -> Result<(), CompanionError> {
+fn install_service(cli: &Cli) -> Result<(), CompanionError> {
     use windows_service::service::{
-        ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceType,
+        ServiceAccess, ServiceDependency, ServiceErrorControl, ServiceInfo, ServiceStartType,
+        ServiceType,
     };
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
     use windows_sys::Win32::Foundation::ERROR_SERVICE_EXISTS;
@@ -1890,8 +1886,10 @@ fn install_service() -> Result<(), CompanionError> {
         start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,
         executable_path: exe_path,
-        launch_arguments: build_service_launch_args(),
-        dependencies: vec![],
+        launch_arguments: build_service_launch_args(cli),
+        dependencies: vec![ServiceDependency::Service(std::ffi::OsString::from(
+            "sonde-gateway",
+        ))],
         account_name: None,
         account_password: None,
     };
@@ -2146,7 +2144,7 @@ async fn run_cli() -> Result<(), CompanionError> {
             check_runtime_ready(&cli.state_dir)?;
         }
         #[cfg(windows)]
-        Command::Install => install_service()?,
+        Command::Install => install_service(&cli)?,
         #[cfg(windows)]
         Command::Uninstall => uninstall_service()?,
         #[cfg(windows)]
@@ -2190,7 +2188,9 @@ mod tests {
     #[cfg(unix)]
     use super::bridge_runtime_with_shutdown;
     #[cfg(windows)]
-    use super::build_service_launch_args_from_iter;
+    use super::build_service_launch_args;
+    #[cfg(windows)]
+    use super::{Cli, Command};
     use azure_core::credentials::TokenCredential;
     #[cfg(unix)]
     use base64::Engine as _;
@@ -3603,21 +3603,26 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn service_launch_args_replace_install_with_service() {
+    fn service_launch_args_use_canonical_global_option_order() {
         use std::ffi::OsString;
 
-        let args = build_service_launch_args_from_iter([
-            OsString::from("install"),
-            OsString::from("--state-dir"),
-            OsString::from(r"C:\ProgramData\sonde-azure-companion"),
-        ]);
+        let args = build_service_launch_args(&Cli {
+            admin_socket: r"\\.\pipe\custom-admin".to_string(),
+            connector_socket: r"\\.\pipe\custom-connector".to_string(),
+            state_dir: PathBuf::from(r"C:\ProgramData\sonde-azure-companion"),
+            command: Some(Command::Install),
+        });
 
         assert_eq!(
             args,
             vec![
-                OsString::from("service"),
+                OsString::from("--admin-socket"),
+                OsString::from(r"\\.\pipe\custom-admin"),
+                OsString::from("--connector-socket"),
+                OsString::from(r"\\.\pipe\custom-connector"),
                 OsString::from("--state-dir"),
                 OsString::from(r"C:\ProgramData\sonde-azure-companion"),
+                OsString::from("service"),
             ]
         );
     }

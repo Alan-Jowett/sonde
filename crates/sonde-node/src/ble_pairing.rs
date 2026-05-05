@@ -434,7 +434,7 @@ fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
                         } else {
                             0xFF
                         };
-                        log::info!(
+                        log::debug!(
                             "diag test attempt {} ignored frame msg_type=0x{:02x} len={} rssi={:?}",
                             attempt_count,
                             msg_type,

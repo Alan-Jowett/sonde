@@ -175,7 +175,7 @@ unsafe extern "C" fn raw_recv_cb(
     let payload = unsafe { core::slice::from_raw_parts(data, len) };
     let rssi_dbm = recv_rssi_dbm(recv_info);
     if rssi_dbm.is_none() {
-        log::warn!(
+        log::debug!(
             "ESP-NOW RX missing metadata: msg_type={} len={}",
             espnow_msg_type_label(payload),
             len

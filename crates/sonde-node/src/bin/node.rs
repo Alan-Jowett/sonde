@@ -34,6 +34,19 @@ fn select_boot_mode(has_staged_test: bool, has_psk: bool, button_held: bool) -> 
 }
 
 #[cfg(feature = "esp")]
+fn boot_reason_label(reset_reason: esp_idf_svc::sys::esp_reset_reason_t) -> &'static str {
+    if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP {
+        "deep_sleep_wake"
+    } else if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_SW {
+        "software_reset"
+    } else if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_POWERON {
+        "power_on"
+    } else {
+        "other_reset"
+    }
+}
+
+#[cfg(feature = "esp")]
 fn main() {
     use esp_idf_hal::gpio::{PinDriver, Pull};
     use esp_idf_hal::peripherals::Peripherals;
@@ -73,11 +86,7 @@ fn main() {
 
     // Log boot reason (ND-1000).
     let reset_reason = unsafe { esp_idf_svc::sys::esp_reset_reason() };
-    let boot_reason = if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP {
-        "deep_sleep_wake"
-    } else {
-        "power_on"
-    };
+    let boot_reason = boot_reason_label(reset_reason);
     info!("boot_reason={} (ND-1000)", boot_reason);
 
     // Register the main task with the ESP-IDF task watchdog (ND-0919).

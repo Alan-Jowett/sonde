@@ -20,16 +20,24 @@
 //! It is reset on power loss or hardware reset, which is acceptable — a
 //! missed early wake is harmless. The retained battery value used for the
 //! next `WAKE.battery_mv` is also stored in RTC slow SRAM via `LAST_BATTERY_*`.
+//! Pre-provisioning test staging and latest-result retention use RTC no-init
+//! storage so one software-rebooted test run can hand off state without a
+//! flash write.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use esp_idf_svc::nvs::{EspNvs, EspNvsPartition, NvsDefault};
-use sonde_protocol::{decode_board_layout_cbor, encode_board_layout_cbor, BoardLayout};
+use sonde_protocol::{
+    decode_board_layout_cbor, encode_board_layout_cbor, BoardLayout, TestResult, MAX_FRAME_SIZE,
+};
 
 use crate::error::{NodeError, NodeResult};
+use crate::traits::StagedTestCommand;
 
 const NVS_NAMESPACE: &str = "sonde";
 const MAGIC_VALUE: u32 = 0xDEAD_BEEF;
+const RTC_STAGED_TEST_MAGIC: u32 = 0x5354_434D;
+const RTC_TEST_RESULT_MAGIC: u32 = 0x5452_4553;
 
 /// Default wake interval in seconds (5 minutes).
 const DEFAULT_INTERVAL_S: u32 = 300;
@@ -48,6 +56,78 @@ static LAST_BATTERY_MV: AtomicU32 = AtomicU32::new(0);
 
 #[link_section = ".rtc.data"]
 static LAST_BATTERY_VALID: AtomicU32 = AtomicU32::new(0);
+
+#[repr(C)]
+struct RtcStagedTestCommand {
+    magic: u32,
+    valid: u32,
+    test_type: u64,
+    rf_channel_present: u32,
+    rf_channel: u8,
+    payload_len: u16,
+    payload: [u8; MAX_FRAME_SIZE],
+}
+
+impl RtcStagedTestCommand {
+    const fn zero() -> Self {
+        Self {
+            magic: 0,
+            valid: 0,
+            test_type: 0,
+            rf_channel_present: 0,
+            rf_channel: 0,
+            payload_len: 0,
+            payload: [0u8; MAX_FRAME_SIZE],
+        }
+    }
+}
+
+#[repr(C)]
+struct RtcTestResult {
+    magic: u32,
+    valid: u32,
+    status: u8,
+    test_type_present: u32,
+    test_type: u64,
+    reply_frame_len: u16,
+    reply_frame: [u8; MAX_FRAME_SIZE],
+    reply_rssi_present: u32,
+    reply_rssi_dbm: i8,
+    attempt_count: u64,
+    elapsed_ms: u64,
+}
+
+impl RtcTestResult {
+    const fn zero() -> Self {
+        Self {
+            magic: 0,
+            valid: 0,
+            status: 0,
+            test_type_present: 0,
+            test_type: 0,
+            reply_frame_len: 0,
+            reply_frame: [0u8; MAX_FRAME_SIZE],
+            reply_rssi_present: 0,
+            reply_rssi_dbm: 0,
+            attempt_count: 0,
+            elapsed_ms: 0,
+        }
+    }
+}
+
+#[link_section = ".rtc_noinit"]
+static mut STAGED_TEST_COMMAND: RtcStagedTestCommand = RtcStagedTestCommand::zero();
+
+#[link_section = ".rtc_noinit"]
+static mut LATEST_TEST_RESULT: RtcTestResult = RtcTestResult::zero();
+
+fn staged_test_command_is_valid(command: &RtcStagedTestCommand) -> bool {
+    command.magic == RTC_STAGED_TEST_MAGIC && command.valid == 1
+}
+
+fn retained_test_result_is_valid(result: &RtcTestResult) -> bool {
+    result.magic == RTC_TEST_RESULT_MAGIC && result.valid == 1
+}
 
 /// NVS-backed implementation of [`crate::traits::PlatformStorage`].
 pub struct NvsStorage {
@@ -490,5 +570,151 @@ impl crate::traits::PlatformStorage for NvsStorage {
         LAST_BATTERY_MV.store(battery_mv, Ordering::Relaxed);
         LAST_BATTERY_VALID.store(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn read_staged_test_command(&self) -> Option<StagedTestCommand> {
+        let command = unsafe { &STAGED_TEST_COMMAND };
+        if !staged_test_command_is_valid(command) {
+            return None;
+        }
+        let payload_len = usize::from(command.payload_len);
+        if payload_len == 0 || payload_len > MAX_FRAME_SIZE {
+            return None;
+        }
+        Some(StagedTestCommand {
+            test_type: command.test_type,
+            rf_channel: (command.rf_channel_present != 0).then_some(command.rf_channel),
+            payload: command.payload[..payload_len].to_vec(),
+        })
+    }
+
+    fn write_staged_test_command(&mut self, command: &StagedTestCommand) -> NodeResult<()> {
+        if command.payload.is_empty() || command.payload.len() > MAX_FRAME_SIZE {
+            return Err(NodeError::StorageError(
+                "staged test payload must be 1..=250 bytes",
+            ));
+        }
+        let payload_len = u16::try_from(command.payload.len())
+            .map_err(|_| NodeError::StorageError("staged test payload too large"))?;
+        let rtc = unsafe { &mut STAGED_TEST_COMMAND };
+        rtc.magic = 0;
+        rtc.valid = 0;
+        rtc.test_type = command.test_type;
+        rtc.rf_channel_present = u32::from(command.rf_channel.is_some());
+        rtc.rf_channel = command.rf_channel.unwrap_or(0);
+        rtc.payload_len = payload_len;
+        rtc.payload[..command.payload.len()].copy_from_slice(&command.payload);
+        rtc.payload[command.payload.len()..].fill(0);
+        rtc.magic = RTC_STAGED_TEST_MAGIC;
+        rtc.valid = 1;
+        Ok(())
+    }
+
+    fn clear_staged_test_command(&mut self) -> NodeResult<()> {
+        let rtc = unsafe { &mut STAGED_TEST_COMMAND };
+        rtc.magic = 0;
+        rtc.valid = 0;
+        rtc.test_type = 0;
+        rtc.rf_channel_present = 0;
+        rtc.rf_channel = 0;
+        rtc.payload_len = 0;
+        rtc.payload.fill(0);
+        Ok(())
+    }
+
+    fn read_test_result(&self) -> Option<TestResult> {
+        let result = unsafe { &LATEST_TEST_RESULT };
+        if !retained_test_result_is_valid(result) {
+            return None;
+        }
+        let reply_frame = if result.reply_frame_len == 0 {
+            None
+        } else {
+            let len = usize::from(result.reply_frame_len);
+            if len > MAX_FRAME_SIZE {
+                return None;
+            }
+            Some(result.reply_frame[..len].to_vec())
+        };
+        let decoded = TestResult {
+            status: result.status,
+            test_type: (result.test_type_present != 0).then_some(result.test_type),
+            reply_frame,
+            reply_rssi_dbm: (result.reply_rssi_present != 0).then_some(result.reply_rssi_dbm),
+            attempt_count: result.attempt_count,
+            elapsed_ms: result.elapsed_ms,
+        };
+        sonde_protocol::validate_test_result(&decoded).ok()?;
+        Some(decoded)
+    }
+
+    fn write_test_result(&mut self, result: &TestResult) -> NodeResult<()> {
+        sonde_protocol::validate_test_result(result)
+            .map_err(|_| NodeError::StorageError("invalid retained test result"))?;
+        let reply_len = result
+            .reply_frame
+            .as_ref()
+            .map(|frame| frame.len())
+            .unwrap_or(0);
+        if reply_len > MAX_FRAME_SIZE {
+            return Err(NodeError::StorageError(
+                "retained test reply frame too large",
+            ));
+        }
+        let reply_len = u16::try_from(reply_len)
+            .map_err(|_| NodeError::StorageError("retained test reply frame too large"))?;
+
+        let rtc = unsafe { &mut LATEST_TEST_RESULT };
+        rtc.magic = 0;
+        rtc.valid = 0;
+        rtc.status = result.status;
+        rtc.test_type_present = u32::from(result.test_type.is_some());
+        rtc.test_type = result.test_type.unwrap_or(0);
+        rtc.reply_frame_len = reply_len;
+        rtc.reply_rssi_present = u32::from(result.reply_rssi_dbm.is_some());
+        rtc.reply_rssi_dbm = result.reply_rssi_dbm.unwrap_or(0);
+        rtc.attempt_count = result.attempt_count;
+        rtc.elapsed_ms = result.elapsed_ms;
+        if let Some(frame) = &result.reply_frame {
+            rtc.reply_frame[..frame.len()].copy_from_slice(frame);
+            rtc.reply_frame[frame.len()..].fill(0);
+        } else {
+            rtc.reply_frame.fill(0);
+        }
+        rtc.magic = RTC_TEST_RESULT_MAGIC;
+        rtc.valid = 1;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        retained_test_result_is_valid, staged_test_command_is_valid, RtcStagedTestCommand,
+        RtcTestResult, RTC_STAGED_TEST_MAGIC, RTC_TEST_RESULT_MAGIC,
+    };
+
+    #[test]
+    fn staged_test_command_requires_magic_and_valid_flag() {
+        let mut command = RtcStagedTestCommand::zero();
+        assert!(!staged_test_command_is_valid(&command));
+
+        command.magic = RTC_STAGED_TEST_MAGIC;
+        assert!(!staged_test_command_is_valid(&command));
+
+        command.valid = 1;
+        assert!(staged_test_command_is_valid(&command));
+    }
+
+    #[test]
+    fn retained_test_result_requires_magic_and_valid_flag() {
+        let mut result = RtcTestResult::zero();
+        assert!(!retained_test_result_is_valid(&result));
+
+        result.magic = RTC_TEST_RESULT_MAGIC;
+        assert!(!retained_test_result_is_valid(&result));
+
+        result.valid = 1;
+        assert!(retained_test_result_is_valid(&result));
     }
 }

@@ -316,6 +316,35 @@ label {
 
 .status-text.hidden { display: none; }
 
+.diagnostic-metrics {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+
+.diagnostic-metrics.hidden { display: none; }
+
+.diagnostic-metric {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.diagnostic-label {
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 11px;
+}
+
+.diagnostic-value {
+  font-weight: 600;
+}
+
 /* Device list */
 .device-list {
   list-style: none;

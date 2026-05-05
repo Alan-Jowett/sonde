@@ -471,6 +471,137 @@ Before provisioning, the tool MUST validate any board layout supplied by the ope
 
 ---
 
+### PT-0410  Phase 1 prerequisite for pre-provisioning tests
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §6a, security.md §1.1
+
+**Description:**  
+Before starting a pre-provisioning test on an unpaired node, the tool MUST verify that it holds a valid phone PSK from Phase 1 gateway pairing. If no valid phone PSK is available, the tool MUST refuse to run the test and instruct the operator to complete Phase 1 first.
+
+**Acceptance criteria:**
+
+1. If no `phone_psk` is available, the tool refuses to start the pre-provisioning test.
+2. The error message clearly instructs the operator to complete gateway pairing first.
+3. If a valid `phone_psk` is present, the tool may construct and send the test command.
+
+---
+
+### PT-0411  RUN_TEST_COMMAND construction and acknowledgement
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §6a, protocol.md §5.8
+
+**Description:**  
+The tool MUST support a generic pre-provisioning `RUN_TEST_COMMAND` write (BLE envelope type `0x02`) and wait for an immediate `RUN_TEST_ACK` indication (BLE envelope type `0x82`). For the initial concrete test type, `DIAG_FRAME`, the tool constructs a complete ESP-NOW `DIAG_REQUEST` frame authenticated with `phone_psk`, wraps it in a generic CBOR command containing `test_type`, `rf_channel`, and `payload`, writes the command to the Node Command characteristic, and waits up to 5 seconds for acknowledgement.
+
+**Acceptance criteria:**
+
+1. The generic command body includes an explicit `test_type`.
+2. For `DIAG_FRAME`, the tool includes the RF channel from Phase 1 and a complete authenticated `DIAG_REQUEST` ESP-NOW frame.
+3. `RUN_TEST_ACK(status=0x00)` is treated as successful staging of the command.
+4. A non-success acknowledgement or 5-second timeout is surfaced as an operator-visible error.
+
+---
+
+### PT-0412  Explicit pre-provisioning test-result readback
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §6a
+
+**Description:**  
+After the node reboots back into BLE pairing mode, the tool MUST explicitly request the latest retained result by sending `READ_TEST_RESULT` (BLE envelope type `0x03`) and waiting for `TEST_RESULT` (BLE envelope type `0x83`). The tool MUST treat result retrieval as a separate step from command submission rather than expecting the original BLE connection to remain active across test execution.
+
+**Acceptance criteria:**
+
+1. The tool reconnects to the node after the rebooted test session instead of waiting for an in-session response.
+2. The tool sends `READ_TEST_RESULT` explicitly to fetch the latest retained result.
+3. Repeated reads of the same retained result are supported until the node runs another test.
+4. A missing result or read timeout is surfaced as an operator-visible error.
+
+---
+
+### PT-0413  Diagnostic result interpretation
+
+**Priority:** Must  
+**Source:** protocol.md §5.9, ble-pairing-protocol.md §6a
+
+**Description:**  
+For a successful `DIAG_FRAME` result, the tool MUST decrypt the raw `DIAG_REPLY` frame using `phone_psk`, extract the gateway-reported diagnostic fields, and present them together with the node-reported reply RSSI and timing metadata. The displayed result MUST distinguish between the gateway-observed RSSI contained in the decrypted `DIAG_REPLY` payload and the node-observed RSSI recorded when the reply was received.
+
+**Acceptance criteria:**
+
+1. The tool decrypts a successful raw `DIAG_REPLY` using the stored `phone_psk`.
+2. The displayed result includes the gateway-observed RSSI and signal-quality fields from `DIAG_REPLY`.
+3. The displayed result includes the node-observed reply RSSI and timing metadata from `TEST_RESULT`.
+4. Timeout results are displayed without attempting to decrypt a missing reply frame.
+
+---
+
+### PT-0414  One-command-per-run semantics
+
+**Priority:** Must  
+**Source:** USER-REQUEST (repeat by sending again)
+
+**Description:**  
+Each pre-provisioning test run MUST contain exactly one generic test command. If the operator wants additional samples, the tool MUST initiate another full run by sending a new `RUN_TEST_COMMAND`; it MUST NOT silently queue multiple diagnostic requests for a single reboot cycle.
+
+**Acceptance criteria:**
+
+1. Each `RUN_TEST_COMMAND` corresponds to at most one rebooted test execution on the node.
+2. The tool does not batch multiple diagnostic requests into a single run.
+3. Repeated sampling is initiated only by explicit operator action to start another run.
+
+---
+
+### PT-0415  Generic pre-provisioning test-command model
+
+**Priority:** Must  
+**Source:** USER-REQUEST (future BPF diagnostic mode)
+
+**Description:**  
+The pairing tool's core API MUST model pre-provisioning tests as a generic command type rather than hard-coding the current diagnostic request as the only supported operation. The initial implementation only needs to support `DIAG_FRAME`, but the API and wire-building logic MUST be structured so a future BPF-based test command can be added without replacing the outer run/read workflow.
+
+**Acceptance criteria:**
+
+1. The core API represents the requested test with an explicit test-type discriminator.
+2. The initial implementation supports `DIAG_FRAME` as the only concrete test type.
+3. Adding a future test type does not require changing the outer run/ack/read/result workflow.
+
+---
+
+### PT-0416  Automatic diagnostic step before provisioning
+
+**Priority:** Must  
+**Source:** USER-REQUEST (actual pairing-tool validation flow)
+
+**Description:**  
+When the tool is about to provision an unpaired node and valid Phase 1 artifacts are available, it MUST automatically run the initial `DIAG_FRAME` pre-provisioning test before sending `NODE_PROVISION`. This automatic diagnostic step applies to both desktop and Android pairing-tool flows; the operator must not need a separate hidden or developer-only action to trigger it.
+
+**Acceptance criteria:**
+
+1. After the operator starts node provisioning, the tool automatically starts the `DIAG_FRAME` pre-provisioning test before any `NODE_PROVISION` write.
+2. The same automatic diagnostic step is part of both desktop and Android pairing-tool flows.
+3. If the automatic diagnostic step cannot start because Phase 1 artifacts are unavailable, the tool fails with the existing Phase 1 prerequisite error instead of silently skipping the test.
+
+---
+
+### PT-0417  Operator confirmation after automatic diagnostic
+
+**Priority:** Must  
+**Source:** USER-REQUEST (automatic but skippable with explicit continue)
+
+**Description:**  
+After an automatic pre-provisioning diagnostic completes, the tool MUST pause the provisioning flow and require an explicit operator decision before proceeding. On success, the tool presents the diagnostic result and waits for confirmation to continue. On failure, the tool presents the failure and offers an explicit **continue anyway** path; diagnostic failure does not permanently block provisioning, but provisioning MUST NOT continue automatically after either success or failure.
+
+**Acceptance criteria:**
+
+1. A successful automatic diagnostic displays the result and requires explicit operator confirmation before the tool sends `NODE_PROVISION`.
+2. A failed automatic diagnostic displays the failure and requires an explicit **continue anyway** action before the tool sends `NODE_PROVISION`.
+3. The tool does not proceed from the diagnostic step to provisioning automatically, regardless of whether the diagnostic succeeded or failed.
+
+---
+
 ## 7  Error handling
 
 ### PT-0500  Error classification
@@ -1354,6 +1485,14 @@ The UI SHOULD use CSS transitions for page changes.  Forward navigation slides t
 | PT-0407 | NODE_PROVISION transmission and acknowledgement | Active |
 | PT-0408 | Node PSK zeroing | Active |
 | PT-0409 | Pin configuration validation | Active |
+| PT-0410 | Phase 1 prerequisite for pre-provisioning tests | Active |
+| PT-0411 | RUN_TEST_COMMAND construction and acknowledgement | Active |
+| PT-0412 | Explicit pre-provisioning test-result readback | Active |
+| PT-0413 | Diagnostic result interpretation | Active |
+| PT-0414 | One-command-per-run semantics | Active |
+| PT-0415 | Generic pre-provisioning test-command model | Active |
+| PT-0416 | Automatic diagnostic step before provisioning | Active |
+| PT-0417 | Operator confirmation after automatic diagnostic | Active |
 | PT-0500 | Error classification | Active |
 | PT-0501 | Actionable error messages | Active |
 | PT-0502 | No partial state on failure | Active |

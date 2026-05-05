@@ -6,18 +6,35 @@ use crate::crypto;
 use crate::envelope::{build_envelope, parse_envelope, parse_error_body, parse_node_ack};
 use crate::error::{format_device_address, PairingError};
 use crate::rng::RngProvider;
+use crate::store::PairingStore;
 use crate::transport::BleTransport;
 use crate::types::*;
 use crate::validation::{compute_key_hint, validate_node_id};
 use sonde_protocol::encode_board_layout_cbor;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, trace};
 use zeroize::Zeroizing;
 
 /// NODE_ACK indication timeout in milliseconds (PT-1002).
 const NODE_ACK_TIMEOUT_MS: u64 = 5_000;
 
-/// DIAG_RELAY_RESPONSE indication timeout in milliseconds (PT-1303).
-const DIAG_RELAY_TIMEOUT_MS: u64 = 10_000;
+/// `RUN_TEST_ACK` indication timeout in milliseconds.
+const RUN_TEST_ACK_TIMEOUT_MS: u64 = 5_000;
+
+/// `TEST_RESULT` indication timeout in milliseconds.
+const TEST_RESULT_TIMEOUT_MS: u64 = 5_000;
+
+#[cfg(not(test))]
+/// Total time budget for reconnecting after the node reboots into BLE pairing mode.
+const POST_REBOOT_RECONNECT_TIMEOUT_MS: u64 = 15_000;
+#[cfg(test)]
+const POST_REBOOT_RECONNECT_TIMEOUT_MS: u64 = 50;
+
+#[cfg(not(test))]
+/// Delay between reconnect attempts after the node reboots back into pairing mode.
+const POST_REBOOT_RECONNECT_BACKOFF_MS: u64 = 500;
+#[cfg(test)]
+const POST_REBOOT_RECONNECT_BACKOFF_MS: u64 = 0;
 
 /// Map a BLE provisioning message type byte to its spec name (PT-0702).
 fn msg_type_name(t: u8) -> &'static str {
@@ -254,97 +271,306 @@ async fn do_provision_node(
     Ok(NodeProvisionResult { status })
 }
 
-/// Result of an RSSI diagnostic check.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DiagnosticResult {
-    /// Measured RSSI in dBm (typically −30 to −90).
-    pub rssi_dbm: i8,
-    /// Signal quality: 0=good, 1=marginal, 2=bad.
-    pub signal_quality: u8,
+async fn connect_to_node(
+    transport: &mut dyn BleTransport,
+    device_address: &[u8; 6],
+) -> Result<(), PairingError> {
+    transport.set_defer_bonding(true);
+    let mtu_result = transport.connect(device_address).await;
+    transport.set_defer_bonding(false);
+    let mtu = mtu_result?;
+    if mtu < BLE_MTU_MIN {
+        transport.disconnect().await.ok();
+        return Err(PairingError::MtuTooLow {
+            device: format_device_address(device_address),
+            negotiated: mtu,
+            required: BLE_MTU_MIN,
+        });
+    }
+    Ok(())
 }
 
-/// Perform an RSSI diagnostic using the node as a radio relay (PT-1300).
-///
-/// The node must already be connected via BLE. This function can be called
-/// multiple times (diagnostic is repeatable, PT-1306) and does not modify
-/// any pairing state (PT-1308).
-pub async fn check_rssi(
+async fn reconnect_to_node_after_test_reboot(
     transport: &mut dyn BleTransport,
-    artifacts: &crate::phase1::PairingArtifacts,
-) -> Result<DiagnosticResult, PairingError> {
-    // 1. Build DIAG_REQUEST frame (PT-1301).
-    let (diag_frame, request_nonce) =
-        crate::crypto::build_diag_request_frame(&artifacts.phone_psk)?;
+    device_address: &[u8; 6],
+) -> Result<(), PairingError> {
+    let deadline = Instant::now() + Duration::from_millis(POST_REBOOT_RECONNECT_TIMEOUT_MS);
+    let mut attempt = 0u32;
 
-    // 2. Wrap in DIAG_RELAY_REQUEST BLE envelope (PT-1302).
-    let relay_body = sonde_protocol::encode_diag_relay_request(artifacts.rf_channel, &diag_frame)
-        .map_err(|e| PairingError::DiagnosticFailed(format!("relay encode: {}", e)))?;
-    let envelope =
-        sonde_protocol::encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_REQUEST, &relay_body)
-            .ok_or_else(|| PairingError::DiagnosticFailed("BLE envelope too large".into()))?;
+    loop {
+        attempt += 1;
+        match connect_to_node(transport, device_address).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                let err_text = err.to_string();
+                debug!(
+                    address = ?device_address,
+                    attempt,
+                    error = %err_text,
+                    "post-reboot reconnect attempt failed"
+                );
+                transport.disconnect().await.ok();
+                if Instant::now() >= deadline {
+                    return Err(PairingError::DiagnosticFailed(format!(
+                        "node did not reconnect after test reboot within {} ms: {}",
+                        POST_REBOOT_RECONNECT_TIMEOUT_MS, err_text
+                    )));
+                }
 
-    // 3. Write to node BLE characteristic.
-    transport
-        .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &envelope)
-        .await?;
+                sleep_reconnect_backoff(Duration::from_millis(POST_REBOOT_RECONNECT_BACKOFF_MS))
+                    .await;
+            }
+        }
+    }
+}
 
-    // 4. Wait for DIAG_RELAY_RESPONSE (timeout per PT-1303).
-    let response = transport
-        .read_indication(NODE_SERVICE_UUID, NODE_COMMAND_UUID, DIAG_RELAY_TIMEOUT_MS)
-        .await?;
+async fn sleep_reconnect_backoff(delay: Duration) {
+    if delay.is_zero() {
+        return;
+    }
 
-    // 5. Parse BLE envelope.
-    let (msg_type, body) = sonde_protocol::parse_ble_envelope(&response).ok_or_else(|| {
+    #[cfg(any(feature = "btleplug", feature = "android", feature = "loopback-ble"))]
+    {
+        tokio::time::sleep(delay).await;
+    }
+
+    #[cfg(not(any(feature = "btleplug", feature = "android", feature = "loopback-ble")))]
+    {
+        std::thread::sleep(delay);
+    }
+}
+
+fn parse_ble_response<'a>(
+    response: &'a [u8],
+    expected_msg_type: u8,
+    expected_name: &str,
+) -> Result<&'a [u8], PairingError> {
+    let (msg_type, body) = sonde_protocol::parse_ble_envelope(response).ok_or_else(|| {
         PairingError::InvalidResponse {
             msg_type: 0,
             reason: "malformed BLE envelope".into(),
         }
     })?;
-    if msg_type != sonde_protocol::BLE_DIAG_RELAY_RESPONSE {
+    if msg_type != expected_msg_type {
         return Err(PairingError::InvalidResponse {
             msg_type,
             reason: format!(
-                "expected DIAG_RELAY_RESPONSE (0x82), got 0x{:02x}",
-                msg_type
+                "expected {expected_name} (0x{expected_msg_type:02x}), got 0x{msg_type:02x}"
             ),
         });
     }
+    Ok(body)
+}
 
-    // 6. Parse relay response status.
-    let (status, payload) = sonde_protocol::decode_diag_relay_response(body).map_err(|e| {
-        PairingError::InvalidResponse {
-            msg_type,
-            reason: format!("decode relay response: {}", e),
+/// Run one generic pre-provisioning test using existing Phase 1 artifacts.
+pub async fn run_pre_provisioning_test_with_artifacts(
+    transport: &mut dyn BleTransport,
+    artifacts: &crate::phase1::PairingArtifacts,
+    device_address: &[u8; 6],
+    command: &PreProvisioningTestCommand,
+) -> Result<sonde_protocol::TestResult, PairingError> {
+    if command.test_type == PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME
+        && command.rf_channel != Some(artifacts.rf_channel)
+    {
+        return Err(PairingError::DiagnosticFailed(format!(
+            "DIAG_FRAME test must use Phase 1 RF channel {}",
+            artifacts.rf_channel
+        )));
+    }
+
+    connect_to_node(transport, device_address).await?;
+
+    let result = async {
+        let run_test_body = sonde_protocol::encode_run_test_command(
+            command.test_type,
+            command.rf_channel,
+            &command.payload,
+        )
+        .map_err(|e| {
+            PairingError::DiagnosticFailed(format!("RUN_TEST_COMMAND encode failed: {e}"))
+        })?;
+        let run_test_envelope = sonde_protocol::encode_ble_envelope(
+            sonde_protocol::BLE_RUN_TEST_COMMAND,
+            &run_test_body,
+        )
+        .ok_or_else(|| {
+            PairingError::DiagnosticFailed("RUN_TEST_COMMAND envelope too large".into())
+        })?;
+
+        transport
+            .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &run_test_envelope)
+            .await?;
+
+        let ack_response = transport
+            .read_indication(
+                NODE_SERVICE_UUID,
+                NODE_COMMAND_UUID,
+                RUN_TEST_ACK_TIMEOUT_MS,
+            )
+            .await?;
+        let ack_body = parse_ble_response(
+            &ack_response,
+            sonde_protocol::BLE_RUN_TEST_ACK,
+            "RUN_TEST_ACK",
+        )?;
+        let ack_status = sonde_protocol::decode_run_test_ack(ack_body).map_err(|e| {
+            PairingError::InvalidResponse {
+                msg_type: sonde_protocol::BLE_RUN_TEST_ACK,
+                reason: format!("decode RUN_TEST_ACK: {e}"),
+            }
+        })?;
+        if ack_status != sonde_protocol::RUN_TEST_ACK_OK {
+            let reason = match ack_status {
+                sonde_protocol::RUN_TEST_ACK_INVALID => "node rejected test command as invalid",
+                sonde_protocol::RUN_TEST_ACK_UNSUPPORTED => {
+                    "node does not support the requested test type"
+                }
+                other => {
+                    return Err(PairingError::DiagnosticFailed(format!(
+                        "unknown RUN_TEST_ACK status: 0x{other:02x}"
+                    )))
+                }
+            };
+            return Err(PairingError::DiagnosticFailed(reason.into()));
         }
-    })?;
 
-    match status {
-        sonde_protocol::DIAG_RELAY_STATUS_OK => {
-            // 7. Decrypt DIAG_REPLY (PT-1303 AC-2).
-            let (rssi_dbm, signal_quality) =
-                crate::crypto::decrypt_diag_reply(payload, &artifacts.phone_psk, request_nonce)?;
+        transport.disconnect().await.ok();
+        reconnect_to_node_after_test_reboot(transport, device_address).await?;
+
+        let read_result_envelope = sonde_protocol::encode_ble_envelope(
+            sonde_protocol::BLE_READ_TEST_RESULT,
+            &sonde_protocol::encode_read_test_result(),
+        )
+        .ok_or_else(|| {
+            PairingError::DiagnosticFailed("READ_TEST_RESULT envelope too large".into())
+        })?;
+        transport
+            .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &read_result_envelope)
+            .await?;
+
+        let result_response = transport
+            .read_indication(NODE_SERVICE_UUID, NODE_COMMAND_UUID, TEST_RESULT_TIMEOUT_MS)
+            .await?;
+        let result_body = parse_ble_response(
+            &result_response,
+            sonde_protocol::BLE_TEST_RESULT,
+            "TEST_RESULT",
+        )?;
+        let result = sonde_protocol::decode_test_result(result_body).map_err(|e| {
+            PairingError::InvalidResponse {
+                msg_type: sonde_protocol::BLE_TEST_RESULT,
+                reason: format!("decode TEST_RESULT: {e}"),
+            }
+        })?;
+
+        if result.status != sonde_protocol::TEST_RESULT_NO_RESULT
+            && result.test_type != Some(command.test_type)
+        {
+            return Err(PairingError::DiagnosticFailed(format!(
+                "unexpected test result type: {:?}",
+                result.test_type
+            )));
+        }
+
+        Ok(result)
+    }
+    .await;
+
+    transport.disconnect().await.ok();
+    result
+}
+
+/// Run one generic pre-provisioning test, loading Phase 1 artifacts from storage.
+pub async fn run_pre_provisioning_test(
+    transport: &mut dyn BleTransport,
+    store: &dyn PairingStore,
+    device_address: &[u8; 6],
+    command: &PreProvisioningTestCommand,
+) -> Result<sonde_protocol::TestResult, PairingError> {
+    let artifacts = store.load_artifacts()?.ok_or_else(|| {
+        PairingError::DiagnosticFailed(
+            "complete Phase 1 gateway pairing first to obtain a phone PSK".into(),
+        )
+    })?;
+    run_pre_provisioning_test_with_artifacts(transport, &artifacts, device_address, command).await
+}
+
+/// Perform the rebooted pre-provisioning RSSI diagnostic.
+pub async fn check_rssi_with_artifacts(
+    transport: &mut dyn BleTransport,
+    artifacts: &crate::phase1::PairingArtifacts,
+    device_address: &[u8; 6],
+) -> Result<DiagnosticResult, PairingError> {
+    let (diag_frame, request_nonce) =
+        crate::crypto::build_diag_request_frame(&artifacts.phone_psk)?;
+    let command = PreProvisioningTestCommand {
+        test_type: PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME,
+        rf_channel: Some(artifacts.rf_channel),
+        payload: diag_frame,
+    };
+
+    let result =
+        run_pre_provisioning_test_with_artifacts(transport, artifacts, device_address, &command)
+            .await?;
+
+    match result.status {
+        sonde_protocol::TEST_RESULT_OK => {
+            if result.test_type != Some(PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME) {
+                return Err(PairingError::DiagnosticFailed(format!(
+                    "unexpected test result type: {:?}",
+                    result.test_type
+                )));
+            }
+            let reply_frame = result.reply_frame.as_deref().ok_or_else(|| {
+                PairingError::DiagnosticFailed("missing raw DIAG_REPLY frame".into())
+            })?;
+            let (gateway_rssi_dbm, signal_quality) = crate::crypto::decrypt_diag_reply(
+                reply_frame,
+                &artifacts.phone_psk,
+                request_nonce,
+            )?;
             Ok(DiagnosticResult {
-                rssi_dbm,
+                gateway_rssi_dbm,
                 signal_quality,
+                node_reply_rssi_dbm: result.reply_rssi_dbm,
+                attempt_count: result.attempt_count,
+                elapsed_ms: result.elapsed_ms,
             })
         }
-        sonde_protocol::DIAG_RELAY_STATUS_TIMEOUT => Err(PairingError::DiagnosticFailed(
-            "no response from gateway — verify gateway is running and modem is connected".into(),
+        sonde_protocol::TEST_RESULT_TIMEOUT => Err(PairingError::DiagnosticFailed(
+            "diagnostic timed out — verify gateway is running and modem is connected".into(),
         )),
-        sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR => Err(PairingError::DiagnosticFailed(
-            "channel error — verify RF channel configuration".into(),
+        sonde_protocol::TEST_RESULT_NO_RESULT => Err(PairingError::DiagnosticFailed(
+            "node reported no retained test result; retry the diagnostic run".into(),
+        )),
+        sonde_protocol::TEST_RESULT_EXECUTION_ERROR => Err(PairingError::DiagnosticFailed(
+            "node failed to execute the staged diagnostic command".into(),
         )),
         other => Err(PairingError::DiagnosticFailed(format!(
-            "unknown relay status: 0x{:02x}",
-            other
+            "unknown TEST_RESULT status: 0x{other:02x}"
         ))),
     }
+}
+
+/// Perform the rebooted pre-provisioning RSSI diagnostic.
+pub async fn check_rssi(
+    transport: &mut dyn BleTransport,
+    store: &dyn PairingStore,
+    device_address: &[u8; 6],
+) -> Result<DiagnosticResult, PairingError> {
+    let artifacts = store.load_artifacts()?.ok_or_else(|| {
+        PairingError::DiagnosticFailed(
+            "complete Phase 1 gateway pairing first to obtain a phone PSK".into(),
+        )
+    })?;
+    check_rssi_with_artifacts(transport, &artifacts, device_address).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rng::MockRng;
+    use crate::store::MockPairingStore;
     use crate::transport::MockBleTransport;
 
     #[tokio::test]
@@ -759,49 +985,539 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn check_rssi_timeout_status() {
-        let artifacts = mock_artifacts();
+    fn mock_store() -> MockPairingStore {
+        MockPairingStore::with_artifacts(mock_artifacts())
+    }
 
-        let relay_body = sonde_protocol::encode_diag_relay_response(
-            sonde_protocol::DIAG_RELAY_STATUS_TIMEOUT,
-            &[],
+    fn encode_ack_response(status: u8) -> Vec<u8> {
+        sonde_protocol::encode_ble_envelope(
+            sonde_protocol::BLE_RUN_TEST_ACK,
+            &sonde_protocol::encode_run_test_ack(status).unwrap(),
         )
-        .unwrap();
-        let ble_response = sonde_protocol::encode_ble_envelope(
-            sonde_protocol::BLE_DIAG_RELAY_RESPONSE,
-            &relay_body,
+        .unwrap()
+    }
+
+    fn encode_test_result_response(result: &sonde_protocol::TestResult) -> Vec<u8> {
+        sonde_protocol::encode_ble_envelope(
+            sonde_protocol::BLE_TEST_RESULT,
+            &sonde_protocol::encode_test_result(result).unwrap(),
         )
-        .unwrap();
-
-        let mut transport = MockBleTransport::new(247);
-        transport.queue_response(Ok(ble_response));
-
-        let result = check_rssi(&mut transport, &artifacts).await;
-        assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
-        assert_eq!(transport.written.len(), 1);
+        .unwrap()
     }
 
     #[tokio::test]
-    async fn check_rssi_channel_error_status() {
-        let artifacts = mock_artifacts();
-
-        let relay_body = sonde_protocol::encode_diag_relay_response(
-            sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR,
-            &[],
-        )
-        .unwrap();
-        let ble_response = sonde_protocol::encode_ble_envelope(
-            sonde_protocol::BLE_DIAG_RELAY_RESPONSE,
-            &relay_body,
-        )
-        .unwrap();
-
+    async fn check_rssi_requires_phase1_artifacts() {
         let mut transport = MockBleTransport::new(247);
-        transport.queue_response(Ok(ble_response));
+        let store = MockPairingStore::new();
 
-        let result = check_rssi(&mut transport, &artifacts).await;
+        let result = check_rssi(&mut transport, &store, &[0xAA; 6]).await;
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("Phase 1"), "unexpected error: {message}");
+        assert!(transport.written.is_empty(), "must fail before BLE writes");
+    }
+
+    #[tokio::test]
+    async fn check_rssi_happy_path_reconnects_and_reads_result() {
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(encode_ack_response(sonde_protocol::RUN_TEST_ACK_OK)));
+        transport.queue_response(Ok(encode_test_result_response(
+            &sonde_protocol::TestResult {
+                status: sonde_protocol::TEST_RESULT_TIMEOUT,
+                test_type: Some(sonde_protocol::TEST_TYPE_DIAG_FRAME),
+                reply_frame: None,
+                reply_rssi_dbm: None,
+                attempt_count: 4,
+                elapsed_ms: 8_600,
+            },
+        )));
+        let store = mock_store();
+
+        let result = check_rssi(&mut transport, &store, &[0xAA; 6]).await;
         assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
+        assert_eq!(transport.written.len(), 2);
+        assert_eq!(
+            transport.written[0].2[0],
+            sonde_protocol::BLE_RUN_TEST_COMMAND
+        );
+        assert_eq!(
+            transport.written[1].2[0],
+            sonde_protocol::BLE_READ_TEST_RESULT
+        );
+        assert_eq!(transport.disconnect_count, 2);
+    }
+
+    #[tokio::test]
+    async fn check_rssi_retries_reconnect_after_test_reboot() {
+        struct FlakyReconnectTransport {
+            inner: MockBleTransport,
+            reconnect_failures_remaining: usize,
+        }
+
+        impl crate::transport::BleTransport for FlakyReconnectTransport {
+            fn start_scan(
+                &mut self,
+                service_uuids: &[u128],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PairingError>> + '_>>
+            {
+                self.inner.start_scan(service_uuids)
+            }
+
+            fn stop_scan(
+                &mut self,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PairingError>> + '_>>
+            {
+                self.inner.stop_scan()
+            }
+
+            fn get_discovered_devices(
+                &self,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Vec<ScannedDevice>, PairingError>> + '_,
+                >,
+            > {
+                self.inner.get_discovered_devices()
+            }
+
+            fn connect(
+                &mut self,
+                address: &[u8; 6],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u16, PairingError>> + '_>>
+            {
+                if self.inner.connect_count >= 1 && self.reconnect_failures_remaining > 0 {
+                    self.inner.connect_count += 1;
+                    self.reconnect_failures_remaining -= 1;
+                    self.inner.connected = false;
+                    self.inner.connected_address = None;
+                    let device = crate::error::format_device_address(address);
+                    return Box::pin(async move {
+                        Err(PairingError::ConnectionFailed {
+                            device: Some(device),
+                            reason: "node rebooting".into(),
+                        })
+                    });
+                }
+                self.inner.connect(address)
+            }
+
+            fn disconnect(
+                &mut self,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PairingError>> + '_>>
+            {
+                self.inner.disconnect()
+            }
+
+            fn write_characteristic(
+                &mut self,
+                service: u128,
+                characteristic: u128,
+                data: &[u8],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PairingError>> + '_>>
+            {
+                self.inner
+                    .write_characteristic(service, characteristic, data)
+            }
+
+            fn read_indication(
+                &mut self,
+                service: u128,
+                characteristic: u128,
+                timeout_ms: u64,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<Vec<u8>, PairingError>> + '_>,
+            > {
+                self.inner
+                    .read_indication(service, characteristic, timeout_ms)
+            }
+
+            fn pairing_method(&self) -> Option<PairingMethod> {
+                self.inner.pairing_method()
+            }
+
+            fn set_defer_bonding(&mut self, defer: bool) {
+                self.inner.set_defer_bonding(defer);
+            }
+        }
+
+        let mut transport = FlakyReconnectTransport {
+            inner: MockBleTransport::new(247),
+            reconnect_failures_remaining: 1,
+        };
+        transport
+            .inner
+            .queue_response(Ok(encode_ack_response(sonde_protocol::RUN_TEST_ACK_OK)));
+        transport
+            .inner
+            .queue_response(Ok(encode_test_result_response(
+                &sonde_protocol::TestResult {
+                    status: sonde_protocol::TEST_RESULT_TIMEOUT,
+                    test_type: Some(sonde_protocol::TEST_TYPE_DIAG_FRAME),
+                    reply_frame: None,
+                    reply_rssi_dbm: None,
+                    attempt_count: 4,
+                    elapsed_ms: 8_600,
+                },
+            )));
+        let store = mock_store();
+
+        let result = check_rssi(&mut transport, &store, &[0xAA; 6]).await;
+
+        assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
+        assert_eq!(transport.inner.connect_count, 3);
+        assert_eq!(transport.inner.disconnect_count, 3);
+        assert_eq!(transport.inner.written.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn check_rssi_ack_failure_surfaces_error() {
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(encode_ack_response(
+            sonde_protocol::RUN_TEST_ACK_INVALID,
+        )));
+        let store = mock_store();
+
+        let result = check_rssi(&mut transport, &store, &[0xAA; 6]).await;
+        assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
+        assert_eq!(transport.written.len(), 1);
+        assert_eq!(
+            transport.written[0].2[0],
+            sonde_protocol::BLE_RUN_TEST_COMMAND
+        );
+    }
+
+    #[tokio::test]
+    async fn check_rssi_success_combines_gateway_and_node_metadata() {
+        struct SuccessDiagnosticTransport {
+            inner: MockBleTransport,
+            psk: [u8; 32],
+        }
+
+        impl crate::transport::BleTransport for SuccessDiagnosticTransport {
+            fn start_scan(
+                &mut self,
+                service_uuids: &[u128],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PairingError>> + '_>>
+            {
+                self.inner.start_scan(service_uuids)
+            }
+
+            fn stop_scan(
+                &mut self,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PairingError>> + '_>>
+            {
+                self.inner.stop_scan()
+            }
+
+            fn get_discovered_devices(
+                &self,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Vec<ScannedDevice>, PairingError>> + '_,
+                >,
+            > {
+                self.inner.get_discovered_devices()
+            }
+
+            fn connect(
+                &mut self,
+                address: &[u8; 6],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u16, PairingError>> + '_>>
+            {
+                self.inner.connect(address)
+            }
+
+            fn disconnect(
+                &mut self,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PairingError>> + '_>>
+            {
+                self.inner.disconnect()
+            }
+
+            fn write_characteristic(
+                &mut self,
+                service: u128,
+                characteristic: u128,
+                data: &[u8],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PairingError>> + '_>>
+            {
+                self.inner
+                    .write_characteristic(service, characteristic, data)
+            }
+
+            fn read_indication(
+                &mut self,
+                service: u128,
+                characteristic: u128,
+                timeout_ms: u64,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<Vec<u8>, PairingError>> + '_>,
+            > {
+                if self.inner.read_call_count == 1 {
+                    let written = self.inner.written[0].2.clone();
+                    let psk = self.psk;
+                    let sha = crate::crypto::PairSha256;
+                    let aead = crate::crypto::PairAead;
+                    let (_, body) = sonde_protocol::parse_ble_envelope(&written).unwrap();
+                    let decoded = sonde_protocol::decode_run_test_command(body).unwrap();
+                    let request = sonde_protocol::decode_frame(&decoded.payload).unwrap();
+                    let reply_payload = sonde_protocol::GatewayMessage::DiagReply {
+                        diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
+                        rssi_dbm: -58,
+                        signal_quality: sonde_protocol::SIGNAL_QUALITY_GOOD,
+                    }
+                    .encode()
+                    .unwrap();
+                    let header = sonde_protocol::FrameHeader {
+                        key_hint: sonde_protocol::key_hint_from_psk(&psk, &sha),
+                        msg_type: sonde_protocol::MSG_DIAG_REPLY,
+                        nonce: request.header.nonce,
+                    };
+                    let raw_reply =
+                        sonde_protocol::encode_frame(&header, &reply_payload, &psk, &aead, &sha)
+                            .unwrap();
+                    self.inner.queue_response(Ok(encode_test_result_response(
+                        &sonde_protocol::TestResult {
+                            status: sonde_protocol::TEST_RESULT_OK,
+                            test_type: Some(sonde_protocol::TEST_TYPE_DIAG_FRAME),
+                            reply_frame: Some(raw_reply),
+                            reply_rssi_dbm: Some(-67),
+                            attempt_count: 2,
+                            elapsed_ms: 4_300,
+                        },
+                    )));
+                }
+                self.inner
+                    .read_indication(service, characteristic, timeout_ms)
+            }
+
+            fn pairing_method(&self) -> Option<PairingMethod> {
+                self.inner.pairing_method()
+            }
+
+            fn set_defer_bonding(&mut self, defer: bool) {
+                self.inner.set_defer_bonding(defer);
+            }
+        }
+
+        let artifacts = mock_artifacts();
+        let store = MockPairingStore::with_artifacts(artifacts.clone());
+        let mut transport = SuccessDiagnosticTransport {
+            inner: MockBleTransport::new(247),
+            psk: *artifacts.phone_psk,
+        };
+        transport
+            .inner
+            .queue_response(Ok(encode_ack_response(sonde_protocol::RUN_TEST_ACK_OK)));
+
+        let result = check_rssi(&mut transport, &store, &[0xAA; 6])
+            .await
+            .unwrap();
+        assert_eq!(transport.inner.written.len(), 2);
+        assert_eq!(
+            transport.inner.written[0].2[0],
+            sonde_protocol::BLE_RUN_TEST_COMMAND
+        );
+        assert_eq!(
+            transport.inner.written[1].2[0],
+            sonde_protocol::BLE_READ_TEST_RESULT
+        );
+        assert_eq!(transport.inner.disconnect_count, 2);
+        assert_eq!(result.gateway_rssi_dbm, -58);
+        assert_eq!(result.signal_quality, sonde_protocol::SIGNAL_QUALITY_GOOD);
+        assert_eq!(result.node_reply_rssi_dbm, Some(-67));
+        assert_eq!(result.attempt_count, 2);
+        assert_eq!(result.elapsed_ms, 4_300);
+    }
+
+    #[tokio::test]
+    async fn check_rssi_rejects_unexpected_test_result_type() {
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(encode_ack_response(sonde_protocol::RUN_TEST_ACK_OK)));
+        transport.queue_response(Ok(encode_test_result_response(
+            &sonde_protocol::TestResult {
+                status: sonde_protocol::TEST_RESULT_OK,
+                test_type: Some(0x99),
+                reply_frame: Some(vec![0xAA; 32]),
+                reply_rssi_dbm: Some(-67),
+                attempt_count: 1,
+                elapsed_ms: 900,
+            },
+        )));
+        let store = mock_store();
+
+        let result = check_rssi(&mut transport, &store, &[0xAA; 6]).await;
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unexpected test result type"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_pre_provisioning_test_rejects_stale_result_type() {
+        let artifacts = mock_artifacts();
+        let command = PreProvisioningTestCommand {
+            test_type: PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(artifacts.rf_channel),
+            payload: vec![0xAA; 32],
+        };
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(encode_ack_response(sonde_protocol::RUN_TEST_ACK_OK)));
+        transport.queue_response(Ok(encode_test_result_response(
+            &sonde_protocol::TestResult {
+                status: sonde_protocol::TEST_RESULT_TIMEOUT,
+                test_type: Some(0x99),
+                reply_frame: None,
+                reply_rssi_dbm: None,
+                attempt_count: 4,
+                elapsed_ms: 8_600,
+            },
+        )));
+
+        let result = run_pre_provisioning_test_with_artifacts(
+            &mut transport,
+            &artifacts,
+            &[0xAA; 6],
+            &command,
+        )
+        .await;
+        let err = result.unwrap_err().to_string();
+
+        assert!(
+            err.contains("unexpected test result type"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(transport.written.len(), 2);
+        assert_eq!(transport.disconnect_count, 2);
+    }
+
+    #[tokio::test]
+    async fn run_pre_provisioning_test_disconnects_on_write_error() {
+        let artifacts = mock_artifacts();
+        let command = PreProvisioningTestCommand {
+            test_type: PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(artifacts.rf_channel),
+            payload: vec![0xAA; 32],
+        };
+        let mut transport = MockBleTransport::new(247);
+        transport.write_error = Some(PairingError::GattWriteFailed {
+            device: Some(crate::error::format_device_address(&[0xAA; 6])),
+            reason: "injected write failure".into(),
+        });
+
+        let result = run_pre_provisioning_test_with_artifacts(
+            &mut transport,
+            &artifacts,
+            &[0xAA; 6],
+            &command,
+        )
+        .await;
+
+        assert!(matches!(result, Err(PairingError::GattWriteFailed { .. })));
+        assert_eq!(transport.connect_count, 1);
+        assert_eq!(transport.disconnect_count, 1);
+        assert_eq!(transport.read_call_count, 0);
+    }
+
+    #[tokio::test]
+    async fn repeated_sampling_requires_separate_runs() {
+        let store = mock_store();
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(encode_ack_response(sonde_protocol::RUN_TEST_ACK_OK)));
+        transport.queue_response(Ok(encode_test_result_response(
+            &sonde_protocol::TestResult {
+                status: sonde_protocol::TEST_RESULT_TIMEOUT,
+                test_type: Some(sonde_protocol::TEST_TYPE_DIAG_FRAME),
+                reply_frame: None,
+                reply_rssi_dbm: None,
+                attempt_count: 4,
+                elapsed_ms: 8_600,
+            },
+        )));
+        let _ = check_rssi(&mut transport, &store, &[0xAA; 6]).await;
+        assert_eq!(
+            transport
+                .written
+                .iter()
+                .filter(|(_, _, data)| data[0] == sonde_protocol::BLE_RUN_TEST_COMMAND)
+                .count(),
+            1
+        );
+
+        transport.queue_response(Ok(encode_ack_response(sonde_protocol::RUN_TEST_ACK_OK)));
+        transport.queue_response(Ok(encode_test_result_response(
+            &sonde_protocol::TestResult {
+                status: sonde_protocol::TEST_RESULT_TIMEOUT,
+                test_type: Some(sonde_protocol::TEST_TYPE_DIAG_FRAME),
+                reply_frame: None,
+                reply_rssi_dbm: None,
+                attempt_count: 4,
+                elapsed_ms: 8_600,
+            },
+        )));
+        let _ = check_rssi(&mut transport, &store, &[0xAA; 6]).await;
+        assert_eq!(
+            transport
+                .written
+                .iter()
+                .filter(|(_, _, data)| data[0] == sonde_protocol::BLE_RUN_TEST_COMMAND)
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn run_pre_provisioning_test_uses_explicit_test_discriminator() {
+        let store = mock_store();
+        let command = PreProvisioningTestCommand {
+            test_type: PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(6),
+            payload: vec![0xAA; 32],
+        };
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(encode_ack_response(sonde_protocol::RUN_TEST_ACK_OK)));
+        transport.queue_response(Ok(encode_test_result_response(
+            &sonde_protocol::TestResult {
+                status: sonde_protocol::TEST_RESULT_TIMEOUT,
+                test_type: Some(PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME),
+                reply_frame: None,
+                reply_rssi_dbm: None,
+                attempt_count: 4,
+                elapsed_ms: 8_600,
+            },
+        )));
+
+        let _ = run_pre_provisioning_test(&mut transport, &store, &[0xAA; 6], &command).await;
+        let (_, _, written) = &transport.written[0];
+        let (_, body) = sonde_protocol::parse_ble_envelope(written).unwrap();
+        let decoded = sonde_protocol::decode_run_test_command(body).unwrap();
+        assert_eq!(decoded.test_type, PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME);
+    }
+
+    #[tokio::test]
+    async fn run_pre_provisioning_test_rejects_diag_frame_with_wrong_phase1_channel() {
+        let artifacts = mock_artifacts();
+        let command = PreProvisioningTestCommand {
+            test_type: PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME,
+            rf_channel: Some(artifacts.rf_channel + 1),
+            payload: vec![0xAA; 32],
+        };
+        let mut transport = MockBleTransport::new(247);
+
+        let result = run_pre_provisioning_test_with_artifacts(
+            &mut transport,
+            &artifacts,
+            &[0xAA; 6],
+            &command,
+        )
+        .await;
+        let err = result.unwrap_err().to_string();
+
+        assert!(
+            err.contains("Phase 1 RF channel"),
+            "unexpected error: {err}"
+        );
+        assert!(transport.written.is_empty(), "must fail before BLE writes");
     }
 
     /// Validates: PT-1214 AC2 — board layout CBOR deterministic encoding.

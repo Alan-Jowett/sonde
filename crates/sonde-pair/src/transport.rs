@@ -87,6 +87,8 @@ pub struct MockBleTransport {
     pub connect_error: Option<PairingError>,
     /// If `Some`, the next `write_characteristic()` call takes and returns this error.
     pub write_error: Option<PairingError>,
+    /// Count of `connect()` calls for reconnect verification.
+    pub connect_count: usize,
     /// Count of `disconnect()` calls for resource-leak verification.
     pub disconnect_count: usize,
     /// Count of `read_indication()` calls for retry verification.
@@ -110,6 +112,7 @@ impl MockBleTransport {
             connected: false,
             connect_error: None,
             write_error: None,
+            connect_count: 0,
             disconnect_count: 0,
             read_call_count: 0,
             pairing_method: None,
@@ -152,6 +155,7 @@ impl BleTransport for MockBleTransport {
         address: &[u8; 6],
     ) -> Pin<Box<dyn Future<Output = Result<u16, PairingError>> + '_>> {
         let device_str = format_device_address(address);
+        self.connect_count += 1;
         if let Some(err) = self.connect_error.take() {
             self.connected = false;
             self.connected_address = None;

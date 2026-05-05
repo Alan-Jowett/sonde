@@ -108,12 +108,35 @@ pub const SIGNAL_QUALITY_BAD: u8 = 2;
 
 // BLE envelope message types (Node Command characteristic)
 pub const BLE_NODE_PROVISION: u8 = 0x01;
-pub const BLE_DIAG_RELAY_REQUEST: u8 = 0x02;
+pub const BLE_RUN_TEST_COMMAND: u8 = 0x02;
+pub const BLE_READ_TEST_RESULT: u8 = 0x03;
 pub const BLE_NODE_ACK: u8 = 0x81;
-pub const BLE_DIAG_RELAY_RESPONSE: u8 = 0x82;
+pub const BLE_RUN_TEST_ACK: u8 = 0x82;
+pub const BLE_TEST_RESULT: u8 = 0x83;
 pub const BLE_ERROR: u8 = 0xFF;
 
-// DIAG_RELAY_RESPONSE status codes
-pub const DIAG_RELAY_STATUS_OK: u8 = 0x00;
-pub const DIAG_RELAY_STATUS_TIMEOUT: u8 = 0x01;
-pub const DIAG_RELAY_STATUS_CHANNEL_ERROR: u8 = 0x02;
+// Pre-provisioning test CBOR keys (separate keyspace)
+pub const TEST_CMD_KEY_TEST_TYPE: u64 = 1;
+pub const TEST_CMD_KEY_RF_CHANNEL: u64 = 2;
+pub const TEST_CMD_KEY_PAYLOAD: u64 = 3;
+
+pub const TEST_RESULT_KEY_STATUS: u64 = 1;
+pub const TEST_RESULT_KEY_TEST_TYPE: u64 = 2;
+pub const TEST_RESULT_KEY_REPLY_FRAME: u64 = 3;
+pub const TEST_RESULT_KEY_REPLY_RSSI_DBM: u64 = 4;
+pub const TEST_RESULT_KEY_ATTEMPT_COUNT: u64 = 5;
+pub const TEST_RESULT_KEY_ELAPSED_MS: u64 = 6;
+
+// Pre-provisioning test types
+pub const TEST_TYPE_DIAG_FRAME: u64 = 0x01;
+
+// RUN_TEST_ACK status codes
+pub const RUN_TEST_ACK_OK: u8 = 0x00;
+pub const RUN_TEST_ACK_INVALID: u8 = 0x01;
+pub const RUN_TEST_ACK_UNSUPPORTED: u8 = 0x02;
+
+// TEST_RESULT status codes
+pub const TEST_RESULT_OK: u8 = 0x00;
+pub const TEST_RESULT_TIMEOUT: u8 = 0x01;
+pub const TEST_RESULT_NO_RESULT: u8 = 0x02;
+pub const TEST_RESULT_EXECUTION_ERROR: u8 = 0x03;

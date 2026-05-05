@@ -15,6 +15,7 @@ const pages = [
   document.getElementById("page-gateway-done"),
   document.getElementById("page-node-scan"),
   document.getElementById("page-node-provision"),
+  document.getElementById("page-diagnostic-review"),
   document.getElementById("page-done"),
 ];
 
@@ -66,6 +67,19 @@ const btnProvision = document.getElementById("btn-provision");
 const provisionStatus = document.getElementById("provision-status");
 
 // Page 6: Done
+const diagnosticSummary = document.getElementById("diagnostic-summary");
+const diagnosticMetrics = document.getElementById("diagnostic-metrics");
+const diagnosticGatewayRssi = document.getElementById("diagnostic-gateway-rssi");
+const diagnosticSignalQuality = document.getElementById("diagnostic-signal-quality");
+const diagnosticNodeRssi = document.getElementById("diagnostic-node-rssi");
+const diagnosticAttemptCount = document.getElementById("diagnostic-attempt-count");
+const diagnosticElapsedMs = document.getElementById("diagnostic-elapsed-ms");
+const diagnosticActionStatus = document.getElementById("diagnostic-action-status");
+const btnDiagnosticContinue = document.getElementById("btn-diagnostic-continue");
+const btnDiagnosticRetry = document.getElementById("btn-diagnostic-retry");
+const btnDiagnosticCancel = document.getElementById("btn-diagnostic-cancel");
+
+// Page 7: Done
 const provisionDetails = document.getElementById("provision-details");
 const btnProvisionAnother = document.getElementById("btn-provision-another");
 
@@ -86,6 +100,7 @@ let logTimer = null;
 let busy = false;
 let isPaired = false;
 let scanGeneration = 0;
+let pendingProvisionRequest = null;
 
 // ---------------------------------------------------------------------------
 // Board presets (PT-1216)
@@ -158,7 +173,7 @@ function resolveBoardLayout() {
 // ---------------------------------------------------------------------------
 
 // Maps page index → stepper phase index (0=Gateway, 1=Node, 2=Done)
-const PAGE_TO_PHASE = [0, 0, 0, 1, 1, 2];
+const PAGE_TO_PHASE = [0, 0, 0, 1, 1, 1, 2];
 const STORAGE_KEY = "sonde-pair-page";
 
 class Navigator {
@@ -233,7 +248,7 @@ class Navigator {
       target = 0;
     }
 
-    // Pages 5–6 require ephemeral state (selected node / provisioning-success context)
+    // Pages 5–7 require ephemeral state (selected node / diagnostic / provisioning context)
     // that cannot survive a restart — fall back to Node Scan when paired,
     // or Welcome when unpaired, consistent with the prerequisite check above (PT-1219 AC 4)
     if (target >= 4) {
@@ -265,7 +280,7 @@ class Navigator {
         el.classList.add("step--active");
       }
     });
-    // PT-1220 AC 6–7: show back button on pages 2–6, hide on page 1
+    // PT-1220 AC 6–7: show back button on pages 2–7, hide on page 1
     btnBack.classList.toggle("hidden", this.currentPage === 0);
   }
 
@@ -326,11 +341,68 @@ function setBusy(b) {
   // Disable action buttons on the current page while busy
   btnPair.disabled = b || !selectedAddressGw;
   btnProvision.disabled = b || !selectedAddressNode;
+  btnDiagnosticContinue.disabled = b || !pendingProvisionRequest;
+  btnDiagnosticRetry.disabled = b || !pendingProvisionRequest;
+  btnDiagnosticCancel.disabled = b;
   btnScanStartGw.disabled = b || scanning;
   btnScanStopGw.disabled = b || !scanning;
   btnScanStartNode.disabled = b || scanning;
   btnScanStopNode.disabled = b || !scanning;
   btnToProvision.disabled = b || !selectedAddressNode;
+}
+
+function resetDiagnosticReview() {
+  pendingProvisionRequest = null;
+  diagnosticSummary.textContent = "";
+  diagnosticMetrics.classList.add("hidden");
+  diagnosticGatewayRssi.textContent = "--";
+  diagnosticSignalQuality.textContent = "--";
+  diagnosticNodeRssi.textContent = "--";
+  diagnosticAttemptCount.textContent = "--";
+  diagnosticElapsedMs.textContent = "--";
+  hideStatus(diagnosticActionStatus);
+  btnDiagnosticContinue.textContent = "Continue";
+}
+
+function renderDiagnosticReview(review) {
+  diagnosticSummary.textContent = review.summary;
+  const hasMetrics = review.success;
+  diagnosticMetrics.classList.toggle("hidden", !hasMetrics);
+  if (hasMetrics) {
+    diagnosticGatewayRssi.textContent = `${review.gatewayRssiDbm} dBm`;
+    diagnosticSignalQuality.textContent = review.signalQuality ?? "--";
+    diagnosticNodeRssi.textContent = review.nodeReplyRssiDbm == null ? "--" : `${review.nodeReplyRssiDbm} dBm`;
+    diagnosticAttemptCount.textContent = String(review.attemptCount ?? "--");
+    diagnosticElapsedMs.textContent = `${review.elapsedMs ?? "--"} ms`;
+    btnDiagnosticContinue.textContent = "Continue to Provisioning";
+  } else {
+    btnDiagnosticContinue.textContent = "Continue Anyway";
+  }
+  hideStatus(diagnosticActionStatus);
+}
+
+async function runDiagnosticForPendingProvision(showStatusMessage, pushToReviewPage) {
+  if (!pendingProvisionRequest) return;
+  clearError();
+  setBusy(true);
+  showStatus(diagnosticActionStatus, showStatusMessage);
+  try {
+    const review = await invoke("run_pre_provisioning_diagnostic", {
+      address: pendingProvisionRequest.address,
+    });
+    hideStatus(diagnosticActionStatus);
+    hideStatus(provisionStatus);
+    renderDiagnosticReview(review);
+    if (pushToReviewPage && navigator_.current !== 5) {
+      navigator_.goTo(5);
+    }
+  } catch (e) {
+    hideStatus(diagnosticActionStatus);
+    hideStatus(provisionStatus);
+    showError(e);
+  } finally {
+    setBusy(false);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -547,20 +619,28 @@ async function provisionNode() {
   if (!boardLayout) return;
   clearError();
   if (scanning) await stopScan();
+  pendingProvisionRequest = {
+    address: selectedAddressNode,
+    nodeId: nid,
+    boardLayout,
+  };
+  showStatus(provisionStatus, "Running diagnostic\u2026");
+  await runDiagnosticForPendingProvision("Running diagnostic\u2026", true);
+}
+
+async function continueProvisioningAfterDiagnostic() {
+  if (!pendingProvisionRequest) return;
+  clearError();
   setBusy(true);
-  showStatus(provisionStatus, "Connecting to node\u2026");
+  showStatus(diagnosticActionStatus, "Provisioning\u2026");
   try {
-    showStatus(provisionStatus, "Provisioning\u2026");
-    await invoke("provision_node", {
-      address: selectedAddressNode,
-      nodeId: nid,
-      boardLayout,
-    });
-    hideStatus(provisionStatus);
-    provisionDetails.textContent = "Node \"" + nid + "\" provisioned.";
+    await invoke("provision_node", pendingProvisionRequest);
+    hideStatus(diagnosticActionStatus);
+    provisionDetails.textContent = `Node "${pendingProvisionRequest.nodeId}" provisioned.`;
+    resetDiagnosticReview();
     navigator_.next();
   } catch (e) {
-    hideStatus(provisionStatus);
+    hideStatus(diagnosticActionStatus);
     showError(e);
   } finally {
     setBusy(false);
@@ -597,6 +677,7 @@ async function clearPairing() {
   try {
     await invoke("clear_pairing");
     isPaired = false;
+    resetDiagnosticReview();
     await refreshPairingStatus();
     navigator_.goTo(0);
   } catch (e) {
@@ -665,13 +746,24 @@ boardSelect.addEventListener("change", () => {
   customPins.classList.toggle("hidden", boardSelect.value !== "custom");
 });
 
-// Page 6: Done
+// Page 6: Diagnostic Review
+btnDiagnosticContinue.addEventListener("click", continueProvisioningAfterDiagnostic);
+btnDiagnosticRetry.addEventListener("click", () => {
+  runDiagnosticForPendingProvision("Retrying diagnostic\u2026", false);
+});
+btnDiagnosticCancel.addEventListener("click", () => {
+  resetDiagnosticReview();
+  navigator_.goTo(4);
+});
+
+// Page 7: Done
 btnProvisionAnother.addEventListener("click", () => {
   nodeId.value = "";
   selectedAddressNode = null;
   rssiPanel.classList.add("hidden");
   btnToProvision.disabled = true;
   renderDevices(deviceListNode, [], false);
+  resetDiagnosticReview();
   navigator_.goTo(3);
 });
 
@@ -697,6 +789,7 @@ window.addEventListener("popstate", (e) => {
 // ---------------------------------------------------------------------------
 
 initBoardSelect();
+resetDiagnosticReview();
 refreshPairingStatus().then(() => {
   navigator_.restore();
 });

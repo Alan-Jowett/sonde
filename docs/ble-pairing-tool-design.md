@@ -207,6 +207,79 @@ The Phase 2 state machine implements the node provisioning flow from [ble-pairin
 - `node_psk` is never persisted to disk.  It exists only in memory during provisioning and is zeroed via `Zeroizing` after the `NODE_PROVISION` write succeeds (PT-0408, PT-0804).
 - The pairing request payload is encrypted with `phone_psk` (AES-256-GCM, AAD = `"sonde-pairing-v2"`) and wrapped in a complete ESP-NOW `PEER_REQUEST` frame (PT-0402).
 
+### 4.4  Pre-provisioning test state machine
+
+The pre-provisioning test flow is implemented in `phase2.rs` alongside the rest of the node-facing Phase 2 logic. It takes a `BleTransport`, `PairingArtifacts` (from Phase 1), a device address, and a generic `PreProvisioningTestCommand`, and returns a structured retained-result value. The initial concrete command uses `test_type = PRE_PROVISIONING_TEST_TYPE_DIAG_FRAME`.
+
+In the Tauri pairing tool, this diagnostic is part of the normal node-provisioning flow on both desktop and Android. After the operator selects a node and enters provisioning inputs, the UI first runs the automatic `DIAG_FRAME` pre-provisioning test, then presents the result in an interstitial confirmation step before allowing `NODE_PROVISION` to proceed.
+
+```text
+┌─────────────┐
+│ Prerequisite│──── no phone_psk ──► Error("complete Phase 1 first")
+│ Check       │
+└────┬────────┘
+     │ phone_psk present
+     ▼
+┌──────────────────┐
+│ Build test cmd   │──── invalid ─────► Error (before BLE)
+│ 1. Create        │
+│    DIAG_REQUEST  │
+│ 2. Wrap generic  │
+│    RUN_TEST_CMD  │
+└────┬─────────────┘
+     ▼
+┌──────────────────┐
+│ Stage command    │
+│ write RUN_TEST   │
+│ wait RUN_TEST_ACK│──── timeout 5s ──► Error("no response")
+│                  │──── ACK !0x00 ───► Error("test rejected")
+└────┬─────────────┘
+     │ ACK(0x00)
+     ▼
+┌──────────────────┐
+│ Reconnect later  │
+│ node reboots     │
+│ connect again    │
+└────┬─────────────┘
+     ▼
+┌──────────────────┐
+│ Read result      │
+│ write READ_TEST  │
+│ wait TEST_RESULT │──── timeout 5s ──► Error("result unavailable")
+└────┬─────────────┘
+     │ TEST_RESULT
+     ▼
+┌──────────────────┐
+│ Interpret        │
+│ decrypt reply    │
+│ present gateway  │
+│ + node RSSI/meta │
+└────┬─────────────┘
+     │ result shown to operator
+     ▼
+┌──────────────────┐
+│ Confirm next step│──── diag failed + cancel ─► Stop, no provisioning
+│ success: Continue│──── diag failed + continue ► Proceed anyway
+│ failure: Continue│
+│ anyway / Cancel  │
+└────┬─────────────┘
+     │ explicit operator confirmation
+     ▼
+┌──────────────────┐
+│ Provision node   │
+│ send NODE_PROV   │
+│ wait NODE_ACK    │
+└──────────────────┘
+```
+
+**Key design decisions:**
+
+- The flow is explicitly split into **stage** and **read** phases so the tool never assumes the original BLE connection will survive test execution.
+- The outer BLE workflow is generic over `test_type`; only the test-specific payload builder changes when new test kinds are added later.
+- For `DiagFrame`, the tool combines the decrypted gateway reply (`rssi_dbm`, `signal_quality`) with the node-reported reply RSSI and elapsed-time metadata from `TEST_RESULT`.
+- The automatic diagnostic is advisory rather than a hard gate: the operator may continue provisioning after a failure, but only by taking an explicit **continue anyway** action.
+- Success also requires explicit confirmation so the operator can review the measured result before provisioning continues.
+
 ### 4.1  NODE_PROVISION body wire format
 
 ```
@@ -891,8 +964,9 @@ Each wizard page is a `<section class="page">` element in `index.html` with a pa
 | 2 | `page-gateway-scan` | Scan controls, device list, phone label, pair button | Gateway |
 | 3 | `page-gateway-done` | Pairing success, channel/key hint info | Gateway |
 | 4 | `page-node-scan` | Scan controls, device list, RSSI indicator | Node |
-| 5 | `page-node-provision` | Node ID, board selector, provision button | Node |
-| 6 | `page-done` | Success summary, "Provision Another" button | Done |
+| 5 | `page-node-provision` | Node ID, board selector, automatic diagnostic start | Node |
+| 6 | `page-diagnostic-review` | Diagnostic result or failure, continue / continue-anyway / cancel | Node |
+| 7 | `page-done` | Success summary, "Provision Another" button | Done |
 
 ### Navigator class
 
@@ -913,7 +987,7 @@ class Navigator {
 
 **Page transitions:** `goTo()` applies CSS classes (`slide-in-right` for forward, `slide-in-left` for back) to animate the transition.  Transitions are ≤ 300 ms.  The previous page gets `slide-out-left` or `slide-out-right` respectively.
 
-**Persistence:** `goTo()` saves `currentPage` (0-based) to `localStorage` key `sonde-pair-page`.  `restore()` reads this key on startup, validates prerequisites (pairing artifacts for pages 3–6; non-ephemeral context for pages 5–6), and navigates to the saved page or the earliest valid page if prerequisites are missing.  Pages 5–6 (Node Provision, Done) require ephemeral state (selected node address and provisioning-success context respectively) that cannot survive a restart; if the saved page is 5 or 6, `restore()` falls back to page 4 (Node Scan).  Invalid or out-of-range values default to the earliest valid page (page 1 if unpaired, page 4 if paired).  After determining the target page N, `restore()` pushes all intermediate states (pages 1 through N) into the history stack so that back navigation traverses each page in sequence.
+**Persistence:** `goTo()` saves `currentPage` (0-based) to `localStorage` key `sonde-pair-page`.  `restore()` reads this key on startup, validates prerequisites (pairing artifacts for pages 3–7; non-ephemeral context for pages 5–7), and navigates to the saved page or the earliest valid page if prerequisites are missing.  Pages 5–7 (Node Provision, Diagnostic Review, Done) require ephemeral state (selected node address, diagnostic result/failure context, and provisioning-success context respectively) that cannot survive a restart; if the saved page is 5, 6, or 7, `restore()` falls back to page 4 (Node Scan).  Invalid or out-of-range values default to the earliest valid page (page 1 if unpaired, page 4 if paired).  After determining the target page N, `restore()` pushes all intermediate states (pages 1 through N) into the history stack so that back navigation traverses each page in sequence.
 
 ### Stepper bar
 

@@ -853,13 +853,14 @@ During chunked transfer, if the node receives a CHUNK response with a `chunk_ind
 **Source:** ble-pairing-protocol.md §8.1
 
 **Description:**  
-On boot the node MUST check, in order: (1) no PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode, (2) PSK stored and `reg_complete` flag NOT set → send PEER_REQUEST, (3) PSK stored and `reg_complete` flag set → normal WAKE cycle.  (The `reg_complete` NVS key is defined in ND-0916.)
+On boot the node MUST check, in order: (1) a pending pre-provisioning test command is staged in RTC-retained state → enter pre-provisioning test mode, (2) no PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode, (3) PSK stored and `reg_complete` flag NOT set → send PEER_REQUEST, (4) PSK stored and `reg_complete` flag set → normal WAKE cycle. The pre-provisioning test-mode path is only used for unpaired nodes and is entered before BLE pairing mode so the node never attempts to keep BLE and ESP-NOW active concurrently. (The `reg_complete` NVS key is defined in ND-0916.)
 
 **Acceptance criteria:**
 
-1. BLE pairing mode is entered when no PSK exists or the pairing button is held.
-2. PEER_REQUEST path is taken when PSK is stored but registration is incomplete.
-3. Normal WAKE cycle is entered only when PSK is stored and registration is complete.
+1. If a pending pre-provisioning test command is present at boot, the node enters pre-provisioning test mode before evaluating the BLE pairing and normal wake paths.
+2. BLE pairing mode is entered when no PSK exists or the pairing button is held and no pending pre-provisioning test command is present.
+3. PEER_REQUEST path is taken when PSK is stored but registration is incomplete and no pending pre-provisioning test command is present.
+4. Normal WAKE cycle is entered only when PSK is stored, registration is complete, and no pending pre-provisioning test command is present.
 
 ---
 
@@ -1444,64 +1445,67 @@ The node MUST log the WiFi / ESP-NOW channel number at boot using `warn!()` leve
 
 ---
 
-## 12  Diagnostic relay
+## 12  Pre-provisioning test mode
 
-### ND-1100  BLE diagnostic relay command
+### ND-1100  Generic BLE pre-provisioning test command
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §6a, protocol.md §5.8
 
 **Description:**  
-In BLE pairing mode, the node MUST accept `DIAG_RELAY_REQUEST` (BLE envelope type `0x02`) on the Node Command characteristic. The node MUST NOT require provisioning to have completed — the diagnostic relay is available as soon as BLE pairing mode is active.
+In BLE pairing mode, the unpaired node MUST accept a generic `RUN_TEST_COMMAND` request (BLE envelope type `0x02`) on the Node Command characteristic. The command body MUST be encoded as a CBOR map with integer keys so that the BLE verb remains stable while the payload schema can grow in future. The command map MUST include `test_type` (key 1) and `payload` (key 3); it MAY include `rf_channel` (key 2) for test types that require a radio channel. The initial concrete test type is `0x01` (`DIAG_FRAME`), whose payload is a complete ESP-NOW `DIAG_REQUEST` frame built and authenticated by the pairing tool using the phone PSK obtained in Phase 1. The node MUST NOT require node provisioning to have completed before accepting the command.
 
 **Acceptance criteria:**
 
-1. `DIAG_RELAY_REQUEST` messages are accepted on the Node Command characteristic while in BLE pairing mode.
-2. The node parses `rf_channel` (1 byte), `payload_len` (2 bytes BE), and `payload` (variable) from the BLE envelope body.
-3. The node rejects requests with `rf_channel` outside 1–13 by sending `DIAG_RELAY_RESPONSE(status=0x02)`.
-4. The node rejects requests with `payload_len` = 0 or `payload_len` > 250 by sending `DIAG_RELAY_RESPONSE(status=0x02)`.
+1. `RUN_TEST_COMMAND` messages are accepted on the Node Command characteristic while the node is unpaired and in BLE pairing mode.
+2. The node parses a CBOR map containing integer key 1 = `test_type`, optional key 2 = `rf_channel`, and key 3 = `payload`.
+3. For `DIAG_FRAME` (`test_type = 0x01`), the node rejects requests with `rf_channel` outside 1–13.
+4. For `DIAG_FRAME`, the node rejects requests whose payload is empty or exceeds 250 bytes.
+5. The node rejects unsupported or malformed test commands without staging them for execution.
 
 ---
 
-### ND-1101  Diagnostic ESP-NOW broadcast
+### ND-1101  Test-command acknowledgement and staging
 
 **Priority:** Must  
-**Source:** ble-pairing-protocol.md §6a.3, protocol.md §6.6
+**Source:** ble-pairing-protocol.md §6a
 
 **Description:**  
-Upon receiving a valid `DIAG_RELAY_REQUEST`, the node MUST temporarily tune the ESP-NOW radio to the specified `rf_channel` and broadcast the `payload` as a raw ESP-NOW frame using the broadcast MAC address (`FF:FF:FF:FF:FF:FF`). The node MUST NOT decrypt or interpret the payload.
+Upon receiving a valid `RUN_TEST_COMMAND`, the node MUST stage exactly one pending pre-provisioning test command in RTC-retained state, replacing any previously staged command that has not yet been executed. Before rebooting, the node MUST send `RUN_TEST_ACK` (BLE envelope type `0x82`) to confirm whether the command was accepted for execution. For the initial `DIAG_FRAME` test type, the node stores the raw ESP-NOW frame and RF channel verbatim and MUST NOT decrypt or interpret the payload.
 
 **Acceptance criteria:**
 
-1. The node tunes to the specified `rf_channel` before transmitting.
-2. The payload is transmitted verbatim as a broadcast ESP-NOW frame.
-3. The node does not attempt to decrypt, parse, or validate the payload contents.
+1. A valid `RUN_TEST_COMMAND` is staged in RTC-retained state before the node reboots.
+2. The node sends `RUN_TEST_ACK(status=0x00)` only after the command has been staged successfully.
+3. Invalid or unsupported requests are rejected with a non-success `RUN_TEST_ACK` status and are not staged.
+4. For `DIAG_FRAME`, the node stores the RF channel and payload verbatim and does not decrypt the payload.
 
 ---
 
-### ND-1102  Diagnostic reply reception
+### ND-1102  Pre-provisioning test-mode execution
 
 **Priority:** Must  
-**Source:** ble-pairing-protocol.md §6a.3, protocol.md §5.9
+**Source:** ble-pairing-protocol.md §6a.3, protocol.md §5.8, protocol.md §5.9
 
 **Description:**  
-After broadcasting the diagnostic payload, the node MUST listen for an inbound ESP-NOW frame whose `msg_type` byte (header offset 2) is `0x85` (`DIAG_REPLY`). The node identifies reply frames by inspecting the plaintext `msg_type` byte in the frame header — no decryption is required.
+When the node boots with a staged pre-provisioning test command, it MUST enter pre-provisioning test mode instead of BLE pairing mode or the normal wake-cycle path. For the initial `DIAG_FRAME` test type, the node MUST tune ESP-NOW to the staged `rf_channel`, transmit the staged diagnostic request as a raw broadcast frame to `FF:FF:FF:FF:FF:FF`, and then listen for an inbound ESP-NOW frame whose plaintext `msg_type` byte (header offset 2) is `0x85` (`DIAG_REPLY`). The node MUST NOT keep BLE active during this execution phase.
 
 **Acceptance criteria:**
 
-1. The node accepts inbound ESP-NOW frames with `msg_type` = `0x85` as diagnostic replies.
-2. The node ignores inbound frames with any other `msg_type` during the listen window.
-3. The node does not decrypt or validate the reply payload.
+1. A staged command causes the node to boot into pre-provisioning test mode rather than BLE pairing mode.
+2. For `DIAG_FRAME`, the node transmits the staged payload as a broadcast ESP-NOW frame on the staged RF channel.
+3. The node accepts inbound ESP-NOW frames with `msg_type = 0x85` as diagnostic replies and ignores other message types during the listen window.
+4. BLE is not active during pre-provisioning test execution.
 
 ---
 
-### ND-1103  Diagnostic retry behavior
+### ND-1103  Diagnostic retry behavior in test mode
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §6a.5, protocol.md §6.6
 
 **Description:**  
-The node MUST retry the ESP-NOW broadcast up to **3 times** with a **200 ms** backoff between attempts, listening for up to **2 seconds** per attempt for a `DIAG_REPLY`. This matches the retry behavior of the WAKE cycle.
+For the `DIAG_FRAME` test type, the node MUST retry the ESP-NOW diagnostic transmission up to **3 times** with a **200 ms** backoff between attempts, listening for up to **2 seconds** per attempt for a `DIAG_REPLY`. A reply received during any attempt terminates the retry loop.
 
 **Acceptance criteria:**
 
@@ -1512,50 +1516,69 @@ The node MUST retry the ESP-NOW broadcast up to **3 times** with a **200 ms** ba
 
 ---
 
-### ND-1104  Diagnostic timeout handling
+### ND-1104  Latest-result retention and explicit readback
 
 **Priority:** Must  
-**Source:** ble-pairing-protocol.md §6a.6
+**Source:** ble-pairing-protocol.md §6a
 
 **Description:**  
-If no `DIAG_REPLY` is received after all retry attempts, the node MUST send `DIAG_RELAY_RESPONSE(status=0x01, payload_len=0)` to the pairing tool via BLE indication.
+After pre-provisioning test execution completes, the node MUST store exactly one latest test result in RTC-retained state and make it available after reboot via an explicit `READ_TEST_RESULT` request (BLE envelope type `0x03`). The node MUST return the retained result in a `TEST_RESULT` response (BLE envelope type `0x83`) while back in BLE pairing mode. The retained result MUST remain available for repeated reads until the next successful `RUN_TEST_COMMAND` overwrites it.
 
 **Acceptance criteria:**
 
-1. After 3 failed retry attempts, the node sends `DIAG_RELAY_RESPONSE` with status `0x01` (timeout).
-2. The `payload_len` is 0 and no payload is included in the timeout response.
+1. The node stores only the most recent pre-provisioning test result.
+2. `READ_TEST_RESULT` returns the retained latest result after the node has rebooted back into BLE pairing mode.
+3. Repeated `READ_TEST_RESULT` requests return the same retained result until a later test run overwrites it.
+4. If no prior test result is available, the node returns a non-success `TEST_RESULT` status indicating that no result is present.
 
 ---
 
-### ND-1105  Diagnostic BLE response forwarding
+### ND-1105  Diagnostic result contents
 
 **Priority:** Must  
-**Source:** ble-pairing-protocol.md §6a.3
+**Source:** ble-pairing-protocol.md §6a, protocol.md §5.9
 
 **Description:**  
-When a `DIAG_REPLY` frame is received, the node MUST forward the raw frame to the pairing tool as `DIAG_RELAY_RESPONSE(status=0x00, payload=<raw frame>)` via a BLE indication on the Node Command characteristic.
+For the initial `DIAG_FRAME` test type, the retained and reported test result MUST contain: the execution status, the `test_type`, the raw `DIAG_REPLY` frame when one was received, timing metadata for the run, and the node-observed RSSI of the received `DIAG_REPLY` when that metadata is available from the platform receive path. Timing metadata MUST include at least the number of attempts used and the total elapsed execution time in milliseconds. On timeout, no raw reply frame is included.
 
 **Acceptance criteria:**
 
-1. The raw `DIAG_REPLY` ESP-NOW frame is forwarded verbatim in the `DIAG_RELAY_RESPONSE` payload.
-2. The BLE indication uses envelope type `0x82`.
-3. The response status is `0x00` (success).
+1. On success, the retained result includes the raw `DIAG_REPLY` frame verbatim.
+2. When the platform provides receive metadata for the successful `DIAG_REPLY`, the retained result includes the node-observed reply RSSI in dBm; otherwise the result remains successful with the RSSI field omitted.
+3. The retained result includes timing metadata containing at least `attempt_count` and `elapsed_ms`.
+4. On timeout, the retained result records a timeout status and omits the raw reply frame.
 
 ---
 
-### ND-1106  Diagnostic radio state restoration
+### ND-1106  Reboot back to BLE pairing mode after test execution
 
 **Priority:** Must  
-**Source:** ble-pairing-protocol.md §6a.3
+**Source:** ble-pairing-protocol.md §6a
 
 **Description:**  
-After a diagnostic relay completes (whether by receiving a reply or exhausting retries), the node MUST restore the ESP-NOW radio to its previous state. The diagnostic MUST NOT leave the radio on a different channel or in an unexpected state.
+After pre-provisioning test execution completes, the node MUST clear the staged pending command, reboot, and return to BLE pairing mode rather than proceeding to PEER_REQUEST or the normal wake cycle. Once back in BLE pairing mode, the node MUST be able to accept another `RUN_TEST_COMMAND`, a `READ_TEST_RESULT` request, or `NODE_PROVISION`.
 
 **Acceptance criteria:**
 
-1. The radio channel is restored to its pre-diagnostic value after the relay completes.
-2. BLE connectivity is maintained throughout the diagnostic relay operation.
-3. The node remains in BLE pairing mode after the diagnostic completes and can accept further `DIAG_RELAY_REQUEST` or `NODE_PROVISION` commands.
+1. The node reboots after test execution completes.
+2. On the next boot after test execution, the node returns to BLE pairing mode.
+3. The node can accept another `RUN_TEST_COMMAND`, `READ_TEST_RESULT`, or `NODE_PROVISION` after it has returned to BLE pairing mode.
+
+---
+
+### ND-1107  Test-command format extensibility
+
+**Priority:** Must  
+**Source:** USER-REQUEST (future BPF diagnostic mode)
+
+**Description:**  
+The BLE pre-provisioning test framework MUST support adding new test types without redefining the outer BLE verbs or the retained-result mechanism. The generic `RUN_TEST_COMMAND` and `TEST_RESULT` formats MUST therefore identify the requested test via an explicit `test_type` field and treat the test-specific payload as opaque to the outer BLE command layer.
+
+**Acceptance criteria:**
+
+1. The outer BLE verbs for run/ack/read/result do not need to change when a new test type is added.
+2. The generic command and result formats include an explicit `test_type`.
+3. Unsupported future test types are rejected explicitly rather than misinterpreted as the initial diagnostic type.
 
 ---
 
@@ -1645,10 +1668,11 @@ After a diagnostic relay completes (whether by receiving a reply or exhausting r
 | ND-1014 | Error diagnostic observability | Must |
 | ND-1015 | Boot version visibility | Must |
 | ND-1016 | ESP-NOW channel logging at boot | Must |
-| ND-1100 | BLE diagnostic relay command | Must |
-| ND-1101 | Diagnostic ESP-NOW broadcast | Must |
-| ND-1102 | Diagnostic reply reception | Must |
-| ND-1103 | Diagnostic retry behavior | Must |
-| ND-1104 | Diagnostic timeout handling | Must |
-| ND-1105 | Diagnostic BLE response forwarding | Must |
-| ND-1106 | Diagnostic radio state restoration | Must |
+| ND-1100 | Generic BLE pre-provisioning test command | Must |
+| ND-1101 | Test-command acknowledgement and staging | Must |
+| ND-1102 | Pre-provisioning test-mode execution | Must |
+| ND-1103 | Diagnostic retry behavior in test mode | Must |
+| ND-1104 | Latest-result retention and explicit readback | Must |
+| ND-1105 | Diagnostic result contents | Must |
+| ND-1106 | Reboot back to BLE pairing mode after test execution | Must |
+| ND-1107 | Test-command format extensibility | Must |

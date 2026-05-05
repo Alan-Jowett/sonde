@@ -1998,79 +1998,81 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-## 12  Diagnostic relay tests
+## 12  Pre-provisioning test mode tests
 
-### T-N1100  DIAG_RELAY_REQUEST accepted in pairing mode
+### T-N1100  RUN_TEST_COMMAND accepted and acknowledged in pairing mode
 
 **Validates:** ND-1100
 
 **Procedure:**
 1. Boot node into BLE pairing mode (no PSK stored).
-2. Connect via BLE and send a `DIAG_RELAY_REQUEST` (envelope type 0x02) with `rf_channel=6` and a valid 50-byte payload.
-3. Assert: the node processes the request (does not reject or ignore it).
-4. Assert: a `DIAG_RELAY_RESPONSE` (envelope type 0x82) is received via BLE indication.
+2. Connect via BLE and send a `RUN_TEST_COMMAND` (envelope type 0x02) containing `test_type=DIAG_FRAME`, `rf_channel=6`, and a valid 50-byte payload.
+3. Assert: the node accepts the command and stages it for execution.
+4. Assert: a `RUN_TEST_ACK(status=0x00)` (envelope type 0x82) is received via BLE indication.
 
 ---
 
-### T-N1101  DIAG_RELAY_REQUEST invalid channel rejected
+### T-N1101  Invalid DIAG_FRAME request rejected
 
 **Validates:** ND-1100
 
 **Procedure:**
 1. Boot node into BLE pairing mode.
-2. Send `DIAG_RELAY_REQUEST` with `rf_channel=14` (out of range).
-3. Assert: node responds with `DIAG_RELAY_RESPONSE(status=0x02)`.
-4. Assert: no ESP-NOW frame is broadcast.
+2. Send `RUN_TEST_COMMAND` with `test_type=DIAG_FRAME` and `rf_channel=14` (out of range).
+3. Assert: node responds with `RUN_TEST_ACK(status=0x01)`.
+4. Assert: no pending test command is staged.
 
 ---
 
-### T-N1102  DIAG_RELAY_REQUEST empty payload rejected
+### T-N1102  Accepted test command triggers reboot into test mode
 
-**Validates:** ND-1100
+**Validates:** ND-1101, ND-1102
 
 **Procedure:**
 1. Boot node into BLE pairing mode.
-2. Send `DIAG_RELAY_REQUEST` with `rf_channel=6` and `payload_len=0`.
-3. Assert: node responds with `DIAG_RELAY_RESPONSE(status=0x02)`.
+2. Send a valid `RUN_TEST_COMMAND` and receive `RUN_TEST_ACK(status=0x00)`.
+3. Disconnect BLE or allow the node to disconnect after the acknowledgement.
+4. Assert: the next boot enters pre-provisioning test mode instead of BLE pairing mode.
 
 ---
 
-### T-N1103  Diagnostic ESP-NOW broadcast
-
-**Validates:** ND-1101
-
-**Procedure:**
-1. Boot node into BLE pairing mode.
-2. Set up an ESP-NOW receiver on channel 6.
-3. Send `DIAG_RELAY_REQUEST` with `rf_channel=6` and a known payload.
-4. Assert: the ESP-NOW receiver captures a broadcast frame matching the payload exactly.
-5. Assert: the destination MAC is `FF:FF:FF:FF:FF:FF`.
-
----
-
-### T-N1104  Diagnostic reply reception and forwarding
-
-**Validates:** ND-1102, ND-1105
-
-**Procedure:**
-1. Boot node into BLE pairing mode.
-2. Send `DIAG_RELAY_REQUEST` with a valid payload.
-3. From a test ESP-NOW transmitter, send a frame with `msg_type=0x85` at header offset 2 to the node.
-4. Assert: node forwards the frame in a `DIAG_RELAY_RESPONSE(status=0x00, payload=<frame>)` BLE indication.
-5. Assert: the forwarded payload is byte-identical to the ESP-NOW frame sent.
-
----
-
-### T-N1105  Non-diagnostic ESP-NOW frames ignored during listen
+### T-N1103  Diagnostic ESP-NOW broadcast in test mode
 
 **Validates:** ND-1102
 
 **Procedure:**
-1. Boot node into BLE pairing mode.
-2. Send `DIAG_RELAY_REQUEST`.
-3. During the listen window, send ESP-NOW frames with `msg_type=0x81` (COMMAND) and `msg_type=0x04` (APP_DATA).
-4. Assert: node does not forward these frames to the pairing tool.
-5. After the listen window expires (no `msg_type=0x85` received), assert `DIAG_RELAY_RESPONSE(status=0x01)`.
+1. Boot node into BLE pairing mode and stage a valid `RUN_TEST_COMMAND` for `DIAG_FRAME`.
+2. Allow the node to reboot into test mode and set up an ESP-NOW receiver on channel 6.
+3. Assert: the ESP-NOW receiver captures a broadcast frame matching the staged payload exactly.
+4. Assert: the destination MAC is `FF:FF:FF:FF:FF:FF`.
+
+---
+
+### T-N1104  Diagnostic reply stored with RSSI and timing metadata
+
+**Validates:** ND-1102, ND-1104, ND-1105
+
+**Procedure:**
+1. Boot node into BLE pairing mode and stage a valid `RUN_TEST_COMMAND`.
+2. During the rebooted test-mode listen window, send a frame with `msg_type=0x85` at header offset 2 to the node.
+3. Allow the node to reboot back into BLE pairing mode.
+4. Send `READ_TEST_RESULT`.
+5. Assert: `TEST_RESULT(status=0x00)` includes the raw reply frame byte-identically.
+6. Assert: the returned result includes a reply RSSI value and non-zero timing metadata.
+
+---
+
+### T-N1105  Timeout result stored after all retries
+
+**Validates:** ND-1103, ND-1104, ND-1105
+
+**Procedure:**
+1. Boot node into BLE pairing mode and stage a valid `RUN_TEST_COMMAND` with no gateway or modem available.
+2. Allow the node to execute the test mode retry loop without receiving any `DIAG_REPLY`.
+3. Reconnect after the node reboots back into BLE pairing mode.
+4. Send `READ_TEST_RESULT`.
+5. Assert: `TEST_RESULT(status=0x01)` is returned.
+6. Assert: no raw reply frame is present.
 
 ---
 
@@ -2079,63 +2081,63 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-1103
 
 **Procedure:**
-1. Boot node into BLE pairing mode.
+1. Boot node into BLE pairing mode and stage a valid `RUN_TEST_COMMAND`.
 2. Set up an ESP-NOW receiver that counts broadcasts but does NOT send a reply.
-3. Send `DIAG_RELAY_REQUEST`.
+3. Allow the node to reboot into test mode and execute the command.
 4. Assert: the receiver counts exactly 4 broadcasts (1 initial + 3 retries).
-5. Assert: the time between consecutive broadcasts is approximately 2.2 seconds (2s listen + 200ms backoff).
-6. Assert: node sends `DIAG_RELAY_RESPONSE(status=0x01)` after all retries.
+5. Assert: the time between consecutive broadcasts is approximately 2.2 seconds (2 s listen + 200 ms backoff).
+6. After the node reboots back into BLE pairing mode, assert the retained result reports a timeout.
 
 ---
 
-### T-N1107  Diagnostic timeout after all retries
+### T-N1107  READ_TEST_RESULT returns latest retained result after reboot
 
 **Validates:** ND-1104
 
 **Procedure:**
-1. Boot node into BLE pairing mode.
-2. Send `DIAG_RELAY_REQUEST` with no gateway or modem available (no ESP-NOW reply will arrive).
-3. Assert: node sends `DIAG_RELAY_RESPONSE(status=0x01, payload_len=0)` within approximately 9 seconds.
+1. Boot node into BLE pairing mode and stage a successful `RUN_TEST_COMMAND`.
+2. Let the node execute the test and reboot back into BLE pairing mode.
+3. Send `READ_TEST_RESULT`.
+4. Assert: the node returns `TEST_RESULT` over BLE.
+5. Assert: the returned `test_type` matches the staged command.
 
 ---
 
-### T-N1108  Radio state restored after diagnostic
+### T-N1108  Retained result remains readable until overwritten
 
-**Validates:** ND-1106
+**Validates:** ND-1104
 
 **Procedure:**
-1. Boot node into BLE pairing mode. Record the initial ESP-NOW channel (or lack thereof).
-2. Send `DIAG_RELAY_REQUEST` with `rf_channel=11`.
-3. Wait for `DIAG_RELAY_RESPONSE`.
-4. Assert: the ESP-NOW radio is restored to its pre-diagnostic state.
-5. Assert: BLE remains connected and functional (send a second `DIAG_RELAY_REQUEST` successfully).
+1. Complete one successful pre-provisioning test run.
+2. Send `READ_TEST_RESULT` twice after the node has rebooted back into BLE pairing mode.
+3. Assert: both reads return identical `TEST_RESULT` payloads.
+4. Start a second test run with a different expected result.
+5. Assert: a later `READ_TEST_RESULT` returns only the new latest result.
 
 ---
 
-### T-N1109  Diagnostic followed by provisioning
+### T-N1109  Test execution followed by provisioning
 
-**Validates:** ND-1106, ND-1100
+**Validates:** ND-1100, ND-1106
 
 **Procedure:**
 1. Boot node into BLE pairing mode.
-2. Run a complete diagnostic relay (send `DIAG_RELAY_REQUEST`, receive response).
+2. Run a complete pre-provisioning test cycle (stage command, execute, reboot back, read result).
 3. Send `NODE_PROVISION` with valid provisioning data.
 4. Assert: provisioning succeeds (`NODE_ACK` status=0x00).
 5. Assert: NVS contains the expected PSK and channel.
 
 ---
 
-### T-N1110  Multiple diagnostics in sequence
+### T-N1110  Unsupported future test type rejected explicitly
 
-**Validates:** ND-1100, ND-1106
+**Validates:** ND-1100, ND-1107
 
 **Procedure:**
 1. Boot node into BLE pairing mode.
-2. Send `DIAG_RELAY_REQUEST` with `rf_channel=1`. Wait for response.
-3. Send `DIAG_RELAY_REQUEST` with `rf_channel=6`. Wait for response.
-4. Send `DIAG_RELAY_REQUEST` with `rf_channel=11`. Wait for response.
-5. Assert: all three diagnostics complete successfully.
-6. Assert: BLE remains connected and functional after all three.
+2. Send `RUN_TEST_COMMAND` with an unsupported `test_type`.
+3. Assert: node responds with `RUN_TEST_ACK(status=0x02)`.
+4. Assert: no command is staged and no reboot into test mode occurs.
 
 ---
 
@@ -2225,13 +2227,14 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-1014 | T-N1021 |
 | ND-1015 | T-N1022 |
 | ND-1016 | T-N1023 |
-| ND-1100 | T-N1100, T-N1101, T-N1102, T-N1109, T-N1110 |
-| ND-1101 | T-N1103 |
-| ND-1102 | T-N1104, T-N1105 |
-| ND-1103 | T-N1106 |
-| ND-1104 | T-N1107 |
-| ND-1105 | T-N1104 |
-| ND-1106 | T-N1108, T-N1109, T-N1110 |
+| ND-1100 | T-N1100, T-N1101, T-N1109, T-N1110 |
+| ND-1101 | T-N1100, T-N1102 |
+| ND-1102 | T-N1102, T-N1103, T-N1104 |
+| ND-1103 | T-N1105, T-N1106 |
+| ND-1104 | T-N1104, T-N1105, T-N1107, T-N1108 |
+| ND-1105 | T-N1104, T-N1105, T-N1106 |
+| ND-1106 | T-N1107, T-N1109 |
+| ND-1107 | T-N1110 |
 
 ---
 

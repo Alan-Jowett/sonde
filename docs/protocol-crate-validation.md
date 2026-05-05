@@ -1049,40 +1049,40 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ---
 
-### T-P114  DIAG_RELAY_REQUEST round-trip
+### T-P114  RUN_TEST_COMMAND round-trip
 
 **Validates:** protocol-crate-design.md §12.2
 
 **Procedure:**
-1. Call `encode_diag_relay_request(rf_channel=6, payload=&[0x42; 50])`.
-2. Wrap in BLE envelope with type `BLE_DIAG_RELAY_REQUEST`.
+1. Call `encode_run_test_command(test_type=0x01, rf_channel=Some(6), payload=&[0x42; 50])`.
+2. Wrap in BLE envelope with type `BLE_RUN_TEST_COMMAND`.
 3. Parse the BLE envelope.
-4. Call `decode_diag_relay_request(body)`.
-5. Assert: `rf_channel` = 6, `payload` = `[0x42; 50]`.
+4. Call `decode_run_test_command(body)`.
+5. Assert: `test_type` = `0x01`, `rf_channel` = `Some(6)`, `payload` = `[0x42; 50]`.
 
 ---
 
-### T-P115  DIAG_RELAY_REQUEST invalid channel rejected
+### T-P115  RUN_TEST_COMMAND invalid channel rejected
 
 **Validates:** protocol-crate-design.md §12.2, ND-1100
 
 **Procedure:**
-1. Call `encode_diag_relay_request(rf_channel=14, payload=&[0x42; 50])`.
+1. Call `encode_run_test_command(test_type=0x01, rf_channel=Some(14), payload=&[0x42; 50])`.
 2. Assert: returns `Err(EncodeError)` — channel 14 is out of range (valid: 1–13).
 
 ---
 
-### T-P116  DIAG_RELAY_RESPONSE round-trip (success and timeout)
+### T-P116  RUN_TEST_ACK and TEST_RESULT round-trip
 
 **Validates:** protocol-crate-design.md §12.2
 
 **Procedure:**
-1. Encode `DIAG_RELAY_RESPONSE` with `status=0x00` and a non-empty payload.
-2. Decode and assert: `status` = 0x00, payload matches.
-3. Encode `DIAG_RELAY_RESPONSE` with `status=0x01` and empty payload.
-4. Decode and assert: `status` = 0x01, `payload_len` = 0.
-5. Encode `DIAG_RELAY_RESPONSE` with `status=0x02` and empty payload.
-6. Decode and assert: `status` = 0x02, `payload_len` = 0.
+1. Encode `RUN_TEST_ACK(status=0x00)` and decode it back.
+2. Assert: decoded acknowledgement status = `0x00`.
+3. Encode a successful `TEST_RESULT` containing `test_type=0x01`, a non-empty `reply_frame`, `reply_rssi_dbm=-64`, `attempt_count=2`, and `elapsed_ms=4100`.
+4. Decode and assert: all fields round-trip exactly.
+5. Encode a timeout `TEST_RESULT` with no `reply_frame`.
+6. Decode and assert: `status` = `0x01` and the optional reply fields are absent.
 
 ---
 

@@ -33,15 +33,13 @@ use esp32_nimble::{
 use log::{info, warn};
 
 use crate::ble_pairing::{
-    do_diag_relay, encode_diag_relay_response, encode_node_ack, handle_diag_relay_request,
-    handle_node_provision, is_mtu_acceptable, parse_ble_envelope, parse_node_provision,
-    BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
+    encode_node_ack, encode_run_test_ack, encode_test_result_response, handle_node_provision,
+    handle_read_test_result, handle_run_test_command, is_mtu_acceptable, parse_ble_envelope,
+    parse_node_provision, BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
 };
 use crate::error::NodeResult;
-use crate::esp_transport::EspNowTransport;
 use crate::map_storage::MapStorage;
 use crate::traits::PlatformStorage;
-use sonde_protocol::BLE_DIAG_RELAY_REQUEST;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -70,18 +68,12 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// NODE_PROVISION triggers a factory reset before writing new credentials
 /// (ND-0917).
 ///
-/// `transport`: optional ESP-NOW transport for DIAG_RELAY_REQUEST support
-/// (ND-1100). When `Some`, diagnostic relay requests are forwarded over
-/// the radio with channel switching (ND-1101, ND-1106). When `None`,
-/// relay requests return `DIAG_RELAY_STATUS_CHANNEL_ERROR`.
-///
 /// Returns `Ok(())` when the BLE connection is terminated (the caller should
 /// reboot per ND-0907), or `Err` if BLE initialisation fails.
 pub fn run_ble_pairing_mode<S: PlatformStorage>(
     storage: &mut S,
     map_storage: &mut MapStorage,
     button_held: bool,
-    mut transport: Option<&mut EspNowTransport>,
 ) -> NodeResult<()> {
     let paired_on_entry = storage.read_key().is_some();
 
@@ -105,7 +97,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         .set_auth(AuthReq::all())
         .set_io_cap(SecurityIOCap::NoInputNoOutput);
 
-    let ble_server = ble_device.get_server();
+    let mut ble_server = ble_device.get_server();
 
     // --- Connection event ---
     let disc_connect = Arc::clone(&disconnected);
@@ -269,7 +261,8 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         // esp32-nimble doesn't dispatch BLE_GAP_EVENT_ENC_CHANGE on this
         // build), check the connection's encryption status directly.
         let is_auth = authenticated.lock().map(|a| *a).unwrap_or(false);
-        let is_auth = is_auth || check_encryption_fallback(&conn_handle, &authenticated);
+        let is_auth =
+            is_auth || check_encryption_fallback(&conn_handle, &authenticated, &mut ble_server);
         let write_data = if is_auth {
             if let Ok(mut p) = pending_write.lock() {
                 p.take()
@@ -282,6 +275,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
 
         if let Some(data) = write_data {
             info!("BLE: GATT write received ({} bytes)", data.len());
+            let mut disconnect_after_ack = false;
 
             // Parse BLE envelope. Silently discard malformed/unknown
             // messages -- the phone will time out waiting for NODE_ACK.
@@ -305,70 +299,27 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                         }
                     }
                 }
-                Some((msg_type, body)) if msg_type == BLE_DIAG_RELAY_REQUEST => {
-                    match (handle_diag_relay_request(body), transport.as_deref_mut()) {
-                        (Ok(params), Some(t)) => {
-                            info!(
-                                "BLE: DIAG_RELAY_REQUEST rf_channel={} (ND-1100)",
-                                params.rf_channel
-                            );
-                            // Save current channel, switch, relay, restore (ND-1101, ND-1106).
-                            let mut orig_primary: u8 = 0;
-                            let mut orig_secondary: esp_idf_sys::wifi_second_chan_t = 0;
-                            let got_channel = unsafe {
-                                esp_idf_sys::esp_wifi_get_channel(
-                                    &mut orig_primary,
-                                    &mut orig_secondary,
-                                ) == esp_idf_sys::ESP_OK
-                            };
-                            if !got_channel {
-                                // Fall back to stored channel so we can still restore (ND-1106).
-                                orig_primary = storage.read_channel().unwrap_or(1);
-                                orig_secondary =
-                                    esp_idf_sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
-                                warn!(
-                                    "BLE: esp_wifi_get_channel failed, will restore to channel {}",
-                                    orig_primary
-                                );
-                            }
-                            let set_ok = unsafe {
-                                let rc = esp_idf_sys::esp_wifi_set_channel(
-                                    params.rf_channel,
-                                    esp_idf_sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE,
-                                );
-                                if rc != esp_idf_sys::ESP_OK {
-                                    warn!("BLE: failed to set Wi-Fi channel {} for DIAG relay: err={}", params.rf_channel, rc);
-                                }
-                                rc == esp_idf_sys::ESP_OK
-                            };
-                            if !set_ok {
-                                Some(encode_diag_relay_response(
-                                    sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR,
-                                    &[],
-                                ))
-                            } else {
-                                let response = do_diag_relay(t, &params);
-                                // Always restore channel (ND-1106).
-                                unsafe {
-                                    let rc = esp_idf_sys::esp_wifi_set_channel(
-                                        orig_primary,
-                                        orig_secondary,
-                                    );
-                                    if rc != esp_idf_sys::ESP_OK {
-                                        warn!("BLE: failed to restore Wi-Fi channel after DIAG relay: err={}", rc);
-                                    }
-                                }
-                                Some(response)
-                            }
+                Some((msg_type, body)) if msg_type == sonde_protocol::BLE_RUN_TEST_COMMAND => {
+                    if storage.read_key().is_some() {
+                        Some(encode_run_test_ack(sonde_protocol::RUN_TEST_ACK_INVALID))
+                    } else {
+                        let (status, staged) = handle_run_test_command(body, storage);
+                        if staged.is_some() && status == sonde_protocol::RUN_TEST_ACK_OK {
+                            disconnect_after_ack = true;
+                            info!("BLE: RUN_TEST_COMMAND accepted and staged");
+                        } else {
+                            info!("BLE: RUN_TEST_COMMAND rejected status=0x{:02x}", status);
                         }
-                        (Ok(_), None) => {
-                            warn!("BLE: DIAG_RELAY_REQUEST but no transport available");
-                            Some(encode_diag_relay_response(
-                                sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR,
-                                &[],
-                            ))
+                        Some(encode_run_test_ack(status))
+                    }
+                }
+                Some((msg_type, body)) if msg_type == sonde_protocol::BLE_READ_TEST_RESULT => {
+                    match handle_read_test_result(body, storage) {
+                        Ok(result) => Some(encode_test_result_response(&result)),
+                        Err(err) => {
+                            warn!("BLE: READ_TEST_RESULT parse error: {}", err);
+                            None
                         }
-                        (Err(error_response), _) => Some(error_response),
                     }
                 }
                 Some((msg_type, _)) => {
@@ -384,16 +335,18 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                 }
             };
 
-            // Send NODE_ACK indication if we have a valid response.
+            // Send indication if we have a valid response.
             if let Some(ack) = ack_data {
                 let current_handle = conn_handle.lock().ok().and_then(|h| *h);
                 if let Some(handle) = current_handle {
                     let chr = node_cmd_char.lock();
                     if let Err(e) = chr.notify_with(&ack, handle) {
-                        warn!("BLE: NODE_ACK indication failed: {:?}", e);
+                        warn!("BLE: indication failed: {:?}", e);
+                    } else if disconnect_after_ack {
+                        let _ = ble_server.disconnect(handle);
                     }
                 } else {
-                    warn!("BLE: no active connection for NODE_ACK indication");
+                    warn!("BLE: no active connection for indication");
                 }
             }
         }
@@ -424,6 +377,7 @@ mod tests {}
 fn check_encryption_fallback(
     conn_handle: &Arc<Mutex<Option<u16>>>,
     authenticated: &Arc<Mutex<bool>>,
+    ble_server: &mut esp32_nimble::BLEServer,
 ) -> bool {
     let handle = match conn_handle.lock().ok().and_then(|h| *h) {
         Some(h) => h,
@@ -460,8 +414,7 @@ fn check_encryption_fallback(
             "BLE: encrypted but MTU too low ({} < {}); disconnecting (ND-0904)",
             mtu, BLE_MIN_ATT_MTU
         );
-        let server = BLEDevice::take().get_server();
-        let _ = server.disconnect(handle);
+        let _ = ble_server.disconnect(handle);
         return false;
     }
     info!("BLE: encryption detected via poll, MTU={}", mtu);

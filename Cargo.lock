@@ -6697,6 +6697,7 @@ dependencies = [
  "jni 0.22.4",
  "serde",
  "sonde-pair",
+ "sonde-protocol",
  "tauri",
  "tauri-build",
  "tokio",

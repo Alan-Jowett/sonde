@@ -14,6 +14,38 @@ fn main() {
     std::process::exit(1);
 }
 
+#[cfg(any(feature = "esp", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootMode {
+    PreProvisioningTest,
+    BlePairing,
+    WakeCycle,
+}
+
+#[cfg(any(feature = "esp", test))]
+fn select_boot_mode(has_staged_test: bool, has_psk: bool, button_held: bool) -> BootMode {
+    if has_staged_test && !has_psk {
+        BootMode::PreProvisioningTest
+    } else if !has_psk || button_held {
+        BootMode::BlePairing
+    } else {
+        BootMode::WakeCycle
+    }
+}
+
+#[cfg(feature = "esp")]
+fn boot_reason_label(reset_reason: esp_idf_svc::sys::esp_reset_reason_t) -> &'static str {
+    if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP {
+        "deep_sleep_wake"
+    } else if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_SW {
+        "software_reset"
+    } else if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_POWERON {
+        "power_on"
+    } else {
+        "other_reset"
+    }
+}
+
 #[cfg(feature = "esp")]
 fn main() {
     use esp_idf_hal::gpio::{PinDriver, Pull};
@@ -23,6 +55,7 @@ fn main() {
     use esp_idf_svc::nvs::EspDefaultNvsPartition;
     use log::{info, warn};
 
+    use sonde_node::ble_pairing::execute_staged_test_command;
     use sonde_node::board_layout::stage_runtime_board_layout;
     use sonde_node::crypto::{EspRng, SoftwareSha256};
     use sonde_node::esp_ble_pairing::run_ble_pairing_mode;
@@ -53,11 +86,7 @@ fn main() {
 
     // Log boot reason (ND-1000).
     let reset_reason = unsafe { esp_idf_svc::sys::esp_reset_reason() };
-    let boot_reason = if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP {
-        "deep_sleep_wake"
-    } else {
-        "power_on"
-    };
+    let boot_reason = boot_reason_label(reset_reason);
     info!("boot_reason={} (ND-1000)", boot_reason);
 
     // Register the main task with the ESP-IDF task watchdog (ND-0919).
@@ -105,12 +134,13 @@ fn main() {
     // Boot priority (ND-0900)
     //
     // Check in order:
-    //   1. No PSK OR pairing button held ≥ 500 ms → BLE pairing mode
-    //   2. PSK stored, reg_complete NOT set → PEER_REQUEST mode (WAKE cycle variant)
-    //   3. PSK stored, reg_complete set → normal WAKE cycle
+    //   1. Staged pre-provisioning test command → test mode
+    //   2. No PSK OR pairing button held ≥ 500 ms → BLE pairing mode
+    //   3. PSK stored, reg_complete NOT set → PEER_REQUEST mode (WAKE cycle variant)
+    //   4. PSK stored, reg_complete set → normal WAKE cycle
     // ---------------------------------------------------------------------------
 
-    // (1) No PSK, or pairing button held ≥ 500 ms → BLE pairing mode.
+    // (2) No PSK, or pairing button held ≥ 500 ms → BLE pairing mode.
     //
     // Pairing button is GPIO 9 on the ESP32-C3 DevKitM-1 (active LOW).
     // We sample it for 500 ms immediately after boot.  If the pin is
@@ -144,46 +174,101 @@ fn main() {
         held
     };
 
-    if storage.read_key().is_none() || button_held {
-        info!(
-            "entering BLE pairing mode (no PSK={}, button_held={})",
-            storage.read_key().is_none(),
-            button_held
-        );
+    let has_psk = storage.read_key().is_some();
+    let mut has_staged_test = storage.read_staged_test_command().is_some();
+    if has_staged_test && has_psk {
+        warn!("ignoring stale staged pre-provisioning test command on paired node");
+        if let Err(err) = storage.clear_staged_test_command() {
+            warn!(
+                "failed to clear stale staged pre-provisioning test command: {}",
+                err
+            );
+        } else {
+            has_staged_test = false;
+        }
+    }
 
-        let pairing_board_layout = storage
-            .read_board_layout()
-            .unwrap_or(sonde_protocol::BoardLayout::SONDE_SENSOR_NODE_REV_A);
-        let mut pairing_hal = EspHal::new(pairing_board_layout);
-        pairing_hal.enter_active_gpio_state();
+    match select_boot_mode(has_staged_test, has_psk, button_held) {
+        BootMode::PreProvisioningTest => {
+            let staged_command = storage
+                .read_staged_test_command()
+                .expect("boot mode selected pre-provisioning test without staged command");
+            info!(
+                "entering pre-provisioning test mode (test_type={}, rf_channel={:?})",
+                staged_command.test_type, staged_command.rf_channel
+            );
 
-        // Try to initialize ESP-NOW for diagnostic relay (ND-1100).
-        // If this fails, BLE pairing still works — just without RSSI diagnostics.
-        // Use stored channel if available; the relay handler switches to the
-        // requested rf_channel before broadcasting anyway.
-        let diag_channel = storage.read_channel().unwrap_or(1);
-        let mut diag_transport =
-            EspNowTransport::new(peripherals.modem, sysloop, nvs_partition, diag_channel).ok();
+            let test_channel = staged_command
+                .rf_channel
+                .or_else(|| storage.read_channel())
+                .unwrap_or(1);
+            let clock = EspClock;
 
-        match run_ble_pairing_mode(
-            &mut storage,
-            &mut map_storage,
-            button_held,
-            diag_transport.as_mut(),
-        ) {
-            Ok(()) => {
-                info!("BLE pairing mode exited — rebooting");
-                pairing_hal.prepare_for_sleep();
-                sleep_ctrl.reboot();
+            match EspNowTransport::new(peripherals.modem, sysloop, nvs_partition, test_channel) {
+                Ok(mut transport) => {
+                    match execute_staged_test_command(&mut storage, &mut transport, &clock) {
+                        Ok(Some(result)) => {
+                            info!(
+                                "pre-provisioning test completed: status=0x{:02x} attempts={} elapsed_ms={}",
+                                result.status, result.attempt_count, result.elapsed_ms
+                            );
+                        }
+                        Ok(None) => {
+                            warn!("pre-provisioning test mode entered without a staged command");
+                        }
+                        Err(err) => {
+                            warn!("pre-provisioning test execution failed: {}", err);
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        "failed to initialize ESP-NOW for pre-provisioning test mode: {}",
+                        err
+                    );
+                    let _ = storage.write_test_result(&sonde_protocol::TestResult {
+                        status: sonde_protocol::TEST_RESULT_EXECUTION_ERROR,
+                        test_type: Some(staged_command.test_type),
+                        reply_frame: None,
+                        reply_rssi_dbm: None,
+                        attempt_count: 0,
+                        elapsed_ms: 0,
+                    });
+                    let _ = storage.clear_staged_test_command();
+                }
             }
-            Err(e) => {
-                // BLE GATT server not yet implemented — deep sleep to conserve
-                // battery until firmware is updated with BLE support.
-                warn!("BLE pairing mode failed: {} — entering deep sleep", e);
-                pairing_hal.prepare_for_sleep();
-                sleep_ctrl.enter_deep_sleep(60);
+
+            info!("pre-provisioning test mode finished — rebooting to BLE pairing mode");
+            sleep_ctrl.reboot();
+        }
+        BootMode::BlePairing => {
+            info!(
+                "entering BLE pairing mode (no PSK={}, button_held={})",
+                !has_psk, button_held
+            );
+
+            let pairing_board_layout = storage
+                .read_board_layout()
+                .unwrap_or(sonde_protocol::BoardLayout::SONDE_SENSOR_NODE_REV_A);
+            let mut pairing_hal = EspHal::new(pairing_board_layout);
+            pairing_hal.enter_active_gpio_state();
+
+            match run_ble_pairing_mode(&mut storage, &mut map_storage, button_held) {
+                Ok(()) => {
+                    info!("BLE pairing mode exited — rebooting");
+                    pairing_hal.prepare_for_sleep();
+                    sleep_ctrl.reboot();
+                }
+                Err(e) => {
+                    // BLE pairing mode failed to initialize or run. Enter deep
+                    // sleep to conserve battery until the operator retries.
+                    warn!("BLE pairing mode failed: {} — entering deep sleep", e);
+                    pairing_hal.prepare_for_sleep();
+                    sleep_ctrl.enter_deep_sleep(60);
+                }
             }
         }
+        BootMode::WakeCycle => {}
     }
 
     // (3) + (4) PSK is present. reg_complete flag determines whether we
@@ -252,5 +337,35 @@ fn main() {
             info!("unexpected unpaired state — rebooting");
             sleep_ctrl.reboot();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{select_boot_mode, BootMode};
+
+    #[test]
+    fn staged_test_takes_priority_over_ble_pairing_conditions() {
+        assert_eq!(
+            select_boot_mode(true, false, true),
+            BootMode::PreProvisioningTest
+        );
+        assert_eq!(
+            select_boot_mode(true, false, false),
+            BootMode::PreProvisioningTest
+        );
+        assert_eq!(select_boot_mode(true, true, true), BootMode::BlePairing);
+        assert_eq!(select_boot_mode(true, true, false), BootMode::WakeCycle);
+    }
+
+    #[test]
+    fn ble_pairing_selected_only_without_staged_test() {
+        assert_eq!(select_boot_mode(false, false, false), BootMode::BlePairing);
+        assert_eq!(select_boot_mode(false, true, true), BootMode::BlePairing);
+    }
+
+    #[test]
+    fn wake_cycle_selected_only_for_paired_node_without_staged_test() {
+        assert_eq!(select_boot_mode(false, true, false), BootMode::WakeCycle);
     }
 }

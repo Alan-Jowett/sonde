@@ -379,7 +379,7 @@ If a `send_recv()` call on the node times out waiting for `APP_DATA_REPLY`, the 
 
 ### 5.8  DIAG_REQUEST (Node → Gateway)
 
-Sent by a **pre-provisioning node acting as a dumb radio relay** on behalf of the pairing tool. The pairing tool constructs the complete frame (authenticated with `phone_psk`) and hands it to the node over BLE. The node broadcasts it on the specified RF channel without decrypting or interpreting the payload.
+Sent by an unpaired node during a **pre-provisioning test-mode boot** on behalf of the pairing tool. The pairing tool constructs the complete frame (authenticated with `phone_psk`) and stages it on the node over BLE before the node reboots into test mode. The node then broadcasts it on the specified RF channel without decrypting or interpreting the payload.
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
@@ -389,7 +389,7 @@ The `key_hint` in the frame header identifies a phone PSK — the gateway perfor
 
 ### 5.9  DIAG_REPLY (Gateway → Node)
 
-Sent by the gateway in response to a valid `DIAG_REQUEST`. Authenticated with the same `phone_psk` used to decrypt the request. The node forwards the raw frame back to the pairing tool over BLE without decrypting it.
+Sent by the gateway in response to a valid `DIAG_REQUEST`. Authenticated with the same `phone_psk` used to decrypt the request. The node stores the raw frame in its retained pre-provisioning test result without decrypting it; the pairing tool later reads that result over BLE and performs the decryption itself.
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
@@ -545,29 +545,31 @@ The number of exchanges per wake cycle is determined by the BPF program. The pro
 
 ### 6.6  Pairing-time RSSI diagnostic
 
-The pairing tool uses the node as a **dumb radio relay** to measure the node→gateway RF link quality **before provisioning**. The node is not yet authenticated with the gateway — all authentication uses the pairing tool's `phone_psk`.
+The pairing tool uses a rebooted **pre-provisioning test mode** to measure node→gateway RF link quality **before provisioning**. The node is not yet authenticated with the gateway — all authentication uses the pairing tool's `phone_psk`.
 
 ```
-    Pairing Tool      Node (BLE relay)      Modem         Gateway
+    Pairing Tool          Node              Modem         Gateway
          │                  │                  │              │
-         │── DIAG_RELAY ───►│                  │              │
-         │   REQUEST (BLE)  │                  │              │
+         │─ RUN_TEST_CMD ──►│                  │              │
+         │   (BLE)          │                  │              │
+         │◄─ RUN_TEST_ACK ──│                  │              │
+         │                  │                  │              │
+         │        [node reboots into test mode]              │
          │                  │── DIAG_REQUEST ─►│              │
          │                  │   (ESP-NOW       │── RECV ─────►│
          │                  │    broadcast)    │   FRAME      │
-         │                  │                  │              │  (decrypt with
-         │                  │                  │              │   phone_psk,
-         │                  │                  │              │   measure RSSI)
-         │                  │                  │◄─ SEND ──────│
-         │                  │◄─ DIAG_REPLY ────│   FRAME      │
-         │                  │   (ESP-NOW)      │              │
-         │◄─ DIAG_RELAY ───│                  │              │
-         │   RESPONSE (BLE) │                  │              │
+         │                  │                  │              │
+         │                  │◄─ DIAG_REPLY ────│◄─ SEND ──────│
+         │                  │   (ESP-NOW)      │   FRAME      │
+         │        [node stores latest result, reboots]       │
+         │                  │                  │              │
+         │─ READ_RESULT ───►│                  │              │
+         │◄─ TEST_RESULT ───│                  │              │
 ```
 
-The node retries the ESP-NOW broadcast up to **3 retries** with **200 ms** backoff between attempts, **2-second** listen window per attempt. If no `DIAG_REPLY` is received after all retries, the node returns a timeout status to the pairing tool. Total worst-case node-side duration is approximately **8.6 seconds** (4 broadcasts × 2 s listen + 3 × 200 ms backoff). The pairing tool applies a **10-second** overall timeout.
+The node retries the ESP-NOW broadcast up to **3 retries** with **200 ms** backoff between attempts and a **2-second** listen window per attempt. If no `DIAG_REPLY` is received after all retries, the node stores a timeout result and returns it later when the pairing tool reads back the latest result. Total worst-case node-side duration is approximately **8.6 seconds** (4 broadcasts × 2 s listen + 3 × 200 ms backoff). The pairing tool applies **5-second** BLE timeouts for the initial acknowledgement and later result-read operations.
 
-The diagnostic step is **optional** and **repeatable** — the installer may run it multiple times to test different node positions before committing to provisioning.
+The diagnostic step is **optional** and **repeatable** — the installer may run it multiple times to test different node positions before committing to provisioning by submitting another test command.
 
 ### 6.7  Store-and-forward data flow
 

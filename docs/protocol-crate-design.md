@@ -111,15 +111,23 @@ pub const SIGNAL_QUALITY_BAD: u8 = 2;
 
 // BLE envelope message types (Node Command characteristic — separate from ESP-NOW msg_types)
 pub const BLE_NODE_PROVISION: u8 = 0x01;
-pub const BLE_DIAG_RELAY_REQUEST: u8 = 0x02;
+pub const BLE_RUN_TEST_COMMAND: u8 = 0x02;
+pub const BLE_READ_TEST_RESULT: u8 = 0x03;
 pub const BLE_NODE_ACK: u8 = 0x81;
-pub const BLE_DIAG_RELAY_RESPONSE: u8 = 0x82;
+pub const BLE_RUN_TEST_ACK: u8 = 0x82;
+pub const BLE_TEST_RESULT: u8 = 0x83;
 pub const BLE_ERROR: u8 = 0xFF;
 
-// DIAG_RELAY_RESPONSE status codes
-pub const DIAG_RELAY_STATUS_OK: u8 = 0x00;
-pub const DIAG_RELAY_STATUS_TIMEOUT: u8 = 0x01;
-pub const DIAG_RELAY_STATUS_CHANNEL_ERROR: u8 = 0x02;
+// RUN_TEST_ACK status codes
+pub const RUN_TEST_ACK_OK: u8 = 0x00;
+pub const RUN_TEST_ACK_INVALID: u8 = 0x01;
+pub const RUN_TEST_ACK_UNSUPPORTED: u8 = 0x02;
+
+// TEST_RESULT status codes
+pub const TEST_RESULT_OK: u8 = 0x00;
+pub const TEST_RESULT_TIMEOUT: u8 = 0x01;
+pub const TEST_RESULT_NO_RESULT: u8 = 0x02;
+pub const TEST_RESULT_EXECUTION_ERROR: u8 = 0x03;
 
 // CBOR integer keys (program image — separate keyspace)
 pub const IMG_KEY_BYTECODE: u64 = 1;
@@ -547,9 +555,9 @@ Implements a minimal Type-Length-Value envelope used for BLE GATT messages in th
 
 ## 12  Diagnostic message codec
 
-Implements encoding and decoding for `DIAG_REQUEST` (`msg_type` 0x06) and `DIAG_REPLY` (`msg_type` 0x85) messages, and for the BLE `DIAG_RELAY_REQUEST` / `DIAG_RELAY_RESPONSE` envelopes.
+Implements encoding and decoding for `DIAG_REQUEST` (`msg_type` 0x06) and `DIAG_REPLY` (`msg_type` 0x85) messages, and for the BLE `RUN_TEST_COMMAND` / `RUN_TEST_ACK` / `READ_TEST_RESULT` / `TEST_RESULT` envelopes.
 
-> **Requirements:** ND-1100 (BLE diagnostic relay command), GW-1700 (DIAG_REQUEST reception), GW-1704 (DIAG_REPLY construction), PT-1301 (diagnostic request construction), PT-1302 (BLE diagnostic relay).
+> **Requirements:** ND-1100 (Generic BLE pre-provisioning test command), ND-1101 (Test-command acknowledgement and staging), ND-1104 (Latest-result retention and explicit readback), ND-1105 (Diagnostic result contents), ND-1107 (Test-command format extensibility), GW-1700 (DIAG_REQUEST reception), GW-1704 (DIAG_REPLY construction), PT-0411 (RUN_TEST_COMMAND construction and acknowledgement), PT-0412 (Explicit pre-provisioning test-result readback), PT-0413 (Diagnostic result interpretation), PT-0415 (Generic pre-provisioning test-command model).
 
 ### 12.1  ESP-NOW diagnostic messages
 
@@ -557,29 +565,54 @@ Implements encoding and decoding for `DIAG_REQUEST` (`msg_type` 0x06) and `DIAG_
 
 Encoding and decoding are handled by the existing `NodeMessage::encode/decode` and `GatewayMessage::encode/decode` methods, which dispatch on `msg_type`.
 
-### 12.2  BLE diagnostic relay messages
+### 12.2  BLE pre-provisioning test messages
 
-The BLE envelope for diagnostic relay uses the same `TYPE | LEN | BODY` format as other BLE messages (§11). The body formats are:
+The BLE envelope for pre-provisioning tests uses the same `TYPE | LEN | BODY` format as other BLE messages (§11). The body formats are:
 
-**DIAG_RELAY_REQUEST (type 0x02):**
+**RUN_TEST_COMMAND (type 0x02):**
+
+Deterministic CBOR map:
+
+```cbor
+{
+  1: test_type,  // uint
+  2: rf_channel, // uint (optional)
+  3: payload     // bstr
+}
+```
+
+**RUN_TEST_ACK (type 0x82):**
 
 ```
-rf_channel: u8      // WiFi channel 1–13
-payload_len: u16 BE // Length of ESP-NOW frame
-payload: [u8]       // Complete DIAG_REQUEST ESP-NOW frame
+status: u8 // 0x00=ok, 0x01=invalid, 0x02=unsupported
 ```
 
-**DIAG_RELAY_RESPONSE (type 0x82):**
+**READ_TEST_RESULT (type 0x03):**
 
-```
-status: u8          // 0x00=ok, 0x01=timeout, 0x02=channel_error
-payload_len: u16 BE // Length of ESP-NOW reply (0 if status ≠ 0x00)
-payload: [u8]       // Raw DIAG_REPLY ESP-NOW frame (if status=0x00)
+Empty body.
+
+**TEST_RESULT (type 0x83):**
+
+Deterministic CBOR map:
+
+```cbor
+{
+  1: status,         // uint
+  2: test_type,      // uint
+  3: reply_frame,    // bstr (optional)
+  4: reply_rssi_dbm, // int  (optional)
+  5: attempt_count,  // uint
+  6: elapsed_ms      // uint
+}
 ```
 
 **Public API:**
 
-- `encode_diag_relay_request(rf_channel: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_REQUEST` body. Validates `rf_channel` ∈ 1–13 and `payload.len()` ≤ `MAX_FRAME_SIZE`. Wrap the returned body with `encode_ble_envelope(...)` to produce the full BLE `TYPE | LEN | BODY` message.
-- `decode_diag_relay_request(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `DIAG_RELAY_REQUEST` body, returning `(rf_channel, payload)`. Validates channel range, payload size, and rejects trailing bytes.
-- `encode_diag_relay_response(status: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_RESPONSE` body. Enforces payload must be empty for non-OK status. Wrap the returned body with `encode_ble_envelope(...)` to produce the full BLE message.
-- `decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `DIAG_RELAY_RESPONSE` body, returning `(status, payload)`. Rejects truncated and trailing-byte inputs.
+- `encode_run_test_command(test_type: u64, rf_channel: Option<u8>, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `RUN_TEST_COMMAND` body. For the initial `DIAG_FRAME` test type, validates that `rf_channel` is present and in 1–13, `payload` is non-empty, and `payload.len()` ≤ `MAX_FRAME_SIZE`. Wrap the returned body with `encode_ble_envelope(...)` to produce the full BLE `TYPE | LEN | BODY` message.
+- `decode_run_test_command(body: &[u8]) -> Result<RunTestCommand, DecodeError>` — decode a `RUN_TEST_COMMAND` body into an owned `RunTestCommand`, validating required fields, channel range for `DIAG_FRAME`, non-empty `payload`, payload size, and rejecting trailing bytes.
+- `encode_run_test_ack(status: u8) -> Result<Vec<u8>, EncodeError>` — encode a `RUN_TEST_ACK` body.
+- `decode_run_test_ack(body: &[u8]) -> Result<u8, DecodeError>` — decode a `RUN_TEST_ACK` body.
+- `encode_read_test_result() -> Vec<u8>` — encode an empty `READ_TEST_RESULT` body.
+- `decode_read_test_result(body: &[u8]) -> Result<(), DecodeError>` — decode a `READ_TEST_RESULT` body, rejecting non-empty bodies.
+- `encode_test_result(result: &TestResult) -> Result<Vec<u8>, EncodeError>` — encode a `TEST_RESULT` body.
+- `decode_test_result(body: &[u8]) -> Result<TestResult, DecodeError>` — decode a `TEST_RESULT` body, validating optional-field combinations and rejecting trailing bytes.

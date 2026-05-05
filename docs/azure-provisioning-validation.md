@@ -159,3 +159,44 @@
 3. Assert: the resource-plane stack is removed, or any retained artifacts are explicitly identified by the documentation.
 4. Assert: teardown expectations for Service Bus, Storage, and Function placeholder resources are clear.
 
+---
+
+### T-AZP-0302  On-demand workflow deploys and tears down a disposable stack
+
+**Validates:** AZP-0302, AZP-0304
+
+**Procedure:**
+1. Manually dispatch the live Azure validation workflow with repository or environment configuration pointing at the dedicated CI-owned disposable resource group.
+2. Observe the workflow run.
+3. Assert: the workflow performs preflight deletion of the configured CI-owned resource group before provisioning.
+4. Assert: provisioning does not begin until the previous resource-group instance is confirmed absent.
+5. Assert: the workflow deploys the Bicep stack into that resource group.
+6. Assert: the workflow proceeds to validation rather than stopping immediately after deployment.
+7. Assert: the workflow attempts teardown in the same run after validation completes.
+
+---
+
+### T-AZP-0303  Live workflow uses federated identity and repo-configured targeting
+
+**Validates:** AZP-0303
+
+**Procedure:**
+1. Inspect the GitHub Actions workflow and its documented setup.
+2. Assert: Azure login is performed using GitHub OIDC/federated identity.
+3. Assert: the workflow does not require a long-lived Azure client secret.
+4. Assert: subscription ID and disposable resource-group name come from repository or environment configuration rather than workflow constants.
+5. Assert: the setup documentation identifies the minimum RBAC needed by the federated CI identity.
+
+---
+
+### T-AZP-0304  Failed runs still attempt teardown and surface cleanup failures
+
+**Validates:** AZP-0304
+
+**Procedure:**
+1. Dispatch the live Azure validation workflow against the dedicated CI-owned disposable resource group.
+2. Force a validation-step failure after the Azure stack has been created.
+3. Assert: the workflow still executes its teardown path after the injected failure.
+4. If teardown succeeds, assert: the disposable resource group is removed.
+5. If teardown fails, assert: the workflow reports the retained resource group explicitly instead of reporting overall success.
+

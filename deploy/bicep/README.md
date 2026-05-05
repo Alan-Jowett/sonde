@@ -31,6 +31,7 @@ Azure companion architecture.
 | `location` | `eastus` | Azure region for the stack |
 | `project_name` | `sonde` | Prefix for resource names and tags |
 | `resource_group_name` | empty | Optional override for the resource group name |
+| `resourceGroupOwnerTag` | empty | Optional `sonde-ci-owner` tag value applied to the deployment resource group |
 | `companionCertificateBase64` | none | Base64-encoded DER certificate public material registered on the Azure companion app |
 | `companionCertificateDisplayName` | `sonde-azure-companion` | Optional display name for the registered certificate credential |
 | `serviceBusNamespaceName` | derived | Optional Service Bus namespace override |
@@ -105,3 +106,44 @@ az group delete --name <resource-group-name> --yes --no-wait
 This removes the Azure resource-plane stack. If you also want to remove the
 Entra application and service principal, delete those identity objects
 explicitly after teardown.
+
+## Live CI prerequisites
+
+The repository's on-demand Azure live-validation workflow binds the job to the
+GitHub environment `azure-live-ci`, so its target values can come from either
+repository variables or variables defined on that environment. A typical setup
+provides:
+
+- `SONDE_AZURE_CI_CLIENT_ID`
+- `SONDE_AZURE_CI_TENANT_ID`
+- `SONDE_AZURE_CI_SUBSCRIPTION_ID`
+- `SONDE_AZURE_CI_RESOURCE_GROUP`
+- optional `SONDE_AZURE_CI_RESOURCE_GROUP_PREFIX`
+- optional `SONDE_AZURE_CI_LOCATION`
+- optional `SONDE_AZURE_CI_PROJECT_NAME`
+
+The workflow uses GitHub OIDC for Azure login. The configured identity needs:
+
+- permission to create, inspect, and delete the dedicated disposable CI resource group,
+- permission to deploy the Bicep stack in that subscription, and
+- Microsoft Graph permissions required by `modules/companion-identity.bicep` to create the Entra application and service principal used by `sonde-azure-companion`, and
+- Service Bus data-plane roles that let the live-validation harness send to and receive from the deployed queues when it authenticates via `AzureCliCredential`.
+
+For the default queue topology, the GitHub OIDC identity therefore needs enough
+Service Bus queue permissions to:
+
+- receive from `connector-upstream`,
+- send to `desired-state`, and
+- receive from `desired-state`.
+
+Those rights can be granted either with queue-scoped assignments or with a
+broader namespace-scoped data role if that is the repository's preferred
+operational model.
+
+For destructive cleanup safety, the workflow only deletes a resource group when
+both of the following are true:
+
+- the configured resource-group name starts with the configured CI prefix (by
+  default `sonde-ci-`, or `${SONDE_AZURE_CI_PROJECT_NAME}-ci-` when the project
+  name is overridden), and
+- the existing group is tagged `sonde-ci-owner=azure-live-ci`.

@@ -18,6 +18,9 @@ param companionCertificateBase64 string
 @description('Display name for the registered companion certificate credential.')
 param companionCertificateDisplayName string = 'sonde-azure-companion'
 
+@description('Optional ownership tag value applied to the deployment resource group. Leave empty for non-CI deployments.')
+param resourceGroupOwnerTag string = ''
+
 @description('Optional override for the Service Bus namespace name.')
 param serviceBusNamespaceName string = ''
 
@@ -57,11 +60,16 @@ var effectiveFunctionPlanName = empty(functionPlanName)
 var tags = {
   project: project_name
 }
+var resourceGroupTags = empty(resourceGroupOwnerTag)
+  ? tags
+  : union(tags, {
+      'sonde-ci-owner': resourceGroupOwnerTag
+    })
 
 resource stackResourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: effectiveResourceGroupName
   location: location
-  tags: tags
+  tags: resourceGroupTags
 }
 
 module companionIdentity './modules/companion-identity.bicep' = {

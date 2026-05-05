@@ -417,6 +417,48 @@ logging, process status, or both.
 
 ---
 
+### AZC-0310  Live Azure CI bridge validation against a connector harness
+
+**Priority:** Must
+**Source:** CI validation discovery review
+
+**Description:**
+The repository MUST support an on-demand live Azure validation workflow that
+runs the real `sonde-azure-companion` runtime against a local connector test
+harness and the disposable Azure Service Bus resources created for that run. The
+workflow validates the Azure companion bridge at the connector boundary and MUST
+NOT require a full `sonde-gateway` process for this live cloud test.
+
+**Acceptance criteria:**
+
+1. The live Azure validation workflow starts the real `sonde-azure-companion` runtime.
+2. The runtime connects to a local connector harness rather than a full `sonde-gateway` process.
+3. The runtime uses the disposable Azure Service Bus namespace and queue names provisioned for that workflow run.
+4. The live validation covers both upstream publish and downstream desired-state delivery.
+5. The workflow remains on-demand rather than part of routine PR CI.
+
+---
+
+### AZC-0311  Live Azure CI verifies concrete Service Bus handoff semantics
+
+**Priority:** Must
+**Source:** CI validation discovery review, AZC-0304, AZC-0308, AZC-0309
+
+**Description:**
+The live Azure validation workflow MUST verify the bridge semantics that matter
+at the cloud boundary: transparent upstream payload publication, transparent
+downstream desired-state delivery, and downstream settlement only after the
+local connector harness accepts the payload.
+
+**Acceptance criteria:**
+
+1. At least one representative upstream connector payload is published through the real Azure Service Bus transport during the live workflow.
+2. At least one representative downstream desired-state payload is received from Azure Service Bus and written unchanged to the local connector harness.
+3. The workflow demonstrates that downstream settlement occurs only after successful local connector handoff.
+4. Detected Azure transport or local connector handoff failures are surfaced by the workflow rather than silently ignored.
+
+---
+
 ## 6  Bootstrap provisioning orchestration
 
 ### AZC-0400  Self-signed certificate generation

@@ -229,7 +229,7 @@ workflow makes the necessary values available to the bootstrap path that does.
 
 ## 6  Outputs and lifecycle
 
-> **Requirements:** AZP-0100, AZP-0102, AZP-0103, AZP-0104, AZP-0300, AZP-0301
+> **Requirements:** AZP-0100, AZP-0102, AZP-0103, AZP-0104, AZP-0300, AZP-0301, AZP-0302, AZP-0303, AZP-0304
 
 ### 6.1  Outputs
 
@@ -256,4 +256,41 @@ Teardown removes the resource-plane stack or clearly documents any intentionally
 retained artifacts. If some identity artifacts cannot be safely removed by the
 same workflow, the teardown documentation must say so plainly rather than
 pretending full cleanup occurred.
+
+### 6.4  Live Azure CI workflow boundary
+
+The repository also exposes a manually triggered GitHub Actions workflow for
+live Azure validation. This workflow is intentionally separate from routine PR
+CI so ordinary code-review runs do not require Azure credentials or incur cloud
+cost.
+
+That workflow performs one end-to-end disposable validation cycle:
+
+1. log in to Azure with GitHub OIDC,
+2. preflight-delete the dedicated CI-owned resource group and wait until Azure reports it absent,
+3. deploy the Bicep stack into that clean resource group,
+4. run live validation against the deployed resources, and
+5. attempt teardown again in an `always()`-style cleanup step.
+
+### 6.5  CI configuration model
+
+The workflow logic is repository-owned, but its Azure target is repo-specific.
+To keep the workflow fork-portable, subscription ID, tenant/client identifiers,
+the dedicated CI resource-group name, and similar deployment defaults are read
+from repository or environment configuration rather than being embedded in the
+workflow file itself.
+
+The design assumes GitHub Actions OIDC federation into an Azure application or
+service principal that has only the RBAC required to:
+
+1. create/update the disposable stack,
+2. inspect deployed resources for validation, and
+3. delete the CI-owned resource group afterward.
+
+### 6.6  Disposable resource-group safety rule
+
+Because the workflow performs destructive preflight cleanup, it must never point
+at an arbitrary shared resource group. The configured resource group for this
+workflow is therefore part of the safety boundary: it is a dedicated,
+CI-owned disposable group reserved exclusively for this live validation path.
 

@@ -262,3 +262,68 @@ require explicit manual handling.
 1. The documented teardown path removes the resource-plane infrastructure created for this stack, or clearly enumerates any retained artifacts.
 2. Teardown behavior is documented for Service Bus, Storage, and Function placeholder resources.
 
+---
+
+### AZP-0302  On-demand disposable CI deployment workflow
+
+**Priority:** Must
+**Source:** CI validation discovery review, [azure-companion-requirements.md](azure-companion-requirements.md)
+
+**Description:**
+The repository MUST provide an on-demand GitHub Actions workflow that exercises
+the provisioning workflow against a disposable Azure test stack. This workflow
+MUST remain separate from routine pull-request CI and MUST provision, validate,
+and tear down the stack within the same manually triggered run.
+
+**Acceptance criteria:**
+
+1. The repository contains a manually triggered GitHub Actions workflow dedicated to live Azure validation.
+2. The workflow provisions a disposable test stack using the repository-owned Bicep entrypoint rather than a separate ad hoc deployment path.
+3. The workflow runs validation steps against the deployed Azure resources before teardown.
+4. The workflow attempts teardown in the same run after validation completes.
+5. The workflow is not required for routine pull-request CI on every change.
+
+---
+
+### AZP-0303  Federated CI authentication with repo-configured targeting
+
+**Priority:** Must
+**Source:** CI validation discovery review
+
+**Description:**
+The live Azure validation workflow MUST authenticate to Azure using GitHub
+federated identity (OIDC) rather than a stored Azure client secret. The target
+subscription and disposable resource-group name MUST be supplied through
+repository or environment configuration so forks can bind the same workflow
+logic to their own Azure subscription without editing workflow code.
+
+**Acceptance criteria:**
+
+1. The workflow uses GitHub OIDC/federated identity for Azure login.
+2. The workflow does not require a long-lived Azure client secret for CI authentication.
+3. The target subscription ID is supplied through repository or environment configuration rather than being hard-coded in the workflow.
+4. The disposable CI resource-group name is supplied through repository or environment configuration rather than being hard-coded in the workflow.
+5. The documented setup identifies the minimum Azure RBAC needed by the federated CI identity for deployment, validation, and teardown.
+
+---
+
+### AZP-0304  Dedicated CI-owned resource-group cleanup
+
+**Priority:** Must
+**Source:** CI validation discovery review
+
+**Description:**
+The live Azure validation workflow MUST use a dedicated disposable resource
+group that is owned exclusively by CI for this purpose. Before provisioning, the
+workflow MUST delete any pre-existing copy of that CI-owned resource group to
+remove leftovers from prior failed runs. After validation, the workflow MUST
+attempt teardown again even when earlier steps failed.
+
+**Acceptance criteria:**
+
+1. The live Azure validation workflow targets only a dedicated disposable CI-owned resource group for destructive cleanup.
+2. The workflow performs preflight deletion of that resource group and does not begin provisioning until the previous group instance is confirmed absent.
+3. The workflow performs teardown in a failure-safe post-run path even if provisioning or validation fails.
+4. If teardown fails, the workflow surfaces the retained resource-group failure explicitly rather than silently reporting success.
+5. The workflow documentation states that arbitrary operator-managed resource groups are out of scope for CI deletion.
+

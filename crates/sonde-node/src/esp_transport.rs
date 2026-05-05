@@ -116,6 +116,26 @@ struct RecvState {
 /// Global callback state — set once during [`EspNowTransport::new`].
 static RECV_STATE: std::sync::OnceLock<RecvState> = std::sync::OnceLock::new();
 
+fn espnow_msg_type_label(frame: &[u8]) -> &'static str {
+    if frame.len() <= sonde_protocol::OFFSET_MSG_TYPE {
+        return "short";
+    }
+    match frame[sonde_protocol::OFFSET_MSG_TYPE] {
+        sonde_protocol::MSG_WAKE => "WAKE",
+        sonde_protocol::MSG_GET_CHUNK => "GET_CHUNK",
+        sonde_protocol::MSG_PROGRAM_ACK => "PROGRAM_ACK",
+        sonde_protocol::MSG_APP_DATA => "APP_DATA",
+        sonde_protocol::MSG_PEER_REQUEST => "PEER_REQUEST",
+        sonde_protocol::MSG_DIAG_REQUEST => "DIAG_REQUEST",
+        sonde_protocol::MSG_COMMAND => "COMMAND",
+        sonde_protocol::MSG_CHUNK => "CHUNK",
+        sonde_protocol::MSG_APP_DATA_REPLY => "APP_DATA_REPLY",
+        sonde_protocol::MSG_PEER_ACK => "PEER_ACK",
+        sonde_protocol::MSG_DIAG_REPLY => "DIAG_REPLY",
+        _ => "unknown",
+    }
+}
+
 fn recv_rssi_dbm(recv_info: *const esp_idf_sys::esp_now_recv_info_t) -> Option<i8> {
     if recv_info.is_null() {
         return None;
@@ -139,14 +159,26 @@ unsafe extern "C" fn raw_recv_cb(
     data_len: core::ffi::c_int,
 ) {
     if recv_info.is_null() || data.is_null() || data_len <= 0 {
+        log::warn!(
+            "ESP-NOW RX drop: invalid callback args recv_info_null={} data_null={} data_len={}",
+            recv_info.is_null(),
+            data.is_null(),
+            data_len
+        );
         return;
     }
     let len = data_len as usize;
     if len > ESPNOW_MAX_DATA_SIZE {
+        log::warn!("ESP-NOW RX drop: frame too large len={}", len);
         return;
     }
     let payload = unsafe { core::slice::from_raw_parts(data, len) };
     let Some(rssi_dbm) = recv_rssi_dbm(recv_info) else {
+        log::warn!(
+            "ESP-NOW RX drop: missing rx metadata msg_type={} len={}",
+            espnow_msg_type_label(payload),
+            len
+        );
         return;
     };
     if let Some(state) = RECV_STATE.get() {
@@ -166,12 +198,24 @@ unsafe extern "C" fn raw_recv_cb(
                 true
             } else {
                 guard.drop_count = guard.drop_count.saturating_add(1);
+                log::warn!(
+                    "ESP-NOW RX drop: ring full msg_type={} len={} rssi={}",
+                    espnow_msg_type_label(payload),
+                    len,
+                    rssi_dbm
+                );
                 false
             }
         };
         // Notify after releasing the lock to avoid waking the consumer
         // into immediate contention on the same mutex.
         if enqueued {
+            log::info!(
+                "ESP-NOW RX enqueue: msg_type={} len={} rssi={}",
+                espnow_msg_type_label(payload),
+                len,
+                rssi_dbm
+            );
             state.condvar.notify_one();
         }
     }
@@ -333,6 +377,12 @@ impl crate::traits::Transport for EspNowTransport {
                 if full_drops > 0 {
                     log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
                 }
+                log::info!(
+                    "ESP-NOW RX dequeue: msg_type={} len={} rssi={}",
+                    espnow_msg_type_label(&buf[..len]),
+                    len,
+                    rssi_dbm
+                );
                 return Ok(Some(ReceivedFrame {
                     data: buf[..len].to_vec(),
                     rssi_dbm: Some(rssi_dbm),
@@ -346,6 +396,7 @@ impl crate::traits::Transport for EspNowTransport {
                 if full_drops > 0 {
                     log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
                 }
+                log::info!("ESP-NOW RX wait timed out after {} ms", timeout_ms);
                 return Ok(None);
             }
             let remaining = deadline - now;

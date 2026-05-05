@@ -388,7 +388,14 @@ fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
             clock.delay_ms(TEST_RETRY_DELAY_MS);
         }
         attempt_count = attempt + 1;
-        if transport.send(&command.payload).is_err() {
+        log::info!(
+            "diag test attempt {} sending {} bytes on channel {}",
+            attempt_count,
+            command.payload.len(),
+            rf_channel
+        );
+        if let Err(err) = transport.send(&command.payload) {
+            log::warn!("diag test attempt {} send failed: {}", attempt_count, err);
             continue;
         }
         send_succeeded = true;
@@ -407,6 +414,12 @@ fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
                             && frame.data[sonde_protocol::OFFSET_MSG_TYPE]
                                 == sonde_protocol::MSG_DIAG_REPLY =>
                     {
+                        log::info!(
+                            "diag test attempt {} received DIAG_REPLY len={} rssi={:?}",
+                            attempt_count,
+                            frame.data.len(),
+                            frame.rssi_dbm
+                        );
                         let Some(reply_rssi_dbm) = frame.rssi_dbm else {
                             return execution_error_result(
                                 command.test_type,
@@ -422,11 +435,38 @@ fn execute_diag_frame_test<T: Transport, C: crate::traits::Clock>(
                             clock.elapsed_ms().saturating_sub(start_ms),
                         );
                     }
-                    Ok(Some(_)) => {
+                    Ok(Some(frame)) => {
+                        let msg_type = if frame.data.len() > sonde_protocol::OFFSET_MSG_TYPE {
+                            frame.data[sonde_protocol::OFFSET_MSG_TYPE]
+                        } else {
+                            0xFF
+                        };
+                        log::info!(
+                            "diag test attempt {} ignored frame msg_type=0x{:02x} len={} rssi={:?}",
+                            attempt_count,
+                            msg_type,
+                            frame.data.len(),
+                            frame.rssi_dbm
+                        );
                         let elapsed = before.elapsed().as_millis() as u32;
                         remaining_ms = remaining_ms.saturating_sub(elapsed.max(1));
                     }
-                    Ok(None) | Err(_) => break,
+                    Ok(None) => {
+                        log::info!(
+                            "diag test attempt {} receive wait expired after {} ms",
+                            attempt_count,
+                            before.elapsed().as_millis()
+                        );
+                        break;
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "diag test attempt {} receive failed: {}",
+                            attempt_count,
+                            err
+                        );
+                        break;
+                    }
                 }
             }
         }

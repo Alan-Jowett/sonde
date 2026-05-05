@@ -1539,12 +1539,12 @@ After pre-provisioning test execution completes, the node MUST store exactly one
 **Source:** ble-pairing-protocol.md §6a, protocol.md §5.9
 
 **Description:**  
-For the initial `DIAG_FRAME` test type, the retained and reported test result MUST contain: the execution status, the `test_type`, the raw `DIAG_REPLY` frame when one was received, the node-observed RSSI of the received `DIAG_REPLY`, and timing metadata for the run. Timing metadata MUST include at least the number of attempts used and the total elapsed execution time in milliseconds. On timeout, no raw reply frame is included.
+For the initial `DIAG_FRAME` test type, the retained and reported test result MUST contain: the execution status, the `test_type`, the raw `DIAG_REPLY` frame when one was received, timing metadata for the run, and the node-observed RSSI of the received `DIAG_REPLY` when that metadata is available from the platform receive path. Timing metadata MUST include at least the number of attempts used and the total elapsed execution time in milliseconds. On timeout, no raw reply frame is included.
 
 **Acceptance criteria:**
 
 1. On success, the retained result includes the raw `DIAG_REPLY` frame verbatim.
-2. The retained result includes the node-observed reply RSSI in dBm.
+2. When the platform provides receive metadata for the successful `DIAG_REPLY`, the retained result includes the node-observed reply RSSI in dBm; otherwise the result remains successful with the RSSI field omitted.
 3. The retained result includes timing metadata containing at least `attempt_count` and `elapsed_ms`.
 4. On timeout, the retained result records a timeout status and omits the raw reply frame.
 

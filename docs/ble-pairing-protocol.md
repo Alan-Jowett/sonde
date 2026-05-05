@@ -459,7 +459,7 @@ The body is a deterministic CBOR map:
 | 1 | `status` | uint | `0x00` = success, `0x01` = timeout, `0x02` = no result available, `0x03` = execution error. |
 | 2 | `test_type` | uint | Echoes the executed test type. |
 | 3 | `reply_frame` | bstr | Raw gateway reply frame, present on success. |
-| 4 | `reply_rssi_dbm` | int | Node-observed RSSI of the received reply frame, present on success. |
+| 4 | `reply_rssi_dbm` | int | Node-observed RSSI of the received reply frame, present on success when the platform receive path provides RSSI metadata. |
 | 5 | `attempt_count` | uint | Number of send/listen attempts used during execution. |
 | 6 | `elapsed_ms` | uint | Total execution time in milliseconds. |
 
@@ -487,7 +487,7 @@ The node identifies reply frames by inspecting the `msg_type` byte at header off
 4. Tool waits up to **5 seconds** for `RUN_TEST_ACK`.
 5. On `RUN_TEST_ACK(status=0x00)`, the tool expects the node to reboot and later reconnects to the BLE pairing service.
 6. Tool sends `READ_TEST_RESULT` and waits up to **5 seconds** for `TEST_RESULT`.
-7. On `TEST_RESULT(status=0x00)`, the tool decrypts the raw `DIAG_REPLY` frame using `phone_psk`, combines the gateway-reported diagnostic fields with the node-reported reply RSSI and timing metadata, and displays the result.
+7. On `TEST_RESULT(status=0x00)`, the tool decrypts the raw `DIAG_REPLY` frame using `phone_psk`, combines the gateway-reported diagnostic fields with timing metadata and any available node-reported reply RSSI, and displays the result.
 8. On `TEST_RESULT(status=0x01)` (timeout) or `TEST_RESULT(status=0x03)` (execution error), the tool displays an error message with guidance.
 9. If the decrypted gateway `signal_quality` is `2` (bad), the tool displays a warning and requires installer confirmation before allowing provisioning to proceed.
 

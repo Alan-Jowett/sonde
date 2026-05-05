@@ -184,6 +184,10 @@ pub fn encode_run_test_command(
     rf_channel: Option<u8>,
     payload: &[u8],
 ) -> Result<Vec<u8>, EncodeError> {
+    if payload.len() > MAX_FRAME_SIZE {
+        return Err(EncodeError::FrameTooLarge);
+    }
+
     if test_type == TEST_TYPE_DIAG_FRAME {
         let rf_channel = rf_channel.ok_or_else(|| {
             EncodeError::InvalidParameter("DIAG_FRAME requires rf_channel".into())
@@ -198,9 +202,6 @@ pub fn encode_run_test_command(
             return Err(EncodeError::InvalidParameter(
                 "DIAG_FRAME payload must not be empty".into(),
             ));
-        }
-        if payload.len() > MAX_FRAME_SIZE {
-            return Err(EncodeError::FrameTooLarge);
         }
     }
 
@@ -222,6 +223,13 @@ pub fn decode_run_test_command(body: &[u8]) -> Result<RunTestCommand, DecodeErro
     let fields = cbor_decode_map(body)?;
     let test_type = get_uint(&fields, TEST_CMD_KEY_TEST_TYPE)?;
     let payload = get_bytes(&fields, TEST_CMD_KEY_PAYLOAD)?;
+    if payload.len() > MAX_FRAME_SIZE {
+        return Err(DecodeError::InvalidParameter(format!(
+            "test payload too large: {} > {}",
+            payload.len(),
+            MAX_FRAME_SIZE
+        )));
+    }
     let rf_channel = match get_optional_uint(&fields, TEST_CMD_KEY_RF_CHANNEL)? {
         None => None,
         Some(channel) => Some(
@@ -468,6 +476,15 @@ mod tests {
     }
 
     #[test]
+    fn run_test_command_large_payload_rejected_for_all_test_types() {
+        let payload = vec![0x42u8; MAX_FRAME_SIZE + 1];
+        assert!(matches!(
+            encode_run_test_command(0x99, None, &payload),
+            Err(EncodeError::FrameTooLarge)
+        ));
+    }
+
+    #[test]
     fn run_test_ack_round_trip() {
         let body = encode_run_test_ack(RUN_TEST_ACK_OK).unwrap();
         let envelope = encode_ble_envelope(BLE_RUN_TEST_ACK, &body).unwrap();
@@ -591,6 +608,23 @@ mod tests {
         assert!(matches!(
             decode_run_test_command(&body),
             Err(DecodeError::MissingField(TEST_CMD_KEY_RF_CHANNEL))
+        ));
+    }
+
+    #[test]
+    fn decode_run_test_command_rejects_large_payload_for_all_test_types() {
+        let body = cbor_encode_map(&[
+            (TEST_CMD_KEY_TEST_TYPE, Value::Integer(0x99u64.into())),
+            (
+                TEST_CMD_KEY_PAYLOAD,
+                Value::Bytes(vec![0x42; MAX_FRAME_SIZE + 1]),
+            ),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            decode_run_test_command(&body),
+            Err(DecodeError::InvalidParameter(_))
         ));
     }
 

@@ -141,7 +141,7 @@
                         Start="auto"
                         Type="ownProcess"
                         ErrorControl="normal"
-                        Arguments="service --state-dir [CommonAppDataFolder]sonde-azure-companion" />
+                        Arguments="service --state-dir &quot;[AZUREDATADIR]&quot;" />
         <ServiceControl Id="SondeAzureCompanionControl"
                         Name="sonde-azure-companion"
                         Stop="both"
@@ -191,6 +191,7 @@
 
     <!-- ── UI ───────────────────────────────────────────────────────── -->
     <ui:WixUI Id="WixUI_FeatureTree" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
     <WixVariable Id="WixUILicenseRtf" Value="installer\windows\license.rtf" />
 
   </Package>

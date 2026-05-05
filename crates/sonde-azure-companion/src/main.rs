@@ -1960,19 +1960,38 @@ fn uninstall_service() -> Result<(), CompanionError> {
         }
     };
 
-    service.delete().map_err(|err| {
-        CompanionError::Config(format!("failed to delete {SERVICE_NAME} service: {err}"))
-    })?;
-
-    let status = service.query_status().map_err(|err| {
+    let mut status = service.query_status().map_err(|err| {
         CompanionError::Config(format!("failed to query {SERVICE_NAME} status: {err}"))
     })?;
     if status.current_state != ServiceState::Stopped {
-        service.stop().map_err(|err| {
-            CompanionError::Config(format!("failed to stop {SERVICE_NAME} service: {err}"))
-        })?;
-        println!("Stopping {SERVICE_NAME} service...");
+        if status.current_state != ServiceState::StopPending {
+            service.stop().map_err(|err| {
+                CompanionError::Config(format!("failed to stop {SERVICE_NAME} service: {err}"))
+            })?;
+            println!("Stopping {SERVICE_NAME} service...");
+        }
+
+        let stop_deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < stop_deadline {
+            status = service.query_status().map_err(|err| {
+                CompanionError::Config(format!("failed to query {SERVICE_NAME} status: {err}"))
+            })?;
+            if status.current_state == ServiceState::Stopped {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+
+        if status.current_state != ServiceState::Stopped {
+            return Err(CompanionError::Config(format!(
+                "timed out waiting for {SERVICE_NAME} service to stop"
+            )));
+        }
     }
+
+    service.delete().map_err(|err| {
+        CompanionError::Config(format!("failed to delete {SERVICE_NAME} service: {err}"))
+    })?;
 
     drop(service);
 
@@ -2072,15 +2091,28 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
         }
     };
 
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("failed to create tokio runtime for {SERVICE_NAME}: {err}");
+            set_service_status(
+                &status_handle,
+                ServiceState::Stopped,
+                ServiceControlAccept::empty(),
+                1,
+            );
+            return;
+        }
+    };
+
     set_service_status(
         &status_handle,
         ServiceState::Running,
-        ServiceControlAccept::STOP,
+        ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
         0,
     );
 
-    let exit_code = match tokio::runtime::Runtime::new() {
-        Ok(runtime) => match runtime.block_on(run_checked_with_factory_and_shutdown(
+    let exit_code = match runtime.block_on(run_checked_with_factory_and_shutdown(
             &cli.connector_socket,
             &runtime_config,
             &runtime_state,
@@ -2089,14 +2121,9 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
                 let _ = shutdown_rx.await;
             },
         )) {
-            Ok(()) => 0,
-            Err(err) => {
-                eprintln!("{err}");
-                1
-            }
-        },
+        Ok(()) => 0,
         Err(err) => {
-            eprintln!("failed to create tokio runtime for {SERVICE_NAME}: {err}");
+            eprintln!("{err}");
             1
         }
     };

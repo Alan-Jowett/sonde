@@ -81,8 +81,7 @@ const SERVICE_NAME: &str = "sonde-azure-companion";
 #[cfg(windows)]
 const SERVICE_DISPLAY_NAME: &str = "Sonde Azure Companion";
 #[cfg(windows)]
-const SERVICE_DESCRIPTION: &str =
-    "Bridges the Sonde gateway connector to Azure Service Bus.";
+const SERVICE_DESCRIPTION: &str = "Bridges the Sonde gateway connector to Azure Service Bus.";
 #[cfg(windows)]
 static SERVICE_CLI: OnceLock<Cli> = OnceLock::new();
 #[cfg(windows)]
@@ -1404,23 +1403,13 @@ where
 }
 
 #[cfg(all(test, unix))]
-async fn bridge_runtime<T, P, C>(
-    stream: T,
-    publisher: P,
-    consumer: C,
-) -> Result<(), CompanionError>
+async fn bridge_runtime<T, P, C>(stream: T, publisher: P, consumer: C) -> Result<(), CompanionError>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     P: UpstreamPublisher + 'static,
     C: DownstreamConsumer + 'static,
 {
-    bridge_runtime_with_shutdown(
-        stream,
-        publisher,
-        consumer,
-        std::future::pending::<()>(),
-    )
-    .await
+    bridge_runtime_with_shutdown(stream, publisher, consumer, std::future::pending::<()>()).await
 }
 
 async fn bridge_runtime_with_shutdown<T, P, C, S>(
@@ -1876,7 +1865,9 @@ fn install_service(cli: &Cli) -> Result<(), CompanionError> {
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
     )
-    .map_err(|err| CompanionError::Config(format!("failed to open Service Control Manager: {err}")))?;
+    .map_err(|err| {
+        CompanionError::Config(format!("failed to open Service Control Manager: {err}"))
+    })?;
 
     let exe_path = std::env::current_exe()?;
     let service_info = ServiceInfo {
@@ -1896,9 +1887,11 @@ fn install_service(cli: &Cli) -> Result<(), CompanionError> {
 
     match manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG) {
         Ok(service) => {
-            service.set_description(SERVICE_DESCRIPTION).map_err(|err| {
-                CompanionError::Config(format!("failed to set service description: {err}"))
-            })?;
+            service
+                .set_description(SERVICE_DESCRIPTION)
+                .map_err(|err| {
+                    CompanionError::Config(format!("failed to set service description: {err}"))
+                })?;
         }
         Err(windows_service::Error::Winapi(err))
             if err.raw_os_error() == Some(ERROR_SERVICE_EXISTS as i32) =>
@@ -1915,9 +1908,11 @@ fn install_service(cli: &Cli) -> Result<(), CompanionError> {
                     "failed to update existing {SERVICE_NAME} service: {change_err}"
                 ))
             })?;
-            service.set_description(SERVICE_DESCRIPTION).map_err(|err| {
-                CompanionError::Config(format!("failed to set service description: {err}"))
-            })?;
+            service
+                .set_description(SERVICE_DESCRIPTION)
+                .map_err(|err| {
+                    CompanionError::Config(format!("failed to set service description: {err}"))
+                })?;
         }
         Err(err) => {
             return Err(CompanionError::Config(format!(
@@ -1938,7 +1933,9 @@ fn uninstall_service() -> Result<(), CompanionError> {
     use windows_sys::Win32::Foundation::ERROR_SERVICE_DOES_NOT_EXIST;
 
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-        .map_err(|err| CompanionError::Config(format!("failed to open Service Control Manager: {err}")))?;
+        .map_err(|err| {
+            CompanionError::Config(format!("failed to open Service Control Manager: {err}"))
+        })?;
 
     let service = match manager.open_service(
         SERVICE_NAME,
@@ -2111,14 +2108,14 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
     );
 
     let exit_code = match runtime.block_on(run_checked_with_factory_and_shutdown(
-            &cli.connector_socket,
-            &runtime_config,
-            &runtime_state,
-            &AzServiceBusTransportFactory,
-            async move {
-                let _ = shutdown_rx.await;
-            },
-        )) {
+        &cli.connector_socket,
+        &runtime_config,
+        &runtime_state,
+        &AzServiceBusTransportFactory,
+        async move {
+            let _ = shutdown_rx.await;
+        },
+    )) {
         Ok(()) => 0,
         Err(err) => {
             eprintln!("{err}");
@@ -2153,7 +2150,11 @@ async fn run_cli() -> Result<(), CompanionError> {
                 CompanionError::Config("duplicate Windows service dispatch".to_string())
             })?;
             windows_service::service_dispatcher::start(SERVICE_NAME, ffi_service_main).map_err(
-                |err| CompanionError::Config(format!("failed to start Windows service dispatcher: {err}")),
+                |err| {
+                    CompanionError::Config(format!(
+                        "failed to start Windows service dispatcher: {err}"
+                    ))
+                },
             )?;
         }
     }
@@ -2171,6 +2172,10 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
+    use super::bridge_runtime_with_shutdown;
+    #[cfg(windows)]
+    use super::build_service_launch_args;
+    #[cfg(unix)]
     use super::validate_certificate_matches_private_key;
     use super::{
         build_az_bootstrap_script, check_runtime_ready, cleanup_staging, commit_staging,
@@ -2185,10 +2190,6 @@ mod tests {
         CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME, SERVICE_BUS_CONFIG_FILENAME,
         SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX,
     };
-    #[cfg(unix)]
-    use super::bridge_runtime_with_shutdown;
-    #[cfg(windows)]
-    use super::build_service_launch_args;
     #[cfg(windows)]
     use super::{Cli, Command};
     use azure_core::credentials::TokenCredential;
@@ -3583,14 +3584,9 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let bridge_task = tokio::spawn(async move {
-            bridge_runtime_with_shutdown(
-                stream,
-                FakePublisher::default(),
-                consumer,
-                async move {
-                    let _ = shutdown_rx.await;
-                },
-            )
+            bridge_runtime_with_shutdown(stream, FakePublisher::default(), consumer, async move {
+                let _ = shutdown_rx.await;
+            })
             .await
         });
 

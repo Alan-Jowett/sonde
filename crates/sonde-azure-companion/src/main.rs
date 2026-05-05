@@ -2101,6 +2101,13 @@ fn set_service_status_with_progress(
 #[cfg(windows)]
 fn log_service_diagnostic(state_dir: &Path, message: &str) {
     let log_path = state_dir.join("service.log");
+    if let Err(err) = std::fs::create_dir_all(state_dir) {
+        eprintln!(
+            "{SERVICE_NAME}: failed to create service diagnostic directory {}: {err}",
+            state_dir.display()
+        );
+        return;
+    }
     match std::fs::OpenOptions::new()
         .create(true)
         .append(true)

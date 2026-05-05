@@ -109,6 +109,9 @@ explicitly after teardown.
 
 ## Live CI prerequisites
 
+For the full step-by-step setup procedure, see
+[`azure-live-ci-setup.md`](azure-live-ci-setup.md).
+
 The repository's on-demand Azure live-validation workflow binds the job to the
 GitHub environment `azure-live-ci`, so its target values can come from either
 repository variables or variables defined on that environment. A typical setup
@@ -136,9 +139,11 @@ Service Bus queue permissions to:
 - send to `desired-state`, and
 - receive from `desired-state`.
 
-Those rights can be granted either with queue-scoped assignments or with a
-broader namespace-scoped data role if that is the repository's preferred
-operational model.
+Because the workflow deletes and recreates its disposable resource group, any
+role assignment scoped only inside that resource group would be deleted on
+teardown. The step-by-step setup guide therefore documents a persistent
+assignment strategy for the CI identity rather than a queue-scoped assignment
+that would not survive repeated runs.
 
 For destructive cleanup safety, the workflow only deletes a resource group when
 both of the following are true:

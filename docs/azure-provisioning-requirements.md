@@ -327,3 +327,27 @@ attempt teardown again even when earlier steps failed.
 4. If teardown fails, the workflow surfaces the retained resource-group failure explicitly rather than silently reporting success.
 5. The workflow documentation states that arbitrary operator-managed resource groups are out of scope for CI deletion.
 
+---
+
+### AZP-0305  Step-by-step live CI setup guide
+
+**Priority:** Must
+**Source:** reviewed discovery output, operator usability review for the live Azure CI workflow
+
+**Description:**
+The repository MUST provide a standalone step-by-step setup guide for the live
+Azure validation workflow. This guide MUST tell a first-time operator how to
+configure the GitHub environment, Azure federated identity, minimum required
+permissions, disposable resource-group safety settings, and the first manual
+workflow dispatch without reverse-engineering the workflow YAML.
+
+**Acceptance criteria:**
+
+1. The repository contains a standalone operator-facing setup guide at `deploy/bicep/azure-live-ci-setup.md` rather than relying only on a brief prerequisite summary inside `deploy/bicep/README.md`.
+2. The setup guide identifies the GitHub environment name and the required repository or environment variables consumed by the workflow.
+3. The setup guide describes both an Azure Portal path and an Azure CLI path for the key setup actions where those paths are practical.
+4. The setup guide names the exact Azure RBAC roles, Service Bus data-plane roles, and Microsoft Graph permissions required by the federated CI identity.
+5. The setup guide explains the disposable resource-group safety boundary, including the default CI prefix behavior and the requirement that only CI-owned disposable groups are in scope for destructive cleanup.
+6. The setup guide describes how to manually dispatch the workflow and what success or cleanup signals an operator should expect from the first run.
+7. `deploy/bicep/README.md` links operators to `deploy/bicep/azure-live-ci-setup.md` for the procedural setup path.
+

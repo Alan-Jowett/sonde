@@ -200,18 +200,19 @@ fn signal_quality_label(signal_quality: u8) -> String {
 }
 
 fn diagnostic_review_success(result: &DiagnosticResult) -> DiagnosticReview {
+    let node_reply_summary = result
+        .node_reply_rssi_dbm
+        .map(|rssi| format!("{rssi} dBm"))
+        .unwrap_or_else(|| "unavailable".into());
     DiagnosticReview {
         success: true,
         summary: format!(
-            "Gateway RSSI {} dBm, node reply RSSI {} dBm, {} attempt(s), {} ms",
-            result.gateway_rssi_dbm,
-            result.node_reply_rssi_dbm,
-            result.attempt_count,
-            result.elapsed_ms
+            "Gateway RSSI {} dBm, node reply RSSI {}, {} attempt(s), {} ms",
+            result.gateway_rssi_dbm, node_reply_summary, result.attempt_count, result.elapsed_ms
         ),
         gateway_rssi_dbm: Some(result.gateway_rssi_dbm),
         signal_quality: Some(signal_quality_label(result.signal_quality)),
-        node_reply_rssi_dbm: Some(result.node_reply_rssi_dbm),
+        node_reply_rssi_dbm: result.node_reply_rssi_dbm,
         attempt_count: Some(result.attempt_count),
         elapsed_ms: Some(result.elapsed_ms),
     }

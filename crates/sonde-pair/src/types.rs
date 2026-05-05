@@ -65,8 +65,9 @@ pub struct DiagnosticResult {
     pub gateway_rssi_dbm: i8,
     /// Gateway-reported signal-quality assessment.
     pub signal_quality: u8,
-    /// Node-observed RSSI of the received reply frame.
-    pub node_reply_rssi_dbm: i8,
+    /// Node-observed RSSI of the received reply frame, when the platform
+    /// exposes receive metadata for the reply.
+    pub node_reply_rssi_dbm: Option<i8>,
     /// Number of send/listen attempts used by the node.
     pub attempt_count: u64,
     /// Total node-side execution time for the test run.

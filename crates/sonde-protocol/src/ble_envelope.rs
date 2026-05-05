@@ -291,9 +291,9 @@ pub fn decode_read_test_result(body: &[u8]) -> Result<(), DecodeError> {
 /// Validate `TEST_RESULT` field combinations before encoding or storing.
 pub fn validate_test_result(result: &TestResult) -> Result<(), EncodeError> {
     if result.status == TEST_RESULT_OK {
-        if result.reply_frame.is_none() || result.reply_rssi_dbm.is_none() {
+        if result.reply_frame.is_none() {
             return Err(EncodeError::InvalidParameter(
-                "successful TEST_RESULT requires reply_frame and reply_rssi_dbm".into(),
+                "successful TEST_RESULT requires reply_frame".into(),
             ));
         }
     } else if result.reply_frame.is_some() || result.reply_rssi_dbm.is_some() {
@@ -365,9 +365,9 @@ pub fn decode_test_result(body: &[u8]) -> Result<TestResult, DecodeError> {
     let elapsed_ms = get_uint(&fields, TEST_RESULT_KEY_ELAPSED_MS)?;
 
     if status == TEST_RESULT_OK {
-        if reply_frame.is_none() || reply_rssi_dbm.is_none() {
+        if reply_frame.is_none() {
             return Err(DecodeError::InvalidParameter(
-                "successful TEST_RESULT missing reply fields".into(),
+                "successful TEST_RESULT missing reply_frame".into(),
             ));
         }
     } else if reply_frame.is_some() || reply_rssi_dbm.is_some() {
@@ -540,6 +540,22 @@ mod tests {
             elapsed_ms: 1,
         };
         assert!(encode_test_result(&result).is_err());
+    }
+
+    #[test]
+    fn test_result_success_allows_missing_reply_rssi() {
+        let result = TestResult {
+            status: TEST_RESULT_OK,
+            test_type: Some(TEST_TYPE_DIAG_FRAME),
+            reply_frame: Some(vec![0xAA; 30]),
+            reply_rssi_dbm: None,
+            attempt_count: 1,
+            elapsed_ms: 10,
+        };
+        assert_eq!(
+            decode_test_result(&encode_test_result(&result).unwrap()).unwrap(),
+            result
+        );
     }
 
     #[test]

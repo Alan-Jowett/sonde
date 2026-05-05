@@ -452,9 +452,6 @@ pub async fn check_rssi_with_artifacts(
             let reply_frame = result.reply_frame.as_deref().ok_or_else(|| {
                 PairingError::DiagnosticFailed("missing raw DIAG_REPLY frame".into())
             })?;
-            let node_reply_rssi_dbm = result.reply_rssi_dbm.ok_or_else(|| {
-                PairingError::DiagnosticFailed("missing node-observed reply RSSI".into())
-            })?;
             let (gateway_rssi_dbm, signal_quality) = crate::crypto::decrypt_diag_reply(
                 reply_frame,
                 &artifacts.phone_psk,
@@ -463,7 +460,7 @@ pub async fn check_rssi_with_artifacts(
             Ok(DiagnosticResult {
                 gateway_rssi_dbm,
                 signal_quality,
-                node_reply_rssi_dbm,
+                node_reply_rssi_dbm: result.reply_rssi_dbm,
                 attempt_count: result.attempt_count,
                 elapsed_ms: result.elapsed_ms,
             })
@@ -1133,7 +1130,7 @@ mod tests {
         assert_eq!(transport.inner.disconnect_count, 2);
         assert_eq!(result.gateway_rssi_dbm, -58);
         assert_eq!(result.signal_quality, sonde_protocol::SIGNAL_QUALITY_GOOD);
-        assert_eq!(result.node_reply_rssi_dbm, -67);
+        assert_eq!(result.node_reply_rssi_dbm, Some(-67));
         assert_eq!(result.attempt_count, 2);
         assert_eq!(result.elapsed_ms, 4_300);
     }

@@ -369,7 +369,7 @@ function renderDiagnosticReview(review) {
   if (hasMetrics) {
     diagnosticGatewayRssi.textContent = `${review.gatewayRssiDbm} dBm`;
     diagnosticSignalQuality.textContent = review.signalQuality ?? "--";
-    diagnosticNodeRssi.textContent = `${review.nodeReplyRssiDbm} dBm`;
+    diagnosticNodeRssi.textContent = review.nodeReplyRssiDbm == null ? "--" : `${review.nodeReplyRssiDbm} dBm`;
     diagnosticAttemptCount.textContent = String(review.attemptCount ?? "--");
     diagnosticElapsedMs.textContent = `${review.elapsedMs ?? "--"} ms`;
     btnDiagnosticContinue.textContent = "Continue to Provisioning";

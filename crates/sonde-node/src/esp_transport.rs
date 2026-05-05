@@ -35,7 +35,7 @@ const RX_RING_CAP: usize = 16;
 struct FrameSlot {
     data: [u8; ESPNOW_MAX_DATA_SIZE],
     len: usize,
-    rssi_dbm: i8,
+    rssi_dbm: Option<i8>,
 }
 
 impl Default for FrameSlot {
@@ -43,7 +43,7 @@ impl Default for FrameSlot {
         Self {
             data: [0u8; ESPNOW_MAX_DATA_SIZE],
             len: 0,
-            rssi_dbm: 0,
+            rssi_dbm: None,
         }
     }
 }
@@ -77,7 +77,7 @@ impl RxRing {
     /// is full or the payload exceeds `ESPNOW_MAX_DATA_SIZE`.
     ///
     /// No heap allocation; safe to call from the WiFi task context.
-    fn push(&mut self, payload: &[u8], rssi_dbm: i8) -> bool {
+    fn push(&mut self, payload: &[u8], rssi_dbm: Option<i8>) -> bool {
         if self.count >= RX_RING_CAP || payload.len() > ESPNOW_MAX_DATA_SIZE {
             return false;
         }
@@ -93,7 +93,7 @@ impl RxRing {
     /// Copy the oldest frame's payload into `buf`, returning the number of
     /// bytes copied. Only `data[..len]` bytes are copied under the lock,
     /// avoiding a full 250-byte memcpy. Returns `None` if the ring is empty.
-    fn pop_into(&mut self, buf: &mut [u8; ESPNOW_MAX_DATA_SIZE]) -> Option<(usize, i8)> {
+    fn pop_into(&mut self, buf: &mut [u8; ESPNOW_MAX_DATA_SIZE]) -> Option<(usize, Option<i8>)> {
         if self.count == 0 {
             return None;
         }
@@ -173,14 +173,14 @@ unsafe extern "C" fn raw_recv_cb(
         return;
     }
     let payload = unsafe { core::slice::from_raw_parts(data, len) };
-    let Some(rssi_dbm) = recv_rssi_dbm(recv_info) else {
+    let rssi_dbm = recv_rssi_dbm(recv_info);
+    if rssi_dbm.is_none() {
         log::warn!(
-            "ESP-NOW RX drop: missing rx metadata msg_type={} len={}",
+            "ESP-NOW RX missing metadata: msg_type={} len={}",
             espnow_msg_type_label(payload),
             len
         );
-        return;
-    };
+    }
     if let Some(state) = RECV_STATE.get() {
         let enqueued = {
             // Match try_lock errors explicitly: recover on Poisoned so
@@ -199,7 +199,7 @@ unsafe extern "C" fn raw_recv_cb(
             } else {
                 guard.drop_count = guard.drop_count.saturating_add(1);
                 log::warn!(
-                    "ESP-NOW RX drop: ring full msg_type={} len={} rssi={}",
+                    "ESP-NOW RX drop: ring full msg_type={} len={} rssi={:?}",
                     espnow_msg_type_label(payload),
                     len,
                     rssi_dbm
@@ -211,7 +211,7 @@ unsafe extern "C" fn raw_recv_cb(
         // into immediate contention on the same mutex.
         if enqueued {
             log::info!(
-                "ESP-NOW RX enqueue: msg_type={} len={} rssi={}",
+                "ESP-NOW RX enqueue: msg_type={} len={} rssi={:?}",
                 espnow_msg_type_label(payload),
                 len,
                 rssi_dbm
@@ -378,14 +378,14 @@ impl crate::traits::Transport for EspNowTransport {
                     log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
                 }
                 log::info!(
-                    "ESP-NOW RX dequeue: msg_type={} len={} rssi={}",
+                    "ESP-NOW RX dequeue: msg_type={} len={} rssi={:?}",
                     espnow_msg_type_label(&buf[..len]),
                     len,
                     rssi_dbm
                 );
                 return Ok(Some(ReceivedFrame {
                     data: buf[..len].to_vec(),
-                    rssi_dbm: Some(rssi_dbm),
+                    rssi_dbm,
                 }));
             }
             let now = Instant::now();

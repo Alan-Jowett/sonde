@@ -17,7 +17,7 @@ from azure.servicebus.aio import ServiceBusClient
 
 
 CONNECT_TIMEOUT_SECS = 30
-MESSAGE_TIMEOUT_SECS = 60
+DEFAULT_MESSAGE_TIMEOUT_SECS = 180
 CONNECTOR_MAX_FRAME_LENGTH = 1_048_576
 
 
@@ -31,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--upstream-queue", required=True)
     parser.add_argument("--downstream-queue", required=True)
+    parser.add_argument("--message-timeout-secs", type=int, default=DEFAULT_MESSAGE_TIMEOUT_SECS)
     return parser.parse_args()
 
 
@@ -108,10 +109,8 @@ class ConnectorHarness:
             raise RuntimeError("connector harness has no connected writer")
         await write_framed(self._writer, payload)
 
-    async def wait_downstream(self) -> bytes:
-        return await asyncio.wait_for(
-            self._downstream_payloads.get(), timeout=MESSAGE_TIMEOUT_SECS
-        )
+    async def wait_downstream(self, timeout_secs: int) -> bytes:
+        return await asyncio.wait_for(self._downstream_payloads.get(), timeout=timeout_secs)
 
     async def close_peer(self) -> None:
         if self._writer is not None:
@@ -128,7 +127,7 @@ class ConnectorHarness:
 
 
 async def receive_one_body(
-    client: ServiceBusClient, queue_name: str, timeout_secs: int = MESSAGE_TIMEOUT_SECS
+    client: ServiceBusClient, queue_name: str, timeout_secs: int
 ) -> bytes:
     deadline = time.monotonic() + timeout_secs
     async with client.get_queue_receiver(queue_name=queue_name, max_wait_time=5) as receiver:
@@ -180,12 +179,13 @@ async def run_success_path(
     client: ServiceBusClient,
     upstream_queue: str,
     downstream_queue: str,
+    message_timeout_secs: int,
 ) -> None:
     upstream_payload = b"ci-live-upstream-payload"
     downstream_payload = b"ci-live-downstream-payload"
 
     await harness.send_upstream(upstream_payload)
-    actual_upstream = await receive_one_body(client, upstream_queue)
+    actual_upstream = await receive_one_body(client, upstream_queue, message_timeout_secs)
     if actual_upstream != upstream_payload:
         raise RuntimeError(
             f"upstream payload mismatch: expected {upstream_payload!r}, got {actual_upstream!r}"
@@ -194,7 +194,7 @@ async def run_success_path(
     async with client.get_queue_sender(queue_name=downstream_queue) as sender:
         await sender.send_messages(ServiceBusMessage(downstream_payload))
 
-    actual_downstream = await harness.wait_downstream()
+    actual_downstream = await harness.wait_downstream(message_timeout_secs)
     if actual_downstream != downstream_payload:
         raise RuntimeError(
             f"downstream payload mismatch: expected {downstream_payload!r}, got {actual_downstream!r}"
@@ -208,6 +208,7 @@ async def run_failure_path(
     client: ServiceBusClient,
     downstream_queue: str,
     companion: asyncio.subprocess.Process,
+    message_timeout_secs: int,
 ) -> None:
     failed_handoff_payload = b"ci-live-downstream-write-failure"
     await harness.close_peer()
@@ -215,13 +216,13 @@ async def run_failure_path(
         await sender.send_messages(ServiceBusMessage(failed_handoff_payload))
 
     try:
-        await asyncio.wait_for(companion.wait(), timeout=MESSAGE_TIMEOUT_SECS)
+        await asyncio.wait_for(companion.wait(), timeout=message_timeout_secs)
     except asyncio.TimeoutError as exc:
         raise RuntimeError("companion did not exit after failed downstream handoff") from exc
     if companion.returncode == 0:
         raise RuntimeError("companion unexpectedly succeeded after failed downstream handoff")
 
-    actual_payload = await receive_one_body(client, downstream_queue)
+    actual_payload = await receive_one_body(client, downstream_queue, message_timeout_secs)
     if actual_payload != failed_handoff_payload:
         raise RuntimeError("downstream message was altered before re-delivery after failure")
 
@@ -240,12 +241,10 @@ async def async_main() -> int:
     stdout_task: asyncio.Task[None] | None = None
     stderr_task: asyncio.Task[None] | None = None
     credential: AzureCliCredential | None = None
-    client: ServiceBusClient | None = None
 
     try:
         await harness.start()
         credential = AzureCliCredential()
-        client = ServiceBusClient(namespace, credential=credential, logging_enable=False)
         companion = await asyncio.create_subprocess_exec(
             args.companion_bin,
             "--connector-socket",
@@ -266,11 +265,23 @@ async def async_main() -> int:
         await harness.wait_connected()
         print("connector harness connected", flush=True)
 
-        async with client:
-            await run_success_path(harness, client, args.upstream_queue, args.downstream_queue)
+        async with ServiceBusClient(namespace, credential=credential, logging_enable=False) as client:
+            await run_success_path(
+                harness,
+                client,
+                args.upstream_queue,
+                args.downstream_queue,
+                args.message_timeout_secs,
+            )
             print("success path passed", flush=True)
 
-            await run_failure_path(harness, client, args.downstream_queue, companion)
+            await run_failure_path(
+                harness,
+                client,
+                args.downstream_queue,
+                companion,
+                args.message_timeout_secs,
+            )
             print("failure path passed", flush=True)
 
         return 0

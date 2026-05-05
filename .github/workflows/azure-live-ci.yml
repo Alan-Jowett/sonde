@@ -63,7 +63,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
           python3 -m pip install --upgrade pip
-          python3 -m pip install azure-identity azure-servicebus
+          python3 -m pip install azure-identity==1.25.3 azure-servicebus==7.14.3
 
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
 
@@ -88,7 +88,7 @@ jobs:
               echo "::error::refusing to delete resource group $SONDE_AZURE_CI_RESOURCE_GROUP without tags.sonde-ci-owner=azure-live-ci"
               exit 1
             fi
-            az group delete --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --yes
+            az group delete --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --yes --no-wait
           fi
           for _ in $(seq 1 90); do
             if [ "$(az group exists --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --output tsv)" = "false" ]; then
@@ -104,6 +104,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .azure-live-state
+          az group create \
+            --name "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --location "$SONDE_AZURE_CI_LOCATION" \
+            --tags sonde-ci-owner=azure-live-ci project="$SONDE_AZURE_CI_PROJECT_NAME" > /dev/null
           openssl ecparam -name prime256v1 -genkey -noout -out .azure-live-state/key.pem
           chmod 600 .azure-live-state/key.pem
           openssl req -new -x509 \
@@ -118,16 +122,9 @@ jobs:
             --parameters location="$SONDE_AZURE_CI_LOCATION" \
             --parameters resource_group_name="$SONDE_AZURE_CI_RESOURCE_GROUP" \
             --parameters project_name="$SONDE_AZURE_CI_PROJECT_NAME" \
+            --parameters resourceGroupOwnerTag='azure-live-ci' \
             --parameters companionCertificateBase64="$CERT_BASE64" \
             --output json > .azure-live-state/deployment.json
-
-      - name: Tag disposable resource group
-        shell: bash
-        run: |
-          set -euo pipefail
-          az group update \
-            --name "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-            --set tags.sonde-ci-owner=azure-live-ci > /dev/null
 
       - name: Write Azure companion runtime state
         shell: bash
@@ -169,6 +166,7 @@ jobs:
             --companion-bin ./target/debug/sonde-azure-companion \
             --state-dir ./.azure-live-state \
             --connector-socket /tmp/sonde-azure-live-ci.sock \
+            --message-timeout-secs 180 \
             --namespace "$(python3 -c "import json; print(json.load(open('.azure-live-state/service-bus.json'))['namespace'])")" \
             --upstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/service-bus.json'))['upstream_queue'])")" \
             --downstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/service-bus.json'))['downstream_queue'])")"
@@ -201,7 +199,7 @@ jobs:
               echo "::error::refusing to delete resource group $SONDE_AZURE_CI_RESOURCE_GROUP without tags.sonde-ci-owner=azure-live-ci"
               exit 1
             fi
-            az group delete --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --yes
+            az group delete --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --yes --no-wait
           fi
           for _ in $(seq 1 90); do
             if [ "$(az group exists --name "$SONDE_AZURE_CI_RESOURCE_GROUP" --output tsv)" = "false" ]; then

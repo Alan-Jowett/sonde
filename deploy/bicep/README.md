@@ -92,6 +92,9 @@ by itself. After provisioning, you still need to publish a package containing:
 - `host.json`
 - `UpstreamConnector/function.json`
 
+The deployment outputs `deploymentContainerName` and `deploymentContainerUrl` so automation
+can discover the blob container that must receive that package.
+
 Until that package is uploaded to the configured deployment container, the Function App
 is provisioned but not yet runnable.
 

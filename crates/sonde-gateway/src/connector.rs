@@ -711,3 +711,35 @@ fn optional_u32_field(
             .ok_or_else(|| format!("`{field}` must be uint or null")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn actual_state_encoding_includes_schedule_interval_at_key_11() {
+        let message = ConnectorOutboundMessage::ActualState {
+            entity_kind: "node",
+            entity_id: "node-1".to_string(),
+            current_program_hash: Some(vec![0x11; 32]),
+            assigned_program_hash: Some(vec![0x22; 32]),
+            schedule_interval_s: Some(60),
+            battery_mv: Some(3300),
+            firmware_abi_version: Some(1),
+            firmware_version: Some("1.2.3".to_string()),
+            timestamp_ms: 1234,
+        };
+
+        let encoded = message.encode().unwrap();
+        let decoded = decode_map(&encoded).unwrap();
+
+        assert_eq!(
+            required_u64(&decoded, 1, "msg_type").unwrap(),
+            MSG_TYPE_ACTUAL_STATE
+        );
+        assert_eq!(
+            optional_u32_field(&decoded, 11, "schedule_interval_s").unwrap(),
+            Some(60)
+        );
+    }
+}

@@ -10,11 +10,12 @@ use azservicebus::{
     ServiceBusSenderOptions,
 };
 use azure_core::credentials::TokenCredential;
+use azure_core_legacy::auth::TokenCredential as LegacyTokenCredential;
 use azure_core_legacy::error::ErrorKind as LegacyAzureErrorKind;
 use azure_core_legacy::StatusCode as LegacyStatusCode;
 use azure_data_tables::prelude::{IfMatchCondition, TableServiceClient};
 use azure_identity::ManagedIdentityCredential;
-use azure_identity_legacy::create_default_credential as create_legacy_default_credential;
+use azure_identity_legacy::{AppServiceManagedIdentityCredential, TokenCredentialOptions};
 use base64::Engine as _;
 use ciborium::Value;
 use serde::{Deserialize, Serialize};
@@ -317,9 +318,12 @@ pub struct AzureTablesStore {
 
 impl AzureTablesStore {
     pub fn new(config: &RuntimeConfig) -> Result<Self, HandlerError> {
-        let credential = create_legacy_default_credential().map_err(|e| {
-            HandlerError::Config(format!("create Azure Table credential failed: {e}"))
-        })?;
+        let credential: Arc<dyn LegacyTokenCredential> = Arc::new(
+            AppServiceManagedIdentityCredential::create(TokenCredentialOptions::default())
+                .map_err(|e| {
+                    HandlerError::Config(format!("create Azure Table credential failed: {e}"))
+                })?,
+        );
         let service = TableServiceClient::new(config.storage_account.clone(), credential);
         Ok(Self {
             node_state_table: service.table_client(config.node_state_table.clone()),

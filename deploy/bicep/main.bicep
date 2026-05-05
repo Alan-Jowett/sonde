@@ -95,11 +95,11 @@ module stack './modules/stack.bicep' = {
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
     storageAccountName: effectiveStorageAccountName
-     nodeStateTableName: nodeStateTableName
-     programRouteTableName: programRouteTableName
-     functionAppName: effectiveFunctionAppName
-     functionPlanName: effectiveFunctionPlanName
-     companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId
+    nodeStateTableName: nodeStateTableName
+    programRouteTableName: programRouteTableName
+    functionAppName: effectiveFunctionAppName
+    functionPlanName: effectiveFunctionPlanName
+    companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId
   }
 }
 
@@ -108,6 +108,8 @@ output serviceBusNamespaceName string = stack.outputs.serviceBusNamespaceName
 output upstreamQueueName string = stack.outputs.upstreamQueueName
 output downstreamQueueName string = stack.outputs.downstreamQueueName
 output storageAccountName string = stack.outputs.storageAccountName
+output deploymentContainerName string = stack.outputs.deploymentContainerName
+output deploymentContainerUrl string = stack.outputs.deploymentContainerUrl
 output nodeStateTableName string = stack.outputs.nodeStateTableName
 output programRouteTableName string = stack.outputs.programRouteTableName
 output functionAppName string = stack.outputs.functionAppName
@@ -121,6 +123,8 @@ output companionBootstrapValues object = {
   serviceBusNamespace: stack.outputs.serviceBusNamespaceName
   upstreamQueue: stack.outputs.upstreamQueueName
   downstreamQueue: stack.outputs.downstreamQueueName
+  deploymentContainerName: stack.outputs.deploymentContainerName
+  deploymentContainerUrl: stack.outputs.deploymentContainerUrl
   nodeStateTable: stack.outputs.nodeStateTableName
   programRouteTable: stack.outputs.programRouteTableName
   note: 'The deployment registers the supplied certificate public material on the Entra app. The matching PEM certificate and private key remain caller-managed local artifacts for sonde-azure-companion bootstrap.'

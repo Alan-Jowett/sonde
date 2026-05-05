@@ -78,6 +78,7 @@ class ConnectorHarness:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._downstream_payloads: asyncio.Queue[bytes] = asyncio.Queue()
+        self._abort_next_downstream_write = False
 
     async def start(self) -> None:
         if self.socket_path.exists():
@@ -92,6 +93,16 @@ class ConnectorHarness:
         self.connected.set()
         try:
             while True:
+                if self._abort_next_downstream_write:
+                    self._abort_next_downstream_write = False
+                    try:
+                        await reader.readexactly(4)
+                    except asyncio.IncompleteReadError as exc:
+                        if exc.partial:
+                            raise RuntimeError("truncated connector frame length prefix") from exc
+                        break
+                    writer.transport.abort()
+                    return
                 payload = await read_framed(reader)
                 if payload is None:
                     break
@@ -112,11 +123,10 @@ class ConnectorHarness:
     async def wait_downstream(self, timeout_secs: int) -> bytes:
         return await asyncio.wait_for(self._downstream_payloads.get(), timeout=timeout_secs)
 
-    async def close_peer(self) -> None:
-        if self._writer is not None:
-            self._writer.close()
-            with contextlib.suppress(Exception):
-                await self._writer.wait_closed()
+    def abort_next_downstream_write(self) -> None:
+        if self._writer is None:
+            raise RuntimeError("connector harness has no connected writer")
+        self._abort_next_downstream_write = True
 
     async def stop(self) -> None:
         if self._server is not None:
@@ -210,8 +220,8 @@ async def run_failure_path(
     companion: asyncio.subprocess.Process,
     message_timeout_secs: int,
 ) -> None:
-    failed_handoff_payload = b"ci-live-downstream-write-failure"
-    await harness.close_peer()
+    failed_handoff_payload = b"x" * (240 * 1024)
+    harness.abort_next_downstream_write()
     async with client.get_queue_sender(queue_name=downstream_queue) as sender:
         await sender.send_messages(ServiceBusMessage(failed_handoff_payload))
 

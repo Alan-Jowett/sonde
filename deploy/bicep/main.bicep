@@ -33,13 +33,16 @@ param downstreamQueueName string = 'desired-state'
 @description('Optional override for the Storage Account name.')
 param storageAccountName string = ''
 
-@description('Table name reserved for later decoded-data persistence.')
-param tableName string = 'decodeddata'
+@description('Table name for Azure handler node-state rows.')
+param nodeStateTableName string = 'nodestate'
 
-@description('Optional override for the placeholder Azure Function App name.')
+@description('Table name for Azure handler program-route rows.')
+param programRouteTableName string = 'programroute'
+
+@description('Optional override for the Azure handler Function App name.')
 param functionAppName string = ''
 
-@description('Optional override for the placeholder Function hosting plan name.')
+@description('Optional override for the Azure handler Function hosting plan name.')
 param functionPlanName string = ''
 
 var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
@@ -52,7 +55,7 @@ var effectiveStorageAccountName = empty(storageAccountName)
   ? take('st${take(uniqueString(subscription().subscriptionId, project_name, effectiveResourceGroupName, 'storage'), 22)}', 24)
   : storageAccountName
 var effectiveFunctionAppName = empty(functionAppName)
-  ? take('${take(effectiveProjectSlug, 24)}-decoder-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'func'), 8)}', 60)
+  ? take('${take(effectiveProjectSlug, 24)}-handler-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'func'), 8)}', 60)
   : functionAppName
 var effectiveFunctionPlanName = empty(functionPlanName)
   ? take('${take(effectiveProjectSlug, 24)}-func-plan', 40)
@@ -92,10 +95,11 @@ module stack './modules/stack.bicep' = {
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
     storageAccountName: effectiveStorageAccountName
-    tableName: tableName
-    functionAppName: effectiveFunctionAppName
-    functionPlanName: effectiveFunctionPlanName
-    companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId
+     nodeStateTableName: nodeStateTableName
+     programRouteTableName: programRouteTableName
+     functionAppName: effectiveFunctionAppName
+     functionPlanName: effectiveFunctionPlanName
+     companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId
   }
 }
 
@@ -104,7 +108,8 @@ output serviceBusNamespaceName string = stack.outputs.serviceBusNamespaceName
 output upstreamQueueName string = stack.outputs.upstreamQueueName
 output downstreamQueueName string = stack.outputs.downstreamQueueName
 output storageAccountName string = stack.outputs.storageAccountName
-output storageTableName string = stack.outputs.tableName
+output nodeStateTableName string = stack.outputs.nodeStateTableName
+output programRouteTableName string = stack.outputs.programRouteTableName
 output functionAppName string = stack.outputs.functionAppName
 output functionPrincipalId string = stack.outputs.functionPrincipalId
 output companionClientId string = companionIdentity.outputs.clientId
@@ -116,5 +121,7 @@ output companionBootstrapValues object = {
   serviceBusNamespace: stack.outputs.serviceBusNamespaceName
   upstreamQueue: stack.outputs.upstreamQueueName
   downstreamQueue: stack.outputs.downstreamQueueName
+  nodeStateTable: stack.outputs.nodeStateTableName
+  programRouteTable: stack.outputs.programRouteTableName
   note: 'The deployment registers the supplied certificate public material on the Entra app. The matching PEM certificate and private key remain caller-managed local artifacts for sonde-azure-companion bootstrap.'
 }

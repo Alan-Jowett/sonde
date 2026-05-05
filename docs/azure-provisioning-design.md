@@ -105,22 +105,24 @@ elsewhere in this design.
 The storage module provisions:
 
 1. one Storage Account, and
-2. the Table resource reserved for later decoded-data persistence.
+2. the Table resources used by the Azure handler, including separate tables for
+   `NodeState` and `ProgramRoute`.
 
-This module intentionally stops at resource creation. It does not define the
-table's logical schema, retention semantics, or decoded-column contract; those
-belong to the later Azure Function work that will own decode/storage behavior.
-When the Function placeholder needs storage credentials for deployment wiring,
-the design keeps that secret handling inside the consuming module rather than
-surfacing raw account keys as deployment outputs.
+This module intentionally stops at resource creation and RBAC-ready wiring. It
+does not define the tables' logical schema, retention semantics, or row
+contracts; those belong to the Azure handler specification that owns cloud-side
+reconciliation behavior. When the Azure handler Function App needs storage
+credentials for deployment wiring, the design keeps that secret handling inside
+the consuming module rather than surfacing raw account keys as deployment
+outputs.
 
-### 3.5  Function placeholder resources
+### 3.5  Azure handler Function App resources
 
-The function-placeholder module provisions the hosting resources that reserve
-space for the later decoder Function App. This module may create the Function
-App shell, a consumption hosting plan, storage linkage, and placeholder app
-settings, but it must not depend on the later function code package being
-present in this issue.
+The function-placeholder module provisions the hosting resources used by the
+Azure handler Function App. This module may create the Function App shell, a
+consumption hosting plan, storage linkage, and baseline app settings, but it
+must not depend on the handler function code package being deployed by the
+provisioning workflow itself.
 
 ---
 
@@ -169,23 +171,29 @@ Azure companion bridge:
 The design intentionally avoids broader "owner" or "administrator" roles for
 normal runtime operation.
 
-### 4.4  Function placeholder identity
+### 4.4  Azure handler Function App identity
 
-The placeholder Function App uses its own system-assigned managed identity. It
+The Azure handler Function App uses its own system-assigned managed identity. It
 is not reused as the Azure companion runtime identity, because the two
 processes have different trust boundaries and different steady-state
 permissions.
 
 The Function App identity receives the narrow data-plane permissions needed by
-the later decoder/control-plane path:
+the Azure handler path:
 
 1. receive from the upstream queue,
 2. send on the downstream queue, and
-3. write decoded records to the reserved Table Storage resource.
+3. read and write the Azure Table resources used by the handler.
 
 The design keeps these grants scoped to the resources actually used by the
 Function App rather than assigning broader namespace-wide or account-wide
 administrator privileges.
+
+When the handler delivers `GW-0813` messages to pre-provisioned external queues,
+the Function App identity also needs send permission on those queues. Because
+those queues may be provisioned outside the Sonde Bicep stack, that grant is an
+external deployment dependency documented alongside the route-table contract
+rather than an automatically created in-stack role assignment.
 
 ---
 

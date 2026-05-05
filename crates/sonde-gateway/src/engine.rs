@@ -916,6 +916,7 @@ impl Gateway {
             node.node_id.clone(),
             program_hash.clone(),
             updated_node.assigned_program_hash.clone(),
+            updated_node.schedule_interval_s,
             battery_mv,
             firmware_abi_version,
             updated_node.firmware_version.clone().unwrap_or_default(),

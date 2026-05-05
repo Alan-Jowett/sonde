@@ -12,12 +12,14 @@ Azure companion architecture.
 - Two Service Bus queues:
   - `connector-upstream`
   - `desired-state`
-- An Azure Storage Account and Table resource for later decoded-data storage
-- A placeholder Azure Function App on a Flex Consumption plan
+- An Azure Storage Account plus two Azure Table resources for the Azure handler:
+  - `nodestate`
+  - `programroute`
+- An Azure handler Function App on a Flex Consumption plan
 - A system-assigned managed identity on the Function App with:
   - receive permissions on the upstream queue
   - send permissions on the downstream queue
-  - write permissions on the Storage Table
+  - read/write permissions on the Azure handler tables
 - An Entra application / service principal for `sonde-azure-companion` using a
   caller-supplied certificate public credential
 - Azure companion Service Bus RBAC:
@@ -38,7 +40,8 @@ Azure companion architecture.
 | `upstreamQueueName` | `connector-upstream` | Gateway-originated connector traffic queue |
 | `downstreamQueueName` | `desired-state` | Desired-state ingress queue |
 | `storageAccountName` | derived | Optional Storage Account override |
-| `tableName` | `decodeddata` | Placeholder decoded-data table resource |
+| `nodeStateTableName` | `nodestate` | Azure handler node-state table |
+| `programRouteTableName` | `programroute` | Azure handler program-route table |
 | `functionAppName` | derived | Optional Function App override |
 | `functionPlanName` | derived | Optional Function hosting plan override |
 
@@ -105,7 +108,9 @@ az group delete --name <resource-group-name> --yes --no-wait
 
 This removes the Azure resource-plane stack. If you also want to remove the
 Entra application and service principal, delete those identity objects
-explicitly after teardown.
+explicitly after teardown. If the Azure handler publishes to pre-provisioned
+external handler queues, those queues and their RBAC grants are outside this
+stack and must be managed separately.
 
 ## Live CI prerequisites
 

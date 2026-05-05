@@ -205,8 +205,9 @@ state.
 | `battery_mv` | 6 | uint/null | Latest node battery reading in millivolts when applicable. |
 | `firmware_abi_version` | 7 | uint/null | Firmware ABI version when applicable. |
 | `firmware_version` | 8 | tstr/null | Firmware version string when applicable. |
-| `timestamp_ms` | 9 | uint | Reception timestamp in Unix milliseconds. |
+| `timestamp_ms` | 9 | uint | Reception timestamp in Unix milliseconds. For node-scoped `ACTUAL_STATE`, this is the node's last check-in time as observed by the gateway. |
 | `status_details` | 10 | map | Additional gateway- or entity-scoped status fields relevant to reconciliation. See section 3.3.1. |
+| `schedule_interval_s` | 11 | uint/null | Latest node wake interval in seconds when applicable. |
 
 #### 3.3.1  `status_details` payload
 

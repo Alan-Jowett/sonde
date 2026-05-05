@@ -1688,9 +1688,9 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Start the gateway and register a node with an assigned resident program.
 2. Connect one connector client.
-3. Send a valid `WAKE` from the registered node with known `program_hash`, `battery_mv`, `firmware_abi_version`, and `firmware_version`.
+3. Configure a known node schedule interval, then send a valid `WAKE` from the registered node with known `program_hash`, `battery_mv`, `firmware_abi_version`, and `firmware_version`.
 4. Assert: the connector client receives exactly one upstream actual-state/status message for that `WAKE`.
-5. Assert: the message contains the expected `node_id`, current and assigned program hashes, `battery_mv`, `firmware_abi_version`, `firmware_version`, and a recent timestamp.
+5. Assert: the message contains the expected `node_id`, current and assigned program hashes, `schedule_interval_s`, `battery_mv`, `firmware_abi_version`, `firmware_version`, and a recent timestamp.
 6. Assert: the message is emitted only after the gateway has updated the node's latest-known status.
 
 ---

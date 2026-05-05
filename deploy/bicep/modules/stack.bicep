@@ -21,13 +21,16 @@ param downstreamQueueName string
 @description('Storage Account name.')
 param storageAccountName string
 
-@description('Storage Table name.')
-param tableName string
+@description('Azure handler node-state table name.')
+param nodeStateTableName string
 
-@description('Placeholder Function App name.')
+@description('Azure handler program-route table name.')
+param programRouteTableName string
+
+@description('Azure handler Function App name.')
 param functionAppName string
 
-@description('Placeholder Function hosting plan name.')
+@description('Azure handler Function hosting plan name.')
 param functionPlanName string
 
 @description('Object ID of the Azure companion runtime service principal.')
@@ -55,7 +58,8 @@ module storage './storage.bicep' = {
   params: {
     location: location
     storageAccountName: storageAccountName
-    tableName: tableName
+    nodeStateTableName: nodeStateTableName
+    programRouteTableName: programRouteTableName
     deploymentContainerName: deploymentStorageContainerName
     tags: tags
   }
@@ -71,6 +75,11 @@ module functionPlaceholder './function-placeholder.bicep' = {
     functionPlanName: functionPlanName
     deploymentContainerUrl: functionDeploymentContainerUrl
     storageAccountName: storage.outputs.storageAccountName
+    serviceBusNamespaceName: serviceBusNamespaceName
+    upstreamQueueName: upstreamQueueName
+    downstreamQueueName: downstreamQueueName
+    nodeStateTableName: storage.outputs.nodeStateTableName
+    programRouteTableName: storage.outputs.programRouteTableName
     tags: tags
   }
 }
@@ -123,7 +132,8 @@ module functionRbac './function-rbac.bicep' = {
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
     storageAccountName: storageAccountName
-    tableName: tableName
+    nodeStateTableName: storage.outputs.nodeStateTableName
+    programRouteTableName: storage.outputs.programRouteTableName
   }
   dependsOn: [
     serviceBus
@@ -136,6 +146,7 @@ output serviceBusNamespaceName string = serviceBus.outputs.namespaceName
 output upstreamQueueName string = serviceBus.outputs.upstreamQueueName
 output downstreamQueueName string = serviceBus.outputs.downstreamQueueName
 output storageAccountName string = storage.outputs.storageAccountName
-output tableName string = storage.outputs.tableName
+output nodeStateTableName string = storage.outputs.nodeStateTableName
+output programRouteTableName string = storage.outputs.programRouteTableName
 output functionAppName string = functionPlaceholder.outputs.functionAppName
 output functionPrincipalId string = functionPlaceholder.outputs.principalId

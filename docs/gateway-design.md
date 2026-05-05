@@ -1082,10 +1082,13 @@ actual state.
 
 When the gateway accepts a node `WAKE`, it updates the node's latest-known
 actual state and emits an upstream connector message describing that state
-change. When the gateway accepts node-originated application data, it emits a
-separate upstream connector message containing the opaque payload bytes plus the
-gateway metadata needed by the control plane to associate the data with the
-originating node and program.
+change. The node-scoped actual-state payload includes the node's reported or
+currently configured wake interval (`schedule_interval_s`) in addition to the
+current program, assigned program, battery, firmware, and last-check-in data.
+When the gateway accepts node-originated application data, it emits a separate
+upstream connector message containing the opaque payload bytes plus the gateway
+metadata needed by the control plane to associate the data with the originating
+node and program.
 
 For a `WAKE` carrying a piggybacked `blob`, the gateway emits the actual-state
 update first and the application-data message second. Application-data egress is

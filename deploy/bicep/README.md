@@ -117,6 +117,7 @@ provides:
 - `SONDE_AZURE_CI_TENANT_ID`
 - `SONDE_AZURE_CI_SUBSCRIPTION_ID`
 - `SONDE_AZURE_CI_RESOURCE_GROUP`
+- optional `SONDE_AZURE_CI_RESOURCE_GROUP_PREFIX`
 - optional `SONDE_AZURE_CI_LOCATION`
 - optional `SONDE_AZURE_CI_PROJECT_NAME`
 
@@ -137,3 +138,10 @@ Service Bus queue permissions to:
 Those rights can be granted either with queue-scoped assignments or with a
 broader namespace-scoped data role if that is the repository's preferred
 operational model.
+
+For destructive cleanup safety, the workflow only deletes a resource group when
+both of the following are true:
+
+- the configured resource-group name starts with the configured CI prefix (by
+  default `${SONDE_AZURE_CI_PROJECT_NAME}-ci-`), and
+- the existing group is tagged `sonde-ci-owner=azure-live-ci`.

@@ -239,12 +239,13 @@ async def async_main() -> int:
     companion: asyncio.subprocess.Process | None = None
     stdout_task: asyncio.Task[None] | None = None
     stderr_task: asyncio.Task[None] | None = None
-
-    await harness.start()
-    credential = AzureCliCredential()
-    client = ServiceBusClient(namespace, credential=credential, logging_enable=False)
+    credential: AzureCliCredential | None = None
+    client: ServiceBusClient | None = None
 
     try:
+        await harness.start()
+        credential = AzureCliCredential()
+        client = ServiceBusClient(namespace, credential=credential, logging_enable=False)
         companion = await asyncio.create_subprocess_exec(
             args.companion_bin,
             "--connector-socket",
@@ -285,7 +286,8 @@ async def async_main() -> int:
             return_exceptions=True,
         )
         await harness.stop()
-        await credential.close()
+        if credential is not None:
+            await credential.close()
 
 
 def main() -> int:

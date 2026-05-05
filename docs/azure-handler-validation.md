@@ -115,6 +115,10 @@
 3. Assert: exactly one downstream `GW-0811` message is published.
 4. Assert: the emitted payload carries the row's desired `schedule_interval_s`.
 
+Combined resident-program and schedule divergence is covered by
+`T-AZH-0101`, which asserts that one complete downstream `GW-0811` is
+published when both desired fields diverge simultaneously.
+
 ---
 
 ### T-AZH-0300  ProgramRoute rows map `program_hash` to handler queue name

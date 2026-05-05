@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use azservicebus::{
-    ServiceBusClient, ServiceBusClientOptions, ServiceBusMessage, ServiceBusSenderOptions,
+    ServiceBusClient, ServiceBusClientOptions, ServiceBusMessage, ServiceBusSender,
+    ServiceBusSenderOptions,
 };
 use azure_core::credentials::TokenCredential;
-use azure_data_tables::prelude::TableServiceClient;
+use azure_core_legacy::error::ErrorKind as LegacyAzureErrorKind;
+use azure_core_legacy::StatusCode as LegacyStatusCode;
+use azure_data_tables::prelude::{IfMatchCondition, TableServiceClient};
 use azure_identity::ManagedIdentityCredential;
 use azure_identity_legacy::create_default_credential as create_legacy_default_credential;
 use base64::Engine as _;
@@ -17,6 +21,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sonde_gateway::connector::{MSG_TYPE_ACTUAL_STATE, MSG_TYPE_APP_DATA, MSG_TYPE_DESIRED_STATE};
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Error)]
 pub enum HandlerError {
@@ -87,6 +92,18 @@ pub struct ProgramRouteRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedStateUpdate {
+    pub node_id: String,
+    pub current_program_hash: Option<Vec<u8>>,
+    pub assigned_program_hash: Option<Vec<u8>>,
+    pub schedule_interval_s: Option<u32>,
+    pub battery_mv: Option<u32>,
+    pub firmware_abi_version: Option<u32>,
+    pub firmware_version: Option<String>,
+    pub timestamp_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActualStateMessage {
     pub entity_kind: String,
     pub entity_id: String,
@@ -118,6 +135,9 @@ pub enum ConnectorMessage {
 pub trait HandlerStore: Send + Sync {
     async fn load_node_state(&self, node_id: &str) -> Result<Option<NodeStateRow>, HandlerError>;
     async fn save_node_state(&self, row: &NodeStateRow) -> Result<(), HandlerError>;
+    async fn create_node_state_if_absent(&self, row: &NodeStateRow) -> Result<bool, HandlerError>;
+    async fn update_observed_state(&self, update: &ObservedStateUpdate)
+        -> Result<(), HandlerError>;
     async fn load_program_route(
         &self,
         program_hash: &[u8],
@@ -171,33 +191,70 @@ where
             ));
         }
 
-        let Some(mut row) = self.store.load_node_state(&actual_state.entity_id).await? else {
+        let node_id = actual_state.entity_id.clone();
+        let Some(row) = self.store.load_node_state(&node_id).await? else {
             let seeded = NodeStateRow {
-                node_id: actual_state.entity_id,
+                node_id: node_id.clone(),
                 desired_assigned_program_hash: actual_state
                     .current_program_hash
                     .clone()
                     .or_else(|| actual_state.assigned_program_hash.clone()),
                 desired_schedule_interval_s: actual_state.schedule_interval_s,
-                observed_current_program_hash: actual_state.current_program_hash,
-                observed_assigned_program_hash: actual_state.assigned_program_hash,
+                observed_current_program_hash: actual_state.current_program_hash.clone(),
+                observed_assigned_program_hash: actual_state.assigned_program_hash.clone(),
                 observed_schedule_interval_s: actual_state.schedule_interval_s,
                 battery_mv: actual_state.battery_mv,
                 firmware_abi_version: actual_state.firmware_abi_version,
-                firmware_version: actual_state.firmware_version,
+                firmware_version: actual_state.firmware_version.clone(),
                 last_checkin_ms: actual_state.timestamp_ms,
             };
-            return self.store.save_node_state(&seeded).await;
+            if self.store.create_node_state_if_absent(&seeded).await? {
+                return Ok(());
+            }
+            let Some(row) = self.store.load_node_state(&node_id).await? else {
+                return Err(HandlerError::Store(format!(
+                    "node state row `{node_id}` disappeared during create race"
+                )));
+            };
+            return self
+                .reconcile_existing_actual_state(row, actual_state)
+                .await;
         };
 
-        row.observed_current_program_hash = actual_state.current_program_hash;
-        row.observed_assigned_program_hash = actual_state.assigned_program_hash;
-        row.observed_schedule_interval_s = actual_state.schedule_interval_s;
-        row.battery_mv = actual_state.battery_mv;
-        row.firmware_abi_version = actual_state.firmware_abi_version;
-        row.firmware_version = actual_state.firmware_version;
-        row.last_checkin_ms = actual_state.timestamp_ms;
-        self.store.save_node_state(&row).await?;
+        self.reconcile_existing_actual_state(row, actual_state)
+            .await
+    }
+
+    async fn reconcile_existing_actual_state(
+        &self,
+        row: NodeStateRow,
+        actual_state: ActualStateMessage,
+    ) -> Result<(), HandlerError> {
+        if actual_state.timestamp_ms < row.last_checkin_ms {
+            return Ok(());
+        }
+
+        let update = ObservedStateUpdate {
+            node_id: row.node_id.clone(),
+            current_program_hash: actual_state.current_program_hash,
+            assigned_program_hash: actual_state.assigned_program_hash,
+            schedule_interval_s: actual_state.schedule_interval_s,
+            battery_mv: actual_state.battery_mv,
+            firmware_abi_version: actual_state.firmware_abi_version,
+            firmware_version: actual_state.firmware_version,
+            timestamp_ms: actual_state.timestamp_ms,
+        };
+        self.store.update_observed_state(&update).await?;
+        let row = self
+            .store
+            .load_node_state(&update.node_id)
+            .await?
+            .ok_or_else(|| {
+                HandlerError::Store(format!(
+                    "node state row `{}` disappeared after observed-state update",
+                    update.node_id
+                ))
+            })?;
 
         let program_diverged =
             row.desired_assigned_program_hash != row.observed_current_program_hash;
@@ -282,6 +339,47 @@ impl HandlerStore for AzureTablesStore {
         Ok(())
     }
 
+    async fn create_node_state_if_absent(&self, row: &NodeStateRow) -> Result<bool, HandlerError> {
+        let entity: NodeStateEntity = row.clone().into();
+        match self
+            .node_state_table
+            .insert::<_, NodeStateEntity>(&entity)
+            .map_err(|e| HandlerError::Store(format!("prepare node state insert failed: {e}")))?
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    LegacyAzureErrorKind::HttpResponse {
+                        status: LegacyStatusCode::Conflict,
+                        ..
+                    }
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(e) => Err(HandlerError::Store(format!(
+                "create node state failed: {e}"
+            ))),
+        }
+    }
+
+    async fn update_observed_state(
+        &self,
+        update: &ObservedStateUpdate,
+    ) -> Result<(), HandlerError> {
+        let entity = ObservedNodeStateEntity::from(update.clone());
+        self.node_state_table
+            .partition_key_client(entity.partition_key.clone())
+            .entity_client(entity.row_key.clone())
+            .merge(&entity, IfMatchCondition::Any)
+            .map_err(|e| HandlerError::Store(format!("prepare observed-state merge failed: {e}")))?
+            .await
+            .map_err(|e| HandlerError::Store(format!("update observed state failed: {e}")))?;
+        Ok(())
+    }
+
     async fn load_program_route(
         &self,
         program_hash: &[u8],
@@ -308,6 +406,7 @@ impl HandlerStore for AzureTablesStore {
 pub struct ServiceBusQueuePublisher {
     namespace: String,
     credential: Arc<dyn TokenCredential>,
+    state: Mutex<ServiceBusPublisherState>,
 }
 
 impl ServiceBusQueuePublisher {
@@ -319,6 +418,7 @@ impl ServiceBusQueuePublisher {
         Ok(Self {
             namespace: namespace.into(),
             credential,
+            state: Mutex::new(ServiceBusPublisherState::default()),
         })
     }
 }
@@ -326,23 +426,49 @@ impl ServiceBusQueuePublisher {
 #[async_trait]
 impl QueuePublisher for ServiceBusQueuePublisher {
     async fn publish(&self, queue: &str, payload: Vec<u8>) -> Result<(), HandlerError> {
-        let mut client = ServiceBusClient::new_from_token_credential(
-            self.namespace.clone(),
-            Arc::clone(&self.credential),
-            ServiceBusClientOptions::default(),
-        )
-        .await
-        .map_err(|e| HandlerError::Publish(format!("connect to Service Bus failed: {e}")))?;
-        let mut sender = client
-            .create_sender(queue.to_string(), ServiceBusSenderOptions::default())
-            .await
-            .map_err(|e| HandlerError::Publish(format!("create Service Bus sender failed: {e}")))?;
-        sender
-            .send_message(ServiceBusMessage::new(payload))
-            .await
-            .map_err(|e| HandlerError::Publish(format!("send Service Bus message failed: {e}")))?;
+        let mut state = self.state.lock().await;
+        if state.client.is_none() {
+            state.client = Some(
+                ServiceBusClient::new_from_token_credential(
+                    self.namespace.clone(),
+                    Arc::clone(&self.credential),
+                    ServiceBusClientOptions::default(),
+                )
+                .await
+                .map_err(|e| {
+                    HandlerError::Publish(format!("connect to Service Bus failed: {e}"))
+                })?,
+            );
+        }
+        if !state.senders.contains_key(queue) {
+            let client = state.client.as_mut().ok_or_else(|| {
+                HandlerError::Publish("service bus client cache was not initialized".to_string())
+            })?;
+            let sender = client
+                .create_sender(queue.to_string(), ServiceBusSenderOptions::default())
+                .await
+                .map_err(|e| {
+                    HandlerError::Publish(format!("create Service Bus sender failed: {e}"))
+                })?;
+            state.senders.insert(queue.to_string(), sender);
+        }
+        let sender = state.senders.get_mut(queue).ok_or_else(|| {
+            HandlerError::Publish(format!("sender cache did not retain queue `{queue}`"))
+        })?;
+        if let Err(e) = sender.send_message(ServiceBusMessage::new(payload)).await {
+            state.senders.remove(queue);
+            return Err(HandlerError::Publish(format!(
+                "send Service Bus message failed: {e}"
+            )));
+        }
         Ok(())
     }
+}
+
+#[derive(Default)]
+struct ServiceBusPublisherState {
+    client: Option<ServiceBusClient<azservicebus::core::BasicRetryPolicy>>,
+    senders: HashMap<String, ServiceBusSender>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -369,6 +495,21 @@ struct ProgramRouteEntity {
     #[serde(rename = "RowKey")]
     row_key: String,
     handler_queue: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct ObservedNodeStateEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    observed_current_program_hash: Option<String>,
+    observed_assigned_program_hash: Option<String>,
+    observed_schedule_interval_s: Option<u32>,
+    battery_mv: Option<u32>,
+    firmware_abi_version: Option<u32>,
+    firmware_version: Option<String>,
+    last_checkin_ms: u64,
 }
 
 impl From<NodeStateEntity> for NodeStateRow {
@@ -419,11 +560,28 @@ impl From<ProgramRouteEntity> for ProgramRouteRow {
     }
 }
 
+impl From<ObservedStateUpdate> for ObservedNodeStateEntity {
+    fn from(value: ObservedStateUpdate) -> Self {
+        Self {
+            partition_key: "node".to_string(),
+            row_key: value.node_id,
+            observed_current_program_hash: encode_optional_hex(value.current_program_hash),
+            observed_assigned_program_hash: encode_optional_hex(value.assigned_program_hash),
+            observed_schedule_interval_s: value.schedule_interval_s,
+            battery_mv: value.battery_mv,
+            firmware_abi_version: value.firmware_abi_version,
+            firmware_version: value.firmware_version,
+            last_checkin_ms: value.timestamp_ms,
+        }
+    }
+}
+
 pub fn extract_trigger_payload(request_body: &[u8]) -> Result<Vec<u8>, HandlerError> {
     let envelope: serde_json::Value = serde_json::from_slice(request_body)?;
     if let Some(value) = envelope
         .get("data")
         .and_then(|data| data.get("message"))
+        .or_else(|| envelope.get("Data").and_then(|data| data.get("message")))
         .or_else(|| envelope.get("Data"))
         .or_else(|| envelope.get("Body"))
         .or_else(|| envelope.get("body"))
@@ -640,8 +798,6 @@ fn opt_u32_value(value: Option<u32>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use tokio::sync::Mutex;
 
     #[derive(Default)]
     struct MemoryStore {
@@ -663,6 +819,39 @@ mod tests {
                 .lock()
                 .await
                 .insert(row.node_id.clone(), row.clone());
+            Ok(())
+        }
+
+        async fn create_node_state_if_absent(
+            &self,
+            row: &NodeStateRow,
+        ) -> Result<bool, HandlerError> {
+            let mut nodes = self.nodes.lock().await;
+            if nodes.contains_key(&row.node_id) {
+                return Ok(false);
+            }
+            nodes.insert(row.node_id.clone(), row.clone());
+            Ok(true)
+        }
+
+        async fn update_observed_state(
+            &self,
+            update: &ObservedStateUpdate,
+        ) -> Result<(), HandlerError> {
+            let mut nodes = self.nodes.lock().await;
+            let row = nodes.get_mut(&update.node_id).ok_or_else(|| {
+                HandlerError::Store(format!(
+                    "missing node `{}` for observed update",
+                    update.node_id
+                ))
+            })?;
+            row.observed_current_program_hash = update.current_program_hash.clone();
+            row.observed_assigned_program_hash = update.assigned_program_hash.clone();
+            row.observed_schedule_interval_s = update.schedule_interval_s;
+            row.battery_mv = update.battery_mv;
+            row.firmware_abi_version = update.firmware_abi_version;
+            row.firmware_version = update.firmware_version.clone();
+            row.last_checkin_ms = update.timestamp_ms;
             Ok(())
         }
 
@@ -711,6 +900,26 @@ mod tests {
         }
 
         async fn save_node_state(&self, _row: &NodeStateRow) -> Result<(), HandlerError> {
+            match &self.save_error {
+                Some(error) => Err(HandlerError::Store(error.clone())),
+                None => Ok(()),
+            }
+        }
+
+        async fn create_node_state_if_absent(
+            &self,
+            _row: &NodeStateRow,
+        ) -> Result<bool, HandlerError> {
+            match &self.save_error {
+                Some(error) => Err(HandlerError::Store(error.clone())),
+                None => Ok(true),
+            }
+        }
+
+        async fn update_observed_state(
+            &self,
+            _update: &ObservedStateUpdate,
+        ) -> Result<(), HandlerError> {
             match &self.save_error {
                 Some(error) => Err(HandlerError::Store(error.clone())),
                 None => Ok(()),
@@ -814,6 +1023,30 @@ mod tests {
         assert_eq!(row.firmware_abi_version, Some(1));
         assert_eq!(row.firmware_version.as_deref(), Some("1.2.3"));
         assert_eq!(row.last_checkin_ms, 1234);
+        assert!(publisher.sends.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn first_actual_state_seeds_from_assigned_program_when_current_is_missing() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        handler
+            .handle_payload(&sample_actual_state(
+                "node-1",
+                None,
+                Some(&[0xCC; 32]),
+                Some(60),
+            ))
+            .await
+            .unwrap();
+
+        let row = store.load_node_state("node-1").await.unwrap().unwrap();
+        assert_eq!(row.desired_assigned_program_hash, Some(vec![0xCC; 32]));
+        assert_eq!(row.observed_current_program_hash, None);
+        assert_eq!(row.observed_assigned_program_hash, Some(vec![0xCC; 32]));
         assert!(publisher.sends.lock().await.is_empty());
     }
 
@@ -927,6 +1160,47 @@ mod tests {
         assert_eq!(row.firmware_abi_version, Some(1));
         assert_eq!(row.firmware_version.as_deref(), Some("1.2.3"));
         assert_eq!(row.last_checkin_ms, 1234);
+        assert!(publisher.sends.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_actual_state_is_ignored() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        store
+            .save_node_state(&NodeStateRow {
+                node_id: "node-1".to_string(),
+                desired_assigned_program_hash: Some(vec![0xAA; 32]),
+                desired_schedule_interval_s: Some(60),
+                observed_current_program_hash: Some(vec![0xAA; 32]),
+                observed_assigned_program_hash: Some(vec![0xAA; 32]),
+                observed_schedule_interval_s: Some(60),
+                battery_mv: Some(3200),
+                firmware_abi_version: Some(2),
+                firmware_version: Some("2.0.0".to_string()),
+                last_checkin_ms: 5000,
+            })
+            .await
+            .unwrap();
+
+        handler
+            .handle_payload(&sample_actual_state(
+                "node-1",
+                Some(&[0xBB; 32]),
+                Some(&[0xBB; 32]),
+                Some(120),
+            ))
+            .await
+            .unwrap();
+
+        let row = store.load_node_state("node-1").await.unwrap().unwrap();
+        assert_eq!(row.observed_current_program_hash, Some(vec![0xAA; 32]));
+        assert_eq!(row.observed_schedule_interval_s, Some(60));
+        assert_eq!(row.battery_mv, Some(3200));
+        assert_eq!(row.last_checkin_ms, 5000);
         assert!(publisher.sends.lock().await.is_empty());
     }
 
@@ -1069,6 +1343,19 @@ mod tests {
         let raw = vec![1u8, 2, 3, 4];
         let body = serde_json::json!({
             "Data": base64::engine::general_purpose::STANDARD.encode(&raw)
+        });
+        let decoded =
+            extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap();
+        assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn extract_trigger_payload_decodes_uppercase_data_message_field() {
+        let raw = vec![9u8, 8, 7, 6];
+        let body = serde_json::json!({
+            "Data": {
+                "message": base64::engine::general_purpose::STANDARD.encode(&raw)
+            }
         });
         let decoded =
             extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap();

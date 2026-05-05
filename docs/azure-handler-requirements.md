@@ -27,7 +27,7 @@
 | **Azure handler** | The Azure-hosted control-plane process that consumes upstream Sonde connector traffic from Service Bus and produces downstream desired-state messages or handler-queue deliveries. |
 | **Node state row** | One Azure Table row keyed by Sonde `node_id` that contains both desired fields and the latest observed fields derived from `GW-0812`. |
 | **Program route row** | One Azure Table row keyed by `program_hash` that names the Azure Service Bus queue that should receive `GW-0813` application-data messages for that program. |
-| **Observed fields** | The subset of node state reported by `GW-0812` and copied into the node state row, including current program state, desired schedule as reported by the gateway, firmware data, battery, and last check-in time. |
+| **Observed fields** | The subset of node state reported by `GW-0812` and copied into the node state row, including current program state, observed schedule as reported by the gateway, firmware data, battery, and last check-in time. |
 | **Desired fields** | The cloud-authored fields stored in the node state row and used to build a complete `GW-0811` `DESIRED_STATE` payload for the node. In v1 this document defines `assigned_program_hash` and `schedule_interval_s`. |
 | **Last check-in time** | The most recent `timestamp_ms` carried by a node-scoped `GW-0812` message accepted by the Azure handler for that node. |
 

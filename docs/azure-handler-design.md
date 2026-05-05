@@ -141,7 +141,7 @@ control-plane intent is not overwritten by the next `GW-0812`.
 Each row uses:
 
 - `PartitionKey = "program"`
-- `RowKey = <hex-encoded program_hash>`
+- `RowKey = <lowercase hex-encoded program_hash>`
 
 The row contains:
 

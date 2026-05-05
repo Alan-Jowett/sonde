@@ -104,9 +104,9 @@ pub struct ObservedStateUpdate {
     pub timestamp_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObservedStateWriteResult {
-    Applied,
+    Applied(NodeStateRow),
     IgnoredStale,
 }
 
@@ -262,20 +262,10 @@ where
             firmware_version: actual_state.firmware_version,
             timestamp_ms: actual_state.timestamp_ms,
         };
-        let result = self.store.update_observed_state(&update).await?;
-        if result == ObservedStateWriteResult::IgnoredStale {
-            return Ok(());
-        }
-        let row = self
-            .store
-            .load_node_state(&update.node_id)
-            .await?
-            .ok_or_else(|| {
-                HandlerError::Store(format!(
-                    "node state row `{}` disappeared after observed-state update",
-                    update.node_id
-                ))
-            })?;
+        let row = match self.store.update_observed_state(&update).await? {
+            ObservedStateWriteResult::IgnoredStale => return Ok(()),
+            ObservedStateWriteResult::Applied(row) => row,
+        };
 
         let program_diverged =
             row.desired_assigned_program_hash != row.observed_current_program_hash;
@@ -426,7 +416,11 @@ impl HandlerStore for AzureTablesStore {
                 })?
                 .await
             {
-                Ok(_) => return Ok(ObservedStateWriteResult::Applied),
+                Ok(_) => {
+                    return Ok(ObservedStateWriteResult::Applied(NodeStateRow::try_from(
+                        entity,
+                    )?))
+                }
                 Err(e)
                     if matches!(
                         e.kind(),
@@ -963,7 +957,7 @@ mod tests {
             row.firmware_abi_version = update.firmware_abi_version;
             row.firmware_version = update.firmware_version.clone();
             row.last_checkin_ms = update.timestamp_ms;
-            Ok(ObservedStateWriteResult::Applied)
+            Ok(ObservedStateWriteResult::Applied(row.clone()))
         }
 
         async fn load_program_route(
@@ -1033,7 +1027,18 @@ mod tests {
         ) -> Result<ObservedStateWriteResult, HandlerError> {
             match &self.save_error {
                 Some(error) => Err(HandlerError::Store(error.clone())),
-                None => Ok(ObservedStateWriteResult::Applied),
+                None => Ok(ObservedStateWriteResult::Applied(NodeStateRow {
+                    node_id: "node-1".to_string(),
+                    desired_assigned_program_hash: None,
+                    desired_schedule_interval_s: None,
+                    observed_current_program_hash: None,
+                    observed_assigned_program_hash: None,
+                    observed_schedule_interval_s: None,
+                    battery_mv: None,
+                    firmware_abi_version: None,
+                    firmware_version: None,
+                    last_checkin_ms: 0,
+                })),
             }
         }
 
@@ -1056,6 +1061,54 @@ mod tests {
     impl QueuePublisher for FailingPublisher {
         async fn publish(&self, _queue: &str, _payload: Vec<u8>) -> Result<(), HandlerError> {
             Err(HandlerError::Publish(self.error.clone()))
+        }
+    }
+
+    struct UpdateReturnsAppliedRowStore {
+        initial_row: NodeStateRow,
+        applied_row: NodeStateRow,
+        load_count: Mutex<u32>,
+    }
+
+    #[async_trait]
+    impl HandlerStore for UpdateReturnsAppliedRowStore {
+        async fn load_node_state(
+            &self,
+            node_id: &str,
+        ) -> Result<Option<NodeStateRow>, HandlerError> {
+            let mut load_count = self.load_count.lock().await;
+            *load_count += 1;
+            if *load_count == 1 && node_id == self.initial_row.node_id {
+                return Ok(Some(self.initial_row.clone()));
+            }
+            Err(HandlerError::Store(
+                "load_node_state should not be called after update_observed_state".to_string(),
+            ))
+        }
+
+        async fn save_node_state(&self, _row: &NodeStateRow) -> Result<(), HandlerError> {
+            Ok(())
+        }
+
+        async fn create_node_state_if_absent(
+            &self,
+            _row: &NodeStateRow,
+        ) -> Result<bool, HandlerError> {
+            Ok(false)
+        }
+
+        async fn update_observed_state(
+            &self,
+            _update: &ObservedStateUpdate,
+        ) -> Result<ObservedStateWriteResult, HandlerError> {
+            Ok(ObservedStateWriteResult::Applied(self.applied_row.clone()))
+        }
+
+        async fn load_program_route(
+            &self,
+            _program_hash: &[u8],
+        ) -> Result<Option<ProgramRouteRow>, HandlerError> {
+            Ok(None)
         }
     }
 
@@ -1471,6 +1524,103 @@ mod tests {
         let decoded =
             extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap();
         assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn extract_trigger_payload_decodes_lowercase_data_message_field() {
+        let raw = vec![5u8, 4, 3, 2];
+        let body = serde_json::json!({
+            "data": {
+                "message": base64::engine::general_purpose::STANDARD.encode(&raw)
+            }
+        });
+        let decoded =
+            extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap();
+        assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn extract_trigger_payload_decodes_body_field() {
+        let raw = vec![7u8, 7, 7];
+        let body = serde_json::json!({
+            "Body": base64::engine::general_purpose::STANDARD.encode(&raw)
+        });
+        let decoded =
+            extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap();
+        assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn extract_trigger_payload_decodes_lowercase_body_field() {
+        let raw = vec![6u8, 6, 6];
+        let body = serde_json::json!({
+            "body": base64::engine::general_purpose::STANDARD.encode(&raw)
+        });
+        let decoded =
+            extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap();
+        assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn extract_trigger_payload_decodes_first_lowercase_data_field() {
+        let raw = vec![0xAAu8, 0xBB, 0xCC];
+        let body = serde_json::json!({
+            "data": {
+                "unexpectedBinding": base64::engine::general_purpose::STANDARD.encode(&raw)
+            }
+        });
+        let decoded =
+            extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap();
+        assert_eq!(decoded, raw);
+    }
+
+    #[tokio::test]
+    async fn actual_state_uses_applied_row_without_post_update_reload() {
+        let store = Arc::new(UpdateReturnsAppliedRowStore {
+            initial_row: NodeStateRow {
+                node_id: "node-1".to_string(),
+                desired_assigned_program_hash: Some(vec![0x42; 32]),
+                desired_schedule_interval_s: Some(120),
+                observed_current_program_hash: Some(vec![0x42; 32]),
+                observed_assigned_program_hash: Some(vec![0x42; 32]),
+                observed_schedule_interval_s: Some(120),
+                battery_mv: Some(3300),
+                firmware_abi_version: Some(1),
+                firmware_version: Some("1.2.3".to_string()),
+                last_checkin_ms: 1200,
+            },
+            applied_row: NodeStateRow {
+                node_id: "node-1".to_string(),
+                desired_assigned_program_hash: Some(vec![0x42; 32]),
+                desired_schedule_interval_s: Some(120),
+                observed_current_program_hash: Some(vec![0x99; 32]),
+                observed_assigned_program_hash: Some(vec![0x99; 32]),
+                observed_schedule_interval_s: Some(60),
+                battery_mv: Some(3300),
+                firmware_abi_version: Some(1),
+                firmware_version: Some("1.2.3".to_string()),
+                last_checkin_ms: 1234,
+            },
+            load_count: Mutex::new(0),
+        });
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        handler
+            .handle_payload(&sample_actual_state(
+                "node-1",
+                Some(&[0x99; 32]),
+                Some(&[0x99; 32]),
+                Some(60),
+            ))
+            .await
+            .unwrap();
+
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].0, "desired-state");
+        assert_eq!(*store.load_count.lock().await, 1);
     }
 
     #[test]

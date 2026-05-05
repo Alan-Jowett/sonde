@@ -40,13 +40,17 @@ Azure companion architecture.
 | `upstreamQueueName` | `connector-upstream` | Gateway-originated connector traffic queue |
 | `downstreamQueueName` | `desired-state` | Desired-state ingress queue |
 | `storageAccountName` | derived | Optional Storage Account override |
-| `nodeStateTableName` | `nodestate` | Azure handler node-state table |
+| `tableName` | empty | Legacy compatibility alias for the node-state table name |
+| `nodeStateTableName` | derived | Azure handler node-state table |
 | `programRouteTableName` | `programroute` | Azure handler program-route table |
 | `functionAppName` | derived | Optional Function App override |
 | `functionPlanName` | derived | Optional Function hosting plan override |
 
 When resource names are derived automatically, the deployment normalizes
 `project_name` to satisfy Azure naming rules for the target resource types.
+
+For backward compatibility with earlier templates, callers may still pass `tableName`.
+When `nodeStateTableName` is omitted, that legacy alias is used as the node-state table name.
 
 ## Companion certificate input
 

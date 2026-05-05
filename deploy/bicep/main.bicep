@@ -33,8 +33,11 @@ param downstreamQueueName string = 'desired-state'
 @description('Optional override for the Storage Account name.')
 param storageAccountName string = ''
 
+@description('Legacy compatibility alias for the Azure handler node-state table name.')
+param tableName string = ''
+
 @description('Table name for Azure handler node-state rows.')
-param nodeStateTableName string = 'nodestate'
+param nodeStateTableName string = ''
 
 @description('Table name for Azure handler program-route rows.')
 param programRouteTableName string = 'programroute'
@@ -54,8 +57,14 @@ var effectiveServiceBusNamespaceName = empty(serviceBusNamespaceName)
 var effectiveStorageAccountName = empty(storageAccountName)
   ? take('st${take(uniqueString(subscription().subscriptionId, project_name, effectiveResourceGroupName, 'storage'), 22)}', 24)
   : storageAccountName
+var effectiveNodeStateTableName = empty(nodeStateTableName)
+  ? (empty(tableName) ? 'nodestate' : tableName)
+  : nodeStateTableName
+var effectiveProgramRouteTableName = empty(programRouteTableName)
+  ? 'programroute'
+  : programRouteTableName
 var effectiveFunctionAppName = empty(functionAppName)
-  ? take('${take(effectiveProjectSlug, 24)}-handler-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'func'), 8)}', 60)
+  ? take('${take(effectiveProjectSlug, 24)}-decoder-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'func'), 8)}', 60)
   : functionAppName
 var effectiveFunctionPlanName = empty(functionPlanName)
   ? take('${take(effectiveProjectSlug, 24)}-func-plan', 40)
@@ -95,8 +104,8 @@ module stack './modules/stack.bicep' = {
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
     storageAccountName: effectiveStorageAccountName
-    nodeStateTableName: nodeStateTableName
-    programRouteTableName: programRouteTableName
+    nodeStateTableName: effectiveNodeStateTableName
+    programRouteTableName: effectiveProgramRouteTableName
     functionAppName: effectiveFunctionAppName
     functionPlanName: effectiveFunctionPlanName
     companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId
@@ -108,6 +117,7 @@ output serviceBusNamespaceName string = stack.outputs.serviceBusNamespaceName
 output upstreamQueueName string = stack.outputs.upstreamQueueName
 output downstreamQueueName string = stack.outputs.downstreamQueueName
 output storageAccountName string = stack.outputs.storageAccountName
+output storageTableName string = stack.outputs.nodeStateTableName
 output deploymentContainerName string = stack.outputs.deploymentContainerName
 output deploymentContainerUrl string = stack.outputs.deploymentContainerUrl
 output nodeStateTableName string = stack.outputs.nodeStateTableName

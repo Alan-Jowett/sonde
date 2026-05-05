@@ -8,7 +8,7 @@
     "serviceBus": {
       "messageHandlerOptions": {
         "autoComplete": true,
-        "maxConcurrentCalls": 16
+        "maxConcurrentCalls": 1
       }
     }
   },

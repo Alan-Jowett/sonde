@@ -17,11 +17,11 @@ use azure_identity::ManagedIdentityCredential;
 use azure_identity_legacy::create_default_credential as create_legacy_default_credential;
 use base64::Engine as _;
 use ciborium::Value;
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sonde_gateway::connector::{MSG_TYPE_ACTUAL_STATE, MSG_TYPE_APP_DATA, MSG_TYPE_DESIRED_STATE};
 use thiserror::Error;
 use tokio::sync::Mutex;
+use tracing::warn;
 
 #[derive(Debug, Error)]
 pub enum HandlerError {
@@ -103,6 +103,12 @@ pub struct ObservedStateUpdate {
     pub timestamp_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservedStateWriteResult {
+    Applied,
+    IgnoredStale,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActualStateMessage {
     pub entity_kind: String,
@@ -136,8 +142,10 @@ pub trait HandlerStore: Send + Sync {
     async fn load_node_state(&self, node_id: &str) -> Result<Option<NodeStateRow>, HandlerError>;
     async fn save_node_state(&self, row: &NodeStateRow) -> Result<(), HandlerError>;
     async fn create_node_state_if_absent(&self, row: &NodeStateRow) -> Result<bool, HandlerError>;
-    async fn update_observed_state(&self, update: &ObservedStateUpdate)
-        -> Result<(), HandlerError>;
+    async fn update_observed_state(
+        &self,
+        update: &ObservedStateUpdate,
+    ) -> Result<ObservedStateWriteResult, HandlerError>;
     async fn load_program_route(
         &self,
         program_hash: &[u8],
@@ -173,11 +181,20 @@ where
             ConnectorMessage::ActualState(actual_state) => {
                 if actual_state.entity_kind == "node" {
                     self.handle_actual_state(actual_state).await?;
+                } else {
+                    warn!(
+                        entity_kind = %actual_state.entity_kind,
+                        entity_id = %actual_state.entity_id,
+                        "ignoring non-node ACTUAL_STATE message"
+                    );
                 }
                 Ok(())
             }
             ConnectorMessage::AppData(app_data) => self.handle_app_data(payload, app_data).await,
-            ConnectorMessage::Unsupported(_) => Ok(()),
+            ConnectorMessage::Unsupported(msg_type) => {
+                warn!(msg_type, "ignoring unsupported connector message");
+                Ok(())
+            }
         }
     }
 
@@ -244,7 +261,10 @@ where
             firmware_version: actual_state.firmware_version,
             timestamp_ms: actual_state.timestamp_ms,
         };
-        self.store.update_observed_state(&update).await?;
+        let result = self.store.update_observed_state(&update).await?;
+        if result == ObservedStateWriteResult::IgnoredStale {
+            return Ok(());
+        }
         let row = self
             .store
             .load_node_state(&update.node_id)
@@ -311,20 +331,25 @@ impl AzureTablesStore {
 #[async_trait]
 impl HandlerStore for AzureTablesStore {
     async fn load_node_state(&self, node_id: &str) -> Result<Option<NodeStateRow>, HandlerError> {
-        let escaped = escape_odata_string(node_id);
-        let mut stream = self
+        let entity_client = self
             .node_state_table
-            .query()
-            .filter(format!("PartitionKey eq 'node' and RowKey eq '{escaped}'"))
-            .top(1)
-            .into_stream::<NodeStateEntity>();
-        let response = match stream.next().await {
-            Some(result) => {
-                result.map_err(|e| HandlerError::Store(format!("query node state failed: {e}")))?
+            .partition_key_client("node")
+            .entity_client(node_id.to_string());
+        match entity_client.get::<NodeStateEntity>().await {
+            Ok(response) => Ok(Some(NodeStateRow::try_from(response.entity)?)),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    LegacyAzureErrorKind::HttpResponse {
+                        status: LegacyStatusCode::NotFound,
+                        ..
+                    }
+                ) =>
+            {
+                Ok(None)
             }
-            None => return Ok(None),
-        };
-        Ok(response.entities.into_iter().next().map(Into::into))
+            Err(e) => Err(HandlerError::Store(format!("query node state failed: {e}"))),
+        }
     }
 
     async fn save_node_state(&self, row: &NodeStateRow) -> Result<(), HandlerError> {
@@ -368,16 +393,58 @@ impl HandlerStore for AzureTablesStore {
     async fn update_observed_state(
         &self,
         update: &ObservedStateUpdate,
-    ) -> Result<(), HandlerError> {
-        let entity = ObservedNodeStateEntity::from(update.clone());
-        self.node_state_table
-            .partition_key_client(entity.partition_key.clone())
-            .entity_client(entity.row_key.clone())
-            .merge(&entity, IfMatchCondition::Any)
-            .map_err(|e| HandlerError::Store(format!("prepare observed-state merge failed: {e}")))?
-            .await
-            .map_err(|e| HandlerError::Store(format!("update observed state failed: {e}")))?;
-        Ok(())
+    ) -> Result<ObservedStateWriteResult, HandlerError> {
+        let entity_client = self
+            .node_state_table
+            .partition_key_client("node")
+            .entity_client(update.node_id.clone());
+        for _ in 0..4 {
+            let response = entity_client.get::<NodeStateEntity>().await.map_err(|e| {
+                HandlerError::Store(format!("load node state for merge failed: {e}"))
+            })?;
+            let mut entity = response.entity;
+            if update.timestamp_ms < entity.last_checkin_ms {
+                return Ok(ObservedStateWriteResult::IgnoredStale);
+            }
+            entity.observed_current_program_hash =
+                encode_optional_hex(update.current_program_hash.clone());
+            entity.observed_assigned_program_hash =
+                encode_optional_hex(update.assigned_program_hash.clone());
+            entity.observed_schedule_interval_s = update.schedule_interval_s;
+            entity.battery_mv = update.battery_mv;
+            entity.firmware_abi_version = update.firmware_abi_version;
+            entity.firmware_version = update.firmware_version.clone();
+            entity.last_checkin_ms = update.timestamp_ms;
+            match entity_client
+                .update(&entity, IfMatchCondition::from(response.etag))
+                .map_err(|e| {
+                    HandlerError::Store(format!("prepare observed-state update failed: {e}"))
+                })?
+                .await
+            {
+                Ok(_) => return Ok(ObservedStateWriteResult::Applied),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        LegacyAzureErrorKind::HttpResponse {
+                            status: LegacyStatusCode::PreconditionFailed,
+                            ..
+                        }
+                    ) =>
+                {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(HandlerError::Store(format!(
+                        "update observed state failed: {e}"
+                    )));
+                }
+            }
+        }
+        Err(HandlerError::Store(format!(
+            "update observed state for node `{}` failed after concurrent retries",
+            update.node_id
+        )))
     }
 
     async fn load_program_route(
@@ -385,28 +452,35 @@ impl HandlerStore for AzureTablesStore {
         program_hash: &[u8],
     ) -> Result<Option<ProgramRouteRow>, HandlerError> {
         let row_key = hex::encode(program_hash);
-        let escaped = escape_odata_string(&row_key);
-        let mut stream = self
+        let entity_client = self
             .program_route_table
-            .query()
-            .filter(format!(
-                "PartitionKey eq 'program' and RowKey eq '{escaped}'"
-            ))
-            .top(1)
-            .into_stream::<ProgramRouteEntity>();
-        let response = match stream.next().await {
-            Some(result) => result
-                .map_err(|e| HandlerError::Store(format!("query program route failed: {e}")))?,
-            None => return Ok(None),
-        };
-        Ok(response.entities.into_iter().next().map(Into::into))
+            .partition_key_client("program")
+            .entity_client(row_key);
+        match entity_client.get::<ProgramRouteEntity>().await {
+            Ok(response) => Ok(Some(ProgramRouteRow::try_from(response.entity)?)),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    LegacyAzureErrorKind::HttpResponse {
+                        status: LegacyStatusCode::NotFound,
+                        ..
+                    }
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(HandlerError::Store(format!(
+                "query program route failed: {e}"
+            ))),
+        }
     }
 }
 
 pub struct ServiceBusQueuePublisher {
     namespace: String,
     credential: Arc<dyn TokenCredential>,
-    state: Mutex<ServiceBusPublisherState>,
+    client: Mutex<Option<ServiceBusClient<azservicebus::core::BasicRetryPolicy>>>,
+    senders: Mutex<HashMap<String, Arc<Mutex<ServiceBusSender>>>>,
 }
 
 impl ServiceBusQueuePublisher {
@@ -418,7 +492,8 @@ impl ServiceBusQueuePublisher {
         Ok(Self {
             namespace: namespace.into(),
             credential,
-            state: Mutex::new(ServiceBusPublisherState::default()),
+            client: Mutex::new(None),
+            senders: Mutex::new(HashMap::new()),
         })
     }
 }
@@ -426,49 +501,59 @@ impl ServiceBusQueuePublisher {
 #[async_trait]
 impl QueuePublisher for ServiceBusQueuePublisher {
     async fn publish(&self, queue: &str, payload: Vec<u8>) -> Result<(), HandlerError> {
-        let mut state = self.state.lock().await;
-        if state.client.is_none() {
-            state.client = Some(
-                ServiceBusClient::new_from_token_credential(
-                    self.namespace.clone(),
-                    Arc::clone(&self.credential),
-                    ServiceBusClientOptions::default(),
-                )
-                .await
-                .map_err(|e| {
-                    HandlerError::Publish(format!("connect to Service Bus failed: {e}"))
-                })?,
-            );
+        if let Some(sender) = self.senders.lock().await.get(queue).cloned() {
+            return send_with_cached_sender(sender, payload).await;
         }
-        if !state.senders.contains_key(queue) {
-            let client = state.client.as_mut().ok_or_else(|| {
+
+        let new_sender = {
+            let mut client_guard = self.client.lock().await;
+            if client_guard.is_none() {
+                *client_guard = Some(
+                    ServiceBusClient::new_from_token_credential(
+                        self.namespace.clone(),
+                        Arc::clone(&self.credential),
+                        ServiceBusClientOptions::default(),
+                    )
+                    .await
+                    .map_err(|e| {
+                        HandlerError::Publish(format!("connect to Service Bus failed: {e}"))
+                    })?,
+                );
+            }
+            let client = client_guard.as_mut().ok_or_else(|| {
                 HandlerError::Publish("service bus client cache was not initialized".to_string())
             })?;
-            let sender = client
-                .create_sender(queue.to_string(), ServiceBusSenderOptions::default())
-                .await
-                .map_err(|e| {
-                    HandlerError::Publish(format!("create Service Bus sender failed: {e}"))
-                })?;
-            state.senders.insert(queue.to_string(), sender);
-        }
-        let sender = state.senders.get_mut(queue).ok_or_else(|| {
-            HandlerError::Publish(format!("sender cache did not retain queue `{queue}`"))
-        })?;
-        if let Err(e) = sender.send_message(ServiceBusMessage::new(payload)).await {
-            state.senders.remove(queue);
-            return Err(HandlerError::Publish(format!(
-                "send Service Bus message failed: {e}"
-            )));
-        }
-        Ok(())
+            Arc::new(Mutex::new(
+                client
+                    .create_sender(queue.to_string(), ServiceBusSenderOptions::default())
+                    .await
+                    .map_err(|e| {
+                        HandlerError::Publish(format!("create Service Bus sender failed: {e}"))
+                    })?,
+            ))
+        };
+
+        let sender = {
+            let mut senders = self.senders.lock().await;
+            senders
+                .entry(queue.to_string())
+                .or_insert_with(|| Arc::clone(&new_sender))
+                .clone()
+        };
+
+        send_with_cached_sender(sender, payload).await
     }
 }
 
-#[derive(Default)]
-struct ServiceBusPublisherState {
-    client: Option<ServiceBusClient<azservicebus::core::BasicRetryPolicy>>,
-    senders: HashMap<String, ServiceBusSender>,
+async fn send_with_cached_sender(
+    sender: Arc<Mutex<ServiceBusSender>>,
+    payload: Vec<u8>,
+) -> Result<(), HandlerError> {
+    let mut sender = sender.lock().await;
+    sender
+        .send_message(ServiceBusMessage::new(payload))
+        .await
+        .map_err(|e| HandlerError::Publish(format!("send Service Bus message failed: {e}")))
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -497,37 +582,31 @@ struct ProgramRouteEntity {
     handler_queue: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-struct ObservedNodeStateEntity {
-    #[serde(rename = "PartitionKey")]
-    partition_key: String,
-    #[serde(rename = "RowKey")]
-    row_key: String,
-    observed_current_program_hash: Option<String>,
-    observed_assigned_program_hash: Option<String>,
-    observed_schedule_interval_s: Option<u32>,
-    battery_mv: Option<u32>,
-    firmware_abi_version: Option<u32>,
-    firmware_version: Option<String>,
-    last_checkin_ms: u64,
-}
+impl TryFrom<NodeStateEntity> for NodeStateRow {
+    type Error = HandlerError;
 
-impl From<NodeStateEntity> for NodeStateRow {
-    fn from(value: NodeStateEntity) -> Self {
-        Self {
+    fn try_from(value: NodeStateEntity) -> Result<Self, Self::Error> {
+        Ok(Self {
             node_id: value.row_key,
-            desired_assigned_program_hash: decode_optional_hex(value.desired_assigned_program_hash),
+            desired_assigned_program_hash: decode_optional_program_hash(
+                value.desired_assigned_program_hash,
+                "desired_assigned_program_hash",
+            )?,
             desired_schedule_interval_s: value.desired_schedule_interval_s,
-            observed_current_program_hash: decode_optional_hex(value.observed_current_program_hash),
-            observed_assigned_program_hash: decode_optional_hex(
+            observed_current_program_hash: decode_optional_program_hash(
+                value.observed_current_program_hash,
+                "observed_current_program_hash",
+            )?,
+            observed_assigned_program_hash: decode_optional_program_hash(
                 value.observed_assigned_program_hash,
-            ),
+                "observed_assigned_program_hash",
+            )?,
             observed_schedule_interval_s: value.observed_schedule_interval_s,
             battery_mv: value.battery_mv,
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
             last_checkin_ms: value.last_checkin_ms,
-        }
+        })
     }
 }
 
@@ -551,28 +630,14 @@ impl From<NodeStateRow> for NodeStateEntity {
     }
 }
 
-impl From<ProgramRouteEntity> for ProgramRouteRow {
-    fn from(value: ProgramRouteEntity) -> Self {
-        Self {
-            program_hash: hex::decode(value.row_key).unwrap_or_default(),
-            handler_queue: value.handler_queue,
-        }
-    }
-}
+impl TryFrom<ProgramRouteEntity> for ProgramRouteRow {
+    type Error = HandlerError;
 
-impl From<ObservedStateUpdate> for ObservedNodeStateEntity {
-    fn from(value: ObservedStateUpdate) -> Self {
-        Self {
-            partition_key: "node".to_string(),
-            row_key: value.node_id,
-            observed_current_program_hash: encode_optional_hex(value.current_program_hash),
-            observed_assigned_program_hash: encode_optional_hex(value.assigned_program_hash),
-            observed_schedule_interval_s: value.schedule_interval_s,
-            battery_mv: value.battery_mv,
-            firmware_abi_version: value.firmware_abi_version,
-            firmware_version: value.firmware_version,
-            last_checkin_ms: value.timestamp_ms,
-        }
+    fn try_from(value: ProgramRouteEntity) -> Result<Self, Self::Error> {
+        Ok(Self {
+            program_hash: decode_hex_program_hash(value.row_key, "ProgramRoute.RowKey")?,
+            handler_queue: value.handler_queue,
+        })
     }
 }
 
@@ -634,8 +699,8 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
         MSG_TYPE_ACTUAL_STATE => Ok(ConnectorMessage::ActualState(ActualStateMessage {
             entity_kind: required_text(&map, 2, "entity_kind")?,
             entity_id: required_text(&map, 3, "entity_id")?,
-            current_program_hash: optional_bytes_field(&map, 4, "current_program_hash")?,
-            assigned_program_hash: optional_bytes_field(&map, 5, "assigned_program_hash")?,
+            current_program_hash: optional_program_hash_field(&map, 4, "current_program_hash")?,
+            assigned_program_hash: optional_program_hash_field(&map, 5, "assigned_program_hash")?,
             battery_mv: optional_u32_field(&map, 6, "battery_mv")?,
             firmware_abi_version: optional_u32_field(&map, 7, "firmware_abi_version")?,
             firmware_version: optional_text_field(&map, 8, "firmware_version")?,
@@ -644,7 +709,7 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
         })),
         MSG_TYPE_APP_DATA => Ok(ConnectorMessage::AppData(AppDataMessage {
             node_id: required_text(&map, 2, "node_id")?,
-            program_hash: required_bytes(&map, 3, "program_hash")?,
+            program_hash: required_program_hash(&map, 3, "program_hash")?,
             payload: required_bytes(&map, 4, "payload")?,
             timestamp_ms: required_u64(&map, 5, "timestamp_ms")?,
         })),
@@ -672,16 +737,17 @@ pub fn encode_desired_state(row: &NodeStateRow) -> Result<Vec<u8>, HandlerError>
     Ok(bytes)
 }
 
-fn escape_odata_string(value: &str) -> String {
-    value.replace('\'', "''")
-}
-
 fn encode_optional_hex(value: Option<Vec<u8>>) -> Option<String> {
     value.map(hex::encode)
 }
 
-fn decode_optional_hex(value: Option<String>) -> Option<Vec<u8>> {
-    value.and_then(|text| hex::decode(text).ok())
+fn decode_optional_program_hash(
+    value: Option<String>,
+    field: &str,
+) -> Result<Option<Vec<u8>>, HandlerError> {
+    value
+        .map(|text| decode_hex_program_hash(text, field))
+        .transpose()
 }
 
 fn decode_map(bytes: &[u8]) -> Result<Vec<(Value, Value)>, HandlerError> {
@@ -735,6 +801,28 @@ fn required_bytes(map: &[(Value, Value)], key: u64, field: &str) -> Result<Vec<u
             Value::Bytes(bytes) => Ok(bytes.clone()),
             _ => Err(HandlerError::Decode(format!("`{field}` must be bstr"))),
         })
+}
+
+fn required_program_hash(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Vec<u8>, HandlerError> {
+    let bytes = required_bytes(map, key, field)?;
+    validate_program_hash_length(&bytes, field)?;
+    Ok(bytes)
+}
+
+fn optional_program_hash_field(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Option<Vec<u8>>, HandlerError> {
+    let value = optional_bytes_field(map, key, field)?;
+    if let Some(bytes) = value.as_deref() {
+        validate_program_hash_length(bytes, field)?;
+    }
+    Ok(value)
 }
 
 fn optional_bytes_field(
@@ -795,6 +883,22 @@ fn opt_u32_value(value: Option<u32>) -> Value {
     }
 }
 
+fn decode_hex_program_hash(text: String, field: &str) -> Result<Vec<u8>, HandlerError> {
+    let bytes = hex::decode(&text)
+        .map_err(|e| HandlerError::Store(format!("`{field}` must contain valid hex: {e}")))?;
+    validate_program_hash_length(&bytes, field).map_err(|e| HandlerError::Store(e.to_string()))?;
+    Ok(bytes)
+}
+
+fn validate_program_hash_length(bytes: &[u8], field: &str) -> Result<(), HandlerError> {
+    if bytes.len() == 32 {
+        return Ok(());
+    }
+    Err(HandlerError::Decode(format!(
+        "`{field}` must be exactly 32 bytes"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,7 +941,7 @@ mod tests {
         async fn update_observed_state(
             &self,
             update: &ObservedStateUpdate,
-        ) -> Result<(), HandlerError> {
+        ) -> Result<ObservedStateWriteResult, HandlerError> {
             let mut nodes = self.nodes.lock().await;
             let row = nodes.get_mut(&update.node_id).ok_or_else(|| {
                 HandlerError::Store(format!(
@@ -845,6 +949,9 @@ mod tests {
                     update.node_id
                 ))
             })?;
+            if update.timestamp_ms < row.last_checkin_ms {
+                return Ok(ObservedStateWriteResult::IgnoredStale);
+            }
             row.observed_current_program_hash = update.current_program_hash.clone();
             row.observed_assigned_program_hash = update.assigned_program_hash.clone();
             row.observed_schedule_interval_s = update.schedule_interval_s;
@@ -852,7 +959,7 @@ mod tests {
             row.firmware_abi_version = update.firmware_abi_version;
             row.firmware_version = update.firmware_version.clone();
             row.last_checkin_ms = update.timestamp_ms;
-            Ok(())
+            Ok(ObservedStateWriteResult::Applied)
         }
 
         async fn load_program_route(
@@ -919,10 +1026,10 @@ mod tests {
         async fn update_observed_state(
             &self,
             _update: &ObservedStateUpdate,
-        ) -> Result<(), HandlerError> {
+        ) -> Result<ObservedStateWriteResult, HandlerError> {
             match &self.save_error {
                 Some(error) => Err(HandlerError::Store(error.clone())),
-                None => Ok(()),
+                None => Ok(ObservedStateWriteResult::Applied),
             }
         }
 
@@ -1360,6 +1467,60 @@ mod tests {
         let decoded =
             extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap();
         assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn actual_state_rejects_non_sha256_program_hash() {
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("node".to_string())),
+            map_entry(3, Value::Text("node-1".to_string())),
+            map_entry(4, Value::Bytes(vec![0xAA; 31])),
+            map_entry(5, Value::Null),
+            map_entry(6, Value::Integer(3300u64.into())),
+            map_entry(7, Value::Integer(1u64.into())),
+            map_entry(8, Value::Text("1.2.3".to_string())),
+            map_entry(9, Value::Integer(1234u64.into())),
+            map_entry(10, Value::Map(Vec::new())),
+            map_entry(11, Value::Integer(60u64.into())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+
+        let err = decode_connector_message(&bytes).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("`current_program_hash` must be exactly 32 bytes"));
+    }
+
+    #[test]
+    fn app_data_rejects_non_sha256_program_hash() {
+        let payload = sample_app_data(&[0x44; 31], &[1, 2, 3]);
+        let err = decode_connector_message(&payload).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("`program_hash` must be exactly 32 bytes"));
+    }
+
+    #[test]
+    fn node_state_row_decode_fails_closed_on_invalid_hex() {
+        let err = NodeStateRow::try_from(NodeStateEntity {
+            partition_key: "node".to_string(),
+            row_key: "node-1".to_string(),
+            desired_assigned_program_hash: Some("not-hex".to_string()),
+            desired_schedule_interval_s: Some(60),
+            observed_current_program_hash: None,
+            observed_assigned_program_hash: None,
+            observed_schedule_interval_s: Some(60),
+            battery_mv: Some(3300),
+            firmware_abi_version: Some(1),
+            firmware_version: Some("1.2.3".to_string()),
+            last_checkin_ms: 1234,
+        })
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("`desired_assigned_program_hash` must contain valid hex"));
     }
 
     #[tokio::test]

@@ -82,6 +82,19 @@ az deployment sub create `
   --parameters companionCertificateBase64=$cert
 ```
 
+## Custom handler package deployment
+
+The Bicep stack provisions the Azure handler Function App shell and the storage-backed
+deployment configuration, but it does **not** upload the runnable custom-handler package
+by itself. After provisioning, you still need to publish a package containing:
+
+- the `sonde-azure-handler` binary
+- `host.json`
+- `UpstreamConnector/function.json`
+
+Until that package is uploaded to the configured deployment container, the Function App
+is provisioned but not yet runnable.
+
 ## Bootstrap handoff
 
 The deployment outputs the values needed to create the Azure companion runtime

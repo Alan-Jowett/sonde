@@ -72,8 +72,10 @@ pub fn encode_ble_envelope(msg_type: u8, body: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn cbor_encode_map(pairs: &[(u64, Value)]) -> Result<Vec<u8>, EncodeError> {
+    let mut sorted_pairs = pairs.to_vec();
+    sorted_pairs.sort_unstable_by_key(|(key, _)| *key);
     let value = Value::Map(
-        pairs
+        sorted_pairs
             .iter()
             .map(|(key, value)| (Value::Integer((*key).into()), value.clone()))
             .collect(),
@@ -590,6 +592,30 @@ mod tests {
             decode_run_test_command(&body),
             Err(DecodeError::MissingField(TEST_CMD_KEY_RF_CHANNEL))
         ));
+    }
+
+    #[test]
+    fn cbor_encode_map_sorts_keys_canonically() {
+        let unsorted = cbor_encode_map(&[
+            (TEST_CMD_KEY_PAYLOAD, Value::Bytes(vec![0x42; 2])),
+            (
+                TEST_CMD_KEY_TEST_TYPE,
+                Value::Integer(TEST_TYPE_DIAG_FRAME.into()),
+            ),
+            (TEST_CMD_KEY_RF_CHANNEL, Value::Integer(6.into())),
+        ])
+        .unwrap();
+        let sorted = cbor_encode_map(&[
+            (
+                TEST_CMD_KEY_TEST_TYPE,
+                Value::Integer(TEST_TYPE_DIAG_FRAME.into()),
+            ),
+            (TEST_CMD_KEY_RF_CHANNEL, Value::Integer(6.into())),
+            (TEST_CMD_KEY_PAYLOAD, Value::Bytes(vec![0x42; 2])),
+        ])
+        .unwrap();
+
+        assert_eq!(unsorted, sorted);
     }
 
     #[test]

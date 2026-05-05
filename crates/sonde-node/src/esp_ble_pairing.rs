@@ -262,7 +262,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         // build), check the connection's encryption status directly.
         let is_auth = authenticated.lock().map(|a| *a).unwrap_or(false);
         let is_auth =
-            is_auth || check_encryption_fallback(&conn_handle, &authenticated, ble_server);
+            is_auth || check_encryption_fallback(&conn_handle, &authenticated, &mut ble_server);
         let write_data = if is_auth {
             if let Ok(mut p) = pending_write.lock() {
                 p.take()

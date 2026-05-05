@@ -79,7 +79,7 @@ class ConnectorHarness:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._downstream_payloads: asyncio.Queue[bytes] = asyncio.Queue()
-        self._abort_next_downstream_write = False
+        self._abort_next_downstream_write = asyncio.Event()
         self._release_failed_connection = asyncio.Event()
 
     async def start(self) -> None:
@@ -95,21 +95,28 @@ class ConnectorHarness:
         self.connected.set()
         try:
             while True:
-                if self._abort_next_downstream_write:
-                    self._abort_next_downstream_write = False
-                    try:
-                        await reader.readexactly(4)
-                    except asyncio.IncompleteReadError as exc:
-                        if exc.partial:
-                            raise RuntimeError("truncated connector frame length prefix") from exc
-                        break
+                read_task = asyncio.create_task(read_framed(reader))
+                abort_task = asyncio.create_task(self._abort_next_downstream_write.wait())
+                done, pending = await asyncio.wait(
+                    {read_task, abort_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+
+                if abort_task in done:
+                    self._abort_next_downstream_write.clear()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await read_task
                     connector_socket = writer.get_extra_info("socket")
                     if connector_socket is None:
                         raise RuntimeError("connector harness missing accepted socket")
                     connector_socket.shutdown(socket.SHUT_RD)
                     await self._release_failed_connection.wait()
                     return
-                payload = await read_framed(reader)
+
+                payload = read_task.result()
                 if payload is None:
                     break
                 await self._downstream_payloads.put(payload)
@@ -132,7 +139,7 @@ class ConnectorHarness:
     def abort_next_downstream_write(self) -> None:
         if self._writer is None:
             raise RuntimeError("connector harness has no connected writer")
-        self._abort_next_downstream_write = True
+        self._abort_next_downstream_write.set()
 
     async def stop(self) -> None:
         self._release_failed_connection.set()

@@ -51,6 +51,9 @@ When resource names are derived automatically, the deployment normalizes
 
 For backward compatibility with earlier templates, callers may still pass `tableName`.
 When `nodeStateTableName` is omitted, that legacy alias is used as the node-state table name.
+The derived default Function App name intentionally keeps the historical `-decoder-`
+stem so existing stacks update in place; set `functionAppName` explicitly on new
+deployments if you want a handler-specific resource name.
 
 ## Companion certificate input
 
@@ -98,6 +101,9 @@ by itself. After provisioning, you still need to publish a package containing:
 
 The deployment outputs `deploymentContainerName` and `deploymentContainerUrl` so automation
 can discover the blob container that must receive that package.
+Build the `sonde-azure-handler` executable for the Function App's Linux runtime, not
+for your local host OS. If you package from Windows or macOS, cross-compile or build
+the binary in a Linux environment before uploading it.
 
 Until that package is uploaded to the configured deployment container, the Function App
 is provisioned but not yet runnable.

@@ -16,6 +16,7 @@ use sonde_azure_handler::{
     ServiceBusQueuePublisher,
 };
 use tokio::net::TcpListener;
+use tracing_subscriber::prelude::*;
 
 #[derive(Clone)]
 struct AppState {
@@ -24,6 +25,20 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_ansi(false)
+                .with_target(true)
+                .with_level(true),
+        )
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "sonde_azure_handler=info".into()),
+        )
+        .init();
+
     let config = RuntimeConfig::from_env()?;
     let store = Arc::new(AzureTablesStore::new(&config)?);
     let publisher = Arc::new(ServiceBusQueuePublisher::new(

@@ -63,6 +63,9 @@ var effectiveNodeStateTableName = empty(nodeStateTableName)
 var effectiveProgramRouteTableName = empty(programRouteTableName)
   ? 'programroute'
   : programRouteTableName
+// Keep the historical `-decoder-` stem as the derived default to avoid replacing
+// existing Function App resources during in-place redeploys. New deployments can
+// still override `functionAppName` if they want a handler-specific resource name.
 var effectiveFunctionAppName = empty(functionAppName)
   ? take('${take(effectiveProjectSlug, 24)}-decoder-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'func'), 8)}', 60)
   : functionAppName

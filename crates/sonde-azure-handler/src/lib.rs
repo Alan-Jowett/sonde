@@ -325,25 +325,31 @@ impl AzureTablesStore {
 #[async_trait]
 impl HandlerStore for AzureTablesStore {
     async fn load_node_state(&self, node_id: &str) -> Result<Option<NodeStateRow>, HandlerError> {
-        let entity_client = self
-            .node_state_table
-            .partition_key_client("node")
-            .entity_client(node_id.to_string());
-        match entity_client.get::<NodeStateEntity>().await {
-            Ok(response) => Ok(Some(NodeStateRow::try_from(response.entity)?)),
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    LegacyAzureErrorKind::HttpResponse {
-                        status: LegacyStatusCode::NotFound,
-                        ..
-                    }
-                ) =>
-            {
-                Ok(None)
+        let encoded_row_key = encode_node_row_key(node_id);
+        for row_key in [encoded_row_key.as_str(), node_id] {
+            let entity_client = self
+                .node_state_table
+                .partition_key_client("node")
+                .entity_client(row_key.to_string());
+            match entity_client.get::<NodeStateEntity>().await {
+                Ok(response) => return Ok(Some(NodeStateRow::try_from(response.entity)?)),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        LegacyAzureErrorKind::HttpResponse {
+                            status: LegacyStatusCode::NotFound,
+                            ..
+                        }
+                    ) => {}
+                Err(e) => {
+                    return Err(HandlerError::Store(format!("query node state failed: {e}")));
+                }
             }
-            Err(e) => Err(HandlerError::Store(format!("query node state failed: {e}"))),
+            if encoded_row_key == node_id {
+                break;
+            }
         }
+        Ok(None)
     }
 
     async fn save_node_state(&self, row: &NodeStateRow) -> Result<(), HandlerError> {
@@ -388,14 +394,52 @@ impl HandlerStore for AzureTablesStore {
         &self,
         update: &ObservedStateUpdate,
     ) -> Result<ObservedStateWriteResult, HandlerError> {
-        let entity_client = self
-            .node_state_table
-            .partition_key_client("node")
-            .entity_client(update.node_id.clone());
+        let entity_client = self.node_state_table.partition_key_client("node");
+        let encoded_row_key = encode_node_row_key(&update.node_id);
         for _ in 0..4 {
-            let response = entity_client.get::<NodeStateEntity>().await.map_err(|e| {
-                HandlerError::Store(format!("load node state for merge failed: {e}"))
-            })?;
+            let response = match entity_client
+                .entity_client(encoded_row_key.clone())
+                .get::<NodeStateEntity>()
+                .await
+            {
+                Ok(response) => response,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        LegacyAzureErrorKind::HttpResponse {
+                            status: LegacyStatusCode::NotFound,
+                            ..
+                        }
+                    ) && encoded_row_key != update.node_id =>
+                {
+                    entity_client
+                        .entity_client(update.node_id.clone())
+                        .get::<NodeStateEntity>()
+                        .await
+                        .map_err(|e| {
+                            HandlerError::Store(format!("load node state for merge failed: {e}"))
+                        })?
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        LegacyAzureErrorKind::HttpResponse {
+                            status: LegacyStatusCode::NotFound,
+                            ..
+                        }
+                    ) =>
+                {
+                    return Err(HandlerError::Store(format!(
+                        "missing node `{}` for observed update",
+                        update.node_id
+                    )));
+                }
+                Err(e) => {
+                    return Err(HandlerError::Store(format!(
+                        "load node state for merge failed: {e}"
+                    )));
+                }
+            };
             let mut entity = response.entity;
             if update.timestamp_ms < entity.last_checkin_ms {
                 return Ok(ObservedStateWriteResult::IgnoredStale);
@@ -410,6 +454,7 @@ impl HandlerStore for AzureTablesStore {
             entity.firmware_version = update.firmware_version.clone();
             entity.last_checkin_ms = update.timestamp_ms;
             match entity_client
+                .entity_client(entity.row_key.clone())
                 .update(&entity, IfMatchCondition::from(response.etag))
                 .map_err(|e| {
                     HandlerError::Store(format!("prepare observed-state update failed: {e}"))
@@ -585,7 +630,7 @@ impl TryFrom<NodeStateEntity> for NodeStateRow {
 
     fn try_from(value: NodeStateEntity) -> Result<Self, Self::Error> {
         Ok(Self {
-            node_id: value.row_key,
+            node_id: decode_node_row_key(&value.row_key)?,
             desired_assigned_program_hash: decode_optional_program_hash(
                 value.desired_assigned_program_hash,
                 "desired_assigned_program_hash",
@@ -612,7 +657,7 @@ impl From<NodeStateRow> for NodeStateEntity {
     fn from(value: NodeStateRow) -> Self {
         Self {
             partition_key: "node".to_string(),
-            row_key: value.node_id,
+            row_key: encode_node_row_key(&value.node_id),
             desired_assigned_program_hash: encode_optional_hex(value.desired_assigned_program_hash),
             desired_schedule_interval_s: value.desired_schedule_interval_s,
             observed_current_program_hash: encode_optional_hex(value.observed_current_program_hash),
@@ -737,6 +782,21 @@ pub fn encode_desired_state(row: &NodeStateRow) -> Result<Vec<u8>, HandlerError>
 
 fn encode_optional_hex(value: Option<Vec<u8>>) -> Option<String> {
     value.map(hex::encode)
+}
+
+fn encode_node_row_key(node_id: &str) -> String {
+    format!("n:{}", hex::encode(node_id.as_bytes()))
+}
+
+fn decode_node_row_key(row_key: &str) -> Result<String, HandlerError> {
+    let Some(encoded) = row_key.strip_prefix("n:") else {
+        return Ok(row_key.to_string());
+    };
+    let bytes = hex::decode(encoded).map_err(|e| {
+        HandlerError::Store(format!("NodeState.RowKey must contain valid hex: {e}"))
+    })?;
+    String::from_utf8(bytes)
+        .map_err(|e| HandlerError::Store(format!("NodeState.RowKey must contain valid UTF-8: {e}")))
 }
 
 fn decode_optional_program_hash(
@@ -1572,6 +1632,48 @@ mod tests {
         let decoded =
             extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap();
         assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn node_state_entity_round_trips_table_safe_row_key() {
+        let row = NodeStateRow {
+            node_id: "node/with?#unsafe\\chars".to_string(),
+            desired_assigned_program_hash: Some(vec![0x11; 32]),
+            desired_schedule_interval_s: Some(60),
+            observed_current_program_hash: Some(vec![0x22; 32]),
+            observed_assigned_program_hash: Some(vec![0x33; 32]),
+            observed_schedule_interval_s: Some(30),
+            battery_mv: Some(3300),
+            firmware_abi_version: Some(1),
+            firmware_version: Some("1.2.3".to_string()),
+            last_checkin_ms: 1234,
+        };
+
+        let entity: NodeStateEntity = row.clone().into();
+        assert_eq!(
+            entity.row_key,
+            "n:6e6f64652f776974683f23756e736166655c6368617273"
+        );
+        assert_eq!(NodeStateRow::try_from(entity).unwrap(), row);
+    }
+
+    #[test]
+    fn node_state_entity_accepts_legacy_raw_row_key() {
+        let row = NodeStateRow::try_from(NodeStateEntity {
+            partition_key: "node".to_string(),
+            row_key: "node-1".to_string(),
+            desired_assigned_program_hash: None,
+            desired_schedule_interval_s: None,
+            observed_current_program_hash: None,
+            observed_assigned_program_hash: None,
+            observed_schedule_interval_s: None,
+            battery_mv: None,
+            firmware_abi_version: None,
+            firmware_version: None,
+            last_checkin_ms: 1,
+        })
+        .unwrap();
+        assert_eq!(row.node_id, "node-1");
     }
 
     #[tokio::test]

@@ -767,6 +767,7 @@ async fn connector_emits_actual_state_after_wake() {
     assert_eq!(uint_field(&message, 7), 1);
     assert_eq!(text_field(&message, 8), "0.6.0");
     assert!(uint_field(&message, 9) > 0);
+    assert_eq!(uint_field(&message, 11), 60);
 
     drop(client);
     handle.await.unwrap();

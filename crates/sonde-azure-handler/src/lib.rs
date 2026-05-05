@@ -248,7 +248,7 @@ where
         row: NodeStateRow,
         actual_state: ActualStateMessage,
     ) -> Result<(), HandlerError> {
-        if actual_state.timestamp_ms < row.last_checkin_ms {
+        if actual_state.timestamp_ms <= row.last_checkin_ms {
             return Ok(());
         }
 
@@ -325,7 +325,7 @@ impl AzureTablesStore {
 #[async_trait]
 impl HandlerStore for AzureTablesStore {
     async fn load_node_state(&self, node_id: &str) -> Result<Option<NodeStateRow>, HandlerError> {
-        let encoded_row_key = encode_node_row_key(node_id);
+        let encoded_row_key = encode_node_row_key(node_id)?;
         for row_key in [encoded_row_key.as_str(), node_id] {
             let entity_client = self
                 .node_state_table
@@ -353,7 +353,7 @@ impl HandlerStore for AzureTablesStore {
     }
 
     async fn save_node_state(&self, row: &NodeStateRow) -> Result<(), HandlerError> {
-        let entity: NodeStateEntity = row.clone().into();
+        let entity = NodeStateEntity::try_from(row.clone())?;
         self.node_state_table
             .partition_key_client(entity.partition_key.clone())
             .entity_client(entity.row_key.clone())
@@ -365,7 +365,7 @@ impl HandlerStore for AzureTablesStore {
     }
 
     async fn create_node_state_if_absent(&self, row: &NodeStateRow) -> Result<bool, HandlerError> {
-        let entity: NodeStateEntity = row.clone().into();
+        let entity = NodeStateEntity::try_from(row.clone())?;
         match self
             .node_state_table
             .insert::<_, NodeStateEntity>(&entity)
@@ -395,7 +395,7 @@ impl HandlerStore for AzureTablesStore {
         update: &ObservedStateUpdate,
     ) -> Result<ObservedStateWriteResult, HandlerError> {
         let entity_client = self.node_state_table.partition_key_client("node");
-        let encoded_row_key = encode_node_row_key(&update.node_id);
+        let encoded_row_key = encode_node_row_key(&update.node_id)?;
         for _ in 0..4 {
             let response = match entity_client
                 .entity_client(encoded_row_key.clone())
@@ -441,7 +441,7 @@ impl HandlerStore for AzureTablesStore {
                 }
             };
             let mut entity = response.entity;
-            if update.timestamp_ms < entity.last_checkin_ms {
+            if update.timestamp_ms <= entity.last_checkin_ms {
                 return Ok(ObservedStateWriteResult::IgnoredStale);
             }
             entity.observed_current_program_hash =
@@ -653,11 +653,13 @@ impl TryFrom<NodeStateEntity> for NodeStateRow {
     }
 }
 
-impl From<NodeStateRow> for NodeStateEntity {
-    fn from(value: NodeStateRow) -> Self {
-        Self {
+impl TryFrom<NodeStateRow> for NodeStateEntity {
+    type Error = HandlerError;
+
+    fn try_from(value: NodeStateRow) -> Result<Self, Self::Error> {
+        Ok(Self {
             partition_key: "node".to_string(),
-            row_key: encode_node_row_key(&value.node_id),
+            row_key: encode_node_row_key(&value.node_id)?,
             desired_assigned_program_hash: encode_optional_hex(value.desired_assigned_program_hash),
             desired_schedule_interval_s: value.desired_schedule_interval_s,
             observed_current_program_hash: encode_optional_hex(value.observed_current_program_hash),
@@ -669,7 +671,7 @@ impl From<NodeStateRow> for NodeStateEntity {
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
             last_checkin_ms: value.last_checkin_ms,
-        }
+        })
     }
 }
 
@@ -784,8 +786,10 @@ fn encode_optional_hex(value: Option<Vec<u8>>) -> Option<String> {
     value.map(hex::encode)
 }
 
-fn encode_node_row_key(node_id: &str) -> String {
-    format!("n:{}", hex::encode(node_id.as_bytes()))
+fn encode_node_row_key(node_id: &str) -> Result<String, HandlerError> {
+    let encoded = format!("n:{}", hex::encode(node_id.as_bytes()));
+    assert_node_row_key_len(&encoded)?;
+    Ok(encoded)
 }
 
 fn decode_node_row_key(row_key: &str) -> Result<String, HandlerError> {
@@ -797,6 +801,15 @@ fn decode_node_row_key(row_key: &str) -> Result<String, HandlerError> {
     })?;
     String::from_utf8(bytes)
         .map_err(|e| HandlerError::Store(format!("NodeState.RowKey must contain valid UTF-8: {e}")))
+}
+
+fn assert_node_row_key_len(row_key: &str) -> Result<(), HandlerError> {
+    if row_key.encode_utf16().count() <= 1024 {
+        return Ok(());
+    }
+    Err(HandlerError::Decode(
+        "NodeState.RowKey exceeds Azure Table 1024 UTF-16 code unit limit".to_string(),
+    ))
 }
 
 fn decode_optional_program_hash(
@@ -1007,7 +1020,7 @@ mod tests {
                     update.node_id
                 ))
             })?;
-            if update.timestamp_ms < row.last_checkin_ms {
+            if update.timestamp_ms <= row.last_checkin_ms {
                 return Ok(ObservedStateWriteResult::IgnoredStale);
             }
             row.observed_current_program_hash = update.current_program_hash.clone();
@@ -1649,7 +1662,7 @@ mod tests {
             last_checkin_ms: 1234,
         };
 
-        let entity: NodeStateEntity = row.clone().into();
+        let entity = NodeStateEntity::try_from(row.clone()).unwrap();
         assert_eq!(
             entity.row_key,
             "n:6e6f64652f776974683f23756e736166655c6368617273"
@@ -1674,6 +1687,15 @@ mod tests {
         })
         .unwrap();
         assert_eq!(row.node_id, "node-1");
+    }
+
+    #[test]
+    fn encode_node_row_key_rejects_values_over_azure_limit() {
+        let node_id = "a".repeat(512);
+        let err = encode_node_row_key(&node_id).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("NodeState.RowKey exceeds Azure Table 1024 UTF-16 code unit limit"));
     }
 
     #[tokio::test]
@@ -1723,6 +1745,44 @@ mod tests {
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].0, "desired-state");
         assert_eq!(*store.load_count.lock().await, 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_actual_state_timestamp_is_ignored() {
+        let store = Arc::new(MemoryStore::default());
+        store.nodes.lock().await.insert(
+            "node-1".to_string(),
+            NodeStateRow {
+                node_id: "node-1".to_string(),
+                desired_assigned_program_hash: Some(vec![0x42; 32]),
+                desired_schedule_interval_s: Some(120),
+                observed_current_program_hash: Some(vec![0x42; 32]),
+                observed_assigned_program_hash: Some(vec![0x42; 32]),
+                observed_schedule_interval_s: Some(120),
+                battery_mv: Some(3300),
+                firmware_abi_version: Some(1),
+                firmware_version: Some("1.2.3".to_string()),
+                last_checkin_ms: 1234,
+            },
+        );
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        handler
+            .handle_payload(&sample_actual_state(
+                "node-1",
+                Some(&[0x99; 32]),
+                Some(&[0x99; 32]),
+                Some(60),
+            ))
+            .await
+            .unwrap();
+
+        assert!(publisher.sends.lock().await.is_empty());
+        let row = store.nodes.lock().await.get("node-1").cloned().unwrap();
+        assert_eq!(row.last_checkin_ms, 1234);
+        assert_eq!(row.observed_current_program_hash, Some(vec![0x42; 32]));
     }
 
     #[test]

@@ -117,7 +117,7 @@ The design uses two Azure Tables:
 Each row uses:
 
 - `PartitionKey = "node"`
-- `RowKey = <node_id>`
+- `RowKey = "n:" + lowercase hex-encoded UTF-8 bytes of node_id`
 
 The row contains the following logical columns:
 
@@ -135,6 +135,9 @@ The row contains the following logical columns:
 
 The row deliberately separates desired and observed columns so that Azure-side
 control-plane intent is not overwritten by the next `GW-0812`.
+The encoded `RowKey` is only a storage-safe representation. The logical node
+identifier remains the original opaque `node_id`, and the handler decodes the
+stored row key back to that original string when it loads rows.
 
 ### 4.2  `ProgramRoute` schema
 

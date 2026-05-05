@@ -229,7 +229,7 @@ workflow makes the necessary values available to the bootstrap path that does.
 
 ## 6  Outputs and lifecycle
 
-> **Requirements:** AZP-0100, AZP-0102, AZP-0103, AZP-0104, AZP-0300, AZP-0301, AZP-0302, AZP-0303, AZP-0304
+> **Requirements:** AZP-0100, AZP-0102, AZP-0103, AZP-0104, AZP-0300, AZP-0301, AZP-0302, AZP-0303, AZP-0304, AZP-0305
 
 ### 6.1  Outputs
 
@@ -293,4 +293,43 @@ Because the workflow performs destructive preflight cleanup, it must never point
 at an arbitrary shared resource group. The configured resource group for this
 workflow is therefore part of the safety boundary: it is a dedicated,
 CI-owned disposable group reserved exclusively for this live validation path.
+
+### 6.7  Live CI setup guide boundary
+
+The repository separates the operator-facing provisioning reference from the
+operator-facing live-CI setup runbook.
+
+1. `deploy/bicep/README.md` remains the reference surface for the Bicep
+   deployment inputs, outputs, and high-level live-CI prerequisites.
+2. `deploy/bicep/azure-live-ci-setup.md` carries the
+   step-by-step procedure for configuring and running the GitHub Actions
+   workflow.
+
+The setup guide is part of the repository-owned deployment surface, not an
+external wiki-only procedure, so operators can configure the workflow from the
+same revision they intend to run.
+`deploy/bicep/README.md` links to this guide from its live-CI prerequisite
+section so the procedural path is discoverable from the provisioning reference.
+
+### 6.8  Setup guide content contract
+
+The live-CI setup guide must present the setup flow in operator order:
+
+1. identify the GitHub environment name and the variables the workflow consumes,
+2. configure GitHub OIDC federation for the Azure identity,
+3. assign the minimum Azure RBAC, Service Bus data-plane roles, and Microsoft
+   Graph permissions required by the workflow,
+4. choose and document a safe disposable resource-group name and optional CI
+   prefix override,
+5. manually dispatch the workflow, and
+6. verify both the success path and the teardown path of the first run.
+
+For the key setup actions above, the guide provides both:
+
+1. an Azure Portal path for operators performing the setup interactively, and
+2. an Azure CLI path for operators automating or scripting the setup.
+
+The guide may reference the workflow file for exact variable names, but it must
+not force an operator to infer the required permissions or safety boundary by
+reading the YAML directly.
 

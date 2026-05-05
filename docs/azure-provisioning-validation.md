@@ -200,3 +200,18 @@
 4. If teardown succeeds, assert: the disposable resource group is removed.
 5. If teardown fails, assert: the workflow reports the retained resource group explicitly instead of reporting overall success.
 
+---
+
+### T-AZP-0305  Live CI setup guide is complete and operator-usable
+
+**Validates:** AZP-0305
+
+**Procedure:**
+1. Inspect `deploy/bicep/azure-live-ci-setup.md` and `deploy/bicep/README.md`.
+2. Assert: `deploy/bicep/README.md` links operators to `deploy/bicep/azure-live-ci-setup.md` for live-CI setup.
+3. Assert: the setup guide identifies the GitHub environment name and the required workflow variables.
+4. Assert: the setup guide describes both an Azure Portal path and an Azure CLI path for the key setup actions.
+5. Assert: the setup guide names the exact Azure RBAC roles, Service Bus data-plane roles, and Microsoft Graph permissions required by the federated CI identity.
+6. Assert: the setup guide explains the disposable resource-group safety boundary, including the default CI prefix behavior and the CI-owned tag/ownership expectations.
+7. Assert: the setup guide tells the operator how to manually dispatch the workflow and what first-run success and teardown signals to expect.
+

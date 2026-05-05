@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import socket
 import sys
 import time
 from pathlib import Path
@@ -116,6 +117,14 @@ class ConnectorHarness:
             raise RuntimeError("connector harness did not capture a downstream payload")
         return self._downstream_payloads.pop(0)
 
+    def reject_downstream_writes(self) -> None:
+        if self._writer is None:
+            raise RuntimeError("connector harness has no connected writer")
+        sock = self._writer.get_extra_info("socket")
+        if sock is None:
+            raise RuntimeError("connector harness socket is unavailable")
+        sock.shutdown(socket.SHUT_RD)
+
     async def close_peer(self) -> None:
         if self._writer is not None:
             self._writer.close()
@@ -130,15 +139,18 @@ class ConnectorHarness:
             self.socket_path.unlink()
 
 
-async def receive_one(
+async def receive_one_body(
     client: ServiceBusClient, queue_name: str, timeout_secs: int = MESSAGE_TIMEOUT_SECS
-):
+) -> bytes:
     deadline = time.monotonic() + timeout_secs
     async with client.get_queue_receiver(queue_name=queue_name, max_wait_time=5) as receiver:
         while time.monotonic() < deadline:
             messages = await receiver.receive_messages(max_message_count=1, max_wait_time=5)
             if messages:
-                return receiver, messages[0]
+                message = messages[0]
+                body = service_bus_body_bytes(message)
+                await receiver.complete_message(message)
+                return body
     raise RuntimeError(f"timed out waiting for a message on queue `{queue_name}`")
 
 
@@ -185,13 +197,11 @@ async def run_success_path(
     downstream_payload = b"ci-live-downstream-payload"
 
     await harness.send_upstream(upstream_payload)
-    upstream_receiver, upstream_message = await receive_one(client, upstream_queue)
-    actual_upstream = service_bus_body_bytes(upstream_message)
+    actual_upstream = await receive_one_body(client, upstream_queue)
     if actual_upstream != upstream_payload:
         raise RuntimeError(
             f"upstream payload mismatch: expected {upstream_payload!r}, got {actual_upstream!r}"
         )
-    await upstream_receiver.complete_message(upstream_message)
 
     async with client.get_queue_sender(queue_name=downstream_queue) as sender:
         await sender.send_messages(ServiceBusMessage(downstream_payload))
@@ -206,24 +216,26 @@ async def run_success_path(
 
 
 async def run_failure_path(
-    client: ServiceBusClient, downstream_queue: str, companion: asyncio.subprocess.Process
+    harness: ConnectorHarness,
+    client: ServiceBusClient,
+    downstream_queue: str,
+    companion: asyncio.subprocess.Process,
 ) -> None:
-    oversized_payload = b"x" * (CONNECTOR_MAX_FRAME_LENGTH + 1)
+    failed_handoff_payload = b"ci-live-downstream-write-failure"
+    harness.reject_downstream_writes()
     async with client.get_queue_sender(queue_name=downstream_queue) as sender:
-        await sender.send_messages(ServiceBusMessage(oversized_payload))
+        await sender.send_messages(ServiceBusMessage(failed_handoff_payload))
 
     try:
         await asyncio.wait_for(companion.wait(), timeout=MESSAGE_TIMEOUT_SECS)
     except asyncio.TimeoutError as exc:
-        raise RuntimeError("companion did not exit after oversized downstream payload") from exc
+        raise RuntimeError("companion did not exit after failed downstream handoff") from exc
     if companion.returncode == 0:
-        raise RuntimeError("companion unexpectedly succeeded after oversized downstream payload")
+        raise RuntimeError("companion unexpectedly succeeded after failed downstream handoff")
 
-    downstream_receiver, downstream_message = await receive_one(client, downstream_queue)
-    actual_payload = service_bus_body_bytes(downstream_message)
-    if actual_payload != oversized_payload:
+    actual_payload = await receive_one_body(client, downstream_queue)
+    if actual_payload != failed_handoff_payload:
         raise RuntimeError("downstream message was altered before re-delivery after failure")
-    await downstream_receiver.complete_message(downstream_message)
 
 
 async def async_main() -> int:
@@ -237,6 +249,8 @@ async def async_main() -> int:
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
     companion: asyncio.subprocess.Process | None = None
+    stdout_task: asyncio.Task[None] | None = None
+    stderr_task: asyncio.Task[None] | None = None
 
     await harness.start()
     credential = AzureCliCredential()
@@ -267,15 +281,21 @@ async def async_main() -> int:
             await run_success_path(harness, client, args.upstream_queue, args.downstream_queue)
             print("success path passed", flush=True)
 
-            await run_failure_path(client, args.downstream_queue, companion)
+            await run_failure_path(harness, client, args.downstream_queue, companion)
             print("failure path passed", flush=True)
 
-        await stdout_task
-        await stderr_task
         return 0
     finally:
         if companion is not None:
             await terminate_process(companion)
+        await asyncio.gather(
+            *[
+                task
+                for task in (stdout_task, stderr_task)
+                if task is not None
+            ],
+            return_exceptions=True,
+        )
         await harness.stop()
         await credential.close()
 

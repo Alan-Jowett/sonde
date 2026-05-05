@@ -16,6 +16,7 @@
          -d Version=VERSION ^
          -d GatewayBin=target\release\sonde-gateway.exe ^
          -d AdminBin=target\release\sonde-admin.exe ^
+         -d AzureCompanionBin=target\release\sonde-azure-companion.exe ^
          -d CustomActionCaDll=installer\windows\CustomActions\bin\Release\net472\SondeCustomActions.CA.dll ^
          -ext WixToolset.UI.wixext ^
          -ext WixToolset.Util.wixext ^
@@ -36,7 +37,7 @@
     Compressed="yes"
     Scope="perMachine">
 
-    <SummaryInformation Keywords="Installer" Description="Sonde gateway and admin tools installer" />
+    <SummaryInformation Keywords="Installer" Description="Sonde gateway, admin tools, and optional Azure companion installer" />
 
     <MajorUpgrade
       DowngradeErrorMessage="A newer version of Sonde is already installed."
@@ -52,8 +53,14 @@
 
     <!-- ── Feature tree ──────────────────────────────────────────────── -->
     <Feature Id="ProductFeature" Title="Sonde" Level="1">
-      <ComponentGroupRef Id="BinariesGroup" />
-      <ComponentGroupRef Id="ConfigGroup" />
+      <Feature Id="GatewayFeature" Title="Gateway and admin tools" Level="1">
+        <ComponentGroupRef Id="BinariesGroup" />
+        <ComponentGroupRef Id="ConfigGroup" />
+      </Feature>
+      <Feature Id="AzureCompanionFeature" Title="Azure companion" Description="Optional Azure Service Bus bridge service" Level="2">
+        <ComponentGroupRef Id="AzureCompanionBinariesGroup" />
+        <ComponentGroupRef Id="AzureCompanionConfigGroup" />
+      </Feature>
     </Feature>
 
     <!-- ── Directory tree ───────────────────────────────────────────── -->
@@ -65,6 +72,7 @@
 
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="DATADIR" Name="sonde" />
+      <Directory Id="AZUREDATADIR" Name="sonde-azure-companion" />
     </StandardDirectory>
 
     <!-- ── Components ───────────────────────────────────────────────── -->
@@ -120,6 +128,34 @@
       </Component>
     </ComponentGroup>
 
+    <ComponentGroup Id="AzureCompanionBinariesGroup" Directory="BinDir">
+      <Component Id="AzureCompanionExe" Guid="D4E5F6A7-B8C9-0123-DEF0-123456789012">
+        <File Id="AzureCompanionExeFile"
+              Source="$(var.AzureCompanionBin)"
+              Name="sonde-azure-companion.exe"
+              KeyPath="yes" />
+        <ServiceInstall Id="SondeAzureCompanionService"
+                        Name="sonde-azure-companion"
+                        DisplayName="Sonde Azure Companion"
+                        Description="Bridges the Sonde gateway connector to Azure Service Bus."
+                        Start="auto"
+                        Type="ownProcess"
+                        ErrorControl="normal"
+                        Arguments="service --state-dir [CommonAppDataFolder]sonde-azure-companion" />
+        <ServiceControl Id="SondeAzureCompanionControl"
+                        Name="sonde-azure-companion"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="AzureCompanionConfigGroup" Directory="AZUREDATADIR">
+      <Component Id="AzureCompanionDataDirComp" Guid="E5F6A7B8-C9D0-1234-EF01-234567890123">
+        <CreateFolder />
+      </Component>
+    </ComponentGroup>
+
     <!-- ── Custom action: auto-detect ESP32-S3 modem COM port ────────
          GW-1501 AC2: Scans USB devices for VID 303A / PID 1001 and
          pre-populates the MODEM_PORT property. Scheduled After AppSearch
@@ -154,8 +190,7 @@
     </InstallExecuteSequence>
 
     <!-- ── UI ───────────────────────────────────────────────────────── -->
-    <ui:WixUI Id="WixUI_InstallDir" />
-    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+    <ui:WixUI Id="WixUI_FeatureTree" />
     <WixVariable Id="WixUILicenseRtf" Value="installer\windows\license.rtf" />
 
   </Package>

@@ -3,10 +3,11 @@
 # Azure Companion Validation Plan
 
 > **Document status:** Draft
-> **Scope:** Validation for the Azure companion container, bootstrap-state
-> detection, gateway admin/connector integration, provisioning orchestration
-> (certificate generation, Bicep deployment via Docker API, runtime artifact
-> creation), and Azure Service Bus bridge.
+> **Scope:** Validation for the Azure companion deployment surfaces (Linux
+> container and Windows native service), bootstrap-state detection, gateway
+> admin/connector integration, provisioning orchestration (certificate
+> generation, Bicep deployment via Docker API, runtime artifact creation), and
+> Azure Service Bus bridge.
 > **Audience:** Implementers and reviewers validating the Azure companion
 > bootstrap and runtime bridge behavior.
 > **Related:** [azure-provisioning-validation.md](azure-provisioning-validation.md),
@@ -260,6 +261,79 @@
 3. In the success sub-case, allow the harness write to complete and assert the Service Bus message is then settled successfully.
 4. In the failure sub-case, force the harness write to fail and assert the message is not reported as successfully processed.
 5. Assert: detected transport or local handoff failure is surfaced in workflow logs or process status.
+
+---
+
+### T-AZC-0119  `sonde-azure-companion install` registers the Windows service
+
+**Validates:** AZC-0103, AZC-0105
+
+**Procedure:**
+1. On a Windows machine with the companion binary on PATH, open an elevated PowerShell prompt.
+2. Run `sonde-azure-companion install`.
+3. Assert: the command exits with code 0 and prints a success message.
+4. Run `sc.exe qc sonde-azure-companion`.
+5. Assert: the service exists with `START_TYPE` = `AUTO_START`.
+6. Assert: the binary path references the native `sonde-azure-companion.exe` executable rather than the Linux container bootstrap wrapper.
+7. Run `sonde-azure-companion install` again.
+8. Assert: the command exits with code 0 and updates the existing service definition idempotently.
+9. Run `sonde-azure-companion install` from a non-elevated prompt.
+10. Assert: the command exits with a clear privilege error instead of modifying the service registration.
+
+---
+
+### T-AZC-0120  `sonde-azure-companion uninstall` removes the Windows service idempotently
+
+**Validates:** AZC-0105
+
+**Procedure:**
+1. Prerequisite: a service registered via `sonde-azure-companion install`.
+2. Start the service: `sc.exe start sonde-azure-companion`.
+3. Run `sonde-azure-companion uninstall` from an elevated prompt.
+4. Assert: the command exits with code 0.
+5. Run `sc.exe query sonde-azure-companion`.
+6. Assert: the service is not found.
+7. Assert: `%ProgramData%\sonde-azure-companion\` is preserved on disk.
+8. Run `sonde-azure-companion uninstall` again.
+9. Assert: the command exits with code 0 and prints an informational "not registered" message.
+10. Re-register the service, then run `sonde-azure-companion uninstall` from a non-elevated prompt.
+11. Assert: the command exits with a clear privilege error instead of deleting the service.
+
+---
+
+### T-AZC-0121  Windows service startup fails closed when bootstrap-complete state is missing
+
+**Validates:** AZC-0103, AZC-0205
+
+**Procedure:**
+1. Register the service via `sonde-azure-companion install`.
+2. Expose the gateway admin and connector named pipes at their default Windows paths.
+3. Ensure `%ProgramData%\sonde-azure-companion\` does not contain bootstrap-complete state.
+4. Start the service: `sc.exe start sonde-azure-companion`.
+5. Assert: the service does not reach steady `RUNNING` runtime-bridge operation.
+6. Assert: service diagnostics clearly identify the missing provisioning artifacts or queue configuration.
+7. Assert: the startup path does not attempt to pull or run the Azure CLI container automatically.
+8. Populate bootstrap-complete state in `%ProgramData%\sonde-azure-companion\` and restart the service.
+9. Assert: the service now starts the runtime bridge normally and connects through the default named-pipe paths.
+10. Stop the service through SCM.
+11. Assert: the service stops cleanly without deleting the populated bootstrap-complete state.
+
+---
+
+### T-AZC-0122  MSI companion feature is optional and defaults off
+
+**Validates:** AZC-0104
+
+**Procedure:**
+1. Install the MSI on a clean Windows VM and inspect the feature-selection UI.
+2. Assert: the Azure companion component is presented as an optional choice and is unchecked by default.
+3. Complete installation without selecting the component.
+4. Assert: `sc.exe query sonde-azure-companion` reports that the service is not installed.
+5. Re-run installation with the component selected.
+6. Assert: the companion binary is installed and `sc.exe qc sonde-azure-companion` succeeds.
+7. Assert: the installer does not prompt for Azure tenant, subscription, namespace, queue, or certificate settings.
+8. Perform a silent install selecting the companion feature via MSI property/feature selection.
+9. Assert: the companion service is installed successfully without interactive UI.
 
 ---
 

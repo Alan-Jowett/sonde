@@ -33,6 +33,10 @@ tar = "0.4"
 thiserror = "2"
 x509-cert = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8.0"
+windows-sys = { version = "0.61", features = ["Win32_Foundation"] }
+
 [dev-dependencies]
 futures = "0.3"
 tempfile = "3"

@@ -6534,6 +6534,8 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tower",
+ "windows-service",
+ "windows-sys 0.61.2",
  "wiremock",
  "x509-cert",
 ]

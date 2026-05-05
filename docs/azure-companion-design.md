@@ -3,8 +3,9 @@
 # Azure Companion Design Specification
 
 > **Document status:** Draft
-> **Scope:** Internal design for the Azure companion container, bootstrap-state
-> detection, bootstrap trigger behavior, integrated provisioning orchestration
+> **Scope:** Internal design for the Azure companion deployment surfaces
+> (Linux container and Windows native service), bootstrap-state detection,
+> bootstrap trigger behavior, integrated provisioning orchestration
 > (certificate generation, Bicep deployment via Docker API, runtime artifact
 > creation), and the Service Bus AMQP runtime bridge.
 > The Bicep module definitions themselves are specified in
@@ -20,8 +21,8 @@
 
 ## 1  Overview
 
-The Azure companion is a Rust workspace crate that runs in its own container and
-talks to `sonde-gateway` over two local gateway-facing surfaces:
+The Azure companion is a Rust workspace crate that talks to
+`sonde-gateway` over two local gateway-facing surfaces:
 
 1. the admin gRPC API for bootstrap-only operator-visible actions, and
 2. the local framed connector API for long-running runtime traffic.
@@ -29,7 +30,8 @@ talks to `sonde-gateway` over two local gateway-facing surfaces:
 The Azure companion now has two distinct responsibilities:
 
 1. detect whether bootstrap has already completed,
-2. invoke bootstrap when the required local provisioning artifacts are missing,
+2. invoke bootstrap on the Linux/container path when the required local
+   provisioning artifacts are missing,
 3. use the gateway admin API to display the device code during bootstrap,
 4. orchestrate the full provisioning lifecycle (certificate generation, Bicep
    deployment via the Docker API, and runtime artifact creation), and
@@ -43,7 +45,7 @@ logic is confined to the Azure companion.
 
 ## 2  Repository layout
 
-> **Requirements:** AZC-0100, AZC-0102
+> **Requirements:** AZC-0100, AZC-0102, AZC-0103, AZC-0104
 
 The implementation adds or updates the following artifacts:
 
@@ -53,6 +55,7 @@ The implementation adds or updates the following artifacts:
 | `.github/docker/Dockerfile.azure-companion` | Dockerfile for the dedicated Azure companion image. |
 | `deploy/azure-companion/bootstrap.sh` | Host/container bootstrap script that prepares the mounted state volume, evaluates bootstrap-complete state, and starts either bootstrap or runtime. |
 | `deploy/azure-companion/entrypoint.sh` | In-container entrypoint that orchestrates bootstrap-state detection before starting the Rust binary. |
+| `installer/windows/sonde.wxs` | Windows MSI definition that exposes the Azure companion as an optional installer feature and can register the companion service. |
 
 The long-running binary is named `sonde-azure-companion`.
 
@@ -60,67 +63,118 @@ The long-running binary is named `sonde-azure-companion`.
 
 ## 3  Runtime architecture
 
-> **Requirements:** AZC-0100, AZC-0101, AZC-0102, AZC-0301, AZC-0302, AZC-0303, AZC-0304, AZC-0305, AZC-0310, AZC-0311
+> **Requirements:** AZC-0100, AZC-0101, AZC-0102, AZC-0103, AZC-0104, AZC-0105, AZC-0205, AZC-0301, AZC-0302, AZC-0303, AZC-0304, AZC-0305, AZC-0310, AZC-0311
 
 ### 3.1  Process model
 
-The container runs a small shell entrypoint that performs filesystem and startup
-orchestration and then execs the Rust binary. The split is intentional:
+The Azure companion has platform-specific deployment entrypoints:
+
+1. **Linux container deployment** uses a small shell entrypoint that performs
+   filesystem and startup orchestration and then execs the Rust binary.
+2. **Windows native-service deployment** is started directly by SCM and runs the
+   Rust binary without the Linux shell wrapper.
+
+This keeps the gateway-facing logic and Azure-facing runtime in typed Rust while
+still allowing a small Alpine-oriented Linux image and a native Windows service
+story.
+
+#### 3.1.1  Linux container startup
+
+For Linux container deployment:
 
 1. **Shell script** handles environment preparation, state-directory setup, and
    bootstrap-state detection orchestration.
 2. **Rust binary** owns gateway admin gRPC communication, connector-socket
    runtime communication, bootstrap device flow, and broker integration.
 
-This keeps the gateway-facing logic and Azure-facing runtime in typed Rust while
-still allowing a small Alpine-oriented container image.
+#### 3.1.2  Windows native-service startup
+
+For Windows deployment:
+
+1. SCM launches the real `sonde-azure-companion` binary directly.
+2. The binary exposes service-management entrypoints (`install` / `uninstall`)
+   plus a service runtime entrypoint used by SCM.
+3. The service runtime uses the Windows defaults for the admin pipe, connector
+   pipe, and persistent state directory unless the operator overrides them.
+4. If bootstrap-complete state is absent, the service fails closed with a clear
+   diagnostic rather than attempting to run the Docker-backed bootstrap flow
+   automatically.
 
 ### 3.2  Mounted and configured inputs
 
-The container expects the following runtime inputs:
+The active deployment entrypoint expects the following runtime inputs:
 
 | Input | Purpose |
 |-------|---------|
-| State volume | Persistent storage for local provisioning artifacts such as the runtime certificate PEM, private-key PEM, service-principal metadata file, and persisted Service Bus configuration. |
+| State directory | Persistent storage for local provisioning artifacts such as the runtime certificate PEM, private-key PEM, service-principal metadata file, and persisted Service Bus configuration. On Linux this is the mounted state volume; on Windows this defaults to `%ProgramData%\sonde-azure-companion`. |
 | Gateway admin socket | Local IPC path used by bootstrap to call `GatewayAdmin` RPCs such as `ShowModemDisplayMessage`. |
 | Gateway connector socket | Local framed IPC path used by the long-running runtime after bootstrap succeeds. |
-| Docker socket (bootstrap only) | Docker Engine API socket, bind-mounted from the host, used by bootstrap to run the Azure CLI container via Bollard. Not required for normal runtime operation. |
+| Docker socket (bootstrap only) | Docker Engine API socket, bind-mounted from the host, used by bootstrap to run the Azure CLI container via Bollard. This is part of the Linux/container bootstrap path and is not a steady-state Windows service requirement. |
 | Service Bus namespace | Runtime configuration for the Azure Service Bus namespace, from environment variable or persisted `service-bus.json`. |
 | Upstream queue name | Runtime configuration for the queue that carries gateway-originated connector messages, from environment variable or persisted `service-bus.json`. |
 | Downstream queue name | Runtime configuration for the queue that carries cloud-originated desired-state messages, from environment variable or persisted `service-bus.json`. |
 
 Bootstrap-complete state is defined by the combination of:
 
-1. the required local provisioning artifacts in the state volume, and
+1. the required local provisioning artifacts in the state directory, and
 2. the required queue configuration (from either environment variables or
-   persisted `service-bus.json` in the state volume).
+   persisted `service-bus.json` in the state directory).
 
 The current runtime artifact shape is a companion-owned `service-principal.json`
 file containing the Entra tenant ID, client ID, PEM certificate path, and PEM
-private-key path, plus the referenced certificate and key files in the mounted
-state directory. After bootstrap, the state volume also contains
+private-key path, plus the referenced certificate and key files in the state
+directory. After bootstrap, the state directory also contains
 `service-bus.json` with the Service Bus namespace and queue names. New bootstrap
-commits are written into a generation directory under the state volume and made
+commits are written into a generation directory under the state directory and made
 current by atomically updating a `.current-state` marker file. For backward
 compatibility, startup also accepts the legacy flat-file layout when the marker
 is absent.
 
 ### 3.3  Bootstrap-state decision
 
-Startup follows this decision:
+Startup follows a platform-specific decision:
 
-1. Ensure the mounted state directory exists and is writable.
+1. Ensure the state directory exists and is writable.
 2. Check whether the required local provisioning artifacts exist.
-3. Check whether the required Service Bus namespace and queue configuration are present.
-4. If both are present, skip bootstrap and start `run`.
-5. Otherwise, start `bootstrap`.
+3. Check whether the required Service Bus namespace and queue configuration are
+   present.
+4. **Linux container path:** if both are present, skip bootstrap and start
+   `run`; otherwise start `bootstrap`.
+5. **Windows service path:** if both are present, start `run`; otherwise emit a
+   clear diagnostic and exit with a non-zero service status.
 
-When bootstrap is entered, the unified `bootstrap` subcommand orchestrates the
-full provisioning lifecycle as described in section 4.2.
+When the Linux bootstrap path is entered, the unified `bootstrap` subcommand
+orchestrates the full provisioning lifecycle as described in section 4.2.
+
+### 3.4  Windows MSI integration
+
+The Windows installer exposes the Azure companion as an optional feature rather
+than a mandatory peer of the gateway binaries.
+
+1. The Azure companion feature is unchecked by default.
+2. If selected, the MSI installs the companion binary and registers the
+   `sonde-azure-companion` service with `SERVICE_AUTO_START`.
+3. If not selected, the MSI leaves the companion service unregistered.
+4. The MSI does not collect Azure tenant, subscription, namespace, queue, or
+   certificate settings; those are established later through explicit bootstrap
+   or provisioning steps outside the installer UI.
+5. Silent or unattended installs select the feature through standard MSI
+   feature/property input rather than requiring an interactive dialog.
+
+### 3.5  Windows CLI service management
+
+The companion binary mirrors the gateway's Windows service-management fallback:
+
+1. `sonde-azure-companion install` validates Administrator privileges and then
+   creates or updates the SCM service definition.
+2. `sonde-azure-companion uninstall` stops and deletes the service registration
+   idempotently.
+3. These commands manage only the service registration; they preserve the
+   companion state directory and provisioning artifacts.
 
 ---
 
-### 3.4  Live Azure CI runtime topology
+### 3.6  Live Azure CI runtime topology
 
 The live Azure validation workflow uses a narrower runtime topology than a full
 gateway deployment. It starts the real `sonde-azure-companion` runtime against:
@@ -133,7 +187,7 @@ The harness is sufficient because the purpose of this workflow is to validate
 the Azure companion's cloud bridge contract at the connector boundary, not to
 re-validate gateway startup, modem ownership, or admin gRPC behavior.
 
-### 3.5  Live validation sequence
+### 3.7  Live validation sequence
 
 Within the single manually triggered workflow, the live validation sequence is:
 
@@ -155,13 +209,16 @@ transport and the runtime bridge semantics already defined in section 5.
 
 ## 4  Bootstrap flow
 
-> **Requirements:** AZC-0200, AZC-0201, AZC-0202, AZC-0203, AZC-0204, AZC-0300,
+> **Requirements:** AZC-0200, AZC-0201, AZC-0202, AZC-0203, AZC-0204, AZC-0205, AZC-0300,
 > AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0407, AZC-0408
 
 ### 4.1  Bootstrap trigger
 
-Bootstrap is entered only when bootstrap-complete state is absent. This differs
-from the earlier draft, which always re-entered device-code login on restart.
+The Linux bootstrap path is entered only when bootstrap-complete state is
+absent. This differs from the earlier draft, which always re-entered device-code
+login on restart. The Windows service path does not auto-enter bootstrap when
+state is absent; it fails closed until the operator performs provisioning
+explicitly.
 
 Re-running the `bootstrap` subcommand explicitly (e.g., for credential rotation)
 is safe: it regenerates the certificate, re-runs Bicep, and rewrites the runtime
@@ -228,10 +285,11 @@ non-zero status. It does not continue to a console-only fallback.
 
 ## 5  Rust binary interface
 
-> **Requirements:** AZC-0100, AZC-0102, AZC-0201, AZC-0202, AZC-0300, AZC-0301, AZC-0302, AZC-0304, AZC-0305,
+> **Requirements:** AZC-0100, AZC-0102, AZC-0103, AZC-0104, AZC-0105, AZC-0201, AZC-0202, AZC-0205, AZC-0300, AZC-0301, AZC-0302, AZC-0304, AZC-0305,
 > AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406
 
-The `sonde-azure-companion` binary exposes three modes:
+The `sonde-azure-companion` binary exposes three cross-platform runtime modes
+plus Windows service-management entrypoints:
 
 1. **`run`** — default long-running runtime mode. It connects to the gateway
    connector socket and bridges connector traffic to Azure Service Bus.
@@ -244,6 +302,13 @@ The `sonde-azure-companion` binary exposes three modes:
    display it on the modem via the gateway admin API.
 3. **`display-message`** — helper mode used by bootstrap logic to call the
    gateway admin `ShowModemDisplayMessage` RPC with 1 to 4 lines of text.
+4. **`install`** *(Windows)* — registers or updates the native Windows service
+   definition used for steady-state runtime.
+5. **`uninstall`** *(Windows)* — removes the native Windows service definition
+   without deleting persisted companion state.
+6. **service runtime entrypoint** *(Windows)* — the SCM-launched execution path
+   that performs the runtime-ready check and either starts `run` or fails closed
+   per AZC-0205.
 
 The companion receives explicit runtime configuration for the Service Bus
 namespace and queue names rather than inferring deployment-specific defaults.

@@ -1859,14 +1859,21 @@ fn install_service(cli: &Cli) -> Result<(), CompanionError> {
         ServiceType,
     };
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
-    use windows_sys::Win32::Foundation::ERROR_SERVICE_EXISTS;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SERVICE_EXISTS};
 
     let manager = ServiceManager::local_computer(
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
     )
-    .map_err(|err| {
-        CompanionError::Config(format!("failed to open Service Control Manager: {err}"))
+    .map_err(|err| match err {
+        windows_service::Error::Winapi(win_err)
+            if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+        {
+            CompanionError::Config(
+                "Administrator privileges are required to install the service.".to_string(),
+            )
+        }
+        _ => CompanionError::Config(format!("failed to open Service Control Manager: {err}")),
     })?;
 
     let exe_path = std::env::current_exe()?;
@@ -1898,16 +1905,34 @@ fn install_service(cli: &Cli) -> Result<(), CompanionError> {
         {
             let service = manager
                 .open_service(SERVICE_NAME, ServiceAccess::CHANGE_CONFIG)
-                .map_err(|open_err| {
-                    CompanionError::Config(format!(
+                .map_err(|open_err| match open_err {
+                    windows_service::Error::Winapi(win_err)
+                        if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+                    {
+                        CompanionError::Config(
+                            "Administrator privileges are required to update the service."
+                                .to_string(),
+                        )
+                    }
+                    _ => CompanionError::Config(format!(
                         "failed to open existing {SERVICE_NAME} service: {open_err}"
-                    ))
+                    )),
                 })?;
-            service.change_config(&service_info).map_err(|change_err| {
-                CompanionError::Config(format!(
-                    "failed to update existing {SERVICE_NAME} service: {change_err}"
-                ))
-            })?;
+            service
+                .change_config(&service_info)
+                .map_err(|change_err| match change_err {
+                    windows_service::Error::Winapi(win_err)
+                        if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+                    {
+                        CompanionError::Config(
+                            "Administrator privileges are required to update the service."
+                                .to_string(),
+                        )
+                    }
+                    _ => CompanionError::Config(format!(
+                        "failed to update existing {SERVICE_NAME} service: {change_err}"
+                    )),
+                })?;
             service
                 .set_description(SERVICE_DESCRIPTION)
                 .map_err(|err| {
@@ -1915,9 +1940,18 @@ fn install_service(cli: &Cli) -> Result<(), CompanionError> {
                 })?;
         }
         Err(err) => {
-            return Err(CompanionError::Config(format!(
-                "failed to create {SERVICE_NAME} service: {err}"
-            )));
+            return Err(match err {
+                windows_service::Error::Winapi(win_err)
+                    if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+                {
+                    CompanionError::Config(
+                        "Administrator privileges are required to install the service.".to_string(),
+                    )
+                }
+                _ => CompanionError::Config(format!(
+                    "failed to create {SERVICE_NAME} service: {err}"
+                )),
+            });
         }
     }
 
@@ -1930,11 +1964,18 @@ fn uninstall_service() -> Result<(), CompanionError> {
     use std::time::{Duration, Instant};
     use windows_service::service::{ServiceAccess, ServiceState};
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
-    use windows_sys::Win32::Foundation::ERROR_SERVICE_DOES_NOT_EXIST;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SERVICE_DOES_NOT_EXIST};
 
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-        .map_err(|err| {
-            CompanionError::Config(format!("failed to open Service Control Manager: {err}"))
+        .map_err(|err| match err {
+            windows_service::Error::Winapi(win_err)
+                if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+            {
+                CompanionError::Config(
+                    "Administrator privileges are required to uninstall the service.".to_string(),
+                )
+            }
+            _ => CompanionError::Config(format!("failed to open Service Control Manager: {err}")),
         })?;
 
     let service = match manager.open_service(
@@ -1949,9 +1990,19 @@ fn uninstall_service() -> Result<(), CompanionError> {
             return Ok(());
         }
         Err(err) => {
-            return Err(CompanionError::Config(format!(
-                "failed to open {SERVICE_NAME} service: {err}"
-            )));
+            return Err(match err {
+                windows_service::Error::Winapi(win_err)
+                    if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+                {
+                    CompanionError::Config(
+                        "Administrator privileges are required to uninstall the service."
+                            .to_string(),
+                    )
+                }
+                _ => {
+                    CompanionError::Config(format!("failed to open {SERVICE_NAME} service: {err}"))
+                }
+            });
         }
     };
 
@@ -2014,6 +2065,25 @@ fn set_service_status(
     controls_accepted: windows_service::service::ServiceControlAccept,
     exit_code: u32,
 ) {
+    set_service_status_with_progress(
+        status_handle,
+        current_state,
+        controls_accepted,
+        exit_code,
+        0,
+        Duration::default(),
+    );
+}
+
+#[cfg(windows)]
+fn set_service_status_with_progress(
+    status_handle: &windows_service::service_control_handler::ServiceStatusHandle,
+    current_state: windows_service::service::ServiceState,
+    controls_accepted: windows_service::service::ServiceControlAccept,
+    exit_code: u32,
+    checkpoint: u32,
+    wait_hint: Duration,
+) {
     use windows_service::service::{ServiceExitCode, ServiceStatus, ServiceType};
 
     let status = ServiceStatus {
@@ -2021,18 +2091,41 @@ fn set_service_status(
         current_state,
         controls_accepted,
         exit_code: ServiceExitCode::Win32(exit_code),
-        checkpoint: 0,
-        wait_hint: Duration::default(),
+        checkpoint,
+        wait_hint,
         process_id: None,
     };
     let _ = status_handle.set_service_status(status);
 }
 
 #[cfg(windows)]
+fn log_service_diagnostic(state_dir: &Path, message: &str) {
+    let log_path = state_dir.join("service.log");
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write as _;
+            let _ = writeln!(file, "{message}");
+        }
+        Err(err) => {
+            eprintln!(
+                "{SERVICE_NAME}: failed to write service diagnostic log {}: {err}",
+                log_path.display()
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
 fn service_entry(_arguments: Vec<std::ffi::OsString>) {
     use std::sync::{Arc, Mutex};
     use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceState};
-    use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+    use windows_service::service_control_handler::{
+        self, ServiceControlHandlerResult, ServiceStatusHandle,
+    };
 
     let cli = match SERVICE_CLI.get() {
         Some(cli) => cli,
@@ -2041,11 +2134,25 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
+    let status_handle_slot = Arc::new(Mutex::new(None::<ServiceStatusHandle>));
+    let status_handle_slot_for_events = Arc::clone(&status_handle_slot);
 
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
         match control_event {
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
             ServiceControl::Stop | ServiceControl::Shutdown => {
+                if let Ok(guard) = status_handle_slot_for_events.lock() {
+                    if let Some(handle) = *guard {
+                        set_service_status_with_progress(
+                            &handle,
+                            ServiceState::StopPending,
+                            ServiceControlAccept::empty(),
+                            0,
+                            1,
+                            Duration::from_secs(30),
+                        );
+                    }
+                }
                 if let Ok(mut guard) = shutdown_tx.lock() {
                     if let Some(tx) = guard.take() {
                         let _ = tx.send(());
@@ -2061,9 +2168,16 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
         Ok(handle) => handle,
         Err(err) => {
             eprintln!("{SERVICE_NAME}: failed to register service control handler: {err}");
+            log_service_diagnostic(
+                &cli.state_dir,
+                &format!("{SERVICE_NAME}: failed to register service control handler: {err}"),
+            );
             return;
         }
     };
+    if let Ok(mut guard) = status_handle_slot.lock() {
+        *guard = Some(status_handle);
+    }
 
     set_service_status(
         &status_handle,
@@ -2076,6 +2190,7 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
         Ok(ready) => ready,
         Err(err) => {
             eprintln!("{err}");
+            log_service_diagnostic(&cli.state_dir, &err.to_string());
             set_service_status(
                 &status_handle,
                 ServiceState::Stopped,
@@ -2090,6 +2205,10 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
         Ok(runtime) => runtime,
         Err(err) => {
             eprintln!("failed to create tokio runtime for {SERVICE_NAME}: {err}");
+            log_service_diagnostic(
+                &cli.state_dir,
+                &format!("failed to create tokio runtime for {SERVICE_NAME}: {err}"),
+            );
             set_service_status(
                 &status_handle,
                 ServiceState::Stopped,
@@ -2119,6 +2238,7 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
         Ok(()) => 0,
         Err(err) => {
             eprintln!("{err}");
+            log_service_diagnostic(&cli.state_dir, &err.to_string());
             1
         }
     };

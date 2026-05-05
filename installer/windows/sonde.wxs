@@ -141,7 +141,7 @@
                         Start="auto"
                         Type="ownProcess"
                         ErrorControl="normal"
-                        Arguments="--state-dir &quot;[AZUREDATADIR]&quot; service">
+                        Arguments="--state-dir [AZUREDATADIR] service">
           <ServiceDependency Id="sonde-gateway" />
         </ServiceInstall>
         <ServiceControl Id="SondeAzureCompanionControl"

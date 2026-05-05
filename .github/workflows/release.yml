@@ -90,7 +90,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build binaries (release)
-        run: cargo build --release -p sonde-gateway -p sonde-admin
+        run: cargo build --release -p sonde-gateway -p sonde-admin -p sonde-azure-companion
 
       - name: Install WiX 4
         run: |

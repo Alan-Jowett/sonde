@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import socket
 import sys
 import time
 from pathlib import Path
@@ -79,6 +80,7 @@ class ConnectorHarness:
         self._writer: asyncio.StreamWriter | None = None
         self._downstream_payloads: asyncio.Queue[bytes] = asyncio.Queue()
         self._abort_next_downstream_write = False
+        self._release_failed_connection = asyncio.Event()
 
     async def start(self) -> None:
         if self.socket_path.exists():
@@ -101,7 +103,11 @@ class ConnectorHarness:
                         if exc.partial:
                             raise RuntimeError("truncated connector frame length prefix") from exc
                         break
-                    writer.transport.abort()
+                    connector_socket = writer.get_extra_info("socket")
+                    if connector_socket is None:
+                        raise RuntimeError("connector harness missing accepted socket")
+                    connector_socket.shutdown(socket.SHUT_RD)
+                    await self._release_failed_connection.wait()
                     return
                 payload = await read_framed(reader)
                 if payload is None:
@@ -129,6 +135,7 @@ class ConnectorHarness:
         self._abort_next_downstream_write = True
 
     async def stop(self) -> None:
+        self._release_failed_connection.set()
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()

@@ -123,4 +123,16 @@ The workflow uses GitHub OIDC for Azure login. The configured identity needs:
 
 - permission to create, inspect, and delete the dedicated disposable CI resource group,
 - permission to deploy the Bicep stack in that subscription, and
-- Microsoft Graph permissions required by `modules/companion-identity.bicep` to create the Entra application and service principal used by `sonde-azure-companion`.
+- Microsoft Graph permissions required by `modules/companion-identity.bicep` to create the Entra application and service principal used by `sonde-azure-companion`, and
+- Service Bus data-plane roles that let the live-validation harness send to and receive from the deployed queues when it authenticates via `AzureCliCredential`.
+
+For the default queue topology, the GitHub OIDC identity therefore needs enough
+Service Bus queue permissions to:
+
+- receive from `connector-upstream`,
+- send to `desired-state`, and
+- receive from `desired-state`.
+
+Those rights can be granted either with queue-scoped assignments or with a
+broader namespace-scoped data role if that is the repository's preferred
+operational model.

@@ -74,11 +74,10 @@ class ConnectorHarness:
     def __init__(self, socket_path: Path) -> None:
         self.socket_path = socket_path
         self.connected = asyncio.Event()
-        self.received_frame = asyncio.Event()
         self._server: asyncio.AbstractServer | None = None
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._downstream_payloads: list[bytes] = []
+        self._downstream_payloads: asyncio.Queue[bytes] = asyncio.Queue()
 
     async def start(self) -> None:
         if self.socket_path.exists():
@@ -96,8 +95,7 @@ class ConnectorHarness:
                 payload = await read_framed(reader)
                 if payload is None:
                     break
-                self._downstream_payloads.append(payload)
-                self.received_frame.set()
+                await self._downstream_payloads.put(payload)
         finally:
             writer.close()
             with contextlib.suppress(Exception):
@@ -112,10 +110,9 @@ class ConnectorHarness:
         await write_framed(self._writer, payload)
 
     async def wait_downstream(self) -> bytes:
-        await asyncio.wait_for(self.received_frame.wait(), timeout=MESSAGE_TIMEOUT_SECS)
-        if not self._downstream_payloads:
-            raise RuntimeError("connector harness did not capture a downstream payload")
-        return self._downstream_payloads.pop(0)
+        return await asyncio.wait_for(
+            self._downstream_payloads.get(), timeout=MESSAGE_TIMEOUT_SECS
+        )
 
     def reject_downstream_writes(self) -> None:
         if self._writer is None:

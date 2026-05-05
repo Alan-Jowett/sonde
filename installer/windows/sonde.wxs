@@ -53,7 +53,7 @@
 
     <!-- ── Feature tree ──────────────────────────────────────────────── -->
     <Feature Id="ProductFeature" Title="Sonde" Level="1">
-      <Feature Id="GatewayFeature" Title="Gateway and admin tools" Level="1">
+      <Feature Id="GatewayFeature" Title="Gateway and admin tools" Level="1" AllowAbsent="no">
         <ComponentGroupRef Id="BinariesGroup" />
         <ComponentGroupRef Id="ConfigGroup" />
       </Feature>

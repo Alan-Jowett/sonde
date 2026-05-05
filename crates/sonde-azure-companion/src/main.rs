@@ -2090,7 +2090,11 @@ fn set_service_status_with_progress(
         service_type: ServiceType::OWN_PROCESS,
         current_state,
         controls_accepted,
-        exit_code: ServiceExitCode::Win32(exit_code),
+        exit_code: if exit_code == 0 {
+            ServiceExitCode::Win32(0)
+        } else {
+            ServiceExitCode::ServiceSpecific(exit_code)
+        },
         checkpoint,
         wait_hint,
         process_id: None,

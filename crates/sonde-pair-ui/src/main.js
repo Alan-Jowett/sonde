@@ -76,6 +76,7 @@ const diagnosticAttemptCount = document.getElementById("diagnostic-attempt-count
 const diagnosticElapsedMs = document.getElementById("diagnostic-elapsed-ms");
 const diagnosticActionStatus = document.getElementById("diagnostic-action-status");
 const btnDiagnosticContinue = document.getElementById("btn-diagnostic-continue");
+const btnDiagnosticRetry = document.getElementById("btn-diagnostic-retry");
 const btnDiagnosticCancel = document.getElementById("btn-diagnostic-cancel");
 
 // Page 7: Done
@@ -341,6 +342,7 @@ function setBusy(b) {
   btnPair.disabled = b || !selectedAddressGw;
   btnProvision.disabled = b || !selectedAddressNode;
   btnDiagnosticContinue.disabled = b || !pendingProvisionRequest;
+  btnDiagnosticRetry.disabled = b || !pendingProvisionRequest;
   btnDiagnosticCancel.disabled = b;
   btnScanStartGw.disabled = b || scanning;
   btnScanStopGw.disabled = b || !scanning;
@@ -377,6 +379,30 @@ function renderDiagnosticReview(review) {
     btnDiagnosticContinue.textContent = "Continue Anyway";
   }
   hideStatus(diagnosticActionStatus);
+}
+
+async function runDiagnosticForPendingProvision(showStatusMessage, pushToReviewPage) {
+  if (!pendingProvisionRequest) return;
+  clearError();
+  setBusy(true);
+  showStatus(diagnosticActionStatus, showStatusMessage);
+  try {
+    const review = await invoke("run_pre_provisioning_diagnostic", {
+      address: pendingProvisionRequest.address,
+    });
+    hideStatus(diagnosticActionStatus);
+    hideStatus(provisionStatus);
+    renderDiagnosticReview(review);
+    if (pushToReviewPage && navigator_.current !== 5) {
+      navigator_.goTo(5);
+    }
+  } catch (e) {
+    hideStatus(diagnosticActionStatus);
+    hideStatus(provisionStatus);
+    showError(e);
+  } finally {
+    setBusy(false);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -593,27 +619,13 @@ async function provisionNode() {
   if (!boardLayout) return;
   clearError();
   if (scanning) await stopScan();
-  setBusy(true);
+  pendingProvisionRequest = {
+    address: selectedAddressNode,
+    nodeId: nid,
+    boardLayout,
+  };
   showStatus(provisionStatus, "Running diagnostic\u2026");
-  try {
-    pendingProvisionRequest = {
-      address: selectedAddressNode,
-      nodeId: nid,
-      boardLayout,
-    };
-    const review = await invoke("run_pre_provisioning_diagnostic", {
-      address: selectedAddressNode,
-    });
-    hideStatus(provisionStatus);
-    renderDiagnosticReview(review);
-    navigator_.next();
-  } catch (e) {
-    pendingProvisionRequest = null;
-    hideStatus(provisionStatus);
-    showError(e);
-  } finally {
-    setBusy(false);
-  }
+  await runDiagnosticForPendingProvision("Running diagnostic\u2026", true);
 }
 
 async function continueProvisioningAfterDiagnostic() {
@@ -736,6 +748,9 @@ boardSelect.addEventListener("change", () => {
 
 // Page 6: Diagnostic Review
 btnDiagnosticContinue.addEventListener("click", continueProvisioningAfterDiagnostic);
+btnDiagnosticRetry.addEventListener("click", () => {
+  runDiagnosticForPendingProvision("Retrying diagnostic\u2026", false);
+});
 btnDiagnosticCancel.addEventListener("click", () => {
   resetDiagnosticReview();
   navigator_.goTo(4);

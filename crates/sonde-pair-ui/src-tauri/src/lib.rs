@@ -484,10 +484,12 @@ async fn run_pre_provisioning_diagnostic(
 
     match result {
         Ok(result) => {
+            tracing::info!("pre-provisioning diagnostic succeeded");
             *state.phase.lock().unwrap() = "Diagnostic ready".into();
             Ok(diagnostic_review_success(&result))
         }
         Err(e) => {
+            tracing::warn!("pre-provisioning diagnostic failed: {}", e);
             *state.phase.lock().unwrap() = "Diagnostic failed".into();
             Ok(diagnostic_review_failure(e.to_string()))
         }
@@ -750,10 +752,12 @@ async fn run_pre_provisioning_diagnostic(
 
     match result {
         Ok(result) => {
+            tracing::info!("pre-provisioning diagnostic succeeded");
             *state.phase.lock().unwrap() = "Diagnostic ready".into();
             Ok(diagnostic_review_success(&result))
         }
         Err(e) => {
+            tracing::warn!("pre-provisioning diagnostic failed: {}", e);
             *state.phase.lock().unwrap() = "Diagnostic failed".into();
             Ok(diagnostic_review_failure(e.to_string()))
         }

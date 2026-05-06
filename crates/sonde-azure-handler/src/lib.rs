@@ -12,6 +12,7 @@ use azservicebus::{
 use azure_core::credentials::TokenCredential;
 use azure_core_legacy::auth::TokenCredential as LegacyTokenCredential;
 use azure_core_legacy::error::ErrorKind as LegacyAzureErrorKind;
+use azure_core_legacy::Error as LegacyAzureError;
 use azure_core_legacy::StatusCode as LegacyStatusCode;
 use azure_data_tables::prelude::{IfMatchCondition, TableServiceClient};
 use azure_identity::ManagedIdentityCredential;
@@ -334,32 +335,44 @@ impl AzureTablesStore {
     }
 }
 
+fn is_legacy_not_found(e: &LegacyAzureError) -> bool {
+    matches!(
+        e.kind(),
+        LegacyAzureErrorKind::HttpResponse {
+            status: LegacyStatusCode::NotFound,
+            ..
+        }
+    )
+}
+
+fn node_state_row_key_candidates(node_id: &str) -> Vec<String> {
+    let mut candidates = Vec::with_capacity(3);
+    for row_key in [
+        encode_node_row_key(node_id),
+        encode_legacy_node_row_key(node_id),
+        node_id.to_string(),
+    ] {
+        if !candidates.contains(&row_key) {
+            candidates.push(row_key);
+        }
+    }
+    candidates
+}
+
 #[async_trait]
 impl HandlerStore for AzureTablesStore {
     async fn load_node_state(&self, node_id: &str) -> Result<Option<NodeStateRow>, HandlerError> {
-        let hashed_row_key = encode_node_row_key(node_id);
-        let legacy_row_key = encode_legacy_node_row_key(node_id);
-        for row_key in [hashed_row_key.as_str(), legacy_row_key.as_str(), node_id] {
+        for row_key in node_state_row_key_candidates(node_id) {
             let entity_client = self
                 .node_state_table
                 .partition_key_client("node")
-                .entity_client(row_key.to_string());
+                .entity_client(row_key);
             match entity_client.get::<NodeStateEntity>().await {
                 Ok(response) => return Ok(Some(NodeStateRow::try_from(response.entity)?)),
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        LegacyAzureErrorKind::HttpResponse {
-                            status: LegacyStatusCode::NotFound,
-                            ..
-                        }
-                    ) => {}
+                Err(e) if is_legacy_not_found(&e) => {}
                 Err(e) => {
                     return Err(HandlerError::Store(format!("query node state failed: {e}")));
                 }
-            }
-            if hashed_row_key == node_id && legacy_row_key == node_id {
-                break;
             }
         }
         Ok(None)
@@ -408,61 +421,32 @@ impl HandlerStore for AzureTablesStore {
         update: &ObservedStateUpdate,
     ) -> Result<ObservedStateWriteResult, HandlerError> {
         let entity_client = self.node_state_table.partition_key_client("node");
-        let hashed_row_key = encode_node_row_key(&update.node_id);
-        let legacy_row_key = encode_legacy_node_row_key(&update.node_id);
+        let candidate_row_keys = node_state_row_key_candidates(&update.node_id);
         for _ in 0..4 {
-            let response = match entity_client
-                .entity_client(hashed_row_key.clone())
-                .get::<NodeStateEntity>()
-                .await
-            {
-                Ok(response) => response,
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        LegacyAzureErrorKind::HttpResponse {
-                            status: LegacyStatusCode::NotFound,
-                            ..
-                        }
-                    ) =>
+            let mut response = None;
+            for row_key in &candidate_row_keys {
+                match entity_client
+                    .entity_client(row_key.clone())
+                    .get::<NodeStateEntity>()
+                    .await
                 {
-                    if let Ok(response) = entity_client
-                        .entity_client(legacy_row_key.clone())
-                        .get::<NodeStateEntity>()
-                        .await
-                    {
-                        response
-                    } else {
-                        entity_client
-                            .entity_client(update.node_id.clone())
-                            .get::<NodeStateEntity>()
-                            .await
-                            .map_err(|e| {
-                                HandlerError::Store(format!(
-                                    "load node state for merge failed: {e}"
-                                ))
-                            })?
+                    Ok(found) => {
+                        response = Some(found);
+                        break;
+                    }
+                    Err(e) if is_legacy_not_found(&e) => {}
+                    Err(e) => {
+                        return Err(HandlerError::Store(format!(
+                            "load node state for merge failed: {e}"
+                        )));
                     }
                 }
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        LegacyAzureErrorKind::HttpResponse {
-                            status: LegacyStatusCode::NotFound,
-                            ..
-                        }
-                    ) =>
-                {
-                    return Err(HandlerError::Store(format!(
-                        "missing node `{}` for observed update",
-                        update.node_id
-                    )));
-                }
-                Err(e) => {
-                    return Err(HandlerError::Store(format!(
-                        "load node state for merge failed: {e}"
-                    )));
-                }
+            }
+            let Some(response) = response else {
+                return Err(HandlerError::Store(format!(
+                    "missing node `{}` for observed update",
+                    update.node_id
+                )));
             };
             let mut entity = response.entity;
             if update.timestamp_ms <= entity.last_checkin_ms {
@@ -734,8 +718,15 @@ pub fn extract_trigger_payload(request_body: &[u8]) -> Result<Vec<u8>, HandlerEr
         return extract_json_payload(value);
     }
     if let Some(object) = envelope.get("data").and_then(|value| value.as_object()) {
-        if let Some((_, value)) = object.iter().next() {
-            return extract_json_payload(value);
+        if object.len() == 1 {
+            if let Some((_, value)) = object.iter().next() {
+                return extract_json_payload(value);
+            }
+        } else if !object.is_empty() {
+            return Err(HandlerError::Decode(
+                "custom handler request `data` object must contain exactly one binding payload"
+                    .to_string(),
+            ));
         }
     }
     Err(HandlerError::Decode(
@@ -1689,7 +1680,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_trigger_payload_decodes_first_lowercase_data_field() {
+    fn extract_trigger_payload_decodes_single_lowercase_data_binding() {
         let raw = vec![0xAAu8, 0xBB, 0xCC];
         let body = serde_json::json!({
             "data": {
@@ -1699,6 +1690,37 @@ mod tests {
         let decoded =
             extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap();
         assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn extract_trigger_payload_rejects_ambiguous_lowercase_data_bindings() {
+        let body = serde_json::json!({
+            "data": {
+                "bindingA": "aGVsbG8=",
+                "bindingB": "d29ybGQ="
+            }
+        });
+        let err =
+            extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("must contain exactly one binding payload"));
+    }
+
+    #[test]
+    fn node_state_row_key_candidates_are_unique_and_ordered() {
+        let candidates = node_state_row_key_candidates("node-1");
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[0], encode_node_row_key("node-1"));
+        assert_eq!(candidates[1], encode_legacy_node_row_key("node-1"));
+        assert_eq!(candidates[2], "node-1");
+        assert_eq!(
+            candidates
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            candidates.len()
+        );
     }
 
     #[test]

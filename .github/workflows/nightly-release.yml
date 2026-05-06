@@ -411,6 +411,7 @@ jobs:
           | TMP102 handler (Linux arm64) | `sonde-tmp102-handler-arm64` |
           | Gateway (Windows x86_64) | `sonde-gateway.exe` |
           | Admin CLI (Windows) | `sonde-admin.exe` |
+          | Azure companion (Windows) | `sonde-azure-companion.exe` |
           | ESP32-C3 Node firmware | `node-flash_image.bin` |
           | ESP32-S3 Modem firmware | `modem-flash_image.bin` |
           | BPF test programs | `sonde-bpf-test-programs.tar.gz` |

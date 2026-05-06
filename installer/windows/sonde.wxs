@@ -57,7 +57,7 @@
         <ComponentGroupRef Id="BinariesGroup" />
         <ComponentGroupRef Id="ConfigGroup" />
       </Feature>
-      <Feature Id="AzureCompanionFeature" Title="Azure companion" Description="Optional Azure Service Bus bridge service" Level="2">
+      <Feature Id="AzureCompanionFeature" Title="Azure companion" Description="Optional Azure Service Bus bridge service" Level="4">
         <ComponentGroupRef Id="AzureCompanionBinariesGroup" />
         <ComponentGroupRef Id="AzureCompanionConfigGroup" />
       </Feature>

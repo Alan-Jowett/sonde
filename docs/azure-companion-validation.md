@@ -372,7 +372,7 @@
 1. Start the bootstrap subcommand with a mock Docker API server (Bollard supports custom connection).
 2. Assert: bootstrap sends Docker API requests to create and start a container using the version-tagged `ghcr.io/alan-jowett/sonde-azure-bootstrap` image that matches the companion release version.
 3. Assert: bootstrap does not invoke the `docker` CLI binary.
-4. Assert: bootstrap uploads only dynamic bootstrap inputs such as the generated certificate into the bootstrap container with Docker archive upload APIs before running the deployment.
+4. Assert: bootstrap passes only dynamic bootstrap inputs such as the generated certificate into the bootstrap container environment before running the deployment.
 5. Assert: bootstrap captures the container's stdout output containing Bicep deployment JSON.
 6. Assert: bootstrap removes the container after completion.
 

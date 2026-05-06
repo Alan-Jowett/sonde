@@ -629,7 +629,7 @@ crate.
 1. Bootstrap uses the Bollard crate to create and run the `sonde-azure-bootstrap` container.
 2. Bootstrap does not invoke the `docker` CLI binary or shell out to any Docker command.
 3. By default, bootstrap uses the `sonde-azure-bootstrap` image tag that matches the companion release version.
-4. Bootstrap uploads only dynamic bootstrap inputs such as the generated certificate into the bootstrap container before running Azure deployment logic; it does not depend on host-side Bicep files.
+4. Bootstrap passes only dynamic deployment inputs such as the generated certificate into the bootstrap container before running Azure deployment logic, and does not depend on host-side Bicep files.
 5. Bootstrap authenticates by running `az login --use-device-code` inside the bootstrap container and parsing the emitted device code for modem display.
 6. Bootstrap captures the Azure deployment JSON outputs from the container's stdout.
 7. Bootstrap cleans up the bootstrap container after completion, regardless of success or failure.

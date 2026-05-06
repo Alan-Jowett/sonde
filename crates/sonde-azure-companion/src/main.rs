@@ -19,9 +19,9 @@ use bollard::container::LogOutput;
 use bollard::models::ContainerCreateBody;
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, LogsOptionsBuilder,
-    RemoveContainerOptionsBuilder, UploadToContainerOptionsBuilder, WaitContainerOptionsBuilder,
+    RemoveContainerOptionsBuilder, WaitContainerOptionsBuilder,
 };
-use bollard::{body_full, Docker};
+use bollard::Docker;
 use clap::{Args, Parser, Subcommand};
 use ed25519_dalek::pkcs8::DecodePrivateKey as Ed25519DecodePrivateKey;
 use futures_util::StreamExt;
@@ -1826,45 +1826,6 @@ async fn run(connector_socket: &str, state_dir: &Path) -> Result<(), CompanionEr
     run_with_factory(connector_socket, state_dir, &AzServiceBusTransportFactory).await
 }
 
-async fn copy_bootstrap_inputs_to_container(
-    docker: &Docker,
-    container_id: &str,
-    staging_dir: &Path,
-) -> Result<(), CompanionError> {
-    let mut archive = Vec::new();
-    {
-        let mut builder = tar::Builder::new(&mut archive);
-        let cert_path = staging_dir.join(CERT_PEM_FILENAME);
-        if !cert_path.is_file() {
-            return Err(CompanionError::Config(format!(
-                "generated certificate file not found: {}",
-                cert_path.display()
-            )));
-        }
-        builder
-            .append_path_with_name(&cert_path, format!("cert/{CERT_PEM_FILENAME}"))
-            .map_err(|e| {
-                CompanionError::Config(format!("failed to add certificate to archive: {e}"))
-            })?;
-        builder
-            .finish()
-            .map_err(|e| CompanionError::Config(format!("failed to finalize tar archive: {e}")))?;
-    }
-
-    let upload_options = UploadToContainerOptionsBuilder::default().path("/").build();
-
-    docker
-        .upload_to_container(
-            container_id,
-            Some(upload_options),
-            body_full(archive.into()),
-        )
-        .await
-        .map_err(|e| CompanionError::Config(format!("failed to copy files to container: {e}")))?;
-
-    Ok(())
-}
-
 async fn stream_container_output(
     docker: &Docker,
     container_id: &str,
@@ -1937,20 +1898,17 @@ async fn stream_container_output(
 
 async fn run_bootstrap_deployment(
     admin_socket: &str,
-    staging_dir: &Path,
     cert_base64: &str,
     args: &BootstrapArgs,
 ) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
     let docker = Docker::connect_with_local_defaults()
         .map_err(|e| CompanionError::Config(format!("failed to connect to Docker daemon: {e}")))?;
-    run_bootstrap_deployment_with_docker(&docker, admin_socket, staging_dir, cert_base64, args)
-        .await
+    run_bootstrap_deployment_with_docker(&docker, admin_socket, cert_base64, args).await
 }
 
 async fn run_bootstrap_deployment_with_docker(
     docker: &Docker,
     admin_socket: &str,
-    staging_dir: &Path,
     cert_base64: &str,
     args: &BootstrapArgs,
 ) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
@@ -1958,7 +1916,6 @@ async fn run_bootstrap_deployment_with_docker(
     run_bootstrap_deployment_with_docker_and_image(
         docker,
         admin_socket,
-        staging_dir,
         cert_base64,
         args,
         &bootstrap_image,
@@ -1969,7 +1926,6 @@ async fn run_bootstrap_deployment_with_docker(
 async fn run_bootstrap_deployment_with_docker_and_image(
     docker: &Docker,
     admin_socket: &str,
-    staging_dir: &Path,
     cert_base64: &str,
     args: &BootstrapArgs,
     bootstrap_image: &str,
@@ -2010,7 +1966,6 @@ async fn run_bootstrap_deployment_with_docker_and_image(
     let container_id = container.id;
 
     let bootstrap_result = async {
-        copy_bootstrap_inputs_to_container(docker, &container_id, staging_dir).await?;
         docker
             .start_container(&container_id, None)
             .await
@@ -2109,7 +2064,7 @@ async fn bootstrap(
     }
     eprintln!("Starting sonde-azure-bootstrap for device-code auth and Bicep deployment");
     let (sp_state, sb_config) =
-        match run_bootstrap_deployment(admin_socket, &staging_dir, &cert_base64, &args).await {
+        match run_bootstrap_deployment(admin_socket, &cert_base64, &args).await {
             Ok(result) => result,
             Err(e) => return report_bootstrap_failure(admin_socket, &staging_dir, e).await,
         };
@@ -3685,8 +3640,6 @@ mod tests {
             .await;
 
         let docker = Docker::connect_with_http(&server.uri(), 120, API_DEFAULT_VERSION).unwrap();
-        let temp = TempDir::new().unwrap();
-        std::fs::write(temp.path().join(CERT_PEM_FILENAME), b"test-cert").unwrap();
         let args = super::BootstrapArgs {
             azure_location: "westus2".to_string(),
             azure_project_name: "sonde".to_string(),
@@ -3697,7 +3650,6 @@ mod tests {
         let err = run_bootstrap_deployment_with_docker_and_image(
             &docker,
             "/tmp/unused-admin.sock",
-            temp.path(),
             "dummy-cert-base64",
             &args,
             "sonde-azure-bootstrap:test-override",
@@ -3716,7 +3668,6 @@ mod tests {
             vec![
                 "POST /images/create".to_string(),
                 "POST /containers/create".to_string(),
-                "PUT /containers/test-container/archive".to_string(),
                 "POST /containers/test-container/start".to_string(),
                 "DELETE /containers/test-container".to_string(),
             ]
@@ -3726,7 +3677,8 @@ mod tests {
                 |query| query.contains("fromImage=sonde-azure-bootstrap%3Atest-override")
             )
         );
-        assert!(!requests[2].body.is_empty());
+        let create_body = String::from_utf8(requests[1].body.clone()).unwrap();
+        assert!(create_body.contains("COMPANION_CERT_BASE64=dummy-cert-base64"));
     }
 
     #[test]

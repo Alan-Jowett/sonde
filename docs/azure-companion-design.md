@@ -270,10 +270,9 @@ When bootstrap is required, the Azure companion performs this sequence:
    `ghcr.io/alan-jowett/sonde-azure-bootstrap:<matching companion version>`
    unless a development or test override is configured.
 7. Use the Bollard crate to pull (if needed) that bootstrap image tag.
-8. Create a bootstrap container and copy in only dynamic inputs such as the
-   staged certificate via Bollard's `put_archive` API (not bind mounts, since
-   the runtime container's internal paths are not visible to the host Docker
-   daemon).
+8. Create a bootstrap container and pass only dynamic inputs such as the
+   generated certificate via container environment variables. The bootstrap
+   flow does not use bind mounts or host-side Bicep paths.
 9. The bootstrap container runs its bundled script, which executes
    `az login --use-device-code` followed by `az deployment sub create` using
    the Bicep files already bundled inside the bootstrap image.
@@ -478,10 +477,10 @@ Engine API. It does not shell out to the `docker` CLI. The integration flow:
    fails with a clear error message.
 4. Create a container with environment variables for deployment parameters
    (`SONDE_AZURE_LOCATION`, `COMPANION_CERT_BASE64`, etc.).
-5. Copy only dynamic bootstrap inputs such as the staged certificate into the
-   container using Bollard's `put_archive` API. The Bicep files and bootstrap
-   script are already part of the bootstrap image, so bootstrap does not depend
-   on runtime-image or host-side Bicep paths.
+5. Pass only dynamic bootstrap inputs such as the generated certificate into
+   the container environment. The Bicep files and bootstrap script are already
+   part of the bootstrap image, so bootstrap does not depend on runtime-image
+   or host-side Bicep paths.
 6. Start the container and stream its output (stdout/stderr).
 7. Monitor the output for the device-code pattern from `az login --use-device-code`.
    When detected, extract the code and display it on the modem via the admin API.

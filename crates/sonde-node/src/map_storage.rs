@@ -192,7 +192,9 @@ fn make_map_data(size: usize, offset: usize) -> MapData {
     // that every call to `make_map_data` receives a unique, non-overlapping
     // `[offset, offset+size)` range within `MAP_BACKING`.
     unsafe {
-        let ptr = core::ptr::addr_of_mut!(MAP_BACKING).cast::<u8>().add(offset);
+        let ptr = core::ptr::addr_of_mut!(MAP_BACKING)
+            .cast::<u8>()
+            .add(offset);
         core::ptr::write_bytes(ptr, 0, size);
         RtcSlice {
             ptr,

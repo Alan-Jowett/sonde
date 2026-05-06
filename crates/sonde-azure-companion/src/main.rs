@@ -52,8 +52,6 @@ const DEFAULT_CONNECTOR_SOCKET: &str = "/var/run/sonde/connector.sock";
 const DEFAULT_CONNECTOR_SOCKET: &str = r"\\.\pipe\sonde-connector";
 #[cfg(unix)]
 const DEFAULT_STATE_DIR: &str = "/var/lib/sonde-azure-companion";
-#[cfg(windows)]
-const DEFAULT_STATE_DIR: &str = r"C:\ProgramData\sonde-azure-companion";
 
 const SERVICE_PRINCIPAL_STATE_FILENAME: &str = "service-principal.json";
 /// Path to bundled Bicep files inside the companion container image.
@@ -86,6 +84,19 @@ const SERVICE_DESCRIPTION: &str = "Bridges the Sonde gateway connector to Azure 
 static SERVICE_CLI: OnceLock<Cli> = OnceLock::new();
 #[cfg(windows)]
 windows_service::define_windows_service!(ffi_service_main, service_entry);
+
+#[cfg(unix)]
+fn default_state_dir() -> PathBuf {
+    PathBuf::from(DEFAULT_STATE_DIR)
+}
+
+#[cfg(windows)]
+fn default_state_dir() -> PathBuf {
+    std::env::var_os("PROGRAMDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+        .join("sonde-azure-companion")
+}
 
 #[derive(Debug, Error)]
 enum CompanionError {
@@ -122,7 +133,7 @@ struct Cli {
     connector_socket: String,
 
     /// Mounted state directory reserved for bootstrap output and runtime auth material.
-    #[arg(long, global = true, env = "SONDE_AZURE_COMPANION_STATE_DIR", default_value = DEFAULT_STATE_DIR)]
+    #[arg(long, global = true, env = "SONDE_AZURE_COMPANION_STATE_DIR", default_value_os_t = default_state_dir())]
     state_dir: PathBuf,
 
     #[command(subcommand)]
@@ -2306,6 +2317,8 @@ mod tests {
     use super::bridge_runtime_with_shutdown;
     #[cfg(windows)]
     use super::build_service_launch_args;
+    #[cfg(windows)]
+    use super::default_state_dir;
     #[cfg(unix)]
     use super::validate_certificate_matches_private_key;
     use super::{
@@ -3752,6 +3765,17 @@ mod tests {
                 OsString::from("service"),
             ]
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_state_dir_uses_programdata_environment() {
+        temp_env::with_var("PROGRAMDATA", Some(r"D:\RelocatedProgramData"), || {
+            assert_eq!(
+                default_state_dir(),
+                PathBuf::from(r"D:\RelocatedProgramData\sonde-azure-companion")
+            );
+        });
     }
 
     #[test]

@@ -222,7 +222,9 @@ explicitly.
 
 Re-running the `bootstrap` subcommand explicitly (e.g., for credential rotation)
 is safe: it regenerates the certificate, re-runs Bicep, and rewrites the runtime
-artifacts.
+artifacts. This explicit bootstrap path is supported from the Windows native
+binary as well as from the Linux/container deployment path; only the Windows
+service auto-start path is fail-closed before bootstrap-complete state exists.
 
 ### 4.2  Unified bootstrap sequence
 
@@ -233,7 +235,11 @@ When bootstrap is required, the Azure companion performs this sequence:
 3. Generate a self-signed ECDSA P-256 X.509 certificate and private key using
    Rust crypto libraries. The certificate has a 2-year default validity period.
    Write the certificate PEM and private-key PEM to a staging directory within
-   the mounted state volume.
+   the mounted state volume using platform-appropriate restricted permissions for
+   the private key. On Unix this is mode `0600`; on Windows this is a restricted
+   ACL that allows the bootstrap operator and the configured Windows service
+   identity for steady-state runtime to read the key while excluding generic
+   broad-access principals.
 4. Base64-encode the certificate's DER public material for the Bicep
    `companionCertificateBase64` parameter.
 5. Display "Authenticating…" on the modem display.
@@ -514,8 +520,12 @@ staged files into the state volume root, replacing any previous artifacts.
 If any write fails (e.g., disk full), the staging directory is removed and the
 previous state remains intact.
 
-The `key.pem` file MUST be written with owner-only read permissions (mode 0600)
-to protect the private key material.
+The `key.pem` file MUST be written with platform-appropriate restricted access
+to protect the private key material. On Unix this is owner-only read permissions
+(mode `0600`). On Windows this is a restricted ACL that permits read access to
+the bootstrap operator and the configured Windows service identity for
+steady-state runtime while excluding generic broad-access principals such as
+`Everyone` and `Users`.
 
 The runtime's `check-runtime-ready` path is updated to also check for the
 persisted Service Bus configuration file (`service-bus.json`) as an alternative

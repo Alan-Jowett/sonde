@@ -516,12 +516,28 @@
 **Procedure:**
 1. Run bootstrap to completion.
 2. Inspect the file permissions of `key.pem` in the state volume.
-3. Assert: the private key file has owner-only read permissions (mode 0600 or equivalent).
-4. Assert: the certificate file (`cert.pem`) is world-readable.
+3. Assert: on Unix, the private key file has owner-only read permissions (mode 0600).
+4. Assert: on Windows, the private key file ACL grants read access to the bootstrap operator and the configured Windows service identity for steady-state runtime, and does not grant read access to generic broad-access principals such as `Everyone` or `Users`.
+5. Assert: the certificate file (`cert.pem`) is world-readable or otherwise readable by the normal runtime without requiring elevated access.
 
 ---
 
-### T-AZC-0414  Access token is not logged
+### T-AZC-0414  Windows native bootstrap completes and produces service-readable key material
+
+**Validates:** AZC-0201, AZC-0400
+
+**Procedure:**
+1. On a Windows machine with Docker available, run `sonde-azure-companion bootstrap` from an elevated PowerShell prompt with the required Azure environment variables set and the gateway admin pipe exposed.
+2. Assert: the command completes successfully without emitting the Unix-only private-key creation failure.
+3. Assert: the generated `cert.pem`, `key.pem`, `service-principal.json`, and `service-bus.json` files exist in `%ProgramData%\sonde-azure-companion\` (or the configured state directory).
+4. Inspect the ACL on `key.pem`.
+5. Assert: the ACL permits read access to the bootstrap operator and the configured Windows service identity for steady-state runtime.
+6. If the `sonde-azure-companion` Windows service is not yet installed, install it; then start or restart the service against the generated state.
+7. Assert: the service reaches the normal runtime path without failing due to private-key access.
+
+---
+
+### T-AZC-0415  Access token is not logged
 
 **Validates:** AZC-0401
 

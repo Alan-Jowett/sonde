@@ -132,7 +132,7 @@ struct Cli {
     #[arg(long, global = true, env = "SONDE_GATEWAY_CONNECTOR_SOCKET", default_value = DEFAULT_CONNECTOR_SOCKET)]
     connector_socket: String,
 
-    /// Mounted state directory reserved for bootstrap output and runtime auth material.
+    /// Persistent state directory reserved for bootstrap output and runtime auth material.
     #[arg(long, global = true, env = "SONDE_AZURE_COMPANION_STATE_DIR", default_value_os_t = default_state_dir())]
     state_dir: PathBuf,
 

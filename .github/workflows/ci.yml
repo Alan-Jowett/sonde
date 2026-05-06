@@ -111,6 +111,9 @@ jobs:
       - name: Build gateway and companion (release)
         run: cargo build --release -p sonde-gateway -p sonde-admin -p sonde-azure-companion
 
+      - name: Test Azure companion (Windows)
+        run: cargo test --release -p sonde-azure-companion
+
       - name: Upload Windows gateway, admin, and companion binaries
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

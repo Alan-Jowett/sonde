@@ -5,11 +5,12 @@
 > **Document status:** Draft
 > **Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771),
 > connector redesign discovery review, and Azure Service Bus discovery review.
-> **Scope:** This document covers the Azure companion container, bootstrap-state
-> detection, bootstrap-trigger behavior, the integrated Azure provisioning
-> orchestration (certificate generation, Bicep deployment via Docker API, and
-> runtime artifact creation), and the long-running Azure Service Bus runtime
-> bridge between `sonde-gateway` and an external Azure control plane.
+> **Scope:** This document covers the Azure companion deployment surfaces
+> (Linux container and Windows native service), bootstrap-state detection,
+> bootstrap-trigger behavior, the integrated Azure provisioning orchestration
+> (certificate generation, Bicep deployment via Docker API, and runtime
+> artifact creation), and the long-running Azure Service Bus runtime bridge
+> between `sonde-gateway` and an external Azure control plane.
 > The Bicep module definitions themselves are specified in
 > [azure-provisioning-requirements.md](azure-provisioning-requirements.md).
 > **Related:** [azure-provisioning-requirements.md](azure-provisioning-requirements.md),
@@ -23,8 +24,9 @@
 
 | Term | Definition |
 |------|------------|
-| **Azure companion** | The Rust process that runs in its own container and integrates with `sonde-gateway` through the local admin API for bootstrap-only operator-visible actions and the local connector API for long-running runtime traffic. |
+| **Azure companion** | The Rust process that integrates with `sonde-gateway` through the local admin API for bootstrap-only operator-visible actions and the local connector API for long-running runtime traffic. On Linux it is deployed in its own container; on Windows it may be deployed as a native service. |
 | **State volume** | A mounted persistent directory reserved for Azure companion bootstrap output and other local provisioning artifacts. |
+| **State directory** | The platform-owned persistent directory that stores Azure companion provisioning artifacts. On Linux this is provided by the mounted state volume; on Windows the default location is `%ProgramData%\sonde-azure-companion`. |
 | **Provisioning artifacts** | The local certificate PEM, private-key PEM, and related companion-owned state that indicate Azure bootstrap has already completed. |
 | **Queue configuration** | The Azure Service Bus namespace and the names of the upstream and downstream queues, supplied to the companion through either environment variables or a persisted configuration file (`service-bus.json`) written by bootstrap. Both sources are valid; persisted configuration is the primary source after bootstrap, and environment variables may override it. |
 | **Bootstrap-complete state** | The condition where the required provisioning artifacts exist and the required queue configuration is present (from either source), allowing the companion to skip bootstrap and start runtime directly. |
@@ -45,7 +47,7 @@ Each requirement uses the following fields:
 
 ---
 
-## 3  Container packaging and bootstrap entrypoints
+## 3  Deployment packaging and bootstrap entrypoints
 
 ### AZC-0100  Dedicated companion container image
 
@@ -111,6 +113,73 @@ dedicated container.
 
 ---
 
+### AZC-0103  Windows native service deployment
+
+**Priority:** Must
+**Source:** [issue #837](https://github.com/Alan-Jowett/sonde/issues/837), gateway Windows service model
+
+**Description:**
+On Windows, the repository MUST support deploying `sonde-azure-companion` as a
+native SCM-managed service rather than requiring the Linux-oriented container
+wrapper. The native service MUST use the companion's Windows defaults for the
+gateway admin pipe, gateway connector pipe, and persistent state directory
+unless the operator overrides them explicitly.
+
+**Acceptance criteria:**
+
+1. `sonde-azure-companion` can be registered as a Windows service that starts the real native binary, not the Linux container bootstrap wrapper.
+2. The registered service uses `SERVICE_AUTO_START`.
+3. By default, the Windows service uses `\\.\pipe\sonde-admin` for the admin pipe, `\\.\pipe\sonde-connector` for the connector pipe, and `%ProgramData%\sonde-azure-companion` for persistent state.
+4. Starting and stopping the service through SCM reaches the same runtime bridge behavior as invoking the native binary directly.
+
+---
+
+### AZC-0104  Optional Windows MSI companion component
+
+**Priority:** Must
+**Source:** [issue #837](https://github.com/Alan-Jowett/sonde/issues/837)
+
+**Description:**
+The Windows MSI installer MUST offer `sonde-azure-companion` as an optional
+component instead of always installing it with the gateway. The UI MUST expose
+this component as a checkbox that defaults to off. If the operator selects the
+component, the installer MUST install the companion binary and register the
+Windows service. The installer MUST NOT require an Azure-specific settings page
+or collect Azure runtime configuration during installation.
+
+**Acceptance criteria:**
+
+1. The MSI presents an Azure companion component choice whose default state is unchecked.
+2. When the component is not selected, the installer does not register a `sonde-azure-companion` service.
+3. When the component is selected, the installer installs the companion binary and registers the companion service.
+4. The installer does not prompt for Azure namespace, queue, tenant, subscription, certificate, or other Azure-specific settings.
+5. Silent or unattended installation can select the component through an MSI feature/property rather than requiring interactive UI.
+
+---
+
+### AZC-0105  Windows CLI service-management fallback
+
+**Priority:** Must
+**Source:** [issue #837](https://github.com/Alan-Jowett/sonde/issues/837), gateway Windows service model
+
+**Description:**
+The `sonde-azure-companion` binary MUST provide Windows CLI fallback commands
+to install and uninstall the companion service for scripted, repair, and
+headless scenarios. Re-running install with updated arguments MUST behave as an
+idempotent service configuration update. Uninstall MUST stop and delete the
+service registration without deleting persisted provisioning artifacts.
+
+**Acceptance criteria:**
+
+1. `sonde-azure-companion install` registers or updates the Windows service and exits successfully when run with Administrator privileges.
+2. Re-running `sonde-azure-companion install` updates the existing service configuration rather than failing with "service exists".
+3. `sonde-azure-companion uninstall` stops and removes the service registration.
+4. Running `sonde-azure-companion uninstall` when no service is registered exits successfully with an informational message.
+5. The install and uninstall commands require elevated privileges and fail with a clear message when run unprivileged.
+6. Installing or uninstalling the service does not delete `%ProgramData%\sonde-azure-companion` or its provisioning artifacts.
+
+---
+
 ## 4  Bootstrap-state detection and bootstrap trigger behavior
 
 ### AZC-0200  Startup decision based on bootstrap-complete state
@@ -119,10 +188,11 @@ dedicated container.
 **Source:** Azure Service Bus discovery review
 
 **Description:**
-At startup, the Azure companion MUST determine whether bootstrap has already
-completed. Bootstrap-complete state requires both the local provisioning
-artifacts and the required queue configuration. If either is missing, the
-companion MUST enter the bootstrap workflow instead of normal runtime mode.
+At startup, the Linux container entrypoint for the Azure companion MUST
+determine whether bootstrap has already completed. Bootstrap-complete state
+requires both the local provisioning artifacts and the required queue
+configuration. If either is missing, the Linux container entrypoint MUST enter
+the bootstrap workflow instead of normal runtime mode.
 
 **Acceptance criteria:**
 
@@ -214,6 +284,27 @@ login merely because the container restarted.
 1. Restarting the container with the required provisioning artifacts and queue configuration skips device-code login.
 2. Runtime startup after a restart does not require operator-visible bootstrap interaction when bootstrap-complete state is present.
 3. Removing either the required provisioning artifacts or queue configuration causes the next start to re-enter bootstrap.
+
+---
+
+### AZC-0205  Windows service startup fails closed before bootstrap
+
+**Priority:** Must
+**Source:** [issue #837](https://github.com/Alan-Jowett/sonde/issues/837)
+
+**Description:**
+When the Windows native service starts without bootstrap-complete state, it
+MUST fail closed with a clear operator-visible diagnostic instead of entering
+the current Docker-backed bootstrap flow automatically. Windows operators are
+expected to provision or bootstrap the companion explicitly before the service
+can start successfully in steady state.
+
+**Acceptance criteria:**
+
+1. Starting the Windows service without the required provisioning artifacts exits with a non-zero service status and surfaces a clear diagnostic identifying the missing state.
+2. Starting the Windows service without the required queue configuration exits with a non-zero service status and surfaces a clear diagnostic identifying the missing configuration.
+3. In the missing-state cases above, the Windows service does not attempt to pull or run the Azure CLI container automatically.
+4. Once bootstrap-complete state is present, restarting the Windows service starts the runtime bridge normally without requiring installer changes.
 
 ---
 

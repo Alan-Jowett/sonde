@@ -8,6 +8,7 @@ on:
     paths:
       - 'crates/sonde-gateway/**'
       - 'crates/sonde-admin/**'
+      - 'crates/sonde-azure-companion/**'
       - 'installer/**'
       - '.github/workflows/release.yml'
 
@@ -48,7 +49,7 @@ jobs:
             protobuf-compiler libudev-dev fakeroot dpkg
 
       - name: Build binaries (release)
-        run: cargo build --release -p sonde-gateway -p sonde-admin
+        run: cargo build --release -p sonde-gateway -p sonde-admin -p sonde-azure-companion
 
       - name: Set package version
         id: version
@@ -89,7 +90,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build binaries (release)
-        run: cargo build --release -p sonde-gateway -p sonde-admin
+        run: cargo build --release -p sonde-gateway -p sonde-admin -p sonde-azure-companion
 
       - name: Install WiX 4
         run: |
@@ -114,6 +115,7 @@ jobs:
             -d Version=${{ steps.version.outputs.version }} `
             -d GatewayBin=target\release\sonde-gateway.exe `
             -d AdminBin=target\release\sonde-admin.exe `
+            -d AzureCompanionBin=target\release\sonde-azure-companion.exe `
             -d CustomActionCaDll=installer\windows\CustomActions\bin\Release\net472\SondeCustomActions.CA.dll `
             -ext WixToolset.UI.wixext `
             -ext WixToolset.Util.wixext `

@@ -52,8 +52,6 @@ const DEFAULT_CONNECTOR_SOCKET: &str = "/var/run/sonde/connector.sock";
 const DEFAULT_CONNECTOR_SOCKET: &str = r"\\.\pipe\sonde-connector";
 #[cfg(unix)]
 const DEFAULT_STATE_DIR: &str = "/var/lib/sonde-azure-companion";
-#[cfg(windows)]
-const DEFAULT_STATE_DIR: &str = r"C:\ProgramData\sonde-azure-companion";
 
 const SERVICE_PRINCIPAL_STATE_FILENAME: &str = "service-principal.json";
 /// Path to bundled Bicep files inside the companion container image.
@@ -75,6 +73,30 @@ const CLIENT_ASSERTION_LIFETIME_SECS: i64 = 600;
 const CLIENT_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 const TOKEN_HTTP_CONNECT_TIMEOUT_SECS: u64 = 10;
 const TOKEN_HTTP_TIMEOUT_SECS: u64 = 30;
+
+#[cfg(windows)]
+const SERVICE_NAME: &str = "sonde-azure-companion";
+#[cfg(windows)]
+const SERVICE_DISPLAY_NAME: &str = "Sonde Azure Companion";
+#[cfg(windows)]
+const SERVICE_DESCRIPTION: &str = "Bridges the Sonde gateway connector to Azure Service Bus.";
+#[cfg(windows)]
+static SERVICE_CLI: OnceLock<Cli> = OnceLock::new();
+#[cfg(windows)]
+windows_service::define_windows_service!(ffi_service_main, service_entry);
+
+#[cfg(unix)]
+fn default_state_dir() -> PathBuf {
+    PathBuf::from(DEFAULT_STATE_DIR)
+}
+
+#[cfg(windows)]
+fn default_state_dir() -> PathBuf {
+    std::env::var_os("PROGRAMDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+        .join("sonde-azure-companion")
+}
 
 #[derive(Debug, Error)]
 enum CompanionError {
@@ -99,26 +121,26 @@ enum CompanionError {
 trait AsyncIo: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T> AsyncIo for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(name = "sonde-azure-companion")]
 struct Cli {
     /// Gateway admin socket path (UDS on Unix, named pipe on Windows).
-    #[arg(long, env = "SONDE_GATEWAY_ADMIN_SOCKET", default_value = DEFAULT_ADMIN_SOCKET)]
+    #[arg(long, global = true, env = "SONDE_GATEWAY_ADMIN_SOCKET", default_value = DEFAULT_ADMIN_SOCKET)]
     admin_socket: String,
 
     /// Gateway connector socket path (UDS on Unix, named pipe on Windows).
-    #[arg(long, env = "SONDE_GATEWAY_CONNECTOR_SOCKET", default_value = DEFAULT_CONNECTOR_SOCKET)]
+    #[arg(long, global = true, env = "SONDE_GATEWAY_CONNECTOR_SOCKET", default_value = DEFAULT_CONNECTOR_SOCKET)]
     connector_socket: String,
 
-    /// Mounted state directory reserved for bootstrap output and runtime auth material.
-    #[arg(long, env = "SONDE_AZURE_COMPANION_STATE_DIR", default_value = DEFAULT_STATE_DIR)]
+    /// Persistent state directory reserved for bootstrap output and runtime auth material.
+    #[arg(long, global = true, env = "SONDE_AZURE_COMPANION_STATE_DIR", default_value_os_t = default_state_dir())]
     state_dir: PathBuf,
 
     #[command(subcommand)]
     command: Option<Command>,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 enum Command {
     /// Start the long-running Azure connector runtime.
     Run,
@@ -132,9 +154,19 @@ enum Command {
     /// Check whether the persisted runtime state and runtime configuration are present.
     #[command(hide = true)]
     CheckRuntimeReady,
+    /// Install the Windows service registration (requires Administrator).
+    #[cfg(windows)]
+    Install,
+    /// Remove the Windows service registration (requires Administrator).
+    #[cfg(windows)]
+    Uninstall,
+    /// Run under the Windows Service Control Manager.
+    #[cfg(windows)]
+    #[command(hide = true)]
+    Service,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 struct BootstrapArgs {
     /// Azure region for Bicep deployment.
     #[arg(long, env = "SONDE_AZURE_LOCATION", default_value = "eastus")]
@@ -1381,15 +1413,27 @@ where
     Ok(())
 }
 
-async fn bridge_runtime<T, P, C>(
+#[cfg(all(test, unix))]
+async fn bridge_runtime<T, P, C>(stream: T, publisher: P, consumer: C) -> Result<(), CompanionError>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    P: UpstreamPublisher + 'static,
+    C: DownstreamConsumer + 'static,
+{
+    bridge_runtime_with_shutdown(stream, publisher, consumer, std::future::pending::<()>()).await
+}
+
+async fn bridge_runtime_with_shutdown<T, P, C, S>(
     stream: T,
     mut publisher: P,
     mut consumer: C,
+    shutdown: S,
 ) -> Result<(), CompanionError>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     P: UpstreamPublisher + 'static,
     C: DownstreamConsumer + 'static,
+    S: std::future::Future<Output = ()>,
 {
     let (mut reader, mut writer) = tokio::io::split(stream);
     let upstream = async move {
@@ -1397,6 +1441,7 @@ where
         Ok::<(), CompanionError>(())
     };
     tokio::pin!(upstream);
+    tokio::pin!(shutdown);
 
     loop {
         tokio::select! {
@@ -1413,6 +1458,12 @@ where
                     }
                     return Err(err);
                 }
+            }
+            _ = &mut shutdown => {
+                if let Err(abandon_err) = consumer.abandon_inflight().await {
+                    eprintln!("failed to abandon downstream Service Bus message during service shutdown: {abandon_err}");
+                }
+                return Ok(());
             }
         }
     }
@@ -1443,13 +1494,36 @@ where
     F::Publisher: 'static,
     F::Consumer: 'static,
 {
+    run_checked_with_factory_and_shutdown(
+        connector_socket,
+        runtime_config,
+        runtime_state,
+        factory,
+        std::future::pending::<()>(),
+    )
+    .await
+}
+
+async fn run_checked_with_factory_and_shutdown<F, S>(
+    connector_socket: &str,
+    runtime_config: &RuntimeConfig,
+    runtime_state: &RuntimeCredentialState,
+    factory: &F,
+    shutdown: S,
+) -> Result<(), CompanionError>
+where
+    F: BrokerTransportFactory,
+    F::Publisher: 'static,
+    F::Consumer: 'static,
+    S: std::future::Future<Output = ()>,
+{
     let (publisher, consumer) = factory.connect(runtime_config, runtime_state).await?;
     let stream = connect_connector(connector_socket).await?;
     eprintln!(
         "connected to gateway connector at {connector_socket} and Azure Service Bus namespace {}",
         runtime_config.namespace
     );
-    bridge_runtime(stream, publisher, consumer).await
+    bridge_runtime_with_shutdown(stream, publisher, consumer, shutdown).await
 }
 
 async fn run(connector_socket: &str, state_dir: &Path) -> Result<(), CompanionError> {
@@ -1776,14 +1850,454 @@ async fn bootstrap(
     Ok(())
 }
 
+#[cfg(windows)]
+fn build_service_launch_args(cli: &Cli) -> Vec<std::ffi::OsString> {
+    vec![
+        std::ffi::OsString::from("--admin-socket"),
+        std::ffi::OsString::from(&cli.admin_socket),
+        std::ffi::OsString::from("--connector-socket"),
+        std::ffi::OsString::from(&cli.connector_socket),
+        std::ffi::OsString::from("--state-dir"),
+        cli.state_dir.as_os_str().to_os_string(),
+        std::ffi::OsString::from("service"),
+    ]
+}
+
+#[cfg(windows)]
+fn install_service(cli: &Cli) -> Result<(), CompanionError> {
+    use windows_service::service::{
+        ServiceAccess, ServiceDependency, ServiceErrorControl, ServiceInfo, ServiceStartType,
+        ServiceType,
+    };
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SERVICE_EXISTS};
+
+    let manager = ServiceManager::local_computer(
+        None::<&str>,
+        ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
+    )
+    .map_err(|err| match err {
+        windows_service::Error::Winapi(win_err)
+            if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+        {
+            CompanionError::Config(
+                "Administrator privileges are required to install the service.".to_string(),
+            )
+        }
+        _ => CompanionError::Config(format!("failed to open Service Control Manager: {err}")),
+    })?;
+
+    let exe_path = std::env::current_exe()?;
+    let service_info = ServiceInfo {
+        name: std::ffi::OsString::from(SERVICE_NAME),
+        display_name: std::ffi::OsString::from(SERVICE_DISPLAY_NAME),
+        service_type: ServiceType::OWN_PROCESS,
+        start_type: ServiceStartType::AutoStart,
+        error_control: ServiceErrorControl::Normal,
+        executable_path: exe_path,
+        launch_arguments: build_service_launch_args(cli),
+        dependencies: vec![ServiceDependency::Service(std::ffi::OsString::from(
+            "sonde-gateway",
+        ))],
+        account_name: None,
+        account_password: None,
+    };
+
+    match manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG) {
+        Ok(service) => {
+            service
+                .set_description(SERVICE_DESCRIPTION)
+                .map_err(|err| {
+                    CompanionError::Config(format!("failed to set service description: {err}"))
+                })?;
+        }
+        Err(windows_service::Error::Winapi(err))
+            if err.raw_os_error() == Some(ERROR_SERVICE_EXISTS as i32) =>
+        {
+            let service = manager
+                .open_service(SERVICE_NAME, ServiceAccess::CHANGE_CONFIG)
+                .map_err(|open_err| match open_err {
+                    windows_service::Error::Winapi(win_err)
+                        if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+                    {
+                        CompanionError::Config(
+                            "Administrator privileges are required to update the service."
+                                .to_string(),
+                        )
+                    }
+                    _ => CompanionError::Config(format!(
+                        "failed to open existing {SERVICE_NAME} service: {open_err}"
+                    )),
+                })?;
+            service
+                .change_config(&service_info)
+                .map_err(|change_err| match change_err {
+                    windows_service::Error::Winapi(win_err)
+                        if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+                    {
+                        CompanionError::Config(
+                            "Administrator privileges are required to update the service."
+                                .to_string(),
+                        )
+                    }
+                    _ => CompanionError::Config(format!(
+                        "failed to update existing {SERVICE_NAME} service: {change_err}"
+                    )),
+                })?;
+            service
+                .set_description(SERVICE_DESCRIPTION)
+                .map_err(|err| {
+                    CompanionError::Config(format!("failed to set service description: {err}"))
+                })?;
+        }
+        Err(err) => {
+            return Err(match err {
+                windows_service::Error::Winapi(win_err)
+                    if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+                {
+                    CompanionError::Config(
+                        "Administrator privileges are required to install the service.".to_string(),
+                    )
+                }
+                _ => CompanionError::Config(format!(
+                    "failed to create {SERVICE_NAME} service: {err}"
+                )),
+            });
+        }
+    }
+
+    println!("{SERVICE_NAME} service installed successfully.");
+    Ok(())
+}
+
+#[cfg(windows)]
+fn uninstall_service() -> Result<(), CompanionError> {
+    use std::time::{Duration, Instant};
+    use windows_service::service::{ServiceAccess, ServiceState};
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SERVICE_DOES_NOT_EXIST};
+
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|err| match err {
+            windows_service::Error::Winapi(win_err)
+                if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+            {
+                CompanionError::Config(
+                    "Administrator privileges are required to uninstall the service.".to_string(),
+                )
+            }
+            _ => CompanionError::Config(format!("failed to open Service Control Manager: {err}")),
+        })?;
+
+    let service = match manager.open_service(
+        SERVICE_NAME,
+        ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
+    ) {
+        Ok(service) => service,
+        Err(windows_service::Error::Winapi(err))
+            if err.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) =>
+        {
+            println!("{SERVICE_NAME} service is not registered.");
+            return Ok(());
+        }
+        Err(err) => {
+            return Err(match err {
+                windows_service::Error::Winapi(win_err)
+                    if win_err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+                {
+                    CompanionError::Config(
+                        "Administrator privileges are required to uninstall the service."
+                            .to_string(),
+                    )
+                }
+                _ => {
+                    CompanionError::Config(format!("failed to open {SERVICE_NAME} service: {err}"))
+                }
+            });
+        }
+    };
+
+    let mut status = service.query_status().map_err(|err| {
+        CompanionError::Config(format!("failed to query {SERVICE_NAME} status: {err}"))
+    })?;
+    if status.current_state != ServiceState::Stopped {
+        if status.current_state != ServiceState::StopPending {
+            service.stop().map_err(|err| {
+                CompanionError::Config(format!("failed to stop {SERVICE_NAME} service: {err}"))
+            })?;
+            println!("Stopping {SERVICE_NAME} service...");
+        }
+
+        let stop_deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < stop_deadline {
+            status = service.query_status().map_err(|err| {
+                CompanionError::Config(format!("failed to query {SERVICE_NAME} status: {err}"))
+            })?;
+            if status.current_state == ServiceState::Stopped {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+
+        if status.current_state != ServiceState::Stopped {
+            return Err(CompanionError::Config(format!(
+                "timed out waiting for {SERVICE_NAME} service to stop"
+            )));
+        }
+    }
+
+    service.delete().map_err(|err| {
+        CompanionError::Config(format!("failed to delete {SERVICE_NAME} service: {err}"))
+    })?;
+
+    drop(service);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
+            Err(windows_service::Error::Winapi(err))
+                if err.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) =>
+            {
+                println!("{SERVICE_NAME} service uninstalled successfully.");
+                return Ok(());
+            }
+            _ => std::thread::sleep(Duration::from_millis(500)),
+        }
+    }
+
+    println!("{SERVICE_NAME} service is marked for deletion.");
+    Ok(())
+}
+
+#[cfg(windows)]
+fn set_service_status(
+    status_handle: &windows_service::service_control_handler::ServiceStatusHandle,
+    current_state: windows_service::service::ServiceState,
+    controls_accepted: windows_service::service::ServiceControlAccept,
+    exit_code: u32,
+) {
+    set_service_status_with_progress(
+        status_handle,
+        current_state,
+        controls_accepted,
+        exit_code,
+        0,
+        Duration::default(),
+    );
+}
+
+#[cfg(windows)]
+fn set_service_status_with_progress(
+    status_handle: &windows_service::service_control_handler::ServiceStatusHandle,
+    current_state: windows_service::service::ServiceState,
+    controls_accepted: windows_service::service::ServiceControlAccept,
+    exit_code: u32,
+    checkpoint: u32,
+    wait_hint: Duration,
+) {
+    use windows_service::service::{ServiceExitCode, ServiceStatus, ServiceType};
+
+    let status = ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state,
+        controls_accepted,
+        exit_code: if exit_code == 0 {
+            ServiceExitCode::Win32(0)
+        } else {
+            ServiceExitCode::ServiceSpecific(exit_code)
+        },
+        checkpoint,
+        wait_hint,
+        process_id: None,
+    };
+    let _ = status_handle.set_service_status(status);
+}
+
+#[cfg(windows)]
+fn log_service_diagnostic(state_dir: &Path, message: &str) {
+    let log_path = state_dir.join("service.log");
+    if let Err(err) = std::fs::create_dir_all(state_dir) {
+        eprintln!(
+            "{SERVICE_NAME}: failed to create service diagnostic directory {}: {err}",
+            state_dir.display()
+        );
+        return;
+    }
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write as _;
+            let _ = writeln!(file, "{message}");
+        }
+        Err(err) => {
+            eprintln!(
+                "{SERVICE_NAME}: failed to write service diagnostic log {}: {err}",
+                log_path.display()
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+fn service_entry(_arguments: Vec<std::ffi::OsString>) {
+    use std::sync::{Arc, Mutex};
+    use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceState};
+    use windows_service::service_control_handler::{
+        self, ServiceControlHandlerResult, ServiceStatusHandle,
+    };
+
+    let cli = match SERVICE_CLI.get() {
+        Some(cli) => cli,
+        None => return,
+    };
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
+    let status_handle_slot = Arc::new(Mutex::new(None::<ServiceStatusHandle>));
+    let status_handle_slot_for_events = Arc::clone(&status_handle_slot);
+
+    let event_handler = move |control_event| -> ServiceControlHandlerResult {
+        match control_event {
+            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+            ServiceControl::Stop | ServiceControl::Shutdown => {
+                if let Ok(guard) = status_handle_slot_for_events.lock() {
+                    if let Some(handle) = *guard {
+                        set_service_status_with_progress(
+                            &handle,
+                            ServiceState::StopPending,
+                            ServiceControlAccept::empty(),
+                            0,
+                            1,
+                            Duration::from_secs(30),
+                        );
+                    }
+                }
+                if let Ok(mut guard) = shutdown_tx.lock() {
+                    if let Some(tx) = guard.take() {
+                        let _ = tx.send(());
+                    }
+                }
+                ServiceControlHandlerResult::NoError
+            }
+            _ => ServiceControlHandlerResult::NotImplemented,
+        }
+    };
+
+    let status_handle = match service_control_handler::register(SERVICE_NAME, event_handler) {
+        Ok(handle) => handle,
+        Err(err) => {
+            eprintln!("{SERVICE_NAME}: failed to register service control handler: {err}");
+            log_service_diagnostic(
+                &cli.state_dir,
+                &format!("{SERVICE_NAME}: failed to register service control handler: {err}"),
+            );
+            return;
+        }
+    };
+    if let Ok(mut guard) = status_handle_slot.lock() {
+        *guard = Some(status_handle);
+    }
+
+    set_service_status(
+        &status_handle,
+        ServiceState::StartPending,
+        ServiceControlAccept::empty(),
+        0,
+    );
+
+    let (runtime_config, runtime_state) = match check_runtime_ready(&cli.state_dir) {
+        Ok(ready) => ready,
+        Err(err) => {
+            eprintln!("{err}");
+            log_service_diagnostic(&cli.state_dir, &err.to_string());
+            set_service_status(
+                &status_handle,
+                ServiceState::Stopped,
+                ServiceControlAccept::empty(),
+                1,
+            );
+            return;
+        }
+    };
+
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("failed to create tokio runtime for {SERVICE_NAME}: {err}");
+            log_service_diagnostic(
+                &cli.state_dir,
+                &format!("failed to create tokio runtime for {SERVICE_NAME}: {err}"),
+            );
+            set_service_status(
+                &status_handle,
+                ServiceState::Stopped,
+                ServiceControlAccept::empty(),
+                1,
+            );
+            return;
+        }
+    };
+
+    set_service_status(
+        &status_handle,
+        ServiceState::Running,
+        ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+        0,
+    );
+
+    let exit_code = match runtime.block_on(run_checked_with_factory_and_shutdown(
+        &cli.connector_socket,
+        &runtime_config,
+        &runtime_state,
+        &AzServiceBusTransportFactory,
+        async move {
+            let _ = shutdown_rx.await;
+        },
+    )) {
+        Ok(()) => 0,
+        Err(err) => {
+            eprintln!("{err}");
+            log_service_diagnostic(&cli.state_dir, &err.to_string());
+            1
+        }
+    };
+
+    set_service_status(
+        &status_handle,
+        ServiceState::Stopped,
+        ServiceControlAccept::empty(),
+        exit_code,
+    );
+}
+
 async fn run_cli() -> Result<(), CompanionError> {
     let cli = Cli::parse();
-    match cli.command.unwrap_or(Command::Run) {
+    match cli.command.clone().unwrap_or(Command::Run) {
         Command::Run => run(&cli.connector_socket, &cli.state_dir).await?,
         Command::Bootstrap(args) => bootstrap(&cli.admin_socket, &cli.state_dir, args).await?,
         Command::DisplayMessage { lines } => display_message(&cli.admin_socket, lines).await?,
         Command::CheckRuntimeReady => {
             check_runtime_ready(&cli.state_dir)?;
+        }
+        #[cfg(windows)]
+        Command::Install => install_service(&cli)?,
+        #[cfg(windows)]
+        Command::Uninstall => uninstall_service()?,
+        #[cfg(windows)]
+        Command::Service => {
+            SERVICE_CLI.set(cli.clone()).map_err(|_| {
+                CompanionError::Config("duplicate Windows service dispatch".to_string())
+            })?;
+            windows_service::service_dispatcher::start(SERVICE_NAME, ffi_service_main).map_err(
+                |err| {
+                    CompanionError::Config(format!(
+                        "failed to start Windows service dispatcher: {err}"
+                    ))
+                },
+            )?;
         }
     }
     Ok(())
@@ -1800,6 +2314,12 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
+    use super::bridge_runtime_with_shutdown;
+    #[cfg(windows)]
+    use super::build_service_launch_args;
+    #[cfg(windows)]
+    use super::default_state_dir;
+    #[cfg(unix)]
     use super::validate_certificate_matches_private_key;
     use super::{
         build_az_bootstrap_script, check_runtime_ready, cleanup_staging, commit_staging,
@@ -1814,6 +2334,8 @@ mod tests {
         CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME, SERVICE_BUS_CONFIG_FILENAME,
         SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX,
     };
+    #[cfg(windows)]
+    use super::{Cli, Command};
     use azure_core::credentials::TokenCredential;
     #[cfg(unix)]
     use base64::Engine as _;
@@ -3184,6 +3706,76 @@ mod tests {
             .contains("injected downstream write failure"));
         assert_eq!(abandon_inflight_calls.load(Ordering::SeqCst), 1);
         assert_eq!(abandon_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bridge_runtime_returns_ok_on_shutdown_signal() {
+        let reader_state = Arc::new(ReaderState::new());
+        let write_started = Arc::new(Notify::new());
+        let inflight_set = Arc::new(Notify::new());
+        let abandons = Arc::new(AtomicUsize::new(0));
+        let stream = ShutdownTestStream {
+            reader_state,
+            write_started,
+        };
+        let consumer = ShutdownAwareConsumer {
+            payload: Some(vec![1u8, 2, 3]),
+            inflight: false,
+            inflight_set: Arc::clone(&inflight_set),
+            abandons: Arc::clone(&abandons),
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let bridge_task = tokio::spawn(async move {
+            bridge_runtime_with_shutdown(stream, FakePublisher::default(), consumer, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+        });
+
+        inflight_set.notified().await;
+        shutdown_tx.send(()).unwrap();
+
+        bridge_task.await.unwrap().unwrap();
+        assert_eq!(abandons.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn service_launch_args_use_canonical_global_option_order() {
+        use std::ffi::OsString;
+
+        let args = build_service_launch_args(&Cli {
+            admin_socket: r"\\.\pipe\custom-admin".to_string(),
+            connector_socket: r"\\.\pipe\custom-connector".to_string(),
+            state_dir: PathBuf::from(r"C:\ProgramData\sonde-azure-companion"),
+            command: Some(Command::Install),
+        });
+
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("--admin-socket"),
+                OsString::from(r"\\.\pipe\custom-admin"),
+                OsString::from("--connector-socket"),
+                OsString::from(r"\\.\pipe\custom-connector"),
+                OsString::from("--state-dir"),
+                OsString::from(r"C:\ProgramData\sonde-azure-companion"),
+                OsString::from("service"),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_state_dir_uses_programdata_environment() {
+        temp_env::with_var("PROGRAMDATA", Some(r"D:\RelocatedProgramData"), || {
+            assert_eq!(
+                default_state_dir(),
+                PathBuf::from(r"D:\RelocatedProgramData\sonde-azure-companion")
+            );
+        });
     }
 
     #[test]

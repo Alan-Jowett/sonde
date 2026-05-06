@@ -318,6 +318,7 @@ jobs:
             -d Version="$ver" `
             -d GatewayBin=target\release\sonde-gateway.exe `
             -d AdminBin=target\release\sonde-admin.exe `
+            -d AzureCompanionBin=target\release\sonde-azure-companion.exe `
             -d CustomActionCaDll=installer\windows\CustomActions\bin\Release\net472\SondeCustomActions.CA.dll `
             -ext WixToolset.UI.wixext `
             -ext WixToolset.Util.wixext `
@@ -380,6 +381,7 @@ jobs:
           cp artifacts/sensor-handlers-linux-arm64/sonde-tmp102-handler release-assets/sonde-tmp102-handler-arm64
           cp artifacts/gateway-windows-x86_64/sonde-gateway.exe release-assets/sonde-gateway.exe
           cp artifacts/gateway-windows-x86_64/sonde-admin.exe   release-assets/sonde-admin.exe
+          cp artifacts/gateway-windows-x86_64/sonde-azure-companion.exe release-assets/sonde-azure-companion.exe
           cp artifacts/node-firmware/flash_image.bin        release-assets/node-flash_image.bin
           cp artifacts/modem-firmware/flash_image.bin       release-assets/modem-flash_image.bin
           tar -C artifacts/bpf-test-programs -czf release-assets/sonde-bpf-test-programs.tar.gz .
@@ -409,6 +411,7 @@ jobs:
           | TMP102 handler (Linux arm64) | `sonde-tmp102-handler-arm64` |
           | Gateway (Windows x86_64) | `sonde-gateway.exe` |
           | Admin CLI (Windows) | `sonde-admin.exe` |
+          | Azure companion (Windows) | `sonde-azure-companion.exe` |
           | ESP32-C3 Node firmware | `node-flash_image.bin` |
           | ESP32-S3 Modem firmware | `modem-flash_image.bin` |
           | BPF test programs | `sonde-bpf-test-programs.tar.gz` |

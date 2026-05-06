@@ -267,7 +267,7 @@ TestNode {
 
 **Procedure:**
 1. Launch the pairing tool.
-2. Assert: the UI shows a multi-page wizard flow with 6 pages.
+2. Assert: the UI shows a multi-page wizard flow with 7 pages.
 3. Navigate through all pages and assert: scan toggle, device list, device select, pair action, node ID input, board selector, status area, and error display are present on the appropriate pages.
 4. Assert: the UI does not include management, monitoring, or telemetry features.
 
@@ -1445,15 +1445,15 @@ TestNode {
 
 ## 13  Multi-page wizard navigation tests
 
-### T-PT-1217a  Six pages rendered and only one visible at a time
+### T-PT-1217a  Seven pages rendered and only one visible at a time
 
 **Validates:** PT-1217 (AC 1, 2)  
 **Type:** Manual / platform test
 
 **Procedure:**
 1. Launch the pairing tool.
-2. Assert: 6 `<section>` elements with IDs `page-welcome`, `page-gateway-scan`, `page-gateway-done`, `page-node-scan`, `page-node-provision`, `page-done` exist in the DOM.
-3. Assert: exactly one page is visible; the other 5 are hidden.
+2. Assert: 7 `<section>` elements with IDs `page-welcome`, `page-gateway-scan`, `page-gateway-done`, `page-node-scan`, `page-node-provision`, `page-diagnostic-review`, `page-done` exist in the DOM.
+3. Assert: exactly one page is visible; the other 6 are hidden.
 
 ---
 
@@ -1465,7 +1465,7 @@ TestNode {
 **Procedure:**
 1. Launch the pairing tool on page 1.
 2. Complete gateway pairing (or simulate via mock) and navigate forward through each page.
-3. Assert: each page becomes visible in order (1 → 2 → 3 → 4 → 5 → 6).
+3. Assert: each page becomes visible in order (1 → 2 → 3 → 4 → 5 → 6 → 7).
 4. Assert: the previous page is hidden when the next page becomes visible.
 
 ---
@@ -1477,7 +1477,7 @@ TestNode {
 
 **Procedure:**
 1. Launch the pairing tool.
-2. Complete a full workflow: check status (page 1) → scan and pair gateway (page 2) → confirm pairing (page 3) → scan and select node (page 4) → provision node (page 5) → view success (page 6).
+2. Complete a full workflow: check status (page 1) → scan and pair gateway (page 2) → confirm pairing (page 3) → scan and select node (page 4) → provision node (page 5) → review the diagnostic result and continue (page 6) → view success (page 7).
 3. Assert: all Tauri commands (`start_scan`, `pair_gateway`, `provision_node`, `get_pairing_status`) are invoked correctly and produce the expected results.
 
 ---
@@ -1825,7 +1825,7 @@ TestNode {
 | T-PT-1216e | PT-1216, PT-0409 | Provision with partial I2C layout rejected |
 | T-PT-1216f | PT-1216 | Espressif preset remains available |
 | T-PT-1216g | PT-1216 | Tauri provision_node command accepts structured board layout |
-| T-PT-1217a | PT-1217 | Six pages rendered and only one visible at a time |
+| T-PT-1217a | PT-1217 | Seven pages rendered and only one visible at a time |
 | T-PT-1217b | PT-1217 | Forward navigation through all pages |
 | T-PT-1217c | PT-1217 | Existing functionality works through wizard flow |
 | T-PT-1218a | PT-1218 | Stepper bar shows three phases |

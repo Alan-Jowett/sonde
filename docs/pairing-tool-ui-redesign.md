@@ -212,7 +212,7 @@ quality before committing to provisioning.
 The current `index.html` is a single-page layout. The redesign uses
 client-side page routing (hash-based or simple show/hide of `<section>`
 elements). No framework dependency is required — vanilla JS with a
-simple state machine is sufficient for 6 pages.
+simple state machine is sufficient for the current 7-page Phase A flow.
 
 **Suggested approach:**
 - Each step is a `<section class="page" id="page-N">` element
@@ -259,7 +259,7 @@ more seamless workflow.
 ## Phased Implementation
 
 ### Phase A — Page routing and basic wizard (no bundle integration)
-- Implement multi-page navigation with stepper bar
+- Implement multi-page navigation with stepper bar; a simple state machine is sufficient for the 7-page flow
 - Move existing functionality into separate pages
 - Add RSSI display on node selection page
 - No bundle manifest — manual node ID entry (current behavior)

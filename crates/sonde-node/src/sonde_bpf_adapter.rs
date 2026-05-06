@@ -402,7 +402,7 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn t_n929_write_to_read_only_context_silently_ignored() {
+    fn t_bpf_033_write_to_read_only_context_silently_ignored() {
         // T-N929: Load a BPF program that attempts to write to the
         // sonde_context memory region.  Verify the context is unchanged
         // and execution continues normally.

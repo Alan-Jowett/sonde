@@ -4,9 +4,11 @@
 //! Phase 2B integration tests: protocol engine, command dispatch, chunked
 //! transfer, and authentication.
 
+use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::Duration;
 
+use ciborium::Value;
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::program::{ProgramLibrary, VerificationProfile};
 use sonde_gateway::registry::NodeRecord;
@@ -233,6 +235,28 @@ async fn t0101_valid_cbor_encoding() {
 
     let decoded = decode_frame(&resp).unwrap();
     let plaintext = open_frame(&decoded, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
+    let raw: Value = ciborium::from_reader(&plaintext[..]).expect("response payload must be CBOR");
+    let map = raw
+        .as_map()
+        .expect("response payload must be a top-level CBOR map");
+    let mut keys = map
+        .iter()
+        .map(|(k, _)| {
+            k.as_integer()
+                .and_then(|i| u64::try_from(i).ok())
+                .expect("all top-level keys must be non-negative integers")
+        })
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            sonde_protocol::KEY_COMMAND_TYPE,
+            sonde_protocol::KEY_STARTING_SEQ,
+            sonde_protocol::KEY_TIMESTAMP_MS,
+        ],
+        "NOP COMMAND must use the expected integer-key CBOR mapping"
+    );
     // Payload must be valid CBOR decodable as a GatewayMessage
     let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext);
     assert!(msg.is_ok(), "response payload must be valid CBOR");
@@ -240,6 +264,7 @@ async fn t0101_valid_cbor_encoding() {
 
 /// T-0102: Malformed CBOR tolerance (valid HMAC, garbage payload).
 #[tokio::test]
+#[traced_test]
 async fn t0102_malformed_cbor_tolerance() {
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway(storage.clone());
@@ -258,6 +283,7 @@ async fn t0102_malformed_cbor_tolerance() {
 
     let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(resp.is_none(), "garbage CBOR must be silently discarded");
+    assert!(logs_contain("discarding WAKE with malformed CBOR payload"));
 }
 
 /// T-0103: WAKE reception and field extraction.

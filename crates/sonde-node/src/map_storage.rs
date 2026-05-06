@@ -192,7 +192,7 @@ fn make_map_data(size: usize, offset: usize) -> MapData {
     // that every call to `make_map_data` receives a unique, non-overlapping
     // `[offset, offset+size)` range within `MAP_BACKING`.
     unsafe {
-        let ptr = MAP_BACKING.as_mut_ptr().add(offset);
+        let ptr = core::ptr::addr_of_mut!(MAP_BACKING).cast::<u8>().add(offset);
         core::ptr::write_bytes(ptr, 0, size);
         RtcSlice {
             ptr,
@@ -360,7 +360,9 @@ impl MapStorage {
             // SAFETY: offset + total_size ≤ total_bytes ≤ MAP_BUDGET.
             let data = unsafe {
                 RtcSlice {
-                    ptr: MAP_BACKING.as_mut_ptr().add(offset),
+                    ptr: core::ptr::addr_of_mut!(MAP_BACKING)
+                        .cast::<u8>()
+                        .add(offset),
                     len: total_size,
                     _not_send_sync: PhantomData,
                 }

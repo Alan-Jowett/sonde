@@ -6,7 +6,7 @@ license = "MIT"
 description = "Tauri v2 BLE pairing tool for sonde sensor nodes"
 
 [lib]
-name = "sonde_pair_ui"
+name = "sonde_pair_ui_backend"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]

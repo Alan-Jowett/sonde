@@ -677,7 +677,8 @@ fn current_user_sid_string() -> Result<String, CompanionError> {
             {
                 Err(std::io::Error::last_os_error().into())
             } else {
-                let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+                let token_user =
+                    unsafe { std::ptr::read_unaligned(buffer.as_ptr().cast::<TOKEN_USER>()) };
                 sid_to_string(token_user.User.Sid)
             }
         }
@@ -783,7 +784,11 @@ fn configured_windows_service_sid_string() -> Result<String, CompanionError> {
                     {
                         Err(std::io::Error::last_os_error().into())
                     } else {
-                        let config = unsafe { &*(buffer.as_ptr().cast::<QUERY_SERVICE_CONFIGW>()) };
+                        let config = unsafe {
+                            std::ptr::read_unaligned(
+                                buffer.as_ptr().cast::<QUERY_SERVICE_CONFIGW>(),
+                            )
+                        };
                         let account_name = unsafe {
                             null_terminated_wide_to_string(
                                 std::ptr::NonNull::new(config.lpServiceStartName).ok_or_else(

@@ -19,6 +19,7 @@ use azure_identity_legacy::{AppServiceManagedIdentityCredential, TokenCredential
 use base64::Engine as _;
 use ciborium::Value;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sonde_gateway::connector::{MSG_TYPE_ACTUAL_STATE, MSG_TYPE_APP_DATA, MSG_TYPE_DESIRED_STATE};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -267,9 +268,13 @@ where
             ObservedStateWriteResult::Applied(row) => row,
         };
 
-        let program_diverged =
-            row.desired_assigned_program_hash != row.observed_current_program_hash;
-        let schedule_diverged = row.desired_schedule_interval_s != row.observed_schedule_interval_s;
+        let program_diverged = row
+            .desired_assigned_program_hash
+            .as_ref()
+            .is_some_and(|desired| row.observed_current_program_hash.as_ref() != Some(desired));
+        let schedule_diverged = row
+            .desired_schedule_interval_s
+            .is_some_and(|desired| row.observed_schedule_interval_s != Some(desired));
         if !program_diverged && !schedule_diverged {
             return Ok(());
         }
@@ -325,8 +330,9 @@ impl AzureTablesStore {
 #[async_trait]
 impl HandlerStore for AzureTablesStore {
     async fn load_node_state(&self, node_id: &str) -> Result<Option<NodeStateRow>, HandlerError> {
-        let encoded_row_key = encode_node_row_key(node_id)?;
-        for row_key in [encoded_row_key.as_str(), node_id] {
+        let hashed_row_key = encode_node_row_key(node_id);
+        let legacy_row_key = encode_legacy_node_row_key(node_id);
+        for row_key in [hashed_row_key.as_str(), legacy_row_key.as_str(), node_id] {
             let entity_client = self
                 .node_state_table
                 .partition_key_client("node")
@@ -345,7 +351,7 @@ impl HandlerStore for AzureTablesStore {
                     return Err(HandlerError::Store(format!("query node state failed: {e}")));
                 }
             }
-            if encoded_row_key == node_id {
+            if hashed_row_key == node_id && legacy_row_key == node_id {
                 break;
             }
         }
@@ -395,10 +401,11 @@ impl HandlerStore for AzureTablesStore {
         update: &ObservedStateUpdate,
     ) -> Result<ObservedStateWriteResult, HandlerError> {
         let entity_client = self.node_state_table.partition_key_client("node");
-        let encoded_row_key = encode_node_row_key(&update.node_id)?;
+        let hashed_row_key = encode_node_row_key(&update.node_id);
+        let legacy_row_key = encode_legacy_node_row_key(&update.node_id);
         for _ in 0..4 {
             let response = match entity_client
-                .entity_client(encoded_row_key.clone())
+                .entity_client(hashed_row_key.clone())
                 .get::<NodeStateEntity>()
                 .await
             {
@@ -410,15 +417,25 @@ impl HandlerStore for AzureTablesStore {
                             status: LegacyStatusCode::NotFound,
                             ..
                         }
-                    ) && encoded_row_key != update.node_id =>
+                    ) =>
                 {
-                    entity_client
-                        .entity_client(update.node_id.clone())
+                    if let Ok(response) = entity_client
+                        .entity_client(legacy_row_key.clone())
                         .get::<NodeStateEntity>()
                         .await
-                        .map_err(|e| {
-                            HandlerError::Store(format!("load node state for merge failed: {e}"))
-                        })?
+                    {
+                        response
+                    } else {
+                        entity_client
+                            .entity_client(update.node_id.clone())
+                            .get::<NodeStateEntity>()
+                            .await
+                            .map_err(|e| {
+                                HandlerError::Store(format!(
+                                    "load node state for merge failed: {e}"
+                                ))
+                            })?
+                    }
                 }
                 Err(e)
                     if matches!(
@@ -605,6 +622,7 @@ struct NodeStateEntity {
     partition_key: String,
     #[serde(rename = "RowKey")]
     row_key: String,
+    node_id: Option<String>,
     desired_assigned_program_hash: Option<String>,
     desired_schedule_interval_s: Option<u32>,
     observed_current_program_hash: Option<String>,
@@ -630,7 +648,10 @@ impl TryFrom<NodeStateEntity> for NodeStateRow {
 
     fn try_from(value: NodeStateEntity) -> Result<Self, Self::Error> {
         Ok(Self {
-            node_id: decode_node_row_key(&value.row_key)?,
+            node_id: match value.node_id {
+                Some(node_id) => node_id,
+                None => decode_legacy_node_row_key(&value.row_key)?,
+            },
             desired_assigned_program_hash: decode_optional_program_hash(
                 value.desired_assigned_program_hash,
                 "desired_assigned_program_hash",
@@ -659,7 +680,8 @@ impl TryFrom<NodeStateRow> for NodeStateEntity {
     fn try_from(value: NodeStateRow) -> Result<Self, Self::Error> {
         Ok(Self {
             partition_key: "node".to_string(),
-            row_key: encode_node_row_key(&value.node_id)?,
+            row_key: encode_node_row_key(&value.node_id),
+            node_id: Some(value.node_id),
             desired_assigned_program_hash: encode_optional_hex(value.desired_assigned_program_hash),
             desired_schedule_interval_s: value.desired_schedule_interval_s,
             observed_current_program_hash: encode_optional_hex(value.observed_current_program_hash),
@@ -786,13 +808,16 @@ fn encode_optional_hex(value: Option<Vec<u8>>) -> Option<String> {
     value.map(hex::encode)
 }
 
-fn encode_node_row_key(node_id: &str) -> Result<String, HandlerError> {
-    let encoded = format!("n:{}", hex::encode(node_id.as_bytes()));
-    assert_node_row_key_len(&encoded)?;
-    Ok(encoded)
+fn encode_node_row_key(node_id: &str) -> String {
+    let digest = Sha256::digest(node_id.as_bytes());
+    format!("n:{}", hex::encode(digest))
 }
 
-fn decode_node_row_key(row_key: &str) -> Result<String, HandlerError> {
+fn encode_legacy_node_row_key(node_id: &str) -> String {
+    format!("n:{}", hex::encode(node_id.as_bytes()))
+}
+
+fn decode_legacy_node_row_key(row_key: &str) -> Result<String, HandlerError> {
     let Some(encoded) = row_key.strip_prefix("n:") else {
         return Ok(row_key.to_string());
     };
@@ -801,15 +826,6 @@ fn decode_node_row_key(row_key: &str) -> Result<String, HandlerError> {
     })?;
     String::from_utf8(bytes)
         .map_err(|e| HandlerError::Store(format!("NodeState.RowKey must contain valid UTF-8: {e}")))
-}
-
-fn assert_node_row_key_len(row_key: &str) -> Result<(), HandlerError> {
-    if row_key.encode_utf16().count() <= 1024 {
-        return Ok(());
-    }
-    Err(HandlerError::Decode(
-        "NodeState.RowKey exceeds Azure Table 1024 UTF-16 code unit limit".to_string(),
-    ))
 }
 
 fn decode_optional_program_hash(
@@ -1665,8 +1681,9 @@ mod tests {
         let entity = NodeStateEntity::try_from(row.clone()).unwrap();
         assert_eq!(
             entity.row_key,
-            "n:6e6f64652f776974683f23756e736166655c6368617273"
+            "n:6a096929d88b3094bc781fbd0fb8dc060aa75ba06339ac3a706aa06f5ac9fedd"
         );
+        assert_eq!(entity.node_id.as_deref(), Some("node/with?#unsafe\\chars"));
         assert_eq!(NodeStateRow::try_from(entity).unwrap(), row);
     }
 
@@ -1675,6 +1692,7 @@ mod tests {
         let row = NodeStateRow::try_from(NodeStateEntity {
             partition_key: "node".to_string(),
             row_key: "node-1".to_string(),
+            node_id: None,
             desired_assigned_program_hash: None,
             desired_schedule_interval_s: None,
             observed_current_program_hash: None,
@@ -1690,12 +1708,10 @@ mod tests {
     }
 
     #[test]
-    fn encode_node_row_key_rejects_values_over_azure_limit() {
-        let node_id = "a".repeat(512);
-        let err = encode_node_row_key(&node_id).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("NodeState.RowKey exceeds Azure Table 1024 UTF-16 code unit limit"));
+    fn long_node_ids_still_produce_bounded_row_keys() {
+        let node_id = "a".repeat(4096);
+        let row_key = encode_node_row_key(&node_id);
+        assert_eq!(row_key.len(), 66);
     }
 
     #[tokio::test]
@@ -1785,6 +1801,41 @@ mod tests {
         assert_eq!(row.observed_current_program_hash, Some(vec![0x42; 32]));
     }
 
+    #[tokio::test]
+    async fn cleared_desired_targets_do_not_republish_forever() {
+        let store = Arc::new(MemoryStore::default());
+        store.nodes.lock().await.insert(
+            "node-1".to_string(),
+            NodeStateRow {
+                node_id: "node-1".to_string(),
+                desired_assigned_program_hash: None,
+                desired_schedule_interval_s: None,
+                observed_current_program_hash: Some(vec![0x42; 32]),
+                observed_assigned_program_hash: Some(vec![0x42; 32]),
+                observed_schedule_interval_s: Some(120),
+                battery_mv: Some(3300),
+                firmware_abi_version: Some(1),
+                firmware_version: Some("1.2.3".to_string()),
+                last_checkin_ms: 1200,
+            },
+        );
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        handler
+            .handle_payload(&sample_actual_state(
+                "node-1",
+                Some(&[0x42; 32]),
+                Some(&[0x42; 32]),
+                Some(120),
+            ))
+            .await
+            .unwrap();
+
+        assert!(publisher.sends.lock().await.is_empty());
+    }
+
     #[test]
     fn actual_state_rejects_non_sha256_program_hash() {
         let value = Value::Map(vec![
@@ -1823,6 +1874,7 @@ mod tests {
         let err = NodeStateRow::try_from(NodeStateEntity {
             partition_key: "node".to_string(),
             row_key: "node-1".to_string(),
+            node_id: None,
             desired_assigned_program_hash: Some("not-hex".to_string()),
             desired_schedule_interval_s: Some(60),
             observed_current_program_hash: None,

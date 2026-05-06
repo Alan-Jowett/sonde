@@ -117,12 +117,13 @@ The design uses two Azure Tables:
 Each row uses:
 
 - `PartitionKey = "node"`
-- `RowKey = "n:" + lowercase hex-encoded UTF-8 bytes of node_id`
+- `RowKey = "n:" + lowercase hex-encoded SHA-256(node_id UTF-8 bytes)`
 
 The row contains the following logical columns:
 
 | Column | Purpose |
 |--------|---------|
+| `node_id` | Original opaque node identifier used by gateway and handlers. |
 | `desired_assigned_program_hash` | Cloud-authored desired resident program hash, nullable. |
 | `desired_schedule_interval_s` | Cloud-authored desired schedule interval, nullable. |
 | `observed_current_program_hash` | Node-reported current resident program hash, nullable. |
@@ -135,9 +136,11 @@ The row contains the following logical columns:
 
 The row deliberately separates desired and observed columns so that Azure-side
 control-plane intent is not overwritten by the next `GW-0812`.
-The encoded `RowKey` is only a storage-safe representation. The logical node
-identifier remains the original opaque `node_id`, and the handler decodes the
-stored row key back to that original string when it loads rows.
+The hashed `RowKey` is only a storage-safe lookup key. The logical node
+identifier remains the original opaque `node_id`, which is stored in the row and
+returned unchanged when the handler loads rows. For backward compatibility, the
+handler also tolerates legacy rows whose `RowKey` used the older reversible
+hex-encoding or the literal raw node ID.
 
 ### 4.2  `ProgramRoute` schema
 

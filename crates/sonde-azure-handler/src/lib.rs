@@ -108,6 +108,7 @@ pub struct ObservedStateUpdate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObservedStateWriteResult {
     Applied(NodeStateRow),
+    Current(NodeStateRow),
     IgnoredStale,
 }
 
@@ -249,23 +250,28 @@ where
         row: NodeStateRow,
         actual_state: ActualStateMessage,
     ) -> Result<(), HandlerError> {
-        if actual_state.timestamp_ms <= row.last_checkin_ms {
+        if actual_state.timestamp_ms < row.last_checkin_ms {
             return Ok(());
         }
 
-        let update = ObservedStateUpdate {
-            node_id: row.node_id.clone(),
-            current_program_hash: actual_state.current_program_hash,
-            assigned_program_hash: actual_state.assigned_program_hash,
-            schedule_interval_s: actual_state.schedule_interval_s,
-            battery_mv: actual_state.battery_mv,
-            firmware_abi_version: actual_state.firmware_abi_version,
-            firmware_version: actual_state.firmware_version,
-            timestamp_ms: actual_state.timestamp_ms,
-        };
-        let row = match self.store.update_observed_state(&update).await? {
-            ObservedStateWriteResult::IgnoredStale => return Ok(()),
-            ObservedStateWriteResult::Applied(row) => row,
+        let row = if actual_state.timestamp_ms == row.last_checkin_ms {
+            row
+        } else {
+            let update = ObservedStateUpdate {
+                node_id: row.node_id.clone(),
+                current_program_hash: actual_state.current_program_hash,
+                assigned_program_hash: actual_state.assigned_program_hash,
+                schedule_interval_s: actual_state.schedule_interval_s,
+                battery_mv: actual_state.battery_mv,
+                firmware_abi_version: actual_state.firmware_abi_version,
+                firmware_version: actual_state.firmware_version,
+                timestamp_ms: actual_state.timestamp_ms,
+            };
+            match self.store.update_observed_state(&update).await? {
+                ObservedStateWriteResult::Applied(row)
+                | ObservedStateWriteResult::Current(row) => row,
+                ObservedStateWriteResult::IgnoredStale => return Ok(()),
+            }
         };
 
         let program_diverged = row
@@ -459,7 +465,13 @@ impl HandlerStore for AzureTablesStore {
             };
             let mut entity = response.entity;
             if update.timestamp_ms <= entity.last_checkin_ms {
-                return Ok(ObservedStateWriteResult::IgnoredStale);
+                return if update.timestamp_ms == entity.last_checkin_ms {
+                    Ok(ObservedStateWriteResult::Current(NodeStateRow::try_from(
+                        entity,
+                    )?))
+                } else {
+                    Ok(ObservedStateWriteResult::IgnoredStale)
+                };
             }
             entity.observed_current_program_hash =
                 encode_optional_hex(update.current_program_hash.clone());
@@ -1037,7 +1049,11 @@ mod tests {
                 ))
             })?;
             if update.timestamp_ms <= row.last_checkin_ms {
-                return Ok(ObservedStateWriteResult::IgnoredStale);
+                return if update.timestamp_ms == row.last_checkin_ms {
+                    Ok(ObservedStateWriteResult::Current(row.clone()))
+                } else {
+                    Ok(ObservedStateWriteResult::IgnoredStale)
+                };
             }
             row.observed_current_program_hash = update.current_program_hash.clone();
             row.observed_assigned_program_hash = update.assigned_program_hash.clone();
@@ -1070,6 +1086,27 @@ mod tests {
     #[async_trait]
     impl QueuePublisher for RecordingPublisher {
         async fn publish(&self, queue: &str, payload: Vec<u8>) -> Result<(), HandlerError> {
+            self.sends.lock().await.push((queue.to_string(), payload));
+            Ok(())
+        }
+    }
+
+    struct FailOncePublisher {
+        sends: Mutex<Vec<(String, Vec<u8>)>>,
+        failed: Mutex<bool>,
+    }
+
+    #[async_trait]
+    impl QueuePublisher for FailOncePublisher {
+        async fn publish(&self, queue: &str, payload: Vec<u8>) -> Result<(), HandlerError> {
+            let mut failed = self.failed.lock().await;
+            if !*failed {
+                *failed = true;
+                return Err(HandlerError::Publish(
+                    "simulated first publish failure".to_string(),
+                ));
+            }
+            drop(failed);
             self.sends.lock().await.push((queue.to_string(), payload));
             Ok(())
         }
@@ -1799,6 +1836,59 @@ mod tests {
         let row = store.nodes.lock().await.get("node-1").cloned().unwrap();
         assert_eq!(row.last_checkin_ms, 1234);
         assert_eq!(row.observed_current_program_hash, Some(vec![0x42; 32]));
+    }
+
+    #[tokio::test]
+    async fn duplicate_actual_state_redelivery_retries_divergence_publish() {
+        let store = Arc::new(MemoryStore::default());
+        store.nodes.lock().await.insert(
+            "node-1".to_string(),
+            NodeStateRow {
+                node_id: "node-1".to_string(),
+                desired_assigned_program_hash: Some(vec![0xBB; 32]),
+                desired_schedule_interval_s: Some(60),
+                observed_current_program_hash: Some(vec![0x11; 32]),
+                observed_assigned_program_hash: Some(vec![0x11; 32]),
+                observed_schedule_interval_s: Some(30),
+                battery_mv: Some(3300),
+                firmware_abi_version: Some(1),
+                firmware_version: Some("1.2.3".to_string()),
+                last_checkin_ms: 1,
+            },
+        );
+        let publisher = Arc::new(FailOncePublisher {
+            sends: Mutex::new(Vec::new()),
+            failed: Mutex::new(false),
+        });
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+        let payload =
+            sample_actual_state("node-1", Some(&[0xAA; 32]), Some(&[0xAA; 32]), Some(30));
+
+        let err = handler.handle_payload(&payload).await.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("simulated first publish failure"));
+
+        handler.handle_payload(&payload).await.unwrap();
+
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        let desired = decode_map(&sends[0].1).unwrap();
+        let desired_state = map_get(&desired, 4).unwrap().as_map().unwrap();
+        assert_eq!(
+            optional_bytes_field(desired_state, 1, "assigned_program_hash").unwrap(),
+            Some(vec![0xBB; 32])
+        );
+        assert_eq!(
+            optional_u32_field(desired_state, 2, "schedule_interval_s").unwrap(),
+            Some(60)
+        );
+        drop(sends);
+
+        let row = store.nodes.lock().await.get("node-1").cloned().unwrap();
+        assert_eq!(row.last_checkin_ms, 1234);
+        assert_eq!(row.observed_current_program_hash, Some(vec![0xAA; 32]));
     }
 
     #[tokio::test]

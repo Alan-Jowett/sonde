@@ -174,11 +174,11 @@ For each node-scoped `GW-0812`, the handler performs the following sequence:
       present, otherwise from `assigned_program_hash`, and
    4. seed `desired_schedule_interval_s` from `schedule_interval_s`.
 3. If the row exists:
-   1. update all observed fields from `GW-0812`,
-   2. compare `desired_assigned_program_hash` to
-      `observed_current_program_hash`, and
-   3. compare `desired_schedule_interval_s` to
-      `observed_schedule_interval_s`.
+    1. update all observed fields from `GW-0812`,
+    2. if `desired_assigned_program_hash` is non-null, compare it to
+       `observed_current_program_hash`, and
+    3. if `desired_schedule_interval_s` is non-null, compare it to
+       `observed_schedule_interval_s`.
 4. If neither comparison diverges, complete the invocation with no downstream
    publication.
 5. If either comparison diverges, build one complete `GW-0811`
@@ -192,6 +192,11 @@ For each node-scoped `GW-0812`, the handler performs the following sequence:
 `ephemeral_program_hash` is intentionally omitted in v1. The gateway connector
 schema already defines it, but this design does not add Azure-side ownership or
 comparison rules for it yet.
+
+A null desired program or schedule field means the cloud is intentionally not
+asserting a target for that field. The reconciliation algorithm therefore skips
+that comparison instead of republishing `GW-0811` forever against a non-null
+observed value.
 
 ---
 

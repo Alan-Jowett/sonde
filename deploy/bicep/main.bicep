@@ -58,7 +58,7 @@ var effectiveStorageAccountName = empty(storageAccountName)
   ? take('st${take(uniqueString(subscription().subscriptionId, project_name, effectiveResourceGroupName, 'storage'), 22)}', 24)
   : storageAccountName
 var effectiveNodeStateTableName = empty(nodeStateTableName)
-  ? (empty(tableName) ? 'nodestate' : tableName)
+  ? (empty(tableName) ? 'decodeddata' : tableName)
   : nodeStateTableName
 var effectiveProgramRouteTableName = empty(programRouteTableName)
   ? 'programroute'

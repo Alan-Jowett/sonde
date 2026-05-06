@@ -164,11 +164,14 @@ program state, observed gateway-assigned program state, and observed schedule.
 **Description:**
 After refreshing an existing node-state row from `GW-0812`, the Azure handler
 MUST compare the row's desired fields against the observed fields reported by
-that message. In v1, divergence is present when desired `assigned_program_hash`
-differs from the observed current program hash, or when desired
-`schedule_interval_s` differs from the observed schedule interval. When either
-comparison diverges, the Azure handler MUST emit one complete `GW-0811`
-`DESIRED_STATE` message for that node using the row's desired fields.
+that message. In v1, divergence is present when desired
+`assigned_program_hash` is non-null and differs from the observed current
+program hash, or when desired `schedule_interval_s` is non-null and differs
+from the observed schedule interval. A null desired field means the Azure
+handler is not asserting a cloud target for that field and therefore MUST NOT
+treat that field as divergent by itself. When either active comparison
+diverges, the Azure handler MUST emit one complete `GW-0811` `DESIRED_STATE`
+message for that node using the row's desired fields.
 
 **Acceptance criteria:**
 
@@ -177,6 +180,7 @@ comparison diverges, the Azure handler MUST emit one complete `GW-0811`
 3. When both resident-program and schedule mismatch, the Azure handler still emits exactly one complete `GW-0811` message for that `GW-0812`.
 4. The emitted desired-state payload includes the row's desired `assigned_program_hash` and desired `schedule_interval_s`.
 5. The emitted desired-state payload does not invent `ephemeral_program_hash` state owned by this document.
+6. A null desired resident-program or null desired schedule field does not, by itself, trigger divergence or downstream publication for that field.
 
 ---
 

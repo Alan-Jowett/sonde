@@ -13,7 +13,7 @@ Azure companion architecture.
   - `connector-upstream`
   - `desired-state`
 - An Azure Storage Account plus two Azure Table resources for the Azure handler:
-  - `nodestate`
+  - `decodeddata` (default node-state table name for backward-compatible deployments)
   - `programroute`
 - An Azure handler Function App on a Flex Consumption plan
 - A system-assigned managed identity on the Function App with:
@@ -41,7 +41,7 @@ Azure companion architecture.
 | `downstreamQueueName` | `desired-state` | Desired-state ingress queue |
 | `storageAccountName` | derived | Optional Storage Account override |
 | `tableName` | empty | Legacy compatibility alias for the node-state table name |
-| `nodeStateTableName` | derived | Azure handler node-state table |
+| `nodeStateTableName` | `decodeddata` | Azure handler node-state table |
 | `programRouteTableName` | `programroute` | Azure handler program-route table |
 | `functionAppName` | derived | Optional Function App override |
 | `functionPlanName` | derived | Optional Function hosting plan override |
@@ -51,6 +51,8 @@ When resource names are derived automatically, the deployment normalizes
 
 For backward compatibility with earlier templates, callers may still pass `tableName`.
 When `nodeStateTableName` is omitted, that legacy alias is used as the node-state table name.
+If neither parameter is set, the deployment keeps the historical default table name
+`decodeddata` so existing stacks continue updating in place.
 The derived default Function App name intentionally keeps the historical `-decoder-`
 stem so existing stacks update in place; set `functionAppName` explicitly on new
 deployments if you want a handler-specific resource name.

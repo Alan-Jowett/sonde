@@ -121,6 +121,18 @@ published when both desired fields diverge simultaneously.
 
 ---
 
+### T-AZH-0206  Null desired fields suppress divergence for that field
+
+**Validates:** AZH-0203, AZH-0204
+
+**Procedure:**
+1. Seed a `NodeState` row whose desired resident program hash and desired schedule are both `null`, while the observed values that will be carried by the next `GW-0812` are non-null.
+2. Deliver that node-scoped `GW-0812`.
+3. Assert: the handler refreshes the stored observed fields.
+4. Assert: no downstream `GW-0811` message is published solely because the desired field is `null`.
+
+---
+
 ### T-AZH-0300  ProgramRoute rows map `program_hash` to handler queue name
 
 **Validates:** AZH-0300
@@ -179,3 +191,7 @@ published when both desired fields diverge simultaneously.
 2. Trigger the corresponding handler path in each sub-case.
 3. Assert: each failure is surfaced through logging, function failure, or both.
 4. Assert: the handler does not report success for the failed message path.
+
+For downstream `GW-0811` publication failures, repeat delivery of the same
+`GW-0812` with the same `timestamp_ms` and assert that the handler retries the
+divergence publication instead of treating that redelivery as permanently stale.

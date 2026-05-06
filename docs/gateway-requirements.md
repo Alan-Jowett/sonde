@@ -1056,17 +1056,18 @@ The gateway MUST emit upstream control-plane messages that describe actual
 gateway and node state changes relevant to reconciliation. For nodes, this
 includes the state learned when the gateway accepts and processes an
 authenticated `WAKE`, such as `node_id`, current and assigned program hashes
-when known, `battery_mv`, firmware ABI/version data, and a reception timestamp
-encoded as Unix time in milliseconds. `battery_mv` remains part of the emitted
-actual-state record even though battery telemetry is runtime-only locally and is
-not durably persisted under GW-0702. These upstream messages are produced only
-after the gateway has updated its latest-known actual state for the affected
-entity.
+when known, `schedule_interval_s`, `battery_mv`, firmware ABI/version data, and
+a reception timestamp encoded as Unix time in milliseconds. For node-scoped
+actual-state updates, that timestamp is the node's last check-in time as
+observed by the gateway. `battery_mv` remains part of the emitted actual-state
+record even though battery telemetry is runtime-only locally and is not durably
+persisted under GW-0702. These upstream messages are produced only after the
+gateway has updated its latest-known actual state for the affected entity.
 
 **Acceptance criteria:**
 
 1. Each valid `WAKE` from a registered node produces exactly one upstream actual-state/status update for that node.
-2. The update fields reflect the values extracted from that `WAKE` and the gateway's current assignment state for the node.
+2. The update fields reflect the values extracted from that `WAKE` together with the gateway's current assignment state and current `schedule_interval_s` for the node.
 3. The update is emitted only after the gateway has accepted the `WAKE` and updated the node's latest-known status.
 4. Gateway-scoped status changes that materially affect reconciliation or connector health are emitted through the same connector model.
 

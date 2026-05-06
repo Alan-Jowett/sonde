@@ -1,0 +1,12 @@
+{
+  "bindings": [
+    {
+      "type": "serviceBusTrigger",
+      "direction": "in",
+      "name": "message",
+      "dataType": "binary",
+      "queueName": "%SONDE_AZURE_HANDLER_UPSTREAM_QUEUE%",
+      "connection": "AzureWebJobsServiceBus"
+    }
+  ]
+}

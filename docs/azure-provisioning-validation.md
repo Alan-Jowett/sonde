@@ -63,22 +63,22 @@
 1. Deploy the workflow.
 2. Inspect the resulting Storage Account and Table resources.
 3. Assert: the Storage Account exists.
-4. Assert: the Table resource exists.
+4. Assert: the required Table resources exist, including separate tables for node-state rows and program-route rows.
 5. Assert: deployment outputs and bootstrap handoff values do not expose raw Storage Account keys.
-6. Assert: the provisioning documentation explicitly defers logical table schema ownership to the later Azure Function work.
+6. Assert: the provisioning documentation explicitly assigns logical table schema ownership to the Azure handler specification rather than to the provisioning spec itself.
 
 ---
 
-### T-AZP-0104  Function placeholder resources deploy without decoder code
+### T-AZP-0104  Azure handler Function App resources deploy without handler code
 
 **Validates:** AZP-0104
 
 **Procedure:**
-1. Run the deployment without supplying any decoder function package.
+1. Run the deployment without supplying any Azure handler function package.
 2. Inspect the resulting Function hosting resources.
-3. Assert: the placeholder Function App resources exist.
-4. Assert: the placeholder Function App uses a consumption hosting plan.
-5. Assert: the deployment did not require the later decoder implementation to be present.
+3. Assert: the Azure handler Function App resources exist.
+4. Assert: the Function App uses a consumption hosting plan.
+5. Assert: the deployment did not require the handler implementation package to be present.
 
 ---
 
@@ -121,19 +121,20 @@
 
 ---
 
-### T-AZP-0203  Function placeholder identity has the required RBAC
+### T-AZP-0203  Azure handler Function App identity has the required RBAC
 
 **Validates:** AZP-0202
 
 **Procedure:**
 1. Run the provisioning workflow.
-2. Inspect the placeholder Function App identity configuration.
+2. Inspect the Azure handler Function App identity configuration.
 3. Assert: the Function App has a system-assigned managed identity.
 4. Inspect the permissions granted to that identity.
 5. Assert: the identity can receive from the upstream queue.
 6. Assert: the identity can send on the downstream queue.
-7. Assert: the identity can write to the reserved Table Storage resource.
+7. Assert: the identity can read and write the Azure Table resources used by the handler.
 8. Assert: the Function App identity is distinct from the Azure companion runtime identity.
+9. Assert: the deployment documentation identifies externally provisioned handler queues as requiring separate send permission grants when the Azure handler will publish `GW-0813` to them.
 
 ---
 
@@ -157,7 +158,7 @@
 1. Provision the stack in a disposable test environment.
 2. Execute the documented teardown path.
 3. Assert: the resource-plane stack is removed, or any retained artifacts are explicitly identified by the documentation.
-4. Assert: teardown expectations for Service Bus, Storage, and Function placeholder resources are clear.
+4. Assert: teardown expectations for Service Bus, Storage, and Azure handler Function App resources are clear.
 
 ---
 

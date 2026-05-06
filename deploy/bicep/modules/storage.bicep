@@ -9,10 +9,13 @@ param location string
 @description('Storage Account name.')
 param storageAccountName string
 
-@description('Table name reserved for decoded data.')
-param tableName string
+@description('Table name for Azure handler node-state rows.')
+param nodeStateTableName string
 
-@description('Blob container name used by the placeholder Function App deployment slot.')
+@description('Table name for Azure handler program-route rows.')
+param programRouteTableName string
+
+@description('Blob container name used by the Azure handler Function App deployment slot.')
 param deploymentContainerName string
 
 @description('Tags applied to provisioned resources.')
@@ -52,9 +55,17 @@ resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/con
   }
 }
 
-resource storageTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+resource nodeStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
   parent: tableService
-  name: tableName
+  name: nodeStateTableName
+  properties: {
+    signedIdentifiers: []
+  }
+}
+
+resource programRouteTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+  parent: tableService
+  name: programRouteTableName
   properties: {
     signedIdentifiers: []
   }
@@ -65,5 +76,7 @@ output storageAccountResourceId string = storageAccount.id
 output blobEndpoint string = storageAccount.properties.primaryEndpoints.blob
 output deploymentContainerName string = deploymentContainer.name
 output deploymentContainerResourceId string = deploymentContainer.id
-output tableName string = storageTable.name
-output tableResourceId string = storageTable.id
+output nodeStateTableName string = nodeStateTable.name
+output nodeStateTableResourceId string = nodeStateTable.id
+output programRouteTableName string = programRouteTable.name
+output programRouteTableResourceId string = programRouteTable.id

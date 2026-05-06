@@ -3,7 +3,7 @@
 
 targetScope = 'resourceGroup'
 
-@description('System-assigned managed identity principal ID for the placeholder Function App.')
+@description('System-assigned managed identity principal ID for the Azure handler Function App.')
 param functionPrincipalId string
 
 @description('Service Bus namespace name.')
@@ -18,8 +18,11 @@ param downstreamQueueName string
 @description('Storage Account name.')
 param storageAccountName string
 
-@description('Storage Table name.')
-param tableName string
+@description('Azure handler node-state table name.')
+param nodeStateTableName string
+
+@description('Azure handler program-route table name.')
+param programRouteTableName string
 
 var serviceBusDataSenderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39')
 var serviceBusDataReceiverRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')
@@ -48,9 +51,14 @@ resource existingTableService 'Microsoft.Storage/storageAccounts/tableServices@2
   name: 'default'
 }
 
-resource existingStorageTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
+resource existingNodeStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
   parent: existingTableService
-  name: tableName
+  name: nodeStateTableName
+}
+
+resource existingProgramRouteTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
+  parent: existingTableService
+  name: programRouteTableName
 }
 
 resource functionUpstreamReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -73,9 +81,19 @@ resource functionDownstreamSender 'Microsoft.Authorization/roleAssignments@2022-
   }
 }
 
-resource functionTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid('function-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingStorageTable.id)
-  scope: existingStorageTable
+resource functionNodeStateTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid('function-node-state-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingNodeStateTable.id)
+  scope: existingNodeStateTable
+  properties: {
+    principalId: functionPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageTableDataContributorRoleId
+  }
+}
+
+resource functionProgramRouteTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid('function-program-route-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingProgramRouteTable.id)
+  scope: existingProgramRouteTable
   properties: {
     principalId: functionPrincipalId
     principalType: 'ServicePrincipal'

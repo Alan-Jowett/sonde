@@ -64,6 +64,7 @@ enum ConnectorOutboundMessage {
         entity_id: String,
         current_program_hash: Option<Vec<u8>>,
         assigned_program_hash: Option<Vec<u8>>,
+        schedule_interval_s: Option<u32>,
         battery_mv: Option<u32>,
         firmware_abi_version: Option<u32>,
         firmware_version: Option<String>,
@@ -93,6 +94,7 @@ impl ConnectorOutboundMessage {
                 entity_id,
                 current_program_hash,
                 assigned_program_hash,
+                schedule_interval_s,
                 battery_mv,
                 firmware_abi_version,
                 firmware_version,
@@ -108,6 +110,7 @@ impl ConnectorOutboundMessage {
                 map_entry(8, opt_text_value(firmware_version.as_deref())),
                 map_entry(9, Value::Integer((*timestamp_ms).into())),
                 map_entry(10, Value::Map(Vec::new())),
+                map_entry(11, opt_u32_value(*schedule_interval_s)),
             ]),
             Self::AppData {
                 node_id,
@@ -188,6 +191,7 @@ impl ConnectorEventHub {
         node_id: String,
         current_program_hash: Vec<u8>,
         assigned_program_hash: Option<Vec<u8>>,
+        schedule_interval_s: u32,
         battery_mv: u32,
         firmware_abi_version: u32,
         firmware_version: String,
@@ -198,6 +202,7 @@ impl ConnectorEventHub {
             entity_id: node_id,
             current_program_hash: Some(current_program_hash),
             assigned_program_hash,
+            schedule_interval_s: Some(schedule_interval_s),
             battery_mv: Some(battery_mv),
             firmware_abi_version: Some(firmware_abi_version),
             firmware_version: Some(firmware_version),
@@ -704,5 +709,37 @@ fn optional_u32_field(
             .and_then(|v| u32::try_from(v).ok())
             .map(Some)
             .ok_or_else(|| format!("`{field}` must be uint or null")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn actual_state_encoding_includes_schedule_interval_at_key_11() {
+        let message = ConnectorOutboundMessage::ActualState {
+            entity_kind: "node",
+            entity_id: "node-1".to_string(),
+            current_program_hash: Some(vec![0x11; 32]),
+            assigned_program_hash: Some(vec![0x22; 32]),
+            schedule_interval_s: Some(60),
+            battery_mv: Some(3300),
+            firmware_abi_version: Some(1),
+            firmware_version: Some("1.2.3".to_string()),
+            timestamp_ms: 1234,
+        };
+
+        let encoded = message.encode().unwrap();
+        let decoded = decode_map(&encoded).unwrap();
+
+        assert_eq!(
+            required_u64(&decoded, 1, "msg_type").unwrap(),
+            MSG_TYPE_ACTUAL_STATE
+        );
+        assert_eq!(
+            optional_u32_field(&decoded, 11, "schedule_interval_s").unwrap(),
+            Some(60)
+        );
     }
 }

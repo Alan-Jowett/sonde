@@ -9,12 +9,14 @@
 > **Scope:** This document covers the Azure-side provisioning workflow for the
 > Azure companion deployment model: Bicep-managed resource provisioning,
 > companion runtime identity provisioning, and the bootstrap handoff contract
-> needed by `sonde-azure-companion`. It does not define Azure Function decoder
-> logic, table schema semantics, or dashboarding.
+> needed by `sonde-azure-companion`. Logical Azure handler behavior and table
+> schema semantics are specified separately in
+> [azure-handler-requirements.md](azure-handler-requirements.md).
 > **Related:** [azure-provisioning-design.md](azure-provisioning-design.md),
 > [azure-provisioning-validation.md](azure-provisioning-validation.md),
 > [azure-companion-requirements.md](azure-companion-requirements.md),
-> [azure-companion-design.md](azure-companion-design.md)
+> [azure-companion-design.md](azure-companion-design.md),
+> [azure-handler-requirements.md](azure-handler-requirements.md)
 
 ---
 
@@ -26,8 +28,8 @@
 | **Bicep root deployment** | The top-level Bicep entrypoint under `deploy/bicep/` that composes the provisioning modules for this workflow. |
 | **Runtime identity bundle** | The Entra tenant/client identity plus certificate-authenticated service-principal material required for the Azure companion runtime after bootstrap completes. |
 | **Bootstrap handoff contract** | The defined set of outputs and artifact locations that lets bootstrap materialize `service-principal.json`, certificate PEM, and private-key PEM for `sonde-azure-companion`. |
-| **Function placeholder** | Azure Function hosting resources reserved for a later decoder implementation, without requiring the decoder code to exist in this issue. |
-| **Storage resources** | The Azure Storage Account and Table resources reserved for later decoded-data persistence. This document covers only their provisioning, not the logical table schema. |
+| **Azure handler Function App** | Azure Function hosting resources used by the Sonde cloud-side handler. This document covers the hosting surface and identity, not the handler's runtime logic. |
+| **Storage resources** | The Azure Storage Account and Table resources used by the Azure handler. This document covers only provisioning and RBAC, not the logical table schema. |
 
 ---
 
@@ -83,7 +85,7 @@ with `project = sonde` by default.
 
 1. The workflow can create a dedicated resource group when one does not already exist.
 2. The workflow can target a caller-specified resource-group override instead of inventing a second group.
-3. Service Bus, Storage, and Function placeholder resources deployed by this workflow carry the `project = sonde` tag unless the caller overrides the value explicitly.
+3. Service Bus, Storage, and Azure handler Function App resources deployed by this workflow carry the `project = sonde` tag unless the caller overrides the value explicitly.
 
 ---
 
@@ -115,36 +117,37 @@ explicitly opts into a different supported tier.
 **Source:** [issue #772](https://github.com/Alan-Jowett/sonde/issues/772), reviewed discovery output
 
 **Description:**
-The provisioning workflow MUST create the Azure Storage resources reserved for
-later decoded-data persistence: a Storage Account and the required Table
-resource. This issue does not define the table's logical schema.
+The provisioning workflow MUST create the Azure Storage resources used by the
+Azure handler: a Storage Account plus the Table resources required by the
+handler's `NodeState` and `ProgramRoute` storage. This document does not define
+the tables' logical schema.
 
 **Acceptance criteria:**
 
 1. The workflow provisions one Azure Storage Account for this stack.
-2. The workflow provisions the Table resource needed by the later decoder path.
-3. The workflow documents that table schema ownership is deferred to the later Azure Function issue and is not defined by this provisioning specification.
+2. The workflow provisions the Table resources needed by the Azure handler path, including separate tables for node-state rows and program-route rows.
+3. The workflow documents that logical table schema ownership lives in `azure-handler-requirements.md` and is not defined by this provisioning specification.
 4. The workflow does not expose raw Storage Account keys in deployment outputs or bootstrap handoff values.
 
 ---
 
-### AZP-0104  Function placeholder infrastructure
+### AZP-0104  Azure handler Function App infrastructure
 
 **Priority:** Must
 **Source:** [issue #772](https://github.com/Alan-Jowett/sonde/issues/772), reviewed discovery output
 
 **Description:**
-The provisioning workflow MUST create placeholder Azure Function hosting
-resources for the later decoder implementation without requiring the decoder
-code to exist in this issue. The placeholder Function App uses a consumption
-plan unless a later issue explicitly changes that hosting model.
+The provisioning workflow MUST create the Azure Function hosting resources used
+by the Sonde Azure handler without requiring the function code package to be
+deployed by the Bicep workflow itself. The Function App uses a consumption plan
+unless a later specification explicitly changes that hosting model.
 
 **Acceptance criteria:**
 
-1. The workflow provisions the Azure resources needed to host the later decoder Function App.
-2. The workflow does not require the decoder function code package to exist in order to deploy the placeholder resources.
-3. The placeholder Function App resources use a consumption-plan hosting model.
-4. The deployment outputs or documentation identify the placeholder Function App resources reserved for the later issue.
+1. The workflow provisions the Azure resources needed to host the Azure handler Function App.
+2. The workflow does not require the handler function code package to exist in order to deploy the hosting resources.
+3. The Function App resources use a consumption-plan hosting model.
+4. The deployment outputs or documentation identify the Function App resources used by the Azure handler path.
 
 ---
 
@@ -187,25 +190,28 @@ downstream consume and settlement.
 
 ---
 
-### AZP-0202  Function placeholder managed identity and data-plane RBAC
+### AZP-0202  Azure handler Function App managed identity and data-plane RBAC
 
 **Priority:** Must
 **Source:** reviewed discovery output
 
 **Description:**
 The provisioning workflow MUST attach a system-assigned managed identity to the
-placeholder Azure Function App and grant only the data-plane permissions needed
-for the later decoder/control-plane function path: receive from the upstream
-queue, send on the downstream queue, and write decoded records to Table
-Storage.
+Azure handler Function App and grant the data-plane permissions needed for the
+Sonde cloud-side handler path: receive from the upstream queue, send on the
+downstream queue, and read/write the Azure Table resources used by the handler.
+When handler delivery queues are provisioned outside this workflow, the
+additional queue-specific send permission for those queues is an external
+dependency rather than an implicit responsibility of this Bicep stack.
 
 **Acceptance criteria:**
 
-1. The placeholder Function App has a system-assigned managed identity.
+1. The Azure handler Function App has a system-assigned managed identity.
 2. That identity can receive messages from the configured upstream queue.
 3. That identity can send messages to the configured downstream queue.
-4. That identity can write to the Storage Table reserved for decoded data.
+4. That identity can read and write the Azure Table resources used by the handler.
 5. The Function App identity is distinct from the Azure companion runtime identity unless a later specification explicitly merges them.
+6. The deployment documentation identifies externally provisioned handler queues as requiring separate send permission grants for the Function App identity.
 
 ---
 

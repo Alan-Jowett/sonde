@@ -3,7 +3,7 @@
 
 targetScope = 'resourceGroup'
 
-@description('Azure region for the Function placeholder resources.')
+@description('Azure region for the Azure handler Function App resources.')
 param location string
 
 @description('Function App name.')
@@ -18,6 +18,21 @@ param deploymentContainerUrl string
 @description('Storage Account name used by the Function placeholder deployment configuration.')
 param storageAccountName string
 
+@description('Service Bus namespace name.')
+param serviceBusNamespaceName string
+
+@description('Queue name for gateway-originated connector traffic.')
+param upstreamQueueName string
+
+@description('Queue name for cloud-originated desired-state traffic.')
+param downstreamQueueName string
+
+@description('Azure handler node-state table name.')
+param nodeStateTableName string
+
+@description('Azure handler program-route table name.')
+param programRouteTableName string
+
 @description('Tags applied to provisioned resources.')
 param tags object
 
@@ -26,6 +41,7 @@ resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' e
 }
 
 var storageConnectionString = 'DefaultEndpointsProtocol=https;AccountName=${existingStorageAccount.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${existingStorageAccount.listKeys().keys[0].value}'
+var serviceBusFullyQualifiedNamespace = '${serviceBusNamespaceName}.${environment().suffixes.serviceBusDns}'
 
 resource hostingPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: functionPlanName
@@ -83,9 +99,17 @@ resource appSettings 'Microsoft.Web/sites/config@2024-04-01' = {
   name: 'appsettings'
   properties: {
     DEPLOYMENT_STORAGE_CONNECTION_STRING: storageConnectionString
+    AzureWebJobsServiceBus__fullyQualifiedNamespace: serviceBusFullyQualifiedNamespace
+    SONDE_AZURE_HANDLER_SERVICE_BUS_NAMESPACE: serviceBusFullyQualifiedNamespace
+    SONDE_AZURE_HANDLER_UPSTREAM_QUEUE: upstreamQueueName
+    SONDE_AZURE_HANDLER_DOWNSTREAM_QUEUE: downstreamQueueName
+    SONDE_AZURE_HANDLER_STORAGE_ACCOUNT: storageAccountName
+    SONDE_AZURE_HANDLER_NODE_STATE_TABLE: nodeStateTableName
+    SONDE_AZURE_HANDLER_PROGRAM_ROUTE_TABLE: programRouteTableName
   }
 }
 
 output functionAppName string = functionApp.name
 output functionAppResourceId string = functionApp.id
 output principalId string = functionApp.identity.principalId
+output serviceBusFullyQualifiedNamespace string = serviceBusFullyQualifiedNamespace

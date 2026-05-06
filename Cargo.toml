@@ -15,6 +15,7 @@ members = [
     "crates/sonde-sht40-handler",
     "crates/sonde-kicad",
     "crates/sonde-azure-companion",
+    "crates/sonde-azure-handler",
 ]
 default-members = [
     "crates/sonde-protocol",

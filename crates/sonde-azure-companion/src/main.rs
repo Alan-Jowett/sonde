@@ -614,14 +614,15 @@ fn wide_null(value: &std::ffi::OsStr) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-fn null_terminated_wide_to_string(value: *const u16) -> String {
+unsafe fn null_terminated_wide_to_string(value: std::ptr::NonNull<u16>) -> String {
     use std::slice;
 
+    let value = value.as_ptr();
     let mut len = 0usize;
-    while unsafe { *value.add(len) } != 0 {
+    while *value.add(len) != 0 {
         len += 1;
     }
-    String::from_utf16_lossy(unsafe { slice::from_raw_parts(value, len) })
+    String::from_utf16_lossy(slice::from_raw_parts(value, len))
 }
 
 #[cfg(windows)]
@@ -633,7 +634,11 @@ fn sid_to_string(sid: windows_sys::Win32::Security::PSID) -> Result<String, Comp
     if unsafe { ConvertSidToStringSidW(sid, &mut sid_wide) } == 0 {
         return Err(std::io::Error::last_os_error().into());
     }
-    let sid_string = null_terminated_wide_to_string(sid_wide);
+    let sid_string = unsafe {
+        null_terminated_wide_to_string(std::ptr::NonNull::new(sid_wide).ok_or_else(|| {
+            CompanionError::Config("ConvertSidToStringSidW returned a null SID string".to_string())
+        })?)
+    };
     unsafe {
         let _ = LocalFree(sid_wide.cast());
     }
@@ -753,7 +758,7 @@ fn configured_windows_service_sid_string() -> Result<String, CompanionError> {
         if service.is_null() {
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) {
-                Ok(String::from("SY"))
+                Ok(String::from("S-1-5-18"))
             } else {
                 Err(err.into())
             }
@@ -779,12 +784,22 @@ fn configured_windows_service_sid_string() -> Result<String, CompanionError> {
                         Err(std::io::Error::last_os_error().into())
                     } else {
                         let config = unsafe { &*(buffer.as_ptr().cast::<QUERY_SERVICE_CONFIGW>()) };
-                        let account_name =
-                            null_terminated_wide_to_string(config.lpServiceStartName);
+                        let account_name = unsafe {
+                            null_terminated_wide_to_string(
+                                std::ptr::NonNull::new(config.lpServiceStartName).ok_or_else(
+                                    || {
+                                        CompanionError::Config(
+                                            "service configuration returned a null service account"
+                                                .to_string(),
+                                        )
+                                    },
+                                )?,
+                            )
+                        };
                         if account_name.eq_ignore_ascii_case("localsystem")
                             || account_name.eq_ignore_ascii_case(r"NT AUTHORITY\SYSTEM")
                         {
-                            Ok(String::from("SY"))
+                            Ok(String::from("S-1-5-18"))
                         } else {
                             lookup_account_sid_string(&account_name)
                         }
@@ -2606,8 +2621,8 @@ mod tests {
     };
     #[cfg(windows)]
     use super::{
-        configured_windows_service_sid_string, current_user_sid_string, windows_private_key_sddl,
-        Cli, Command,
+        configured_windows_service_sid_string, current_user_sid_string, sid_to_string, wide_null,
+        windows_private_key_sddl, Cli, Command,
     };
     use azure_core::credentials::TokenCredential;
     use base64::Engine as _;
@@ -3176,6 +3191,119 @@ mod tests {
         assert!(sddl.contains(&format!("(A;;FA;;;{current_user_sid})")));
         if runtime_service_sid != current_user_sid {
             assert!(sddl.contains(&format!("(A;;GR;;;{runtime_service_sid})")));
+        }
+    }
+
+    #[cfg(windows)]
+    fn read_allowed_file_acl_entries(path: &Path) -> Result<Vec<(String, u32)>, CompanionError> {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            GetAce, ACCESS_ALLOWED_ACE, DACL_SECURITY_INFORMATION,
+            PROTECTED_DACL_SECURITY_INFORMATION,
+        };
+
+        const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+
+        let path_wide = wide_null(path.as_os_str());
+        let mut dacl = std::ptr::null_mut();
+        let mut security_descriptor = std::ptr::null_mut();
+        let error = unsafe {
+            GetNamedSecurityInfoW(
+                path_wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut dacl,
+                std::ptr::null_mut(),
+                &mut security_descriptor,
+            )
+        };
+        if error != 0 {
+            return Err(std::io::Error::from_raw_os_error(error as i32).into());
+        }
+
+        let result = (|| -> Result<Vec<(String, u32)>, CompanionError> {
+            if dacl.is_null() {
+                return Err(CompanionError::Config(
+                    "private key file did not have a DACL".to_string(),
+                ));
+            }
+
+            let ace_count = unsafe { (*dacl).AceCount };
+            let mut entries = Vec::with_capacity(ace_count as usize);
+            for index in 0..ace_count {
+                let mut ace_ptr = std::ptr::null_mut();
+                if unsafe { GetAce(dacl, index.into(), &mut ace_ptr) } == 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+
+                let header =
+                    unsafe { &*(ace_ptr.cast::<windows_sys::Win32::Security::ACE_HEADER>()) };
+                if header.AceType != ACCESS_ALLOWED_ACE_TYPE {
+                    continue;
+                }
+
+                let ace = unsafe { &*(ace_ptr.cast::<ACCESS_ALLOWED_ACE>()) };
+                let sid = sid_to_string(
+                    std::ptr::addr_of!(ace.SidStart)
+                        .cast::<u32>()
+                        .cast_mut()
+                        .cast(),
+                )?;
+                entries.push((sid, ace.Mask));
+            }
+
+            Ok(entries)
+        })();
+
+        unsafe {
+            let _ = LocalFree(security_descriptor.cast());
+        }
+
+        result
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn generated_private_key_acl_excludes_broad_principals_and_allows_runtime_identities() {
+        use windows_sys::Win32::Foundation::{GENERIC_ALL, GENERIC_READ};
+        use windows_sys::Win32::Storage::FileSystem::{FILE_ALL_ACCESS, FILE_GENERIC_READ};
+
+        let temp = TempDir::new().unwrap();
+        let (_cert_path, key_path, _cert_base64) = generate_certificate(temp.path()).unwrap();
+        let acl_entries = read_allowed_file_acl_entries(&key_path).unwrap();
+        let current_user_sid = current_user_sid_string().unwrap();
+        let runtime_service_sid = configured_windows_service_sid_string().unwrap();
+
+        assert!(!acl_entries.is_empty());
+        assert!(!acl_entries
+            .iter()
+            .any(|(sid, _)| sid == "S-1-1-0" || sid == "S-1-5-32-545"));
+
+        let current_user_mask = acl_entries
+            .iter()
+            .find(|(sid, _)| sid == &current_user_sid)
+            .map(|(_, mask)| *mask)
+            .unwrap();
+        assert!(
+            (current_user_mask & FILE_ALL_ACCESS) == FILE_ALL_ACCESS
+                || (current_user_mask & GENERIC_ALL) == GENERIC_ALL
+        );
+
+        if runtime_service_sid != current_user_sid {
+            let runtime_service_mask = acl_entries
+                .iter()
+                .find(|(sid, _)| sid == &runtime_service_sid)
+                .map(|(_, mask)| *mask)
+                .unwrap();
+            assert!(
+                (runtime_service_mask & FILE_GENERIC_READ) == FILE_GENERIC_READ
+                    || (runtime_service_mask & GENERIC_READ) == GENERIC_READ
+                    || (runtime_service_mask & FILE_ALL_ACCESS) == FILE_ALL_ACCESS
+                    || (runtime_service_mask & GENERIC_ALL) == GENERIC_ALL
+            );
         }
     }
 

@@ -205,7 +205,7 @@ the bootstrap workflow instead of normal runtime mode.
 ### AZC-0201  Unified bootstrap subcommand
 
 **Priority:** Must
-**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), discovery review
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), [issue #849](https://github.com/Alan-Jowett/sonde/issues/849), discovery review
 
 **Description:**
 When bootstrap is required, the Azure companion MUST provide a single unified
@@ -216,7 +216,9 @@ creation. The earlier `bootstrap-auth` subcommand is retired and replaced by
 this unified command. Device-code authentication occurs inside the
 digest-pinned Azure CLI container via `az login --use-device-code`; the Rust
 companion monitors the container output to extract the device code and display
-it on the modem.
+it on the modem. The same explicit `bootstrap` subcommand MUST be supported by
+the Windows native binary when invoked manually by an operator; Windows service
+startup remains a separate fail-closed path governed by AZC-0205.
 
 **Acceptance criteria:**
 
@@ -225,6 +227,7 @@ it on the modem.
 3. If any phase of the unified bootstrap fails, the subcommand exits with a non-zero status and does not report success.
 4. Successful device-code login alone is not treated as bootstrap completion; the bootstrap path reports success only after bootstrap-complete state has been established.
 5. The earlier `bootstrap-auth` subcommand name is no longer accepted.
+6. Invoking `sonde-azure-companion bootstrap` from the Windows native binary performs the same end-to-end provisioning lifecycle as the Linux bootstrap path, subject to the same Docker and Azure prerequisites.
 
 ---
 
@@ -555,7 +558,7 @@ local connector harness accepts the payload.
 ### AZC-0400  Self-signed certificate generation
 
 **Priority:** Must
-**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), discovery review
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), [issue #849](https://github.com/Alan-Jowett/sonde/issues/849), discovery review
 
 **Description:**
 The unified `bootstrap` subcommand MUST generate a self-signed ECDSA P-256
@@ -570,7 +573,8 @@ mounted state volume as PEM files.
 3. The certificate PEM and private-key PEM are written to the mounted state volume.
 4. The certificate's DER-encoded public material can be base64-encoded and passed to the Bicep deployment's `companionCertificateBase64` parameter.
 5. Re-running bootstrap regenerates the certificate and private key.
-6. The private-key PEM file MUST be written with owner-only read permissions (mode 0600).
+6. On Unix platforms, the private-key PEM file MUST be written with owner-only read permissions (mode 0600).
+7. On Windows, the private-key PEM file MUST be protected with a restricted ACL that permits read access to the bootstrap operator and the configured Windows service identity for steady-state runtime, while denying broad access to generic principals such as `Everyone` and `Users`.
 
 ---
 

@@ -606,32 +606,322 @@ fn generate_certificate(staging_dir: &Path) -> Result<(PathBuf, PathBuf, String)
     Ok((cert_path, key_path, cert_base64))
 }
 
-fn write_private_key_pem(path: &Path, pem: &str) -> Result<(), CompanionError> {
-    #[cfg(unix)]
-    {
-        use std::fs::OpenOptions;
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt;
+#[cfg(windows)]
+fn wide_null(value: &std::ffi::OsStr) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(pem.as_bytes())?;
-        file.flush()?;
-        Ok(())
+    value.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+unsafe fn null_terminated_wide_to_string(value: std::ptr::NonNull<u16>) -> String {
+    use std::slice;
+
+    let value = value.as_ptr();
+    let mut len = 0usize;
+    while *value.add(len) != 0 {
+        len += 1;
+    }
+    String::from_utf16_lossy(slice::from_raw_parts(value, len))
+}
+
+#[cfg(windows)]
+fn sid_to_string(sid: windows_sys::Win32::Security::PSID) -> Result<String, CompanionError> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+
+    let mut sid_wide = std::ptr::null_mut();
+    if unsafe { ConvertSidToStringSidW(sid, &mut sid_wide) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let sid_string = unsafe {
+        null_terminated_wide_to_string(std::ptr::NonNull::new(sid_wide).ok_or_else(|| {
+            CompanionError::Config("ConvertSidToStringSidW returned a null SID string".to_string())
+        })?)
+    };
+    unsafe {
+        let _ = LocalFree(sid_wide.cast());
+    }
+    Ok(sid_string)
+}
+
+#[cfg(windows)]
+fn current_user_sid_string() -> Result<String, CompanionError> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
     }
 
-    #[cfg(not(unix))]
+    let result = {
+        let mut required_len = 0;
+        let _ = unsafe {
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required_len)
+        };
+        if required_len == 0 {
+            Err(std::io::Error::last_os_error().into())
+        } else {
+            let mut buffer = vec![0u8; required_len as usize];
+            if unsafe {
+                GetTokenInformation(
+                    token,
+                    TokenUser,
+                    buffer.as_mut_ptr().cast(),
+                    required_len,
+                    &mut required_len,
+                )
+            } == 0
+            {
+                Err(std::io::Error::last_os_error().into())
+            } else {
+                let token_user =
+                    unsafe { std::ptr::read_unaligned(buffer.as_ptr().cast::<TOKEN_USER>()) };
+                sid_to_string(token_user.User.Sid)
+            }
+        }
+    };
+
+    unsafe {
+        let _ = CloseHandle(token);
+    }
+
+    result
+}
+
+#[cfg(windows)]
+fn lookup_account_sid_string(account_name: &str) -> Result<String, CompanionError> {
+    use windows_sys::Win32::Security::{LookupAccountNameW, SID_NAME_USE};
+
+    let account_name_wide = wide_null(std::ffi::OsStr::new(account_name));
+    let mut sid_len = 0u32;
+    let mut domain_len = 0u32;
+    let mut sid_use: SID_NAME_USE = 0;
+    let _ = unsafe {
+        LookupAccountNameW(
+            std::ptr::null(),
+            account_name_wide.as_ptr(),
+            std::ptr::null_mut(),
+            &mut sid_len,
+            std::ptr::null_mut(),
+            &mut domain_len,
+            &mut sid_use,
+        )
+    };
+    if sid_len == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    let mut sid_buffer = vec![0u8; sid_len as usize];
+    let mut domain_buffer = vec![0u16; domain_len as usize];
+    let domain_ptr = if domain_buffer.is_empty() {
+        std::ptr::null_mut()
+    } else {
+        domain_buffer.as_mut_ptr()
+    };
+    if unsafe {
+        LookupAccountNameW(
+            std::ptr::null(),
+            account_name_wide.as_ptr(),
+            sid_buffer.as_mut_ptr().cast(),
+            &mut sid_len,
+            domain_ptr,
+            &mut domain_len,
+            &mut sid_use,
+        )
+    } == 0
     {
-        let _ = (path, pem);
-        Err(CompanionError::Config(
-            "bootstrap private-key generation requires Unix so the key file can be created with owner-only permissions"
-                .to_string(),
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    sid_to_string(sid_buffer.as_mut_ptr().cast())
+}
+
+#[cfg(windows)]
+fn configured_windows_service_sid_string() -> Result<String, CompanionError> {
+    use windows_sys::Win32::Foundation::ERROR_SERVICE_DOES_NOT_EXIST;
+    use windows_sys::Win32::System::Services::{
+        CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceConfigW,
+        QUERY_SERVICE_CONFIGW, SC_MANAGER_CONNECT, SERVICE_QUERY_CONFIG,
+    };
+
+    let manager = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT) };
+    if manager.is_null() {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    let result = {
+        let service_name_wide = wide_null(std::ffi::OsStr::new(SERVICE_NAME));
+        let service =
+            unsafe { OpenServiceW(manager, service_name_wide.as_ptr(), SERVICE_QUERY_CONFIG) };
+        if service.is_null() {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) {
+                Ok(String::from("S-1-5-18"))
+            } else {
+                Err(err.into())
+            }
+        } else {
+            let service_result = {
+                let mut bytes_needed = 0u32;
+                let _ = unsafe {
+                    QueryServiceConfigW(service, std::ptr::null_mut(), 0, &mut bytes_needed)
+                };
+                if bytes_needed == 0 {
+                    Err(std::io::Error::last_os_error().into())
+                } else {
+                    let mut buffer = vec![0u8; bytes_needed as usize];
+                    if unsafe {
+                        QueryServiceConfigW(
+                            service,
+                            buffer.as_mut_ptr().cast::<QUERY_SERVICE_CONFIGW>(),
+                            bytes_needed,
+                            &mut bytes_needed,
+                        )
+                    } == 0
+                    {
+                        Err(std::io::Error::last_os_error().into())
+                    } else {
+                        let config = unsafe {
+                            std::ptr::read_unaligned(
+                                buffer.as_ptr().cast::<QUERY_SERVICE_CONFIGW>(),
+                            )
+                        };
+                        let account_name = unsafe {
+                            null_terminated_wide_to_string(
+                                std::ptr::NonNull::new(config.lpServiceStartName).ok_or_else(
+                                    || {
+                                        CompanionError::Config(
+                                            "service configuration returned a null service account"
+                                                .to_string(),
+                                        )
+                                    },
+                                )?,
+                            )
+                        };
+                        if account_name.eq_ignore_ascii_case("localsystem")
+                            || account_name.eq_ignore_ascii_case(r"NT AUTHORITY\SYSTEM")
+                        {
+                            Ok(String::from("S-1-5-18"))
+                        } else {
+                            lookup_account_sid_string(&account_name)
+                        }
+                    }
+                }
+            };
+            unsafe {
+                let _ = CloseServiceHandle(service);
+            }
+            service_result
+        }
+    };
+
+    unsafe {
+        let _ = CloseServiceHandle(manager);
+    }
+
+    result
+}
+
+#[cfg(windows)]
+fn windows_private_key_sddl() -> Result<String, CompanionError> {
+    let current_user_sid = current_user_sid_string()?;
+    let service_sid = configured_windows_service_sid_string()?;
+    if service_sid == current_user_sid {
+        Ok(format!("D:P(A;;FA;;;{current_user_sid})"))
+    } else {
+        Ok(format!(
+            "D:P(A;;FA;;;{current_user_sid})(A;;GR;;;{service_sid})"
         ))
     }
+}
+
+#[cfg(unix)]
+fn write_private_key_pem(path: &Path, pem: &str) -> Result<(), CompanionError> {
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(pem.as_bytes())?;
+    file.flush()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_private_key_pem(path: &Path, pem: &str) -> Result<(), CompanionError> {
+    use std::fs::File;
+    use std::io::Write as _;
+    use std::os::windows::io::FromRawHandle;
+
+    use windows_sys::Win32::Foundation::{LocalFree, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE,
+    };
+
+    let private_key_sddl = windows_private_key_sddl()?;
+    let private_key_sddl_wide = wide_null(std::ffi::OsStr::new(&private_key_sddl));
+    let mut security_descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            private_key_sddl_wide.as_ptr(),
+            1,
+            &mut security_descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    let path_wide = wide_null(path.as_os_str());
+    let security_attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: security_descriptor,
+        bInheritHandle: 0,
+    };
+
+    let result: Result<(), CompanionError> = {
+        let handle = unsafe {
+            CreateFileW(
+                path_wide.as_ptr(),
+                FILE_GENERIC_WRITE,
+                0,
+                &security_attributes,
+                CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            Err(std::io::Error::last_os_error().into())
+        } else {
+            let mut file = unsafe { File::from_raw_handle(handle) };
+            file.write_all(pem.as_bytes())?;
+            file.flush()?;
+            Ok(())
+        }
+    };
+
+    unsafe {
+        let _ = LocalFree(security_descriptor.cast());
+    }
+
+    if let Err(err) = result {
+        let _ = std::fs::remove_file(path);
+        return Err(err);
+    }
+
+    Ok(())
 }
 
 fn resolve_state_relative_path(state_dir: &Path, value: &str) -> Result<PathBuf, CompanionError> {
@@ -2335,9 +2625,11 @@ mod tests {
         SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX,
     };
     #[cfg(windows)]
-    use super::{Cli, Command};
+    use super::{
+        configured_windows_service_sid_string, current_user_sid_string, sid_to_string, wide_null,
+        windows_private_key_sddl, Cli, Command,
+    };
     use azure_core::credentials::TokenCredential;
-    #[cfg(unix)]
     use base64::Engine as _;
     use bollard::{Docker, API_DEFAULT_VERSION};
     use jsonwebtoken::{Algorithm, EncodingKey};
@@ -2363,9 +2655,7 @@ mod tests {
     use tokio::sync::{Mutex, Notify};
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-    #[cfg(unix)]
     use x509_cert::der::Decode;
-    #[cfg(unix)]
     use x509_cert::Certificate;
 
     fn lines(values: &[&str]) -> Vec<String> {
@@ -2852,49 +3142,173 @@ mod tests {
     #[test]
     fn test_generate_certificate() {
         let temp = TempDir::new().unwrap();
+        let (cert_path, key_path, cert_base64) = generate_certificate(temp.path()).unwrap();
 
-        #[cfg(not(unix))]
-        {
-            let err = generate_certificate(temp.path()).unwrap_err();
-            assert!(err
-                .to_string()
-                .contains("bootstrap private-key generation requires Unix"));
-        }
+        assert_eq!(cert_path, temp.path().join(CERT_PEM_FILENAME));
+        assert_eq!(key_path, temp.path().join(KEY_PEM_FILENAME));
+        assert!(cert_path.is_file());
+        assert!(key_path.is_file());
+
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(cert_base64)
+            .unwrap();
+        let cert_file = std::fs::File::open(&cert_path).unwrap();
+        let mut reader = std::io::BufReader::new(cert_file);
+        let cert_der = rustls_pemfile::certs(&mut reader)
+            .next()
+            .transpose()
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded, cert_der.as_ref());
+
+        let certificate = Certificate::from_der(cert_der.as_ref()).unwrap();
+        assert_ne!(
+            certificate.tbs_certificate.validity.not_before,
+            certificate.tbs_certificate.validity.not_after
+        );
+        let (algorithm, _) = load_signing_key(&key_path).unwrap();
+        assert_eq!(algorithm, Algorithm::ES256);
 
         #[cfg(unix)]
         {
-            let (cert_path, key_path, cert_base64) = generate_certificate(temp.path()).unwrap();
-
-            assert_eq!(cert_path, temp.path().join(CERT_PEM_FILENAME));
-            assert_eq!(key_path, temp.path().join(KEY_PEM_FILENAME));
-            assert!(cert_path.is_file());
-            assert!(key_path.is_file());
-
-            let decoded = base64::engine::general_purpose::STANDARD
-                .decode(cert_base64)
-                .unwrap();
-            let cert_file = std::fs::File::open(&cert_path).unwrap();
-            let mut reader = std::io::BufReader::new(cert_file);
-            let cert_der = rustls_pemfile::certs(&mut reader)
-                .next()
-                .transpose()
-                .unwrap()
-                .unwrap();
-            assert_eq!(decoded, cert_der.as_ref());
-
-            let certificate = Certificate::from_der(cert_der.as_ref()).unwrap();
-            assert_ne!(
-                certificate.tbs_certificate.validity.not_before,
-                certificate.tbs_certificate.validity.not_after
-            );
-            let (algorithm, _) = load_signing_key(&key_path).unwrap();
-            assert_eq!(algorithm, Algorithm::ES256);
             validate_certificate_matches_private_key(&cert_path, &key_path).unwrap();
 
             use std::os::unix::fs::PermissionsExt;
 
             let key_mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
             assert_eq!(key_mode, 0o600);
+        }
+
+        #[cfg(windows)]
+        {
+            let key_pem = std::fs::read_to_string(&key_path).unwrap();
+            assert!(key_pem.contains("BEGIN PRIVATE KEY"));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_private_key_sddl_grants_current_user_and_runtime_service_identity() {
+        let current_user_sid = current_user_sid_string().unwrap();
+        let runtime_service_sid = configured_windows_service_sid_string().unwrap();
+        let sddl = windows_private_key_sddl().unwrap();
+        assert!(sddl.starts_with("D:P"));
+        assert!(sddl.contains(&format!("(A;;FA;;;{current_user_sid})")));
+        if runtime_service_sid != current_user_sid {
+            assert!(sddl.contains(&format!("(A;;GR;;;{runtime_service_sid})")));
+        }
+    }
+
+    #[cfg(windows)]
+    fn read_allowed_file_acl_entries(path: &Path) -> Result<Vec<(String, u32)>, CompanionError> {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            GetAce, ACCESS_ALLOWED_ACE, DACL_SECURITY_INFORMATION,
+            PROTECTED_DACL_SECURITY_INFORMATION,
+        };
+
+        const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+
+        let path_wide = wide_null(path.as_os_str());
+        let mut dacl = std::ptr::null_mut();
+        let mut security_descriptor = std::ptr::null_mut();
+        let error = unsafe {
+            GetNamedSecurityInfoW(
+                path_wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut dacl,
+                std::ptr::null_mut(),
+                &mut security_descriptor,
+            )
+        };
+        if error != 0 {
+            return Err(std::io::Error::from_raw_os_error(error as i32).into());
+        }
+
+        let result = (|| -> Result<Vec<(String, u32)>, CompanionError> {
+            if dacl.is_null() {
+                return Err(CompanionError::Config(
+                    "private key file did not have a DACL".to_string(),
+                ));
+            }
+
+            let ace_count = unsafe { (*dacl).AceCount };
+            let mut entries = Vec::with_capacity(ace_count as usize);
+            for index in 0..ace_count {
+                let mut ace_ptr = std::ptr::null_mut();
+                if unsafe { GetAce(dacl, index.into(), &mut ace_ptr) } == 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+
+                let header =
+                    unsafe { &*(ace_ptr.cast::<windows_sys::Win32::Security::ACE_HEADER>()) };
+                if header.AceType != ACCESS_ALLOWED_ACE_TYPE {
+                    continue;
+                }
+
+                let ace = unsafe { &*(ace_ptr.cast::<ACCESS_ALLOWED_ACE>()) };
+                let sid = sid_to_string(
+                    std::ptr::addr_of!(ace.SidStart)
+                        .cast::<u32>()
+                        .cast_mut()
+                        .cast(),
+                )?;
+                entries.push((sid, ace.Mask));
+            }
+
+            Ok(entries)
+        })();
+
+        unsafe {
+            let _ = LocalFree(security_descriptor.cast());
+        }
+
+        result
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn generated_private_key_acl_excludes_broad_principals_and_allows_runtime_identities() {
+        use windows_sys::Win32::Foundation::{GENERIC_ALL, GENERIC_READ};
+        use windows_sys::Win32::Storage::FileSystem::{FILE_ALL_ACCESS, FILE_GENERIC_READ};
+
+        let temp = TempDir::new().unwrap();
+        let (_cert_path, key_path, _cert_base64) = generate_certificate(temp.path()).unwrap();
+        let acl_entries = read_allowed_file_acl_entries(&key_path).unwrap();
+        let current_user_sid = current_user_sid_string().unwrap();
+        let runtime_service_sid = configured_windows_service_sid_string().unwrap();
+
+        assert!(!acl_entries.is_empty());
+        assert!(!acl_entries
+            .iter()
+            .any(|(sid, _)| sid == "S-1-1-0" || sid == "S-1-5-32-545"));
+
+        let current_user_mask = acl_entries
+            .iter()
+            .find(|(sid, _)| sid == &current_user_sid)
+            .map(|(_, mask)| *mask)
+            .unwrap();
+        assert!(
+            (current_user_mask & FILE_ALL_ACCESS) == FILE_ALL_ACCESS
+                || (current_user_mask & GENERIC_ALL) == GENERIC_ALL
+        );
+
+        if runtime_service_sid != current_user_sid {
+            let runtime_service_mask = acl_entries
+                .iter()
+                .find(|(sid, _)| sid == &runtime_service_sid)
+                .map(|(_, mask)| *mask)
+                .unwrap();
+            assert!(
+                (runtime_service_mask & FILE_GENERIC_READ) == FILE_GENERIC_READ
+                    || (runtime_service_mask & GENERIC_READ) == GENERIC_READ
+                    || (runtime_service_mask & FILE_ALL_ACCESS) == FILE_ALL_ACCESS
+                    || (runtime_service_mask & GENERIC_ALL) == GENERIC_ALL
+            );
         }
     }
 

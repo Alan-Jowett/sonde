@@ -642,11 +642,8 @@ fn sid_to_string(sid: windows_sys::Win32::Security::PSID) -> Result<String, Comp
 
 #[cfg(windows)]
 fn current_user_sid_string() -> Result<String, CompanionError> {
-
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::Security::{
-        GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser,
-    };
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     let mut token = std::ptr::null_mut();
@@ -657,13 +654,7 @@ fn current_user_sid_string() -> Result<String, CompanionError> {
     let result = {
         let mut required_len = 0;
         let _ = unsafe {
-            GetTokenInformation(
-                token,
-                TokenUser,
-                std::ptr::null_mut(),
-                0,
-                &mut required_len,
-            )
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required_len)
         };
         if required_len == 0 {
             Err(std::io::Error::last_os_error().into())
@@ -757,7 +748,8 @@ fn configured_windows_service_sid_string() -> Result<String, CompanionError> {
 
     let result = {
         let service_name_wide = wide_null(std::ffi::OsStr::new(SERVICE_NAME));
-        let service = unsafe { OpenServiceW(manager, service_name_wide.as_ptr(), SERVICE_QUERY_CONFIG) };
+        let service =
+            unsafe { OpenServiceW(manager, service_name_wide.as_ptr(), SERVICE_QUERY_CONFIG) };
         if service.is_null() {
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) {
@@ -787,7 +779,8 @@ fn configured_windows_service_sid_string() -> Result<String, CompanionError> {
                         Err(std::io::Error::last_os_error().into())
                     } else {
                         let config = unsafe { &*(buffer.as_ptr().cast::<QUERY_SERVICE_CONFIGW>()) };
-                        let account_name = null_terminated_wide_to_string(config.lpServiceStartName);
+                        let account_name =
+                            null_terminated_wide_to_string(config.lpServiceStartName);
                         if account_name.eq_ignore_ascii_case("localsystem")
                             || account_name.eq_ignore_ascii_case(r"NT AUTHORITY\SYSTEM")
                         {
@@ -849,8 +842,8 @@ fn write_private_key_pem(path: &Path, pem: &str) -> Result<(), CompanionError> {
     use std::os::windows::io::FromRawHandle;
 
     use windows_sys::Win32::Foundation::{LocalFree, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE,
     };

@@ -932,9 +932,11 @@ pub fn run() {
         )
         .with({
             #[cfg(debug_assertions)]
-            const DEFAULT_FILTER: &str = "sonde_pair=info,sonde_pair_ui=info";
+            const DEFAULT_FILTER: &str =
+                "sonde_pair=info,sonde_pair_ui=info,sonde_pair_ui_backend=info";
             #[cfg(not(debug_assertions))]
-            const DEFAULT_FILTER: &str = "sonde_pair=warn,sonde_pair_ui=warn";
+            const DEFAULT_FILTER: &str =
+                "sonde_pair=warn,sonde_pair_ui=warn,sonde_pair_ui_backend=warn";
 
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| DEFAULT_FILTER.into())

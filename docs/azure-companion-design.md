@@ -4,10 +4,11 @@
 
 > **Document status:** Draft
 > **Scope:** Internal design for the Azure companion deployment surfaces
-> (Linux container and Windows native service), bootstrap-state detection,
-> bootstrap trigger behavior, integrated provisioning orchestration
-> (certificate generation, Bicep deployment via Docker API, runtime artifact
-> creation), and the Service Bus AMQP runtime bridge.
+> (Linux runtime container and Windows native service), the dedicated bootstrap
+> image, bootstrap-state detection, bootstrap trigger behavior, integrated
+> provisioning orchestration (certificate generation, bootstrap-image execution
+> via Docker API, and runtime artifact creation), and the Service Bus AMQP
+> runtime bridge.
 > The Bicep module definitions themselves are specified in
 > [azure-provisioning-design.md](azure-provisioning-design.md).
 > **Audience:** Implementers building the Azure companion crate and its
@@ -30,11 +31,12 @@ The Azure companion is a Rust workspace crate that talks to
 The Azure companion now has two distinct responsibilities:
 
 1. detect whether bootstrap has already completed,
-2. invoke bootstrap on the Linux/container path when the required local
-   provisioning artifacts are missing,
+2. invoke the dedicated bootstrap image on the Linux runtime-container path when the
+   required local provisioning artifacts are missing,
 3. use the gateway admin API to display the device code during bootstrap,
-4. orchestrate the full provisioning lifecycle (certificate generation, Bicep
-   deployment via the Docker API, and runtime artifact creation), and
+4. orchestrate the full provisioning lifecycle (certificate generation,
+   bootstrap-image execution via the Docker API, and runtime artifact
+   creation), and
 5. when bootstrap-complete state exists, bridge the gateway connector session to
    Azure Service Bus over AMQP.
 
@@ -45,16 +47,18 @@ logic is confined to the Azure companion.
 
 ## 2  Repository layout
 
-> **Requirements:** AZC-0100, AZC-0102, AZC-0103, AZC-0104
+> **Requirements:** AZC-0100, AZC-0102, AZC-0103, AZC-0104, AZC-0106
 
 The implementation adds or updates the following artifacts:
 
 | Artifact | Purpose |
 |----------|---------|
 | `crates/sonde-azure-companion/` | Rust crate containing the Azure companion binary. |
-| `.github/docker/Dockerfile.azure-companion` | Dockerfile for the dedicated Azure companion image. |
-| `deploy/azure-companion/bootstrap.sh` | Host/container bootstrap script that prepares the mounted state volume, evaluates bootstrap-complete state, and starts either bootstrap or runtime. |
-| `deploy/azure-companion/entrypoint.sh` | In-container entrypoint that orchestrates bootstrap-state detection before starting the Rust binary. |
+| `.github/docker/Dockerfile.azure-companion` | Dockerfile for the dedicated Azure companion runtime image. |
+| `.github/docker/Dockerfile.azure-bootstrap` | Dockerfile for the dedicated `sonde-azure-bootstrap` provisioning image. |
+| `deploy/azure-companion/bootstrap.sh` | Host/container runtime orchestration script that prepares the mounted state volume, evaluates bootstrap-complete state, launches the bootstrap image when needed, and otherwise starts runtime. |
+| `deploy/azure-companion/entrypoint.sh` | In-container runtime entrypoint that orchestrates bootstrap-state detection before starting the Rust binary. |
+| `deploy/azure-bootstrap/bootstrap.sh` | In-bootstrap-image script that runs device-code login plus Azure deployment using bundled provisioning assets. |
 | `installer/windows/sonde.wxs` | Windows MSI definition that exposes the Azure companion as an optional installer feature and can register the companion service. |
 
 The long-running binary is named `sonde-azure-companion`.
@@ -67,20 +71,24 @@ The long-running binary is named `sonde-azure-companion`.
 
 ### 3.1  Process model
 
-The Azure companion has platform-specific deployment entrypoints:
+The Azure companion architecture separates steady-state runtime from bootstrap
+execution. The deployment entrypoints are:
 
-1. **Linux container deployment** uses a small shell entrypoint that performs
-   filesystem and startup orchestration and then execs the Rust binary.
+1. **Linux runtime container deployment** uses a small shell entrypoint that
+   performs filesystem and startup orchestration and then execs the Rust binary.
 2. **Windows native-service deployment** is started directly by SCM and runs the
    Rust binary without the Linux shell wrapper.
 
+3. **Bootstrap-image deployment** runs the dedicated `sonde-azure-bootstrap`
+   image, which contains Azure CLI, bundled Bicep files, and the bootstrap
+   script for device-code login plus Azure deployment.
+
 This keeps the gateway-facing logic and Azure-facing runtime in typed Rust while
-still allowing a small Alpine-oriented Linux image and a native Windows service
-story.
+isolating bootstrap-only tooling and provisioning assets in a separate image.
 
-#### 3.1.1  Linux container startup
+#### 3.1.1  Linux runtime container startup
 
-For Linux container deployment:
+For Linux runtime container deployment:
 
 1. **Shell script** handles environment preparation, state-directory setup, and
    bootstrap-state detection orchestration.
@@ -97,8 +105,19 @@ For Windows deployment:
 3. The service runtime uses the Windows defaults for the admin pipe, connector
    pipe, and persistent state directory unless the operator overrides them.
 4. If bootstrap-complete state is absent, the service fails closed with a clear
-   diagnostic rather than attempting to run the Docker-backed bootstrap flow
-   automatically.
+   diagnostic rather than attempting to run the bootstrap image automatically.
+
+#### 3.1.3  Bootstrap-image startup
+
+For explicit or auto-launched bootstrap:
+
+1. `sonde-azure-companion` resolves the default bootstrap image reference as
+   `ghcr.io/alan-jowett/sonde-azure-bootstrap:<matching companion version>`,
+   unless a development or test override is configured.
+2. The Rust companion uses Bollard to create and run that bootstrap image.
+3. The bootstrap image runs its bundled script, which executes
+   `az login --use-device-code` followed by Azure deployment using the bundled
+   Bicep files.
 
 ### 3.2  Mounted and configured inputs
 
@@ -109,7 +128,7 @@ The active deployment entrypoint expects the following runtime inputs:
 | State directory | Persistent storage for local provisioning artifacts such as the runtime certificate PEM, private-key PEM, service-principal metadata file, and persisted Service Bus configuration. On Linux this is the mounted state volume; on Windows this defaults to `%ProgramData%\sonde-azure-companion`. |
 | Gateway admin socket | Local IPC path used by bootstrap to call `GatewayAdmin` RPCs such as `ShowModemDisplayMessage`. |
 | Gateway connector socket | Local framed IPC path used by the long-running runtime after bootstrap succeeds. |
-| Docker socket (bootstrap only) | Docker Engine API socket, bind-mounted from the host, used by bootstrap to run the Azure CLI container via Bollard. This is part of the Linux/container bootstrap path and is not a steady-state Windows service requirement. |
+| Docker socket (bootstrap only) | Docker Engine API socket, bind-mounted from the host, used by the companion to launch the dedicated bootstrap image via Bollard. This is part of the Linux runtime-container bootstrap path and explicit Windows bootstrap, and is not a steady-state Windows service requirement. |
 | Service Bus namespace | Runtime configuration for the Azure Service Bus namespace, from environment variable or persisted `service-bus.json`. |
 | Upstream queue name | Runtime configuration for the queue that carries gateway-originated connector messages, from environment variable or persisted `service-bus.json`. |
 | Downstream queue name | Runtime configuration for the queue that carries cloud-originated desired-state messages, from environment variable or persisted `service-bus.json`. |
@@ -138,13 +157,16 @@ Startup follows a platform-specific decision:
 2. Check whether the required local provisioning artifacts exist.
 3. Check whether the required Service Bus namespace and queue configuration are
    present.
-4. **Linux container path:** if both are present, skip bootstrap and start
-   `run`; otherwise start `bootstrap`.
+4. **Linux runtime-container path:** if both are present, skip bootstrap and
+   start `run`; otherwise start `bootstrap`, which launches the dedicated
+   bootstrap image and waits for bootstrap-complete state before starting
+   runtime.
 5. **Windows service path:** if both are present, start `run`; otherwise emit a
    clear diagnostic and exit with a non-zero service status.
 
 When the Linux bootstrap path is entered, the unified `bootstrap` subcommand
-orchestrates the full provisioning lifecycle as described in section 4.2.
+orchestrates the full provisioning lifecycle by launching the dedicated
+bootstrap image as described in section 4.2.
 
 ### 3.4  Windows MSI integration
 
@@ -218,12 +240,13 @@ The Linux bootstrap path is entered only when bootstrap-complete state is
 absent. This differs from the earlier draft, which always re-entered device-code
 login on restart. The Windows service path does not auto-enter bootstrap when
 state is absent; it fails closed until the operator performs provisioning
-explicitly.
+explicitly. Both Linux auto-bootstrap and explicit Windows bootstrap use the
+same dedicated bootstrap image.
 
 Re-running the `bootstrap` subcommand explicitly (e.g., for credential rotation)
 is safe: it regenerates the certificate, re-runs Bicep, and rewrites the runtime
 artifacts. This explicit bootstrap path is supported from the Windows native
-binary as well as from the Linux/container deployment path; only the Windows
+binary as well as from the Linux runtime-container deployment path; only the Windows
 service auto-start path is fail-closed before bootstrap-complete state exists.
 
 ### 4.2  Unified bootstrap sequence
@@ -243,41 +266,44 @@ When bootstrap is required, the Azure companion performs this sequence:
 4. Base64-encode the certificate's DER public material for the Bicep
    `companionCertificateBase64` parameter.
 5. Display "Authenticating…" on the modem display.
-6. Use the Bollard crate to pull (if needed) the digest-pinned
-   `mcr.microsoft.com/azure-cli` image.
-7. Create an Azure CLI container with the bundled Bicep files and staged
-   certificate copied in via Bollard's `put_archive` API (not bind mounts,
-   since the companion's container-internal paths are not visible to the host
-   Docker daemon).
-8. The container runs a bootstrap script that executes
-   `az login --use-device-code` followed by `az deployment sub create`.
-9. Rust monitors the container's output stream, looking for the device-code
-   pattern produced by `az login --use-device-code`. Because the Azure CLI
-   image is pinned by digest, the output format is a known quantity for the
-   pinned version.
-10. When the device code is detected, call the gateway admin
+6. Resolve the default bootstrap image reference as
+   `ghcr.io/alan-jowett/sonde-azure-bootstrap:<matching companion version>`
+   unless a development or test override is configured.
+7. Use the Bollard crate to pull (if needed) that bootstrap image tag.
+8. Create a bootstrap container and copy in only dynamic inputs such as the
+   staged certificate via Bollard's `put_archive` API (not bind mounts, since
+   the runtime container's internal paths are not visible to the host Docker
+   daemon).
+9. The bootstrap container runs its bundled script, which executes
+   `az login --use-device-code` followed by `az deployment sub create` using
+   the Bicep files already bundled inside the bootstrap image.
+10. Rust monitors the bootstrap container's output stream, looking for the
+    device-code pattern produced by `az login --use-device-code`. Because the
+    bootstrap image tag is version-matched to the companion release, the output
+    format is controlled by the shipped bootstrap artifact for that release.
+11. When the device code is detected, call the gateway admin
     `ShowModemDisplayMessage` RPC with a short prompt plus the exact device
     code.
-11. Wait for the container to finish. On success, `az deployment sub create`
+12. Wait for the container to finish. On success, `az deployment sub create`
     produces JSON deployment outputs on stdout.
-12. Display "Deploying Azure…" on the modem display (transitions from auth to
+13. Display "Deploying Azure…" on the modem display (transitions from auth to
     deployment phase may overlap in the single container session).
-13. Capture and parse the JSON outputs to extract `tenantId`, `clientId`,
+14. Capture and parse the JSON outputs to extract `tenantId`, `clientId`,
     Service Bus namespace, and queue names from the `companionBootstrapValues`
     output object.
-14. Write `service-principal.json` and `service-bus.json` to the staging
+15. Write `service-principal.json` and `service-bus.json` to the staging
     directory with the extracted values and relative paths to the certificate
     and private-key PEM files.
-15. Rename the staging directory into a new generation directory under the state
+16. Rename the staging directory into a new generation directory under the state
     volume, then atomically update the `.current-state` marker to point at that
     generation, leaving the previous generation untouched until the new one is
     fully committed.
-16. Remove the Azure CLI container.
-17. Display "Bootstrap complete" on the modem display.
-18. The bootstrap wrapper/entrypoint reports overall success only after
+17. Remove the bootstrap container.
+18. Display "Bootstrap complete" on the modem display.
+19. The bootstrap wrapper/entrypoint reports overall success only after
     bootstrap-complete state has been established.
 
-If any step fails, the staging directory is cleaned up, the Azure CLI
+If any step fails, the staging directory is cleaned up, the bootstrap
 container is removed, and the existing state volume contents remain untouched,
 preserving the previous working state for the next retry or runtime start.
 
@@ -300,12 +326,12 @@ plus Windows service-management entrypoints:
 1. **`run`** — default long-running runtime mode. It connects to the gateway
    connector socket and bridges connector traffic to Azure Service Bus.
 2. **`bootstrap`** — performs the unified provisioning lifecycle: self-signed
-   ECDSA P-256 certificate generation, Azure device-code authentication and
-   Bicep deployment via the Bollard Docker API (inside a pinned Azure CLI
-   container), and runtime artifact creation (`service-principal.json`,
-   `service-bus.json`, certificate PEM, private-key PEM). The Rust code
-   monitors the Azure CLI container's output to extract the device code and
-   display it on the modem via the gateway admin API.
+   ECDSA P-256 certificate generation, launching the version-matched
+   `sonde-azure-bootstrap` image via the Bollard Docker API, and runtime
+   artifact creation (`service-principal.json`, `service-bus.json`,
+   certificate PEM, private-key PEM). The Rust code monitors the bootstrap
+   container's output to extract the device code and display it on the modem
+   via the gateway admin API.
 3. **`display-message`** — helper mode used by bootstrap logic to call the
    gateway admin `ShowModemDisplayMessage` RPC with 1 to 4 lines of text.
 4. **`install`** *(Windows)* — registers or updates the native Windows service
@@ -437,41 +463,45 @@ The DER-encoded certificate public material is base64-encoded for the Bicep
 `companionCertificateBase64` parameter. This reuses the same parameter
 interface already defined in `deploy/bicep/main.bicep`.
 
-### 8.2  Bollard Docker API integration
+### 8.2  Bollard bootstrap-image integration
 
 The `bootstrap` subcommand uses the Bollard crate to interact with the Docker
 Engine API. It does not shell out to the `docker` CLI. The integration flow:
 
 1. Connect to the Docker daemon via Bollard's auto-detection (typically
    `/var/run/docker.sock` inside the container).
-2. Pull the `mcr.microsoft.com/azure-cli` image if not already present. The
-   image reference is pinned by digest in the source code for reproducibility.
-   If the pull fails (e.g., network is unavailable), bootstrap fails with a
-   clear error message.
-3. Create a container with environment variables for deployment parameters
+2. Resolve the default bootstrap image reference as
+   `ghcr.io/alan-jowett/sonde-azure-bootstrap:<matching companion version>`
+   unless a development or test override is configured.
+3. Pull that bootstrap image if it is not already present. If the pull fails
+   (e.g., network is unavailable or the version tag is missing), bootstrap
+   fails with a clear error message.
+4. Create a container with environment variables for deployment parameters
    (`SONDE_AZURE_LOCATION`, `COMPANION_CERT_BASE64`, etc.).
-4. Copy the bundled Bicep files and staged certificate into the container
-   using Bollard's `put_archive` API. This avoids bind mounts, which would
-   fail because the companion's container-internal paths are not visible to the
-   host Docker daemon when running as a sibling container.
-5. Start the container and stream its output (stdout/stderr).
-6. Monitor the output for the device-code pattern from `az login --use-device-code`.
+5. Copy only dynamic bootstrap inputs such as the staged certificate into the
+   container using Bollard's `put_archive` API. The Bicep files and bootstrap
+   script are already part of the bootstrap image, so bootstrap does not depend
+   on runtime-image or host-side Bicep paths.
+6. Start the container and stream its output (stdout/stderr).
+7. Monitor the output for the device-code pattern from `az login --use-device-code`.
    When detected, extract the code and display it on the modem via the admin API.
-7. Wait for the container to exit and capture the JSON deployment outputs.
-8. Remove the container after completion (regardless of success or failure).
+8. Wait for the container to exit and capture the JSON deployment outputs.
+9. Remove the container after completion (regardless of success or failure).
 
 If the container fails to start or the Docker daemon is unreachable, bootstrap
 fails with a descriptive error and cleans up any created-but-unstarted
 container resources.
 
-### 8.3  Azure CLI container execution
+### 8.3  Bootstrap-image execution
 
-Inside the Azure CLI container, the bootstrap runs a shell script that:
+Inside the `sonde-azure-bootstrap` image, the bootstrap runs a shell script
+that:
 
 1. Authenticates using `az login --use-device-code`. The device code and
    verification URL appear on stderr, which Rust monitors and relays to the
-   modem display. Because the Azure CLI image is pinned by digest, the output
-   format is a known quantity that can be parsed reliably for that version.
+   modem display. Because the bootstrap image tag is version-matched to the
+   companion release, the output format is controlled by the shipped bootstrap
+   artifact for that release.
 2. Optionally sets the target subscription if `SONDE_AZURE_SUBSCRIPTION_ID` is
    provided via `az account set --subscription`.
 3. Runs `az deployment sub create` with:
@@ -532,16 +562,20 @@ persisted Service Bus configuration file (`service-bus.json`) as an alternative
 to environment variables, enabling a fully automated startup after bootstrap.
 Environment variables, if set, override the persisted file values.
 
-### 8.5  Bundled Bicep files
+### 8.5  Bootstrap-image contents
 
-The Azure companion Dockerfile includes:
+The bootstrap Dockerfile includes:
 
 ```dockerfile
 COPY deploy/bicep/ /opt/sonde/deploy/bicep/
 ```
 
-This bundles the complete Bicep deployment surface into the companion image.
-The bootstrap mounts this path into the Azure CLI container at runtime.
+It also includes the bootstrap script that runs `az login --use-device-code`
+and Azure deployment inside the bootstrap image.
+
+This bundles the complete Azure provisioning surface into the dedicated
+bootstrap image. The runtime companion image no longer needs to carry these
+bootstrap-only assets.
 
 ### 8.6  Docker socket requirements
 
@@ -562,7 +596,7 @@ The bootstrap displays these messages on the modem via the admin API:
 | Phase | Modem display | stderr log |
 |-------|--------------|------------|
 | Certificate generation | "Generating cert..." | "Generating ECDSA P-256 self-signed certificate" |
-| Azure CLI container start | "Authenticating..." | "Starting Azure CLI container for device-code auth" |
+| Bootstrap image start | "Authenticating..." | "Starting sonde-azure-bootstrap for device-code auth" |
 | Device code received | "Azure login" + device code | "Device auth: open {uri} and enter code {code}" |
 | Bicep deployment | "Deploying Azure..." | "Running Bicep deployment" |
 | Config writing | "Writing config..." | "Writing runtime artifacts to state volume" |

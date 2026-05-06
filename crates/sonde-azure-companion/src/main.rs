@@ -1290,10 +1290,16 @@ fn default_bootstrap_image() -> String {
 
 fn resolve_bootstrap_image(override_image: Option<&str>) -> Result<String, CompanionError> {
     match override_image {
-        Some(image) if image.trim().is_empty() => Err(CompanionError::Config(
-            "bootstrap image override must not be empty".into(),
-        )),
-        Some(image) => Ok(image.to_string()),
+        Some(image) => {
+            let trimmed = image.trim();
+            if trimmed.is_empty() {
+                Err(CompanionError::Config(
+                    "bootstrap image override must not be empty".into(),
+                ))
+            } else {
+                Ok(trimmed.to_string())
+            }
+        }
         None => Ok(default_bootstrap_image()),
     }
 }
@@ -3444,6 +3450,14 @@ mod tests {
     fn resolve_bootstrap_image_uses_override_when_provided() {
         assert_eq!(
             resolve_bootstrap_image(Some("sonde-azure-bootstrap:test-override")).unwrap(),
+            "sonde-azure-bootstrap:test-override"
+        );
+    }
+
+    #[test]
+    fn resolve_bootstrap_image_trims_override() {
+        assert_eq!(
+            resolve_bootstrap_image(Some("  sonde-azure-bootstrap:test-override  ")).unwrap(),
             "sonde-azure-bootstrap:test-override"
         );
     }

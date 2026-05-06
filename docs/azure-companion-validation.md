@@ -38,8 +38,8 @@
 
 **Procedure:**
 1. Build the `sonde-azure-bootstrap` Docker image from the repository Dockerfile.
-2. Run `docker run --rm <image> sh -c "az version >/dev/null"`.
-3. Run `docker run --rm <image> ls /opt/sonde/deploy/bicep/`.
+2. Run `docker run --rm --entrypoint sh <image> -c "az version >/dev/null"`.
+3. Run `docker run --rm --entrypoint sh <image> -c "ls /opt/sonde/deploy/bicep/"`.
 4. Assert: the image contains working Azure CLI tooling plus the bundled Bicep deployment files.
 5. Assert: the listing includes `main.bicep`, `bicepconfig.json`, and the `modules/` directory.
 

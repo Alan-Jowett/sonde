@@ -11,3 +11,5 @@ COPY deploy/bicep/ /opt/sonde/deploy/bicep/
 
 RUN chmod +x /opt/sonde/deploy/azure-bootstrap/bootstrap.sh \
     && mkdir -p /cert
+
+ENTRYPOINT ["/opt/sonde/deploy/azure-bootstrap/bootstrap.sh"]

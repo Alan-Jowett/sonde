@@ -66,7 +66,11 @@ jobs:
              && test -r /opt/sonde/deploy/bicep/bicepconfig.json \
              && test -d /opt/sonde/deploy/bicep/modules'
 
-      - name: Smoke test — runtime image excludes Rust toolchain and source tree
+      - name: Smoke test — bootstrap image entrypoint
+        run: |
+          test "$(docker image inspect ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} --format '{{json .Config.Entrypoint}}')" = '["/opt/sonde/deploy/azure-bootstrap/bootstrap.sh"]'
+
+      - name: Smoke test — bootstrap image excludes Rust toolchain and source tree
         run: |
           docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
             '! command -v cargo >/dev/null 2>&1 \

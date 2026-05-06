@@ -567,7 +567,7 @@
 **Validates:** AZC-0106, AZC-0401
 
 **Procedure:**
-1. Configure `sonde-azure-companion` with an explicit bootstrap image override reference such as `sonde-azure-bootstrap:test-override`.
+1. Configure `sonde-azure-companion` with an explicit bootstrap image override reference such as `sonde-azure-bootstrap:test-override`, using either `SONDE_AZURE_BOOTSTRAP_IMAGE` or `--bootstrap-image`.
 2. Start bootstrap with a mock Docker API server (or equivalent traceable test double).
 3. Assert: the Docker API requests use the configured override image reference rather than the default version-matched release tag.
 4. Assert: bootstrap reaches the container-creation path using the override image reference when the override image is available.

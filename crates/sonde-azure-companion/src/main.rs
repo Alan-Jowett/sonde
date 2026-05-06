@@ -55,7 +55,6 @@ const DEFAULT_STATE_DIR: &str = "/var/lib/sonde-azure-companion";
 
 const SERVICE_PRINCIPAL_STATE_FILENAME: &str = "service-principal.json";
 const DEFAULT_BOOTSTRAP_IMAGE_REPOSITORY: &str = "ghcr.io/alan-jowett/sonde-azure-bootstrap";
-const BOOTSTRAP_SCRIPT_PATH: &str = "/opt/sonde/deploy/azure-bootstrap/bootstrap.sh";
 const CERT_PEM_FILENAME: &str = "cert.pem";
 const KEY_PEM_FILENAME: &str = "key.pem";
 const SERVICE_BUS_CONFIG_FILENAME: &str = "service-bus.json";
@@ -1954,7 +1953,6 @@ async fn run_bootstrap_deployment_with_docker_and_image(
             ),
             ContainerCreateBody {
                 image: Some(bootstrap_image.to_string()),
-                cmd: Some(vec![BOOTSTRAP_SCRIPT_PATH.to_string()]),
                 env: Some(env_vars),
                 ..Default::default()
             },

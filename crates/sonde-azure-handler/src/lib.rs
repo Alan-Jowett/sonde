@@ -268,8 +268,9 @@ where
                 timestamp_ms: actual_state.timestamp_ms,
             };
             match self.store.update_observed_state(&update).await? {
-                ObservedStateWriteResult::Applied(row)
-                | ObservedStateWriteResult::Current(row) => row,
+                ObservedStateWriteResult::Applied(row) | ObservedStateWriteResult::Current(row) => {
+                    row
+                }
                 ObservedStateWriteResult::IgnoredStale => return Ok(()),
             }
         };
@@ -1862,13 +1863,10 @@ mod tests {
         });
         let handler =
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-        let payload =
-            sample_actual_state("node-1", Some(&[0xAA; 32]), Some(&[0xAA; 32]), Some(30));
+        let payload = sample_actual_state("node-1", Some(&[0xAA; 32]), Some(&[0xAA; 32]), Some(30));
 
         let err = handler.handle_payload(&payload).await.unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("simulated first publish failure"));
+        assert!(err.to_string().contains("simulated first publish failure"));
 
         handler.handle_payload(&payload).await.unwrap();
 

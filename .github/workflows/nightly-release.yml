@@ -344,7 +344,7 @@ jobs:
   # ── Publish release ────────────────────────────────────────────────
   release:
     name: Publish nightly
-    needs: [should_run, gateway, bpf-test-programs, sensor-handlers, gateway-container, node-firmware, modem-firmware, desktop, android, installer-linux, installer-linux-arm64, installer-windows]
+    needs: [should_run, gateway, bpf-test-programs, sensor-handlers, gateway-container, azure-bootstrap-container, node-firmware, modem-firmware, desktop, android, installer-linux, installer-linux-arm64, installer-windows]
     if: needs.should_run.outputs.run_builds == 'true'
     runs-on: ubuntu-latest
     permissions:

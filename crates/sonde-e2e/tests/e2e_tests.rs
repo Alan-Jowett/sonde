@@ -1486,7 +1486,7 @@ async fn t_e2e_081_ephemeral_restrictions() {
 // T-E2E-080 — Map access through full stack
 // ---------------------------------------------------------------------------
 
-/// T-E2E-080 — E2E map access through full stack.
+/// T-BPF-031 / T-E2E-080 — E2E map access through full stack.
 ///
 /// Installs a resident program with a map definition, runs two wake
 /// cycles, and verifies map allocation and persistence across cycles.

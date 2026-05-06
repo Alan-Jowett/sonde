@@ -182,9 +182,9 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Provision a board layout with `battery_adc = null`.
 2. Run one full wake cycle through `COMMAND` processing so the node computes a current-cycle battery value.
-3. Assert: the node stores `3300` mV in RTC-retained battery state.
+3. Assert: the node stores `0` mV in RTC-retained battery state.
 4. Trigger the next wake cycle and capture WAKE.
-5. Assert: `battery_mv` = 3300.
+5. Assert: `battery_mv` = 0.
 
 ---
 
@@ -1993,8 +1993,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Provision a board layout with `battery_adc=null`.
 2. Run a wake cycle through `COMMAND` processing.
-3. Assert: the current-cycle `sonde_context.battery_mv` and `get_battery_mv()` value are 3300.
-4. Assert: 3300 mV is stored in RTC-retained state for the next wake.
+3. Assert: the current-cycle `sonde_context.battery_mv` and `get_battery_mv()` value are 0.
+4. Assert: 0 mV is stored in RTC-retained state for the next wake.
 
 ---
 

@@ -126,7 +126,7 @@ Each wake cycle MUST follow this structure: wake → send one or more `WAKE` mes
 **Source:** protocol.md §5.1
 
 **Description:**  
-The `WAKE` message MUST include `firmware_abi_version`, `program_hash` (SHA-256 of the resident program, or zero-length if none installed), `battery_mv`, and `firmware_version` (semantic version string derived from `CARGO_PKG_VERSION` at compile time, e.g., `"0.6.0"`). The `battery_mv` field reports the battery reading stored from the previous wake cycle in RTC-retained state. On the first wake after provisioning or cold boot, before any battery value has been stored, `battery_mv` MUST be `0`. If the provisioned board layout does not assign a battery ADC pin, the firmware stores a known fallback value (`3300` mV) for use on subsequent wakes. The `nonce` header field MUST contain a fresh 64-bit random value from the hardware RNG. The WAKE message MAY include an optional `blob` field (CBOR key 10) containing a single piggybacked uplink data blob from a prior `send_async()` call. The blob is included only when exactly one message is queued and it fits within the available payload budget (223 bytes minus the space consumed by the four required fields and their CBOR encoding overhead). When the blob would not fit or multiple messages are queued, the `blob` field is omitted and data is sent via APP_DATA after receiving COMMAND.
+The `WAKE` message MUST include `firmware_abi_version`, `program_hash` (SHA-256 of the resident program, or zero-length if none installed), `battery_mv`, and `firmware_version` (semantic version string derived from `CARGO_PKG_VERSION` at compile time, e.g., `"0.6.0"`). The `battery_mv` field reports the battery reading stored from the previous wake cycle in RTC-retained state. On the first wake after provisioning or cold boot, before any battery value has been stored, `battery_mv` MUST be `0`. If the provisioned board layout does not assign a battery ADC pin, the firmware stores the explicit failure fallback value (`0` mV) for use on subsequent wakes. The `nonce` header field MUST contain a fresh 64-bit random value from the hardware RNG. The WAKE message MAY include an optional `blob` field (CBOR key 10) containing a single piggybacked uplink data blob from a prior `send_async()` call. The blob is included only when exactly one message is queued and it fits within the available payload budget (223 bytes minus the space consumed by the four required fields and their CBOR encoding overhead). When the blob would not fit or multiple messages are queued, the `blob` field is omitted and data is sent via APP_DATA after receiving COMMAND.
 
 **Acceptance criteria:**
 
@@ -134,7 +134,7 @@ The `WAKE` message MUST include `firmware_abi_version`, `program_hash` (SHA-256 
 2. `program_hash` matches the SHA-256 of the currently installed resident program.
 3. On the first wake after provisioning or cold boot, `battery_mv` is `0`.
 4. On subsequent wakes, `battery_mv` equals the battery value stored from the previous wake cycle.
-5. If the provisioned board layout does not assign a battery ADC pin, the firmware stores and later reports the known fallback value (`3300` mV).
+5. If the provisioned board layout does not assign a battery ADC pin, the firmware stores and later reports the explicit failure fallback value (`0` mV).
 6. `firmware_version` is a valid semantic version string matching the compiled firmware version.
 7. The nonce is generated from the hardware RNG (not a constant or predictable value).
 
@@ -443,7 +443,7 @@ The firmware MUST populate a read-only `sonde_context` structure before each BPF
 **Acceptance criteria:**
 
 1. `timestamp` is derived from the gateway's `timestamp_ms` plus local elapsed time since COMMAND was received.
-2. `battery_mv` is the current-cycle battery value captured after `COMMAND` processing using the provisioned board layout (fresh ADC reading when a battery ADC pin is assigned, otherwise the known fallback value).
+2. `battery_mv` is the current-cycle battery value captured after `COMMAND` processing using the provisioned board layout (fresh ADC reading when a battery ADC pin is assigned, otherwise the explicit failure fallback value).
 3. `firmware_abi_version` matches the firmware's actual ABI.
 4. `wake_reason` is set correctly: `WAKE_SCHEDULED` (0x00) for normal wake, `WAKE_EARLY` (0x01) when woken early due to `set_next_wake()`, `WAKE_PROGRAM_UPDATE` (0x02) on first execution after a program update.
 5. The context is read-only — the BPF program cannot modify it.
@@ -546,7 +546,7 @@ The firmware MUST provide `get_time()`, `get_battery_mv()`, `delay_us()`, `set_n
 **Acceptance criteria:**
 
 1. `get_time()` returns the current time in milliseconds since epoch.
-2. `get_battery_mv()` returns the current-cycle battery value captured after `COMMAND` processing using the provisioned board layout (fresh ADC reading when a battery ADC pin is assigned, otherwise the known fallback value).
+2. `get_battery_mv()` returns the current-cycle battery value captured after `COMMAND` processing using the provisioned board layout (fresh ADC reading when a battery ADC pin is assigned, otherwise the explicit failure fallback value).
 3. `delay_us()` busy-waits for the specified microseconds; the firmware enforces a maximum delay value.
 4. `set_next_wake()` sets the interval for the next wake cycle only; the firmware applies `min(requested, base interval)`.
 5. Ephemeral programs calling `set_next_wake()` receive an error.

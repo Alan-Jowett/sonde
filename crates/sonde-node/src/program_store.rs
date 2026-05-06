@@ -334,6 +334,57 @@ mod tests {
         assert!(matches!(result, Err(NodeError::StorageError(_))));
     }
 
+    #[test]
+    fn t_bpf_032_resident_install_rejects_oversized_maps_and_keeps_active_program() {
+        let (active_cbor, active_hash) =
+            make_test_image(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], &[]);
+        let oversized_maps = [MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 16,
+            max_entries: 4,
+        }];
+        let (oversized_cbor, oversized_hash) = make_test_image(
+            &[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            &oversized_maps,
+        );
+
+        let mut storage = MockStorage::new();
+        storage.programs[0] = Some(active_cbor.clone());
+        storage.active_partition = 0;
+
+        {
+            let mut store = ProgramStore::new(&mut storage);
+            let result = store.install_resident(&oversized_cbor, &oversized_hash, &TestSha256, 32);
+
+            assert!(matches!(
+                result,
+                Err(NodeError::MapBudgetExceeded {
+                    required: 80,
+                    available: 32
+                })
+            ));
+
+            let (loaded_hash, loaded_raw) = store.load_active_raw(&TestSha256);
+            assert_eq!(loaded_hash, active_hash);
+            assert_eq!(loaded_raw.as_deref(), Some(active_cbor.as_slice()));
+        }
+
+        assert_eq!(
+            storage.active_partition, 0,
+            "oversized install must not flip the active partition"
+        );
+        assert_eq!(
+            storage.programs[0].as_ref(),
+            Some(&active_cbor),
+            "previously active resident program must remain intact"
+        );
+        assert!(
+            storage.programs[1].is_none(),
+            "inactive partition must remain untouched when install is rejected"
+        );
+    }
+
     // ---- load_active_raw tests ----
 
     #[test]

@@ -1332,7 +1332,7 @@ A "Custom" option MUST also be available, which reveals editable fields for the 
 **Source:** pairing-tool-ui-redesign.md §Phase A, issue #673
 
 **Description:**  
-The UI MUST be organized as a multi-page wizard with 6 pages, each implemented as a `<section>` element.  Client-side routing uses show/hide logic managed by a `Navigator` class.  No server-side routing or SPA framework is required.
+The UI MUST be organized as a multi-page wizard with 7 pages, each implemented as a `<section>` element.  Client-side routing uses show/hide logic managed by a `Navigator` class.  No server-side routing or SPA framework is required.
 
 The page layout is:
 
@@ -1343,7 +1343,8 @@ The page layout is:
 | 3 | Pairing Complete | Success confirmation, channel and key hint info | Gateway |
 | 4 | Node Scan & RSSI | Scan for nodes, device list, live RSSI indicator | Node |
 | 5 | Node Provision | Node ID input, board selector, provision button, progress | Node |
-| 6 | Done | Success summary, "Provision Another" button | Done |
+| 6 | Diagnostic Review | Diagnostic result or failure, continue / continue-anyway / cancel | Node |
+| 7 | Done | Success summary, "Provision Another" button | Done |
 
 **Acceptance criteria:**
 
@@ -1365,7 +1366,7 @@ The UI MUST display a stepper bar at the top of every page showing three phases:
 
 **Acceptance criteria:**
 
-1. The stepper bar is visible on all 6 pages.
+1. The stepper bar is visible on all 7 pages.
 2. The stepper shows exactly three steps: Gateway, Node, Done.
 3. The currently active phase is visually distinct (highlighted).
 4. Completed phases are visually marked as done (e.g., checkmark).

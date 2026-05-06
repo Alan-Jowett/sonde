@@ -4,10 +4,10 @@
 
 > **Document status:** Draft
 > **Scope:** Validation for the Azure companion deployment surfaces (Linux
-> container and Windows native service), bootstrap-state detection, gateway
-> admin/connector integration, provisioning orchestration (certificate
-> generation, Bicep deployment via Docker API, runtime artifact creation), and
-> Azure Service Bus bridge.
+> runtime container and Windows native service), the dedicated bootstrap image,
+> bootstrap-state detection, gateway admin/connector integration, provisioning
+> orchestration (certificate generation, bootstrap-image execution via Docker
+> API, runtime artifact creation), and Azure Service Bus bridge.
 > **Audience:** Implementers and reviewers validating the Azure companion
 > bootstrap and runtime bridge behavior.
 > **Related:** [azure-provisioning-validation.md](azure-provisioning-validation.md),
@@ -32,6 +32,19 @@
 
 ---
 
+### T-AZC-0123  Azure bootstrap image smoke test
+
+**Validates:** AZC-0106, AZC-0402
+
+**Procedure:**
+1. Build the `sonde-azure-bootstrap` Docker image from the repository Dockerfile.
+2. Run `docker run --rm --entrypoint sh <image> -c "az version >/dev/null"`.
+3. Run `docker run --rm --entrypoint sh <image> -c "ls /opt/sonde/deploy/bicep/"`.
+4. Assert: the image contains working Azure CLI tooling plus the bundled Bicep deployment files.
+5. Assert: the listing includes `main.bicep`, `bicepconfig.json`, and the `modules/` directory.
+
+---
+
 ### T-AZC-0101  Startup enters bootstrap when provisioning artifacts are missing
 
 **Validates:** AZC-0101, AZC-0102, AZC-0200, AZC-0201
@@ -40,7 +53,7 @@
 1. Create an empty temporary directory to use as the mounted state volume.
 2. Provide valid queue configuration to the bootstrap script.
 3. Invoke the Azure companion bootstrap entrypoint with that directory mounted as the state volume.
-4. Assert: the bootstrap path runs before the long-running runtime starts.
+4. Assert: the bootstrap path runs the dedicated bootstrap image before the long-running runtime starts.
 5. Assert: the bootstrap path invokes the Rust `bootstrap` flow, parses the device code from Azure CLI stderr, and forwards it to the modem display.
 
 ---
@@ -312,7 +325,7 @@
 4. Start the service: `sc.exe start sonde-azure-companion`.
 5. Assert: the service does not reach steady `RUNNING` runtime-bridge operation.
 6. Assert: service diagnostics clearly identify the missing provisioning artifacts or queue configuration.
-7. Assert: the startup path does not attempt to pull or run the Azure CLI container automatically.
+7. Assert: the startup path does not attempt to pull or run the bootstrap image automatically.
 8. Populate bootstrap-complete state in `%ProgramData%\sonde-azure-companion\` and restart the service.
 9. Assert: the service now starts the runtime bridge normally and connects through the default named-pipe paths.
 10. Stop the service through SCM.
@@ -351,26 +364,26 @@
 
 ---
 
-### T-AZC-0401  Bootstrap uses Bollard to run Azure CLI container
+### T-AZC-0401  Bootstrap uses Bollard to run the bootstrap image
 
-**Validates:** AZC-0401, AZC-0402
+**Validates:** AZC-0106, AZC-0401, AZC-0402
 
 **Procedure:**
 1. Start the bootstrap subcommand with a mock Docker API server (Bollard supports custom connection).
-2. Assert: bootstrap sends Docker API requests to create and start a container using the pinned Azure CLI image digest.
+2. Assert: bootstrap sends Docker API requests to create and start a container using the version-tagged `ghcr.io/alan-jowett/sonde-azure-bootstrap` image that matches the companion release version.
 3. Assert: bootstrap does not invoke the `docker` CLI binary.
-4. Assert: bootstrap uploads the bundled Bicep files and generated certificate into the Azure CLI container with Docker archive upload APIs before running the deployment.
+4. Assert: bootstrap passes only dynamic bootstrap inputs such as the generated certificate into the bootstrap container environment before running the deployment.
 5. Assert: bootstrap captures the container's stdout output containing Bicep deployment JSON.
 6. Assert: bootstrap removes the container after completion.
 
 ---
 
-### T-AZC-0402  Companion image bundles Bicep files
+### T-AZC-0402  Bootstrap image bundles Bicep files
 
 **Validates:** AZC-0402
 
 **Procedure:**
-1. Build the Azure companion Docker image.
+1. Build the `sonde-azure-bootstrap` Docker image.
 2. Run `docker run --rm <image> ls /opt/sonde/deploy/bicep/`.
 3. Assert: the listing includes `main.bicep`, `bicepconfig.json`, and the `modules/` directory.
 4. Assert: the `modules/` directory contains the expected Bicep module files.
@@ -451,7 +464,7 @@
 
 **Procedure:**
 1. Run bootstrap with `SONDE_AZURE_SUBSCRIPTION_ID` set to a known value.
-2. Assert: the Bicep deployment command within the Azure CLI container targets the specified subscription.
+2. Assert: the Bicep deployment command within the bootstrap container targets the specified subscription.
 3. Run bootstrap without `SONDE_AZURE_SUBSCRIPTION_ID`.
 4. Assert: the Bicep deployment uses the default subscription from the device-login session.
 
@@ -474,14 +487,14 @@
 
 ### T-AZC-0410  Bootstrap fails cleanly on image pull failure
 
-**Validates:** AZC-0401, AZC-0405
+**Validates:** AZC-0106, AZC-0401, AZC-0405
 
 **Procedure:**
-1. Start bootstrap with Bollard configured to reject the image pull (simulated network failure).
+1. Start bootstrap with Bollard configured to reject the bootstrap image pull (simulated network failure or missing version tag).
 2. Assert: bootstrap fails with a non-zero exit status.
 3. Assert: the error message identifies the image pull failure.
 4. Assert: the modem displays an error indication.
-5. Assert: no Azure CLI container is left running.
+5. Assert: no bootstrap container is left running.
 
 ---
 
@@ -546,3 +559,15 @@
 2. Capture all stderr and stdout output from the bootstrap process.
 3. Assert: the access token value does not appear in any log output.
 4. Assert: the access token is not persisted to any file in the state volume.
+
+---
+
+### T-AZC-0416  Bootstrap image override is honored for development and test flows
+
+**Validates:** AZC-0106, AZC-0401
+
+**Procedure:**
+1. Configure `sonde-azure-companion` with an explicit bootstrap image override reference such as `sonde-azure-bootstrap:test-override`, using either `SONDE_AZURE_BOOTSTRAP_IMAGE` or `--bootstrap-image`.
+2. Start bootstrap with a mock Docker API server (or equivalent traceable test double).
+3. Assert: the Docker API requests use the configured override image reference rather than the default version-matched release tag.
+4. Assert: bootstrap reaches the container-creation path using the override image reference when the override image is available.

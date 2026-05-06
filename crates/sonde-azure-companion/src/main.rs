@@ -19,9 +19,9 @@ use bollard::container::LogOutput;
 use bollard::models::ContainerCreateBody;
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, LogsOptionsBuilder,
-    RemoveContainerOptionsBuilder, UploadToContainerOptionsBuilder, WaitContainerOptionsBuilder,
+    RemoveContainerOptionsBuilder, WaitContainerOptionsBuilder,
 };
-use bollard::{body_full, Docker};
+use bollard::Docker;
 use clap::{Args, Parser, Subcommand};
 use ed25519_dalek::pkcs8::DecodePrivateKey as Ed25519DecodePrivateKey;
 use futures_util::StreamExt;
@@ -54,11 +54,7 @@ const DEFAULT_CONNECTOR_SOCKET: &str = r"\\.\pipe\sonde-connector";
 const DEFAULT_STATE_DIR: &str = "/var/lib/sonde-azure-companion";
 
 const SERVICE_PRINCIPAL_STATE_FILENAME: &str = "service-principal.json";
-/// Path to bundled Bicep files inside the companion container image.
-const BUNDLED_BICEP_PATH: &str = "/opt/sonde/deploy/bicep";
-/// Pinned Azure CLI container image digest for reproducible bootstrap.
-const AZURE_CLI_IMAGE: &str =
-    "mcr.microsoft.com/azure-cli@sha256:7f9ca8e6bf1c72e5fafefb6925546272776d635fb428538455c5c79bb77e2aa7";
+const DEFAULT_BOOTSTRAP_IMAGE_REPOSITORY: &str = "ghcr.io/alan-jowett/sonde-azure-bootstrap";
 const CERT_PEM_FILENAME: &str = "cert.pem";
 const KEY_PEM_FILENAME: &str = "key.pem";
 const SERVICE_BUS_CONFIG_FILENAME: &str = "service-bus.json";
@@ -179,6 +175,10 @@ struct BootstrapArgs {
     /// Optional Azure subscription ID override.
     #[arg(long, env = "SONDE_AZURE_SUBSCRIPTION_ID")]
     azure_subscription_id: Option<String>,
+
+    /// Optional bootstrap image override for development and test workflows.
+    #[arg(long, env = "SONDE_AZURE_BOOTSTRAP_IMAGE")]
+    bootstrap_image: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1280,22 +1280,27 @@ fn parse_bicep_outputs(
     Ok((sp, sb))
 }
 
-fn build_az_bootstrap_script() -> String {
-    r#"set -eu
-az login --use-device-code --output none >&2
-if [ -n "${SONDE_AZURE_SUBSCRIPTION_ID:-}" ]; then
-    az account set --subscription "$SONDE_AZURE_SUBSCRIPTION_ID" >&2
-fi
-echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2
-az deployment sub create \
-    --location "$SONDE_AZURE_LOCATION" \
-    --template-file /bicep/main.bicep \
-    --parameters companionCertificateBase64="$COMPANION_CERT_BASE64" \
-    --parameters location="$SONDE_AZURE_LOCATION" \
-    --parameters project_name="$SONDE_AZURE_PROJECT_NAME" \
-    --query 'properties.outputs' \
-    --output json"#
-        .to_string()
+fn default_bootstrap_image() -> String {
+    format!(
+        "{DEFAULT_BOOTSTRAP_IMAGE_REPOSITORY}:{}",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+fn resolve_bootstrap_image(override_image: Option<&str>) -> Result<String, CompanionError> {
+    match override_image {
+        Some(image) => {
+            let trimmed = image.trim();
+            if trimmed.is_empty() {
+                Err(CompanionError::Config(
+                    "bootstrap image override must not be empty".into(),
+                ))
+            } else {
+                Ok(trimmed.to_string())
+            }
+        }
+        None => Ok(default_bootstrap_image()),
+    }
 }
 
 fn device_code_regex() -> &'static Regex {
@@ -1820,56 +1825,6 @@ async fn run(connector_socket: &str, state_dir: &Path) -> Result<(), CompanionEr
     run_with_factory(connector_socket, state_dir, &AzServiceBusTransportFactory).await
 }
 
-async fn copy_files_to_container(
-    docker: &Docker,
-    container_id: &str,
-    staging_dir: &Path,
-    bicep_path: &Path,
-) -> Result<(), CompanionError> {
-    let mut archive = Vec::new();
-    {
-        let mut builder = tar::Builder::new(&mut archive);
-        if !bicep_path.is_dir() {
-            return Err(CompanionError::Config(format!(
-                "bundled Bicep path not found: {}",
-                bicep_path.display()
-            )));
-        }
-        builder.append_dir_all("bicep", bicep_path).map_err(|e| {
-            CompanionError::Config(format!("failed to add Bicep files to archive: {e}"))
-        })?;
-
-        let cert_path = staging_dir.join(CERT_PEM_FILENAME);
-        if !cert_path.is_file() {
-            return Err(CompanionError::Config(format!(
-                "generated certificate file not found: {}",
-                cert_path.display()
-            )));
-        }
-        builder
-            .append_path_with_name(&cert_path, format!("cert/{CERT_PEM_FILENAME}"))
-            .map_err(|e| {
-                CompanionError::Config(format!("failed to add certificate to archive: {e}"))
-            })?;
-        builder
-            .finish()
-            .map_err(|e| CompanionError::Config(format!("failed to finalize tar archive: {e}")))?;
-    }
-
-    let upload_options = UploadToContainerOptionsBuilder::default().path("/").build();
-
-    docker
-        .upload_to_container(
-            container_id,
-            Some(upload_options),
-            body_full(archive.into()),
-        )
-        .await
-        .map_err(|e| CompanionError::Config(format!("failed to copy files to container: {e}")))?;
-
-    Ok(())
-}
-
 async fn stream_container_output(
     docker: &Docker,
     container_id: &str,
@@ -1942,53 +1897,51 @@ async fn stream_container_output(
 
 async fn run_bootstrap_deployment(
     admin_socket: &str,
-    staging_dir: &Path,
     cert_base64: &str,
     args: &BootstrapArgs,
 ) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
     let docker = Docker::connect_with_local_defaults()
         .map_err(|e| CompanionError::Config(format!("failed to connect to Docker daemon: {e}")))?;
-    run_bootstrap_deployment_with_docker(&docker, admin_socket, staging_dir, cert_base64, args)
-        .await
+    run_bootstrap_deployment_with_docker(&docker, admin_socket, cert_base64, args).await
 }
 
 async fn run_bootstrap_deployment_with_docker(
     docker: &Docker,
     admin_socket: &str,
-    staging_dir: &Path,
     cert_base64: &str,
     args: &BootstrapArgs,
 ) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
-    run_bootstrap_deployment_with_docker_and_bicep_dir(
+    let bootstrap_image = resolve_bootstrap_image(args.bootstrap_image.as_deref())?;
+    run_bootstrap_deployment_with_docker_and_image(
         docker,
         admin_socket,
-        staging_dir,
         cert_base64,
         args,
-        Path::new(BUNDLED_BICEP_PATH),
+        &bootstrap_image,
     )
     .await
 }
 
-async fn run_bootstrap_deployment_with_docker_and_bicep_dir(
+async fn run_bootstrap_deployment_with_docker_and_image(
     docker: &Docker,
     admin_socket: &str,
-    staging_dir: &Path,
     cert_base64: &str,
     args: &BootstrapArgs,
-    bicep_path: &Path,
+    bootstrap_image: &str,
 ) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
-    eprintln!("Pulling Azure CLI container image...");
+    eprintln!("Pulling bootstrap image...");
     let pull_opts = CreateImageOptionsBuilder::default()
-        .from_image(AZURE_CLI_IMAGE)
+        .from_image(bootstrap_image)
         .build();
     let mut pull_stream = docker.create_image(Some(pull_opts), None, None);
     while let Some(result) = pull_stream.next().await {
-        result
-            .map_err(|e| CompanionError::Config(format!("failed to pull Azure CLI image: {e}")))?;
+        result.map_err(|e| {
+            CompanionError::Config(format!(
+                "failed to pull bootstrap image {bootstrap_image}: {e}"
+            ))
+        })?;
     }
 
-    let bootstrap_script = build_az_bootstrap_script();
     let env_vars = build_container_env(cert_base64, args);
     let container_name = format!("sonde-bootstrap-{}", Uuid::new_v4());
     let container = docker
@@ -1999,25 +1952,23 @@ async fn run_bootstrap_deployment_with_docker_and_bicep_dir(
                     .build(),
             ),
             ContainerCreateBody {
-                image: Some(AZURE_CLI_IMAGE.to_string()),
-                cmd: Some(vec!["sh".to_string(), "-c".to_string(), bootstrap_script]),
+                image: Some(bootstrap_image.to_string()),
                 env: Some(env_vars),
                 ..Default::default()
             },
         )
         .await
         .map_err(|e| {
-            CompanionError::Config(format!("failed to create Azure CLI container: {e}"))
+            CompanionError::Config(format!("failed to create bootstrap container: {e}"))
         })?;
     let container_id = container.id;
 
     let bootstrap_result = async {
-        copy_files_to_container(docker, &container_id, staging_dir, bicep_path).await?;
         docker
             .start_container(&container_id, None)
             .await
             .map_err(|e| {
-                CompanionError::Config(format!("failed to start Azure CLI container: {e}"))
+                CompanionError::Config(format!("failed to start bootstrap container: {e}"))
             })?;
 
         let stdout_output = stream_container_output(docker, &container_id, admin_socket).await?;
@@ -2031,18 +1982,18 @@ async fn run_bootstrap_deployment_with_docker_and_bicep_dir(
             Some(Ok(result)) if result.status_code == 0 => {}
             Some(Ok(result)) => {
                 return Err(CompanionError::Config(format!(
-                    "Azure CLI container exited with non-zero status: {}",
+                    "bootstrap container exited with non-zero status: {}",
                     result.status_code
                 )));
             }
             Some(Err(e)) => {
                 return Err(CompanionError::Config(format!(
-                    "failed to wait for Azure CLI container: {e}"
+                    "failed to wait for bootstrap container: {e}"
                 )));
             }
             None => {
                 return Err(CompanionError::Config(
-                    "Azure CLI container wait stream ended unexpectedly".into(),
+                    "bootstrap container wait stream ended unexpectedly".into(),
                 ));
             }
         }
@@ -2109,9 +2060,9 @@ async fn bootstrap(
         cleanup_staging(&staging_dir);
         return Err(err);
     }
-    eprintln!("Starting Azure CLI container for device-code auth and Bicep deployment");
+    eprintln!("Starting sonde-azure-bootstrap for device-code auth and Bicep deployment");
     let (sp_state, sb_config) =
-        match run_bootstrap_deployment(admin_socket, &staging_dir, &cert_base64, &args).await {
+        match run_bootstrap_deployment(admin_socket, &cert_base64, &args).await {
             Ok(result) => result,
             Err(e) => return report_bootstrap_failure(admin_socket, &staging_dir, e).await,
         };
@@ -2612,12 +2563,12 @@ mod tests {
     #[cfg(unix)]
     use super::validate_certificate_matches_private_key;
     use super::{
-        build_az_bootstrap_script, check_runtime_ready, cleanup_staging, commit_staging,
+        check_runtime_ready, cleanup_staging, commit_staging, default_bootstrap_image,
         downstream_body_to_connector_payload, extract_device_code, generate_certificate,
         load_runtime_config, load_runtime_credential_state, load_signing_key, parse_bicep_outputs,
         prepare_staging_dir, pump_downstream_once, pump_upstream_once, read_framed,
-        resolve_effective_state_dir, resolve_state_relative_path,
-        run_bootstrap_deployment_with_docker_and_bicep_dir, trim_buffer_to_max_len,
+        resolve_bootstrap_image, resolve_effective_state_dir, resolve_state_relative_path,
+        run_bootstrap_deployment_with_docker_and_image, trim_buffer_to_max_len,
         validate_display_lines, write_framed, ClientAssertionCredential, CompanionError,
         DownstreamConsumer, RuntimeConfig, RuntimeCredentialState, ServiceBusConfigFile,
         ServicePrincipalStateFile, UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME,
@@ -3438,11 +3389,36 @@ mod tests {
     }
 
     #[test]
-    fn build_az_bootstrap_script_passes_location_parameter_to_template() {
-        let script = build_az_bootstrap_script();
-        assert!(script.contains(r#"--location "$SONDE_AZURE_LOCATION""#));
-        assert!(script.contains(r#"--parameters location="$SONDE_AZURE_LOCATION""#));
-        assert!(script.contains(r#"echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2"#));
+    fn default_bootstrap_image_uses_package_version_tag() {
+        assert_eq!(
+            default_bootstrap_image(),
+            format!(
+                "ghcr.io/alan-jowett/sonde-azure-bootstrap:{}",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_bootstrap_image_uses_override_when_provided() {
+        assert_eq!(
+            resolve_bootstrap_image(Some("sonde-azure-bootstrap:test-override")).unwrap(),
+            "sonde-azure-bootstrap:test-override"
+        );
+    }
+
+    #[test]
+    fn resolve_bootstrap_image_trims_override() {
+        assert_eq!(
+            resolve_bootstrap_image(Some("  sonde-azure-bootstrap:test-override  ")).unwrap(),
+            "sonde-azure-bootstrap:test-override"
+        );
+    }
+
+    #[test]
+    fn resolve_bootstrap_image_rejects_empty_override() {
+        let err = resolve_bootstrap_image(Some("   ")).unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
     }
 
     #[test]
@@ -3662,28 +3638,19 @@ mod tests {
             .await;
 
         let docker = Docker::connect_with_http(&server.uri(), 120, API_DEFAULT_VERSION).unwrap();
-        let temp = TempDir::new().unwrap();
-        std::fs::write(temp.path().join(CERT_PEM_FILENAME), b"test-cert").unwrap();
-        let bicep_dir = temp.path().join("bicep");
-        std::fs::create_dir_all(&bicep_dir).unwrap();
-        std::fs::write(
-            bicep_dir.join("main.bicep"),
-            b"targetScope = 'subscription'\n",
-        )
-        .unwrap();
         let args = super::BootstrapArgs {
             azure_location: "westus2".to_string(),
             azure_project_name: "sonde".to_string(),
             azure_subscription_id: None,
+            bootstrap_image: Some("sonde-azure-bootstrap:test-override".to_string()),
         };
 
-        let err = run_bootstrap_deployment_with_docker_and_bicep_dir(
+        let err = run_bootstrap_deployment_with_docker_and_image(
             &docker,
             "/tmp/unused-admin.sock",
-            temp.path(),
             "dummy-cert-base64",
             &args,
-            &bicep_dir,
+            "sonde-azure-bootstrap:test-override",
         )
         .await
         .unwrap_err();
@@ -3699,12 +3666,17 @@ mod tests {
             vec![
                 "POST /images/create".to_string(),
                 "POST /containers/create".to_string(),
-                "PUT /containers/test-container/archive".to_string(),
                 "POST /containers/test-container/start".to_string(),
                 "DELETE /containers/test-container".to_string(),
             ]
         );
-        assert!(!requests[2].body.is_empty());
+        assert!(
+            requests[0].url.query().is_some_and(
+                |query| query.contains("fromImage=sonde-azure-bootstrap%3Atest-override")
+            )
+        );
+        let create_body = String::from_utf8(requests[1].body.clone()).unwrap();
+        assert!(create_body.contains("COMPANION_CERT_BASE64=dummy-cert-base64"));
     }
 
     #[test]
@@ -4009,6 +3981,7 @@ mod tests {
             azure_location: "westus2".to_string(),
             azure_project_name: "sonde".to_string(),
             azure_subscription_id: None,
+            bootstrap_image: None,
         };
 
         let err = super::bootstrap("/tmp/sonde-missing-admin.sock", temp.path(), args)

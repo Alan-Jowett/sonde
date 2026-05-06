@@ -120,6 +120,7 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         -e SONDE_AZURE_LOCATION \
         -e SONDE_AZURE_PROJECT_NAME \
         -e SONDE_AZURE_SUBSCRIPTION_ID \
+        -e SONDE_AZURE_BOOTSTRAP_IMAGE \
         -v "$state_dir:$container_state_dir" \
         -v "$admin_socket_path:$container_admin_socket_path" \
         -v "$connector_socket_path:$container_connector_socket_path" \

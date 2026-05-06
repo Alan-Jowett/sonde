@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Bootstrap image for Azure companion provisioning. Contains Azure CLI plus the
+# bundled Bicep deployment surface and bootstrap script.
+
+FROM mcr.microsoft.com/azure-cli@sha256:7f9ca8e6bf1c72e5fafefb6925546272776d635fb428538455c5c79bb77e2aa7
+
+COPY deploy/azure-bootstrap/bootstrap.sh /opt/sonde/deploy/azure-bootstrap/bootstrap.sh
+COPY deploy/bicep/ /opt/sonde/deploy/bicep/
+
+RUN chmod +x /opt/sonde/deploy/azure-bootstrap/bootstrap.sh \
+    && mkdir -p /cert
+
+ENTRYPOINT ["/opt/sonde/deploy/azure-bootstrap/bootstrap.sh"]

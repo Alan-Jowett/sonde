@@ -1,0 +1,145 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Build and publish the sonde-azure-bootstrap multi-arch container image to GHCR.
+
+name: Azure Bootstrap Container
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: alan-jowett/sonde-azure-bootstrap
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Log in to GitHub Container Registry
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v3
+
+      - name: Build container image
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: .github/docker/Dockerfile.azure-bootstrap
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }}
+
+      - name: Smoke test — Azure CLI and bundled assets
+        run: |
+          docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
+            'az version >/dev/null \
+             && test -x /opt/sonde/deploy/azure-bootstrap/bootstrap.sh \
+             && test -r /opt/sonde/deploy/bicep/main.bicep \
+             && test -r /opt/sonde/deploy/bicep/bicepconfig.json \
+             && test -d /opt/sonde/deploy/bicep/modules'
+
+      - name: Smoke test — bootstrap image entrypoint
+        run: |
+          test "$(docker image inspect ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} --format '{{json .Config.Entrypoint}}')" = '["/opt/sonde/deploy/azure-bootstrap/bootstrap.sh"]'
+
+      - name: Smoke test — bootstrap image excludes Rust toolchain and source tree
+        run: |
+          docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
+            '! command -v cargo >/dev/null 2>&1 \
+             && ! command -v rustc >/dev/null 2>&1 \
+             && ! test -d /root/.cargo \
+             && ! test -d /usr/local/cargo \
+             && ! test -d /src'
+
+      - name: Push per-arch image
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          ARCH_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}"
+          docker tag "${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }}" "$ARCH_TAG"
+          docker push "$ARCH_TAG"
+
+  manifest:
+    name: Publish multi-arch manifest
+    needs: [build]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v3
+
+      - name: Determine tags
+        id: tags
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          VERSION="$(sed -n '/\[workspace\.package\]/,/^\[/{ s/^version *= *"\(.*\)"/\1/p; }' Cargo.toml)"
+          TAGS="sha-${SHORT_SHA},${VERSION}"
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAGS="${TAGS},latest"
+          else
+            DATE=$(date -u +%Y%m%d)
+            TAGS="${TAGS},nightly,nightly-${DATE}"
+          fi
+
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push multi-arch manifest
+        run: |
+          set -euo pipefail
+          BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          AMD64="${BASE}:build-${{ github.sha }}-${{ github.run_id }}-amd64"
+          ARM64="${BASE}:build-${{ github.sha }}-${{ github.run_id }}-arm64"
+
+          IFS=',' read -ra TAG_ARRAY <<< "${{ steps.tags.outputs.tags }}"
+          for TAG in "${TAG_ARRAY[@]}"; do
+            docker buildx imagetools create \
+              --tag "${BASE}:${TAG}" \
+              "${AMD64}" "${ARM64}"
+          done
+
+      - name: Clean up temporary per-arch tags
+        run: |
+          echo "Manifest published successfully."

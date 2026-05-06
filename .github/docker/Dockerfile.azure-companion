@@ -3,7 +3,7 @@
 #
 # Multi-stage Dockerfile for the Azure companion container image.
 # Produces a minimal Alpine-based image containing the
-# `sonde-azure-companion` binary plus bootstrap scripts.
+# `sonde-azure-companion` binary plus runtime orchestration scripts.
 
 # ── Stage 1: build ──────────────────────────────────────────────────────────
 # rust:alpine — pinned by digest for reproducible builds.
@@ -25,7 +25,6 @@ RUN apk add --no-cache ca-certificates \
 COPY --from=builder /sonde/target/release/sonde-azure-companion /usr/local/bin/sonde-azure-companion
 COPY deploy/azure-companion/bootstrap.sh /opt/sonde/deploy/azure-companion/bootstrap.sh
 COPY deploy/azure-companion/entrypoint.sh /opt/sonde/deploy/azure-companion/entrypoint.sh
-COPY deploy/bicep/ /opt/sonde/deploy/bicep/
 
 RUN chmod +x /usr/local/bin/sonde-azure-companion \
     /opt/sonde/deploy/azure-companion/bootstrap.sh \

@@ -241,11 +241,13 @@ instead of normal runtime mode.
 When bootstrap is required, the Azure companion MUST provide a single unified
 `bootstrap` subcommand that performs the entire provisioning lifecycle:
 certificate generation, device-code authentication inside the dedicated
-`sonde-azure-bootstrap` image, Azure deployment through the Docker API, and
-local runtime artifact creation. The earlier `bootstrap-auth` subcommand is
-retired and replaced by this unified command. By default, the Rust companion
-launches the `sonde-azure-bootstrap:<matching companion version>` image tag;
-the image contains the Azure CLI, bundled Bicep files, and bootstrap script.
+`sonde-azure-bootstrap` image, Azure deployment through the Docker API,
+deployment of the bundled Azure handler package into the provisioned Function
+App, and local runtime artifact creation. The earlier `bootstrap-auth`
+subcommand is retired and replaced by this unified command. By default, the
+Rust companion launches the `sonde-azure-bootstrap:<matching companion
+version>` image tag; the image contains the Azure CLI, bundled Bicep files,
+bundled Azure handler package, and bootstrap script.
 The Rust companion monitors the bootstrap image output to extract the device
 code and display it on the modem. The same explicit `bootstrap` subcommand MUST
 be supported by the Windows native binary when invoked manually by an operator;
@@ -255,7 +257,7 @@ AZC-0205.
 **Acceptance criteria:**
 
 1. Missing bootstrap-complete state causes the companion bootstrap path to invoke the unified `bootstrap` subcommand.
-2. The `bootstrap` subcommand performs device-code login, certificate generation, Bicep deployment, and runtime artifact creation in sequence.
+2. The `bootstrap` subcommand performs device-code login, certificate generation, Bicep deployment, Azure handler package deployment/activation, and runtime artifact creation in sequence.
 3. If any phase of the unified bootstrap fails, the subcommand exits with a non-zero status and does not report success.
 4. Successful device-code login alone is not treated as bootstrap completion; the bootstrap path reports success only after bootstrap-complete state has been established.
 5. The earlier `bootstrap-auth` subcommand name is no longer accepted.
@@ -644,7 +646,9 @@ crate.
 **Description:**
 The dedicated `sonde-azure-bootstrap` image MUST bundle the Azure provisioning
 assets needed for bootstrap at build time so the bootstrap workflow does not
-rely on runtime-image internals or host-side Bicep files.
+rely on runtime-image internals or host-side Bicep files. The same image MUST
+also bundle the prebuilt Azure handler package needed to make the Function App
+runnable during bootstrap.
 
 **Acceptance criteria:**
 
@@ -652,6 +656,7 @@ rely on runtime-image internals or host-side Bicep files.
 2. The bundled provisioning assets include the top-level `main.bicep`, all module files, and `bicepconfig.json`.
 3. The bootstrap image includes the script that runs `az login --use-device-code` followed by Azure deployment.
 4. Bootstrap references the bundled path inside the bootstrap image rather than copying Bicep files out of the runtime companion image.
+5. The bootstrap image bundles the prebuilt `sonde-azure-handler` package that bootstrap deploys into the Function App.
 
 ---
 
@@ -693,8 +698,6 @@ supply them.
 1. Bootstrap extracts the Service Bus namespace, upstream queue name, and downstream queue name from the Bicep deployment outputs.
 2. Bootstrap writes or persists these values so they are available at the next container startup.
 3. The runtime can read the persisted queue configuration without requiring the operator to re-enter it manually.
-
----
 
 ### AZC-0405  Bootstrap progress display
 
@@ -777,3 +780,23 @@ deployment SHOULD use the default subscription from the device-login session.
 1. Bootstrap accepts an optional Azure subscription ID via environment variable.
 2. If specified, the Bicep deployment targets that subscription.
 3. If not specified, the Bicep deployment uses the device-login session's default subscription.
+
+---
+
+### AZC-0409  Bootstrap deploys and activates the bundled Azure handler package
+
+**Priority:** Must
+**Source:** USER-REQUEST: implement "Function code deployment" in azure funciton, AZP-0105
+
+**Description:**
+After successful Azure deployment, the unified `bootstrap` subcommand MUST
+deploy the bundled prebuilt `sonde-azure-handler` package into the provisioned
+Azure Function App and wait until Azure reports the package active. Bootstrap
+does not succeed if the Function App shell exists but no functions are loaded.
+
+**Acceptance criteria:**
+
+1. Bootstrap deploys the bundled `sonde-azure-handler` package without requiring a manual operator upload step.
+2. The deployed package matches the companion/bootstrap release rather than an ad hoc package built on the operator host during bootstrap.
+3. Bootstrap waits until Azure reports that at least one function is loaded in the provisioned Function App before reporting success.
+4. If package deployment or activation fails, bootstrap exits non-zero and does not report success-shaped completion.

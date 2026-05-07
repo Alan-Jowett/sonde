@@ -94,21 +94,26 @@ az deployment sub create `
 ## Custom handler package deployment
 
 The Bicep stack provisions the Azure handler Function App shell and the storage-backed
-deployment configuration, but it does **not** upload the runnable custom-handler package
-by itself. After provisioning, you still need to publish a package containing:
+deployment configuration. The supported `sonde-azure-companion bootstrap` flow now
+uses those deployment outputs to upload the bundled runnable custom-handler package
+automatically.
+
+If you run the Bicep deployment manually without the repository-owned bootstrap
+image, you still need to publish a package containing:
 
 - the `sonde-azure-handler` binary
 - `host.json`
 - `UpstreamConnector/function.json`
 
-The deployment outputs `deploymentContainerName` and `deploymentContainerUrl` so automation
-can discover the blob container that must receive that package.
+The deployment outputs `functionAppName`, `deploymentContainerName`, and
+`deploymentContainerUrl` so automation can discover the target used by that
+package deployment.
 Build the `sonde-azure-handler` executable for the Function App's Linux runtime, not
 for your local host OS. If you package from Windows or macOS, cross-compile or build
 the binary in a Linux environment before uploading it.
 
-Until that package is uploaded to the configured deployment container, the Function App
-is provisioned but not yet runnable.
+Until that package is uploaded and Azure loads at least one function, the
+Function App is provisioned but not yet runnable.
 
 ## Bootstrap handoff
 
@@ -120,6 +125,8 @@ state:
 - Service Bus namespace
 - upstream queue name
 - downstream queue name
+- Function App name
+- deployment container name / URL
 
 You still need to place the matching PEM certificate and private key into the
 Azure companion state directory and write `service-principal.json` that points

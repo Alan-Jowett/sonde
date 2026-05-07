@@ -138,16 +138,38 @@ the tables' logical schema.
 
 **Description:**
 The provisioning workflow MUST create the Azure Function hosting resources used
-by the Sonde Azure handler without requiring the function code package to be
-deployed by the Bicep workflow itself. The Function App uses a consumption plan
-unless a later specification explicitly changes that hosting model.
+by the Sonde Azure handler and the deployment target that the repository-owned
+bootstrap path populates with the runnable handler package. The Function App
+uses a consumption plan unless a later specification explicitly changes that
+hosting model.
 
 **Acceptance criteria:**
 
 1. The workflow provisions the Azure resources needed to host the Azure handler Function App.
-2. The workflow does not require the handler function code package to exist in order to deploy the hosting resources.
+2. The workflow provisions or documents the deployment target consumed by the repository-owned handler package deployment step.
 3. The Function App resources use a consumption-plan hosting model.
 4. The deployment outputs or documentation identify the Function App resources used by the Azure handler path.
+
+---
+
+### AZP-0105  Repository-owned Azure handler package deployment
+
+**Priority:** Must
+**Source:** USER-REQUEST: implement "Function code deployment" in azure funciton, reviewed discovery output
+
+**Description:**
+The repository-owned Azure provisioning/bootstrap workflow MUST deploy a
+prebuilt `sonde-azure-handler` package into the provisioned Function App rather
+than leaving a manual post-provision upload step to the operator. Successful
+bootstrap MUST make the Function App runnable.
+
+**Acceptance criteria:**
+
+1. The deployed package is a prebuilt repository-owned artifact for the Function App's Linux runtime rather than a package built ad hoc during bootstrap.
+2. The package contents include the `sonde-azure-handler` executable, `host.json`, and the function metadata required for Azure Functions to load at least one function.
+3. The bootstrap workflow deploys that package without requiring the operator to upload a separate handler artifact manually.
+4. Bootstrap does not report overall success until Azure reports the package active and at least one function is loaded in the Function App.
+5. Re-running bootstrap may replace the deployed package, but it does not require manual cleanup of the prior package first.
 
 ---
 
@@ -229,7 +251,7 @@ and private-key PEM.
 **Acceptance criteria:**
 
 1. The workflow documents which values and artifacts must be handed off to bootstrap for runtime starts.
-2. The handoff contract includes the tenant ID, client ID, certificate reference or material, private-key reference or material, and Service Bus namespace/queue configuration.
+2. The handoff contract includes the tenant ID, client ID, certificate reference or material, private-key reference or material, Service Bus namespace/queue configuration, and the Function App / deployment-target values needed for package deployment and activation checks.
 3. The handoff contract is compatible with the current Azure companion runtime expectations in `azure-companion-requirements.md`.
 
 ---

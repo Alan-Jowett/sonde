@@ -46,7 +46,7 @@ The design assumes this layout:
 | `deploy/bicep/main.bicep` | Top-level deployment entrypoint. |
 | `deploy/bicep/modules/service-bus.bicep` | Service Bus namespace and queue provisioning. |
 | `deploy/bicep/modules/storage.bicep` | Storage Account and Table resource provisioning. |
-| `deploy/bicep/modules/function-placeholder.bicep` | Placeholder Function hosting resources for the later decoder issue. |
+| `deploy/bicep/modules/function-placeholder.bicep` | Function hosting resources and deployment target for the Azure handler package. |
 | `deploy/bicep/modules/identity.*` | Runtime identity provisioning artifacts or wrappers used by the Bicep-driven workflow. |
 | `deploy/bicep/README.md` or equivalent inline deployment documentation | Operator-facing description of inputs, outputs, and post-deploy handoff. |
 
@@ -119,10 +119,14 @@ outputs.
 ### 3.5  Azure handler Function App resources
 
 The function-placeholder module provisions the hosting resources used by the
-Azure handler Function App. This module may create the Function App shell, a
-consumption hosting plan, storage linkage, and baseline app settings, but it
-must not depend on the handler function code package being deployed by the
-provisioning workflow itself.
+Azure handler Function App. This module creates the Function App shell, the
+consumption hosting plan, storage linkage, and baseline app settings required
+for the repository-owned bootstrap path to deploy the runnable handler package.
+
+The runnable package itself is not compiled during bootstrap. Instead, the
+bootstrap image carries a prebuilt Linux package for the matching Sonde
+release, uploads it into the provisioned deployment target, and waits until
+Azure reports that at least one function is loaded before reporting success.
 
 ---
 
@@ -218,6 +222,8 @@ The handoff contract includes:
 | Service Bus namespace | Azure companion runtime configuration |
 | Upstream queue name | Azure companion runtime configuration |
 | Downstream queue name | Azure companion runtime configuration |
+| Function App name | bootstrap package activation checks |
+| Deployment container name / URL | bootstrap package upload target |
 
 ### 5.2  Local artifact compatibility
 
@@ -248,8 +254,8 @@ The top-level workflow exposes or documents the following outputs:
 3. upstream queue name,
 4. downstream queue name,
 5. Storage Account name,
-6. Table resource name,
-7. Function placeholder resource identity, and
+6. deployment container name / URL,
+7. Function App name and identity, and
 8. the runtime identity / bootstrap handoff values described in section 5.
 
 ### 6.2  Idempotency

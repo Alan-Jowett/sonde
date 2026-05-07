@@ -69,16 +69,32 @@
 
 ---
 
-### T-AZP-0104  Azure handler Function App resources deploy without handler code
+### T-AZP-0104  Azure handler Function App resources and deployment target are provisioned
 
 **Validates:** AZP-0104
 
 **Procedure:**
-1. Run the deployment without supplying any Azure handler function package.
+1. Run the deployment.
 2. Inspect the resulting Function hosting resources.
 3. Assert: the Azure handler Function App resources exist.
 4. Assert: the Function App uses a consumption hosting plan.
-5. Assert: the deployment did not require the handler implementation package to be present.
+5. Assert: the deployment target used by the repository-owned package deployment step is present or explicitly surfaced by deployment outputs/documentation.
+
+---
+
+### T-AZP-0105  Repository-owned bootstrap deploys runnable Azure handler package
+
+**Validates:** AZP-0105
+
+**Procedure:**
+1. Run the repository-owned bootstrap workflow against a disposable Azure test stack.
+2. Inspect the bootstrap image contents or documented build outputs.
+3. Assert: the bundled handler package includes the `sonde-azure-handler` executable, `host.json`, and the function metadata required by the Function App host.
+4. After bootstrap completes, query Azure for the Function App.
+5. Assert: Azure reports at least one loaded function for the provisioned Function App.
+6. Assert: the operator did not need to upload a separate handler package manually.
+7. Re-run bootstrap against the same stack.
+8. Assert: bootstrap can replace or refresh the deployed handler package without requiring manual cleanup first.
 
 ---
 
@@ -116,7 +132,7 @@
 1. Run the provisioning workflow.
 2. Collect the documented outputs and artifacts from the handoff contract.
 3. Compare them against the runtime-state inputs expected by `sonde-azure-companion`.
-4. Assert: the handoff includes tenant ID, client ID, certificate material or reference, private-key material or reference, and Service Bus namespace/queue values.
+4. Assert: the handoff includes tenant ID, client ID, certificate material or reference, private-key material or reference, Service Bus namespace/queue values, and the Function App / deployment-target values needed by bootstrap package deployment.
 5. Assert: the handoff can be translated into `service-principal.json`, certificate PEM, and private-key PEM without inventing extra undocumented values.
 
 ---

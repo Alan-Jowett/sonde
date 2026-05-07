@@ -12,10 +12,22 @@ name: Gateway Container
 
 on:
   workflow_call:
+    inputs:
+      build_same_run_artifacts:
+        description: Build supporting same-run artifacts for standalone execution.
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
+    inputs:
+      build_same_run_artifacts:
+        description: Build supporting same-run artifacts for standalone execution.
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: gateway-container-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -27,14 +39,14 @@ jobs:
   # modem artifacts, so build them here first. workflow_call executions expect
   # the caller to produce modem-firmware and modem-firmware-verbose in the same run.
   modem-firmware:
-    if: github.event_name == 'workflow_dispatch'
+    if: inputs.build_same_run_artifacts
     name: Build modem firmware (same run)
     uses: ./.github/workflows/esp32-modem.yml
 
   # Standalone dispatches also need same-run compiled BPF test-program artifacts.
   # workflow_call executions expect the caller to upload a bpf-test-programs artifact.
   bpf-test-programs:
-    if: github.event_name == 'workflow_dispatch'
+    if: inputs.build_same_run_artifacts
     name: Build BPF test programs (same run)
     runs-on: ubuntu-latest
     steps:

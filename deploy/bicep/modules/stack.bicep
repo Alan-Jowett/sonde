@@ -143,6 +143,7 @@ module functionRbac './function-rbac.bicep' = {
 }
 
 output serviceBusNamespaceName string = serviceBus.outputs.namespaceName
+output serviceBusNamespaceFqdn string = serviceBus.outputs.namespaceFqdn
 output upstreamQueueName string = serviceBus.outputs.upstreamQueueName
 output downstreamQueueName string = serviceBus.outputs.downstreamQueueName
 output storageAccountName string = storage.outputs.storageAccountName

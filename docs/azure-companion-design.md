@@ -538,7 +538,7 @@ staging directory:
 3. **`service-bus.json`** containing:
    ```json
    {
-     "namespace": "<from companionBootstrapValues.serviceBusNamespace>",
+     "namespace": "<fully qualified host from companionBootstrapValues.serviceBusNamespace>",
      "upstream_queue": "<from companionBootstrapValues.upstreamQueue>",
      "downstream_queue": "<from companionBootstrapValues.downstreamQueue>"
    }

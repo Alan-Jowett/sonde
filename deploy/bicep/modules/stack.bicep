@@ -128,18 +128,13 @@ module functionRbac './function-rbac.bicep' = {
   name: 'functionRbac'
   params: {
     functionPrincipalId: functionPlaceholder.outputs.principalId
-    serviceBusNamespaceName: serviceBusNamespaceName
-    upstreamQueueName: upstreamQueueName
-    downstreamQueueName: downstreamQueueName
-    storageAccountName: storageAccountName
+    serviceBusNamespaceName: serviceBus.outputs.namespaceName
+    upstreamQueueName: serviceBus.outputs.upstreamQueueName
+    downstreamQueueName: serviceBus.outputs.downstreamQueueName
+    storageAccountName: storage.outputs.storageAccountName
     nodeStateTableName: storage.outputs.nodeStateTableName
     programRouteTableName: storage.outputs.programRouteTableName
   }
-  dependsOn: [
-    serviceBus
-    storage
-    functionPlaceholder
-  ]
 }
 
 output serviceBusNamespaceName string = serviceBus.outputs.namespaceName

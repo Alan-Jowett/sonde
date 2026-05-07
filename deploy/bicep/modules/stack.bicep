@@ -135,11 +135,6 @@ module functionRbac './function-rbac.bicep' = {
     nodeStateTableName: storage.outputs.nodeStateTableName
     programRouteTableName: storage.outputs.programRouteTableName
   }
-  dependsOn: [
-    serviceBus
-    storage
-    functionPlaceholder
-  ]
 }
 
 output serviceBusNamespaceName string = serviceBus.outputs.namespaceName

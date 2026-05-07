@@ -415,7 +415,7 @@ if [ "$#" -ge 4 ] && [ "$1" = "deployment" ] && [ "$2" = "sub" ] && [ "$3" = "sh
         ;;
     esac
   done
-  [ "$query" = "[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value]" ] || exit 67
+  [ "$query" = "[[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value]]" ] || exit 67
   printf 'rg-sonde\tfunc-sonde\tdeploypkg\thttps://example.blob.core.windows.net/deploypkg\n'
   exit 0
 fi

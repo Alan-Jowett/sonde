@@ -17,7 +17,11 @@ require_deployment_output_string() {
 }
 
 read_required_deployment_outputs() {
-    query='[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value]'
+    # Wrap in an outer array so `--output tsv` emits a single row with
+    # tab-separated columns.  A flat JMESPath array produces one value per
+    # line (newline-separated), which breaks the tab-based field splitting
+    # below.
+    query='[[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value]]'
     stderr_file="$(mktemp "${TMPDIR:-/tmp}/sonde-azure-deployment-show.XXXXXX")"
     if ! deployment_runtime_values="$(az deployment sub show \
         --name "$deployment_name" \

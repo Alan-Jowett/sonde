@@ -246,6 +246,16 @@ jobs:
             if PATH="/tmp/fakebin:$PATH" \
               SONDE_AZURE_LOCATION=eastus \
               SONDE_AZURE_PROJECT_NAME=sonde \
+              SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS=08 \
+              COMPANION_CERT_BASE64=dummy-cert \
+              /opt/sonde/deploy/azure-bootstrap/bootstrap.sh >/tmp/leading-zero-stdout.txt 2>/tmp/leading-zero-stderr.txt; then
+              exit 1
+            fi
+            grep -q "SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS must not contain leading zeros" /tmp/leading-zero-stderr.txt
+
+            if PATH="/tmp/fakebin:$PATH" \
+              SONDE_AZURE_LOCATION=eastus \
+              SONDE_AZURE_PROJECT_NAME=sonde \
               SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS=0 \
               COMPANION_CERT_BASE64=dummy-cert \
               /opt/sonde/deploy/azure-bootstrap/bootstrap.sh >/tmp/invalid-deploy-stdout.txt 2>/tmp/invalid-deploy-stderr.txt; then

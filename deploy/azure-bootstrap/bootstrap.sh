@@ -57,6 +57,10 @@ validate_positive_integer() {
             echo "$name must be greater than zero; got: $value" >&2
             exit 1
             ;;
+        0[0-9]*)
+            echo "$name must not contain leading zeros; got: $value" >&2
+            exit 1
+            ;;
     esac
 }
 

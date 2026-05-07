@@ -232,7 +232,7 @@ transport and the runtime bridge semantics already defined in section 5.
 ## 4  Bootstrap flow
 
 > **Requirements:** AZC-0200, AZC-0201, AZC-0202, AZC-0203, AZC-0204, AZC-0205, AZC-0300,
-> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0407, AZC-0408
+> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0407, AZC-0408, AZC-0409
 
 ### 4.1  Bootstrap trigger
 
@@ -288,18 +288,22 @@ When bootstrap is required, the Azure companion performs this sequence:
 13. Display "Deploying Azure…" on the modem display (transitions from auth to
     deployment phase may overlap in the single container session).
 14. Capture and parse the JSON outputs to extract `tenantId`, `clientId`,
-    Service Bus namespace, and queue names from the `companionBootstrapValues`
-    output object.
-15. Write `service-principal.json` and `service-bus.json` to the staging
+    Service Bus namespace, queue names, Function App name, and deployment
+    container values from the `companionBootstrapValues` output object.
+15. Use the bundled prebuilt `sonde-azure-handler` package from the bootstrap
+    image to populate the provisioned Function App deployment target.
+16. Poll Azure for Function App activation until the uploaded package is active
+    and at least one function is reported as loaded.
+17. Write `service-principal.json` and `service-bus.json` to the staging
     directory with the extracted values and relative paths to the certificate
     and private-key PEM files.
-16. Rename the staging directory into a new generation directory under the state
+18. Rename the staging directory into a new generation directory under the state
     volume, then atomically update the `.current-state` marker to point at that
     generation, leaving the previous generation untouched until the new one is
     fully committed.
-17. Remove the bootstrap container.
-18. Display "Bootstrap complete" on the modem display.
-19. The bootstrap wrapper/entrypoint reports overall success only after
+19. Remove the bootstrap container.
+20. Display "Bootstrap complete" on the modem display.
+21. The bootstrap wrapper/entrypoint reports overall success only after
     bootstrap-complete state has been established.
 
 If any step fails, the staging directory is cleaned up, the bootstrap
@@ -443,7 +447,7 @@ a detected bridge failure.
 ## 8  Provisioning orchestration internals
 
 > **Requirements:** AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405,
-> AZC-0406, AZC-0407, AZC-0408
+> AZC-0406, AZC-0407, AZC-0408, AZC-0409
 
 ### 8.1  Certificate generation
 
@@ -510,6 +514,9 @@ that:
      parameter overrides from environment variables
    - `--query properties.outputs` to extract only the deployment outputs
    - `--output json` for machine-parseable output
+4. Materializes the bundled prebuilt `sonde-azure-handler` package and deploys
+   it into the Function App deployment target described by the Bicep outputs.
+5. Polls Azure until the Function App reports at least one loaded function.
 
 The deployment outputs JSON is emitted on stdout. All other `az` output
 (device-code prompt, login confirmation, deployment progress) goes to stderr,

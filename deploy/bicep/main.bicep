@@ -136,6 +136,7 @@ output companionBootstrapValues object = {
   serviceBusNamespace: stack.outputs.serviceBusNamespaceFqdn
   upstreamQueue: stack.outputs.upstreamQueueName
   downstreamQueue: stack.outputs.downstreamQueueName
+  functionAppName: stack.outputs.functionAppName
   deploymentContainerName: stack.outputs.deploymentContainerName
   deploymentContainerUrl: stack.outputs.deploymentContainerUrl
   nodeStateTable: stack.outputs.nodeStateTableName

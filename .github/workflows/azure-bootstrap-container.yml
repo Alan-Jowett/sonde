@@ -18,7 +18,29 @@ env:
   IMAGE_NAME: alan-jowett/sonde-azure-bootstrap
 
 jobs:
+  function-package:
+    name: Build Azure handler package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - name: Build bundled Azure handler package
+        run: sh deploy/azure-bootstrap/build-function-package.sh
+
+      - name: Upload Azure handler package artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: azure-handler-function-package
+          path: .artifacts/azure-handler-function/sonde-azure-handler-function.zip
+          if-no-files-found: error
+          retention-days: 7
+
   build:
+    needs: [function-package]
     strategy:
       matrix:
         include:
@@ -34,6 +56,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download Azure handler package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: azure-handler-function-package
+          path: .artifacts/azure-handler-function
 
       - name: Log in to GitHub Container Registry
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
@@ -60,11 +88,181 @@ jobs:
       - name: Smoke test — Azure CLI and bundled assets
         run: |
           docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
-            'az version >/dev/null \
-             && test -x /opt/sonde/deploy/azure-bootstrap/bootstrap.sh \
-             && test -r /opt/sonde/deploy/bicep/main.bicep \
-             && test -r /opt/sonde/deploy/bicep/bicepconfig.json \
-             && test -d /opt/sonde/deploy/bicep/modules'
+             'az version >/dev/null \
+              && test -x /opt/sonde/deploy/azure-bootstrap/bootstrap.sh \
+              && test -r /opt/sonde/deploy/bicep/main.bicep \
+              && test -r /opt/sonde/deploy/bicep/bicepconfig.json \
+              && test -d /opt/sonde/deploy/bicep/modules \
+              && test -r /opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip'
+
+      - name: Smoke test — bundled handler package contents
+        run: |
+          docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
+            'python3 - <<'"'"'PY'"'"'
+          import zipfile
+
+          package_path = "/opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip"
+          with zipfile.ZipFile(package_path) as archive:
+              names = set(archive.namelist())
+              expected = {
+                  "host.json",
+                  "UpstreamConnector/function.json",
+                  "sonde-azure-handler",
+              }
+              missing = expected.difference(names)
+              if missing:
+                  raise SystemExit(f"missing packaged files: {sorted(missing)}")
+              mode = (archive.getinfo("sonde-azure-handler").external_attr >> 16) & 0o777
+              if (mode & 0o111) == 0:
+                  raise SystemExit(f"sonde-azure-handler is not executable in zip metadata: {oct(mode)}")
+          PY'
+
+      - name: Smoke test — bootstrap script deploy flow
+        run: |
+          docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c '
+            set -eu
+            mkdir -p /tmp/fakebin
+            cat > /tmp/fakebin/az <<'"'"'SH'"'"'
+            #!/bin/sh
+            set -eu
+
+            log_file=/tmp/az-calls.log
+            count_file=/tmp/function-list-count
+            printf "%s\n" "$*" >> "$log_file"
+
+            case "$1" in
+              login)
+                exit 0
+                ;;
+              account)
+                [ "${2:-}" = "set" ] || exit 1
+                exit 0
+                ;;
+              deployment)
+                [ "${2:-}" = "sub" ] && [ "${3:-}" = "create" ] || exit 1
+                cat <<'"'"'JSON'"'"'
+            {"resourceGroupName":{"value":"rg-test"},"companionBootstrapValues":{"value":{"tenantId":"11111111-1111-1111-1111-111111111111","clientId":"22222222-2222-2222-2222-222222222222","serviceBusNamespace":"example.servicebus.windows.net","upstreamQueue":"upstream","downstreamQueue":"downstream","functionAppName":"func-test","deploymentContainerName":"app-package-test","deploymentContainerUrl":"https://example.blob.core.windows.net/app-package-test"}}}
+            JSON
+                ;;
+              functionapp)
+                case "${2:-}" in
+                  deployment)
+                    [ "${3:-}" = "source" ] && [ "${4:-}" = "config-zip" ] || exit 1
+                    src=
+                    while [ "$#" -gt 0 ]; do
+                      case "$1" in
+                        --src)
+                          src="$2"
+                          shift 2
+                          ;;
+                        --timeout)
+                          timeout="$2"
+                          shift 2
+                          ;;
+                        *)
+                          shift
+                          ;;
+                      esac
+                    done
+                    [ "$src" = "/opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip" ] || exit 1
+                    [ "${timeout:-}" = "600" ] || exit 1
+                    python3 - <<'"'"'PY'"'"'
+            import zipfile
+
+            with zipfile.ZipFile("/opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip") as archive:
+                names = set(archive.namelist())
+                assert "host.json" in names
+                assert "UpstreamConnector/function.json" in names
+                assert "sonde-azure-handler" in names
+            PY
+                    exit 0
+                    ;;
+                  function)
+                    [ "${3:-}" = "list" ] || exit 1
+                    count=0
+                    if [ -f "$count_file" ]; then
+                      count="$(cat "$count_file")"
+                    fi
+                    count="$((count + 1))"
+                    printf "%s" "$count" > "$count_file"
+                    if [ "$count" -eq 1 ]; then
+                      printf "warning: warm-up in progress\n" >&2
+                      printf "[]"
+                    else
+                      printf "[{\"name\":\"UpstreamConnector\"}]"
+                    fi
+                    ;;
+                  *)
+                    exit 1
+                    ;;
+                esac
+                ;;
+              *)
+                exit 1
+                ;;
+            esac
+            SH
+            chmod +x /tmp/fakebin/az
+
+            cat > /tmp/fakebin/sleep <<'"'"'SH'"'"'
+            #!/bin/sh
+            exit 0
+            SH
+            chmod +x /tmp/fakebin/sleep
+
+            PATH="/tmp/fakebin:$PATH" \
+            SONDE_AZURE_LOCATION=eastus \
+            SONDE_AZURE_PROJECT_NAME=sonde \
+            COMPANION_CERT_BASE64=dummy-cert \
+            /opt/sonde/deploy/azure-bootstrap/bootstrap.sh >/tmp/bootstrap-stdout.json 2>/tmp/bootstrap-stderr.txt
+
+            grep -q "__SONDE_AZURE_DEPLOYMENT_START__" /tmp/bootstrap-stderr.txt
+            grep -q "Deploying bundled Azure handler package" /tmp/bootstrap-stderr.txt
+            grep -q "warning: warm-up in progress" /tmp/bootstrap-stderr.txt
+            grep -q "Waiting for Azure Function App to load functions" /tmp/bootstrap-stderr.txt
+            grep -q "Azure Function App reports 1 loaded function(s)" /tmp/bootstrap-stderr.txt
+            grep -q "functionapp deployment source config-zip" /tmp/az-calls.log
+            test "$(cat /tmp/function-list-count)" = "2"
+
+            python3 - <<'"'"'PY'"'"'
+            import json
+
+            with open("/tmp/bootstrap-stdout.json", "r", encoding="utf-8") as fh:
+                outputs = json.load(fh)
+            assert outputs["companionBootstrapValues"]["value"]["functionAppName"] == "func-test"
+            assert outputs["companionBootstrapValues"]["value"]["deploymentContainerName"] == "app-package-test"
+            PY
+
+            if PATH="/tmp/fakebin:$PATH" \
+              SONDE_AZURE_LOCATION=eastus \
+              SONDE_AZURE_PROJECT_NAME=sonde \
+              SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS=abc \
+              COMPANION_CERT_BASE64=dummy-cert \
+              /opt/sonde/deploy/azure-bootstrap/bootstrap.sh >/tmp/invalid-activation-stdout.txt 2>/tmp/invalid-activation-stderr.txt; then
+              exit 1
+            fi
+            grep -q "SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS must be a positive integer" /tmp/invalid-activation-stderr.txt
+
+            if PATH="/tmp/fakebin:$PATH" \
+              SONDE_AZURE_LOCATION=eastus \
+              SONDE_AZURE_PROJECT_NAME=sonde \
+              SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS=08 \
+              COMPANION_CERT_BASE64=dummy-cert \
+              /opt/sonde/deploy/azure-bootstrap/bootstrap.sh >/tmp/leading-zero-stdout.txt 2>/tmp/leading-zero-stderr.txt; then
+              exit 1
+            fi
+            grep -q "SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS must not contain leading zeros" /tmp/leading-zero-stderr.txt
+
+            if PATH="/tmp/fakebin:$PATH" \
+              SONDE_AZURE_LOCATION=eastus \
+              SONDE_AZURE_PROJECT_NAME=sonde \
+              SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS=0 \
+              COMPANION_CERT_BASE64=dummy-cert \
+              /opt/sonde/deploy/azure-bootstrap/bootstrap.sh >/tmp/invalid-deploy-stdout.txt 2>/tmp/invalid-deploy-stderr.txt; then
+              exit 1
+            fi
+            grep -q "SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS must be greater than zero" /tmp/invalid-deploy-stderr.txt
+          '
 
       - name: Smoke test — bootstrap image entrypoint
         run: |

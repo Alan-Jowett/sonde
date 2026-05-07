@@ -1,15 +1,23 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
 #
-# Bootstrap image for Azure companion provisioning. Contains Azure CLI plus the
-# bundled Bicep deployment surface and bootstrap script.
+# Bootstrap image for Azure companion provisioning. Contains Azure CLI, the
+# bundled Bicep deployment surface, the prebuilt Azure handler package, and the
+# bootstrap script.
+#
+# Build:
+#   sh deploy/azure-bootstrap/build-function-package.sh
+#   docker build -f .github/docker/Dockerfile.azure-bootstrap -t sonde-azure-bootstrap .
+#   # Requires:
+#   #   .artifacts/azure-handler-function/sonde-azure-handler-function.zip
 
 FROM mcr.microsoft.com/azure-cli@sha256:7f9ca8e6bf1c72e5fafefb6925546272776d635fb428538455c5c79bb77e2aa7
 
 COPY deploy/azure-bootstrap/bootstrap.sh /opt/sonde/deploy/azure-bootstrap/bootstrap.sh
 COPY deploy/bicep/ /opt/sonde/deploy/bicep/
+COPY .artifacts/azure-handler-function/sonde-azure-handler-function.zip /opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip
 
 RUN chmod +x /opt/sonde/deploy/azure-bootstrap/bootstrap.sh \
-    && mkdir -p /cert
+    && mkdir -p /cert /opt/sonde/deploy/azure-handler
 
 ENTRYPOINT ["/opt/sonde/deploy/azure-bootstrap/bootstrap.sh"]

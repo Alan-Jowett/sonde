@@ -243,6 +243,8 @@ sonde-azure-companion.exe bootstrap
 Bootstrap:
 - pulls `ghcr.io/alan-jowett/sonde-azure-bootstrap:<matching companion version>` by default
 - runs Azure device-code authentication inside the bootstrap container
+- deploys the bundled prebuilt `sonde-azure-handler` package into the provisioned Function App
+- waits until Azure reports at least one loaded function before reporting success
 - displays the device code and progress messages on the modem via the gateway admin pipe
 - writes runtime state under `%ProgramData%\sonde-azure-companion\`
 

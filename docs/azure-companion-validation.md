@@ -387,6 +387,7 @@
 2. Run `docker run --rm <image> ls /opt/sonde/deploy/bicep/`.
 3. Assert: the listing includes `main.bicep`, `bicepconfig.json`, and the `modules/` directory.
 4. Assert: the `modules/` directory contains the expected Bicep module files.
+5. Assert: the image also contains the bundled prebuilt Azure handler package intended for Function App deployment.
 
 ---
 
@@ -571,3 +572,17 @@
 2. Start bootstrap with a mock Docker API server (or equivalent traceable test double).
 3. Assert: the Docker API requests use the configured override image reference rather than the default version-matched release tag.
 4. Assert: bootstrap reaches the container-creation path using the override image reference when the override image is available.
+
+---
+
+### T-AZC-0417  Bootstrap deploys the bundled Azure handler package and waits for activation
+
+**Validates:** AZC-0409, AZC-0402
+
+**Procedure:**
+1. Run bootstrap with device auth and Azure deployment stubbed or directed at a disposable Azure test stack whose Function App can be queried after deployment.
+2. Assert: bootstrap uses the prebuilt `sonde-azure-handler` package bundled in the version-matched bootstrap image rather than requiring a separate operator-supplied upload or an ad hoc local build.
+3. After the package-deployment phase, query Azure for the provisioned Function App.
+4. Assert: bootstrap does not report success until Azure reports at least one loaded function for that Function App.
+5. Force package activation to fail or never complete.
+6. Assert: bootstrap exits non-zero and does not report success-shaped completion.

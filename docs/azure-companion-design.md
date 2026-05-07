@@ -536,12 +536,12 @@ staging directory:
    }
    ```
 3. **`service-bus.json`** containing:
-   ```json
-   {
-     "namespace": "<from companionBootstrapValues.serviceBusNamespace>",
-     "upstream_queue": "<from companionBootstrapValues.upstreamQueue>",
-     "downstream_queue": "<from companionBootstrapValues.downstreamQueue>"
-   }
+    ```json
+    {
+      "namespace": "<fully qualified host from companionBootstrapValues.serviceBusNamespace>",
+      "upstream_queue": "<from companionBootstrapValues.upstreamQueue>",
+      "downstream_queue": "<from companionBootstrapValues.downstreamQueue>"
+    }
    ```
 
 Only after all staging writes succeed does the bootstrap atomically move the

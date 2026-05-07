@@ -133,7 +133,7 @@ output companionServicePrincipalObjectId string = companionIdentity.outputs.serv
 output companionBootstrapValues object = {
   tenantId: companionIdentity.outputs.tenantId
   clientId: companionIdentity.outputs.clientId
-  serviceBusNamespace: stack.outputs.serviceBusNamespaceName
+  serviceBusNamespace: stack.outputs.serviceBusNamespaceFqdn
   upstreamQueue: stack.outputs.upstreamQueueName
   downstreamQueue: stack.outputs.downstreamQueueName
   deploymentContainerName: stack.outputs.deploymentContainerName

@@ -432,6 +432,7 @@ exit 64
         ),
     );
     write_executable(&bin_dir.join("python3"), "#!/bin/sh\nexit 91\n");
+    write_executable(&bin_dir.join("awk"), "#!/bin/sh\nexit 92\n");
 
     let mut cmd = Command::new("sh");
     cmd.arg(azure_bootstrap_script_path());

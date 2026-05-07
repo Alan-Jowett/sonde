@@ -49,6 +49,13 @@ fn bootstrap_script_path() -> PathBuf {
         .join("bootstrap.sh")
 }
 
+fn azure_bootstrap_script_path() -> PathBuf {
+    repo_root()
+        .join("deploy")
+        .join("azure-bootstrap")
+        .join("bootstrap.sh")
+}
+
 fn prepare_path_dir(temp: &TempDir) -> PathBuf {
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
@@ -351,6 +358,118 @@ fn host_bootstrap_does_not_require_removed_device_env() {
         docker_log.exists(),
         "docker should still be invoked by the host wrapper"
     );
+}
+
+#[test]
+fn azure_bootstrap_script_avoids_python_and_uses_cli_queries() {
+    let temp = TempDir::new().unwrap();
+    let bin_dir = prepare_path_dir(&temp);
+    let az_log = temp.path().join("az.log");
+    let function_package_path = temp.path().join("handler.zip");
+    fs::write(&function_package_path, b"zip").unwrap();
+
+    write_executable(
+        &bin_dir.join("az"),
+        &format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "{}"
+if [ "$#" -ge 3 ] && [ "$1" = "login" ] && [ "$2" = "--use-device-code" ] && [ "$3" = "--output" ]; then
+  exit 0
+fi
+if [ "$#" -ge 4 ] && [ "$1" = "deployment" ] && [ "$2" = "sub" ] && [ "$3" = "create" ]; then
+  query=""
+  name=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --name)
+        name="$2"
+        shift 2
+        ;;
+      --query)
+        query="$2"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  [ -n "$name" ] || exit 65
+  [ "$query" = "properties.outputs" ] || exit 66
+  cat <<'EOF'
+{{"resourceGroupName":{{"type":"String","value":"rg-sonde"}},"functionAppName":{{"type":"String","value":"func-sonde"}},"deploymentContainerName":{{"type":"String","value":"deploypkg"}},"deploymentContainerUrl":{{"type":"String","value":"https://example.blob.core.windows.net/deploypkg"}},"companionBootstrapValues":{{"type":"Object","value":{{"tenantId":"tenant-123","clientId":"client-456","serviceBusNamespace":"sonde.servicebus.windows.net","upstreamQueue":"connector-upstream","downstreamQueue":"desired-state"}}}}}}
+EOF
+  exit 0
+fi
+if [ "$#" -ge 4 ] && [ "$1" = "deployment" ] && [ "$2" = "sub" ] && [ "$3" = "show" ]; then
+  query=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --query)
+        query="$2"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  [ "$query" = "[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value]" ] || exit 67
+  printf 'rg-sonde\tfunc-sonde\tdeploypkg\thttps://example.blob.core.windows.net/deploypkg\n'
+  exit 0
+fi
+if [ "$#" -ge 5 ] && [ "$1" = "functionapp" ] && [ "$2" = "deployment" ] && [ "$3" = "source" ] && [ "$4" = "config-zip" ]; then
+  exit 0
+fi
+if [ "$#" -ge 4 ] && [ "$1" = "functionapp" ] && [ "$2" = "function" ] && [ "$3" = "list" ]; then
+  printf '1\n'
+  exit 0
+fi
+exit 64
+"#,
+            az_log.display()
+        ),
+    );
+    write_executable(&bin_dir.join("python3"), "#!/bin/sh\nexit 91\n");
+
+    let mut cmd = Command::new("sh");
+    cmd.arg(azure_bootstrap_script_path());
+    cmd.env(
+        "PATH",
+        format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+    cmd.env("COMPANION_CERT_BASE64", "ZmFrZWNlcnQ=");
+    cmd.env("SONDE_AZURE_LOCATION", "westus2");
+    cmd.env("SONDE_AZURE_PROJECT_NAME", "sonde-test");
+    cmd.env("SONDE_AZURE_FUNCTION_PACKAGE_PATH", &function_package_path);
+    cmd.env("SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS", "10");
+    cmd.env("SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS", "10");
+
+    let output = cmd.output().unwrap();
+    assert!(
+        output.status.success(),
+        "azure bootstrap script failed: {output:?}"
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains(r#""resourceGroupName":{"type":"String","value":"rg-sonde"}"#));
+    assert!(stdout.contains(r#""companionBootstrapValues":{"type":"Object""#));
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("__SONDE_AZURE_DEPLOYMENT_START__"));
+    assert!(stderr.contains("Deploying bundled Azure handler package to Function App func-sonde"));
+    assert!(stderr.contains("Azure Function App reports 1 loaded function(s)"));
+
+    let az_calls = fs::read_to_string(az_log).unwrap();
+    assert!(az_calls.contains("deployment sub create"));
+    assert_eq!(az_calls.matches("deployment sub show").count(), 1);
+    assert!(az_calls.contains("functionapp deployment source config-zip"));
+    assert!(az_calls.contains("functionapp function list"));
 }
 
 #[test]

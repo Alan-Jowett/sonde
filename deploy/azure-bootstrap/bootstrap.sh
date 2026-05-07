@@ -5,19 +5,29 @@ trim_string() {
     printf '%s' "$1" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
-deployment_output_string() {
-    query="$1"
-    field="$2"
+require_deployment_output_string() {
+    field="$1"
+    query="$2"
+    value="$(trim_string "$3")"
+    if [ -z "$value" ] || [ "$value" = "null" ]; then
+        echo "deployment output \`$field\` is missing or null for query \`$query\`" >&2
+        exit 1
+    fi
+    printf '%s\n' "$value"
+}
+
+read_required_deployment_outputs() {
+    query='[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value]'
     stderr_file="$(mktemp "${TMPDIR:-/tmp}/sonde-azure-deployment-show.XXXXXX")"
-    if ! value="$(az deployment sub show \
+    if ! deployment_runtime_values="$(az deployment sub show \
         --name "$deployment_name" \
         --query "$query" \
         --output tsv 2>"$stderr_file")"; then
         if [ -s "$stderr_file" ]; then
             deployment_show_error="$(cat "$stderr_file")"
-            echo "failed to read deployment output \`$field\`: $deployment_show_error" >&2
+            echo "failed to read deployment outputs for query \`$query\`: $deployment_show_error" >&2
         else
-            echo "failed to read deployment output \`$field\`" >&2
+            echo "failed to read deployment outputs for query \`$query\`" >&2
         fi
         rm -f "$stderr_file"
         exit 1
@@ -26,12 +36,38 @@ deployment_output_string() {
         cat "$stderr_file" >&2
     fi
     rm -f "$stderr_file"
-    value="$(trim_string "$value")"
-    if [ -z "$value" ] || [ "$value" = "null" ]; then
-        echo "deployment output \`$field\` must be a non-empty string" >&2
+
+    field_count="$(printf '%s' "$deployment_runtime_values" | awk -F '\t' 'NR == 1 { print NF; exit }')"
+    field_count="${field_count:-0}"
+    if [ "$field_count" -ne 4 ]; then
+        echo "deployment output query \`$query\` returned $field_count field(s); expected 4 tab-separated values" >&2
         exit 1
     fi
-    printf '%s\n' "$value"
+
+    resource_group_name="$(
+        require_deployment_output_string \
+            resourceGroupName \
+            "$query" \
+            "$(printf '%s' "$deployment_runtime_values" | awk -F '\t' 'NR == 1 { print $1; exit }')"
+    )"
+    function_app_name="$(
+        require_deployment_output_string \
+            functionAppName \
+            "$query" \
+            "$(printf '%s' "$deployment_runtime_values" | awk -F '\t' 'NR == 1 { print $2; exit }')"
+    )"
+    deployment_container_name="$(
+        require_deployment_output_string \
+            deploymentContainerName \
+            "$query" \
+            "$(printf '%s' "$deployment_runtime_values" | awk -F '\t' 'NR == 1 { print $3; exit }')"
+    )"
+    deployment_container_url="$(
+        require_deployment_output_string \
+            deploymentContainerUrl \
+            "$query" \
+            "$(printf '%s' "$deployment_runtime_values" | awk -F '\t' 'NR == 1 { print $4; exit }')"
+    )"
 }
 
 validate_positive_integer() {
@@ -124,10 +160,7 @@ deployment_outputs="$(az deployment sub create \
     --query 'properties.outputs' \
     --output json)"
 
-resource_group_name="$(deployment_output_string 'properties.outputs.resourceGroupName.value' resourceGroupName)"
-function_app_name="$(deployment_output_string 'properties.outputs.functionAppName.value' functionAppName)"
-deployment_container_name="$(deployment_output_string 'properties.outputs.deploymentContainerName.value' deploymentContainerName)"
-deployment_container_url="$(deployment_output_string 'properties.outputs.deploymentContainerUrl.value' deploymentContainerUrl)"
+read_required_deployment_outputs
 function_package_path="${SONDE_AZURE_FUNCTION_PACKAGE_PATH:-/opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip}"
 
 if [ ! -r "$function_package_path" ]; then

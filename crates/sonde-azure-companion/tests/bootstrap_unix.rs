@@ -415,23 +415,8 @@ if [ "$#" -ge 4 ] && [ "$1" = "deployment" ] && [ "$2" = "sub" ] && [ "$3" = "sh
         ;;
     esac
   done
-  case "$query" in
-    properties.outputs.resourceGroupName.value)
-      printf 'rg-sonde\n'
-      ;;
-    properties.outputs.functionAppName.value)
-      printf 'func-sonde\n'
-      ;;
-    properties.outputs.deploymentContainerName.value)
-      printf 'deploypkg\n'
-      ;;
-    properties.outputs.deploymentContainerUrl.value)
-      printf 'https://example.blob.core.windows.net/deploypkg\n'
-      ;;
-    *)
-      exit 67
-      ;;
-  esac
+  [ "$query" = "[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value]" ] || exit 67
+  printf 'rg-sonde\tfunc-sonde\tdeploypkg\thttps://example.blob.core.windows.net/deploypkg\n'
   exit 0
 fi
 if [ "$#" -ge 5 ] && [ "$1" = "functionapp" ] && [ "$2" = "deployment" ] && [ "$3" = "source" ] && [ "$4" = "config-zip" ]; then
@@ -482,7 +467,7 @@ exit 64
 
     let az_calls = fs::read_to_string(az_log).unwrap();
     assert!(az_calls.contains("deployment sub create"));
-    assert!(az_calls.contains("deployment sub show"));
+    assert_eq!(az_calls.matches("deployment sub show").count(), 1);
     assert!(az_calls.contains("functionapp deployment source config-zip"));
     assert!(az_calls.contains("functionapp function list"));
 }

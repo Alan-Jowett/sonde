@@ -37,8 +37,11 @@ read_required_deployment_outputs() {
     fi
     rm -f "$stderr_file"
 
-    field_count="$(printf '%s' "$deployment_runtime_values" | awk -F '\t' 'NR == 1 { print NF; exit }')"
-    field_count="${field_count:-0}"
+    old_ifs="$IFS"
+    IFS="$(printf '\t')"
+    set -- $deployment_runtime_values
+    IFS="$old_ifs"
+    field_count="$#"
     if [ "$field_count" -ne 4 ]; then
         echo "deployment output query \`$query\` returned $field_count field(s); expected 4 tab-separated values" >&2
         exit 1
@@ -48,25 +51,25 @@ read_required_deployment_outputs() {
         require_deployment_output_string \
             resourceGroupName \
             "$query" \
-            "$(printf '%s' "$deployment_runtime_values" | awk -F '\t' 'NR == 1 { print $1; exit }')"
+            "$1"
     )"
     function_app_name="$(
         require_deployment_output_string \
             functionAppName \
             "$query" \
-            "$(printf '%s' "$deployment_runtime_values" | awk -F '\t' 'NR == 1 { print $2; exit }')"
+            "$2"
     )"
     deployment_container_name="$(
         require_deployment_output_string \
             deploymentContainerName \
             "$query" \
-            "$(printf '%s' "$deployment_runtime_values" | awk -F '\t' 'NR == 1 { print $3; exit }')"
+            "$3"
     )"
     deployment_container_url="$(
         require_deployment_output_string \
             deploymentContainerUrl \
             "$query" \
-            "$(printf '%s' "$deployment_runtime_values" | awk -F '\t' 'NR == 1 { print $4; exit }')"
+            "$4"
     )"
 }
 

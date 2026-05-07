@@ -28,7 +28,7 @@ use futures_util::StreamExt;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use regex::Regex;
 use rsa::pkcs1::DecodeRsaPrivateKey;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use spki::EncodePublicKey;
 use thiserror::Error;
@@ -230,16 +230,25 @@ struct OAuthTokenResponse {
 
 #[derive(Debug, Deserialize)]
 struct BicepBootstrapValues {
-    #[serde(rename = "tenantId")]
-    tenant_id: BicepOutputValue,
-    #[serde(rename = "clientId")]
-    client_id: BicepOutputValue,
-    #[serde(rename = "serviceBusNamespace")]
-    service_bus_namespace: BicepOutputValue,
-    #[serde(rename = "upstreamQueue")]
-    upstream_queue: BicepOutputValue,
-    #[serde(rename = "downstreamQueue")]
-    downstream_queue: BicepOutputValue,
+    #[serde(rename = "tenantId", deserialize_with = "deserialize_bicep_string")]
+    tenant_id: String,
+    #[serde(rename = "clientId", deserialize_with = "deserialize_bicep_string")]
+    client_id: String,
+    #[serde(
+        rename = "serviceBusNamespace",
+        deserialize_with = "deserialize_bicep_string"
+    )]
+    service_bus_namespace: String,
+    #[serde(
+        rename = "upstreamQueue",
+        deserialize_with = "deserialize_bicep_string"
+    )]
+    upstream_queue: String,
+    #[serde(
+        rename = "downstreamQueue",
+        deserialize_with = "deserialize_bicep_string"
+    )]
+    downstream_queue: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,6 +260,24 @@ struct BicepOutputValue {
 struct BicepOutputs {
     #[serde(rename = "companionBootstrapValues")]
     companion_bootstrap_values: BicepOutputValue,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BicepStringField {
+    Plain(String),
+    Wrapped { value: String },
+}
+
+fn deserialize_bicep_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let field = BicepStringField::deserialize(deserializer)?;
+    Ok(match field {
+        BicepStringField::Plain(value) => value,
+        BicepStringField::Wrapped { value } => value,
+    })
 }
 
 struct ClientAssertionCredential {
@@ -1240,41 +1267,16 @@ fn parse_bicep_outputs(
         })?;
 
     let sp = ServicePrincipalStateFile {
-        tenant_id: bootstrap_values
-            .tenant_id
-            .value
-            .as_str()
-            .ok_or_else(|| CompanionError::Config("tenantId must be a string".into()))?
-            .to_string(),
-        client_id: bootstrap_values
-            .client_id
-            .value
-            .as_str()
-            .ok_or_else(|| CompanionError::Config("clientId must be a string".into()))?
-            .to_string(),
+        tenant_id: bootstrap_values.tenant_id,
+        client_id: bootstrap_values.client_id,
         certificate_path: CERT_PEM_FILENAME.to_string(),
         private_key_path: KEY_PEM_FILENAME.to_string(),
     };
 
     let sb = ServiceBusConfigFile {
-        namespace: bootstrap_values
-            .service_bus_namespace
-            .value
-            .as_str()
-            .ok_or_else(|| CompanionError::Config("serviceBusNamespace must be a string".into()))?
-            .to_string(),
-        upstream_queue: bootstrap_values
-            .upstream_queue
-            .value
-            .as_str()
-            .ok_or_else(|| CompanionError::Config("upstreamQueue must be a string".into()))?
-            .to_string(),
-        downstream_queue: bootstrap_values
-            .downstream_queue
-            .value
-            .as_str()
-            .ok_or_else(|| CompanionError::Config("downstreamQueue must be a string".into()))?
-            .to_string(),
+        namespace: bootstrap_values.service_bus_namespace,
+        upstream_queue: bootstrap_values.upstream_queue,
+        downstream_queue: bootstrap_values.downstream_queue,
     };
 
     Ok((sp, sb))
@@ -3456,11 +3458,11 @@ mod tests {
         let json = r#"{
             "companionBootstrapValues": {
                 "value": {
-                    "tenantId": { "value": "11111111-1111-1111-1111-111111111111" },
-                    "clientId": { "value": "22222222-2222-2222-2222-222222222222" },
-                    "serviceBusNamespace": { "value": "example.servicebus.windows.net" },
-                    "upstreamQueue": { "value": "upstream" },
-                    "downstreamQueue": { "value": "downstream" }
+                    "tenantId": "11111111-1111-1111-1111-111111111111",
+                    "clientId": "22222222-2222-2222-2222-222222222222",
+                    "serviceBusNamespace": "example.servicebus.windows.net",
+                    "upstreamQueue": "upstream",
+                    "downstreamQueue": "downstream"
                 }
             }
         }"#;
@@ -3483,6 +3485,28 @@ mod tests {
                 downstream_queue: "downstream".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn test_parse_bicep_outputs_accepts_wrapped_nested_values() {
+        let json = r#"{
+            "companionBootstrapValues": {
+                "value": {
+                    "tenantId": { "value": "11111111-1111-1111-1111-111111111111" },
+                    "clientId": { "value": "22222222-2222-2222-2222-222222222222" },
+                    "serviceBusNamespace": { "value": "example.servicebus.windows.net" },
+                    "upstreamQueue": { "value": "upstream" },
+                    "downstreamQueue": { "value": "downstream" }
+                }
+            }
+        }"#;
+
+        let (sp, sb) = parse_bicep_outputs(json).unwrap();
+        assert_eq!(sp.tenant_id, "11111111-1111-1111-1111-111111111111");
+        assert_eq!(sp.client_id, "22222222-2222-2222-2222-222222222222");
+        assert_eq!(sb.namespace, "example.servicebus.windows.net");
+        assert_eq!(sb.upstream_queue, "upstream");
+        assert_eq!(sb.downstream_queue, "downstream");
     }
 
     #[test]

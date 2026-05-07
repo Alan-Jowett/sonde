@@ -3,8 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use azservicebus::{
@@ -30,6 +29,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 static HISTORY_ROW_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static HISTORY_ROW_PROCESS_NONCE: OnceLock<u64> = OnceLock::new();
 
 #[derive(Debug, Error)]
 pub enum HandlerError {
@@ -95,9 +95,9 @@ pub struct ActualStateRow {
 }
 
 impl ActualStateRow {
-    fn from_message(message: &ActualStateMessage) -> Self {
-        Self {
-            row_key: next_history_row_key(message.timestamp_ms),
+    fn from_message(message: &ActualStateMessage) -> Result<Self, HandlerError> {
+        Ok(Self {
+            row_key: next_history_row_key(message.timestamp_ms)?,
             node_id: message.entity_id.clone(),
             observed_current_program_hash: message.current_program_hash.clone(),
             observed_assigned_program_hash: message.assigned_program_hash.clone(),
@@ -106,7 +106,7 @@ impl ActualStateRow {
             firmware_abi_version: message.firmware_abi_version,
             firmware_version: message.firmware_version.clone(),
             timestamp_ms: message.timestamp_ms,
-        }
+        })
     }
 }
 
@@ -226,7 +226,7 @@ where
             ));
         }
 
-        let appended_row = ActualStateRow::from_message(&actual_state);
+        let appended_row = ActualStateRow::from_message(&actual_state)?;
         self.store.append_actual_state(&appended_row).await?;
 
         let latest_actual = self
@@ -722,19 +722,33 @@ fn encode_node_partition_key(node_id: &str) -> String {
     format!("n:{}", hex::encode(digest))
 }
 
-fn next_history_row_key(timestamp_ms: u64) -> String {
-    let ingested_at_ns = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let ingested_at_ns = u64::try_from(ingested_at_ns).unwrap_or(u64::MAX);
+fn next_history_row_key(timestamp_ms: u64) -> Result<String, HandlerError> {
     let sequence = HISTORY_ROW_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!(
+    let process_nonce = history_row_process_nonce()?;
+    Ok(format!(
         "{:016x}:{:016x}:{:016x}",
         u64::MAX - timestamp_ms,
-        u64::MAX - ingested_at_ns,
-        u64::MAX - sequence
-    )
+        u64::MAX - sequence,
+        process_nonce
+    ))
+}
+
+fn history_row_process_nonce() -> Result<u64, HandlerError> {
+    if let Some(nonce) = HISTORY_ROW_PROCESS_NONCE.get() {
+        return Ok(*nonce);
+    }
+
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| HandlerError::Store(format!("generate row-key nonce failed: {e}")))?;
+    let nonce = u64::from_be_bytes(bytes);
+    if HISTORY_ROW_PROCESS_NONCE.set(nonce).is_ok() {
+        return Ok(nonce);
+    }
+    HISTORY_ROW_PROCESS_NONCE
+        .get()
+        .copied()
+        .ok_or_else(|| HandlerError::Store("row-key nonce initialization lost race".to_string()))
 }
 
 fn partition_filter(partition_key: &str) -> String {
@@ -1084,7 +1098,7 @@ mod tests {
         timestamp_ms: u64,
     ) -> DesiredStateRow {
         DesiredStateRow {
-            row_key: next_history_row_key(timestamp_ms),
+            row_key: next_history_row_key(timestamp_ms).unwrap(),
             node_id: node_id.to_string(),
             desired_assigned_program_hash,
             desired_schedule_interval_s,
@@ -1276,7 +1290,7 @@ mod tests {
             .await;
         store
             .append_actual_state(&ActualStateRow {
-                row_key: next_history_row_key(5000),
+                row_key: next_history_row_key(5000).unwrap(),
                 node_id: "node-1".to_string(),
                 observed_current_program_hash: Some(vec![0xAA; 32]),
                 observed_assigned_program_hash: Some(vec![0xAA; 32]),
@@ -1523,22 +1537,22 @@ mod tests {
 
     #[test]
     fn history_row_keys_sort_newer_timestamps_first() {
-        let newer = next_history_row_key(200);
-        let older = next_history_row_key(100);
+        let newer = next_history_row_key(200).unwrap();
+        let older = next_history_row_key(100).unwrap();
         assert!(newer < older);
     }
 
     #[test]
     fn history_row_keys_sort_later_appends_first_for_equal_timestamps() {
-        let first = next_history_row_key(1234);
-        let second = next_history_row_key(1234);
+        let first = next_history_row_key(1234).unwrap();
+        let second = next_history_row_key(1234).unwrap();
         assert!(second < first);
     }
 
     #[test]
     fn actual_state_entity_round_trips_table_safe_partition_key() {
         let row = ActualStateRow {
-            row_key: next_history_row_key(1234),
+            row_key: next_history_row_key(1234).unwrap(),
             node_id: "node/with?#unsafe\\chars".to_string(),
             observed_current_program_hash: Some(vec![0x22; 32]),
             observed_assigned_program_hash: Some(vec![0x33; 32]),
@@ -1608,7 +1622,7 @@ mod tests {
     fn desired_state_row_decode_fails_closed_on_invalid_hex() {
         let err = DesiredStateRow::try_from(DesiredStateEntity {
             partition_key: encode_node_partition_key("node-1"),
-            row_key: next_history_row_key(1234),
+            row_key: next_history_row_key(1234).unwrap(),
             node_id: "node-1".to_string(),
             desired_assigned_program_hash: Some("not-hex".to_string()),
             desired_schedule_interval_s: Some(60),

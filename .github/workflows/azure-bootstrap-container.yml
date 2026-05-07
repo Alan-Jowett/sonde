@@ -232,6 +232,26 @@ jobs:
             assert outputs["companionBootstrapValues"]["value"]["functionAppName"] == "func-test"
             assert outputs["companionBootstrapValues"]["value"]["deploymentContainerName"] == "app-package-test"
             PY
+
+            if PATH="/tmp/fakebin:$PATH" \
+              SONDE_AZURE_LOCATION=eastus \
+              SONDE_AZURE_PROJECT_NAME=sonde \
+              SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS=abc \
+              COMPANION_CERT_BASE64=dummy-cert \
+              /opt/sonde/deploy/azure-bootstrap/bootstrap.sh >/tmp/invalid-activation-stdout.txt 2>/tmp/invalid-activation-stderr.txt; then
+              exit 1
+            fi
+            grep -q "SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS must be a positive integer" /tmp/invalid-activation-stderr.txt
+
+            if PATH="/tmp/fakebin:$PATH" \
+              SONDE_AZURE_LOCATION=eastus \
+              SONDE_AZURE_PROJECT_NAME=sonde \
+              SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS=0 \
+              COMPANION_CERT_BASE64=dummy-cert \
+              /opt/sonde/deploy/azure-bootstrap/bootstrap.sh >/tmp/invalid-deploy-stdout.txt 2>/tmp/invalid-deploy-stderr.txt; then
+              exit 1
+            fi
+            grep -q "SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS must be greater than zero" /tmp/invalid-deploy-stderr.txt
           '
 
       - name: Smoke test — bootstrap image entrypoint

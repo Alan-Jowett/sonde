@@ -45,10 +45,25 @@ print(value.strip())
 PY
 }
 
+validate_positive_integer() {
+    name="$1"
+    value="$2"
+    case "$value" in
+        ''|*[!0-9]*)
+            echo "$name must be a positive integer; got: $value" >&2
+            exit 1
+            ;;
+        0)
+            echo "$name must be greater than zero; got: $value" >&2
+            exit 1
+            ;;
+    esac
+}
+
 wait_for_function_activation() {
     resource_group_name="$1"
     function_app_name="$2"
-    timeout_secs="${SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS:-300}"
+    timeout_secs="$3"
     deadline="$(( $(date +%s) + timeout_secs ))"
 
     while :; do
@@ -100,6 +115,11 @@ PY
     done
 }
 
+activation_timeout_secs="${SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS:-300}"
+deployment_timeout_secs="${SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS:-600}"
+validate_positive_integer "SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS" "$activation_timeout_secs"
+validate_positive_integer "SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS" "$deployment_timeout_secs"
+
 az login --use-device-code --output none >&2
 if [ -n "${SONDE_AZURE_SUBSCRIPTION_ID:-}" ]; then
     az account set --subscription "$SONDE_AZURE_SUBSCRIPTION_ID" >&2
@@ -119,7 +139,6 @@ function_app_name="$(json_output_string functionAppName)"
 deployment_container_name="$(json_output_string deploymentContainerName)"
 deployment_container_url="$(json_output_string deploymentContainerUrl)"
 function_package_path='/opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip'
-deployment_timeout_secs="${SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS:-600}"
 
 if [ ! -r "$function_package_path" ]; then
     echo "bundled Azure handler package not found: $function_package_path" >&2
@@ -135,6 +154,6 @@ az functionapp deployment source config-zip \
     --timeout "$deployment_timeout_secs" \
     --output none 1>&2
 
-wait_for_function_activation "$resource_group_name" "$function_app_name"
+wait_for_function_activation "$resource_group_name" "$function_app_name" "$activation_timeout_secs"
 
 printf '%s\n' "$deployment_outputs"

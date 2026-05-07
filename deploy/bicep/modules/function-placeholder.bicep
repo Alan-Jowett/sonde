@@ -18,8 +18,8 @@ param deploymentContainerUrl string
 @description('Storage Account name used by the Function placeholder deployment configuration.')
 param storageAccountName string
 
-@description('Service Bus namespace name.')
-param serviceBusNamespaceName string
+@description('Service Bus fully qualified namespace.')
+param serviceBusFullyQualifiedNamespace string
 
 @description('Queue name for gateway-originated connector traffic.')
 param upstreamQueueName string
@@ -41,7 +41,6 @@ resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' e
 }
 
 var storageConnectionString = 'DefaultEndpointsProtocol=https;AccountName=${existingStorageAccount.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${existingStorageAccount.listKeys().keys[0].value}'
-var serviceBusFullyQualifiedNamespace = '${serviceBusNamespaceName}.${environment().suffixes.serviceBusDns}'
 
 resource hostingPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: functionPlanName

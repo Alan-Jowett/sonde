@@ -239,9 +239,10 @@ where
                     actual_state.entity_id
                 ))
             })?;
-        if latest_actual.row_key != appended_row.row_key {
+        if latest_actual.timestamp_ms > appended_row.timestamp_ms {
             return Ok(());
         }
+        let actual_state_for_evaluation = appended_row;
 
         let Some(desired_row) = self
             .store
@@ -255,11 +256,16 @@ where
             .desired_assigned_program_hash
             .as_ref()
             .is_some_and(|desired| {
-                latest_actual.observed_current_program_hash.as_ref() != Some(desired)
+                actual_state_for_evaluation
+                    .observed_current_program_hash
+                    .as_ref()
+                    != Some(desired)
             });
         let schedule_diverged = desired_row
             .desired_schedule_interval_s
-            .is_some_and(|desired| latest_actual.observed_schedule_interval_s != Some(desired));
+            .is_some_and(|desired| {
+                actual_state_for_evaluation.observed_schedule_interval_s != Some(desired)
+            });
         if !program_diverged && !schedule_diverged {
             return Ok(());
         }
@@ -1048,11 +1054,11 @@ mod tests {
 
     #[async_trait]
     impl HandlerStore for FailingStore {
-        async fn append_actual_state(&self, _row: &ActualStateRow) -> Result<(), HandlerError> {
+        async fn append_actual_state(&self, row: &ActualStateRow) -> Result<(), HandlerError> {
             match &self.append_actual_error {
                 Some(error) => Err(HandlerError::Store(error.clone())),
                 None => {
-                    *self.latest_actual.lock().await = Some(_row.clone());
+                    *self.latest_actual.lock().await = Some(row.clone());
                     Ok(())
                 }
             }
@@ -1088,6 +1094,41 @@ mod tests {
                 Some(error) => Err(HandlerError::Store(error.clone())),
                 None => Ok(None),
             }
+        }
+    }
+
+    struct SameTimestampDifferentLatestStore {
+        latest_actual: ActualStateRow,
+        desired: DesiredStateRow,
+        appended_rows: Mutex<Vec<ActualStateRow>>,
+    }
+
+    #[async_trait]
+    impl HandlerStore for SameTimestampDifferentLatestStore {
+        async fn append_actual_state(&self, row: &ActualStateRow) -> Result<(), HandlerError> {
+            self.appended_rows.lock().await.push(row.clone());
+            Ok(())
+        }
+
+        async fn load_latest_actual_state(
+            &self,
+            _node_id: &str,
+        ) -> Result<Option<ActualStateRow>, HandlerError> {
+            Ok(Some(self.latest_actual.clone()))
+        }
+
+        async fn load_latest_desired_state(
+            &self,
+            _node_id: &str,
+        ) -> Result<Option<DesiredStateRow>, HandlerError> {
+            Ok(Some(self.desired.clone()))
+        }
+
+        async fn load_program_route(
+            &self,
+            _program_hash: &[u8],
+        ) -> Result<Option<ProgramRouteRow>, HandlerError> {
+            Ok(None)
         }
     }
 
@@ -1391,6 +1432,48 @@ mod tests {
             .unwrap();
         assert_eq!(latest.timestamp_ms, 1234);
         assert_eq!(latest.observed_current_program_hash, Some(vec![0xAA; 32]));
+    }
+
+    #[tokio::test]
+    async fn same_timestamp_row_key_mismatch_still_evaluates_current_delivery() {
+        let store = Arc::new(SameTimestampDifferentLatestStore {
+            latest_actual: ActualStateRow {
+                row_key: next_history_row_key(1234).unwrap(),
+                node_id: "node-1".to_string(),
+                observed_current_program_hash: Some(vec![0xBB; 32]),
+                observed_assigned_program_hash: Some(vec![0xBB; 32]),
+                observed_schedule_interval_s: Some(60),
+                battery_mv: Some(3200),
+                firmware_abi_version: Some(1),
+                firmware_version: Some("1.2.3".to_string()),
+                timestamp_ms: 1234,
+            },
+            desired: desired_row("node-1", Some(vec![0xCC; 32]), Some(60), 100),
+            appended_rows: Mutex::new(Vec::new()),
+        });
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        handler
+            .handle_payload(&sample_actual_state(
+                "node-1",
+                Some(&[0xAA; 32]),
+                Some(&[0xAA; 32]),
+                Some(60),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(store.appended_rows.lock().await.len(), 1);
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        let desired = decode_map(&sends[0].1).unwrap();
+        let desired_state = map_get(&desired, 4).unwrap().as_map().unwrap();
+        assert_eq!(
+            optional_bytes_field(desired_state, 1, "assigned_program_hash").unwrap(),
+            Some(vec![0xCC; 32])
+        );
     }
 
     #[tokio::test]

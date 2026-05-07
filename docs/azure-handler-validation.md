@@ -174,7 +174,20 @@ published when both desired fields diverge simultaneously.
 
 ---
 
-### T-AZH-0210  Handler never writes desired-state history during reconciliation
+### T-AZH-0210  Equal-timestamp deliveries still evaluate the current append
+
+**Validates:** AZH-0203, AZH-0205, AZH-0207
+
+**Procedure:**
+1. Seed a latest desired-state row for a test node.
+2. Arrange the latest-row lookup to return a different actual-state history row with the same `timestamp_ms` as the delivery being tested.
+3. Deliver a node-scoped `GW-0812` whose observed state diverges from the desired state.
+4. Assert: the handler still evaluates the current appended delivery rather than suppressing it as stale solely because another equal-timestamp row sorts first.
+5. Assert: downstream `GW-0811` publication still occurs when the current delivery diverges.
+
+---
+
+### T-AZH-0211  Handler never writes desired-state history during reconciliation
 
 **Validates:** AZH-0206
 

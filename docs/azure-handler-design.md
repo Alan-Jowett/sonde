@@ -184,25 +184,32 @@ For each node-scoped `GW-0812`, the handler performs the following sequence:
 
 1. Append one `ActualNodeState` row for the received `GW-0812`.
 2. Query `Top(1)` from `ActualNodeState` for the node's partition.
-3. If the newest actual-state row is not the row that was just appended, treat
-   the incoming message as out-of-order and complete the invocation without
-   downstream publication.
-4. Query `Top(1)` from `DesiredNodeState` for the same node partition.
-5. If no desired-state row exists, complete the invocation without downstream
+3. If the newest actual-state row has a `timestamp_ms` greater than the
+   appended row's `timestamp_ms`, treat the incoming message as out-of-order and
+   complete the invocation without downstream publication.
+4. Otherwise, use the appended row as the actual-state input for this
+   invocation's divergence evaluation. Equal-timestamp ordering among history
+   rows is retained for diagnostics, but reconciliation correctness does not
+   depend on `Top(1)` choosing the just-appended row when multiple rows share
+   the same `timestamp_ms`.
+5. Query `Top(1)` from `DesiredNodeState` for the same node partition.
+6. If no desired-state row exists, complete the invocation without downstream
    publication.
-6. If `desired_assigned_program_hash` is non-null, compare it to
-   `observed_current_program_hash` from the newest actual-state row.
-7. If `desired_schedule_interval_s` is non-null, compare it to
-   `observed_schedule_interval_s` from the newest actual-state row.
-8. If neither comparison diverges, complete the invocation with no downstream
+7. If `desired_assigned_program_hash` is non-null, compare it to
+   `observed_current_program_hash` from the appended row selected for
+   evaluation.
+8. If `desired_schedule_interval_s` is non-null, compare it to
+   `observed_schedule_interval_s` from the appended row selected for
+   evaluation.
+9. If neither comparison diverges, complete the invocation with no downstream
    publication.
-9. If either comparison diverges, build one complete `GW-0811`
+10. If either comparison diverges, build one complete `GW-0811`
    `DESIRED_STATE` payload using:
    1. `entity_kind = "node"`,
    2. `entity_id = node_id`,
    3. `assigned_program_hash = desired_assigned_program_hash` from the latest desired row, and
    4. `schedule_interval_s = desired_schedule_interval_s` from the latest desired row.
-10. Publish that payload to the downstream queue.
+11. Publish that payload to the downstream queue.
 
 `ephemeral_program_hash` is intentionally omitted in v1. The gateway connector
 schema already defines it, but this design does not add Azure-side ownership or

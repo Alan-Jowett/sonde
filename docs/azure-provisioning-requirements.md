@@ -155,7 +155,7 @@ hosting model.
 ### AZP-0105  Repository-owned Azure handler package deployment
 
 **Priority:** Must
-**Source:** USER-REQUEST: implement "Function code deployment" in azure funciton, reviewed discovery output
+**Source:** USER-REQUEST: implement "Function code deployment" in azure function, reviewed discovery output
 
 **Description:**
 The repository-owned Azure provisioning/bootstrap workflow MUST deploy a

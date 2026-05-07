@@ -786,7 +786,7 @@ deployment SHOULD use the default subscription from the device-login session.
 ### AZC-0409  Bootstrap deploys and activates the bundled Azure handler package
 
 **Priority:** Must
-**Source:** USER-REQUEST: implement "Function code deployment" in azure funciton, AZP-0105
+**Source:** USER-REQUEST: implement "Function code deployment" in azure function, AZP-0105
 
 **Description:**
 After successful Azure deployment, the unified `bootstrap` subcommand MUST

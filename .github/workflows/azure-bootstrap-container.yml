@@ -186,6 +186,7 @@ jobs:
                     count="$((count + 1))"
                     printf "%s" "$count" > "$count_file"
                     if [ "$count" -eq 1 ]; then
+                      printf "warning: warm-up in progress\n" >&2
                       printf "[]"
                     else
                       printf "[{\"name\":\"UpstreamConnector\"}]"
@@ -217,6 +218,7 @@ jobs:
 
             grep -q "__SONDE_AZURE_DEPLOYMENT_START__" /tmp/bootstrap-stderr.txt
             grep -q "Deploying bundled Azure handler package" /tmp/bootstrap-stderr.txt
+            grep -q "warning: warm-up in progress" /tmp/bootstrap-stderr.txt
             grep -q "Waiting for Azure Function App to load functions" /tmp/bootstrap-stderr.txt
             grep -q "Azure Function App reports 1 loaded function(s)" /tmp/bootstrap-stderr.txt
             grep -q "functionapp deployment source config-zip" /tmp/az-calls.log

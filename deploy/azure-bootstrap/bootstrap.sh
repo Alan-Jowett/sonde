@@ -10,10 +10,33 @@ import sys
 field = sys.argv[1]
 data = json.load(sys.stdin)
 
-if field == "resourceGroupName":
-    value = data["resourceGroupName"]["value"]
-else:
-    value = data["companionBootstrapValues"]["value"][field]
+try:
+    if field == "resourceGroupName":
+        value = data["resourceGroupName"]["value"]
+    else:
+        companion_values = data["companionBootstrapValues"]["value"]
+        value = companion_values[field]
+except (KeyError, TypeError):
+    if not isinstance(data, dict):
+        raise SystemExit("deployment outputs must be a JSON object")
+    if field == "resourceGroupName":
+        available_keys = ", ".join(sorted(data.keys())) or "(none)"
+        raise SystemExit(
+            f"missing deployment output `{field}`; available top-level outputs: {available_keys}"
+        )
+    companion_output = data.get("companionBootstrapValues")
+    if isinstance(companion_output, dict):
+        companion_values = companion_output.get("value")
+    else:
+        companion_values = None
+    available_keys = (
+        ", ".join(sorted(companion_values.keys()))
+        if isinstance(companion_values, dict)
+        else "(none)"
+    )
+    raise SystemExit(
+        f"missing deployment output `{field}` in companionBootstrapValues; available keys: {available_keys}"
+    )
 
 if not isinstance(value, str) or not value.strip():
     raise SystemExit(f"deployment output `{field}` must be a non-empty string")
@@ -29,10 +52,15 @@ wait_for_function_activation() {
     deadline="$(( $(date +%s) + timeout_secs ))"
 
     while :; do
+        function_list_stderr="$(mktemp "${TMPDIR:-/tmp}/sonde-azure-function-list.XXXXXX")"
         if function_list_json="$(az functionapp function list \
             --name "$function_app_name" \
             --resource-group "$resource_group_name" \
-            --output json 2>&1)"; then
+            --output json 2>"$function_list_stderr")"; then
+            if [ -s "$function_list_stderr" ]; then
+                cat "$function_list_stderr" >&2
+            fi
+            rm -f "$function_list_stderr"
             loaded_count="$(printf '%s' "$function_list_json" | python3 - <<'PY'
 import json
 import sys
@@ -54,7 +82,13 @@ PY
 
             echo "Waiting for Azure Function App to load functions..." >&2
         else
-            echo "Azure Function activation probe failed: $function_list_json" >&2
+            if [ -s "$function_list_stderr" ]; then
+                function_list_error="$(cat "$function_list_stderr")"
+                echo "Azure Function activation probe failed: $function_list_error" >&2
+            else
+                echo "Azure Function activation probe failed" >&2
+            fi
+            rm -f "$function_list_stderr"
         fi
 
         if [ "$(date +%s)" -ge "$deadline" ]; then

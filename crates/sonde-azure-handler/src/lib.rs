@@ -216,7 +216,10 @@ where
         }
     }
 
-    async fn handle_actual_state(&self, actual_state: ActualStateMessage) -> Result<(), HandlerError> {
+    async fn handle_actual_state(
+        &self,
+        actual_state: ActualStateMessage,
+    ) -> Result<(), HandlerError> {
         if actual_state.entity_id.is_empty() {
             return Err(HandlerError::Decode(
                 "node-scoped ACTUAL_STATE requires a non-empty entity_id".to_string(),
@@ -251,7 +254,9 @@ where
         let program_diverged = desired_row
             .desired_assigned_program_hash
             .as_ref()
-            .is_some_and(|desired| latest_actual.observed_current_program_hash.as_ref() != Some(desired));
+            .is_some_and(|desired| {
+                latest_actual.observed_current_program_hash.as_ref() != Some(desired)
+            });
         let schedule_diverged = desired_row
             .desired_schedule_interval_s
             .is_some_and(|desired| latest_actual.observed_schedule_interval_s != Some(desired));
@@ -550,7 +555,9 @@ impl TryFrom<ActualStateRow> for ActualStateEntity {
             row_key: value.row_key,
             node_id: value.node_id,
             observed_current_program_hash: encode_optional_hex(value.observed_current_program_hash),
-            observed_assigned_program_hash: encode_optional_hex(value.observed_assigned_program_hash),
+            observed_assigned_program_hash: encode_optional_hex(
+                value.observed_assigned_program_hash,
+            ),
             observed_schedule_interval_s: value.observed_schedule_interval_s,
             battery_mv: value.battery_mv,
             firmware_abi_version: value.firmware_abi_version,
@@ -634,12 +641,12 @@ pub fn extract_trigger_payload(request_body: &[u8]) -> Result<Vec<u8>, HandlerEr
 
 fn extract_json_payload(value: &serde_json::Value) -> Result<Vec<u8>, HandlerError> {
     match value {
-        serde_json::Value::String(text) => match base64::engine::general_purpose::STANDARD
-            .decode(text)
-        {
-            Ok(bytes) => Ok(bytes),
-            Err(_) => Ok(text.as_bytes().to_vec()),
-        },
+        serde_json::Value::String(text) => {
+            match base64::engine::general_purpose::STANDARD.decode(text) {
+                Ok(bytes) => Ok(bytes),
+                Err(_) => Ok(text.as_bytes().to_vec()),
+            }
+        }
         serde_json::Value::Array(values) => values
             .iter()
             .map(|value| {
@@ -948,12 +955,11 @@ mod tests {
             &self,
             node_id: &str,
         ) -> Result<Option<ActualStateRow>, HandlerError> {
-            Ok(self
-                .actual_rows
-                .lock()
-                .await
-                .get(node_id)
-                .and_then(|rows| rows.iter().min_by(|a, b| a.row_key.cmp(&b.row_key)).cloned()))
+            Ok(self.actual_rows.lock().await.get(node_id).and_then(|rows| {
+                rows.iter()
+                    .min_by(|a, b| a.row_key.cmp(&b.row_key))
+                    .cloned()
+            }))
         }
 
         async fn load_latest_desired_state(
@@ -965,7 +971,11 @@ mod tests {
                 .lock()
                 .await
                 .get(node_id)
-                .and_then(|rows| rows.iter().min_by(|a, b| a.row_key.cmp(&b.row_key)).cloned()))
+                .and_then(|rows| {
+                    rows.iter()
+                        .min_by(|a, b| a.row_key.cmp(&b.row_key))
+                        .cloned()
+                }))
         }
 
         async fn load_program_route(
@@ -1296,7 +1306,11 @@ mod tests {
         let rows = store.actual_rows_for("node-1").await;
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|row| row.timestamp_ms == 1234));
-        let latest = store.load_latest_actual_state("node-1").await.unwrap().unwrap();
+        let latest = store
+            .load_latest_actual_state("node-1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(latest.timestamp_ms, 5000);
         assert!(publisher.sends.lock().await.is_empty());
     }
@@ -1356,7 +1370,11 @@ mod tests {
 
         let rows = store.actual_rows_for("node-1").await;
         assert_eq!(rows.len(), 2);
-        let latest = store.load_latest_actual_state("node-1").await.unwrap().unwrap();
+        let latest = store
+            .load_latest_actual_state("node-1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(latest.timestamp_ms, 1234);
         assert_eq!(latest.observed_current_program_hash, Some(vec![0xAA; 32]));
     }

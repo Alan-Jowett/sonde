@@ -218,6 +218,38 @@ Admin socket (configurable via `--admin-socket`):
 - **Windows:** `\\.\pipe\sonde-admin` (named pipe)
 - **Linux:** `/var/run/sonde/admin.sock` (UDS, created by systemd `RuntimeDirectory`)
 
+#### Windows Azure companion bootstrap (optional)
+
+If you installed the optional Azure companion feature, bootstrap it after the
+gateway service is running and the modem display is available.
+
+Prerequisites:
+- Docker Desktop / Docker Engine running on the Windows host
+- the gateway admin pipe available at `\\.\pipe\sonde-admin` (or your configured override)
+- Azure deployment values chosen for your environment (`SONDE_AZURE_LOCATION`,
+  `SONDE_AZURE_PROJECT_NAME`, and optionally `SONDE_AZURE_SUBSCRIPTION_ID`)
+
+From PowerShell:
+
+```powershell
+$env:SONDE_AZURE_LOCATION = "eastus"
+$env:SONDE_AZURE_PROJECT_NAME = "sonde-prod"
+# Optional:
+# $env:SONDE_AZURE_SUBSCRIPTION_ID = "<subscription-guid>"
+
+sonde-azure-companion.exe bootstrap
+```
+
+Bootstrap:
+- pulls `ghcr.io/alan-jowett/sonde-azure-bootstrap:<matching companion version>` by default
+- runs Azure device-code authentication inside the bootstrap container
+- displays the device code and progress messages on the modem via the gateway admin pipe
+- writes runtime state under `%ProgramData%\sonde-azure-companion\`
+
+If `sonde-azure-companion.exe` is not on `PATH`, run the installed binary from
+the Sonde `bin` directory instead. If Docker is unavailable or the modem
+display cannot be updated, bootstrap fails closed; fix the dependency and retry.
+
 ## 6. Verify gateway and modem (smoke test)
 
 Before proceeding, confirm the gateway and modem are operational.

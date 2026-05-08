@@ -251,6 +251,12 @@ where
         else {
             return Ok(());
         };
+        if desired_row.node_id != actual_state.entity_id {
+            return Err(HandlerError::Store(format!(
+                "desired-state row node_id `{}` did not match requested node `{}`",
+                desired_row.node_id, actual_state.entity_id
+            )));
+        }
 
         let program_diverged = desired_row
             .desired_assigned_program_hash
@@ -1135,6 +1141,42 @@ mod tests {
         }
     }
 
+    struct MismatchedDesiredNodeStore {
+        desired: DesiredStateRow,
+        latest_actual: Mutex<Option<ActualStateRow>>,
+        appended_rows: Mutex<Vec<ActualStateRow>>,
+    }
+
+    #[async_trait]
+    impl HandlerStore for MismatchedDesiredNodeStore {
+        async fn append_actual_state(&self, row: &ActualStateRow) -> Result<(), HandlerError> {
+            self.appended_rows.lock().await.push(row.clone());
+            *self.latest_actual.lock().await = Some(row.clone());
+            Ok(())
+        }
+
+        async fn load_latest_actual_state(
+            &self,
+            _node_id: &str,
+        ) -> Result<Option<ActualStateRow>, HandlerError> {
+            Ok(self.latest_actual.lock().await.clone())
+        }
+
+        async fn load_latest_desired_state(
+            &self,
+            _node_id: &str,
+        ) -> Result<Option<DesiredStateRow>, HandlerError> {
+            Ok(Some(self.desired.clone()))
+        }
+
+        async fn load_program_route(
+            &self,
+            _program_hash: &[u8],
+        ) -> Result<Option<ProgramRouteRow>, HandlerError> {
+            Ok(None)
+        }
+    }
+
     fn desired_row(
         node_id: &str,
         desired_assigned_program_hash: Option<Vec<u8>>,
@@ -1477,6 +1519,34 @@ mod tests {
             optional_bytes_field(desired_state, 1, "assigned_program_hash").unwrap(),
             Some(vec![0xCC; 32])
         );
+    }
+
+    #[tokio::test]
+    async fn mismatched_desired_row_node_id_is_rejected() {
+        let store = Arc::new(MismatchedDesiredNodeStore {
+            desired: desired_row("other-node", Some(vec![0xBB; 32]), Some(60), 100),
+            latest_actual: Mutex::new(None),
+            appended_rows: Mutex::new(Vec::new()),
+        });
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        let err = handler
+            .handle_payload(&sample_actual_state(
+                "node-1",
+                Some(&[0xAA; 32]),
+                Some(&[0xAA; 32]),
+                Some(30),
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains(
+            "desired-state row node_id `other-node` did not match requested node `node-1`"
+        ));
+        assert_eq!(store.appended_rows.lock().await.len(), 1);
+        assert!(publisher.sends.lock().await.is_empty());
     }
 
     #[tokio::test]

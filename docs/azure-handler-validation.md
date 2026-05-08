@@ -199,6 +199,18 @@ published when both desired fields diverge simultaneously.
 
 ---
 
+### T-AZH-0212  Mismatched desired-state `node_id` fails closed
+
+**Validates:** AZH-0203
+
+**Procedure:**
+1. Arrange a desired-state lookup for node `A` that returns a row from node `A`'s partition but with a stored `node_id` payload of node `B`.
+2. Deliver a node-scoped `GW-0812` for node `A` that would otherwise diverge from the desired row.
+3. Assert: the handler surfaces an error instead of publishing a downstream `GW-0811`.
+4. Assert: no downstream desired-state message is sent for either node.
+
+---
+
 ### T-AZH-0300  ProgramRoute rows map `program_hash` to handler queue name
 
 **Validates:** AZH-0300

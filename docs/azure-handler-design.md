@@ -198,21 +198,24 @@ For each node-scoped `GW-0812`, the handler performs the following sequence:
 5. Query `Top(1)` from `DesiredNodeState` for the same node partition.
 6. If no desired-state row exists, complete the invocation without downstream
    publication.
-7. If `desired_assigned_program_hash` is non-null, compare it to
+7. If the desired-state row's `node_id` payload does not exactly match the
+   current `entity_id`, fail the invocation rather than publishing a command
+   for potentially corrupted cross-node state.
+8. If `desired_assigned_program_hash` is non-null, compare it to
    `observed_current_program_hash` from the appended row selected for
    evaluation.
-8. If `desired_schedule_interval_s` is non-null, compare it to
+9. If `desired_schedule_interval_s` is non-null, compare it to
    `observed_schedule_interval_s` from the appended row selected for
    evaluation.
-9. If neither comparison diverges, complete the invocation with no downstream
+10. If neither comparison diverges, complete the invocation with no downstream
    publication.
-10. If either comparison diverges, build one complete `GW-0811`
+11. If either comparison diverges, build one complete `GW-0811`
    `DESIRED_STATE` payload using:
    1. `entity_kind = "node"`,
    2. `entity_id = node_id`,
    3. `assigned_program_hash = desired_assigned_program_hash` from the latest desired row, and
    4. `schedule_interval_s = desired_schedule_interval_s` from the latest desired row.
-11. Publish that payload to the downstream queue.
+12. Publish that payload to the downstream queue.
 
 `ephemeral_program_hash` is intentionally omitted in v1. The gateway connector
 schema already defines it, but this design does not add Azure-side ownership or

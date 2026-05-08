@@ -185,6 +185,7 @@ message for that node using the latest desired-state row's fields.
 5. The emitted desired-state payload does not invent `ephemeral_program_hash` state owned by this document.
 6. A null desired resident-program or null desired schedule field does not, by itself, trigger divergence or downstream publication for that field.
 7. Absence of any desired-state row for a node suppresses downstream publication for that node.
+8. If the latest desired-state row returned for a node partition carries a different `node_id` payload, the handler fails the reconciliation attempt rather than publishing a `GW-0811` for either node.
 
 ---
 

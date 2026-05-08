@@ -7,7 +7,7 @@
 > (Linux runtime container and Windows native service), the dedicated bootstrap
 > image, bootstrap-state detection, bootstrap trigger behavior, integrated
 > provisioning orchestration (certificate generation, bootstrap-image execution
-> via Docker API, and runtime artifact creation), and the Storage Queue AMQP
+> via Docker API, and runtime artifact creation), and the Storage Queue HTTP REST
 > runtime bridge.
 > The Bicep module definitions themselves are specified in
 > [azure-provisioning-design.md](azure-provisioning-design.md).
@@ -38,7 +38,7 @@ The Azure companion now has two distinct responsibilities:
    bootstrap-image execution via the Docker API, and runtime artifact
    creation), and
 5. when bootstrap-complete state exists, bridge the gateway connector session to
-   Azure Storage Queue over AMQP.
+   Azure Storage Queue over HTTP REST.
 
 The gateway-facing connector contract remains cloud-agnostic. Azure-specific
 logic is confined to the Azure companion.
@@ -398,7 +398,7 @@ crate. `reqwest` is the first required broker transport implementation.
 
 ### 7.2  Azure Storage Queue runtime
 
-The Azure Storage Queue transport implementation uses AMQP to connect to:
+The Azure Storage Queue transport implementation uses HTTP REST to connect to:
 
 1. one upstream queue for gateway-originated connector messages, and
 2. one downstream queue for desired-state requests coming from the control plane.
@@ -545,7 +545,7 @@ staging directory:
 3. **`storage-queues.json`** containing:
    ```json
    {
-     "namespace": "<fully qualified host from companionBootstrapValues.storageQueueEndpoint>",
+     "queue_endpoint": "<from companionBootstrapValues.storageQueueEndpoint>",
      "upstream_queue": "<from companionBootstrapValues.upstreamQueue>",
      "downstream_queue": "<from companionBootstrapValues.downstreamQueue>"
    }

@@ -30,7 +30,7 @@
 | **State volume** | A mounted persistent directory reserved for Azure companion bootstrap output and other local provisioning artifacts. |
 | **State directory** | The platform-owned persistent directory that stores Azure companion provisioning artifacts. On Linux this is provided by the mounted state volume; on Windows the default location is `%ProgramData%\sonde-azure-companion`. |
 | **Provisioning artifacts** | The local certificate PEM, private-key PEM, and related companion-owned state that indicate Azure bootstrap has already completed. |
-| **Queue configuration** | The Azure Storage Queue namespace and the names of the upstream and downstream queues, supplied to the companion through either environment variables or a persisted configuration file (`storage-queues.json`) written by bootstrap. Both sources are valid; persisted configuration is the primary source after bootstrap, and environment variables may override it. |
+| **Queue configuration** | The Azure Storage Queue endpoint and the names of the upstream and downstream queues, supplied to the companion through either environment variables or a persisted configuration file (`storage-queues.json`) written by bootstrap. Both sources are valid; persisted configuration is the primary source after bootstrap, and environment variables may override it. |
 | **Bootstrap-complete state** | The condition where the required provisioning artifacts exist and the required queue configuration is present (from either source), allowing the companion to skip bootstrap and start runtime directly. |
 | **Transparent connector payload** | A Storage Queue message body that carries the raw Sonde connector payload bytes unchanged. |
 
@@ -155,7 +155,7 @@ or collect Azure runtime configuration during installation.
 1. The MSI presents an Azure companion component choice whose default state is unchecked.
 2. When the component is not selected, the installer does not register a `sonde-azure-companion` service.
 3. When the component is selected, the installer installs the companion binary and registers the companion service.
-4. The installer does not prompt for Azure namespace, queue, tenant, subscription, certificate, or other Azure-specific settings.
+4. The installer does not prompt for Azure queue endpoint, queue, tenant, subscription, certificate, or other Azure-specific settings.
 5. Silent or unattended installation can select the component through an MSI feature/property rather than requiring interactive UI.
 
 ---
@@ -394,7 +394,7 @@ traffic MUST NOT depend on `GatewayAdmin`.
 
 **Description:**
 The Azure companion MUST require explicit configuration for the Azure Service
-Bus namespace plus the names of exactly two queues: one upstream queue for
+Queue endpoint plus the names of exactly two queues: one upstream queue for
 gateway-originated connector messages and one downstream queue for cloud-issued
 desired-state messages. These values MUST NOT be hard-coded in the container
 image. Configuration MAY be supplied through environment variables or through a
@@ -403,10 +403,10 @@ workflow. Environment variables, if set, override persisted file values.
 
 **Acceptance criteria:**
 
-1. Runtime startup requires namespace configuration from either environment variables or a persisted configuration file.
+1. Runtime startup requires queue endpoint configuration from either environment variables or a persisted configuration file.
 2. Runtime startup requires configuration for one upstream queue and one downstream queue from either source.
 3. The upstream and downstream queues are independently configurable.
-4. The image does not hard-code environment-specific queue names or namespace values.
+4. The image does not hard-code environment-specific queue names or endpoint values.
 5. Environment variables override values from the persisted configuration file when both are present.
 
 ---
@@ -425,20 +425,20 @@ transport swappable.
 
 **Acceptance criteria:**
 
-1. The runtime design separates gateway-connector logic from broker-specific AMQP operations.
+1. The runtime design separates gateway-connector logic from broker-specific HTTP operations.
 2. Replacing the Azure Storage Queue transport implementation does not require changing the gateway-facing connector protocol.
 3. `reqwest` is supported as the initial concrete Azure transport implementation.
 
 ---
 
-### AZC-0304  Azure Storage Queue AMQP transport
+### AZC-0304  Azure Storage Queue HTTP transport
 
 **Priority:** Must
 **Source:** Azure Storage Queue discovery review
 
 **Description:**
 The Azure companion runtime MUST bridge the local connector session to Azure
-Storage Queue over AMQP. The runtime MUST publish gateway-originated connector
+Storage Queues over HTTP REST. The runtime MUST publish gateway-originated connector
 messages to the configured upstream queue and consume cloud-issued desired-state
 messages from the configured downstream queue.
 
@@ -563,7 +563,7 @@ NOT require a full `sonde-gateway` process for this live cloud test.
 
 1. The live Azure validation workflow starts the real `sonde-azure-companion` runtime.
 2. The runtime connects to a local connector harness rather than a full `sonde-gateway` process.
-3. The runtime uses the disposable Azure Storage Queue namespace and queue names provisioned for that workflow run.
+3. The runtime uses the disposable Azure Storage Queue endpoint and queue names provisioned for that workflow run.
 4. The live validation covers both upstream publish and downstream desired-state delivery.
 5. The workflow remains on-demand rather than part of routine PR CI.
 

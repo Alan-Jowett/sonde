@@ -45,7 +45,6 @@ The design assumes this layout:
 |----------|---------|
 | `deploy/bicep/main.bicep` | Top-level deployment entrypoint. |
 | `deploy/bicep/modules/storage.bicep` | Storage Account, tables, queues, and deployment container. |
-| `deploy/bicep/modules/storage.bicep` | Storage Account and Table resource provisioning. |
 | `deploy/bicep/modules/function-placeholder.bicep` | Function hosting resources and deployment target for the Azure handler package. |
 | `deploy/bicep/modules/identity.*` | Runtime identity provisioning artifacts or wrappers used by the Bicep-driven workflow. |
 | `deploy/bicep/README.md` or equivalent inline deployment documentation | Operator-facing description of inputs, outputs, and post-deploy handoff. |

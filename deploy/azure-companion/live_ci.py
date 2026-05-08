@@ -219,7 +219,7 @@ async def run_failure_path(
     companion: asyncio.subprocess.Process,
     message_timeout_secs: int,
 ) -> None:
-    failed_handoff_payload = b"x" * (240 * 1024)
+    failed_handoff_payload = b"x" * (48 * 1024)
     harness.abort_next_downstream_write()
     queue_client = service_client.get_queue_client(downstream_queue)
     await queue_client.send_message(base64.b64encode(failed_handoff_payload).decode())

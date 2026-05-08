@@ -12,6 +12,12 @@ param tags object
 @description('Storage Account name.')
 param storageAccountName string
 
+@description('Queue name for gateway-originated connector traffic.')
+param upstreamQueueName string
+
+@description('Queue name for cloud-originated desired-state traffic.')
+param downstreamQueueName string
+
 @description('Azure handler node-state table name.')
 param nodeStateTableName string
 

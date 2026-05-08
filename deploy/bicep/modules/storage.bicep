@@ -9,8 +9,11 @@ param location string
 @description('Storage Account name.')
 param storageAccountName string
 
-@description('Table name for Azure handler node-state rows.')
-param nodeStateTableName string
+@description('Table name for Azure handler actual-state rows.')
+param actualStateTableName string
+
+@description('Table name for Azure handler desired-state rows.')
+param desiredStateTableName string
 
 @description('Table name for Azure handler program-route rows.')
 param programRouteTableName string
@@ -76,9 +79,17 @@ resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/con
   }
 }
 
-resource nodeStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+resource actualStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
   parent: tableService
-  name: nodeStateTableName
+  name: actualStateTableName
+  properties: {
+    signedIdentifiers: []
+  }
+}
+
+resource desiredStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+  parent: tableService
+  name: desiredStateTableName
   properties: {
     signedIdentifiers: []
   }
@@ -97,8 +108,10 @@ output storageAccountResourceId string = storageAccount.id
 output blobEndpoint string = storageAccount.properties.primaryEndpoints.blob
 output deploymentContainerName string = deploymentContainer.name
 output deploymentContainerResourceId string = deploymentContainer.id
-output nodeStateTableName string = nodeStateTable.name
-output nodeStateTableResourceId string = nodeStateTable.id
+output actualStateTableName string = actualStateTable.name
+output actualStateTableResourceId string = actualStateTable.id
+output desiredStateTableName string = desiredStateTable.name
+output desiredStateTableResourceId string = desiredStateTable.id
 output programRouteTableName string = programRouteTable.name
 output programRouteTableResourceId string = programRouteTable.id
 output queueServiceUri string = storageAccount.properties.primaryEndpoints.queue

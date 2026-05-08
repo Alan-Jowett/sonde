@@ -9,8 +9,11 @@ param functionPrincipalId string
 @description('Storage Account name.')
 param storageAccountName string
 
-@description('Azure handler node-state table name.')
-param nodeStateTableName string
+@description('Azure handler actual-state table name.')
+param actualStateTableName string
+
+@description('Azure handler desired-state table name.')
+param desiredStateTableName string
 
 @description('Azure handler program-route table name.')
 param programRouteTableName string
@@ -27,9 +30,14 @@ resource existingTableService 'Microsoft.Storage/storageAccounts/tableServices@2
   name: 'default'
 }
 
-resource existingNodeStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
+resource existingActualStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
   parent: existingTableService
-  name: nodeStateTableName
+  name: actualStateTableName
+}
+
+resource existingDesiredStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
+  parent: existingTableService
+  name: desiredStateTableName
 }
 
 resource existingProgramRouteTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
@@ -47,9 +55,19 @@ resource functionQueueContributor 'Microsoft.Authorization/roleAssignments@2022-
   }
 }
 
-resource functionNodeStateTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid('function-node-state-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingNodeStateTable.id)
-  scope: existingNodeStateTable
+resource functionActualStateTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid('function-actual-state-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingActualStateTable.id)
+  scope: existingActualStateTable
+  properties: {
+    principalId: functionPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageTableDataContributorRoleId
+  }
+}
+
+resource functionDesiredStateTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid('function-desired-state-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingDesiredStateTable.id)
+  scope: existingDesiredStateTable
   properties: {
     principalId: functionPrincipalId
     principalType: 'ServicePrincipal'

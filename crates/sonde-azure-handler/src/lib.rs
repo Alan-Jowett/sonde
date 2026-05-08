@@ -456,11 +456,13 @@ impl QueuePublisher for StorageQueuePublisher {
         let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
         let body = format!("<QueueMessage><MessageText>{encoded}</MessageText></QueueMessage>");
         let url = format!("{}/{queue}/messages", self.queue_endpoint);
+        let date = httpdate::fmt_http_date(std::time::SystemTime::now());
         let response = self
             .http_client
             .post(&url)
             .header("Authorization", format!("Bearer {token}"))
             .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
+            .header("x-ms-date", &date)
             .header("Content-Type", "application/xml")
             .body(body)
             .send()

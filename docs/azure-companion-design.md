@@ -202,7 +202,7 @@ The live Azure validation workflow uses a narrower runtime topology than a full
 gateway deployment. It starts the real `sonde-azure-companion` runtime against:
 
 1. a local connector harness that speaks the framed connector protocol, and
-2. the disposable Azure Storage Queue namespace and queues created earlier in the
+2. the disposable Azure Storage Queue endpoint and queues created earlier in the
    same workflow run.
 
 The harness is sufficient because the purpose of this workflow is to validate

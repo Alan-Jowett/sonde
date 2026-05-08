@@ -10,6 +10,7 @@ base64 = "0.22"
 bollard = "0.20"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
+httpdate = "1"
 hyper-util = "0.1"
 jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
 regex = "1"

@@ -1509,6 +1509,10 @@ async fn get_storage_bearer_token(
     Ok(token.token.secret().to_string())
 }
 
+fn storage_queue_date_header() -> String {
+    httpdate::fmt_http_date(std::time::SystemTime::now())
+}
+
 #[tonic::async_trait]
 impl UpstreamPublisher for StorageQueuePublisher {
     async fn publish(&mut self, payload: Vec<u8>) -> Result<(), CompanionError> {
@@ -1521,6 +1525,7 @@ impl UpstreamPublisher for StorageQueuePublisher {
             .post(&url)
             .header("Authorization", format!("Bearer {token}"))
             .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
+            .header("x-ms-date", &storage_queue_date_header())
             .header("Content-Type", "application/xml")
             .body(body)
             .send()
@@ -1598,6 +1603,7 @@ impl DownstreamConsumer for StorageQueueConsumer {
             .get(&url)
             .header("Authorization", format!("Bearer {token}"))
             .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
+            .header("x-ms-date", &storage_queue_date_header())
             .send()
             .await
             .map_err(|e| {
@@ -1661,6 +1667,7 @@ impl DownstreamConsumer for StorageQueueConsumer {
             .delete(&url)
             .header("Authorization", format!("Bearer {token}"))
             .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
+            .header("x-ms-date", &storage_queue_date_header())
             .send()
             .await
             .map_err(|e| {
@@ -1717,6 +1724,7 @@ impl StorageQueueConsumer {
             .put(&url)
             .header("Authorization", format!("Bearer {token}"))
             .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
+            .header("x-ms-date", &storage_queue_date_header())
             .header("Content-Length", "0")
             .send()
             .await

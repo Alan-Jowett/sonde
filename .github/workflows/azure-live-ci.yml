@@ -187,6 +187,13 @@ jobs:
             --queue-endpoint "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['queue_endpoint'])")" \
             --upstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['upstream_queue'])")" \
             --downstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['downstream_queue'])")"
+
+      - name: Refresh Azure login before handler deployment
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy Azure handler function package
         shell: bash
@@ -216,6 +223,13 @@ jobs:
             echo "  attempt $attempt: $loaded functions loaded, waiting..."
             sleep 10
           done
+
+      - name: Refresh Azure login before handler validation
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
       - name: Validate Azure handler processes upstream messages
         shell: bash

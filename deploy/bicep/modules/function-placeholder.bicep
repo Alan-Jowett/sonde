@@ -100,6 +100,7 @@ resource appSettings 'Microsoft.Web/sites/config@2024-04-01' = {
   parent: functionApp
   name: 'appsettings'
   properties: {
+    AzureWebJobsStorage: storageConnectionString
     DEPLOYMENT_STORAGE_CONNECTION_STRING: storageConnectionString
     SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT: queueServiceUri
     SONDE_AZURE_HANDLER_UPSTREAM_QUEUE: upstreamQueueName

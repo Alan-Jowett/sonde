@@ -169,6 +169,18 @@ jobs:
           )
           PY
 
+      - name: Run live Azure companion validation
+        run: |
+          python3 ./deploy/azure-companion/live_ci.py \
+            --companion-bin ./target/debug/sonde-azure-companion \
+            --state-dir ./.azure-live-state \
+            --connector-socket /tmp/sonde-azure-live-ci.sock \
+            --connect-timeout-secs 180 \
+            --message-timeout-secs 180 \
+            --queue-endpoint "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['queue_endpoint'])")" \
+            --upstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['upstream_queue'])")" \
+            --downstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['downstream_queue'])")"
+
       - name: Deploy Azure handler function package
         shell: bash
         run: |
@@ -333,18 +345,6 @@ jobs:
 
           sys.exit(asyncio.run(main()))
           PY
-
-      - name: Run live Azure companion validation
-        run: |
-          python3 ./deploy/azure-companion/live_ci.py \
-            --companion-bin ./target/debug/sonde-azure-companion \
-            --state-dir ./.azure-live-state \
-            --connector-socket /tmp/sonde-azure-live-ci.sock \
-            --connect-timeout-secs 180 \
-            --message-timeout-secs 180 \
-            --queue-endpoint "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['queue_endpoint'])")" \
-            --upstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['upstream_queue'])")" \
-            --downstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['downstream_queue'])")"
 
       - name: Upload Azure live artifacts
         if: failure()

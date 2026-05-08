@@ -131,8 +131,9 @@ Grant the GitHub OIDC service principal these Azure RBAC roles:
 | `Contributor` | Subscription named by `SONDE_AZURE_CI_SUBSCRIPTION_ID` | Needed for `az group create`, `az group delete`, and the subscription-scope deployment. |
 | `User Access Administrator` | Same subscription | Needed because the Bicep deployment creates queue/table `roleAssignments`. |
 | `Storage Queue Data Contributor` | Subscription | Needed for the live validation harness to send to and receive from the deployed queues. |
+| `Storage Table Data Reader` | Subscription | Needed for the handler validation step to query the actual-state table after processing. |
 
-**Why subscription scope for the Storage Queue data roles?** The workflow deletes
+**Why subscription scope for the Storage Queue/Table data roles?** The workflow deletes
 and recreates the disposable resource group every run. Narrower assignments
 inside that resource group would be destroyed on teardown, so the current
 workflow needs persistent assignments above the disposable stack scope.
@@ -157,7 +158,8 @@ $subscriptionScope = "/subscriptions/$subscriptionId"
 foreach ($role in @(
   "Contributor",
   "User Access Administrator",
-  "Storage Queue Data Contributor"
+  "Storage Queue Data Contributor",
+  "Storage Table Data Reader"
 )) {
   az role assignment create `
     --assignee-object-id $principalObjectId `

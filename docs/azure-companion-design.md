@@ -129,7 +129,7 @@ The active deployment entrypoint expects the following runtime inputs:
 | Gateway admin socket | Local IPC path used by bootstrap to call `GatewayAdmin` RPCs such as `ShowModemDisplayMessage`. |
 | Gateway connector socket | Local framed IPC path used by the long-running runtime after bootstrap succeeds. |
 | Docker socket (bootstrap only) | Docker Engine API socket, bind-mounted from the host, used by the companion to launch the dedicated bootstrap image via Bollard. This is part of the Linux runtime-container bootstrap path and explicit Windows bootstrap, and is not a steady-state Windows service requirement. |
-| Storage Queue endpoint | Runtime configuration for the Azure Storage Queue namespace, from environment variable or persisted `storage-queues.json`. |
+| Storage Queue endpoint | Runtime configuration for the Azure Storage Queue service URI (e.g., `https://<account>.queue.core.windows.net`), from environment variable or persisted `storage-queues.json`. |
 | Upstream queue name | Runtime configuration for the queue that carries gateway-originated connector messages, from environment variable or persisted `storage-queues.json`. |
 | Downstream queue name | Runtime configuration for the queue that carries cloud-originated desired-state messages, from environment variable or persisted `storage-queues.json`. |
 

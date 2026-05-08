@@ -330,6 +330,7 @@ struct StorageQueueTransportFactory;
 const STORAGE_QUEUE_API_VERSION: &str = "2024-11-04";
 const STORAGE_TOKEN_SCOPE: &str = "https://storage.azure.com/.default";
 const STORAGE_QUEUE_VISIBILITY_TIMEOUT_SECS: u64 = 30;
+const STORAGE_QUEUE_EMPTY_POLL_DELAY: Duration = Duration::from_secs(1);
 
 struct StorageQueuePublisher {
     queue_endpoint: String,
@@ -1638,6 +1639,9 @@ impl DownstreamConsumer for StorageQueueConsumer {
                 }
             }
         } else {
+            // Avoid spinning when the queue is empty — the REST API returns
+            // immediately unlike Service Bus which blocked for a wait period.
+            tokio::time::sleep(STORAGE_QUEUE_EMPTY_POLL_DELAY).await;
             Ok(None)
         }
     }

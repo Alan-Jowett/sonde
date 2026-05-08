@@ -86,7 +86,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       }
       runtime: {
         name: 'custom'
-        version: '1.0'
+        version: ''
       }
       scaleAndConcurrency: {
         maximumInstanceCount: 100

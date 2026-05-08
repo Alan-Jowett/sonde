@@ -73,7 +73,6 @@ module functionPlaceholder './function-placeholder.bicep' = {
     location: location
     functionAppName: functionAppName
     functionPlanName: functionPlanName
-    deploymentContainerUrl: functionDeploymentContainerUrl
     storageAccountName: storage.outputs.storageAccountName
     serviceBusFullyQualifiedNamespace: serviceBus.outputs.namespaceFqdn
     upstreamQueueName: upstreamQueueName

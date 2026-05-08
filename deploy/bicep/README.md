@@ -15,7 +15,7 @@ Azure companion architecture.
 - An Azure Storage Account plus two Azure Table resources for the Azure handler:
   - `decodeddata` (default node-state table name for backward-compatible deployments)
   - `programroute`
-- An Azure handler Function App on a Flex Consumption plan
+- An Azure handler Function App on a Classic Consumption plan (`Y1` / `Dynamic`)
 - A system-assigned managed identity on the Function App with:
   - receive permissions on the upstream queue
   - send permissions on the downstream queue
@@ -93,9 +93,9 @@ az deployment sub create `
 
 ## Custom handler package deployment
 
-The Bicep stack provisions the Azure handler Function App shell and the storage-backed
-deployment configuration. The supported `sonde-azure-companion bootstrap` flow now
-uses those deployment outputs to upload the bundled runnable custom-handler package
+The Bicep stack provisions the Azure handler Function App shell with
+`WEBSITE_RUN_FROM_PACKAGE=1`. The supported `sonde-azure-companion bootstrap`
+flow deploys the bundled runnable custom-handler package via zip deploy
 automatically.
 
 If you run the Bicep deployment manually without the repository-owned bootstrap
@@ -105,14 +105,21 @@ image, you still need to publish a package containing:
 - `host.json`
 - `UpstreamConnector/function.json`
 
-The deployment outputs `functionAppName`, `deploymentContainerName`, and
-`deploymentContainerUrl` so automation can discover the target used by that
-package deployment.
+Deploy the package using the zip deploy command. The deployment outputs
+`functionAppName` and the top-level output `resourceGroupName` identify the
+target:
+
+```powershell
+az functionapp deployment source config-zip `
+  --resource-group <resourceGroupName> `
+  --name <functionAppName> `
+  --src handler.zip
+```
 Build the `sonde-azure-handler` executable for the Function App's Linux runtime, not
 for your local host OS. If you package from Windows or macOS, cross-compile or build
 the binary in a Linux environment before uploading it.
 
-Until that package is uploaded and Azure loads at least one function, the
+Until that package is deployed and Azure loads at least one function, the
 Function App is provisioned but not yet runnable.
 
 ## Bootstrap handoff

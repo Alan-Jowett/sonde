@@ -105,9 +105,16 @@ image, you still need to publish a package containing:
 - `host.json`
 - `UpstreamConnector/function.json`
 
-Deploy the package using `az functionapp deployment source config-zip` or the
-Kudu zip deploy API. The deployment output `functionAppName` identifies the
-target Function App.
+Deploy the package using the zip deploy command. The deployment outputs
+`functionAppName` and the top-level output `resourceGroupName` identify the
+target:
+
+```powershell
+az functionapp deployment source config-zip `
+  --resource-group <resourceGroupName> `
+  --name <functionAppName> `
+  --src handler.zip
+```
 Build the `sonde-azure-handler` executable for the Function App's Linux runtime, not
 for your local host OS. If you package from Windows or macOS, cross-compile or build
 the binary in a Linux environment before uploading it.

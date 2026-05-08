@@ -1533,7 +1533,7 @@ impl UpstreamPublisher for StorageQueuePublisher {
                 .await
                 .unwrap_or_else(|_| "<failed to read response>".to_string());
             return Err(CompanionError::Config(format!(
-                "Storage Queue PUT message returned {status}: {body}"
+                "Storage Queue POST message returned {status}: {body}"
             )));
         }
         Ok(())

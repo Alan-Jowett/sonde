@@ -177,12 +177,20 @@ fi
 
 echo "Deploying bundled Azure handler package to Function App $function_app_name" >&2
 echo "Using deployment target $deployment_container_name ($deployment_container_url)" >&2
+# The CLI's post-deployment health check ("Failed to fetch host key") can
+# fail on Flex Consumption plans even when the zip upload (HTTP 202)
+# succeeded.  Tolerate this exit code and rely on wait_for_function_activation
+# to confirm the function is actually loaded.
+config_zip_exit=0
 az functionapp deployment source config-zip \
     --src "$function_package_path" \
     --name "$function_app_name" \
     --resource-group "$resource_group_name" \
     --timeout "$deployment_timeout_secs" \
-    --output none 1>&2
+    --output none 1>&2 || config_zip_exit=$?
+if [ "$config_zip_exit" -ne 0 ]; then
+    echo "WARNING: config-zip exited $config_zip_exit; verifying via function activation probe" >&2
+fi
 
 wait_for_function_activation "$resource_group_name" "$function_app_name" "$activation_timeout_secs"
 

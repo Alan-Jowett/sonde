@@ -24,8 +24,11 @@ param upstreamQueueName string
 @description('Queue name for cloud-originated desired-state traffic.')
 param downstreamQueueName string
 
-@description('Azure handler node-state table name.')
-param nodeStateTableName string
+@description('Azure handler actual-state table name.')
+param actualStateTableName string
+
+@description('Azure handler desired-state table name.')
+param desiredStateTableName string
 
 @description('Azure handler program-route table name.')
 param programRouteTableName string
@@ -104,8 +107,12 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
           value: storageAccountName
         }
         {
-          name: 'SONDE_AZURE_HANDLER_NODE_STATE_TABLE'
-          value: nodeStateTableName
+          name: 'SONDE_AZURE_HANDLER_ACTUAL_STATE_TABLE'
+          value: actualStateTableName
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_DESIRED_STATE_TABLE'
+          value: desiredStateTableName
         }
         {
           name: 'SONDE_AZURE_HANDLER_ACTUAL_STATE_TABLE'

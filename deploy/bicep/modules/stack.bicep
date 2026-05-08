@@ -18,8 +18,11 @@ param upstreamQueueName string
 @description('Queue name for cloud-originated desired-state traffic.')
 param downstreamQueueName string
 
-@description('Azure handler node-state table name.')
-param nodeStateTableName string
+@description('Azure handler actual-state table name.')
+param actualStateTableName string
+
+@description('Azure handler desired-state table name.')
+param desiredStateTableName string
 
 @description('Azure handler program-route table name.')
 param programRouteTableName string
@@ -42,7 +45,8 @@ module storage './storage.bicep' = {
   params: {
     location: location
     storageAccountName: storageAccountName
-    nodeStateTableName: nodeStateTableName
+    actualStateTableName: actualStateTableName
+    desiredStateTableName: desiredStateTableName
     programRouteTableName: programRouteTableName
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
@@ -61,7 +65,8 @@ module functionPlaceholder './function-placeholder.bicep' = {
     queueServiceUri: storage.outputs.queueServiceUri
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
-    nodeStateTableName: storage.outputs.nodeStateTableName
+    actualStateTableName: storage.outputs.actualStateTableName
+    desiredStateTableName: storage.outputs.desiredStateTableName
     programRouteTableName: storage.outputs.programRouteTableName
     tags: tags
   }
@@ -89,7 +94,8 @@ module functionRbac './function-rbac.bicep' = {
   params: {
     functionPrincipalId: functionPlaceholder.outputs.principalId
     storageAccountName: storageAccountName
-    nodeStateTableName: storage.outputs.nodeStateTableName
+    actualStateTableName: storage.outputs.actualStateTableName
+    desiredStateTableName: storage.outputs.desiredStateTableName
     programRouteTableName: storage.outputs.programRouteTableName
   }
   dependsOn: [
@@ -104,7 +110,8 @@ output upstreamQueueName string = storage.outputs.upstreamQueueName
 output downstreamQueueName string = storage.outputs.downstreamQueueName
 output deploymentContainerName string = storage.outputs.deploymentContainerName
 output deploymentContainerUrl string = '${storage.outputs.blobEndpoint}${storage.outputs.deploymentContainerName}'
-output nodeStateTableName string = storage.outputs.nodeStateTableName
+output actualStateTableName string = storage.outputs.actualStateTableName
+output desiredStateTableName string = storage.outputs.desiredStateTableName
 output programRouteTableName string = storage.outputs.programRouteTableName
 output functionAppName string = functionPlaceholder.outputs.functionAppName
 output functionPrincipalId string = functionPlaceholder.outputs.principalId

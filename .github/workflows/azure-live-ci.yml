@@ -205,11 +205,24 @@ jobs:
           print(d['properties']['outputs']['functionAppName']['value'])
           ")"
           echo "Deploying handler to $FUNCTION_APP_NAME"
-          az functionapp deployment source config-zip \
-            --name "$FUNCTION_APP_NAME" \
-            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-            --src .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
-            --timeout 600
+          # The Consumption plan SCM/Kudu site may take a moment to become
+          # available after Bicep provisioning.  Retry up to 3 times.
+          for deploy_attempt in 1 2 3; do
+            if az functionapp deployment source config-zip \
+              --name "$FUNCTION_APP_NAME" \
+              --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+              --src .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
+              --timeout 600 2>&1; then
+              echo "Zip deploy succeeded on attempt $deploy_attempt"
+              break
+            fi
+            echo "Zip deploy attempt $deploy_attempt failed, retrying in 30s..."
+            sleep 30
+            if [ "$deploy_attempt" -eq 3 ]; then
+              echo "::error::Zip deploy failed after 3 attempts"
+              exit 1
+            fi
+          done
           echo "Waiting for function to load..."
           for attempt in $(seq 1 30); do
             loaded="$(az functionapp function list \

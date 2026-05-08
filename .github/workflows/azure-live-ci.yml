@@ -253,6 +253,20 @@ jobs:
             echo "  attempt $attempt: $loaded functions loaded, waiting..."
             sleep 10
           done
+          # Wake up the Consumption plan host so the queue trigger starts
+          # polling. On Y1/Dynamic, the host sleeps until it receives
+          # traffic.  A simple HTTP GET (even a 404) is enough.
+          FUNCTION_URL="https://${FUNCTION_APP_NAME}.azurewebsites.net"
+          echo "Warming up function host at $FUNCTION_URL ..."
+          for warmup in $(seq 1 5); do
+            http_code="$(curl -s -o /dev/null -w '%{http_code}' "$FUNCTION_URL" 2>/dev/null || echo 0)"
+            echo "  warmup $warmup: HTTP $http_code"
+            if [ "$http_code" != "0" ] && [ "$http_code" != "502" ]; then
+              break
+            fi
+            sleep 10
+          done
+          echo "Function app warm-up complete"
 
       - name: Refresh Azure login before handler validation
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0

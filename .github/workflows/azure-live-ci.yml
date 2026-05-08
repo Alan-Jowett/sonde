@@ -405,6 +405,20 @@ jobs:
                           await asyncio.sleep(5)
 
                       if not found:
+                          # Check if the message is still in the queue (function never dequeued)
+                          async with QueueServiceClient(
+                              queue_endpoint, credential=credential
+                          ) as diag_svc:
+                              diag_client = diag_svc.get_queue_client(upstream_queue)
+                              props = await diag_client.get_queue_properties()
+                              msg_count = props.approximate_message_count
+                              print(f"Upstream queue approximate message count: {msg_count}")
+                              if msg_count and msg_count > 0:
+                                  print("::warning::Messages remain in queue — the function "
+                                        "trigger may not be dequeuing (check RBAC / trigger config)")
+                              else:
+                                  print("Queue is empty — function dequeued but may have "
+                                        "failed during processing (check App Insights logs)")
                           print(f"::error::No row for node `{node_id}` in `{actual_state_table}` "
                                 f"after {TIMEOUT_SECS}s", file=sys.stderr)
                           return 1
@@ -417,6 +431,14 @@ jobs:
           sys.exit(asyncio.run(main()))
           PY
 
+      - name: Refresh Azure login before diagnostics
+        if: always()
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
       - name: Dump Azure handler function logs
         if: always()
         shell: bash
@@ -424,11 +446,19 @@ jobs:
           if [ -f .azure-live-state/appinsights-name.txt ]; then
             APPINSIGHTS_NAME="$(cat .azure-live-state/appinsights-name.txt)"
             echo "Querying App Insights ($APPINSIGHTS_NAME) for handler logs..."
+            echo "--- Errors and warnings ---"
             az monitor app-insights query \
               --app "$APPINSIGHTS_NAME" \
               --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-              --analytics-query "union traces, exceptions | order by timestamp desc | take 50 | project timestamp, message, severityLevel, outerMessage" \
-              -o table 2>/dev/null || echo "No App Insights data available"
+              --analytics-query "union traces, exceptions | where severityLevel >= 2 | order by timestamp desc | take 30 | project timestamp, message, severityLevel, outerMessage" \
+              -o table 2>/dev/null || echo "(no error data)"
+            echo ""
+            echo "--- All recent traces ---"
+            az monitor app-insights query \
+              --app "$APPINSIGHTS_NAME" \
+              --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+              --analytics-query "traces | where message != '' | order by timestamp desc | take 50 | project timestamp, message, severityLevel" \
+              -o table 2>/dev/null || echo "(no trace data)"
           else
             echo "No App Insights configured, skipping log dump"
           fi

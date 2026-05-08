@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Builder image for the Azure handler function package.  Produces a
+# statically-linked musl binary inside an Alpine container so the
+# resulting artifact runs on any Linux host regardless of glibc version.
+#
+# Usage (via build-function-package.sh):
+#   docker build \
+#       -f .github/docker/Dockerfile.azure-handler-builder \
+#       -o type=local,dest=.artifacts/azure-handler-function .
+
+# ── Stage 1: build ──────────────────────────────────────────────────────────
+# rust:alpine — same base image used by the companion builder.
+FROM rust:alpine@sha256:ef7b340d4201444fa2757dfddfd4c03be9d2bde468de7b7a68b0e9fabb794334 AS builder
+
+RUN apk add --no-cache build-base musl-dev openssl-dev openssl-libs-static protobuf pkgconf zip
+
+WORKDIR /sonde
+COPY . .
+RUN cargo build --locked --release -p sonde-azure-handler
+
+RUN mkdir -p /out/UpstreamConnector /pkg \
+    && cp target/release/sonde-azure-handler /out/sonde-azure-handler \
+    && chmod 0755 /out/sonde-azure-handler \
+    && cp crates/sonde-azure-handler/function-app/host.json /out/host.json \
+    && cp crates/sonde-azure-handler/function-app/UpstreamConnector/function.json \
+       /out/UpstreamConnector/function.json \
+    && cd /out && zip -q -r /pkg/sonde-azure-handler-function.zip .
+
+# ── Stage 2: export ─────────────────────────────────────────────────────────
+# Scratch stage so `docker build -o` exports only the zip artifact.
+FROM scratch
+COPY --from=builder /pkg/sonde-azure-handler-function.zip /sonde-azure-handler-function.zip

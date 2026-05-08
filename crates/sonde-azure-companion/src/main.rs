@@ -474,7 +474,10 @@ fn load_runtime_config(state_dir: &Path) -> Result<RuntimeConfig, CompanionError
     let queue_endpoint = if let Some(value) = endpoint_env {
         require_non_empty(value, "SONDE_AZURE_STORAGE_QUEUE_ENDPOINT")?
     } else if let Some(config) = file_config.as_ref() {
-        require_non_empty(config.queue_endpoint.clone(), "storage-queues.json queue_endpoint")?
+        require_non_empty(
+            config.queue_endpoint.clone(),
+            "storage-queues.json queue_endpoint",
+        )?
     } else {
         return Err(CompanionError::Config(
             "SONDE_AZURE_STORAGE_QUEUE_ENDPOINT must be set and non-empty (or storage-queues.json must exist in state dir)"
@@ -515,7 +518,9 @@ fn load_runtime_config(state_dir: &Path) -> Result<RuntimeConfig, CompanionError
     })
 }
 
-fn load_storage_queues_config_file(state_dir: &Path) -> Result<StorageQueuesConfigFile, CompanionError> {
+fn load_storage_queues_config_file(
+    state_dir: &Path,
+) -> Result<StorageQueuesConfigFile, CompanionError> {
     let effective_state_dir = resolve_effective_state_dir(state_dir)?;
     let config_path = effective_state_dir.join(STORAGE_QUEUES_CONFIG_FILENAME);
     let bytes = std::fs::read(&config_path)?;
@@ -1492,7 +1497,9 @@ impl TokenCredential for ClientAssertionCredential {
     }
 }
 
-async fn get_storage_bearer_token(credential: &dyn TokenCredential) -> Result<String, CompanionError> {
+async fn get_storage_bearer_token(
+    credential: &dyn TokenCredential,
+) -> Result<String, CompanionError> {
     let token = credential
         .get_token(&[STORAGE_TOKEN_SCOPE], None)
         .await
@@ -1505,9 +1512,7 @@ impl UpstreamPublisher for StorageQueuePublisher {
     async fn publish(&mut self, payload: Vec<u8>) -> Result<(), CompanionError> {
         let token = get_storage_bearer_token(&*self.credential).await?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
-        let body = format!(
-            "<QueueMessage><MessageText>{encoded}</MessageText></QueueMessage>"
-        );
+        let body = format!("<QueueMessage><MessageText>{encoded}</MessageText></QueueMessage>");
         let url = format!("{}/{}/messages", self.queue_endpoint, self.queue_name);
         let response = self
             .http_client
@@ -1518,7 +1523,9 @@ impl UpstreamPublisher for StorageQueuePublisher {
             .body(body)
             .send()
             .await
-            .map_err(|e| CompanionError::Config(format!("send Storage Queue message failed: {e}")))?;
+            .map_err(|e| {
+                CompanionError::Config(format!("send Storage Queue message failed: {e}"))
+            })?;
         if !response.status().is_success() {
             let status = response.status();
             let body = response
@@ -1591,7 +1598,9 @@ impl DownstreamConsumer for StorageQueueConsumer {
             .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
             .send()
             .await
-            .map_err(|e| CompanionError::Config(format!("receive Storage Queue message failed: {e}")))?;
+            .map_err(|e| {
+                CompanionError::Config(format!("receive Storage Queue message failed: {e}"))
+            })?;
         if !response.status().is_success() {
             let status = response.status();
             let body = response
@@ -1602,10 +1611,9 @@ impl DownstreamConsumer for StorageQueueConsumer {
                 "Storage Queue GET messages returned {status}: {body}"
             )));
         }
-        let xml = response
-            .text()
-            .await
-            .map_err(|e| CompanionError::Config(format!("read Storage Queue response failed: {e}")))?;
+        let xml = response.text().await.map_err(|e| {
+            CompanionError::Config(format!("read Storage Queue response failed: {e}"))
+        })?;
 
         let message = parse_queue_message_xml(&xml)?;
         if let Some(message) = message {
@@ -1617,7 +1625,9 @@ impl DownstreamConsumer for StorageQueueConsumer {
                 }
                 Err(err) => {
                     // Abandon the message on decode error by making it visible again
-                    let abandon_result = self.abandon_message_direct(&message.message_id, &message.pop_receipt).await;
+                    let abandon_result = self
+                        .abandon_message_direct(&message.message_id, &message.pop_receipt)
+                        .await;
                     if let Err(abandon_err) = abandon_result {
                         eprintln!(
                             "failed to abandon downstream Storage Queue message after body decode error: {abandon_err}"
@@ -1648,7 +1658,9 @@ impl DownstreamConsumer for StorageQueueConsumer {
             .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
             .send()
             .await
-            .map_err(|e| CompanionError::Config(format!("delete Storage Queue message failed: {e}")))?;
+            .map_err(|e| {
+                CompanionError::Config(format!("delete Storage Queue message failed: {e}"))
+            })?;
         if !response.status().is_success() {
             let status = response.status();
             let body = response
@@ -1667,7 +1679,8 @@ impl DownstreamConsumer for StorageQueueConsumer {
         let inflight = self.inflight.as_ref().ok_or_else(|| {
             CompanionError::Config("no inflight downstream message to abandon".to_string())
         })?;
-        self.abandon_message_direct(&inflight.message_id.clone(), &inflight.pop_receipt.clone()).await?;
+        self.abandon_message_direct(&inflight.message_id.clone(), &inflight.pop_receipt.clone())
+            .await?;
         self.inflight = None;
         Ok(())
     }
@@ -1681,7 +1694,11 @@ impl DownstreamConsumer for StorageQueueConsumer {
 }
 
 impl StorageQueueConsumer {
-    async fn abandon_message_direct(&self, message_id: &str, pop_receipt: &str) -> Result<(), CompanionError> {
+    async fn abandon_message_direct(
+        &self,
+        message_id: &str,
+        pop_receipt: &str,
+    ) -> Result<(), CompanionError> {
         let token = get_storage_bearer_token(&*self.credential).await?;
         let encoded_receipt = urlencoding_encode(pop_receipt);
         let url = format!(
@@ -1696,7 +1713,9 @@ impl StorageQueueConsumer {
             .header("Content-Length", "0")
             .send()
             .await
-            .map_err(|e| CompanionError::Config(format!("abandon Storage Queue message failed: {e}")))?;
+            .map_err(|e| {
+                CompanionError::Config(format!("abandon Storage Queue message failed: {e}"))
+            })?;
         if !response.status().is_success() {
             let status = response.status();
             let body = response
@@ -2716,10 +2735,10 @@ mod tests {
         resolve_bootstrap_image, resolve_effective_state_dir, resolve_state_relative_path,
         run_bootstrap_deployment_with_docker_and_image, trim_buffer_to_max_len,
         validate_display_lines, write_framed, ClientAssertionCredential, CompanionError,
-        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState, StorageQueuesConfigFile,
-        ServicePrincipalStateFile, UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME,
-        CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME, STORAGE_QUEUES_CONFIG_FILENAME,
-        SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX,
+        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState, ServicePrincipalStateFile,
+        StorageQueuesConfigFile, UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME,
+        CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME,
+        STATE_GENERATION_PREFIX, STORAGE_QUEUES_CONFIG_FILENAME,
     };
     #[cfg(windows)]
     use super::{
@@ -2839,16 +2858,18 @@ mod tests {
                     Some("https://example.queue.core.windows.net"),
                 ),
                 ("SONDE_AZURE_STORAGE_UPSTREAM_QUEUE", Some("upstream")),
-                (
-                    "SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE",
-                    Some("downstream"),
-                ),
+                ("SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE", Some("downstream")),
             ],
             test,
         );
     }
 
-    fn write_storage_queues_config(temp: &TempDir, endpoint: &str, upstream: &str, downstream: &str) {
+    fn write_storage_queues_config(
+        temp: &TempDir,
+        endpoint: &str,
+        upstream: &str,
+        downstream: &str,
+    ) {
         let config = StorageQueuesConfigFile {
             queue_endpoint: endpoint.to_string(),
             upstream_queue: upstream.to_string(),
@@ -3412,7 +3433,12 @@ mod tests {
     #[test]
     fn test_load_runtime_config_from_file() {
         let temp = TempDir::new().unwrap();
-        write_storage_queues_config(&temp, "https://file.queue.core.windows.net", "file-up", "file-down");
+        write_storage_queues_config(
+            &temp,
+            "https://file.queue.core.windows.net",
+            "file-up",
+            "file-down",
+        );
 
         temp_env::with_vars_unset(
             [
@@ -3437,7 +3463,12 @@ mod tests {
     #[test]
     fn test_load_runtime_config_env_overrides_file() {
         let temp = TempDir::new().unwrap();
-        write_storage_queues_config(&temp, "https://file.queue.core.windows.net", "file-up", "file-down");
+        write_storage_queues_config(
+            &temp,
+            "https://file.queue.core.windows.net",
+            "file-up",
+            "file-down",
+        );
 
         temp_env::with_vars(
             [
@@ -3495,7 +3526,12 @@ mod tests {
     #[test]
     fn test_load_runtime_config_rejects_blank_storage_queues_file_values() {
         let temp = TempDir::new().unwrap();
-        write_storage_queues_config(&temp, "https://example.queue.core.windows.net", "  ", "downstream");
+        write_storage_queues_config(
+            &temp,
+            "https://example.queue.core.windows.net",
+            "  ",
+            "downstream",
+        );
 
         temp_env::with_vars_unset(
             [

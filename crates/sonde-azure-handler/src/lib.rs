@@ -56,9 +56,8 @@ pub struct RuntimeConfig {
 
 impl RuntimeConfig {
     pub fn from_env() -> Result<Self, HandlerError> {
-        let storage_queue_endpoint =
-            required_env("SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT")
-                .or_else(|_| required_env("QueueConnection__queueServiceUri"))?;
+        let storage_queue_endpoint = required_env("SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT")
+            .or_else(|_| required_env("QueueConnection__queueServiceUri"))?;
         Ok(Self {
             storage_queue_endpoint,
             upstream_queue: required_env("SONDE_AZURE_HANDLER_UPSTREAM_QUEUE")?,
@@ -455,9 +454,7 @@ impl QueuePublisher for StorageQueuePublisher {
     async fn publish(&self, queue: &str, payload: Vec<u8>) -> Result<(), HandlerError> {
         let token = self.get_bearer_token().await?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
-        let body = format!(
-            "<QueueMessage><MessageText>{encoded}</MessageText></QueueMessage>"
-        );
+        let body = format!("<QueueMessage><MessageText>{encoded}</MessageText></QueueMessage>");
         let url = format!("{}/{queue}/messages", self.queue_endpoint);
         let response = self
             .http_client

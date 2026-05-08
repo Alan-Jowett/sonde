@@ -157,7 +157,7 @@ published when both desired fields diverge simultaneously.
 3. Assert: the returned row is the one with the greatest `timestamp_ms`.
 4. Repeat for desired-state rows.
 5. Assert: repeated timestamps can coexist without overwriting one another.
-6. Assert: when two rows share the same `timestamp_ms`, the later-appended row sorts ahead of the earlier one for `Top(1)`.
+6. Assert: when two rows share the same `timestamp_ms` within one handler process lifetime, the later-appended row sorts ahead of the earlier one for `Top(1)`.
 
 ---
 

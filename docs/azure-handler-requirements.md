@@ -223,7 +223,7 @@ so that the newest row for a node sorts first for `Top(1)` retrieval.
 2. Within one node partition, newer timestamps sort before older timestamps by row key.
 3. A `Top(1)` query scoped to one node returns that node's newest row without a full partition scan.
 4. The row key format permits multiple rows with the same `timestamp_ms` without overwriting history.
-5. For rows that share the same `timestamp_ms`, the row key still provides deterministic newest-first ordering within that timestamp.
+5. For rows that share the same `timestamp_ms`, the row key still provides deterministic uniqueness, and within one handler process lifetime later appends sort before earlier appends. Reconciliation correctness MUST NOT depend on a globally newest-first order across restarts or concurrent handler instances.
 
 ---
 

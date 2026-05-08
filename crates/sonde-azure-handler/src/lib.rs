@@ -728,6 +728,9 @@ fn encode_node_partition_key(node_id: &str) -> String {
     format!("n:{}", hex::encode(digest))
 }
 
+// Equal-timestamp ordering is only guaranteed within one handler process
+// lifetime; reconciliation correctness must not depend on cross-process suffix
+// ordering.
 fn next_history_row_key(timestamp_ms: u64) -> Result<String, HandlerError> {
     let sequence = HISTORY_ROW_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let process_nonce = history_row_process_nonce()?;
@@ -1626,7 +1629,7 @@ mod tests {
     }
 
     #[test]
-    fn history_row_keys_sort_later_appends_first_for_equal_timestamps() {
+    fn history_row_keys_sort_later_appends_first_for_equal_timestamps_within_process() {
         let first = next_history_row_key(1234).unwrap();
         let second = next_history_row_key(1234).unwrap();
         assert!(second < first);

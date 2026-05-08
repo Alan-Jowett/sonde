@@ -118,7 +118,7 @@ The design uses three Azure Tables:
 Each row uses:
 
 - `PartitionKey = "n:" + lowercase hex-encoded SHA-256(node_id UTF-8 bytes)`
-- `RowKey = <reverse_tick_ms as fixed-width lowercase hex> + ":" + <implementation-defined suffix that orders later appends first within the same timestamp>`
+- `RowKey = <reverse_tick_ms as fixed-width lowercase hex> + ":" + <implementation-defined suffix that preserves append uniqueness and orders later appends first within the same timestamp for one handler process lifetime>`
 
 The row contains the following logical columns:
 
@@ -136,15 +136,18 @@ The row contains the following logical columns:
 The node-scoped `PartitionKey` keeps each node's history in one queryable
 partition. The reverse-tick `RowKey` prefix makes newer timestamps sort first.
 The suffix preserves append-only behavior when multiple deliveries share the
-same `timestamp_ms`, and it must order later appends before earlier appends
-within that timestamp so `Top(1)` remains deterministic.
+same `timestamp_ms`, and it orders later appends before earlier appends only
+within one handler process lifetime. Across restarts or concurrent handler
+instances, equal-timestamp row ordering is intentionally unspecified, so the
+reconciliation path must not depend on `Top(1)` returning the most recently
+appended equal-timestamp row.
 
 ### 4.2  `DesiredNodeState` schema
 
 Each row uses:
 
 - `PartitionKey = "n:" + lowercase hex-encoded SHA-256(node_id UTF-8 bytes)`
-- `RowKey = <reverse_tick_ms as fixed-width lowercase hex> + ":" + <implementation-defined suffix that orders later appends first within the same timestamp>`
+- `RowKey = <reverse_tick_ms as fixed-width lowercase hex> + ":" + <implementation-defined suffix that preserves append uniqueness and orders later appends first within the same timestamp for one handler process lifetime>`
 
 The row contains:
 

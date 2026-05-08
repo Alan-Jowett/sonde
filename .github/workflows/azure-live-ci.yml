@@ -244,6 +244,24 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Check Azure handler function health
+        shell: bash
+        run: |
+          set -euo pipefail
+          FUNCTION_APP_NAME="$(python3 -c "
+          import json
+          d = json.load(open('.azure-live-state/deployment.json'))
+          print(d['properties']['outputs']['functionAppName']['value'])
+          ")"
+          echo "Checking function app $FUNCTION_APP_NAME..."
+          az functionapp show --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --query "{state:state,usageState:usageState,availabilityState:availabilityState}" -o json
+          echo "App settings:"
+          az functionapp config appsettings list --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --query "[?starts_with(name,'SONDE_') || starts_with(name,'Queue')].{name:name,value:value}" -o table
+
       - name: Validate Azure handler processes upstream messages
         shell: bash
         run: |

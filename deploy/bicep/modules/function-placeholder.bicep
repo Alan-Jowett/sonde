@@ -18,8 +18,8 @@ param deploymentContainerUrl string
 @description('Storage Account name used by the Function placeholder deployment configuration.')
 param storageAccountName string
 
-@description('Service Bus fully qualified namespace.')
-param serviceBusFullyQualifiedNamespace string
+@description('Storage Queue service URI for identity-based trigger connections.')
+param queueServiceUri string
 
 @description('Queue name for gateway-originated connector traffic.')
 param upstreamQueueName string
@@ -98,8 +98,8 @@ resource appSettings 'Microsoft.Web/sites/config@2024-04-01' = {
   name: 'appsettings'
   properties: {
     DEPLOYMENT_STORAGE_CONNECTION_STRING: storageConnectionString
-    AzureWebJobsServiceBus__fullyQualifiedNamespace: serviceBusFullyQualifiedNamespace
-    SONDE_AZURE_HANDLER_SERVICE_BUS_NAMESPACE: serviceBusFullyQualifiedNamespace
+    QueueConnection__queueServiceUri: queueServiceUri
+    SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT: queueServiceUri
     SONDE_AZURE_HANDLER_UPSTREAM_QUEUE: upstreamQueueName
     SONDE_AZURE_HANDLER_DOWNSTREAM_QUEUE: downstreamQueueName
     SONDE_AZURE_HANDLER_STORAGE_ACCOUNT: storageAccountName
@@ -111,4 +111,3 @@ resource appSettings 'Microsoft.Web/sites/config@2024-04-01' = {
 output functionAppName string = functionApp.name
 output functionAppResourceId string = functionApp.id
 output principalId string = functionApp.identity.principalId
-output serviceBusFullyQualifiedNamespace string = serviceBusFullyQualifiedNamespace

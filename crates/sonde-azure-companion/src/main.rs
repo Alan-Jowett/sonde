@@ -6,10 +6,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use azservicebus::{
-    ServiceBusClient, ServiceBusClientOptions, ServiceBusMessage, ServiceBusReceiver,
-    ServiceBusReceiverOptions, ServiceBusSender, ServiceBusSenderOptions,
-};
 use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
 use azure_core::date::OffsetDateTime;
 use azure_core::error::ErrorKind;
@@ -57,11 +53,10 @@ const SERVICE_PRINCIPAL_STATE_FILENAME: &str = "service-principal.json";
 const DEFAULT_BOOTSTRAP_IMAGE_REPOSITORY: &str = "ghcr.io/alan-jowett/sonde-azure-bootstrap";
 const CERT_PEM_FILENAME: &str = "cert.pem";
 const KEY_PEM_FILENAME: &str = "key.pem";
-const SERVICE_BUS_CONFIG_FILENAME: &str = "service-bus.json";
+const STORAGE_QUEUES_CONFIG_FILENAME: &str = "storage-queues.json";
 const STAGING_DIR_NAME: &str = ".staging";
 const ACTIVE_STATE_FILENAME: &str = ".current-state";
 const STATE_GENERATION_PREFIX: &str = ".state-";
-const DEFAULT_DOWNSTREAM_WAIT_SECS: u64 = 1;
 const CONNECTOR_MAX_FRAME_LENGTH: usize =
     sonde_gateway::connector::DEFAULT_CONNECTOR_MAX_MESSAGE_SIZE;
 const ACCESS_TOKEN_REFRESH_MARGIN_SECS: i64 = 300;
@@ -75,7 +70,7 @@ const SERVICE_NAME: &str = "sonde-azure-companion";
 #[cfg(windows)]
 const SERVICE_DISPLAY_NAME: &str = "Sonde Azure Companion";
 #[cfg(windows)]
-const SERVICE_DESCRIPTION: &str = "Bridges the Sonde gateway connector to Azure Service Bus.";
+const SERVICE_DESCRIPTION: &str = "Bridges the Sonde gateway connector to Azure Storage Queues.";
 #[cfg(windows)]
 static SERVICE_CLI: OnceLock<Cli> = OnceLock::new();
 #[cfg(windows)]
@@ -183,7 +178,7 @@ struct BootstrapArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RuntimeConfig {
-    namespace: String,
+    queue_endpoint: String,
     upstream_queue: String,
     downstream_queue: String,
 }
@@ -197,8 +192,8 @@ struct ServicePrincipalStateFile {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-struct ServiceBusConfigFile {
-    namespace: String,
+struct StorageQueuesConfigFile {
+    queue_endpoint: String,
     upstream_queue: String,
     downstream_queue: String,
 }
@@ -235,10 +230,10 @@ struct BicepBootstrapValues {
     #[serde(rename = "clientId", deserialize_with = "deserialize_bicep_string")]
     client_id: String,
     #[serde(
-        rename = "serviceBusNamespace",
+        rename = "storageQueueEndpoint",
         deserialize_with = "deserialize_bicep_string"
     )]
-    service_bus_namespace: String,
+    storage_queue_endpoint: String,
     #[serde(
         rename = "upstreamQueue",
         deserialize_with = "deserialize_bicep_string"
@@ -330,18 +325,31 @@ trait BrokerTransportFactory {
     ) -> Result<(Self::Publisher, Self::Consumer), CompanionError>;
 }
 
-struct AzServiceBusTransportFactory;
+struct StorageQueueTransportFactory;
 
-struct AzServiceBusPublisher {
-    _client: ServiceBusClient<azservicebus::core::BasicRetryPolicy>,
-    sender: ServiceBusSender,
+const STORAGE_QUEUE_API_VERSION: &str = "2024-11-04";
+const STORAGE_TOKEN_SCOPE: &str = "https://storage.azure.com/.default";
+const STORAGE_QUEUE_VISIBILITY_TIMEOUT_SECS: u64 = 30;
+
+struct StorageQueuePublisher {
+    queue_endpoint: String,
+    queue_name: String,
+    credential: Arc<dyn TokenCredential>,
+    http_client: reqwest::Client,
 }
 
-struct AzServiceBusConsumer {
-    _client: ServiceBusClient<azservicebus::core::BasicRetryPolicy>,
-    receiver: ServiceBusReceiver,
-    inflight:
-        Option<azservicebus::primitives::service_bus_received_message::ServiceBusReceivedMessage>,
+struct StorageQueueConsumer {
+    queue_endpoint: String,
+    queue_name: String,
+    credential: Arc<dyn TokenCredential>,
+    http_client: reqwest::Client,
+    inflight: Option<StorageQueueMessage>,
+}
+
+struct StorageQueueMessage {
+    message_id: String,
+    pop_receipt: String,
+    body: Vec<u8>,
 }
 
 #[cfg(unix)]
@@ -447,71 +455,71 @@ fn require_non_empty(value: String, env_name: &str) -> Result<String, CompanionE
 }
 
 fn load_runtime_config(state_dir: &Path) -> Result<RuntimeConfig, CompanionError> {
-    let namespace_env = std::env::var("SONDE_AZURE_SERVICEBUS_NAMESPACE")
+    let endpoint_env = std::env::var("SONDE_AZURE_STORAGE_QUEUE_ENDPOINT")
         .ok()
         .filter(|v| !v.trim().is_empty());
-    let upstream_env = std::env::var("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE")
+    let upstream_env = std::env::var("SONDE_AZURE_STORAGE_UPSTREAM_QUEUE")
         .ok()
         .filter(|v| !v.trim().is_empty());
-    let downstream_env = std::env::var("SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE")
+    let downstream_env = std::env::var("SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE")
         .ok()
         .filter(|v| !v.trim().is_empty());
 
-    let file_config = match load_service_bus_config_file(state_dir) {
+    let file_config = match load_storage_queues_config_file(state_dir) {
         Ok(config) => Some(config),
         Err(CompanionError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => None,
         Err(err) => return Err(err),
     };
 
-    let namespace = if let Some(value) = namespace_env {
-        require_non_empty(value, "SONDE_AZURE_SERVICEBUS_NAMESPACE")?
+    let queue_endpoint = if let Some(value) = endpoint_env {
+        require_non_empty(value, "SONDE_AZURE_STORAGE_QUEUE_ENDPOINT")?
     } else if let Some(config) = file_config.as_ref() {
-        require_non_empty(config.namespace.clone(), "service-bus.json namespace")?
+        require_non_empty(config.queue_endpoint.clone(), "storage-queues.json queue_endpoint")?
     } else {
         return Err(CompanionError::Config(
-            "SONDE_AZURE_SERVICEBUS_NAMESPACE must be set and non-empty (or service-bus.json must exist in state dir)"
+            "SONDE_AZURE_STORAGE_QUEUE_ENDPOINT must be set and non-empty (or storage-queues.json must exist in state dir)"
                 .into(),
         ));
     };
     let upstream_queue = if let Some(value) = upstream_env {
-        require_non_empty(value, "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE")?
+        require_non_empty(value, "SONDE_AZURE_STORAGE_UPSTREAM_QUEUE")?
     } else if let Some(config) = file_config.as_ref() {
         require_non_empty(
             config.upstream_queue.clone(),
-            "service-bus.json upstream_queue",
+            "storage-queues.json upstream_queue",
         )?
     } else {
         return Err(CompanionError::Config(
-            "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE must be set and non-empty (or service-bus.json must exist in state dir)"
+            "SONDE_AZURE_STORAGE_UPSTREAM_QUEUE must be set and non-empty (or storage-queues.json must exist in state dir)"
                 .into(),
         ));
     };
     let downstream_queue = if let Some(value) = downstream_env {
-        require_non_empty(value, "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE")?
+        require_non_empty(value, "SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE")?
     } else if let Some(config) = file_config.as_ref() {
         require_non_empty(
             config.downstream_queue.clone(),
-            "service-bus.json downstream_queue",
+            "storage-queues.json downstream_queue",
         )?
     } else {
         return Err(CompanionError::Config(
-            "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE must be set and non-empty (or service-bus.json must exist in state dir)"
+            "SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE must be set and non-empty (or storage-queues.json must exist in state dir)"
                 .into(),
         ));
     };
 
     Ok(RuntimeConfig {
-        namespace,
+        queue_endpoint,
         upstream_queue,
         downstream_queue,
     })
 }
 
-fn load_service_bus_config_file(state_dir: &Path) -> Result<ServiceBusConfigFile, CompanionError> {
+fn load_storage_queues_config_file(state_dir: &Path) -> Result<StorageQueuesConfigFile, CompanionError> {
     let effective_state_dir = resolve_effective_state_dir(state_dir)?;
-    let config_path = effective_state_dir.join(SERVICE_BUS_CONFIG_FILENAME);
+    let config_path = effective_state_dir.join(STORAGE_QUEUES_CONFIG_FILENAME);
     let bytes = std::fs::read(&config_path)?;
-    let config: ServiceBusConfigFile = serde_json::from_slice(&bytes)?;
+    let config: StorageQueuesConfigFile = serde_json::from_slice(&bytes)?;
     Ok(config)
 }
 
@@ -1256,7 +1264,7 @@ fn validate_certificate_matches_private_key(
 
 fn parse_bicep_outputs(
     json: &str,
-) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
+) -> Result<(ServicePrincipalStateFile, StorageQueuesConfigFile), CompanionError> {
     let outputs: BicepOutputs = serde_json::from_str(json).map_err(|e| {
         CompanionError::Config(format!("failed to parse Bicep deployment outputs: {e}"))
     })?;
@@ -1273,8 +1281,8 @@ fn parse_bicep_outputs(
         private_key_path: KEY_PEM_FILENAME.to_string(),
     };
 
-    let sb = ServiceBusConfigFile {
-        namespace: bootstrap_values.service_bus_namespace,
+    let sb = StorageQueuesConfigFile {
+        queue_endpoint: bootstrap_values.storage_queue_endpoint,
         upstream_queue: bootstrap_values.upstream_queue,
         downstream_queue: bootstrap_values.downstream_queue,
     };
@@ -1362,7 +1370,7 @@ fn build_container_env(cert_base64: &str, args: &BootstrapArgs) -> Vec<String> {
 fn downstream_body_to_connector_payload(body: &[u8]) -> Result<Vec<u8>, CompanionError> {
     if body.len() > CONNECTOR_MAX_FRAME_LENGTH {
         return Err(CompanionError::Config(format!(
-            "downstream Service Bus message body length {} exceeds connector max frame length {}",
+            "downstream message body length {} exceeds connector max frame length {}",
             body.len(),
             CONNECTOR_MAX_FRAME_LENGTH
         )));
@@ -1370,7 +1378,7 @@ fn downstream_body_to_connector_payload(body: &[u8]) -> Result<Vec<u8>, Companio
     Ok(body.to_vec())
 }
 
-fn build_service_bus_credential(
+fn build_storage_queue_credential(
     runtime_state: &RuntimeCredentialState,
 ) -> Result<Arc<dyn TokenCredential>, CompanionError> {
     let certificate_thumbprint = load_certificate_thumbprint(&runtime_state.certificate_path)?;
@@ -1484,17 +1492,86 @@ impl TokenCredential for ClientAssertionCredential {
     }
 }
 
+async fn get_storage_bearer_token(credential: &dyn TokenCredential) -> Result<String, CompanionError> {
+    let token = credential
+        .get_token(&[STORAGE_TOKEN_SCOPE], None)
+        .await
+        .map_err(|e| CompanionError::Config(format!("get Storage Queue token failed: {e}")))?;
+    Ok(token.token.secret().to_string())
+}
+
 #[tonic::async_trait]
-impl UpstreamPublisher for AzServiceBusPublisher {
+impl UpstreamPublisher for StorageQueuePublisher {
     async fn publish(&mut self, payload: Vec<u8>) -> Result<(), CompanionError> {
-        let message = ServiceBusMessage::new(payload);
-        self.sender.send_message(message).await?;
+        let token = get_storage_bearer_token(&*self.credential).await?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
+        let body = format!(
+            "<QueueMessage><MessageText>{encoded}</MessageText></QueueMessage>"
+        );
+        let url = format!("{}/{}/messages", self.queue_endpoint, self.queue_name);
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
+            .header("Content-Type", "application/xml")
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| CompanionError::Config(format!("send Storage Queue message failed: {e}")))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read response>".to_string());
+            return Err(CompanionError::Config(format!(
+                "Storage Queue PUT message returned {status}: {body}"
+            )));
+        }
         Ok(())
     }
 }
 
+fn parse_queue_message_xml(xml: &str) -> Result<Option<StorageQueueMessage>, CompanionError> {
+    // Parse the simple XML response from Azure Storage Queue GET messages.
+    // Response contains <QueueMessagesList><QueueMessage>...</QueueMessage></QueueMessagesList>
+    let message_start = match xml.find("<QueueMessage>") {
+        Some(pos) => pos,
+        None => return Ok(None),
+    };
+    let message_xml = &xml[message_start..];
+
+    let message_id = extract_xml_element(message_xml, "MessageId")
+        .ok_or_else(|| CompanionError::Config("missing MessageId in queue response".into()))?;
+    let pop_receipt = extract_xml_element(message_xml, "PopReceipt")
+        .ok_or_else(|| CompanionError::Config("missing PopReceipt in queue response".into()))?;
+    let message_text = extract_xml_element(message_xml, "MessageText")
+        .ok_or_else(|| CompanionError::Config("missing MessageText in queue response".into()))?;
+
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(&message_text)
+        .map_err(|e| {
+            CompanionError::Config(format!("failed to base64-decode queue message body: {e}"))
+        })?;
+
+    Ok(Some(StorageQueueMessage {
+        message_id,
+        pop_receipt,
+        body,
+    }))
+}
+
+fn extract_xml_element(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)? + start;
+    Some(xml[start..end].to_string())
+}
+
 #[tonic::async_trait]
-impl DownstreamConsumer for AzServiceBusConsumer {
+impl DownstreamConsumer for StorageQueueConsumer {
     async fn receive(&mut self) -> Result<Option<Vec<u8>>, CompanionError> {
         if self.inflight.is_some() {
             return Err(CompanionError::Config(
@@ -1502,31 +1579,48 @@ impl DownstreamConsumer for AzServiceBusConsumer {
                     .to_string(),
             ));
         }
-        let message = self
-            .receiver
-            .receive_message_with_max_wait_time(Some(Duration::from_secs(
-                DEFAULT_DOWNSTREAM_WAIT_SECS,
-            )))
-            .await?;
+        let token = get_storage_bearer_token(&*self.credential).await?;
+        let url = format!(
+            "{}/{}/messages?numofmessages=1&visibilitytimeout={STORAGE_QUEUE_VISIBILITY_TIMEOUT_SECS}",
+            self.queue_endpoint, self.queue_name
+        );
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
+            .send()
+            .await
+            .map_err(|e| CompanionError::Config(format!("receive Storage Queue message failed: {e}")))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read response>".to_string());
+            return Err(CompanionError::Config(format!(
+                "Storage Queue GET messages returned {status}: {body}"
+            )));
+        }
+        let xml = response
+            .text()
+            .await
+            .map_err(|e| CompanionError::Config(format!("read Storage Queue response failed: {e}")))?;
+
+        let message = parse_queue_message_xml(&xml)?;
         if let Some(message) = message {
-            self.inflight = Some(message);
-            let payload = self
-                .inflight
-                .as_ref()
-                .expect("inflight message must exist immediately after receive")
-                .body()
-                .map_err(|err| {
-                    CompanionError::Config(format!(
-                        "downstream Service Bus message body was not raw binary data: {err}"
-                    ))
-                })
-                .and_then(downstream_body_to_connector_payload);
+            let payload = downstream_body_to_connector_payload(&message.body);
             match payload {
-                Ok(payload) => Ok(Some(payload)),
+                Ok(payload) => {
+                    self.inflight = Some(message);
+                    Ok(Some(payload))
+                }
                 Err(err) => {
-                    if let Err(abandon_err) = self.abandon().await {
+                    // Abandon the message on decode error by making it visible again
+                    let abandon_result = self.abandon_message_direct(&message.message_id, &message.pop_receipt).await;
+                    if let Err(abandon_err) = abandon_result {
                         eprintln!(
-                            "failed to abandon downstream Service Bus message after body decode error: {abandon_err}"
+                            "failed to abandon downstream Storage Queue message after body decode error: {abandon_err}"
                         );
                     }
                     Err(err)
@@ -1541,7 +1635,30 @@ impl DownstreamConsumer for AzServiceBusConsumer {
         let inflight = self.inflight.as_ref().ok_or_else(|| {
             CompanionError::Config("no inflight downstream message to complete".to_string())
         })?;
-        self.receiver.complete_message(inflight).await?;
+        let token = get_storage_bearer_token(&*self.credential).await?;
+        let pop_receipt = urlencoding_encode(&inflight.pop_receipt);
+        let url = format!(
+            "{}/{}/messages/{}?popreceipt={pop_receipt}",
+            self.queue_endpoint, self.queue_name, inflight.message_id
+        );
+        let response = self
+            .http_client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
+            .send()
+            .await
+            .map_err(|e| CompanionError::Config(format!("delete Storage Queue message failed: {e}")))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read response>".to_string());
+            return Err(CompanionError::Config(format!(
+                "Storage Queue DELETE message returned {status}: {body}"
+            )));
+        }
         self.inflight = None;
         Ok(())
     }
@@ -1550,7 +1667,7 @@ impl DownstreamConsumer for AzServiceBusConsumer {
         let inflight = self.inflight.as_ref().ok_or_else(|| {
             CompanionError::Config("no inflight downstream message to abandon".to_string())
         })?;
-        self.receiver.abandon_message(inflight, None).await?;
+        self.abandon_message_direct(&inflight.message_id.clone(), &inflight.pop_receipt.clone()).await?;
         self.inflight = None;
         Ok(())
     }
@@ -1563,55 +1680,82 @@ impl DownstreamConsumer for AzServiceBusConsumer {
     }
 }
 
+impl StorageQueueConsumer {
+    async fn abandon_message_direct(&self, message_id: &str, pop_receipt: &str) -> Result<(), CompanionError> {
+        let token = get_storage_bearer_token(&*self.credential).await?;
+        let encoded_receipt = urlencoding_encode(pop_receipt);
+        let url = format!(
+            "{}/{}/messages/{message_id}?popreceipt={encoded_receipt}&visibilitytimeout=0",
+            self.queue_endpoint, self.queue_name
+        );
+        let response = self
+            .http_client
+            .put(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
+            .header("Content-Length", "0")
+            .send()
+            .await
+            .map_err(|e| CompanionError::Config(format!("abandon Storage Queue message failed: {e}")))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read response>".to_string());
+            return Err(CompanionError::Config(format!(
+                "Storage Queue UPDATE message (abandon) returned {status}: {body}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn urlencoding_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                String::from(b as char)
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 #[tonic::async_trait]
-impl BrokerTransportFactory for AzServiceBusTransportFactory {
-    type Publisher = AzServiceBusPublisher;
-    type Consumer = AzServiceBusConsumer;
+impl BrokerTransportFactory for StorageQueueTransportFactory {
+    type Publisher = StorageQueuePublisher;
+    type Consumer = StorageQueueConsumer;
 
     async fn connect(
         &self,
         runtime_config: &RuntimeConfig,
         runtime_state: &RuntimeCredentialState,
     ) -> Result<(Self::Publisher, Self::Consumer), CompanionError> {
-        let credential = build_service_bus_credential(runtime_state)?;
+        let credential = build_storage_queue_credential(runtime_state)?;
+        let http_client = reqwest::Client::new();
 
-        let mut sender_client = ServiceBusClient::new_from_token_credential(
-            runtime_config.namespace.clone(),
-            Arc::clone(&credential),
-            ServiceBusClientOptions::default(),
-        )
-        .await?;
-        let sender = sender_client
-            .create_sender(
-                runtime_config.upstream_queue.clone(),
-                ServiceBusSenderOptions::default(),
-            )
-            .await?;
+        let mut endpoint = runtime_config.queue_endpoint.clone();
+        if endpoint.ends_with('/') {
+            endpoint.pop();
+        }
 
-        let mut receiver_client = ServiceBusClient::new_from_token_credential(
-            runtime_config.namespace.clone(),
+        let publisher = StorageQueuePublisher {
+            queue_endpoint: endpoint.clone(),
+            queue_name: runtime_config.upstream_queue.clone(),
+            credential: Arc::clone(&credential),
+            http_client: http_client.clone(),
+        };
+
+        let consumer = StorageQueueConsumer {
+            queue_endpoint: endpoint,
+            queue_name: runtime_config.downstream_queue.clone(),
             credential,
-            ServiceBusClientOptions::default(),
-        )
-        .await?;
-        let receiver = receiver_client
-            .create_receiver_for_queue(
-                runtime_config.downstream_queue.clone(),
-                ServiceBusReceiverOptions::default(),
-            )
-            .await?;
+            http_client,
+            inflight: None,
+        };
 
-        Ok((
-            AzServiceBusPublisher {
-                _client: sender_client,
-                sender,
-            },
-            AzServiceBusConsumer {
-                _client: receiver_client,
-                receiver,
-                inflight: None,
-            },
-        ))
+        Ok((publisher, consumer))
     }
 }
 
@@ -1694,7 +1838,7 @@ where
 
     if let Err(err) = write_framed(writer, &payload).await {
         if let Err(abandon_err) = consumer.abandon().await {
-            eprintln!("failed to abandon downstream Service Bus message after connector write error: {abandon_err}");
+            eprintln!("failed to abandon downstream queue message after connector write error: {abandon_err}");
         }
         return Err(err);
     }
@@ -1702,7 +1846,7 @@ where
     if let Err(err) = consumer.complete().await {
         if let Err(abandon_err) = consumer.abandon().await {
             eprintln!(
-                "failed to abandon downstream Service Bus message after completion error: {abandon_err}"
+                "failed to abandon downstream queue message after completion error: {abandon_err}"
             );
         }
         return Err(err);
@@ -1744,21 +1888,21 @@ where
         tokio::select! {
             result = &mut upstream => {
                 if let Err(abandon_err) = consumer.abandon_inflight().await {
-                    eprintln!("failed to abandon downstream Service Bus message during bridge shutdown: {abandon_err}");
+                    eprintln!("failed to abandon downstream queue message during bridge shutdown: {abandon_err}");
                 }
                 return result;
             }
             result = pump_downstream_once(&mut writer, &mut consumer) => {
                 if let Err(err) = result {
                     if let Err(abandon_err) = consumer.abandon_inflight().await {
-                        eprintln!("failed to abandon downstream Service Bus message after downstream error: {abandon_err}");
+                        eprintln!("failed to abandon downstream queue message after downstream error: {abandon_err}");
                     }
                     return Err(err);
                 }
             }
             _ = &mut shutdown => {
                 if let Err(abandon_err) = consumer.abandon_inflight().await {
-                    eprintln!("failed to abandon downstream Service Bus message during service shutdown: {abandon_err}");
+                    eprintln!("failed to abandon downstream queue message during service shutdown: {abandon_err}");
                 }
                 return Ok(());
             }
@@ -1817,14 +1961,14 @@ where
     let (publisher, consumer) = factory.connect(runtime_config, runtime_state).await?;
     let stream = connect_connector(connector_socket).await?;
     eprintln!(
-        "connected to gateway connector at {connector_socket} and Azure Service Bus namespace {}",
-        runtime_config.namespace
+        "connected to gateway connector at {connector_socket} and Azure Storage Queue endpoint {}",
+        runtime_config.queue_endpoint
     );
     bridge_runtime_with_shutdown(stream, publisher, consumer, shutdown).await
 }
 
 async fn run(connector_socket: &str, state_dir: &Path) -> Result<(), CompanionError> {
-    run_with_factory(connector_socket, state_dir, &AzServiceBusTransportFactory).await
+    run_with_factory(connector_socket, state_dir, &StorageQueueTransportFactory).await
 }
 
 async fn stream_container_output(
@@ -1901,7 +2045,7 @@ async fn run_bootstrap_deployment(
     admin_socket: &str,
     cert_base64: &str,
     args: &BootstrapArgs,
-) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
+) -> Result<(ServicePrincipalStateFile, StorageQueuesConfigFile), CompanionError> {
     let docker = Docker::connect_with_local_defaults()
         .map_err(|e| CompanionError::Config(format!("failed to connect to Docker daemon: {e}")))?;
     run_bootstrap_deployment_with_docker(&docker, admin_socket, cert_base64, args).await
@@ -1912,7 +2056,7 @@ async fn run_bootstrap_deployment_with_docker(
     admin_socket: &str,
     cert_base64: &str,
     args: &BootstrapArgs,
-) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
+) -> Result<(ServicePrincipalStateFile, StorageQueuesConfigFile), CompanionError> {
     let bootstrap_image = resolve_bootstrap_image(args.bootstrap_image.as_deref())?;
     run_bootstrap_deployment_with_docker_and_image(
         docker,
@@ -1930,7 +2074,7 @@ async fn run_bootstrap_deployment_with_docker_and_image(
     cert_base64: &str,
     args: &BootstrapArgs,
     bootstrap_image: &str,
-) -> Result<(ServicePrincipalStateFile, ServiceBusConfigFile), CompanionError> {
+) -> Result<(ServicePrincipalStateFile, StorageQueuesConfigFile), CompanionError> {
     eprintln!("Pulling bootstrap image...");
     let pull_opts = CreateImageOptionsBuilder::default()
         .from_image(bootstrap_image)
@@ -2079,7 +2223,7 @@ async fn bootstrap(
     let sp_json = serde_json::to_string_pretty(&sp_state)?;
     std::fs::write(&sp_path, sp_json.as_bytes())?;
 
-    let sb_path = staging_dir.join(SERVICE_BUS_CONFIG_FILENAME);
+    let sb_path = staging_dir.join(STORAGE_QUEUES_CONFIG_FILENAME);
     let sb_json = serde_json::to_string_pretty(&sb_config)?;
     std::fs::write(&sb_path, sb_json.as_bytes())?;
 
@@ -2495,7 +2639,7 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
         &cli.connector_socket,
         &runtime_config,
         &runtime_state,
-        &AzServiceBusTransportFactory,
+        &StorageQueueTransportFactory,
         async move {
             let _ = shutdown_rx.await;
         },
@@ -2572,9 +2716,9 @@ mod tests {
         resolve_bootstrap_image, resolve_effective_state_dir, resolve_state_relative_path,
         run_bootstrap_deployment_with_docker_and_image, trim_buffer_to_max_len,
         validate_display_lines, write_framed, ClientAssertionCredential, CompanionError,
-        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState, ServiceBusConfigFile,
+        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState, StorageQueuesConfigFile,
         ServicePrincipalStateFile, UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME,
-        CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME, SERVICE_BUS_CONFIG_FILENAME,
+        CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME, STORAGE_QUEUES_CONFIG_FILENAME,
         SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX,
     };
     #[cfg(windows)]
@@ -2691,12 +2835,12 @@ mod tests {
         temp_env::with_vars(
             [
                 (
-                    "SONDE_AZURE_SERVICEBUS_NAMESPACE",
-                    Some("example.servicebus.windows.net"),
+                    "SONDE_AZURE_STORAGE_QUEUE_ENDPOINT",
+                    Some("https://example.queue.core.windows.net"),
                 ),
-                ("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE", Some("upstream")),
+                ("SONDE_AZURE_STORAGE_UPSTREAM_QUEUE", Some("upstream")),
                 (
-                    "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+                    "SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE",
                     Some("downstream"),
                 ),
             ],
@@ -2704,14 +2848,14 @@ mod tests {
         );
     }
 
-    fn write_service_bus_config(temp: &TempDir, namespace: &str, upstream: &str, downstream: &str) {
-        let config = ServiceBusConfigFile {
-            namespace: namespace.to_string(),
+    fn write_storage_queues_config(temp: &TempDir, endpoint: &str, upstream: &str, downstream: &str) {
+        let config = StorageQueuesConfigFile {
+            queue_endpoint: endpoint.to_string(),
             upstream_queue: upstream.to_string(),
             downstream_queue: downstream.to_string(),
         };
         std::fs::write(
-            temp.path().join(SERVICE_BUS_CONFIG_FILENAME),
+            temp.path().join(STORAGE_QUEUES_CONFIG_FILENAME),
             serde_json::to_vec(&config).unwrap(),
         )
         .unwrap();
@@ -3268,20 +3412,20 @@ mod tests {
     #[test]
     fn test_load_runtime_config_from_file() {
         let temp = TempDir::new().unwrap();
-        write_service_bus_config(&temp, "file.servicebus.windows.net", "file-up", "file-down");
+        write_storage_queues_config(&temp, "https://file.queue.core.windows.net", "file-up", "file-down");
 
         temp_env::with_vars_unset(
             [
-                "SONDE_AZURE_SERVICEBUS_NAMESPACE",
-                "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE",
-                "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+                "SONDE_AZURE_STORAGE_QUEUE_ENDPOINT",
+                "SONDE_AZURE_STORAGE_UPSTREAM_QUEUE",
+                "SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE",
             ],
             || {
                 let config = load_runtime_config(temp.path()).unwrap();
                 assert_eq!(
                     config,
                     RuntimeConfig {
-                        namespace: "file.servicebus.windows.net".to_string(),
+                        queue_endpoint: "https://file.queue.core.windows.net".to_string(),
                         upstream_queue: "file-up".to_string(),
                         downstream_queue: "file-down".to_string(),
                     }
@@ -3293,23 +3437,23 @@ mod tests {
     #[test]
     fn test_load_runtime_config_env_overrides_file() {
         let temp = TempDir::new().unwrap();
-        write_service_bus_config(&temp, "file.servicebus.windows.net", "file-up", "file-down");
+        write_storage_queues_config(&temp, "https://file.queue.core.windows.net", "file-up", "file-down");
 
         temp_env::with_vars(
             [
                 (
-                    "SONDE_AZURE_SERVICEBUS_NAMESPACE",
-                    Some("env.servicebus.windows.net"),
+                    "SONDE_AZURE_STORAGE_QUEUE_ENDPOINT",
+                    Some("https://env.queue.core.windows.net"),
                 ),
-                ("SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE", Some("env-up")),
-                ("SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE", Some("env-down")),
+                ("SONDE_AZURE_STORAGE_UPSTREAM_QUEUE", Some("env-up")),
+                ("SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE", Some("env-down")),
             ],
             || {
                 let config = load_runtime_config(temp.path()).unwrap();
                 assert_eq!(
                     config,
                     RuntimeConfig {
-                        namespace: "env.servicebus.windows.net".to_string(),
+                        queue_endpoint: "https://env.queue.core.windows.net".to_string(),
                         upstream_queue: "env-up".to_string(),
                         downstream_queue: "env-down".to_string(),
                     }
@@ -3321,25 +3465,25 @@ mod tests {
     #[test]
     fn test_load_runtime_config_trims_selected_values() {
         let temp = TempDir::new().unwrap();
-        write_service_bus_config(
+        write_storage_queues_config(
             &temp,
-            "  file.servicebus.windows.net  ",
+            "  https://file.queue.core.windows.net  ",
             "  file-up  ",
             "  file-down  ",
         );
 
         temp_env::with_vars_unset(
             [
-                "SONDE_AZURE_SERVICEBUS_NAMESPACE",
-                "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE",
-                "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+                "SONDE_AZURE_STORAGE_QUEUE_ENDPOINT",
+                "SONDE_AZURE_STORAGE_UPSTREAM_QUEUE",
+                "SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE",
             ],
             || {
                 let config = load_runtime_config(temp.path()).unwrap();
                 assert_eq!(
                     config,
                     RuntimeConfig {
-                        namespace: "file.servicebus.windows.net".to_string(),
+                        queue_endpoint: "https://file.queue.core.windows.net".to_string(),
                         upstream_queue: "file-up".to_string(),
                         downstream_queue: "file-down".to_string(),
                     }
@@ -3349,39 +3493,39 @@ mod tests {
     }
 
     #[test]
-    fn test_load_runtime_config_rejects_blank_service_bus_file_values() {
+    fn test_load_runtime_config_rejects_blank_storage_queues_file_values() {
         let temp = TempDir::new().unwrap();
-        write_service_bus_config(&temp, "example.servicebus.windows.net", "  ", "downstream");
+        write_storage_queues_config(&temp, "https://example.queue.core.windows.net", "  ", "downstream");
 
         temp_env::with_vars_unset(
             [
-                "SONDE_AZURE_SERVICEBUS_NAMESPACE",
-                "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE",
-                "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+                "SONDE_AZURE_STORAGE_QUEUE_ENDPOINT",
+                "SONDE_AZURE_STORAGE_UPSTREAM_QUEUE",
+                "SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE",
             ],
             || {
                 let err = load_runtime_config(temp.path()).unwrap_err();
                 assert!(err
                     .to_string()
-                    .contains("service-bus.json upstream_queue must be set and non-empty"));
+                    .contains("storage-queues.json upstream_queue must be set and non-empty"));
             },
         );
     }
 
     #[test]
-    fn test_load_runtime_config_surfaces_invalid_service_bus_json() {
+    fn test_load_runtime_config_surfaces_invalid_storage_queues_json() {
         let temp = TempDir::new().unwrap();
         std::fs::write(
-            temp.path().join(SERVICE_BUS_CONFIG_FILENAME),
+            temp.path().join(STORAGE_QUEUES_CONFIG_FILENAME),
             b"{not valid json",
         )
         .unwrap();
 
         temp_env::with_vars_unset(
             [
-                "SONDE_AZURE_SERVICEBUS_NAMESPACE",
-                "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE",
-                "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+                "SONDE_AZURE_STORAGE_QUEUE_ENDPOINT",
+                "SONDE_AZURE_STORAGE_UPSTREAM_QUEUE",
+                "SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE",
             ],
             || {
                 let err = load_runtime_config(temp.path()).unwrap_err();
@@ -3460,7 +3604,7 @@ mod tests {
                 "value": {
                     "tenantId": "11111111-1111-1111-1111-111111111111",
                     "clientId": "22222222-2222-2222-2222-222222222222",
-                    "serviceBusNamespace": "example.servicebus.windows.net",
+                    "storageQueueEndpoint": "https://example.queue.core.windows.net",
                     "upstreamQueue": "upstream",
                     "downstreamQueue": "downstream"
                 }
@@ -3479,8 +3623,8 @@ mod tests {
         );
         assert_eq!(
             sb,
-            ServiceBusConfigFile {
-                namespace: "example.servicebus.windows.net".to_string(),
+            StorageQueuesConfigFile {
+                queue_endpoint: "https://example.queue.core.windows.net".to_string(),
                 upstream_queue: "upstream".to_string(),
                 downstream_queue: "downstream".to_string(),
             }
@@ -3494,7 +3638,7 @@ mod tests {
                 "value": {
                     "tenantId": { "value": "11111111-1111-1111-1111-111111111111" },
                     "clientId": { "value": "22222222-2222-2222-2222-222222222222" },
-                    "serviceBusNamespace": { "value": "example.servicebus.windows.net" },
+                    "storageQueueEndpoint": { "value": "https://example.queue.core.windows.net" },
                     "upstreamQueue": { "value": "upstream" },
                     "downstreamQueue": { "value": "downstream" }
                 }
@@ -3504,7 +3648,7 @@ mod tests {
         let (sp, sb) = parse_bicep_outputs(json).unwrap();
         assert_eq!(sp.tenant_id, "11111111-1111-1111-1111-111111111111");
         assert_eq!(sp.client_id, "22222222-2222-2222-2222-222222222222");
-        assert_eq!(sb.namespace, "example.servicebus.windows.net");
+        assert_eq!(sb.queue_endpoint, "https://example.queue.core.windows.net");
         assert_eq!(sb.upstream_queue, "upstream");
         assert_eq!(sb.downstream_queue, "downstream");
     }
@@ -3527,9 +3671,9 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            staging_dir.join(SERVICE_BUS_CONFIG_FILENAME),
-            serde_json::to_vec(&ServiceBusConfigFile {
-                namespace: "example.servicebus.windows.net".to_string(),
+            staging_dir.join(STORAGE_QUEUES_CONFIG_FILENAME),
+            serde_json::to_vec(&StorageQueuesConfigFile {
+                queue_endpoint: "https://example.queue.core.windows.net".to_string(),
                 upstream_queue: "upstream".to_string(),
                 downstream_queue: "downstream".to_string(),
             })
@@ -3592,9 +3736,9 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            staging_dir.join(SERVICE_BUS_CONFIG_FILENAME),
-            serde_json::to_vec(&ServiceBusConfigFile {
-                namespace: "example.servicebus.windows.net".to_string(),
+            staging_dir.join(STORAGE_QUEUES_CONFIG_FILENAME),
+            serde_json::to_vec(&StorageQueuesConfigFile {
+                queue_endpoint: "https://example.queue.core.windows.net".to_string(),
                 upstream_queue: "upstream".to_string(),
                 downstream_queue: "downstream".to_string(),
             })
@@ -3707,9 +3851,9 @@ mod tests {
     fn runtime_ready_requires_namespace_and_queue_config() {
         temp_env::with_vars_unset(
             [
-                "SONDE_AZURE_SERVICEBUS_NAMESPACE",
-                "SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE",
-                "SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE",
+                "SONDE_AZURE_STORAGE_QUEUE_ENDPOINT",
+                "SONDE_AZURE_STORAGE_UPSTREAM_QUEUE",
+                "SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE",
             ],
             || {
                 let temp = TempDir::new().unwrap();
@@ -3728,7 +3872,7 @@ mod tests {
             assert_eq!(
                 config,
                 RuntimeConfig {
-                    namespace: "example.servicebus.windows.net".to_string(),
+                    queue_endpoint: "https://example.queue.core.windows.net".to_string(),
                     upstream_queue: "upstream".to_string(),
                     downstream_queue: "downstream".to_string(),
                 }
@@ -4278,7 +4422,7 @@ mod tests {
         };
         let connector_socket = socket_path.to_string_lossy().into_owned();
         let runtime_config = RuntimeConfig {
-            namespace: "example.servicebus.windows.net".to_string(),
+            queue_endpoint: "https://example.queue.core.windows.net".to_string(),
             upstream_queue: "upstream".to_string(),
             downstream_queue: "downstream".to_string(),
         };

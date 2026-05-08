@@ -21,7 +21,7 @@
 **Validates:** AZH-0100
 
 **Procedure:**
-1. Start the Azure handler against test doubles for Azure Tables and Service Bus senders.
+1. Start the Azure handler against test doubles for Azure Tables and Storage Queue senders.
 2. Deliver one node-scoped `GW-0812`, one `GW-0813`, and one unsupported connector payload through the upstream trigger path.
 3. Assert: the `GW-0812` is routed to node-state reconciliation.
 4. Assert: the `GW-0813` is routed to application-data delivery.

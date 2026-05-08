@@ -8,7 +8,7 @@
 > **Scope:** This document covers the Azure cloud-side handler hosted in the
 > Azure Function App provisioned for the Sonde Azure integration. It owns the
 > Azure Table state used for node reconciliation, consumes upstream connector
-> traffic from Service Bus, emits downstream `GW-0811` desired-state messages,
+> traffic from Storage Queue, emits downstream `GW-0811` desired-state messages,
 > and routes `GW-0813` application-data messages to handler queues. It does not
 > cover the gateway-local Azure companion bridge or Azure resource provisioning
 > beyond the handler's runtime dependencies.
@@ -24,10 +24,10 @@
 
 | Term | Definition |
 |------|------------|
-| **Azure handler** | The Azure-hosted control-plane process that consumes upstream Sonde connector traffic from Service Bus and produces downstream desired-state messages or handler-queue deliveries. |
+| **Azure handler** | The Azure-hosted control-plane process that consumes upstream Sonde connector traffic from Storage Queue and produces downstream desired-state messages or handler-queue deliveries. |
 | **Actual state row** | One append-only Azure Table row that records a received node-scoped `GW-0812` observation for a Sonde `node_id`. |
 | **Desired state row** | One append-only Azure Table row that records a requested desired state for a Sonde `node_id`. Desired rows are authored by admin/control-plane surfaces, not by the Azure handler reconciliation path. |
-| **Program route row** | One Azure Table row keyed by `program_hash` that names the Azure Service Bus queue that should receive `GW-0813` application-data messages for that program. |
+| **Program route row** | One Azure Table row keyed by `program_hash` that names the Azure Storage Queue queue that should receive `GW-0813` application-data messages for that program. |
 | **Observed fields** | The subset of node state reported by `GW-0812` and copied into an actual state row, including current program state, observed schedule as reported by the gateway, firmware data, battery, and check-in time. |
 | **Desired fields** | The cloud-authored fields stored in a desired state row and used to build a complete `GW-0811` `DESIRED_STATE` payload for the node. In v1 this document defines `assigned_program_hash` and `schedule_interval_s`. |
 | **Reverse-tick key** | A row-key prefix derived from `u64::MAX - timestamp_ms`, so newer timestamps sort before older timestamps for `Top(1)` queries within one node partition. |
@@ -47,7 +47,7 @@ Each requirement uses the following fields:
 
 ---
 
-## 3  Service Bus integration
+## 3  Storage Queue integration
 
 ### AZH-0100  Upstream connector queue consumption
 
@@ -56,7 +56,7 @@ Each requirement uses the following fields:
 
 **Description:**
 The Azure handler MUST consume raw Sonde connector payloads from the configured
-upstream Azure Service Bus queue. It MUST decode the connector `msg_type`
+upstream Azure Storage Queue queue. It MUST decode the connector `msg_type`
 enough to distinguish node-scoped `GW-0812` actual-state messages from
 `GW-0813` application-data messages and route them to the appropriate handler
 logic.
@@ -276,7 +276,7 @@ evaluation or downstream `GW-0811` publication.
 
 **Description:**
 The Azure handler MUST own an Azure Table that stores one program route row per
-`program_hash`. Each row maps the Sonde program hash to the Azure Service Bus
+`program_hash`. Each row maps the Sonde program hash to the Azure Storage Queue
 queue that should receive `GW-0813` messages for that program.
 
 **Acceptance criteria:**
@@ -294,7 +294,7 @@ queue that should receive `GW-0813` messages for that program.
 
 **Description:**
 When the Azure handler receives a `GW-0813` message whose `program_hash` has a
-program route row, it MUST deliver that message to the mapped Azure Service Bus
+program route row, it MUST deliver that message to the mapped Azure Storage Queue
 queue. The delivered message body MUST preserve the raw `GW-0813` connector
 payload bytes unchanged.
 

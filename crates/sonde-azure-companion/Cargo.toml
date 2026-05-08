@@ -5,7 +5,6 @@ version.workspace = true
 license = "MIT"
 
 [dependencies]
-azservicebus = { version = "0.25.1", default-features = false, features = ["rustls"] }
 azure_core = { version = "0.25", default-features = false }
 base64 = "0.22"
 bollard = "0.20"

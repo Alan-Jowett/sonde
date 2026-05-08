@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import socket
 import sys
@@ -13,8 +14,7 @@ import time
 from pathlib import Path
 
 from azure.identity.aio import AzureCliCredential
-from azure.servicebus import ServiceBusMessage
-from azure.servicebus.aio import ServiceBusClient
+from azure.storage.queue.aio import QueueServiceClient
 
 
 DEFAULT_MESSAGE_TIMEOUT_SECS = 180
@@ -23,24 +23,17 @@ CONNECTOR_MAX_FRAME_LENGTH = 1_048_576
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run live Azure companion validation against Service Bus."
+        description="Run live Azure companion validation against Storage Queues."
     )
     parser.add_argument("--companion-bin", required=True)
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--connector-socket", required=True)
-    parser.add_argument("--namespace", required=True)
+    parser.add_argument("--queue-endpoint", required=True)
     parser.add_argument("--upstream-queue", required=True)
     parser.add_argument("--downstream-queue", required=True)
     parser.add_argument("--connect-timeout-secs", type=int)
     parser.add_argument("--message-timeout-secs", type=int, default=DEFAULT_MESSAGE_TIMEOUT_SECS)
     return parser.parse_args()
-
-
-def normalize_namespace(namespace: str) -> str:
-    namespace = namespace.strip()
-    if namespace.endswith(".servicebus.windows.net"):
-        return namespace
-    return f"{namespace}.servicebus.windows.net"
 
 
 async def write_framed(writer: asyncio.StreamWriter, payload: bytes) -> None:
@@ -64,11 +57,29 @@ async def read_framed(reader: asyncio.StreamReader) -> bytes | None:
     return await reader.readexactly(frame_length)
 
 
-def service_bus_body_bytes(message) -> bytes:
-    return b"".join(
-        chunk if isinstance(chunk, (bytes, bytearray)) else bytes(chunk)
-        for chunk in message.body
-    )
+async def receive_one_body(
+    service_client: QueueServiceClient, queue_name: str, timeout_secs: int
+) -> bytes:
+    queue_client = service_client.get_queue_client(queue_name)
+    deadline = time.monotonic() + timeout_secs
+    while time.monotonic() < deadline:
+        messages = queue_client.receive_messages(max_messages=1, visibility_timeout=30)
+        async for message in messages:
+            body = base64.b64decode(message.content)
+            await queue_client.delete_message(message)
+            return body
+        await asyncio.sleep(1)
+    raise RuntimeError(f"timed out waiting for a message on queue `{queue_name}`")
+
+
+async def expect_queue_empty(
+    service_client: QueueServiceClient, queue_name: str, timeout_secs: int = 10
+) -> None:
+    queue_client = service_client.get_queue_client(queue_name)
+    messages = queue_client.receive_messages(max_messages=1, visibility_timeout=5)
+    async for message in messages:
+        await queue_client.update_message(message, visibility_timeout=0)
+        raise RuntimeError(f"expected queue `{queue_name}` to be empty after settlement")
 
 
 class ConnectorHarness:
@@ -150,32 +161,6 @@ class ConnectorHarness:
             self.socket_path.unlink()
 
 
-async def receive_one_body(
-    client: ServiceBusClient, queue_name: str, timeout_secs: int
-) -> bytes:
-    deadline = time.monotonic() + timeout_secs
-    async with client.get_queue_receiver(queue_name=queue_name, max_wait_time=5) as receiver:
-        while time.monotonic() < deadline:
-            messages = await receiver.receive_messages(max_message_count=1, max_wait_time=5)
-            if messages:
-                message = messages[0]
-                body = service_bus_body_bytes(message)
-                await receiver.complete_message(message)
-                return body
-    raise RuntimeError(f"timed out waiting for a message on queue `{queue_name}`")
-
-
-async def expect_queue_empty(
-    client: ServiceBusClient, queue_name: str, timeout_secs: int = 10
-) -> None:
-    async with client.get_queue_receiver(queue_name=queue_name, max_wait_time=5) as receiver:
-        messages = await receiver.receive_messages(max_message_count=1, max_wait_time=timeout_secs)
-        if messages:
-            first = messages[0]
-            await receiver.abandon_message(first)
-            raise RuntimeError(f"expected queue `{queue_name}` to be empty after settlement")
-
-
 async def capture_stream(prefix: str, stream: asyncio.StreamReader, sink: list[str]) -> None:
     while True:
         line = await stream.readline()
@@ -200,7 +185,7 @@ async def terminate_process(process: asyncio.subprocess.Process) -> int:
 
 async def run_success_path(
     harness: ConnectorHarness,
-    client: ServiceBusClient,
+    service_client: QueueServiceClient,
     upstream_queue: str,
     downstream_queue: str,
     message_timeout_secs: int,
@@ -209,14 +194,14 @@ async def run_success_path(
     downstream_payload = b"ci-live-downstream-payload"
 
     await harness.send_upstream(upstream_payload)
-    actual_upstream = await receive_one_body(client, upstream_queue, message_timeout_secs)
+    actual_upstream = await receive_one_body(service_client, upstream_queue, message_timeout_secs)
     if actual_upstream != upstream_payload:
         raise RuntimeError(
             f"upstream payload mismatch: expected {upstream_payload!r}, got {actual_upstream!r}"
         )
 
-    async with client.get_queue_sender(queue_name=downstream_queue) as sender:
-        await sender.send_messages(ServiceBusMessage(downstream_payload))
+    queue_client = service_client.get_queue_client(downstream_queue)
+    await queue_client.send_message(base64.b64encode(downstream_payload).decode())
 
     actual_downstream = await harness.wait_downstream(message_timeout_secs)
     if actual_downstream != downstream_payload:
@@ -224,20 +209,20 @@ async def run_success_path(
             f"downstream payload mismatch: expected {downstream_payload!r}, got {actual_downstream!r}"
         )
 
-    await expect_queue_empty(client, downstream_queue)
+    await expect_queue_empty(service_client, downstream_queue)
 
 
 async def run_failure_path(
     harness: ConnectorHarness,
-    client: ServiceBusClient,
+    service_client: QueueServiceClient,
     downstream_queue: str,
     companion: asyncio.subprocess.Process,
     message_timeout_secs: int,
 ) -> None:
     failed_handoff_payload = b"x" * (240 * 1024)
     harness.abort_next_downstream_write()
-    async with client.get_queue_sender(queue_name=downstream_queue) as sender:
-        await sender.send_messages(ServiceBusMessage(failed_handoff_payload))
+    queue_client = service_client.get_queue_client(downstream_queue)
+    await queue_client.send_message(base64.b64encode(failed_handoff_payload).decode())
 
     try:
         await asyncio.wait_for(companion.wait(), timeout=message_timeout_secs)
@@ -246,14 +231,14 @@ async def run_failure_path(
     if companion.returncode == 0:
         raise RuntimeError("companion unexpectedly succeeded after failed downstream handoff")
 
-    actual_payload = await receive_one_body(client, downstream_queue, message_timeout_secs)
+    actual_payload = await receive_one_body(service_client, downstream_queue, message_timeout_secs)
     if actual_payload != failed_handoff_payload:
         raise RuntimeError("downstream message was altered before re-delivery after failure")
 
 
 async def async_main() -> int:
     args = parse_args()
-    namespace = normalize_namespace(args.namespace)
+    queue_endpoint = args.queue_endpoint.strip()
     connect_timeout_secs = (
         args.connect_timeout_secs
         if args.connect_timeout_secs is not None
@@ -294,10 +279,10 @@ async def async_main() -> int:
         await harness.wait_connected(connect_timeout_secs)
         print("connector harness connected", flush=True)
 
-        async with ServiceBusClient(namespace, credential=credential, logging_enable=False) as client:
+        async with QueueServiceClient(queue_endpoint, credential=credential) as service_client:
             await run_success_path(
                 harness,
-                client,
+                service_client,
                 args.upstream_queue,
                 args.downstream_queue,
                 args.message_timeout_secs,
@@ -306,7 +291,7 @@ async def async_main() -> int:
 
             await run_failure_path(
                 harness,
-                client,
+                service_client,
                 args.downstream_queue,
                 companion,
                 args.message_timeout_secs,

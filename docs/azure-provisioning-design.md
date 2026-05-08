@@ -24,7 +24,7 @@ bootstrap and runtime paths described in `azure-companion-design.md` operate.
 
 This document therefore separates the problem into three layers:
 
-1. **Resource-plane provisioning** via Bicep for Service Bus, Storage, and
+1. **Resource-plane provisioning** via Bicep for Storage Queue, Storage, and
    Function placeholder resources.
 2. **Runtime identity provisioning** for the certificate-authenticated Entra
    application/service principal used by `sonde-azure-companion`.
@@ -44,7 +44,7 @@ The design assumes this layout:
 | Artifact | Purpose |
 |----------|---------|
 | `deploy/bicep/main.bicep` | Top-level deployment entrypoint. |
-| `deploy/bicep/modules/service-bus.bicep` | Service Bus namespace and queue provisioning. |
+| `deploy/bicep/modules/storage.bicep` | Storage Account, tables, queues, and deployment container. |
 | `deploy/bicep/modules/storage.bicep` | Storage Account and Table resource provisioning. |
 | `deploy/bicep/modules/function-placeholder.bicep` | Function hosting resources and deployment target for the Azure handler package. |
 | `deploy/bicep/modules/identity.*` | Runtime identity provisioning artifacts or wrappers used by the Bicep-driven workflow. |
@@ -84,9 +84,9 @@ caller does not supply `resource_group_name`, the workflow derives one from
 common tag set whose required baseline entry is `project = sonde` unless the
 caller intentionally overrides the project value.
 
-### 3.3  Service Bus resources
+### 3.3  Storage Queue resources
 
-The Service Bus module provisions:
+The Storage Queue module provisions:
 
 1. one namespace,
 2. one upstream queue for gateway-originated connector traffic, and
@@ -146,7 +146,7 @@ The runtime identity consists of:
 1. an Entra application registration,
 2. its corresponding service principal,
 3. a certificate credential bound to that application identity, and
-4. Service Bus permissions aligned with the bridge's upstream send and
+4. Storage Queue permissions aligned with the bridge's upstream send and
    downstream receive/settle behavior.
 
 ### 4.2  Bicep boundary
@@ -166,7 +166,7 @@ treating both as part of the same issue.
 
 ### 4.3  Role assignments
 
-The identity step must assign only the Service Bus permissions required by the
+The identity step must assign only the Storage Queue permissions required by the
 Azure companion bridge:
 
 1. send to the upstream queue, and
@@ -219,7 +219,7 @@ The handoff contract includes:
 | Entra client ID | `service-principal.json` |
 | Certificate reference or exported PEM | certificate PEM material used by the runtime |
 | Private-key reference or exported PEM | private-key PEM material used by the runtime |
-| Service Bus namespace | Azure companion runtime configuration |
+| Storage Queue endpoint | Azure companion runtime configuration |
 | Upstream queue name | Azure companion runtime configuration |
 | Downstream queue name | Azure companion runtime configuration |
 | Function App name | bootstrap package activation checks |
@@ -250,7 +250,7 @@ workflow makes the necessary values available to the bootstrap path that does.
 The top-level workflow exposes or documents the following outputs:
 
 1. resource group name,
-2. Service Bus namespace name,
+2. Storage Queue endpoint name,
 3. upstream queue name,
 4. downstream queue name,
 5. Storage Account name,
@@ -331,7 +331,7 @@ The live-CI setup guide must present the setup flow in operator order:
 
 1. identify the GitHub environment name and the variables the workflow consumes,
 2. configure GitHub OIDC federation for the Azure identity,
-3. assign the minimum Azure RBAC, Service Bus data-plane roles, and Microsoft
+3. assign the minimum Azure RBAC, Storage Queue data-plane roles, and Microsoft
    Graph permissions required by the workflow,
 4. choose and document a safe disposable resource-group name and optional CI
    prefix override,

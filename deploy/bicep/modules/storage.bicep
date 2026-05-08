@@ -18,6 +18,12 @@ param programRouteTableName string
 @description('Blob container name used by the Azure handler Function App deployment slot.')
 param deploymentContainerName string
 
+@description('Queue name for gateway-originated connector traffic.')
+param upstreamQueueName string
+
+@description('Queue name for cloud-originated desired-state traffic.')
+param downstreamQueueName string
+
 @description('Tags applied to provisioned resources.')
 param tags object
 
@@ -45,6 +51,21 @@ resource tableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-0
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
   parent: storageAccount
   name: 'default'
+}
+
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
+  parent: storageAccount
+  name: 'default'
+}
+
+resource upstreamQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  parent: queueService
+  name: upstreamQueueName
+}
+
+resource downstreamQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  parent: queueService
+  name: downstreamQueueName
 }
 
 resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
@@ -80,3 +101,6 @@ output nodeStateTableName string = nodeStateTable.name
 output nodeStateTableResourceId string = nodeStateTable.id
 output programRouteTableName string = programRouteTable.name
 output programRouteTableResourceId string = programRouteTable.id
+output queueServiceUri string = storageAccount.properties.primaryEndpoints.queue
+output upstreamQueueName string = upstreamQueue.name
+output downstreamQueueName string = downstreamQueue.name

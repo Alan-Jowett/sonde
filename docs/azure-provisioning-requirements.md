@@ -85,24 +85,24 @@ with `project = sonde` by default.
 
 1. The workflow can create a dedicated resource group when one does not already exist.
 2. The workflow can target a caller-specified resource-group override instead of inventing a second group.
-3. Service Bus, Storage, and Azure handler Function App resources deployed by this workflow carry the `project = sonde` tag unless the caller overrides the value explicitly.
+3. Storage Queue, Storage, and Azure handler Function App resources deployed by this workflow carry the `project = sonde` tag unless the caller overrides the value explicitly.
 
 ---
 
-### AZP-0102  Service Bus namespace and queues
+### AZP-0102  Storage Queue endpoint and queues
 
 **Priority:** Must
 **Source:** [issue #772](https://github.com/Alan-Jowett/sonde/issues/772), AZC-0302, AZC-0304
 
 **Description:**
-The provisioning workflow MUST create the Azure Service Bus resources required
+The provisioning workflow MUST create the Azure Storage Queue resources required
 by the Azure companion runtime: one namespace plus one upstream queue and one
 downstream queue. The namespace uses the Standard tier unless the caller
 explicitly opts into a different supported tier.
 
 **Acceptance criteria:**
 
-1. The workflow provisions one Service Bus namespace.
+1. The workflow provisions one Storage Queue endpoint.
 2. The workflow provisions one upstream queue for gateway-originated connector traffic.
 3. The workflow provisions one downstream queue for cloud-originated desired-state traffic.
 4. The default namespace tier is Standard.
@@ -194,13 +194,13 @@ interactive login during normal runtime operation.
 
 ---
 
-### AZP-0201  Service Bus role assignments for bridge directions
+### AZP-0201  Storage Queue role assignments for bridge directions
 
 **Priority:** Must
 **Source:** reviewed discovery output, AZC-0304, AZC-0308
 
 **Description:**
-The provisioning workflow MUST assign Service Bus permissions that match the
+The provisioning workflow MUST assign Storage Queue permissions that match the
 Azure companion bridge's bidirectional behavior: upstream publish plus
 downstream consume and settlement.
 
@@ -251,7 +251,7 @@ and private-key PEM.
 **Acceptance criteria:**
 
 1. The workflow documents which values and artifacts must be handed off to bootstrap for runtime starts.
-2. The handoff contract includes the tenant ID, client ID, certificate reference or material, private-key reference or material, Service Bus namespace/queue configuration, and the Function App / deployment-target values needed for package deployment and activation checks.
+2. The handoff contract includes the tenant ID, client ID, certificate reference or material, private-key reference or material, Storage Queue endpoint/queue configuration, and the Function App / deployment-target values needed for package deployment and activation checks.
 3. The handoff contract is compatible with the current Azure companion runtime expectations in `azure-companion-requirements.md`.
 
 ---
@@ -288,7 +288,7 @@ require explicit manual handling.
 **Acceptance criteria:**
 
 1. The documented teardown path removes the resource-plane infrastructure created for this stack, or clearly enumerates any retained artifacts.
-2. Teardown behavior is documented for Service Bus, Storage, and Function placeholder resources.
+2. Teardown behavior is documented for Storage Queue, Storage, and Function placeholder resources.
 
 ---
 
@@ -374,7 +374,7 @@ workflow dispatch without reverse-engineering the workflow YAML.
 1. The repository contains a standalone operator-facing setup guide at `deploy/bicep/azure-live-ci-setup.md` rather than relying only on a brief prerequisite summary inside `deploy/bicep/README.md`.
 2. The setup guide identifies the GitHub environment name and the required repository or environment variables consumed by the workflow.
 3. The setup guide describes both an Azure Portal path and an Azure CLI path for the key setup actions where those paths are practical.
-4. The setup guide names the exact Azure RBAC roles, Service Bus data-plane roles, and Microsoft Graph permissions required by the federated CI identity.
+4. The setup guide names the exact Azure RBAC roles, Storage Queue data-plane roles, and Microsoft Graph permissions required by the federated CI identity.
 5. The setup guide explains the disposable resource-group safety boundary, including the default CI prefix behavior and the requirement that only CI-owned disposable groups are in scope for destructive cleanup.
 6. The setup guide describes how to manually dispatch the workflow and what success or cleanup signals an operator should expect from the first run.
 7. `deploy/bicep/README.md` links operators to `deploy/bicep/azure-live-ci-setup.md` for the procedural setup path.

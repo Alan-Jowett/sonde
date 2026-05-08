@@ -7,7 +7,7 @@
 > runtime container and Windows native service), the dedicated bootstrap image,
 > bootstrap-state detection, gateway admin/connector integration, provisioning
 > orchestration (certificate generation, bootstrap-image execution via Docker
-> API, runtime artifact creation), and Azure Service Bus bridge.
+> API, runtime artifact creation), and Azure Storage Queue bridge.
 > **Audience:** Implementers and reviewers validating the Azure companion
 > bootstrap and runtime bridge behavior.
 > **Related:** [azure-provisioning-validation.md](azure-provisioning-validation.md),
@@ -149,7 +149,7 @@
 
 ---
 
-### T-AZC-0109  Runtime requires explicit Service Bus queue configuration
+### T-AZC-0109  Runtime requires explicit Storage Queue configuration
 
 **Validates:** AZC-0302
 
@@ -223,14 +223,14 @@
 
 ---
 
-### T-AZC-0115  Alpine image reaches the concrete `azservicebus` runtime path
+### T-AZC-0115  Alpine image reaches the concrete `reqwest` runtime path
 
 **Validates:** AZC-0100, AZC-0303, AZC-0304, AZC-0305
 
 **Procedure:**
 1. Build the Azure companion Alpine image.
 2. Prepare bootstrap-complete state and explicit queue configuration.
-3. Start the runtime in the container with the concrete `azservicebus` transport selected and with a deliberately unreachable or test-only Service Bus endpoint.
+3. Start the runtime in the container with the concrete `reqwest` transport selected and with a deliberately unreachable or test-only Storage Queue endpoint.
 4. Assert: the runtime reaches the concrete Azure transport initialization path and fails, if it fails, with an Azure transport/connectivity error rather than a missing binary, missing dynamic library, or unsupported-platform error.
 5. Assert: the runtime does not fall back to device-code login in this bootstrap-complete case.
 
@@ -244,7 +244,7 @@
 1. Dispatch the live Azure validation workflow after provisioning a disposable Azure stack.
 2. Start the real `sonde-azure-companion` runtime in bootstrap-complete mode against the workflow's connector harness.
 3. Inject at least one representative upstream connector payload through the harness.
-4. Read the configured upstream Service Bus queue.
+4. Read the configured upstream Storage Queue.
 5. Assert: the queue receives the raw connector payload bytes unchanged.
 6. Assert: the runtime under test is the real `sonde-azure-companion`, not a broker mock.
 
@@ -257,7 +257,7 @@
 **Procedure:**
 1. Dispatch the live Azure validation workflow after provisioning a disposable Azure stack.
 2. Start the real `sonde-azure-companion` runtime against the connector harness.
-3. Enqueue a representative raw desired-state connector payload into the configured downstream Service Bus queue.
+3. Enqueue a representative raw desired-state connector payload into the configured downstream Storage Queue.
 4. Observe the payload received by the connector harness.
 5. Assert: the harness receives the raw payload bytes unchanged.
 6. Assert: the workflow does not require a full `sonde-gateway` process to validate this handoff.
@@ -271,7 +271,7 @@
 **Procedure:**
 1. Dispatch the live Azure validation workflow with a connector harness that can delay or reject local writes.
 2. Enqueue one desired-state message in the downstream queue.
-3. In the success sub-case, allow the harness write to complete and assert the Service Bus message is then settled successfully.
+3. In the success sub-case, allow the harness write to complete and assert the Storage Queue message is then settled successfully.
 4. In the failure sub-case, force the harness write to fail and assert the message is not reported as successfully processed.
 5. Assert: detected transport or local handoff failure is surfaced in workflow logs or process status.
 
@@ -405,14 +405,14 @@
 
 ---
 
-### T-AZC-0404  Bootstrap persists Service Bus configuration
+### T-AZC-0404  Bootstrap persists Storage Queue configuration
 
 **Validates:** AZC-0404
 
 **Procedure:**
 1. Run the bootstrap subcommand with stubbed Bicep outputs containing known namespace and queue names.
-2. Assert: the Service Bus namespace, upstream queue, and downstream queue values are persisted in the state volume.
-3. Restart the container without the Service Bus environment variables.
+2. Assert: the Storage Queue endpoint, upstream queue, and downstream queue values are persisted in the state volume.
+3. Restart the container without the Storage Queue environment variables.
 4. Assert: the runtime can read the persisted configuration and startup succeeds (or reaches the Azure transport path).
 
 ---
@@ -543,7 +543,7 @@
 **Procedure:**
 1. On a Windows machine with Docker available, run `sonde-azure-companion bootstrap` from an elevated PowerShell prompt with the required Azure environment variables set and the gateway admin pipe exposed.
 2. Assert: the command completes successfully without emitting the Unix-only private-key creation failure.
-3. Assert: the generated `cert.pem`, `key.pem`, `service-principal.json`, and `service-bus.json` files exist in `%ProgramData%\sonde-azure-companion\` (or the configured state directory).
+3. Assert: the generated `cert.pem`, `key.pem`, `service-principal.json`, and `storage-queues.json` files exist in `%ProgramData%\sonde-azure-companion\` (or the configured state directory).
 4. Inspect the ACL on `key.pem`.
 5. Assert: the ACL permits read access to the bootstrap operator and the configured Windows service identity for steady-state runtime.
 6. If the `sonde-azure-companion` Windows service is not yet installed, install it; then start or restart the service against the generated state.

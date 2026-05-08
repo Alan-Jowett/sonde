@@ -21,9 +21,6 @@ param companionCertificateDisplayName string = 'sonde-azure-companion'
 @description('Optional ownership tag value applied to the deployment resource group. Leave empty for non-CI deployments.')
 param resourceGroupOwnerTag string = ''
 
-@description('Optional override for the Service Bus namespace name.')
-param serviceBusNamespaceName string = ''
-
 @description('Queue name for gateway-originated connector traffic.')
 param upstreamQueueName string = 'connector-upstream'
 
@@ -51,9 +48,6 @@ param functionPlanName string = ''
 var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
 var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
 var effectiveResourceGroupName = empty(resource_group_name) ? '${take(effectiveProjectSlug, 84)}-azure' : resource_group_name
-var effectiveServiceBusNamespaceName = empty(serviceBusNamespaceName)
-  ? take('${take(effectiveProjectSlug, 20)}-sb-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName), 8)}', 50)
-  : serviceBusNamespaceName
 var effectiveStorageAccountName = empty(storageAccountName)
   ? take('st${take(uniqueString(subscription().subscriptionId, project_name, effectiveResourceGroupName, 'storage'), 22)}', 24)
   : storageAccountName
@@ -103,10 +97,9 @@ module stack './modules/stack.bicep' = {
   params: {
     location: location
     tags: tags
-    serviceBusNamespaceName: effectiveServiceBusNamespaceName
+    storageAccountName: effectiveStorageAccountName
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
-    storageAccountName: effectiveStorageAccountName
     nodeStateTableName: effectiveNodeStateTableName
     programRouteTableName: effectiveProgramRouteTableName
     functionAppName: effectiveFunctionAppName
@@ -116,10 +109,10 @@ module stack './modules/stack.bicep' = {
 }
 
 output resourceGroupName string = stackResourceGroup.name
-output serviceBusNamespaceName string = stack.outputs.serviceBusNamespaceName
+output storageAccountName string = stack.outputs.storageAccountName
+output queueServiceUri string = stack.outputs.queueServiceUri
 output upstreamQueueName string = stack.outputs.upstreamQueueName
 output downstreamQueueName string = stack.outputs.downstreamQueueName
-output storageAccountName string = stack.outputs.storageAccountName
 output storageTableName string = stack.outputs.nodeStateTableName
 output deploymentContainerName string = stack.outputs.deploymentContainerName
 output deploymentContainerUrl string = stack.outputs.deploymentContainerUrl
@@ -133,7 +126,7 @@ output companionServicePrincipalObjectId string = companionIdentity.outputs.serv
 output companionBootstrapValues object = {
   tenantId: companionIdentity.outputs.tenantId
   clientId: companionIdentity.outputs.clientId
-  serviceBusNamespace: stack.outputs.serviceBusNamespaceFqdn
+  storageQueueEndpoint: stack.outputs.queueServiceUri
   upstreamQueue: stack.outputs.upstreamQueueName
   downstreamQueue: stack.outputs.downstreamQueueName
   functionAppName: stack.outputs.functionAppName

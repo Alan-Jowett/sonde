@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use azservicebus::{
-    ServiceBusClient, ServiceBusClientOptions, ServiceBusMessage, ServiceBusSender,
-    ServiceBusSenderOptions,
-};
 use azure_core::credentials::TokenCredential;
 use azure_core_legacy::auth::TokenCredential as LegacyTokenCredential;
 use azure_core_legacy::error::ErrorKind as LegacyAzureErrorKind;
@@ -25,7 +20,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sonde_gateway::connector::{MSG_TYPE_ACTUAL_STATE, MSG_TYPE_APP_DATA, MSG_TYPE_DESIRED_STATE};
 use thiserror::Error;
-use tokio::sync::Mutex;
 use tracing::warn;
 
 static HISTORY_ROW_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -44,12 +38,14 @@ pub enum HandlerError {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
-    AzureServiceBus(#[from] azure_core::Error),
+    AzureCore(#[from] azure_core::Error),
+    #[error("{0}")]
+    Http(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
-    pub service_bus_namespace: String,
+    pub storage_queue_endpoint: String,
     pub upstream_queue: String,
     pub downstream_queue: String,
     pub storage_account: String,
@@ -60,10 +56,11 @@ pub struct RuntimeConfig {
 
 impl RuntimeConfig {
     pub fn from_env() -> Result<Self, HandlerError> {
-        let service_bus_namespace = required_env("SONDE_AZURE_HANDLER_SERVICE_BUS_NAMESPACE")
-            .or_else(|_| required_env("AzureWebJobsServiceBus__fullyQualifiedNamespace"))?;
+        let storage_queue_endpoint =
+            required_env("SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT")
+                .or_else(|_| required_env("QueueConnection__queueServiceUri"))?;
         Ok(Self {
-            service_bus_namespace,
+            storage_queue_endpoint,
             upstream_queue: required_env("SONDE_AZURE_HANDLER_UPSTREAM_QUEUE")?,
             downstream_queue: required_env("SONDE_AZURE_HANDLER_DOWNSTREAM_QUEUE")?,
             storage_account: required_env("SONDE_AZURE_HANDLER_STORAGE_ACCOUNT")?,
@@ -417,84 +414,73 @@ impl HandlerStore for AzureTablesStore {
     }
 }
 
-pub struct ServiceBusQueuePublisher {
-    namespace: String,
+const STORAGE_QUEUE_API_VERSION: &str = "2024-11-04";
+const STORAGE_TOKEN_SCOPE: &str = "https://storage.azure.com/.default";
+
+pub struct StorageQueuePublisher {
+    queue_endpoint: String,
     credential: Arc<dyn TokenCredential>,
-    client: Mutex<Option<ServiceBusClient<azservicebus::core::BasicRetryPolicy>>>,
-    senders: Mutex<HashMap<String, Arc<Mutex<ServiceBusSender>>>>,
+    http_client: reqwest::Client,
 }
 
-impl ServiceBusQueuePublisher {
-    pub fn new(namespace: impl Into<String>) -> Result<Self, HandlerError> {
+impl StorageQueuePublisher {
+    pub fn new(queue_endpoint: impl Into<String>) -> Result<Self, HandlerError> {
         let credential: Arc<dyn TokenCredential> =
             ManagedIdentityCredential::new(None).map_err(|e| {
-                HandlerError::Config(format!("create Service Bus credential failed: {e}"))
+                HandlerError::Config(format!("create Storage Queue credential failed: {e}"))
             })?;
+        let http_client = reqwest::Client::new();
+        let mut endpoint = queue_endpoint.into();
+        if endpoint.ends_with('/') {
+            endpoint.pop();
+        }
         Ok(Self {
-            namespace: namespace.into(),
+            queue_endpoint: endpoint,
             credential,
-            client: Mutex::new(None),
-            senders: Mutex::new(HashMap::new()),
+            http_client,
         })
+    }
+
+    async fn get_bearer_token(&self) -> Result<String, HandlerError> {
+        let token = self
+            .credential
+            .get_token(&[STORAGE_TOKEN_SCOPE], None)
+            .await?;
+        Ok(token.token.secret().to_string())
     }
 }
 
 #[async_trait]
-impl QueuePublisher for ServiceBusQueuePublisher {
+impl QueuePublisher for StorageQueuePublisher {
     async fn publish(&self, queue: &str, payload: Vec<u8>) -> Result<(), HandlerError> {
-        if let Some(sender) = self.senders.lock().await.get(queue).cloned() {
-            return send_with_cached_sender(sender, payload).await;
+        let token = self.get_bearer_token().await?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
+        let body = format!(
+            "<QueueMessage><MessageText>{encoded}</MessageText></QueueMessage>"
+        );
+        let url = format!("{}/{queue}/messages", self.queue_endpoint);
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("x-ms-version", STORAGE_QUEUE_API_VERSION)
+            .header("Content-Type", "application/xml")
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| HandlerError::Http(format!("send Storage Queue message failed: {e}")))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read response>".to_string());
+            return Err(HandlerError::Http(format!(
+                "Storage Queue PUT message returned {status}: {body}"
+            )));
         }
-
-        let new_sender = {
-            let mut client_guard = self.client.lock().await;
-            if client_guard.is_none() {
-                *client_guard = Some(
-                    ServiceBusClient::new_from_token_credential(
-                        self.namespace.clone(),
-                        Arc::clone(&self.credential),
-                        ServiceBusClientOptions::default(),
-                    )
-                    .await
-                    .map_err(|e| {
-                        HandlerError::Publish(format!("connect to Service Bus failed: {e}"))
-                    })?,
-                );
-            }
-            let client = client_guard.as_mut().ok_or_else(|| {
-                HandlerError::Publish("service bus client cache was not initialized".to_string())
-            })?;
-            Arc::new(Mutex::new(
-                client
-                    .create_sender(queue.to_string(), ServiceBusSenderOptions::default())
-                    .await
-                    .map_err(|e| {
-                        HandlerError::Publish(format!("create Service Bus sender failed: {e}"))
-                    })?,
-            ))
-        };
-
-        let sender = {
-            let mut senders = self.senders.lock().await;
-            senders
-                .entry(queue.to_string())
-                .or_insert_with(|| Arc::clone(&new_sender))
-                .clone()
-        };
-
-        send_with_cached_sender(sender, payload).await
+        Ok(())
     }
-}
-
-async fn send_with_cached_sender(
-    sender: Arc<Mutex<ServiceBusSender>>,
-    payload: Vec<u8>,
-) -> Result<(), HandlerError> {
-    let mut sender = sender.lock().await;
-    sender
-        .send_message(ServiceBusMessage::new(payload))
-        .await
-        .map_err(|e| HandlerError::Publish(format!("send Service Bus message failed: {e}")))
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -647,7 +633,7 @@ pub fn extract_trigger_payload(request_body: &[u8]) -> Result<Vec<u8>, HandlerEr
         }
     }
     Err(HandlerError::Decode(
-        "custom handler request did not contain a Service Bus payload".to_string(),
+        "custom handler request did not contain a trigger payload".to_string(),
     ))
 }
 
@@ -931,6 +917,8 @@ fn validate_program_hash_length(bytes: &[u8], field: &str) -> Result<(), Handler
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use tokio::sync::Mutex;
 
     #[derive(Default)]
     struct MemoryStore {

@@ -4,13 +4,13 @@
 
 > **Document status:** Draft
 > **Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771),
-> connector redesign discovery review, and Azure Service Bus discovery review.
+> connector redesign discovery review, and Azure Storage Queue discovery review.
 > **Scope:** This document covers the Azure companion deployment surfaces
 > (Linux runtime container and Windows native service), the dedicated Azure
 > bootstrap container image, bootstrap-state detection, bootstrap-trigger
 > behavior, the integrated Azure provisioning orchestration (certificate
 > generation, bootstrap-image execution via Docker API, and runtime artifact
-> creation), and the long-running Azure Service Bus runtime bridge between
+> creation), and the long-running Azure Storage Queue runtime bridge between
 > `sonde-gateway` and an external Azure control plane.
 > The Bicep module definitions themselves are specified in
 > [azure-provisioning-requirements.md](azure-provisioning-requirements.md).
@@ -30,9 +30,9 @@
 | **State volume** | A mounted persistent directory reserved for Azure companion bootstrap output and other local provisioning artifacts. |
 | **State directory** | The platform-owned persistent directory that stores Azure companion provisioning artifacts. On Linux this is provided by the mounted state volume; on Windows the default location is `%ProgramData%\sonde-azure-companion`. |
 | **Provisioning artifacts** | The local certificate PEM, private-key PEM, and related companion-owned state that indicate Azure bootstrap has already completed. |
-| **Queue configuration** | The Azure Service Bus namespace and the names of the upstream and downstream queues, supplied to the companion through either environment variables or a persisted configuration file (`service-bus.json`) written by bootstrap. Both sources are valid; persisted configuration is the primary source after bootstrap, and environment variables may override it. |
+| **Queue configuration** | The Azure Storage Queue namespace and the names of the upstream and downstream queues, supplied to the companion through either environment variables or a persisted configuration file (`storage-queues.json`) written by bootstrap. Both sources are valid; persisted configuration is the primary source after bootstrap, and environment variables may override it. |
 | **Bootstrap-complete state** | The condition where the required provisioning artifacts exist and the required queue configuration is present (from either source), allowing the companion to skip bootstrap and start runtime directly. |
-| **Transparent connector payload** | A Service Bus message body that carries the raw Sonde connector payload bytes unchanged. |
+| **Transparent connector payload** | A Storage Queue message body that carries the raw Sonde connector payload bytes unchanged. |
 
 ---
 
@@ -54,7 +54,7 @@ Each requirement uses the following fields:
 ### AZC-0100  Dedicated companion runtime container image
 
 **Priority:** Must
-**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), Azure Service Bus discovery review
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), Azure Storage Queue discovery review
 
 **Description:**
 The repository MUST build a dedicated Docker container image for the Azure
@@ -69,7 +69,7 @@ bridge. The runtime image MUST remain suitable for Alpine Linux deployment.
 1. Building the Azure companion runtime Dockerfile produces an image that starts the Azure companion runtime container without requiring the gateway image.
 2. The runtime image contains the Azure companion binary.
 3. The runtime image is based on Alpine Linux.
-4. The runtime image does not require Azure CLI for normal runtime connectivity to Service Bus.
+4. The runtime image does not require Azure CLI for normal runtime connectivity to Storage Queue.
 5. The runtime image contains the startup/orchestration scripts used to decide between bootstrap and normal runtime startup.
 6. The runtime image does not need to bundle the Bicep deployment files or Azure CLI tooling.
 
@@ -214,7 +214,7 @@ explicitly.
 ### AZC-0200  Startup decision based on bootstrap-complete state
 
 **Priority:** Must
-**Source:** Azure Service Bus discovery review
+**Source:** Azure Storage Queue discovery review
 
 **Description:**
 At startup, the Linux runtime container entrypoint for the Azure companion MUST
@@ -311,7 +311,7 @@ the operator and require a retry after the display becomes available.
 ### AZC-0204  Bootstrapped state reuse
 
 **Priority:** Must
-**Source:** Azure Service Bus discovery review
+**Source:** Azure Storage Queue discovery review
 
 **Description:**
 If bootstrap-complete state is present at startup, the Azure companion MUST
@@ -390,7 +390,7 @@ traffic MUST NOT depend on `GatewayAdmin`.
 ### AZC-0302  Explicit Azure queue configuration
 
 **Priority:** Must
-**Source:** Azure Service Bus discovery review
+**Source:** Azure Storage Queue discovery review
 
 **Description:**
 The Azure companion MUST require explicit configuration for the Azure Service
@@ -398,7 +398,7 @@ Bus namespace plus the names of exactly two queues: one upstream queue for
 gateway-originated connector messages and one downstream queue for cloud-issued
 desired-state messages. These values MUST NOT be hard-coded in the container
 image. Configuration MAY be supplied through environment variables or through a
-persisted configuration file (`service-bus.json`) written by the bootstrap
+persisted configuration file (`storage-queues.json`) written by the bootstrap
 workflow. Environment variables, if set, override persisted file values.
 
 **Acceptance criteria:**
@@ -414,31 +414,31 @@ workflow. Environment variables, if set, override persisted file values.
 ### AZC-0303  Pluggable broker transport boundary
 
 **Priority:** Must
-**Source:** Azure Service Bus discovery review, GW-0814
+**Source:** Azure Storage Queue discovery review, GW-0814
 
 **Description:**
 The Azure companion runtime MUST isolate its broker-specific integration behind
 a pluggable transport boundary so the gateway-facing connector logic does not
-depend on one specific Azure SDK crate. `azservicebus` is the first required
+depend on one specific Azure SDK crate. `reqwest` is the first required
 transport implementation for this document, but the design MUST keep the Azure
 transport swappable.
 
 **Acceptance criteria:**
 
 1. The runtime design separates gateway-connector logic from broker-specific AMQP operations.
-2. Replacing the Azure Service Bus transport implementation does not require changing the gateway-facing connector protocol.
-3. `azservicebus` is supported as the initial concrete Azure transport implementation.
+2. Replacing the Azure Storage Queue transport implementation does not require changing the gateway-facing connector protocol.
+3. `reqwest` is supported as the initial concrete Azure transport implementation.
 
 ---
 
-### AZC-0304  Azure Service Bus AMQP transport
+### AZC-0304  Azure Storage Queue AMQP transport
 
 **Priority:** Must
-**Source:** Azure Service Bus discovery review
+**Source:** Azure Storage Queue discovery review
 
 **Description:**
 The Azure companion runtime MUST bridge the local connector session to Azure
-Service Bus over AMQP. The runtime MUST publish gateway-originated connector
+Storage Queue over AMQP. The runtime MUST publish gateway-originated connector
 messages to the configured upstream queue and consume cloud-issued desired-state
 messages from the configured downstream queue.
 
@@ -453,7 +453,7 @@ messages from the configured downstream queue.
 ### AZC-0305  Certificate-authenticated Azure runtime
 
 **Priority:** Must
-**Source:** Azure Service Bus discovery review
+**Source:** Azure Storage Queue discovery review
 
 **Description:**
 The Azure companion runtime MUST authenticate to Azure using an Entra
@@ -471,18 +471,18 @@ required RBAC roles are assumed to be preconfigured outside this document.
 ### AZC-0306  Transparent upstream connector payloads
 
 **Priority:** Must
-**Source:** Azure Service Bus discovery review, GW-0814
+**Source:** Azure Storage Queue discovery review, GW-0814
 
 **Description:**
 When forwarding gateway-originated connector traffic to the upstream queue, the
 Azure companion MUST carry the raw Sonde connector payload bytes unchanged in
-the Service Bus message body. The companion MAY attach minimal broker metadata
+the Storage Queue message body. The companion MAY attach minimal broker metadata
 in message properties, but it MUST NOT translate the connector payload into an
 Azure-specific schema.
 
 **Acceptance criteria:**
 
-1. The Service Bus message body for upstream traffic contains the raw Sonde connector payload bytes.
+1. The Storage Queue message body for upstream traffic contains the raw Sonde connector payload bytes.
 2. The Azure companion does not rewrite connector payload fields into an Azure-specific typed schema before enqueueing them.
 3. Any broker properties used by the companion are supplementary metadata rather than a replacement for the raw connector payload body.
 
@@ -491,11 +491,11 @@ Azure-specific schema.
 ### AZC-0307  Transparent downstream desired-state payloads
 
 **Priority:** Must
-**Source:** Azure Service Bus discovery review, GW-0811
+**Source:** Azure Storage Queue discovery review, GW-0811
 
 **Description:**
 When consuming desired-state requests from the downstream queue, the Azure
-companion MUST interpret the Service Bus message body as a raw Sonde connector
+companion MUST interpret the Storage Queue message body as a raw Sonde connector
 payload and forward those bytes unchanged to the local gateway connector socket.
 It MUST NOT require the Azure companion to decode and re-encode the desired
 state into a different transport schema.
@@ -511,10 +511,10 @@ state into a different transport schema.
 ### AZC-0308  Downstream settlement after local handoff
 
 **Priority:** Must
-**Source:** Azure Service Bus discovery review
+**Source:** Azure Storage Queue discovery review
 
 **Description:**
-The Azure companion MUST treat a downstream Service Bus message as successfully
+The Azure companion MUST treat a downstream Storage Queue message as successfully
 processed only after the raw connector payload has been written successfully to
 the local gateway connector socket. This success criterion covers local handoff
 to the gateway socket only; it does not imply a separate gateway reconciliation
@@ -523,7 +523,7 @@ acknowledgement path.
 **Acceptance criteria:**
 
 1. The Azure companion does not settle a downstream desired-state message as successful before the raw payload has been written to the local connector socket.
-2. If the Azure companion cannot write the payload to the local connector socket, it does not report that Service Bus message as successfully processed.
+2. If the Azure companion cannot write the payload to the local connector socket, it does not report that Storage Queue message as successfully processed.
 3. The requirement does not invent a new synchronous acknowledgement path inside the gateway connector protocol.
 
 ---
@@ -531,7 +531,7 @@ acknowledgement path.
 ### AZC-0309  Detected transport loss observability
 
 **Priority:** Must
-**Source:** GW-0815, Azure Service Bus discovery review
+**Source:** GW-0815, Azure Storage Queue discovery review
 
 **Description:**
 The Azure companion MUST NOT silently mask detected failures at the broker or
@@ -555,7 +555,7 @@ logging, process status, or both.
 **Description:**
 The repository MUST support an on-demand live Azure validation workflow that
 runs the real `sonde-azure-companion` runtime against a local connector test
-harness and the disposable Azure Service Bus resources created for that run. The
+harness and the disposable Azure Storage Queue resources created for that run. The
 workflow validates the Azure companion bridge at the connector boundary and MUST
 NOT require a full `sonde-gateway` process for this live cloud test.
 
@@ -563,13 +563,13 @@ NOT require a full `sonde-gateway` process for this live cloud test.
 
 1. The live Azure validation workflow starts the real `sonde-azure-companion` runtime.
 2. The runtime connects to a local connector harness rather than a full `sonde-gateway` process.
-3. The runtime uses the disposable Azure Service Bus namespace and queue names provisioned for that workflow run.
+3. The runtime uses the disposable Azure Storage Queue namespace and queue names provisioned for that workflow run.
 4. The live validation covers both upstream publish and downstream desired-state delivery.
 5. The workflow remains on-demand rather than part of routine PR CI.
 
 ---
 
-### AZC-0311  Live Azure CI verifies concrete Service Bus handoff semantics
+### AZC-0311  Live Azure CI verifies concrete Storage Queue handoff semantics
 
 **Priority:** Must
 **Source:** CI validation discovery review, AZC-0304, AZC-0308, AZC-0309
@@ -582,8 +582,8 @@ local connector harness accepts the payload.
 
 **Acceptance criteria:**
 
-1. At least one representative upstream connector payload is published through the real Azure Service Bus transport during the live workflow.
-2. At least one representative downstream desired-state payload is received from Azure Service Bus and written unchanged to the local connector harness.
+1. At least one representative upstream connector payload is published through the real Azure Storage Queue transport during the live workflow.
+2. At least one representative downstream desired-state payload is received from Azure Storage Queue and written unchanged to the local connector harness.
 3. The workflow demonstrates that downstream settlement occurs only after successful local connector handoff.
 4. Detected Azure transport or local connector handoff failures are surfaced by the workflow rather than silently ignored.
 
@@ -682,20 +682,20 @@ the state volume.
 
 ---
 
-### AZC-0404  Service Bus configuration from Bicep outputs
+### AZC-0404  Storage Queue configuration from Bicep outputs
 
 **Priority:** Must
 **Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), AZC-0302
 
 **Description:**
 After successful Bicep deployment, the unified `bootstrap` subcommand MUST
-persist or surface the Service Bus namespace and queue names so the companion
+persist or surface the Storage Queue endpoint and queue names so the companion
 runtime can use them without requiring the operator to manually extract and
 supply them.
 
 **Acceptance criteria:**
 
-1. Bootstrap extracts the Service Bus namespace, upstream queue name, and downstream queue name from the Bicep deployment outputs.
+1. Bootstrap extracts the Storage Queue endpoint, upstream queue name, and downstream queue name from the Bicep deployment outputs.
 2. Bootstrap writes or persists these values so they are available at the next container startup.
 3. The runtime can read the persisted queue configuration without requiring the operator to re-enter it manually.
 

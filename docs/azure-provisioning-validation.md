@@ -46,12 +46,10 @@
 
 **Procedure:**
 1. Deploy the workflow.
-2. Inspect the resulting Storage Queue resources.
-3. Assert: one namespace exists for the stack.
+2. Inspect the resulting Storage Queue resources on the Storage Account.
+3. Assert: a queue service is available on the provisioned Storage Account.
 4. Assert: one upstream queue and one downstream queue exist.
-5. Assert: the namespace uses the Standard tier by default.
-6. Assert: the namespace has local/SAS authentication disabled by default.
-7. Assert: the queue names are available through deployment outputs or documented post-deploy values.
+5. Assert: the queue service endpoint URI and queue names are available through deployment outputs or documented post-deploy values.
 
 ---
 

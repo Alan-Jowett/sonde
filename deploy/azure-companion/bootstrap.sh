@@ -71,10 +71,10 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
             return 1
         fi
 
-        namespace_env="$(host_trim_string "${SONDE_AZURE_STORAGE_QUEUE_ENDPOINT:-}")"
+        endpoint_env="$(host_trim_string "${SONDE_AZURE_STORAGE_QUEUE_ENDPOINT:-}")"
         upstream_env="$(host_trim_string "${SONDE_AZURE_STORAGE_UPSTREAM_QUEUE:-}")"
         downstream_env="$(host_trim_string "${SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE:-}")"
-        if [ -n "$namespace_env" ] &&
+        if [ -n "$endpoint_env" ] &&
             [ -n "$upstream_env" ] &&
             [ -n "$downstream_env" ]; then
             return 0

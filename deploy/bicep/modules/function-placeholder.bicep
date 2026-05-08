@@ -86,7 +86,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       }
       runtime: {
         name: 'custom'
-        version: ''
+        version: '1.0'
       }
       scaleAndConcurrency: {
         maximumInstanceCount: 100
@@ -101,7 +101,6 @@ resource appSettings 'Microsoft.Web/sites/config@2024-04-01' = {
   name: 'appsettings'
   properties: {
     DEPLOYMENT_STORAGE_CONNECTION_STRING: storageConnectionString
-    QueueConnection__queueServiceUri: queueServiceUri
     SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT: queueServiceUri
     SONDE_AZURE_HANDLER_UPSTREAM_QUEUE: upstreamQueueName
     SONDE_AZURE_HANDLER_DOWNSTREAM_QUEUE: downstreamQueueName

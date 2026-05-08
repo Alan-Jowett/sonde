@@ -917,6 +917,19 @@ mod tests {
     use std::collections::HashMap;
     use tokio::sync::Mutex;
 
+    #[test]
+    fn storage_queue_xml_envelope_is_well_formed() {
+        let payload = b"hello world";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
+        let xml = format!("<QueueMessage><MessageText>{encoded}</MessageText></QueueMessage>");
+        assert!(xml.starts_with("<QueueMessage><MessageText>"));
+        assert!(xml.ends_with("</MessageText></QueueMessage>"));
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&encoded)
+            .unwrap();
+        assert_eq!(decoded, payload);
+    }
+
     #[derive(Default)]
     struct MemoryStore {
         actual_rows: Mutex<HashMap<String, Vec<ActualStateRow>>>,

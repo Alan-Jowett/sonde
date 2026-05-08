@@ -96,18 +96,15 @@ with `project = sonde` by default.
 
 **Description:**
 The provisioning workflow MUST create the Azure Storage Queue resources required
-by the Azure companion runtime: one namespace plus one upstream queue and one
-downstream queue. The namespace uses the Standard tier unless the caller
-explicitly opts into a different supported tier.
+by the Azure companion runtime: two queues (upstream and downstream) on the
+provisioned Storage Account.
 
 **Acceptance criteria:**
 
-1. The workflow provisions one Storage Queue endpoint.
+1. The workflow provisions a queue service on the Storage Account.
 2. The workflow provisions one upstream queue for gateway-originated connector traffic.
 3. The workflow provisions one downstream queue for cloud-originated desired-state traffic.
-4. The default namespace tier is Standard.
-5. The workflow exposes the namespace and queue names as deployment outputs or documented post-deploy values consumable by Azure companion bootstrap/runtime configuration.
-6. The default namespace configuration disables local/SAS authentication so Entra-based RBAC is the only steady-state access path unless a later specification explicitly broadens it.
+4. The workflow exposes the queue service endpoint URI and queue names as deployment outputs or documented post-deploy values consumable by Azure companion bootstrap/runtime configuration.
 
 ---
 

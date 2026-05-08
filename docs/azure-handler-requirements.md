@@ -27,7 +27,7 @@
 | **Azure handler** | The Azure-hosted control-plane process that consumes upstream Sonde connector traffic from Storage Queue and produces downstream desired-state messages or handler-queue deliveries. |
 | **Actual state row** | One append-only Azure Table row that records a received node-scoped `GW-0812` observation for a Sonde `node_id`. |
 | **Desired state row** | One append-only Azure Table row that records a requested desired state for a Sonde `node_id`. Desired rows are authored by admin/control-plane surfaces, not by the Azure handler reconciliation path. |
-| **Program route row** | One Azure Table row keyed by `program_hash` that names the Azure Storage Queue queue that should receive `GW-0813` application-data messages for that program. |
+| **Program route row** | One Azure Table row keyed by `program_hash` that names the Storage Queue that should receive `GW-0813` application-data messages for that program. |
 | **Observed fields** | The subset of node state reported by `GW-0812` and copied into an actual state row, including current program state, observed schedule as reported by the gateway, firmware data, battery, and check-in time. |
 | **Desired fields** | The cloud-authored fields stored in a desired state row and used to build a complete `GW-0811` `DESIRED_STATE` payload for the node. In v1 this document defines `assigned_program_hash` and `schedule_interval_s`. |
 | **Reverse-tick key** | A row-key prefix derived from `u64::MAX - timestamp_ms`, so newer timestamps sort before older timestamps for `Top(1)` queries within one node partition. |
@@ -56,7 +56,7 @@ Each requirement uses the following fields:
 
 **Description:**
 The Azure handler MUST consume raw Sonde connector payloads from the configured
-upstream Azure Storage Queue queue. It MUST decode the connector `msg_type`
+upstream Azure Storage Queue. It MUST decode the connector `msg_type`
 enough to distinguish node-scoped `GW-0812` actual-state messages from
 `GW-0813` application-data messages and route them to the appropriate handler
 logic.

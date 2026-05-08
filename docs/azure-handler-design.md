@@ -172,7 +172,7 @@ The row contains:
 
 | Column | Purpose |
 |--------|---------|
-| `handler_queue` | Azure Storage Queue queue name for `GW-0813` delivery. |
+| `handler_queue` | Storage Queue name for `GW-0813` delivery. |
 
 The table stores only queue references. It does not own queue creation or queue
 policy lifecycle.

@@ -76,10 +76,14 @@ async def expect_queue_empty(
     service_client: QueueServiceClient, queue_name: str, timeout_secs: int = 10
 ) -> None:
     queue_client = service_client.get_queue_client(queue_name)
-    messages = queue_client.receive_messages(max_messages=1, visibility_timeout=5)
-    async for message in messages:
-        await queue_client.update_message(message, visibility_timeout=0)
-        raise RuntimeError(f"expected queue `{queue_name}` to be empty after settlement")
+    deadline = time.monotonic() + timeout_secs
+    while time.monotonic() < deadline:
+        messages = queue_client.receive_messages(max_messages=1, visibility_timeout=5)
+        async for message in messages:
+            await queue_client.update_message(message, visibility_timeout=0)
+            raise RuntimeError(f"expected queue `{queue_name}` to be empty after settlement")
+        await asyncio.sleep(1)
+    # No messages seen within the timeout — queue is empty.
 
 
 class ConnectorHarness:

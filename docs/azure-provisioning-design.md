@@ -259,7 +259,7 @@ workflow makes the necessary values available to the bootstrap path that does.
 The top-level workflow exposes or documents the following outputs:
 
 1. resource group name,
-2. Storage Queue endpoint name,
+2. Storage Queue endpoint URI,
 3. upstream queue name,
 4. downstream queue name,
 5. Storage Account name,

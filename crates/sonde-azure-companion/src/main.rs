@@ -346,6 +346,7 @@ struct StorageQueueConsumer {
     inflight: Option<StorageQueueMessage>,
 }
 
+#[derive(Debug)]
 struct StorageQueueMessage {
     message_id: String,
     pop_receipt: String,
@@ -2729,16 +2730,17 @@ mod tests {
     use super::validate_certificate_matches_private_key;
     use super::{
         check_runtime_ready, cleanup_staging, commit_staging, default_bootstrap_image,
-        downstream_body_to_connector_payload, extract_device_code, generate_certificate,
-        load_runtime_config, load_runtime_credential_state, load_signing_key, parse_bicep_outputs,
-        prepare_staging_dir, pump_downstream_once, pump_upstream_once, read_framed,
-        resolve_bootstrap_image, resolve_effective_state_dir, resolve_state_relative_path,
-        run_bootstrap_deployment_with_docker_and_image, trim_buffer_to_max_len,
-        validate_display_lines, write_framed, ClientAssertionCredential, CompanionError,
-        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState, ServicePrincipalStateFile,
-        StorageQueuesConfigFile, UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME,
-        CONNECTOR_MAX_FRAME_LENGTH, KEY_PEM_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME,
-        STATE_GENERATION_PREFIX, STORAGE_QUEUES_CONFIG_FILENAME,
+        downstream_body_to_connector_payload, extract_device_code, extract_xml_element,
+        generate_certificate, load_runtime_config, load_runtime_credential_state, load_signing_key,
+        parse_bicep_outputs, parse_queue_message_xml, prepare_staging_dir, pump_downstream_once,
+        pump_upstream_once, read_framed, resolve_bootstrap_image, resolve_effective_state_dir,
+        resolve_state_relative_path, run_bootstrap_deployment_with_docker_and_image,
+        trim_buffer_to_max_len, urlencoding_encode, validate_display_lines, write_framed,
+        ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
+        RuntimeCredentialState, ServicePrincipalStateFile, StorageQueuesConfigFile,
+        UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH,
+        KEY_PEM_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX,
+        STORAGE_QUEUES_CONFIG_FILENAME,
     };
     #[cfg(windows)]
     use super::{
@@ -4017,6 +4019,49 @@ mod tests {
         assert!(err
             .to_string()
             .contains("exceeds connector max frame length"));
+    }
+
+    #[test]
+    fn parse_queue_message_xml_extracts_message() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<QueueMessagesList>
+  <QueueMessage>
+    <MessageId>msg-123</MessageId>
+    <PopReceipt>pop-abc</PopReceipt>
+    <MessageText>aGVsbG8=</MessageText>
+  </QueueMessage>
+</QueueMessagesList>"#;
+        let msg = parse_queue_message_xml(xml).unwrap().unwrap();
+        assert_eq!(msg.message_id, "msg-123");
+        assert_eq!(msg.pop_receipt, "pop-abc");
+        assert_eq!(msg.body, b"hello");
+    }
+
+    #[test]
+    fn parse_queue_message_xml_returns_none_for_empty_list() {
+        let xml = r#"<?xml version="1.0"?><QueueMessagesList></QueueMessagesList>"#;
+        assert!(parse_queue_message_xml(xml).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_queue_message_xml_rejects_invalid_base64() {
+        let xml = r#"<QueueMessagesList><QueueMessage>
+<MessageId>id</MessageId><PopReceipt>pr</PopReceipt>
+<MessageText>!!!not-base64!!!</MessageText>
+</QueueMessage></QueueMessagesList>"#;
+        let err = parse_queue_message_xml(xml).unwrap_err();
+        assert!(err.to_string().contains("base64"));
+    }
+
+    #[test]
+    fn extract_xml_element_returns_none_for_missing_tag() {
+        assert!(extract_xml_element("<Root></Root>", "Missing").is_none());
+    }
+
+    #[test]
+    fn urlencoding_encode_encodes_special_chars() {
+        assert_eq!(urlencoding_encode("a b+c"), "a%20b%2Bc");
+        assert_eq!(urlencoding_encode("simple"), "simple");
     }
 
     #[tokio::test]

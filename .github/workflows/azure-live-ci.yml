@@ -66,7 +66,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
           python3 -m pip install --upgrade pip
-          python3 -m pip install azure-identity==1.25.3 azure-storage-queue==12.13.0 aiohttp
+          python3 -m pip install azure-identity==1.25.3 azure-storage-queue==12.13.0 azure-data-tables==12.9.0 aiohttp
 
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
 
@@ -74,8 +74,14 @@ jobs:
         with:
           key: azure-live-ci
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v3
+
       - name: Build Azure companion
         run: cargo build --locked -p sonde-azure-companion
+
+      - name: Build Azure handler function package
+        run: sh deploy/azure-bootstrap/build-function-package.sh
 
       - name: Preflight-delete disposable resource group
         shell: bash
@@ -161,6 +167,171 @@ jobs:
           (state_dir / "storage-queues.json").write_text(
               json.dumps(storage_queues), encoding="utf-8"
           )
+          PY
+
+      - name: Deploy Azure handler function package
+        shell: bash
+        run: |
+          set -euo pipefail
+          FUNCTION_APP_NAME="$(python3 -c "
+          import json
+          d = json.load(open('.azure-live-state/deployment.json'))
+          print(d['properties']['outputs']['functionAppName']['value'])
+          ")"
+          echo "Deploying handler to $FUNCTION_APP_NAME"
+          az functionapp deployment source config-zip \
+            --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --src .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
+            --timeout 600
+          echo "Waiting for function to load..."
+          for attempt in $(seq 1 30); do
+            loaded="$(az functionapp function list \
+              --name "$FUNCTION_APP_NAME" \
+              --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+              --query 'length(@)' -o tsv 2>/dev/null || echo 0)"
+            if [ "$loaded" -ge 1 ]; then
+              echo "Function App reports $loaded loaded function(s)"
+              break
+            fi
+            echo "  attempt $attempt: $loaded functions loaded, waiting..."
+            sleep 10
+          done
+
+      - name: Validate Azure handler processes upstream messages
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import asyncio
+          import base64
+          import hashlib
+          import json
+          import sys
+          import time
+
+          from azure.identity.aio import AzureCliCredential
+          from azure.storage.queue.aio import QueueServiceClient
+          from azure.data.tables.aio import TableServiceClient
+
+          TIMEOUT_SECS = 180
+
+          def build_actual_state_cbor(node_id: str, timestamp_ms: int) -> bytes:
+              """Build a minimal CBOR ACTUAL_STATE message (msg_type=2)."""
+              import io
+              # Manual CBOR encoding of integer-keyed map matching the handler's
+              # decode_connector_message() expectations.
+              # {1: 2, 2: "node", 3: node_id, 6: 3300, 7: 1, 8: "1.0.0",
+              #  9: timestamp_ms, 10: {}}
+              items = [
+                  (1, 2),            # msg_type = ACTUAL_STATE
+                  (2, "node"),       # entity_kind
+                  (3, node_id),      # entity_id
+                  (6, 3300),         # battery_mv
+                  (7, 1),            # firmware_abi_version
+                  (8, "1.0.0"),      # firmware_version
+                  (9, timestamp_ms), # timestamp_ms
+                  (10, {}),          # map_defs (empty)
+              ]
+              buf = io.BytesIO()
+              # CBOR map header: 0xA0 | count (we have 8 items)
+              buf.write(bytes([0xA0 | len(items)]))
+              for key, val in items:
+                  # Encode small unsigned int key
+                  if key < 24:
+                      buf.write(bytes([key]))
+                  else:
+                      buf.write(bytes([0x18, key]))
+                  # Encode value
+                  if isinstance(val, int):
+                      if val < 24:
+                          buf.write(bytes([val]))
+                      elif val < 256:
+                          buf.write(bytes([0x18, val]))
+                      elif val < 65536:
+                          buf.write(bytes([0x19]) + val.to_bytes(2, "big"))
+                      elif val < 2**32:
+                          buf.write(bytes([0x1A]) + val.to_bytes(4, "big"))
+                      else:
+                          buf.write(bytes([0x1B]) + val.to_bytes(8, "big"))
+                  elif isinstance(val, str):
+                      encoded = val.encode("utf-8")
+                      if len(encoded) < 24:
+                          buf.write(bytes([0x60 | len(encoded)]))
+                      else:
+                          buf.write(bytes([0x78, len(encoded)]))
+                      buf.write(encoded)
+                  elif isinstance(val, dict):
+                      buf.write(bytes([0xA0]))  # empty map
+              return buf.getvalue()
+
+          async def main() -> int:
+              state_dir = ".azure-live-state"
+              deployment = json.load(open(f"{state_dir}/deployment.json"))
+              outputs = deployment["properties"]["outputs"]
+              bootstrap = outputs["companionBootstrapValues"]["value"]
+
+              queue_endpoint = bootstrap["storageQueueEndpoint"]
+              upstream_queue = bootstrap["upstreamQueue"]
+              storage_account = outputs["storageAccountName"]["value"]
+              actual_state_table = outputs["actualStateTableName"]["value"]
+              table_endpoint = f"https://{storage_account}.table.core.windows.net"
+
+              node_id = "ci-live-test-node"
+              timestamp_ms = int(time.time() * 1000)
+              cbor_payload = build_actual_state_cbor(node_id, timestamp_ms)
+
+              credential = AzureCliCredential()
+              try:
+                  # Send the CBOR message to the upstream queue (base64-encoded,
+                  # matching what the companion would send).
+                  async with QueueServiceClient(
+                      queue_endpoint, credential=credential
+                  ) as queue_svc:
+                      queue_client = queue_svc.get_queue_client(upstream_queue)
+                      encoded = base64.b64encode(cbor_payload).decode()
+                      await queue_client.send_message(encoded)
+                      print(f"Sent ACTUAL_STATE for node `{node_id}` (ts={timestamp_ms})")
+
+                  # Poll the actual-state table until the handler processes the
+                  # message and writes a row.
+                  digest = hashlib.sha256(node_id.encode()).hexdigest()
+                  partition_key = f"n:{digest}"
+                  print(f"Polling table `{actual_state_table}` partition `{partition_key}`...")
+
+                  async with TableServiceClient(
+                      endpoint=table_endpoint, credential=credential
+                  ) as table_svc:
+                      table_client = table_svc.get_table_client(actual_state_table)
+                      deadline = time.monotonic() + TIMEOUT_SECS
+                      found = False
+                      while time.monotonic() < deadline:
+                          query = f"PartitionKey eq '{partition_key}'"
+                          entities = []
+                          async for entity in table_client.query_entities(query):
+                              entities.append(entity)
+                          if entities:
+                              entity = entities[0]
+                              print(f"Found row: PartitionKey={entity['PartitionKey']}, "
+                                    f"RowKey={entity['RowKey']}, "
+                                    f"node_id={entity.get('node_id')}, "
+                                    f"timestamp_ms={entity.get('timestamp_ms')}")
+                              if entity.get("node_id") == node_id:
+                                  found = True
+                                  break
+                          await asyncio.sleep(5)
+
+                      if not found:
+                          print(f"::error::No row for node `{node_id}` in `{actual_state_table}` "
+                                f"after {TIMEOUT_SECS}s", file=sys.stderr)
+                          return 1
+
+                  print("Azure handler function validation passed")
+                  return 0
+              finally:
+                  await credential.close()
+
+          sys.exit(asyncio.run(main()))
           PY
 
       - name: Run live Azure companion validation

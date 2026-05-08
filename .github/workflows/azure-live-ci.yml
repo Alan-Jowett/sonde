@@ -222,25 +222,21 @@ jobs:
             echo "App Insights enabled ($APPINSIGHTS_NAME)"
             echo "$APPINSIGHTS_NAME" > .azure-live-state/appinsights-name.txt
           fi
-          # The Consumption plan SCM/Kudu site may take a moment to become
-          # available after Bicep provisioning.  Retry up to 3 times.
-          for deploy_attempt in 1 2 3; do
-            if az functionapp deployment source config-zip \
-              --name "$FUNCTION_APP_NAME" \
-              --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-              --src .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
-              --timeout 600 2>&1; then
-              echo "Zip deploy succeeded on attempt $deploy_attempt"
-              break
-            fi
-            echo "Zip deploy attempt $deploy_attempt failed, retrying in 30s..."
-            sleep 30
-            if [ "$deploy_attempt" -eq 3 ]; then
-              echo "::error::Zip deploy failed after 3 attempts"
-              exit 1
-            fi
-          done
+          # The CLI's post-deployment health check ("Failed to fetch host key")
+          # can fail on Flex Consumption even when the zip upload succeeded.
+          # Tolerate this and rely on the function activation probe below.
+          config_zip_exit=0
+          az functionapp deployment source config-zip \
+            --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --src .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
+            --timeout 600 \
+            --output none 2>&1 || config_zip_exit=$?
+          if [ "$config_zip_exit" -ne 0 ]; then
+            echo "WARNING: config-zip exited $config_zip_exit; verifying via function activation probe"
+          fi
           echo "Waiting for function to load..."
+          loaded=0
           for attempt in $(seq 1 30); do
             loaded="$(az functionapp function list \
               --name "$FUNCTION_APP_NAME" \
@@ -253,20 +249,10 @@ jobs:
             echo "  attempt $attempt: $loaded functions loaded, waiting..."
             sleep 10
           done
-          # Wake up the Consumption plan host so the queue trigger starts
-          # polling. On Y1/Dynamic, the host sleeps until it receives
-          # traffic.  A simple HTTP GET (even a 404) is enough.
-          FUNCTION_URL="https://${FUNCTION_APP_NAME}.azurewebsites.net"
-          echo "Warming up function host at $FUNCTION_URL ..."
-          for warmup in $(seq 1 5); do
-            http_code="$(curl -s -o /dev/null -w '%{http_code}' "$FUNCTION_URL" 2>/dev/null || echo 0)"
-            echo "  warmup $warmup: HTTP $http_code"
-            if [ "$http_code" != "0" ] && [ "$http_code" != "502" ]; then
-              break
-            fi
-            sleep 10
-          done
-          echo "Function app warm-up complete"
+          if [ "$loaded" -lt 1 ]; then
+            echo "::error::Function App did not load any functions after 300s"
+            exit 1
+          fi
 
       - name: Refresh Azure login before handler validation
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0

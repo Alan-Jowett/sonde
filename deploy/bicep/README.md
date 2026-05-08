@@ -12,8 +12,9 @@ Azure companion architecture.
   - Two Storage Queues:
     - `connector-upstream`
     - `desired-state`
-  - Two Azure Table resources for the Azure handler:
-    - `decodeddata` (default node-state table name for backward-compatible deployments)
+  - Three Azure Table resources for the Azure handler:
+    - `actualstate`
+    - `desiredstate`
     - `programroute`
 - An Azure handler Function App on a Classic Consumption plan (`Y1` / `Dynamic`)
 - A system-assigned managed identity on the Function App with:
@@ -37,8 +38,8 @@ Azure companion architecture.
 | `upstreamQueueName` | `connector-upstream` | Gateway-originated connector traffic queue |
 | `downstreamQueueName` | `desired-state` | Desired-state ingress queue |
 | `storageAccountName` | derived | Optional Storage Account override |
-| `tableName` | empty | Legacy compatibility alias for the node-state table name |
-| `nodeStateTableName` | `decodeddata` | Azure handler node-state table |
+| `actualStateTableName` | `actualstate` | Azure handler actual-state table |
+| `desiredStateTableName` | `desiredstate` | Azure handler desired-state table |
 | `programRouteTableName` | `programroute` | Azure handler program-route table |
 | `functionAppName` | derived | Optional Function App override |
 | `functionPlanName` | derived | Optional Function hosting plan override |
@@ -46,10 +47,6 @@ Azure companion architecture.
 When resource names are derived automatically, the deployment normalizes
 `project_name` to satisfy Azure naming rules for the target resource types.
 
-For backward compatibility with earlier templates, callers may still pass `tableName`.
-When `nodeStateTableName` is omitted, that legacy alias is used as the node-state table name.
-If neither parameter is set, the deployment keeps the historical default table name
-`decodeddata` so existing stacks continue updating in place.
 The derived default Function App name intentionally keeps the historical `-decoder-`
 stem so existing stacks update in place; set `functionAppName` explicitly on new
 deployments if you want a handler-specific resource name.

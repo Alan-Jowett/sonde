@@ -115,14 +115,6 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
           value: desiredStateTableName
         }
         {
-          name: 'SONDE_AZURE_HANDLER_ACTUAL_STATE_TABLE'
-          value: nodeStateTableName
-        }
-        {
-          name: 'SONDE_AZURE_HANDLER_DESIRED_STATE_TABLE'
-          value: nodeStateTableName
-        }
-        {
           name: 'SONDE_AZURE_HANDLER_PROGRAM_ROUTE_TABLE'
           value: programRouteTableName
         }

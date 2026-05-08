@@ -393,7 +393,7 @@ traffic MUST NOT depend on `GatewayAdmin`.
 **Source:** Azure Storage Queue discovery review
 
 **Description:**
-The Azure companion MUST require explicit configuration for the Azure Service
+The Azure companion MUST require explicit configuration for the Azure Storage
 Queue endpoint plus the names of exactly two queues: one upstream queue for
 gateway-originated connector messages and one downstream queue for cloud-issued
 desired-state messages. These values MUST NOT be hard-coded in the container

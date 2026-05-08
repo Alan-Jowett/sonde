@@ -16,7 +16,7 @@ regex = "1"
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
 p256 = { version = "0.13", features = ["pkcs8"] }
 rcgen = { version = "0.14", features = ["pem"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots-no-provider"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 rsa = "0.9"
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }

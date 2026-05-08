@@ -1,48 +1,80 @@
 #!/bin/sh
 set -eu
 
-json_output_string() {
+trim_string() {
+    printf '%s' "$1" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+require_deployment_output_string() {
     field="$1"
-    printf '%s' "$deployment_outputs" | python3 - "$field" <<'PY'
-import json
-import sys
+    query="$2"
+    value="$(trim_string "$3")"
+    if [ -z "$value" ] || [ "$value" = "null" ]; then
+        echo "deployment output \`$field\` is missing or null for query \`$query\`" >&2
+        exit 1
+    fi
+    printf '%s\n' "$value"
+}
 
-field = sys.argv[1]
-data = json.load(sys.stdin)
+read_required_deployment_outputs() {
+    # Wrap in an outer array so `--output tsv` emits a single row with
+    # tab-separated columns.  A flat JMESPath array produces one value per
+    # line (newline-separated), which breaks the tab-based field splitting
+    # below.
+    query='[[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value]]'
+    stderr_file="$(mktemp "${TMPDIR:-/tmp}/sonde-azure-deployment-show.XXXXXX")"
+    if ! deployment_runtime_values="$(az deployment sub show \
+        --name "$deployment_name" \
+        --query "$query" \
+        --output tsv 2>"$stderr_file")"; then
+        if [ -s "$stderr_file" ]; then
+            deployment_show_error="$(cat "$stderr_file")"
+            echo "failed to read deployment outputs for query \`$query\`: $deployment_show_error" >&2
+        else
+            echo "failed to read deployment outputs for query \`$query\`" >&2
+        fi
+        rm -f "$stderr_file"
+        exit 1
+    fi
+    if [ -s "$stderr_file" ]; then
+        cat "$stderr_file" >&2
+    fi
+    rm -f "$stderr_file"
 
-try:
-    if field == "resourceGroupName":
-        value = data["resourceGroupName"]["value"]
-    else:
-        companion_values = data["companionBootstrapValues"]["value"]
-        value = companion_values[field]
-except (KeyError, TypeError):
-    if not isinstance(data, dict):
-        raise SystemExit("deployment outputs must be a JSON object")
-    if field == "resourceGroupName":
-        available_keys = ", ".join(sorted(data.keys())) or "(none)"
-        raise SystemExit(
-            f"missing deployment output `{field}`; available top-level outputs: {available_keys}"
-        )
-    companion_output = data.get("companionBootstrapValues")
-    if isinstance(companion_output, dict):
-        companion_values = companion_output.get("value")
-    else:
-        companion_values = None
-    available_keys = (
-        ", ".join(sorted(companion_values.keys()))
-        if isinstance(companion_values, dict)
-        else "(none)"
-    )
-    raise SystemExit(
-        f"missing deployment output `{field}` in companionBootstrapValues; available keys: {available_keys}"
-    )
+    old_ifs="$IFS"
+    IFS="$(printf '\t')"
+    set -- $deployment_runtime_values
+    IFS="$old_ifs"
+    field_count="$#"
+    if [ "$field_count" -ne 4 ]; then
+        echo "deployment output query \`$query\` returned $field_count field(s); expected 4 tab-separated values" >&2
+        exit 1
+    fi
 
-if not isinstance(value, str) or not value.strip():
-    raise SystemExit(f"deployment output `{field}` must be a non-empty string")
-
-print(value.strip())
-PY
+    resource_group_name="$(
+        require_deployment_output_string \
+            resourceGroupName \
+            "$query" \
+            "$1"
+    )"
+    function_app_name="$(
+        require_deployment_output_string \
+            functionAppName \
+            "$query" \
+            "$2"
+    )"
+    deployment_container_name="$(
+        require_deployment_output_string \
+            deploymentContainerName \
+            "$query" \
+            "$3"
+    )"
+    deployment_container_url="$(
+        require_deployment_output_string \
+            deploymentContainerUrl \
+            "$query" \
+            "$4"
+    )"
 }
 
 validate_positive_integer() {
@@ -72,21 +104,16 @@ wait_for_function_activation() {
 
     while :; do
         function_list_stderr="$(mktemp "${TMPDIR:-/tmp}/sonde-azure-function-list.XXXXXX")"
-        if function_list_json="$(az functionapp function list \
+        if loaded_count="$(az functionapp function list \
             --name "$function_app_name" \
             --resource-group "$resource_group_name" \
-            --output json 2>"$function_list_stderr")"; then
+            --query 'length(@)' \
+            --output tsv 2>"$function_list_stderr")"; then
             if [ -s "$function_list_stderr" ]; then
                 cat "$function_list_stderr" >&2
             fi
             rm -f "$function_list_stderr"
-            loaded_count="$(printf '%s' "$function_list_json" | python3 - <<'PY'
-import json
-import sys
-
-print(len(json.load(sys.stdin)))
-PY
-)"
+            loaded_count="$(trim_string "$loaded_count")"
             case "$loaded_count" in
                 ''|*[!0-9]*)
                     echo "invalid Azure function-list response while waiting for activation" >&2
@@ -129,7 +156,9 @@ if [ -n "${SONDE_AZURE_SUBSCRIPTION_ID:-}" ]; then
     az account set --subscription "$SONDE_AZURE_SUBSCRIPTION_ID" >&2
 fi
 echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2
+deployment_name="sonde-bootstrap-$(date +%Y%m%d%H%M%S)-$$"
 deployment_outputs="$(az deployment sub create \
+    --name "$deployment_name" \
     --location "$SONDE_AZURE_LOCATION" \
     --template-file /opt/sonde/deploy/bicep/main.bicep \
     --parameters companionCertificateBase64="$COMPANION_CERT_BASE64" \
@@ -138,11 +167,8 @@ deployment_outputs="$(az deployment sub create \
     --query 'properties.outputs' \
     --output json)"
 
-resource_group_name="$(json_output_string resourceGroupName)"
-function_app_name="$(json_output_string functionAppName)"
-deployment_container_name="$(json_output_string deploymentContainerName)"
-deployment_container_url="$(json_output_string deploymentContainerUrl)"
-function_package_path='/opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip'
+read_required_deployment_outputs
+function_package_path="${SONDE_AZURE_FUNCTION_PACKAGE_PATH:-/opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip}"
 
 if [ ! -r "$function_package_path" ]; then
     echo "bundled Azure handler package not found: $function_package_path" >&2
@@ -151,12 +177,20 @@ fi
 
 echo "Deploying bundled Azure handler package to Function App $function_app_name" >&2
 echo "Using deployment target $deployment_container_name ($deployment_container_url)" >&2
+# The CLI's post-deployment health check ("Failed to fetch host key") can
+# fail on Flex Consumption plans even when the zip upload (HTTP 202)
+# succeeded.  Tolerate this exit code and rely on wait_for_function_activation
+# to confirm the function is actually loaded.
+config_zip_exit=0
 az functionapp deployment source config-zip \
     --src "$function_package_path" \
     --name "$function_app_name" \
     --resource-group "$resource_group_name" \
     --timeout "$deployment_timeout_secs" \
-    --output none 1>&2
+    --output none 1>&2 || config_zip_exit=$?
+if [ "$config_zip_exit" -ne 0 ]; then
+    echo "WARNING: config-zip exited $config_zip_exit; verifying via function activation probe" >&2
+fi
 
 wait_for_function_activation "$resource_group_name" "$function_app_name" "$activation_timeout_secs"
 

@@ -140,15 +140,17 @@ the tables' logical schema.
 The provisioning workflow MUST create the Azure Function hosting resources used
 by the Sonde Azure handler and the deployment target that the repository-owned
 bootstrap path populates with the runnable handler package. The Function App
-uses a consumption plan unless a later specification explicitly changes that
-hosting model.
+uses the Classic Consumption plan (`Y1` / `Dynamic` SKU) so that built-in
+filesystem log streaming is available through the Azure Portal without
+requiring an Application Insights resource.
 
 **Acceptance criteria:**
 
 1. The workflow provisions the Azure resources needed to host the Azure handler Function App.
 2. The workflow provisions or documents the deployment target consumed by the repository-owned handler package deployment step.
-3. The Function App resources use a consumption-plan hosting model.
+3. The Function App resources use the Classic Consumption plan (`Y1` / `Dynamic` SKU).
 4. The deployment outputs or documentation identify the Function App resources used by the Azure handler path.
+5. The Function App does not require an Application Insights resource for basic log access.
 
 ---
 

@@ -51,15 +51,12 @@ module storage './storage.bicep' = {
   }
 }
 
-var functionDeploymentContainerUrl = '${storage.outputs.blobEndpoint}${storage.outputs.deploymentContainerName}'
-
 module functionPlaceholder './function-placeholder.bicep' = {
   name: 'functionPlaceholder'
   params: {
     location: location
     functionAppName: functionAppName
     functionPlanName: functionPlanName
-    deploymentContainerUrl: functionDeploymentContainerUrl
     storageAccountName: storage.outputs.storageAccountName
     queueServiceUri: storage.outputs.queueServiceUri
     upstreamQueueName: upstreamQueueName

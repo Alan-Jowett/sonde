@@ -77,8 +77,10 @@
 1. Run the deployment.
 2. Inspect the resulting Function hosting resources.
 3. Assert: the Azure handler Function App resources exist.
-4. Assert: the Function App uses a consumption hosting plan.
-5. Assert: the deployment target used by the repository-owned package deployment step is present or explicitly surfaced by deployment outputs/documentation.
+4. Assert: the Function App uses the Classic Consumption hosting plan (`Y1` / `Dynamic` SKU).
+5. Assert: the Function App is configured with `WEBSITE_RUN_FROM_PACKAGE` for package deployment.
+6. Assert: the Function App does not require an Application Insights resource for basic log access.
+7. Assert: the deployment target used by the repository-owned package deployment step is present or explicitly surfaced by deployment outputs/documentation.
 
 ---
 

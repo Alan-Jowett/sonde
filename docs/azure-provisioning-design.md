@@ -120,8 +120,18 @@ outputs.
 
 The function-placeholder module provisions the hosting resources used by the
 Azure handler Function App. This module creates the Function App shell, the
-consumption hosting plan, storage linkage, and baseline app settings required
-for the repository-owned bootstrap path to deploy the runnable handler package.
+Classic Consumption hosting plan (`Y1` / `Dynamic` SKU), storage linkage, and
+baseline app settings required for the repository-owned bootstrap path to
+deploy the runnable handler package.
+
+The Classic Consumption plan is chosen over the Flex Consumption plan so that
+built-in filesystem log streaming is available through the Azure Portal
+without requiring a separate Application Insights resource. The Function App
+uses `WEBSITE_RUN_FROM_PACKAGE=1` so that the Azure Functions host runs the
+handler package deployed via the zip deploy API. The `AzureWebJobsStorage`
+connection string provides the runtime storage backend, and
+`FUNCTIONS_WORKER_RUNTIME=custom` tells the Azure Functions host to use the
+Sonde custom handler binary.
 
 The runnable package itself is not compiled during bootstrap. Instead, the
 bootstrap image carries a prebuilt Linux package for the matching Sonde

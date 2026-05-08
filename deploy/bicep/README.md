@@ -8,23 +8,22 @@ Azure companion architecture.
 ## What it provisions
 
 - A dedicated resource group (or a caller-specified existing group target)
-- A Standard-tier Azure Service Bus namespace
-- Two Service Bus queues:
-  - `connector-upstream`
-  - `desired-state`
-- An Azure Storage Account plus two Azure Table resources for the Azure handler:
-  - `decodeddata` (default node-state table name for backward-compatible deployments)
-  - `programroute`
+- An Azure Storage Account with:
+  - Two Storage Queues:
+    - `connector-upstream`
+    - `desired-state`
+  - Three Azure Table resources for the Azure handler:
+    - `actualstate`
+    - `desiredstate`
+    - `programroute`
 - An Azure handler Function App on a Classic Consumption plan (`Y1` / `Dynamic`)
 - A system-assigned managed identity on the Function App with:
-  - receive permissions on the upstream queue
-  - send permissions on the downstream queue
+  - Storage Queue Data Contributor permissions on the Storage Account
   - read/write permissions on the Azure handler tables
 - An Entra application / service principal for `sonde-azure-companion` using a
   caller-supplied certificate public credential
-- Azure companion Service Bus RBAC:
-  - send on the upstream queue
-  - receive on the downstream queue
+- Azure companion Storage Queue RBAC:
+  - Storage Queue Data Contributor on the Storage Account
 
 ## Inputs
 
@@ -36,12 +35,11 @@ Azure companion architecture.
 | `resourceGroupOwnerTag` | empty | Optional `sonde-ci-owner` tag value applied to the deployment resource group |
 | `companionCertificateBase64` | none | Base64-encoded DER certificate public material registered on the Azure companion app |
 | `companionCertificateDisplayName` | `sonde-azure-companion` | Optional display name for the registered certificate credential |
-| `serviceBusNamespaceName` | derived | Optional Service Bus namespace override |
 | `upstreamQueueName` | `connector-upstream` | Gateway-originated connector traffic queue |
 | `downstreamQueueName` | `desired-state` | Desired-state ingress queue |
 | `storageAccountName` | derived | Optional Storage Account override |
-| `tableName` | empty | Legacy compatibility alias for the node-state table name |
-| `nodeStateTableName` | `decodeddata` | Azure handler node-state table |
+| `actualStateTableName` | `actualstate` | Azure handler actual-state table |
+| `desiredStateTableName` | `desiredstate` | Azure handler desired-state table |
 | `programRouteTableName` | `programroute` | Azure handler program-route table |
 | `functionAppName` | derived | Optional Function App override |
 | `functionPlanName` | derived | Optional Function hosting plan override |
@@ -49,10 +47,6 @@ Azure companion architecture.
 When resource names are derived automatically, the deployment normalizes
 `project_name` to satisfy Azure naming rules for the target resource types.
 
-For backward compatibility with earlier templates, callers may still pass `tableName`.
-When `nodeStateTableName` is omitted, that legacy alias is used as the node-state table name.
-If neither parameter is set, the deployment keeps the historical default table name
-`decodeddata` so existing stacks continue updating in place.
 The derived default Function App name intentionally keeps the historical `-decoder-`
 stem so existing stacks update in place; set `functionAppName` explicitly on new
 deployments if you want a handler-specific resource name.
@@ -129,7 +123,7 @@ state:
 
 - tenant ID
 - client ID
-- Service Bus namespace
+- Storage Queue endpoint
 - upstream queue name
 - downstream queue name
 - Function App name
@@ -177,10 +171,10 @@ The workflow uses GitHub OIDC for Azure login. The configured identity needs:
 - permission to create, inspect, and delete the dedicated disposable CI resource group,
 - permission to deploy the Bicep stack in that subscription, and
 - Microsoft Graph permissions required by `modules/companion-identity.bicep` to create the Entra application and service principal used by `sonde-azure-companion`, and
-- Service Bus data-plane roles that let the live-validation harness send to and receive from the deployed queues when it authenticates via `AzureCliCredential`.
+- Storage Queue data-plane roles that let the live-validation harness send to and receive from the deployed queues when it authenticates via `AzureCliCredential`.
 
 For the default queue topology, the GitHub OIDC identity therefore needs enough
-Service Bus queue permissions to:
+Storage Queue permissions to:
 
 - receive from `connector-upstream`,
 - send to `desired-state`, and

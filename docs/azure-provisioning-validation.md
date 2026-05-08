@@ -36,22 +36,20 @@
 1. Deploy the workflow into a test subscription or resource group.
 2. Inspect the resulting resource group and managed resources.
 3. Assert: the deployment targets the expected resource group.
-4. Assert: Service Bus, Storage, and Function placeholder resources carry the required `project = sonde` tag unless a deliberate override was supplied.
+4. Assert: Storage Queue, Storage, and Function placeholder resources carry the required `project = sonde` tag unless a deliberate override was supplied.
 
 ---
 
-### T-AZP-0102  Service Bus namespace and queues are provisioned
+### T-AZP-0102  Storage Queue endpoint and queues are provisioned
 
 **Validates:** AZP-0102
 
 **Procedure:**
 1. Deploy the workflow.
-2. Inspect the resulting Service Bus resources.
-3. Assert: one namespace exists for the stack.
+2. Inspect the resulting Storage Queue resources on the Storage Account.
+3. Assert: a queue service is available on the provisioned Storage Account.
 4. Assert: one upstream queue and one downstream queue exist.
-5. Assert: the namespace uses the Standard tier by default.
-6. Assert: the namespace has local/SAS authentication disabled by default.
-7. Assert: the queue names are available through deployment outputs or documented post-deploy values.
+5. Assert: the queue service endpoint URI and queue names are available through deployment outputs or documented post-deploy values.
 
 ---
 
@@ -113,13 +111,13 @@
 
 ---
 
-### T-AZP-0201  Service Bus permissions match bridge behavior
+### T-AZP-0201  Storage Queue permissions match bridge behavior
 
 **Validates:** AZP-0201
 
 **Procedure:**
 1. Run the provisioning workflow.
-2. Inspect the assigned Service Bus roles or permissions for the runtime identity.
+2. Inspect the assigned Storage Queue roles or permissions for the runtime identity.
 3. Assert: the identity can send to the upstream queue.
 4. Assert: the identity can receive and settle messages on the downstream queue.
 5. Assert: the assigned permissions do not exceed the documented runtime need without an explicit justification.
@@ -134,7 +132,7 @@
 1. Run the provisioning workflow.
 2. Collect the documented outputs and artifacts from the handoff contract.
 3. Compare them against the runtime-state inputs expected by `sonde-azure-companion`.
-4. Assert: the handoff includes tenant ID, client ID, certificate material or reference, private-key material or reference, Service Bus namespace/queue values, and the Function App / deployment-target values needed by bootstrap package deployment.
+4. Assert: the handoff includes tenant ID, client ID, certificate material or reference, private-key material or reference, Storage Queue endpoint/queue values, and the Function App / deployment-target values needed by bootstrap package deployment.
 5. Assert: the handoff can be translated into `service-principal.json`, certificate PEM, and private-key PEM without inventing extra undocumented values.
 
 ---
@@ -176,7 +174,7 @@
 1. Provision the stack in a disposable test environment.
 2. Execute the documented teardown path.
 3. Assert: the resource-plane stack is removed, or any retained artifacts are explicitly identified by the documentation.
-4. Assert: teardown expectations for Service Bus, Storage, and Azure handler Function App resources are clear.
+4. Assert: teardown expectations for Storage Queue, Storage, and Azure handler Function App resources are clear.
 
 ---
 
@@ -230,7 +228,7 @@
 2. Assert: `deploy/bicep/README.md` links operators to `deploy/bicep/azure-live-ci-setup.md` for live-CI setup.
 3. Assert: the setup guide identifies the GitHub environment name and the required workflow variables.
 4. Assert: the setup guide describes both an Azure Portal path and an Azure CLI path for the key setup actions.
-5. Assert: the setup guide names the exact Azure RBAC roles, Service Bus data-plane roles, and Microsoft Graph permissions required by the federated CI identity.
+5. Assert: the setup guide names the exact Azure RBAC roles, Storage Queue data-plane roles, and Microsoft Graph permissions required by the federated CI identity.
 6. Assert: the setup guide explains the disposable resource-group safety boundary, including the default CI prefix behavior and the CI-owned tag/ownership expectations.
 7. Assert: the setup guide tells the operator how to manually dispatch the workflow and what first-run success and teardown signals to expect.
 

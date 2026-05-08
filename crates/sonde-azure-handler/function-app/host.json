@@ -5,11 +5,10 @@
     "version": "[4.*, 5.0.0)"
   },
   "extensions": {
-    "serviceBus": {
-      "messageHandlerOptions": {
-        "autoComplete": true,
-        "maxConcurrentCalls": 1
-      }
+    "queues": {
+      "maxPollingInterval": "00:00:02",
+      "batchSize": 1,
+      "maxDequeueCount": 5
     }
   },
   "customHandler": {

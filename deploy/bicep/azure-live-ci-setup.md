@@ -9,7 +9,7 @@ Use this guide when you want GitHub Actions to:
 
 1. log in to Azure with GitHub OIDC,
 2. deploy the disposable Azure companion stack,
-3. run the real `sonde-azure-companion` against Azure Service Bus, and
+3. run the real `sonde-azure-companion` against Azure Storage Queues, and
 4. tear the disposable stack down again in the same run.
 
 `deploy/bicep/README.md` remains the reference document for the provisioning
@@ -120,7 +120,7 @@ As implemented today, the workflow needs permissions for four distinct jobs:
 1. create and delete the disposable resource group,
 2. run a subscription-scope Bicep deployment,
 3. create RBAC assignments inside that deployment, and
-4. send to / receive from Service Bus during live validation.
+4. send to / receive from Storage Queues during live validation.
 
 ### 5.1 Azure RBAC roles
 
@@ -130,10 +130,9 @@ Grant the GitHub OIDC service principal these Azure RBAC roles:
 |------|-------------------|-----|
 | `Contributor` | Subscription named by `SONDE_AZURE_CI_SUBSCRIPTION_ID` | Needed for `az group create`, `az group delete`, and the subscription-scope deployment. |
 | `User Access Administrator` | Same subscription | Needed because the Bicep deployment creates queue/table `roleAssignments`. |
-| `Azure Service Bus Data Sender` | Subscription | Needed for the live validation harness to send to `desired-state`. |
-| `Azure Service Bus Data Receiver` | Subscription | Needed for the live validation harness to receive from `connector-upstream` and `desired-state`. |
+| `Storage Queue Data Contributor` | Subscription | Needed for the live validation harness to send to and receive from the deployed queues. |
 
-**Why subscription scope for the Service Bus data roles?** The workflow deletes
+**Why subscription scope for the Storage Queue data roles?** The workflow deletes
 and recreates the disposable resource group every run. Narrower assignments
 inside that resource group would be destroyed on teardown, so the current
 workflow needs persistent assignments above the disposable stack scope.
@@ -158,8 +157,7 @@ $subscriptionScope = "/subscriptions/$subscriptionId"
 foreach ($role in @(
   "Contributor",
   "User Access Administrator",
-  "Azure Service Bus Data Sender",
-  "Azure Service Bus Data Receiver"
+  "Storage Queue Data Contributor"
 )) {
   az role assignment create `
     --assignee-object-id $principalObjectId `
@@ -282,5 +280,5 @@ On failure:
 | Azure login fails | Client ID, tenant ID, subscription ID, or federated credential subject is wrong. |
 | Graph deployment fails while creating the companion identity | The OIDC app is missing `Application.ReadWrite.OwnedBy` or tenant admin consent. |
 | Bicep deployment fails on role assignments | The OIDC identity is missing `User Access Administrator`. |
-| Live validation fails with Service Bus authorization errors | The OIDC identity is missing `Azure Service Bus Data Sender` and/or `Azure Service Bus Data Receiver`. |
+| Live validation fails with Storage Queue authorization errors | The OIDC identity is missing `Storage Queue Data Contributor`. |
 | Cleanup refuses to delete the resource group | The group name is outside the configured CI prefix or the CI-ownership tag is missing. |

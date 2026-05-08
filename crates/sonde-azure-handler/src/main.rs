@@ -13,14 +13,14 @@ use axum::{Json, Router};
 use serde_json::json;
 use sonde_azure_handler::{
     extract_trigger_payload, AzureHandler, AzureTablesStore, HandlerError, RuntimeConfig,
-    ServiceBusQueuePublisher,
+    StorageQueuePublisher,
 };
 use tokio::net::TcpListener;
 use tracing_subscriber::prelude::*;
 
 #[derive(Clone)]
 struct AppState {
-    handler: Arc<AzureHandler<AzureTablesStore, ServiceBusQueuePublisher>>,
+    handler: Arc<AzureHandler<AzureTablesStore, StorageQueuePublisher>>,
 }
 
 #[tokio::main]
@@ -41,8 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = RuntimeConfig::from_env()?;
     let store = Arc::new(AzureTablesStore::new(&config)?);
-    let publisher = Arc::new(ServiceBusQueuePublisher::new(
-        config.service_bus_namespace.clone(),
+    let publisher = Arc::new(StorageQueuePublisher::new(
+        config.storage_queue_endpoint.clone(),
     )?);
     let state = AppState {
         handler: Arc::new(AzureHandler::new(

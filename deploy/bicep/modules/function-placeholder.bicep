@@ -15,8 +15,8 @@ param functionPlanName string
 @description('Storage Account name used by the Function placeholder deployment configuration.')
 param storageAccountName string
 
-@description('Service Bus fully qualified namespace.')
-param serviceBusFullyQualifiedNamespace string
+@description('Storage Queue service URI for identity-based trigger connections.')
+param queueServiceUri string
 
 @description('Queue name for gateway-originated connector traffic.')
 param upstreamQueueName string
@@ -24,8 +24,11 @@ param upstreamQueueName string
 @description('Queue name for cloud-originated desired-state traffic.')
 param downstreamQueueName string
 
-@description('Azure handler node-state table name.')
-param nodeStateTableName string
+@description('Azure handler actual-state table name.')
+param actualStateTableName string
+
+@description('Azure handler desired-state table name.')
+param desiredStateTableName string
 
 @description('Azure handler program-route table name.')
 param programRouteTableName string
@@ -84,12 +87,12 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
           value: '1'
         }
         {
-          name: 'AzureWebJobsServiceBus__fullyQualifiedNamespace'
-          value: serviceBusFullyQualifiedNamespace
+          name: 'QueueConnection__queueServiceUri'
+          value: queueServiceUri
         }
         {
-          name: 'SONDE_AZURE_HANDLER_SERVICE_BUS_NAMESPACE'
-          value: serviceBusFullyQualifiedNamespace
+          name: 'SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT'
+          value: queueServiceUri
         }
         {
           name: 'SONDE_AZURE_HANDLER_UPSTREAM_QUEUE'
@@ -104,8 +107,12 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
           value: storageAccountName
         }
         {
-          name: 'SONDE_AZURE_HANDLER_NODE_STATE_TABLE'
-          value: nodeStateTableName
+          name: 'SONDE_AZURE_HANDLER_ACTUAL_STATE_TABLE'
+          value: actualStateTableName
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_DESIRED_STATE_TABLE'
+          value: desiredStateTableName
         }
         {
           name: 'SONDE_AZURE_HANDLER_PROGRAM_ROUTE_TABLE'
@@ -119,4 +126,3 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
 output functionAppName string = functionApp.name
 output functionAppResourceId string = functionApp.id
 output principalId string = functionApp.identity.principalId
-output serviceBusFullyQualifiedNamespace string = serviceBusFullyQualifiedNamespace

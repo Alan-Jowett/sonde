@@ -21,9 +21,6 @@ param companionCertificateDisplayName string = 'sonde-azure-companion'
 @description('Optional ownership tag value applied to the deployment resource group. Leave empty for non-CI deployments.')
 param resourceGroupOwnerTag string = ''
 
-@description('Optional override for the Service Bus namespace name.')
-param serviceBusNamespaceName string = ''
-
 @description('Queue name for gateway-originated connector traffic.')
 param upstreamQueueName string = 'connector-upstream'
 
@@ -33,11 +30,11 @@ param downstreamQueueName string = 'desired-state'
 @description('Optional override for the Storage Account name.')
 param storageAccountName string = ''
 
-@description('Legacy compatibility alias for the Azure handler node-state table name.')
-param tableName string = ''
+@description('Table name for Azure handler actual-state rows.')
+param actualStateTableName string = ''
 
-@description('Table name for Azure handler node-state rows.')
-param nodeStateTableName string = ''
+@description('Table name for Azure handler desired-state rows.')
+param desiredStateTableName string = ''
 
 @description('Table name for Azure handler program-route rows.')
 param programRouteTableName string = 'programroute'
@@ -51,15 +48,15 @@ param functionPlanName string = ''
 var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
 var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
 var effectiveResourceGroupName = empty(resource_group_name) ? '${take(effectiveProjectSlug, 84)}-azure' : resource_group_name
-var effectiveServiceBusNamespaceName = empty(serviceBusNamespaceName)
-  ? take('${take(effectiveProjectSlug, 20)}-sb-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName), 8)}', 50)
-  : serviceBusNamespaceName
 var effectiveStorageAccountName = empty(storageAccountName)
   ? take('st${take(uniqueString(subscription().subscriptionId, project_name, effectiveResourceGroupName, 'storage'), 22)}', 24)
   : storageAccountName
-var effectiveNodeStateTableName = empty(nodeStateTableName)
-  ? (empty(tableName) ? 'decodeddata' : tableName)
-  : nodeStateTableName
+var effectiveActualStateTableName = empty(actualStateTableName)
+  ? 'actualstate'
+  : actualStateTableName
+var effectiveDesiredStateTableName = empty(desiredStateTableName)
+  ? 'desiredstate'
+  : desiredStateTableName
 var effectiveProgramRouteTableName = empty(programRouteTableName)
   ? 'programroute'
   : programRouteTableName
@@ -103,11 +100,11 @@ module stack './modules/stack.bicep' = {
   params: {
     location: location
     tags: tags
-    serviceBusNamespaceName: effectiveServiceBusNamespaceName
+    storageAccountName: effectiveStorageAccountName
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
-    storageAccountName: effectiveStorageAccountName
-    nodeStateTableName: effectiveNodeStateTableName
+    actualStateTableName: effectiveActualStateTableName
+    desiredStateTableName: effectiveDesiredStateTableName
     programRouteTableName: effectiveProgramRouteTableName
     functionAppName: effectiveFunctionAppName
     functionPlanName: effectiveFunctionPlanName
@@ -116,14 +113,14 @@ module stack './modules/stack.bicep' = {
 }
 
 output resourceGroupName string = stackResourceGroup.name
-output serviceBusNamespaceName string = stack.outputs.serviceBusNamespaceName
+output storageAccountName string = stack.outputs.storageAccountName
+output queueServiceUri string = stack.outputs.queueServiceUri
 output upstreamQueueName string = stack.outputs.upstreamQueueName
 output downstreamQueueName string = stack.outputs.downstreamQueueName
-output storageAccountName string = stack.outputs.storageAccountName
-output storageTableName string = stack.outputs.nodeStateTableName
+output actualStateTableName string = stack.outputs.actualStateTableName
+output desiredStateTableName string = stack.outputs.desiredStateTableName
 output deploymentContainerName string = stack.outputs.deploymentContainerName
 output deploymentContainerUrl string = stack.outputs.deploymentContainerUrl
-output nodeStateTableName string = stack.outputs.nodeStateTableName
 output programRouteTableName string = stack.outputs.programRouteTableName
 output functionAppName string = stack.outputs.functionAppName
 output functionPrincipalId string = stack.outputs.functionPrincipalId
@@ -133,13 +130,14 @@ output companionServicePrincipalObjectId string = companionIdentity.outputs.serv
 output companionBootstrapValues object = {
   tenantId: companionIdentity.outputs.tenantId
   clientId: companionIdentity.outputs.clientId
-  serviceBusNamespace: stack.outputs.serviceBusNamespaceFqdn
+  storageQueueEndpoint: stack.outputs.queueServiceUri
   upstreamQueue: stack.outputs.upstreamQueueName
   downstreamQueue: stack.outputs.downstreamQueueName
   functionAppName: stack.outputs.functionAppName
   deploymentContainerName: stack.outputs.deploymentContainerName
   deploymentContainerUrl: stack.outputs.deploymentContainerUrl
-  nodeStateTable: stack.outputs.nodeStateTableName
+  actualStateTable: stack.outputs.actualStateTableName
+  desiredStateTable: stack.outputs.desiredStateTableName
   programRouteTable: stack.outputs.programRouteTableName
   note: 'The deployment registers the supplied certificate public material on the Entra app. The matching PEM certificate and private key remain caller-managed local artifacts for sonde-azure-companion bootstrap.'
 }

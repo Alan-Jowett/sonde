@@ -6,41 +6,20 @@ targetScope = 'resourceGroup'
 @description('System-assigned managed identity principal ID for the Azure handler Function App.')
 param functionPrincipalId string
 
-@description('Service Bus namespace name.')
-param serviceBusNamespaceName string
-
-@description('Queue name for gateway-originated connector traffic.')
-param upstreamQueueName string
-
-@description('Queue name for cloud-originated desired-state traffic.')
-param downstreamQueueName string
-
 @description('Storage Account name.')
 param storageAccountName string
 
-@description('Azure handler node-state table name.')
-param nodeStateTableName string
+@description('Azure handler actual-state table name.')
+param actualStateTableName string
+
+@description('Azure handler desired-state table name.')
+param desiredStateTableName string
 
 @description('Azure handler program-route table name.')
 param programRouteTableName string
 
-var serviceBusDataSenderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39')
-var serviceBusDataReceiverRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')
+var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
-
-resource existingServiceBusNamespace 'Microsoft.ServiceBus/namespaces@2024-01-01' existing = {
-  name: serviceBusNamespaceName
-}
-
-resource existingUpstreamQueue 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' existing = {
-  parent: existingServiceBusNamespace
-  name: upstreamQueueName
-}
-
-resource existingDownstreamQueue 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' existing = {
-  parent: existingServiceBusNamespace
-  name: downstreamQueueName
-}
 
 resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
@@ -51,9 +30,14 @@ resource existingTableService 'Microsoft.Storage/storageAccounts/tableServices@2
   name: 'default'
 }
 
-resource existingNodeStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
+resource existingActualStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
   parent: existingTableService
-  name: nodeStateTableName
+  name: actualStateTableName
+}
+
+resource existingDesiredStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
+  parent: existingTableService
+  name: desiredStateTableName
 }
 
 resource existingProgramRouteTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
@@ -61,29 +45,29 @@ resource existingProgramRouteTable 'Microsoft.Storage/storageAccounts/tableServi
   name: programRouteTableName
 }
 
-resource functionUpstreamReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid('function-upstream-receiver', functionPrincipalId, serviceBusDataReceiverRoleId, serviceBusNamespaceName, upstreamQueueName)
-  scope: existingUpstreamQueue
+resource functionQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid('function-queue-contributor', functionPrincipalId, storageQueueDataContributorRoleId, storageAccountName)
+  scope: existingStorageAccount
   properties: {
     principalId: functionPrincipalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: serviceBusDataReceiverRoleId
+    roleDefinitionId: storageQueueDataContributorRoleId
   }
 }
 
-resource functionDownstreamSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid('function-downstream-sender', functionPrincipalId, serviceBusDataSenderRoleId, serviceBusNamespaceName, downstreamQueueName)
-  scope: existingDownstreamQueue
+resource functionActualStateTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid('function-actual-state-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingActualStateTable.id)
+  scope: existingActualStateTable
   properties: {
     principalId: functionPrincipalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: serviceBusDataSenderRoleId
+    roleDefinitionId: storageTableDataContributorRoleId
   }
 }
 
-resource functionNodeStateTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid('function-node-state-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingNodeStateTable.id)
-  scope: existingNodeStateTable
+resource functionDesiredStateTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid('function-desired-state-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingDesiredStateTable.id)
+  scope: existingDesiredStateTable
   properties: {
     principalId: functionPrincipalId
     principalType: 'ServicePrincipal'

@@ -7,7 +7,7 @@
 > (Linux runtime container and Windows native service), the dedicated bootstrap
 > image, bootstrap-state detection, bootstrap trigger behavior, integrated
 > provisioning orchestration (certificate generation, bootstrap-image execution
-> via Docker API, and runtime artifact creation), and the Service Bus AMQP
+> via Docker API, and runtime artifact creation), and the Storage Queue HTTP REST
 > runtime bridge.
 > The Bicep module definitions themselves are specified in
 > [azure-provisioning-design.md](azure-provisioning-design.md).
@@ -38,7 +38,7 @@ The Azure companion now has two distinct responsibilities:
    bootstrap-image execution via the Docker API, and runtime artifact
    creation), and
 5. when bootstrap-complete state exists, bridge the gateway connector session to
-   Azure Service Bus over AMQP.
+   Azure Storage Queue over HTTP REST.
 
 The gateway-facing connector contract remains cloud-agnostic. Azure-specific
 logic is confined to the Azure companion.
@@ -125,25 +125,25 @@ The active deployment entrypoint expects the following runtime inputs:
 
 | Input | Purpose |
 |-------|---------|
-| State directory | Persistent storage for local provisioning artifacts such as the runtime certificate PEM, private-key PEM, service-principal metadata file, and persisted Service Bus configuration. On Linux this is the mounted state volume; on Windows this defaults to `%ProgramData%\sonde-azure-companion`. |
+| State directory | Persistent storage for local provisioning artifacts such as the runtime certificate PEM, private-key PEM, service-principal metadata file, and persisted Storage Queue configuration. On Linux this is the mounted state volume; on Windows this defaults to `%ProgramData%\sonde-azure-companion`. |
 | Gateway admin socket | Local IPC path used by bootstrap to call `GatewayAdmin` RPCs such as `ShowModemDisplayMessage`. |
 | Gateway connector socket | Local framed IPC path used by the long-running runtime after bootstrap succeeds. |
 | Docker socket (bootstrap only) | Docker Engine API socket, bind-mounted from the host, used by the companion to launch the dedicated bootstrap image via Bollard. This is part of the Linux runtime-container bootstrap path and explicit Windows bootstrap, and is not a steady-state Windows service requirement. |
-| Service Bus namespace | Runtime configuration for the Azure Service Bus namespace, from environment variable or persisted `service-bus.json`. |
-| Upstream queue name | Runtime configuration for the queue that carries gateway-originated connector messages, from environment variable or persisted `service-bus.json`. |
-| Downstream queue name | Runtime configuration for the queue that carries cloud-originated desired-state messages, from environment variable or persisted `service-bus.json`. |
+| Storage Queue endpoint | Runtime configuration for the Azure Storage Queue service URI (e.g., `https://<account>.queue.core.windows.net`), from environment variable or persisted `storage-queues.json`. |
+| Upstream queue name | Runtime configuration for the queue that carries gateway-originated connector messages, from environment variable or persisted `storage-queues.json`. |
+| Downstream queue name | Runtime configuration for the queue that carries cloud-originated desired-state messages, from environment variable or persisted `storage-queues.json`. |
 
 Bootstrap-complete state is defined by the combination of:
 
 1. the required local provisioning artifacts in the state directory, and
 2. the required queue configuration (from either environment variables or
-   persisted `service-bus.json` in the state directory).
+   persisted `storage-queues.json` in the state directory).
 
 The current runtime artifact shape is a companion-owned `service-principal.json`
 file containing the Entra tenant ID, client ID, PEM certificate path, and PEM
 private-key path, plus the referenced certificate and key files in the state
 directory. After bootstrap, the state directory also contains
-`service-bus.json` with the Service Bus namespace and queue names. New bootstrap
+`storage-queues.json` with the Storage Queue endpoint and queue names. New bootstrap
 commits are written into a generation directory under the state directory and made
 current by atomically updating a `.current-state` marker file. For backward
 compatibility, startup also accepts the legacy flat-file layout when the marker
@@ -155,7 +155,7 @@ Startup follows a platform-specific decision:
 
 1. Ensure the state directory exists and is writable.
 2. Check whether the required local provisioning artifacts exist.
-3. Check whether the required Service Bus namespace and queue configuration are
+3. Check whether the required Storage Queue endpoint and queue configuration are
    present.
 4. **Linux runtime-container path:** if both are present, skip bootstrap and
    start `run`; otherwise start `bootstrap`, which launches the dedicated
@@ -202,7 +202,7 @@ The live Azure validation workflow uses a narrower runtime topology than a full
 gateway deployment. It starts the real `sonde-azure-companion` runtime against:
 
 1. a local connector harness that speaks the framed connector protocol, and
-2. the disposable Azure Service Bus namespace and queues created earlier in the
+2. the disposable Azure Storage Queue endpoint and queues created earlier in the
    same workflow run.
 
 The harness is sufficient because the purpose of this workflow is to validate
@@ -219,12 +219,12 @@ Within the single manually triggered workflow, the live validation sequence is:
 4. start the real `sonde-azure-companion` runtime in bootstrap-complete mode,
 5. inject representative upstream connector payloads through the harness and
    assert they reach the upstream queue unchanged,
-6. enqueue representative downstream desired-state payloads in Azure Service Bus
+6. enqueue representative downstream desired-state payloads in Azure Storage Queue
    and assert they are delivered unchanged to the harness, and
 7. assert that downstream settlement happens only after the harness accepts the
    local handoff.
 
-This sequence keeps live Azure validation focused on the real Service Bus
+This sequence keeps live Azure validation focused on the real Storage Queue
 transport and the runtime bridge semantics already defined in section 5.
 
 ---
@@ -288,13 +288,13 @@ When bootstrap is required, the Azure companion performs this sequence:
 13. Display "Deploying Azure…" on the modem display (transitions from auth to
     deployment phase may overlap in the single container session).
 14. Capture and parse the JSON outputs to extract `tenantId`, `clientId`,
-    Service Bus namespace, queue names, Function App name, and deployment
+    Storage Queue endpoint, queue names, Function App name, and deployment
     container values from the `companionBootstrapValues` output object.
 15. Use the bundled prebuilt `sonde-azure-handler` package from the bootstrap
     image to populate the provisioned Function App deployment target.
 16. Poll Azure for Function App activation until the uploaded package is active
     and at least one function is reported as loaded.
-17. Write `service-principal.json` and `service-bus.json` to the staging
+17. Write `service-principal.json` and `storage-queues.json` to the staging
     directory with the extracted values and relative paths to the certificate
     and private-key PEM files.
 18. Rename the staging directory into a new generation directory under the state
@@ -327,11 +327,11 @@ The `sonde-azure-companion` binary exposes three cross-platform runtime modes
 plus Windows service-management entrypoints:
 
 1. **`run`** — default long-running runtime mode. It connects to the gateway
-   connector socket and bridges connector traffic to Azure Service Bus.
+   connector socket and bridges connector traffic to Azure Storage Queue.
 2. **`bootstrap`** — performs the unified provisioning lifecycle: self-signed
    ECDSA P-256 certificate generation, launching the version-matched
    `sonde-azure-bootstrap` image via the Bollard Docker API, and runtime
-   artifact creation (`service-principal.json`, `service-bus.json`,
+   artifact creation (`service-principal.json`, `storage-queues.json`,
    certificate PEM, private-key PEM). The Rust code monitors the bootstrap
    container's output to extract the device code and display it on the modem
    via the gateway admin API.
@@ -345,7 +345,7 @@ plus Windows service-management entrypoints:
    that performs the runtime-ready check and either starts `run` or fails closed
    per AZC-0205.
 
-The companion receives explicit runtime configuration for the Service Bus
+The companion receives explicit runtime configuration for the Storage Queue
 namespace and queue names rather than inferring deployment-specific defaults.
 
 ---
@@ -394,11 +394,11 @@ The runtime is divided into two internal responsibilities:
 
 These responsibilities are separated by an internal transport abstraction
 boundary so the gateway-facing logic does not depend directly on one Azure SDK
-crate. `azservicebus` is the first required broker transport implementation.
+crate. `reqwest` is the first required broker transport implementation.
 
-### 7.2  Azure Service Bus runtime
+### 7.2  Azure Storage Queue runtime
 
-The Azure Service Bus transport implementation uses AMQP to connect to:
+The Azure Storage Queue transport implementation uses HTTP REST to connect to:
 
 1. one upstream queue for gateway-originated connector messages, and
 2. one downstream queue for desired-state requests coming from the control plane.
@@ -417,7 +417,7 @@ is not part of normal runtime operation.
 
 ### 7.4  Transparent message bodies
 
-The Service Bus message body carries the raw Sonde connector payload bytes
+The Storage Queue message body carries the raw Sonde connector payload bytes
 unchanged. The Azure companion may attach minimal broker metadata in message
 properties for diagnostics or routing hints, but the broker representation does
 not replace the connector payload with an Azure-specific schema.
@@ -542,10 +542,10 @@ staging directory:
      "private_key_path": "key.pem"
    }
    ```
-3. **`service-bus.json`** containing:
+3. **`storage-queues.json`** containing:
    ```json
    {
-     "namespace": "<fully qualified host from companionBootstrapValues.serviceBusNamespace>",
+     "queue_endpoint": "<from companionBootstrapValues.storageQueueEndpoint>",
      "upstream_queue": "<from companionBootstrapValues.upstreamQueue>",
      "downstream_queue": "<from companionBootstrapValues.downstreamQueue>"
    }
@@ -564,7 +564,7 @@ steady-state runtime while excluding generic broad-access principals such as
 `Everyone` and `Users`.
 
 The runtime's `check-runtime-ready` path is updated to also check for the
-persisted Service Bus configuration file (`service-bus.json`) as an alternative
+persisted Storage Queue configuration file (`storage-queues.json`) as an alternative
 to environment variables, enabling a fully automated startup after bootstrap.
 Environment variables, if set, override the persisted file values.
 

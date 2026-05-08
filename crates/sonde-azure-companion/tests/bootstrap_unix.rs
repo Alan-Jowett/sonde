@@ -73,7 +73,7 @@ fn write_runtime_wrapper(bin_dir: &Path, wrapper_log: &Path) {
     write_executable(
         &bin_dir.join("sonde-azure-companion"),
         &format!(
-            "#!/bin/sh\nset -eu\nadmin_socket=\"\"\nconnector_socket=\"\"\nstate_dir=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --admin-socket)\n      admin_socket=\"$2\"\n      shift 2\n      ;;\n    --connector-socket)\n      connector_socket=\"$2\"\n      shift 2\n      ;;\n    --state-dir)\n      state_dir=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\ncase \"$1\" in\n  run)\n    printf 'run %s %s %s\\n' \"$admin_socket\" \"$connector_socket\" \"$state_dir\" >> \"{}\"\n    exit 0\n    ;;\n  bootstrap)\n    printf 'bootstrap %s %s %s\\n' \"$admin_socket\" \"$connector_socket\" \"$state_dir\" >> \"{}\"\n    if [ \"${{SONDE_TEST_FAIL_BOOTSTRAP:-0}}\" = \"1\" ]; then\n      exit 17\n    fi\n    if [ \"${{SONDE_TEST_WRITE_RUNTIME_STATE:-0}}\" = \"1\" ]; then\n      mkdir -p \"$state_dir\"\n      cat > \"$state_dir/cert.pem\" <<'EOF'\n{}\nEOF\n      cat > \"$state_dir/key.pem\" <<'EOF'\n{}\nEOF\n      cat > \"$state_dir/service-principal.json\" <<'EOF'\n{{\"tenant_id\":\"11111111-1111-1111-1111-111111111111\",\"client_id\":\"22222222-2222-2222-2222-222222222222\",\"certificate_path\":\"cert.pem\",\"private_key_path\":\"key.pem\"}}\nEOF\n      cat > \"$state_dir/service-bus.json\" <<'EOF'\n{{\"namespace\":\"example.servicebus.windows.net\",\"upstream_queue\":\"upstream\",\"downstream_queue\":\"downstream\"}}\nEOF\n    fi\n    exit 0\n    ;;\n  *)\n    exec \"{}\" --admin-socket \"$admin_socket\" --connector-socket \"$connector_socket\" --state-dir \"$state_dir\" \"$@\"\n    ;;\nesac\n",
+            "#!/bin/sh\nset -eu\nadmin_socket=\"\"\nconnector_socket=\"\"\nstate_dir=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --admin-socket)\n      admin_socket=\"$2\"\n      shift 2\n      ;;\n    --connector-socket)\n      connector_socket=\"$2\"\n      shift 2\n      ;;\n    --state-dir)\n      state_dir=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\ncase \"$1\" in\n  run)\n    printf 'run %s %s %s\\n' \"$admin_socket\" \"$connector_socket\" \"$state_dir\" >> \"{}\"\n    exit 0\n    ;;\n  bootstrap)\n    printf 'bootstrap %s %s %s\\n' \"$admin_socket\" \"$connector_socket\" \"$state_dir\" >> \"{}\"\n    if [ \"${{SONDE_TEST_FAIL_BOOTSTRAP:-0}}\" = \"1\" ]; then\n      exit 17\n    fi\n    if [ \"${{SONDE_TEST_WRITE_RUNTIME_STATE:-0}}\" = \"1\" ]; then\n      mkdir -p \"$state_dir\"\n      cat > \"$state_dir/cert.pem\" <<'EOF'\n{}\nEOF\n      cat > \"$state_dir/key.pem\" <<'EOF'\n{}\nEOF\n      cat > \"$state_dir/service-principal.json\" <<'EOF'\n{{\"tenant_id\":\"11111111-1111-1111-1111-111111111111\",\"client_id\":\"22222222-2222-2222-2222-222222222222\",\"certificate_path\":\"cert.pem\",\"private_key_path\":\"key.pem\"}}\nEOF\n      cat > \"$state_dir/storage-queues.json\" <<'EOF'\n{{\"queue_endpoint\":\"https://example.queue.core.windows.net\",\"upstream_queue\":\"upstream\",\"downstream_queue\":\"downstream\"}}\nEOF\n    fi\n    exit 0\n    ;;\n  *)\n    exec \"{}\" --admin-socket \"$admin_socket\" --connector-socket \"$connector_socket\" --state-dir \"$state_dir\" \"$@\"\n    ;;\nesac\n",
             wrapper_log.display(),
             wrapper_log.display(),
             TEST_CERT_PEM,
@@ -93,8 +93,8 @@ fn write_runtime_ready_state(state_dir: &Path) {
     )
     .unwrap();
     fs::write(
-        state_dir.join("service-bus.json"),
-        br#"{"namespace":"example.servicebus.windows.net","upstream_queue":"upstream","downstream_queue":"downstream"}"#,
+        state_dir.join("storage-queues.json"),
+        br#"{"queue_endpoint":"https://example.queue.core.windows.net","upstream_queue":"upstream","downstream_queue":"downstream"}"#,
     )
     .unwrap();
 }

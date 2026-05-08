@@ -9,8 +9,8 @@ param location string
 @description('Tags applied to provisioned resources.')
 param tags object
 
-@description('Service Bus namespace name.')
-param serviceBusNamespaceName string
+@description('Storage Account name.')
+param storageAccountName string
 
 @description('Queue name for gateway-originated connector traffic.')
 param upstreamQueueName string
@@ -18,11 +18,11 @@ param upstreamQueueName string
 @description('Queue name for cloud-originated desired-state traffic.')
 param downstreamQueueName string
 
-@description('Storage Account name.')
-param storageAccountName string
+@description('Azure handler actual-state table name.')
+param actualStateTableName string
 
-@description('Azure handler node-state table name.')
-param nodeStateTableName string
+@description('Azure handler desired-state table name.')
+param desiredStateTableName string
 
 @description('Azure handler program-route table name.')
 param programRouteTableName string
@@ -36,36 +36,24 @@ param functionPlanName string
 @description('Object ID of the Azure companion runtime service principal.')
 param companionServicePrincipalObjectId string
 
-var serviceBusDataSenderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39')
-var serviceBusDataReceiverRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')
-var companionUpstreamSenderAssignmentName = guid('companion-upstream-sender', companionServicePrincipalObjectId, serviceBusDataSenderRoleId, serviceBusNamespaceName, upstreamQueueName)
-var companionDownstreamReceiverAssignmentName = guid('companion-downstream-receiver', companionServicePrincipalObjectId, serviceBusDataReceiverRoleId, serviceBusNamespaceName, downstreamQueueName)
+var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
+var companionQueueContributorAssignmentName = guid('companion-queue-contributor', companionServicePrincipalObjectId, storageQueueDataContributorRoleId, storageAccountName)
 var deploymentStorageContainerName = 'app-package-${take(uniqueString(resourceGroup().id, functionAppName, 'deployment-package'), 20)}'
-
-module serviceBus './service-bus.bicep' = {
-  name: 'serviceBus'
-  params: {
-    location: location
-    namespaceName: serviceBusNamespaceName
-    upstreamQueueName: upstreamQueueName
-    downstreamQueueName: downstreamQueueName
-    tags: tags
-  }
-}
 
 module storage './storage.bicep' = {
   name: 'storage'
   params: {
     location: location
     storageAccountName: storageAccountName
-    nodeStateTableName: nodeStateTableName
+    actualStateTableName: actualStateTableName
+    desiredStateTableName: desiredStateTableName
     programRouteTableName: programRouteTableName
+    upstreamQueueName: upstreamQueueName
+    downstreamQueueName: downstreamQueueName
     deploymentContainerName: deploymentStorageContainerName
     tags: tags
   }
 }
-
-var functionDeploymentContainerUrl = '${storage.outputs.blobEndpoint}${storage.outputs.deploymentContainerName}'
 
 module functionPlaceholder './function-placeholder.bicep' = {
   name: 'functionPlaceholder'
@@ -74,52 +62,30 @@ module functionPlaceholder './function-placeholder.bicep' = {
     functionAppName: functionAppName
     functionPlanName: functionPlanName
     storageAccountName: storage.outputs.storageAccountName
-    serviceBusFullyQualifiedNamespace: serviceBus.outputs.namespaceFqdn
+    queueServiceUri: storage.outputs.queueServiceUri
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
-    nodeStateTableName: storage.outputs.nodeStateTableName
+    actualStateTableName: storage.outputs.actualStateTableName
+    desiredStateTableName: storage.outputs.desiredStateTableName
     programRouteTableName: storage.outputs.programRouteTableName
     tags: tags
   }
 }
 
-resource existingServiceBusNamespace 'Microsoft.ServiceBus/namespaces@2024-01-01' existing = {
-  name: serviceBusNamespaceName
+resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: storageAccountName
 }
 
-resource existingUpstreamQueue 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' existing = {
-  parent: existingServiceBusNamespace
-  name: upstreamQueueName
-}
-
-resource existingDownstreamQueue 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' existing = {
-  parent: existingServiceBusNamespace
-  name: downstreamQueueName
-}
-
-resource companionUpstreamSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: companionUpstreamSenderAssignmentName
-  scope: existingUpstreamQueue
+resource companionQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: companionQueueContributorAssignmentName
+  scope: existingStorageAccount
   dependsOn: [
-    serviceBus
+    storage
   ]
   properties: {
     principalId: companionServicePrincipalObjectId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: serviceBusDataSenderRoleId
-  }
-}
-
-resource companionDownstreamReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: companionDownstreamReceiverAssignmentName
-  scope: existingDownstreamQueue
-  dependsOn: [
-    serviceBus
-  ]
-  properties: {
-    principalId: companionServicePrincipalObjectId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: serviceBusDataReceiverRoleId
+    roleDefinitionId: storageQueueDataContributorRoleId
   }
 }
 
@@ -127,23 +93,25 @@ module functionRbac './function-rbac.bicep' = {
   name: 'functionRbac'
   params: {
     functionPrincipalId: functionPlaceholder.outputs.principalId
-    serviceBusNamespaceName: serviceBus.outputs.namespaceName
-    upstreamQueueName: serviceBus.outputs.upstreamQueueName
-    downstreamQueueName: serviceBus.outputs.downstreamQueueName
-    storageAccountName: storage.outputs.storageAccountName
-    nodeStateTableName: storage.outputs.nodeStateTableName
+    storageAccountName: storageAccountName
+    actualStateTableName: storage.outputs.actualStateTableName
+    desiredStateTableName: storage.outputs.desiredStateTableName
     programRouteTableName: storage.outputs.programRouteTableName
   }
+  dependsOn: [
+    storage
+    functionPlaceholder
+  ]
 }
 
-output serviceBusNamespaceName string = serviceBus.outputs.namespaceName
-output serviceBusNamespaceFqdn string = serviceBus.outputs.namespaceFqdn
-output upstreamQueueName string = serviceBus.outputs.upstreamQueueName
-output downstreamQueueName string = serviceBus.outputs.downstreamQueueName
 output storageAccountName string = storage.outputs.storageAccountName
+output queueServiceUri string = storage.outputs.queueServiceUri
+output upstreamQueueName string = storage.outputs.upstreamQueueName
+output downstreamQueueName string = storage.outputs.downstreamQueueName
 output deploymentContainerName string = storage.outputs.deploymentContainerName
-output deploymentContainerUrl string = functionDeploymentContainerUrl
-output nodeStateTableName string = storage.outputs.nodeStateTableName
+output deploymentContainerUrl string = '${storage.outputs.blobEndpoint}${storage.outputs.deploymentContainerName}'
+output actualStateTableName string = storage.outputs.actualStateTableName
+output desiredStateTableName string = storage.outputs.desiredStateTableName
 output programRouteTableName string = storage.outputs.programRouteTableName
 output functionAppName string = functionPlaceholder.outputs.functionAppName
 output functionPrincipalId string = functionPlaceholder.outputs.principalId

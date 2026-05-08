@@ -20,7 +20,7 @@
 
 The Azure handler is the cloud-side counterpart to the implemented
 `sonde-azure-companion` bridge. The bridge remains a transparent transport
-adapter between the gateway's local connector socket and Azure Service Bus. The
+adapter between the gateway's local connector socket and Azure Storage Queue. The
 Azure handler owns the first Sonde-aware cloud logic:
 
 1. consume upstream connector messages from the upstream queue,
@@ -53,7 +53,7 @@ not provisioned by the Sonde Bicep stack.
 
 ### 2.1  Trigger model
 
-The Function App uses a Service Bus-triggered entrypoint for upstream connector
+The Function App uses a Storage Queue-triggered entrypoint for upstream connector
 messages. Each invocation receives one raw connector payload from the upstream
 queue and performs the following dispatch:
 
@@ -172,7 +172,7 @@ The row contains:
 
 | Column | Purpose |
 |--------|---------|
-| `handler_queue` | Azure Service Bus queue name for `GW-0813` delivery. |
+| `handler_queue` | Storage Queue name for `GW-0813` delivery. |
 
 The table stores only queue references. It does not own queue creation or queue
 policy lifecycle.
@@ -252,7 +252,7 @@ exist.
 
 > **Requirements:** AZH-0302, AZH-0400
 
-The handler follows a fail-closed rule for all Azure Table and Service Bus
+The handler follows a fail-closed rule for all Azure Table and Storage Queue
 operations that determine externally visible control-plane behavior:
 
 1. Table read/write failure aborts the invocation.

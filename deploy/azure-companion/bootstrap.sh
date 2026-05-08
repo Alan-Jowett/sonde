@@ -71,25 +71,25 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
             return 1
         fi
 
-        namespace_env="$(host_trim_string "${SONDE_AZURE_SERVICEBUS_NAMESPACE:-}")"
-        upstream_env="$(host_trim_string "${SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE:-}")"
-        downstream_env="$(host_trim_string "${SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE:-}")"
-        if [ -n "$namespace_env" ] &&
+        endpoint_env="$(host_trim_string "${SONDE_AZURE_STORAGE_QUEUE_ENDPOINT:-}")"
+        upstream_env="$(host_trim_string "${SONDE_AZURE_STORAGE_UPSTREAM_QUEUE:-}")"
+        downstream_env="$(host_trim_string "${SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE:-}")"
+        if [ -n "$endpoint_env" ] &&
             [ -n "$upstream_env" ] &&
             [ -n "$downstream_env" ]; then
             return 0
         fi
 
-        service_bus_path="$effective_state_dir/service-bus.json"
-        if [ ! -f "$service_bus_path" ]; then
+        storage_queues_path="$effective_state_dir/storage-queues.json"
+        if [ ! -f "$storage_queues_path" ]; then
             return 1
         fi
 
-        namespace="$(host_json_string namespace "$service_bus_path")"
-        upstream_queue="$(host_json_string upstream_queue "$service_bus_path")"
-        downstream_queue="$(host_json_string downstream_queue "$service_bus_path")"
+        queue_endpoint="$(host_json_string queue_endpoint "$storage_queues_path")"
+        upstream_queue="$(host_json_string upstream_queue "$storage_queues_path")"
+        downstream_queue="$(host_json_string downstream_queue "$storage_queues_path")"
 
-        [ -n "$namespace" ] &&
+        [ -n "$queue_endpoint" ] &&
             [ -n "$upstream_queue" ] &&
             [ -n "$downstream_queue" ]
     }
@@ -114,9 +114,9 @@ if [ "${SONDE_AZURE_COMPANION_IN_CONTAINER:-0}" != "1" ]; then
         -e SONDE_AZURE_COMPANION_STATE_DIR="$container_state_dir" \
         -e SONDE_GATEWAY_ADMIN_SOCKET="$container_admin_socket_path" \
         -e SONDE_GATEWAY_CONNECTOR_SOCKET="$container_connector_socket_path" \
-        -e SONDE_AZURE_SERVICEBUS_NAMESPACE \
-        -e SONDE_AZURE_SERVICEBUS_UPSTREAM_QUEUE \
-        -e SONDE_AZURE_SERVICEBUS_DOWNSTREAM_QUEUE \
+        -e SONDE_AZURE_STORAGE_QUEUE_ENDPOINT \
+        -e SONDE_AZURE_STORAGE_UPSTREAM_QUEUE \
+        -e SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE \
         -e SONDE_AZURE_LOCATION \
         -e SONDE_AZURE_PROJECT_NAME \
         -e SONDE_AZURE_SUBSCRIPTION_ID \

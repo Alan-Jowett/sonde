@@ -9,14 +9,23 @@ param location string
 @description('Storage Account name.')
 param storageAccountName string
 
-@description('Table name for Azure handler node-state rows.')
-param nodeStateTableName string
+@description('Table name for Azure handler actual-state rows.')
+param actualStateTableName string
+
+@description('Table name for Azure handler desired-state rows.')
+param desiredStateTableName string
 
 @description('Table name for Azure handler program-route rows.')
 param programRouteTableName string
 
 @description('Blob container name used by the Azure handler Function App deployment slot.')
 param deploymentContainerName string
+
+@description('Queue name for gateway-originated connector traffic.')
+param upstreamQueueName string
+
+@description('Queue name for cloud-originated desired-state traffic.')
+param downstreamQueueName string
 
 @description('Tags applied to provisioned resources.')
 param tags object
@@ -47,6 +56,21 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
   name: 'default'
 }
 
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
+  parent: storageAccount
+  name: 'default'
+}
+
+resource upstreamQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  parent: queueService
+  name: upstreamQueueName
+}
+
+resource downstreamQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  parent: queueService
+  name: downstreamQueueName
+}
+
 resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
   parent: blobService
   name: deploymentContainerName
@@ -55,9 +79,17 @@ resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/con
   }
 }
 
-resource nodeStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+resource actualStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
   parent: tableService
-  name: nodeStateTableName
+  name: actualStateTableName
+  properties: {
+    signedIdentifiers: []
+  }
+}
+
+resource desiredStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+  parent: tableService
+  name: desiredStateTableName
   properties: {
     signedIdentifiers: []
   }
@@ -76,7 +108,12 @@ output storageAccountResourceId string = storageAccount.id
 output blobEndpoint string = storageAccount.properties.primaryEndpoints.blob
 output deploymentContainerName string = deploymentContainer.name
 output deploymentContainerResourceId string = deploymentContainer.id
-output nodeStateTableName string = nodeStateTable.name
-output nodeStateTableResourceId string = nodeStateTable.id
+output actualStateTableName string = actualStateTable.name
+output actualStateTableResourceId string = actualStateTable.id
+output desiredStateTableName string = desiredStateTable.name
+output desiredStateTableResourceId string = desiredStateTable.id
 output programRouteTableName string = programRouteTable.name
 output programRouteTableResourceId string = programRouteTable.id
+output queueServiceUri string = storageAccount.properties.primaryEndpoints.queue
+output upstreamQueueName string = upstreamQueue.name
+output downstreamQueueName string = downstreamQueue.name

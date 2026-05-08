@@ -57,7 +57,7 @@
         <ComponentGroupRef Id="BinariesGroup" />
         <ComponentGroupRef Id="ConfigGroup" />
       </Feature>
-      <Feature Id="AzureCompanionFeature" Title="Azure companion" Description="Optional Azure Service Bus bridge service" Level="4">
+      <Feature Id="AzureCompanionFeature" Title="Azure companion" Description="Optional Azure Storage Queue bridge service" Level="4">
         <ComponentGroupRef Id="AzureCompanionBinariesGroup" />
         <ComponentGroupRef Id="AzureCompanionConfigGroup" />
       </Feature>
@@ -137,7 +137,7 @@
         <ServiceInstall Id="SondeAzureCompanionService"
                         Name="sonde-azure-companion"
                         DisplayName="Sonde Azure Companion"
-                        Description="Bridges the Sonde gateway connector to Azure Service Bus."
+                        Description="Bridges the Sonde gateway connector to Azure Storage Queues."
                         Start="auto"
                         Type="ownProcess"
                         ErrorControl="normal"

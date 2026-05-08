@@ -25,11 +25,12 @@
 | Term | Definition |
 |------|------------|
 | **Azure handler** | The Azure-hosted control-plane process that consumes upstream Sonde connector traffic from Service Bus and produces downstream desired-state messages or handler-queue deliveries. |
-| **Node state row** | One Azure Table row keyed by Sonde `node_id` that contains both desired fields and the latest observed fields derived from `GW-0812`. |
+| **Actual state row** | One append-only Azure Table row that records a received node-scoped `GW-0812` observation for a Sonde `node_id`. |
+| **Desired state row** | One append-only Azure Table row that records a requested desired state for a Sonde `node_id`. Desired rows are authored by admin/control-plane surfaces, not by the Azure handler reconciliation path. |
 | **Program route row** | One Azure Table row keyed by `program_hash` that names the Azure Service Bus queue that should receive `GW-0813` application-data messages for that program. |
-| **Observed fields** | The subset of node state reported by `GW-0812` and copied into the node state row, including current program state, observed schedule as reported by the gateway, firmware data, battery, and last check-in time. |
-| **Desired fields** | The cloud-authored fields stored in the node state row and used to build a complete `GW-0811` `DESIRED_STATE` payload for the node. In v1 this document defines `assigned_program_hash` and `schedule_interval_s`. |
-| **Last check-in time** | The most recent `timestamp_ms` carried by a node-scoped `GW-0812` message accepted by the Azure handler for that node. |
+| **Observed fields** | The subset of node state reported by `GW-0812` and copied into an actual state row, including current program state, observed schedule as reported by the gateway, firmware data, battery, and check-in time. |
+| **Desired fields** | The cloud-authored fields stored in a desired state row and used to build a complete `GW-0811` `DESIRED_STATE` payload for the node. In v1 this document defines `assigned_program_hash` and `schedule_interval_s`. |
+| **Reverse-tick key** | A row-key prefix derived from `u64::MAX - timestamp_ms`, so newer timestamps sort before older timestamps for `Top(1)` queries within one node partition. |
 
 ---
 
@@ -65,7 +66,7 @@ logic.
 1. The Azure handler accepts raw connector payload bytes from the configured upstream queue.
 2. A node-scoped `GW-0812` message is routed to node-state reconciliation logic.
 3. A `GW-0813` message is routed to application-data delivery logic.
-4. Unsupported or out-of-scope connector messages do not mutate node-state or program-route tables.
+4. Unsupported or out-of-scope connector messages do not mutate actual-state, desired-state, or program-route tables.
 
 ---
 
@@ -84,75 +85,76 @@ desired-state view for that node.
 
 1. Each emitted message is encoded as one complete node-scoped `GW-0811` desired-state payload.
 2. The payload targets exactly one node by `node_id`.
-3. The payload includes the desired fields owned by the node-state row.
+3. The payload includes the desired fields owned by the latest desired-state row.
 4. The Azure handler does not emit imperative gateway commands outside the `GW-0811` desired-state contract.
 
 ---
 
 ## 4  Node-state table ownership and reconciliation
 
-### AZH-0200  Combined desired and observed node-state rows
+### AZH-0200  Append-only actual-state and desired-state history tables
 
 **Priority:** Must
 **Source:** Azure handler discovery review
 
 **Description:**
-The Azure handler MUST own an Azure Table that stores one node state row per
-`node_id`. Each row MUST contain both desired fields and the latest observed
-fields derived from node-scoped `GW-0812` messages. In v1, the desired fields
-owned by this document are `assigned_program_hash` and `schedule_interval_s`.
+The Azure handler integration MUST use separate append-only Azure Tables for
+node actual-state history and node desired-state history. `ActualNodeState`
+records every received node-scoped `GW-0812`. `DesiredNodeState` records each
+requested node desired state. In v1, the desired fields owned by this document
+are `assigned_program_hash` and `schedule_interval_s`.
 `ephemeral_program_hash` remains out of scope for this document.
 
 **Acceptance criteria:**
 
-1. The table stores one row per `node_id`.
-2. Each row contains desired `assigned_program_hash` and desired `schedule_interval_s` fields.
-3. Each row contains observed `current_program_hash`, observed gateway-assigned program hash, observed `schedule_interval_s`, `battery_mv`, firmware ABI/version fields, and last check-in time.
-4. The row shape distinguishes desired fields from observed fields rather than collapsing them into one set of columns.
+1. `ActualNodeState` stores append-only actual-state rows for each `node_id`.
+2. `DesiredNodeState` stores append-only desired-state rows for each `node_id`.
+3. Actual-state rows contain observed `current_program_hash`, observed gateway-assigned program hash, observed `schedule_interval_s`, `battery_mv`, firmware ABI/version fields, and `timestamp_ms`.
+4. Desired-state rows contain desired `assigned_program_hash` and desired `schedule_interval_s`.
+5. The schema distinguishes actual-state history from desired-state history rather than collapsing them into one mutable row shape.
 
 ---
 
-### AZH-0201  Seed missing rows from `GW-0812`
+### AZH-0201  First `GW-0812` appends actual-state history without seeding desired state
 
 **Priority:** Must
 **Source:** Azure handler discovery review, GW-0812
 
 **Description:**
-If the node-state table does not contain a row for the `node_id` named by a
-node-scoped `GW-0812` message, the Azure handler MUST create one using values
-from that message. The seed operation MUST initialize the desired resident
-program from the node's observed current program when present, otherwise from
-the gateway-assigned program hash. It MUST initialize the desired schedule from
-the observed `schedule_interval_s`. The seed operation MUST NOT emit `GW-0811`
-for that first-seen node.
+If the handler receives a node-scoped `GW-0812` for a `node_id` that has no
+prior actual-state history, it MUST append one `ActualNodeState` row using the
+message fields. It MUST NOT synthesize or append a `DesiredNodeState` row for
+that first-seen node. It MUST NOT emit `GW-0811` solely because the node has no
+desired-state history yet.
 
 **Acceptance criteria:**
 
-1. The first node-scoped `GW-0812` for an unseen `node_id` creates exactly one new row.
-2. The new row copies the observed fields from the message.
-3. The new row initializes desired `assigned_program_hash` from observed `current_program_hash` when non-null, otherwise from observed gateway-assigned program hash.
-4. The new row initializes desired `schedule_interval_s` from the observed `schedule_interval_s`.
-5. The seed path does not emit a downstream `GW-0811` message.
+1. The first node-scoped `GW-0812` for an unseen `node_id` creates exactly one new actual-state row.
+2. The new actual-state row copies the observed fields from the message.
+3. The handler does not create or mutate any desired-state row on that path.
+4. The first-seen path does not emit a downstream `GW-0811` message solely because desired state is absent.
 
 ---
 
-### AZH-0202  Observed-state refresh on every `GW-0812`
+### AZH-0202  Append-only actual-state recording on every `GW-0812`
 
 **Priority:** Must
 **Source:** Azure handler discovery review, GW-0812
 
 **Description:**
-For every node-scoped `GW-0812` message, the Azure handler MUST refresh the
-row's observed fields from the message before evaluating divergence. The update
-must include the latest check-in time, battery, firmware data, observed current
+For every node-scoped `GW-0812` message, the Azure handler MUST append a new
+actual-state history row before evaluating divergence. The appended row MUST
+capture the message's check-in time, battery, firmware data, observed current
 program state, observed gateway-assigned program state, and observed schedule.
+The handler MUST retain repeated deliveries and older deliveries as history
+rather than overwriting or discarding them at write time.
 
 **Acceptance criteria:**
 
-1. Existing rows are updated in place when a later `GW-0812` for that node arrives.
-2. The row's last check-in time matches the message timestamp after the update.
-3. The row's observed `battery_mv`, firmware ABI/version fields, current program, assigned program, and schedule fields match the message after the update.
-4. Divergence evaluation uses the refreshed observed values rather than stale values from an older row version.
+1. Each node-scoped `GW-0812` appends exactly one new actual-state row.
+2. The appended row's `timestamp_ms`, `battery_mv`, firmware ABI/version fields, current program, assigned program, and schedule fields match the message.
+3. Repeated delivery of the same logical check-in results in multiple history rows rather than in-place replacement.
+4. Older deliveries may still be appended for diagnostics and audit history.
 
 ---
 
@@ -162,25 +164,28 @@ program state, observed gateway-assigned program state, and observed schedule.
 **Source:** Azure handler discovery review, GW-0811, GW-0812
 
 **Description:**
-After refreshing an existing node-state row from `GW-0812`, the Azure handler
-MUST compare the row's desired fields against the observed fields reported by
-that message. In v1, divergence is present when desired
+After appending an actual-state row from `GW-0812`, the Azure handler MUST load
+the latest desired-state row for that `node_id` and compare the latest eligible
+actual-state row against it. In v1, divergence is present when desired
 `assigned_program_hash` is non-null and differs from the observed current
 program hash, or when desired `schedule_interval_s` is non-null and differs
 from the observed schedule interval. A null desired field means the Azure
 handler is not asserting a cloud target for that field and therefore MUST NOT
-treat that field as divergent by itself. When either active comparison
+treat that field as divergent by itself. If no desired-state row exists for the
+node, the handler MUST NOT emit `GW-0811`. When either active comparison
 diverges, the Azure handler MUST emit one complete `GW-0811` `DESIRED_STATE`
-message for that node using the row's desired fields.
+message for that node using the latest desired-state row's fields.
 
 **Acceptance criteria:**
 
-1. A resident-program mismatch causes one downstream `GW-0811` message for that `GW-0812`.
-2. A schedule mismatch causes one downstream `GW-0811` message for that `GW-0812`.
-3. When both resident-program and schedule mismatch, the Azure handler still emits exactly one complete `GW-0811` message for that `GW-0812`.
-4. The emitted desired-state payload includes the row's desired `assigned_program_hash` and desired `schedule_interval_s`.
+1. A resident-program mismatch between the latest eligible actual-state row and the latest desired-state row causes one downstream `GW-0811` message for that evaluation.
+2. A schedule mismatch between the latest eligible actual-state row and the latest desired-state row causes one downstream `GW-0811` message for that evaluation.
+3. When both resident-program and schedule mismatch, the Azure handler still emits exactly one complete `GW-0811` message for that evaluation.
+4. The emitted desired-state payload includes the latest desired-state row's `assigned_program_hash` and `schedule_interval_s`.
 5. The emitted desired-state payload does not invent `ephemeral_program_hash` state owned by this document.
 6. A null desired resident-program or null desired schedule field does not, by itself, trigger divergence or downstream publication for that field.
+7. Absence of any desired-state row for a node suppresses downstream publication for that node.
+8. If the latest desired-state row returned for a node partition carries a different `node_id` payload, the handler fails the reconciliation attempt rather than publishing a `GW-0811` for either node.
 
 ---
 
@@ -190,14 +195,75 @@ message for that node using the row's desired fields.
 **Source:** Azure handler discovery review
 
 **Description:**
-If the desired fields stored in a node-state row match the corresponding
-observed fields reported by `GW-0812`, the Azure handler MUST update the row and
-MUST NOT emit a downstream `GW-0811` message for that event.
+If the latest desired-state row for a node matches the latest eligible
+actual-state row derived from `GW-0812`, the Azure handler MUST retain the
+appended actual-state history row and MUST NOT emit a downstream `GW-0811`
+message for that event.
 
 **Acceptance criteria:**
 
-1. An aligned `GW-0812` updates the node-state row.
+1. An aligned `GW-0812` appends an actual-state row.
 2. An aligned `GW-0812` does not enqueue a downstream desired-state message.
+
+---
+
+### AZH-0205  Reverse-tick latest-row lookup
+
+**Priority:** Must
+**Source:** Azure handler discovery review
+
+**Description:**
+The actual-state and desired-state history tables MUST optimize the common query
+pattern "latest row for one node". Each table MUST use a node-scoped partition
+key and a reverse-tick row-key prefix derived from `u64::MAX - timestamp_ms`,
+so that the newest row for a node sorts first for `Top(1)` retrieval.
+
+**Acceptance criteria:**
+
+1. Actual-state and desired-state rows for one node can be queried by a node-scoped partition key.
+2. Within one node partition, newer timestamps sort before older timestamps by row key.
+3. A `Top(1)` query scoped to one node returns that node's newest row without a full partition scan.
+4. The row key format permits multiple rows with the same `timestamp_ms` without overwriting history.
+5. For rows that share the same `timestamp_ms`, the row key still provides deterministic uniqueness, and within one handler process lifetime later appends sort before earlier appends. Reconciliation correctness MUST NOT depend on a globally newest-first order across restarts or concurrent handler instances.
+
+---
+
+### AZH-0206  Desired-state history is admin-authored
+
+**Priority:** Must
+**Source:** Azure handler discovery review
+
+**Description:**
+The Azure handler reconciliation path MUST treat `DesiredNodeState` as an
+admin-authored control-plane history surface. It MUST read the latest desired
+row for a node when evaluating divergence, but it MUST NOT create, replace, or
+append desired-state rows while processing `GW-0812`.
+
+**Acceptance criteria:**
+
+1. Node reconciliation reads desired-state history but does not write it.
+2. First-seen nodes do not cause synthetic desired-state rows to be created.
+3. Desired-state table mutations are owned by external admin or control-plane surfaces.
+
+---
+
+### AZH-0207  Out-of-order actual-state retention without stale control decisions
+
+**Priority:** Must
+**Source:** Azure handler discovery review
+
+**Description:**
+If a node-scoped `GW-0812` arrives with `timestamp_ms` older than the latest
+actual-state row already stored for that node, the Azure handler MUST still
+append the older actual-state row for diagnostics. However, it MUST NOT let
+that out-of-order row displace the latest eligible actual state for divergence
+evaluation or downstream `GW-0811` publication.
+
+**Acceptance criteria:**
+
+1. An older `GW-0812` still produces an appended actual-state history row.
+2. The latest actual-state row used for control decisions remains the newest row by timestamp for that node.
+3. An out-of-order row does not trigger downstream publication solely because it differs from the latest desired state.
 
 ---
 
@@ -284,13 +350,16 @@ document's scope does not include queue creation or lifecycle management.
 **Source:** Azure handler discovery review, GW-0815
 
 **Description:**
-If the Azure handler cannot read or write the node-state table, cannot read the
-program route table, cannot publish `GW-0811`, or cannot publish a mapped
-`GW-0813`, it MUST surface the failure and fail closed for the affected message.
+If the Azure handler cannot append to the actual-state table, cannot read the
+desired-state table, cannot read the program route table, cannot publish
+`GW-0811`, or cannot publish a mapped `GW-0813`, it MUST surface the failure
+and fail closed for the affected message.
 
 **Acceptance criteria:**
 
-1. Table read/write failures are surfaced through logging, function failure, or both.
-2. Downstream `GW-0811` publish failures are surfaced through logging, function failure, or both.
-3. Mapped handler-queue publish failures are surfaced through logging, function failure, or both.
-4. The Azure handler does not silently claim success after a detected storage or broker failure.
+1. Actual-state table append failures are surfaced through logging, function failure, or both.
+2. Desired-state table read failures are surfaced through logging, function failure, or both.
+3. Program route table read failures are surfaced through logging, function failure, or both.
+4. Downstream `GW-0811` publish failures are surfaced through logging, function failure, or both.
+5. Mapped handler-queue publish failures are surfaced through logging, function failure, or both.
+6. The Azure handler does not silently claim success after a detected storage or broker failure.

@@ -2,7 +2,8 @@
 // Copyright (c) 2026 sonde contributors
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use azservicebus::{
@@ -14,17 +15,21 @@ use azure_core_legacy::auth::TokenCredential as LegacyTokenCredential;
 use azure_core_legacy::error::ErrorKind as LegacyAzureErrorKind;
 use azure_core_legacy::Error as LegacyAzureError;
 use azure_core_legacy::StatusCode as LegacyStatusCode;
-use azure_data_tables::prelude::{IfMatchCondition, TableServiceClient};
+use azure_data_tables::prelude::TableServiceClient;
 use azure_identity::ManagedIdentityCredential;
 use azure_identity_legacy::{AppServiceManagedIdentityCredential, TokenCredentialOptions};
 use base64::Engine as _;
 use ciborium::Value;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sonde_gateway::connector::{MSG_TYPE_ACTUAL_STATE, MSG_TYPE_APP_DATA, MSG_TYPE_DESIRED_STATE};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::warn;
+
+static HISTORY_ROW_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static HISTORY_ROW_PROCESS_NONCE: OnceLock<u64> = OnceLock::new();
 
 #[derive(Debug, Error)]
 pub enum HandlerError {
@@ -48,7 +53,8 @@ pub struct RuntimeConfig {
     pub upstream_queue: String,
     pub downstream_queue: String,
     pub storage_account: String,
-    pub node_state_table: String,
+    pub actual_state_table: String,
+    pub desired_state_table: String,
     pub program_route_table: String,
 }
 
@@ -61,7 +67,8 @@ impl RuntimeConfig {
             upstream_queue: required_env("SONDE_AZURE_HANDLER_UPSTREAM_QUEUE")?,
             downstream_queue: required_env("SONDE_AZURE_HANDLER_DOWNSTREAM_QUEUE")?,
             storage_account: required_env("SONDE_AZURE_HANDLER_STORAGE_ACCOUNT")?,
-            node_state_table: required_env("SONDE_AZURE_HANDLER_NODE_STATE_TABLE")?,
+            actual_state_table: required_env("SONDE_AZURE_HANDLER_ACTUAL_STATE_TABLE")?,
+            desired_state_table: required_env("SONDE_AZURE_HANDLER_DESIRED_STATE_TABLE")?,
             program_route_table: required_env("SONDE_AZURE_HANDLER_PROGRAM_ROUTE_TABLE")?,
         })
     }
@@ -75,42 +82,47 @@ fn required_env(name: &str) -> Result<String, HandlerError> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeStateRow {
+pub struct ActualStateRow {
+    pub row_key: String,
     pub node_id: String,
-    pub desired_assigned_program_hash: Option<Vec<u8>>,
-    pub desired_schedule_interval_s: Option<u32>,
     pub observed_current_program_hash: Option<Vec<u8>>,
     pub observed_assigned_program_hash: Option<Vec<u8>>,
     pub observed_schedule_interval_s: Option<u32>,
     pub battery_mv: Option<u32>,
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
-    pub last_checkin_ms: u64,
+    pub timestamp_ms: u64,
+}
+
+impl ActualStateRow {
+    fn from_message(message: &ActualStateMessage) -> Result<Self, HandlerError> {
+        Ok(Self {
+            row_key: next_history_row_key(message.timestamp_ms)?,
+            node_id: message.entity_id.clone(),
+            observed_current_program_hash: message.current_program_hash.clone(),
+            observed_assigned_program_hash: message.assigned_program_hash.clone(),
+            observed_schedule_interval_s: message.schedule_interval_s,
+            battery_mv: message.battery_mv,
+            firmware_abi_version: message.firmware_abi_version,
+            firmware_version: message.firmware_version.clone(),
+            timestamp_ms: message.timestamp_ms,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesiredStateRow {
+    pub row_key: String,
+    pub node_id: String,
+    pub desired_assigned_program_hash: Option<Vec<u8>>,
+    pub desired_schedule_interval_s: Option<u32>,
+    pub timestamp_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramRouteRow {
     pub program_hash: Vec<u8>,
     pub handler_queue: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObservedStateUpdate {
-    pub node_id: String,
-    pub current_program_hash: Option<Vec<u8>>,
-    pub assigned_program_hash: Option<Vec<u8>>,
-    pub schedule_interval_s: Option<u32>,
-    pub battery_mv: Option<u32>,
-    pub firmware_abi_version: Option<u32>,
-    pub firmware_version: Option<String>,
-    pub timestamp_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ObservedStateWriteResult {
-    Applied(NodeStateRow),
-    Current(NodeStateRow),
-    IgnoredStale,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,13 +155,15 @@ pub enum ConnectorMessage {
 
 #[async_trait]
 pub trait HandlerStore: Send + Sync {
-    async fn load_node_state(&self, node_id: &str) -> Result<Option<NodeStateRow>, HandlerError>;
-    async fn save_node_state(&self, row: &NodeStateRow) -> Result<(), HandlerError>;
-    async fn create_node_state_if_absent(&self, row: &NodeStateRow) -> Result<bool, HandlerError>;
-    async fn update_observed_state(
+    async fn append_actual_state(&self, row: &ActualStateRow) -> Result<(), HandlerError>;
+    async fn load_latest_actual_state(
         &self,
-        update: &ObservedStateUpdate,
-    ) -> Result<ObservedStateWriteResult, HandlerError>;
+        node_id: &str,
+    ) -> Result<Option<ActualStateRow>, HandlerError>;
+    async fn load_latest_desired_state(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<DesiredStateRow>, HandlerError>;
     async fn load_program_route(
         &self,
         program_hash: &[u8],
@@ -212,82 +226,57 @@ where
             ));
         }
 
-        let node_id = actual_state.entity_id.clone();
-        let Some(row) = self.store.load_node_state(&node_id).await? else {
-            let seeded = NodeStateRow {
-                node_id: node_id.clone(),
-                desired_assigned_program_hash: actual_state
-                    .current_program_hash
-                    .clone()
-                    .or_else(|| actual_state.assigned_program_hash.clone()),
-                desired_schedule_interval_s: actual_state.schedule_interval_s,
-                observed_current_program_hash: actual_state.current_program_hash.clone(),
-                observed_assigned_program_hash: actual_state.assigned_program_hash.clone(),
-                observed_schedule_interval_s: actual_state.schedule_interval_s,
-                battery_mv: actual_state.battery_mv,
-                firmware_abi_version: actual_state.firmware_abi_version,
-                firmware_version: actual_state.firmware_version.clone(),
-                last_checkin_ms: actual_state.timestamp_ms,
-            };
-            if self.store.create_node_state_if_absent(&seeded).await? {
-                return Ok(());
-            }
-            let Some(row) = self.store.load_node_state(&node_id).await? else {
-                return Err(HandlerError::Store(format!(
-                    "node state row `{node_id}` disappeared during create race"
-                )));
-            };
-            return self
-                .reconcile_existing_actual_state(row, actual_state)
-                .await;
-        };
+        let appended_row = ActualStateRow::from_message(&actual_state)?;
+        self.store.append_actual_state(&appended_row).await?;
 
-        self.reconcile_existing_actual_state(row, actual_state)
-            .await
-    }
-
-    async fn reconcile_existing_actual_state(
-        &self,
-        row: NodeStateRow,
-        actual_state: ActualStateMessage,
-    ) -> Result<(), HandlerError> {
-        if actual_state.timestamp_ms < row.last_checkin_ms {
+        let latest_actual = self
+            .store
+            .load_latest_actual_state(&actual_state.entity_id)
+            .await?
+            .ok_or_else(|| {
+                HandlerError::Store(format!(
+                    "actual-state row `{}` disappeared after append",
+                    actual_state.entity_id
+                ))
+            })?;
+        if latest_actual.timestamp_ms > appended_row.timestamp_ms {
             return Ok(());
         }
+        let actual_state_for_evaluation = appended_row;
 
-        let row = if actual_state.timestamp_ms == row.last_checkin_ms {
-            row
-        } else {
-            let update = ObservedStateUpdate {
-                node_id: row.node_id.clone(),
-                current_program_hash: actual_state.current_program_hash,
-                assigned_program_hash: actual_state.assigned_program_hash,
-                schedule_interval_s: actual_state.schedule_interval_s,
-                battery_mv: actual_state.battery_mv,
-                firmware_abi_version: actual_state.firmware_abi_version,
-                firmware_version: actual_state.firmware_version,
-                timestamp_ms: actual_state.timestamp_ms,
-            };
-            match self.store.update_observed_state(&update).await? {
-                ObservedStateWriteResult::Applied(row) | ObservedStateWriteResult::Current(row) => {
-                    row
-                }
-                ObservedStateWriteResult::IgnoredStale => return Ok(()),
-            }
+        let Some(desired_row) = self
+            .store
+            .load_latest_desired_state(&actual_state.entity_id)
+            .await?
+        else {
+            return Ok(());
         };
+        if desired_row.node_id != actual_state.entity_id {
+            return Err(HandlerError::Store(format!(
+                "desired-state row node_id `{}` did not match requested node `{}`",
+                desired_row.node_id, actual_state.entity_id
+            )));
+        }
 
-        let program_diverged = row
+        let program_diverged = desired_row
             .desired_assigned_program_hash
             .as_ref()
-            .is_some_and(|desired| row.observed_current_program_hash.as_ref() != Some(desired));
-        let schedule_diverged = row
+            .is_some_and(|desired| {
+                actual_state_for_evaluation
+                    .observed_current_program_hash
+                    .as_ref()
+                    != Some(desired)
+            });
+        let schedule_diverged = desired_row
             .desired_schedule_interval_s
-            .is_some_and(|desired| row.observed_schedule_interval_s != Some(desired));
+            .is_some_and(|desired| {
+                actual_state_for_evaluation.observed_schedule_interval_s != Some(desired)
+            });
         if !program_diverged && !schedule_diverged {
             return Ok(());
         }
 
-        let desired = encode_desired_state(&row)?;
+        let desired = encode_desired_state(&desired_row)?;
         self.publisher
             .publish(&self.downstream_queue, desired)
             .await
@@ -315,7 +304,8 @@ where
 }
 
 pub struct AzureTablesStore {
-    node_state_table: azure_data_tables::clients::TableClient,
+    actual_state_table: azure_data_tables::clients::TableClient,
+    desired_state_table: azure_data_tables::clients::TableClient,
     program_route_table: azure_data_tables::clients::TableClient,
 }
 
@@ -329,7 +319,8 @@ impl AzureTablesStore {
         );
         let service = TableServiceClient::new(config.storage_account.clone(), credential);
         Ok(Self {
-            node_state_table: service.table_client(config.node_state_table.clone()),
+            actual_state_table: service.table_client(config.actual_state_table.clone()),
+            desired_state_table: service.table_client(config.desired_state_table.clone()),
             program_route_table: service.table_client(config.program_route_table.clone()),
         })
     }
@@ -345,163 +336,66 @@ fn is_legacy_not_found(e: &LegacyAzureError) -> bool {
     )
 }
 
-fn node_state_row_key_candidates(node_id: &str) -> Vec<String> {
-    let mut candidates = Vec::with_capacity(3);
-    for row_key in [
-        encode_node_row_key(node_id),
-        encode_legacy_node_row_key(node_id),
-        node_id.to_string(),
-    ] {
-        if !candidates.contains(&row_key) {
-            candidates.push(row_key);
-        }
-    }
-    candidates
-}
-
 #[async_trait]
 impl HandlerStore for AzureTablesStore {
-    async fn load_node_state(&self, node_id: &str) -> Result<Option<NodeStateRow>, HandlerError> {
-        for row_key in node_state_row_key_candidates(node_id) {
-            let entity_client = self
-                .node_state_table
-                .partition_key_client("node")
-                .entity_client(row_key);
-            match entity_client.get::<NodeStateEntity>().await {
-                Ok(response) => return Ok(Some(NodeStateRow::try_from(response.entity)?)),
-                Err(e) if is_legacy_not_found(&e) => {}
-                Err(e) => {
-                    return Err(HandlerError::Store(format!("query node state failed: {e}")));
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    async fn save_node_state(&self, row: &NodeStateRow) -> Result<(), HandlerError> {
-        let entity = NodeStateEntity::try_from(row.clone())?;
-        self.node_state_table
-            .partition_key_client(entity.partition_key.clone())
-            .entity_client(entity.row_key.clone())
-            .insert_or_replace(&entity)
-            .map_err(|e| HandlerError::Store(format!("prepare node state upsert failed: {e}")))?
+    async fn append_actual_state(&self, row: &ActualStateRow) -> Result<(), HandlerError> {
+        let entity = ActualStateEntity::try_from(row.clone())?;
+        self.actual_state_table
+            .insert::<_, ActualStateEntity>(&entity)
+            .map_err(|e| HandlerError::Store(format!("prepare actual-state insert failed: {e}")))?
             .await
-            .map_err(|e| HandlerError::Store(format!("save node state failed: {e}")))?;
+            .map_err(|e| HandlerError::Store(format!("append actual-state row failed: {e}")))?;
         Ok(())
     }
 
-    async fn create_node_state_if_absent(&self, row: &NodeStateRow) -> Result<bool, HandlerError> {
-        let entity = NodeStateEntity::try_from(row.clone())?;
-        match self
-            .node_state_table
-            .insert::<_, NodeStateEntity>(&entity)
-            .map_err(|e| HandlerError::Store(format!("prepare node state insert failed: {e}")))?
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    LegacyAzureErrorKind::HttpResponse {
-                        status: LegacyStatusCode::Conflict,
-                        ..
-                    }
-                ) =>
-            {
-                Ok(false)
-            }
-            Err(e) => Err(HandlerError::Store(format!(
-                "create node state failed: {e}"
+    async fn load_latest_actual_state(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<ActualStateRow>, HandlerError> {
+        let partition_key = encode_node_partition_key(node_id);
+        let mut stream = self
+            .actual_state_table
+            .query()
+            .filter(partition_filter(&partition_key))
+            .top(1)
+            .into_stream::<ActualStateEntity>();
+        match stream.next().await {
+            Some(Ok(response)) => response
+                .entities
+                .into_iter()
+                .next()
+                .map(ActualStateRow::try_from)
+                .transpose(),
+            Some(Err(e)) => Err(HandlerError::Store(format!(
+                "query latest actual-state row failed: {e}"
             ))),
+            None => Ok(None),
         }
     }
 
-    async fn update_observed_state(
+    async fn load_latest_desired_state(
         &self,
-        update: &ObservedStateUpdate,
-    ) -> Result<ObservedStateWriteResult, HandlerError> {
-        let entity_client = self.node_state_table.partition_key_client("node");
-        let candidate_row_keys = node_state_row_key_candidates(&update.node_id);
-        for _ in 0..4 {
-            let mut response = None;
-            for row_key in &candidate_row_keys {
-                match entity_client
-                    .entity_client(row_key.clone())
-                    .get::<NodeStateEntity>()
-                    .await
-                {
-                    Ok(found) => {
-                        response = Some(found);
-                        break;
-                    }
-                    Err(e) if is_legacy_not_found(&e) => {}
-                    Err(e) => {
-                        return Err(HandlerError::Store(format!(
-                            "load node state for merge failed: {e}"
-                        )));
-                    }
-                }
-            }
-            let Some(response) = response else {
-                return Err(HandlerError::Store(format!(
-                    "missing node `{}` for observed update",
-                    update.node_id
-                )));
-            };
-            let mut entity = response.entity;
-            if update.timestamp_ms <= entity.last_checkin_ms {
-                return if update.timestamp_ms == entity.last_checkin_ms {
-                    Ok(ObservedStateWriteResult::Current(NodeStateRow::try_from(
-                        entity,
-                    )?))
-                } else {
-                    Ok(ObservedStateWriteResult::IgnoredStale)
-                };
-            }
-            entity.observed_current_program_hash =
-                encode_optional_hex(update.current_program_hash.clone());
-            entity.observed_assigned_program_hash =
-                encode_optional_hex(update.assigned_program_hash.clone());
-            entity.observed_schedule_interval_s = update.schedule_interval_s;
-            entity.battery_mv = update.battery_mv;
-            entity.firmware_abi_version = update.firmware_abi_version;
-            entity.firmware_version = update.firmware_version.clone();
-            entity.last_checkin_ms = update.timestamp_ms;
-            match entity_client
-                .entity_client(entity.row_key.clone())
-                .update(&entity, IfMatchCondition::from(response.etag))
-                .map_err(|e| {
-                    HandlerError::Store(format!("prepare observed-state update failed: {e}"))
-                })?
-                .await
-            {
-                Ok(_) => {
-                    return Ok(ObservedStateWriteResult::Applied(NodeStateRow::try_from(
-                        entity,
-                    )?))
-                }
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        LegacyAzureErrorKind::HttpResponse {
-                            status: LegacyStatusCode::PreconditionFailed,
-                            ..
-                        }
-                    ) =>
-                {
-                    continue;
-                }
-                Err(e) => {
-                    return Err(HandlerError::Store(format!(
-                        "update observed state failed: {e}"
-                    )));
-                }
-            }
+        node_id: &str,
+    ) -> Result<Option<DesiredStateRow>, HandlerError> {
+        let partition_key = encode_node_partition_key(node_id);
+        let mut stream = self
+            .desired_state_table
+            .query()
+            .filter(partition_filter(&partition_key))
+            .top(1)
+            .into_stream::<DesiredStateEntity>();
+        match stream.next().await {
+            Some(Ok(response)) => response
+                .entities
+                .into_iter()
+                .next()
+                .map(DesiredStateRow::try_from)
+                .transpose(),
+            Some(Err(e)) => Err(HandlerError::Store(format!(
+                "query latest desired-state row failed: {e}"
+            ))),
+            None => Ok(None),
         }
-        Err(HandlerError::Store(format!(
-            "update observed state for node `{}` failed after concurrent retries",
-            update.node_id
-        )))
     }
 
     async fn load_program_route(
@@ -515,17 +409,7 @@ impl HandlerStore for AzureTablesStore {
             .entity_client(row_key);
         match entity_client.get::<ProgramRouteEntity>().await {
             Ok(response) => Ok(Some(ProgramRouteRow::try_from(response.entity)?)),
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    LegacyAzureErrorKind::HttpResponse {
-                        status: LegacyStatusCode::NotFound,
-                        ..
-                    }
-                ) =>
-            {
-                Ok(None)
-            }
+            Err(e) if is_legacy_not_found(&e) => Ok(None),
             Err(e) => Err(HandlerError::Store(format!(
                 "query program route failed: {e}"
             ))),
@@ -614,21 +498,31 @@ async fn send_with_cached_sender(
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct NodeStateEntity {
+struct ActualStateEntity {
     #[serde(rename = "PartitionKey")]
     partition_key: String,
     #[serde(rename = "RowKey")]
     row_key: String,
-    node_id: Option<String>,
-    desired_assigned_program_hash: Option<String>,
-    desired_schedule_interval_s: Option<u32>,
+    node_id: String,
     observed_current_program_hash: Option<String>,
     observed_assigned_program_hash: Option<String>,
     observed_schedule_interval_s: Option<u32>,
     battery_mv: Option<u32>,
     firmware_abi_version: Option<u32>,
     firmware_version: Option<String>,
-    last_checkin_ms: u64,
+    timestamp_ms: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct DesiredStateEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    node_id: String,
+    desired_assigned_program_hash: Option<String>,
+    desired_schedule_interval_s: Option<u32>,
+    timestamp_ms: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -640,20 +534,13 @@ struct ProgramRouteEntity {
     handler_queue: String,
 }
 
-impl TryFrom<NodeStateEntity> for NodeStateRow {
+impl TryFrom<ActualStateEntity> for ActualStateRow {
     type Error = HandlerError;
 
-    fn try_from(value: NodeStateEntity) -> Result<Self, Self::Error> {
+    fn try_from(value: ActualStateEntity) -> Result<Self, Self::Error> {
         Ok(Self {
-            node_id: match value.node_id {
-                Some(node_id) => node_id,
-                None => decode_legacy_node_row_key(&value.row_key)?,
-            },
-            desired_assigned_program_hash: decode_optional_program_hash(
-                value.desired_assigned_program_hash,
-                "desired_assigned_program_hash",
-            )?,
-            desired_schedule_interval_s: value.desired_schedule_interval_s,
+            row_key: value.row_key,
+            node_id: value.node_id,
             observed_current_program_hash: decode_optional_program_hash(
                 value.observed_current_program_hash,
                 "observed_current_program_hash",
@@ -666,21 +553,19 @@ impl TryFrom<NodeStateEntity> for NodeStateRow {
             battery_mv: value.battery_mv,
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
-            last_checkin_ms: value.last_checkin_ms,
+            timestamp_ms: value.timestamp_ms,
         })
     }
 }
 
-impl TryFrom<NodeStateRow> for NodeStateEntity {
+impl TryFrom<ActualStateRow> for ActualStateEntity {
     type Error = HandlerError;
 
-    fn try_from(value: NodeStateRow) -> Result<Self, Self::Error> {
+    fn try_from(value: ActualStateRow) -> Result<Self, Self::Error> {
         Ok(Self {
-            partition_key: "node".to_string(),
-            row_key: encode_node_row_key(&value.node_id),
-            node_id: Some(value.node_id),
-            desired_assigned_program_hash: encode_optional_hex(value.desired_assigned_program_hash),
-            desired_schedule_interval_s: value.desired_schedule_interval_s,
+            partition_key: encode_node_partition_key(&value.node_id),
+            row_key: value.row_key,
+            node_id: value.node_id,
             observed_current_program_hash: encode_optional_hex(value.observed_current_program_hash),
             observed_assigned_program_hash: encode_optional_hex(
                 value.observed_assigned_program_hash,
@@ -689,7 +574,39 @@ impl TryFrom<NodeStateRow> for NodeStateEntity {
             battery_mv: value.battery_mv,
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
-            last_checkin_ms: value.last_checkin_ms,
+            timestamp_ms: value.timestamp_ms,
+        })
+    }
+}
+
+impl TryFrom<DesiredStateEntity> for DesiredStateRow {
+    type Error = HandlerError;
+
+    fn try_from(value: DesiredStateEntity) -> Result<Self, Self::Error> {
+        Ok(Self {
+            row_key: value.row_key,
+            node_id: value.node_id,
+            desired_assigned_program_hash: decode_optional_program_hash(
+                value.desired_assigned_program_hash,
+                "desired_assigned_program_hash",
+            )?,
+            desired_schedule_interval_s: value.desired_schedule_interval_s,
+            timestamp_ms: value.timestamp_ms,
+        })
+    }
+}
+
+impl TryFrom<DesiredStateRow> for DesiredStateEntity {
+    type Error = HandlerError;
+
+    fn try_from(value: DesiredStateRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            partition_key: encode_node_partition_key(&value.node_id),
+            row_key: value.row_key,
+            node_id: value.node_id,
+            desired_assigned_program_hash: encode_optional_hex(value.desired_assigned_program_hash),
+            desired_schedule_interval_s: value.desired_schedule_interval_s,
+            timestamp_ms: value.timestamp_ms,
         })
     }
 }
@@ -788,7 +705,7 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
     }
 }
 
-pub fn encode_desired_state(row: &NodeStateRow) -> Result<Vec<u8>, HandlerError> {
+pub fn encode_desired_state(row: &DesiredStateRow) -> Result<Vec<u8>, HandlerError> {
     let desired_state = Value::Map(vec![
         map_entry(
             1,
@@ -812,24 +729,45 @@ fn encode_optional_hex(value: Option<Vec<u8>>) -> Option<String> {
     value.map(hex::encode)
 }
 
-fn encode_node_row_key(node_id: &str) -> String {
+fn encode_node_partition_key(node_id: &str) -> String {
     let digest = Sha256::digest(node_id.as_bytes());
     format!("n:{}", hex::encode(digest))
 }
 
-fn encode_legacy_node_row_key(node_id: &str) -> String {
-    format!("n:{}", hex::encode(node_id.as_bytes()))
+// Equal-timestamp ordering is only guaranteed within one handler process
+// lifetime; reconciliation correctness must not depend on cross-process suffix
+// ordering.
+fn next_history_row_key(timestamp_ms: u64) -> Result<String, HandlerError> {
+    let sequence = HISTORY_ROW_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let process_nonce = history_row_process_nonce()?;
+    Ok(format!(
+        "{:016x}:{:016x}:{:016x}",
+        u64::MAX - timestamp_ms,
+        u64::MAX - sequence,
+        process_nonce
+    ))
 }
 
-fn decode_legacy_node_row_key(row_key: &str) -> Result<String, HandlerError> {
-    let Some(encoded) = row_key.strip_prefix("n:") else {
-        return Ok(row_key.to_string());
-    };
-    let bytes = hex::decode(encoded).map_err(|e| {
-        HandlerError::Store(format!("NodeState.RowKey must contain valid hex: {e}"))
-    })?;
-    String::from_utf8(bytes)
-        .map_err(|e| HandlerError::Store(format!("NodeState.RowKey must contain valid UTF-8: {e}")))
+fn history_row_process_nonce() -> Result<u64, HandlerError> {
+    if let Some(nonce) = HISTORY_ROW_PROCESS_NONCE.get() {
+        return Ok(*nonce);
+    }
+
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| HandlerError::Store(format!("generate row-key nonce failed: {e}")))?;
+    let nonce = u64::from_be_bytes(bytes);
+    if HISTORY_ROW_PROCESS_NONCE.set(nonce).is_ok() {
+        return Ok(nonce);
+    }
+    HISTORY_ROW_PROCESS_NONCE
+        .get()
+        .copied()
+        .ok_or_else(|| HandlerError::Store("row-key nonce initialization lost race".to_string()))
+}
+
+fn partition_filter(partition_key: &str) -> String {
+    format!("PartitionKey eq '{partition_key}'")
 }
 
 fn decode_optional_program_hash(
@@ -996,65 +934,77 @@ mod tests {
 
     #[derive(Default)]
     struct MemoryStore {
-        nodes: Mutex<HashMap<String, NodeStateRow>>,
+        actual_rows: Mutex<HashMap<String, Vec<ActualStateRow>>>,
+        desired_rows: Mutex<HashMap<String, Vec<DesiredStateRow>>>,
         routes: Mutex<HashMap<String, ProgramRouteRow>>,
+    }
+
+    impl MemoryStore {
+        async fn desired_writes(&self) -> usize {
+            self.desired_rows
+                .lock()
+                .await
+                .values()
+                .map(Vec::len)
+                .sum::<usize>()
+        }
+
+        async fn append_desired(&self, row: DesiredStateRow) {
+            self.desired_rows
+                .lock()
+                .await
+                .entry(row.node_id.clone())
+                .or_default()
+                .push(row);
+        }
+
+        async fn actual_rows_for(&self, node_id: &str) -> Vec<ActualStateRow> {
+            self.actual_rows
+                .lock()
+                .await
+                .get(node_id)
+                .cloned()
+                .unwrap_or_default()
+        }
     }
 
     #[async_trait]
     impl HandlerStore for MemoryStore {
-        async fn load_node_state(
-            &self,
-            node_id: &str,
-        ) -> Result<Option<NodeStateRow>, HandlerError> {
-            Ok(self.nodes.lock().await.get(node_id).cloned())
-        }
-
-        async fn save_node_state(&self, row: &NodeStateRow) -> Result<(), HandlerError> {
-            self.nodes
+        async fn append_actual_state(&self, row: &ActualStateRow) -> Result<(), HandlerError> {
+            self.actual_rows
                 .lock()
                 .await
-                .insert(row.node_id.clone(), row.clone());
+                .entry(row.node_id.clone())
+                .or_default()
+                .push(row.clone());
             Ok(())
         }
 
-        async fn create_node_state_if_absent(
+        async fn load_latest_actual_state(
             &self,
-            row: &NodeStateRow,
-        ) -> Result<bool, HandlerError> {
-            let mut nodes = self.nodes.lock().await;
-            if nodes.contains_key(&row.node_id) {
-                return Ok(false);
-            }
-            nodes.insert(row.node_id.clone(), row.clone());
-            Ok(true)
+            node_id: &str,
+        ) -> Result<Option<ActualStateRow>, HandlerError> {
+            Ok(self.actual_rows.lock().await.get(node_id).and_then(|rows| {
+                rows.iter()
+                    .min_by(|a, b| a.row_key.cmp(&b.row_key))
+                    .cloned()
+            }))
         }
 
-        async fn update_observed_state(
+        async fn load_latest_desired_state(
             &self,
-            update: &ObservedStateUpdate,
-        ) -> Result<ObservedStateWriteResult, HandlerError> {
-            let mut nodes = self.nodes.lock().await;
-            let row = nodes.get_mut(&update.node_id).ok_or_else(|| {
-                HandlerError::Store(format!(
-                    "missing node `{}` for observed update",
-                    update.node_id
-                ))
-            })?;
-            if update.timestamp_ms <= row.last_checkin_ms {
-                return if update.timestamp_ms == row.last_checkin_ms {
-                    Ok(ObservedStateWriteResult::Current(row.clone()))
-                } else {
-                    Ok(ObservedStateWriteResult::IgnoredStale)
-                };
-            }
-            row.observed_current_program_hash = update.current_program_hash.clone();
-            row.observed_assigned_program_hash = update.assigned_program_hash.clone();
-            row.observed_schedule_interval_s = update.schedule_interval_s;
-            row.battery_mv = update.battery_mv;
-            row.firmware_abi_version = update.firmware_abi_version;
-            row.firmware_version = update.firmware_version.clone();
-            row.last_checkin_ms = update.timestamp_ms;
-            Ok(ObservedStateWriteResult::Applied(row.clone()))
+            node_id: &str,
+        ) -> Result<Option<DesiredStateRow>, HandlerError> {
+            Ok(self
+                .desired_rows
+                .lock()
+                .await
+                .get(node_id)
+                .and_then(|rows| {
+                    rows.iter()
+                        .min_by(|a, b| a.row_key.cmp(&b.row_key))
+                        .cloned()
+                }))
         }
 
         async fn load_program_route(
@@ -1105,58 +1055,43 @@ mod tests {
     }
 
     struct FailingStore {
-        load_node_error: Option<String>,
-        save_error: Option<String>,
+        append_actual_error: Option<String>,
+        load_desired_error: Option<String>,
         load_route_error: Option<String>,
+        latest_actual: Mutex<Option<ActualStateRow>>,
     }
 
     #[async_trait]
     impl HandlerStore for FailingStore {
-        async fn load_node_state(
+        async fn append_actual_state(&self, row: &ActualStateRow) -> Result<(), HandlerError> {
+            match &self.append_actual_error {
+                Some(error) => Err(HandlerError::Store(error.clone())),
+                None => {
+                    *self.latest_actual.lock().await = Some(row.clone());
+                    Ok(())
+                }
+            }
+        }
+
+        async fn load_latest_actual_state(
             &self,
             _node_id: &str,
-        ) -> Result<Option<NodeStateRow>, HandlerError> {
-            match &self.load_node_error {
-                Some(error) => Err(HandlerError::Store(error.clone())),
-                None => Ok(None),
-            }
+        ) -> Result<Option<ActualStateRow>, HandlerError> {
+            Ok(self.latest_actual.lock().await.clone())
         }
 
-        async fn save_node_state(&self, _row: &NodeStateRow) -> Result<(), HandlerError> {
-            match &self.save_error {
-                Some(error) => Err(HandlerError::Store(error.clone())),
-                None => Ok(()),
-            }
-        }
-
-        async fn create_node_state_if_absent(
+        async fn load_latest_desired_state(
             &self,
-            _row: &NodeStateRow,
-        ) -> Result<bool, HandlerError> {
-            match &self.save_error {
+            node_id: &str,
+        ) -> Result<Option<DesiredStateRow>, HandlerError> {
+            match &self.load_desired_error {
                 Some(error) => Err(HandlerError::Store(error.clone())),
-                None => Ok(true),
-            }
-        }
-
-        async fn update_observed_state(
-            &self,
-            _update: &ObservedStateUpdate,
-        ) -> Result<ObservedStateWriteResult, HandlerError> {
-            match &self.save_error {
-                Some(error) => Err(HandlerError::Store(error.clone())),
-                None => Ok(ObservedStateWriteResult::Applied(NodeStateRow {
-                    node_id: "node-1".to_string(),
-                    desired_assigned_program_hash: None,
-                    desired_schedule_interval_s: None,
-                    observed_current_program_hash: None,
-                    observed_assigned_program_hash: None,
-                    observed_schedule_interval_s: None,
-                    battery_mv: None,
-                    firmware_abi_version: None,
-                    firmware_version: None,
-                    last_checkin_ms: 0,
-                })),
+                None => Ok(Some(desired_row(
+                    node_id,
+                    Some(vec![0xBB; 32]),
+                    Some(60),
+                    1234,
+                ))),
             }
         }
 
@@ -1171,55 +1106,31 @@ mod tests {
         }
     }
 
-    struct FailingPublisher {
-        error: String,
+    struct SameTimestampDifferentLatestStore {
+        latest_actual: ActualStateRow,
+        desired: DesiredStateRow,
+        appended_rows: Mutex<Vec<ActualStateRow>>,
     }
 
     #[async_trait]
-    impl QueuePublisher for FailingPublisher {
-        async fn publish(&self, _queue: &str, _payload: Vec<u8>) -> Result<(), HandlerError> {
-            Err(HandlerError::Publish(self.error.clone()))
-        }
-    }
-
-    struct UpdateReturnsAppliedRowStore {
-        initial_row: NodeStateRow,
-        applied_row: NodeStateRow,
-        load_count: Mutex<u32>,
-    }
-
-    #[async_trait]
-    impl HandlerStore for UpdateReturnsAppliedRowStore {
-        async fn load_node_state(
-            &self,
-            node_id: &str,
-        ) -> Result<Option<NodeStateRow>, HandlerError> {
-            let mut load_count = self.load_count.lock().await;
-            *load_count += 1;
-            if *load_count == 1 && node_id == self.initial_row.node_id {
-                return Ok(Some(self.initial_row.clone()));
-            }
-            Err(HandlerError::Store(
-                "load_node_state should not be called after update_observed_state".to_string(),
-            ))
-        }
-
-        async fn save_node_state(&self, _row: &NodeStateRow) -> Result<(), HandlerError> {
+    impl HandlerStore for SameTimestampDifferentLatestStore {
+        async fn append_actual_state(&self, row: &ActualStateRow) -> Result<(), HandlerError> {
+            self.appended_rows.lock().await.push(row.clone());
             Ok(())
         }
 
-        async fn create_node_state_if_absent(
+        async fn load_latest_actual_state(
             &self,
-            _row: &NodeStateRow,
-        ) -> Result<bool, HandlerError> {
-            Ok(false)
+            _node_id: &str,
+        ) -> Result<Option<ActualStateRow>, HandlerError> {
+            Ok(Some(self.latest_actual.clone()))
         }
 
-        async fn update_observed_state(
+        async fn load_latest_desired_state(
             &self,
-            _update: &ObservedStateUpdate,
-        ) -> Result<ObservedStateWriteResult, HandlerError> {
-            Ok(ObservedStateWriteResult::Applied(self.applied_row.clone()))
+            _node_id: &str,
+        ) -> Result<Option<DesiredStateRow>, HandlerError> {
+            Ok(Some(self.desired.clone()))
         }
 
         async fn load_program_route(
@@ -1230,11 +1141,63 @@ mod tests {
         }
     }
 
-    fn sample_actual_state(
+    struct MismatchedDesiredNodeStore {
+        desired: DesiredStateRow,
+        latest_actual: Mutex<Option<ActualStateRow>>,
+        appended_rows: Mutex<Vec<ActualStateRow>>,
+    }
+
+    #[async_trait]
+    impl HandlerStore for MismatchedDesiredNodeStore {
+        async fn append_actual_state(&self, row: &ActualStateRow) -> Result<(), HandlerError> {
+            self.appended_rows.lock().await.push(row.clone());
+            *self.latest_actual.lock().await = Some(row.clone());
+            Ok(())
+        }
+
+        async fn load_latest_actual_state(
+            &self,
+            _node_id: &str,
+        ) -> Result<Option<ActualStateRow>, HandlerError> {
+            Ok(self.latest_actual.lock().await.clone())
+        }
+
+        async fn load_latest_desired_state(
+            &self,
+            _node_id: &str,
+        ) -> Result<Option<DesiredStateRow>, HandlerError> {
+            Ok(Some(self.desired.clone()))
+        }
+
+        async fn load_program_route(
+            &self,
+            _program_hash: &[u8],
+        ) -> Result<Option<ProgramRouteRow>, HandlerError> {
+            Ok(None)
+        }
+    }
+
+    fn desired_row(
+        node_id: &str,
+        desired_assigned_program_hash: Option<Vec<u8>>,
+        desired_schedule_interval_s: Option<u32>,
+        timestamp_ms: u64,
+    ) -> DesiredStateRow {
+        DesiredStateRow {
+            row_key: next_history_row_key(timestamp_ms).unwrap(),
+            node_id: node_id.to_string(),
+            desired_assigned_program_hash,
+            desired_schedule_interval_s,
+            timestamp_ms,
+        }
+    }
+
+    fn sample_actual_state_with_timestamp(
         node_id: &str,
         current_program_hash: Option<&[u8]>,
         assigned_program_hash: Option<&[u8]>,
         schedule_interval_s: Option<u32>,
+        timestamp_ms: u64,
     ) -> Vec<u8> {
         let value = Value::Map(vec![
             map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
@@ -1245,13 +1208,28 @@ mod tests {
             map_entry(6, Value::Integer(3300u64.into())),
             map_entry(7, Value::Integer(1u64.into())),
             map_entry(8, Value::Text("1.2.3".to_string())),
-            map_entry(9, Value::Integer(1234u64.into())),
+            map_entry(9, Value::Integer(timestamp_ms.into())),
             map_entry(10, Value::Map(Vec::new())),
             map_entry(11, opt_u32_value(schedule_interval_s)),
         ]);
         let mut bytes = Vec::new();
         ciborium::into_writer(&value, &mut bytes).unwrap();
         bytes
+    }
+
+    fn sample_actual_state(
+        node_id: &str,
+        current_program_hash: Option<&[u8]>,
+        assigned_program_hash: Option<&[u8]>,
+        schedule_interval_s: Option<u32>,
+    ) -> Vec<u8> {
+        sample_actual_state_with_timestamp(
+            node_id,
+            current_program_hash,
+            assigned_program_hash,
+            schedule_interval_s,
+            1234,
+        )
     }
 
     fn sample_app_data(program_hash: &[u8], payload: &[u8]) -> Vec<u8> {
@@ -1279,7 +1257,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_actual_state_seeds_row_without_publish() {
+    async fn first_actual_state_appends_row_without_publish_when_desired_is_absent() {
         let store = Arc::new(MemoryStore::default());
         let publisher = Arc::new(RecordingPublisher::default());
         let handler =
@@ -1295,65 +1273,28 @@ mod tests {
             .await
             .unwrap();
 
-        let row = store.load_node_state("node-1").await.unwrap().unwrap();
-        assert_eq!(row.desired_assigned_program_hash, Some(vec![0xAA; 32]));
-        assert_eq!(row.desired_schedule_interval_s, Some(60));
-        assert_eq!(row.observed_current_program_hash, Some(vec![0xAA; 32]));
-        assert_eq!(row.observed_assigned_program_hash, None);
-        assert_eq!(row.observed_schedule_interval_s, Some(60));
-        assert_eq!(row.battery_mv, Some(3300));
-        assert_eq!(row.firmware_abi_version, Some(1));
-        assert_eq!(row.firmware_version.as_deref(), Some("1.2.3"));
-        assert_eq!(row.last_checkin_ms, 1234);
-        assert!(publisher.sends.lock().await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn first_actual_state_seeds_from_assigned_program_when_current_is_missing() {
-        let store = Arc::new(MemoryStore::default());
-        let publisher = Arc::new(RecordingPublisher::default());
-        let handler =
-            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
-        handler
-            .handle_payload(&sample_actual_state(
-                "node-1",
-                None,
-                Some(&[0xCC; 32]),
-                Some(60),
-            ))
-            .await
-            .unwrap();
-
-        let row = store.load_node_state("node-1").await.unwrap().unwrap();
-        assert_eq!(row.desired_assigned_program_hash, Some(vec![0xCC; 32]));
-        assert_eq!(row.observed_current_program_hash, None);
-        assert_eq!(row.observed_assigned_program_hash, Some(vec![0xCC; 32]));
+        let rows = store.actual_rows_for("node-1").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].observed_current_program_hash, Some(vec![0xAA; 32]));
+        assert_eq!(rows[0].observed_assigned_program_hash, None);
+        assert_eq!(rows[0].observed_schedule_interval_s, Some(60));
+        assert_eq!(rows[0].battery_mv, Some(3300));
+        assert_eq!(rows[0].firmware_abi_version, Some(1));
+        assert_eq!(rows[0].firmware_version.as_deref(), Some("1.2.3"));
+        assert_eq!(rows[0].timestamp_ms, 1234);
+        assert_eq!(store.desired_writes().await, 0);
         assert!(publisher.sends.lock().await.is_empty());
     }
 
     #[tokio::test]
     async fn divergence_publishes_full_desired_state_without_ephemeral() {
         let store = Arc::new(MemoryStore::default());
+        store
+            .append_desired(desired_row("node-1", Some(vec![0xBB; 32]), Some(120), 100))
+            .await;
         let publisher = Arc::new(RecordingPublisher::default());
         let handler =
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
-        store
-            .save_node_state(&NodeStateRow {
-                node_id: "node-1".to_string(),
-                desired_assigned_program_hash: Some(vec![0xBB; 32]),
-                desired_schedule_interval_s: Some(120),
-                observed_current_program_hash: Some(vec![0xAA; 32]),
-                observed_assigned_program_hash: Some(vec![0xAA; 32]),
-                observed_schedule_interval_s: Some(60),
-                battery_mv: Some(3200),
-                firmware_abi_version: Some(1),
-                firmware_version: Some("1.0.0".to_string()),
-                last_checkin_ms: 1,
-            })
-            .await
-            .unwrap();
 
         handler
             .handle_payload(&sample_actual_state(
@@ -1386,41 +1327,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_messages_do_not_mutate_state() {
+    async fn aligned_actual_state_appends_history_without_publish() {
         let store = Arc::new(MemoryStore::default());
-        let publisher = Arc::new(RecordingPublisher::default());
-        let handler =
-            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
-        handler.handle_payload(&sample_unsupported()).await.unwrap();
-
-        assert!(store.nodes.lock().await.is_empty());
-        assert!(store.routes.lock().await.is_empty());
-        assert!(publisher.sends.lock().await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn aligned_actual_state_refreshes_observed_fields_without_publish() {
-        let store = Arc::new(MemoryStore::default());
-        let publisher = Arc::new(RecordingPublisher::default());
-        let handler =
-            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
         store
-            .save_node_state(&NodeStateRow {
-                node_id: "node-1".to_string(),
-                desired_assigned_program_hash: Some(vec![0xAA; 32]),
-                desired_schedule_interval_s: Some(60),
-                observed_current_program_hash: Some(vec![0x10; 32]),
-                observed_assigned_program_hash: Some(vec![0x20; 32]),
-                observed_schedule_interval_s: Some(30),
-                battery_mv: Some(3100),
-                firmware_abi_version: Some(9),
-                firmware_version: Some("0.9.0".to_string()),
-                last_checkin_ms: 7,
-            })
-            .await
-            .unwrap();
+            .append_desired(desired_row("node-1", Some(vec![0xAA; 32]), Some(60), 100))
+            .await;
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
 
         handler
             .handle_payload(&sample_actual_state(
@@ -1432,82 +1346,81 @@ mod tests {
             .await
             .unwrap();
 
-        let row = store.load_node_state("node-1").await.unwrap().unwrap();
-        assert_eq!(row.desired_assigned_program_hash, Some(vec![0xAA; 32]));
-        assert_eq!(row.desired_schedule_interval_s, Some(60));
-        assert_eq!(row.observed_current_program_hash, Some(vec![0xAA; 32]));
-        assert_eq!(row.observed_assigned_program_hash, Some(vec![0xCC; 32]));
-        assert_eq!(row.observed_schedule_interval_s, Some(60));
-        assert_eq!(row.battery_mv, Some(3300));
-        assert_eq!(row.firmware_abi_version, Some(1));
-        assert_eq!(row.firmware_version.as_deref(), Some("1.2.3"));
-        assert_eq!(row.last_checkin_ms, 1234);
+        let rows = store.actual_rows_for("node-1").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].observed_assigned_program_hash, Some(vec![0xCC; 32]));
         assert!(publisher.sends.lock().await.is_empty());
     }
 
     #[tokio::test]
-    async fn stale_actual_state_is_ignored() {
+    async fn repeated_actual_state_deliveries_are_all_recorded() {
         let store = Arc::new(MemoryStore::default());
         let publisher = Arc::new(RecordingPublisher::default());
         let handler =
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+        let payload = sample_actual_state("node-1", Some(&[0xAA; 32]), Some(&[0xAA; 32]), Some(60));
 
+        handler.handle_payload(&payload).await.unwrap();
+        handler.handle_payload(&payload).await.unwrap();
+
+        let rows = store.actual_rows_for("node-1").await;
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].row_key, rows[1].row_key);
+    }
+
+    #[tokio::test]
+    async fn out_of_order_actual_state_is_retained_without_publish() {
+        let store = Arc::new(MemoryStore::default());
         store
-            .save_node_state(&NodeStateRow {
+            .append_desired(desired_row("node-1", Some(vec![0xAA; 32]), Some(60), 100))
+            .await;
+        store
+            .append_actual_state(&ActualStateRow {
+                row_key: next_history_row_key(5000).unwrap(),
                 node_id: "node-1".to_string(),
-                desired_assigned_program_hash: Some(vec![0xAA; 32]),
-                desired_schedule_interval_s: Some(60),
                 observed_current_program_hash: Some(vec![0xAA; 32]),
                 observed_assigned_program_hash: Some(vec![0xAA; 32]),
                 observed_schedule_interval_s: Some(60),
                 battery_mv: Some(3200),
                 firmware_abi_version: Some(2),
                 firmware_version: Some("2.0.0".to_string()),
-                last_checkin_ms: 5000,
+                timestamp_ms: 5000,
             })
             .await
             .unwrap();
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
 
         handler
-            .handle_payload(&sample_actual_state(
+            .handle_payload(&sample_actual_state_with_timestamp(
                 "node-1",
                 Some(&[0xBB; 32]),
                 Some(&[0xBB; 32]),
                 Some(120),
+                1234,
             ))
             .await
             .unwrap();
 
-        let row = store.load_node_state("node-1").await.unwrap().unwrap();
-        assert_eq!(row.observed_current_program_hash, Some(vec![0xAA; 32]));
-        assert_eq!(row.observed_schedule_interval_s, Some(60));
-        assert_eq!(row.battery_mv, Some(3200));
-        assert_eq!(row.last_checkin_ms, 5000);
+        let rows = store.actual_rows_for("node-1").await;
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row.timestamp_ms == 1234));
+        let latest = store
+            .load_latest_actual_state("node-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.timestamp_ms, 5000);
         assert!(publisher.sends.lock().await.is_empty());
     }
 
     #[tokio::test]
-    async fn schedule_only_divergence_publishes_one_desired_state() {
+    async fn missing_desired_state_suppresses_publication() {
         let store = Arc::new(MemoryStore::default());
         let publisher = Arc::new(RecordingPublisher::default());
         let handler =
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
-        store
-            .save_node_state(&NodeStateRow {
-                node_id: "node-1".to_string(),
-                desired_assigned_program_hash: Some(vec![0xAA; 32]),
-                desired_schedule_interval_s: Some(120),
-                observed_current_program_hash: Some(vec![0xAA; 32]),
-                observed_assigned_program_hash: Some(vec![0xAA; 32]),
-                observed_schedule_interval_s: Some(120),
-                battery_mv: Some(3200),
-                firmware_abi_version: Some(1),
-                firmware_version: Some("1.0.0".to_string()),
-                last_checkin_ms: 1,
-            })
-            .await
-            .unwrap();
 
         handler
             .handle_payload(&sample_actual_state(
@@ -1519,52 +1432,27 @@ mod tests {
             .await
             .unwrap();
 
-        let sends = publisher.sends.lock().await;
-        assert_eq!(sends.len(), 1);
-        let desired = decode_map(&sends[0].1).unwrap();
-        let desired_state = map_get(&desired, 4).unwrap().as_map().unwrap();
-        assert_eq!(
-            optional_bytes_field(desired_state, 1, "assigned_program_hash").unwrap(),
-            Some(vec![0xAA; 32])
-        );
-        assert_eq!(
-            optional_u32_field(desired_state, 2, "schedule_interval_s").unwrap(),
-            Some(120)
-        );
+        assert!(publisher.sends.lock().await.is_empty());
     }
 
     #[tokio::test]
-    async fn program_only_divergence_publishes_one_desired_state() {
+    async fn duplicate_actual_state_redelivery_retries_divergence_publish() {
         let store = Arc::new(MemoryStore::default());
-        let publisher = Arc::new(RecordingPublisher::default());
+        store
+            .append_desired(desired_row("node-1", Some(vec![0xBB; 32]), Some(60), 10))
+            .await;
+        let publisher = Arc::new(FailOncePublisher {
+            sends: Mutex::new(Vec::new()),
+            failed: Mutex::new(false),
+        });
         let handler =
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+        let payload = sample_actual_state("node-1", Some(&[0xAA; 32]), Some(&[0xAA; 32]), Some(30));
 
-        store
-            .save_node_state(&NodeStateRow {
-                node_id: "node-1".to_string(),
-                desired_assigned_program_hash: Some(vec![0xBB; 32]),
-                desired_schedule_interval_s: Some(60),
-                observed_current_program_hash: Some(vec![0xAA; 32]),
-                observed_assigned_program_hash: Some(vec![0xAA; 32]),
-                observed_schedule_interval_s: Some(60),
-                battery_mv: Some(3200),
-                firmware_abi_version: Some(1),
-                firmware_version: Some("1.0.0".to_string()),
-                last_checkin_ms: 1,
-            })
-            .await
-            .unwrap();
+        let err = handler.handle_payload(&payload).await.unwrap_err();
+        assert!(err.to_string().contains("simulated first publish failure"));
 
-        handler
-            .handle_payload(&sample_actual_state(
-                "node-1",
-                Some(&[0xAA; 32]),
-                Some(&[0xAA; 32]),
-                Some(60),
-            ))
-            .await
-            .unwrap();
+        handler.handle_payload(&payload).await.unwrap();
 
         let sends = publisher.sends.lock().await;
         assert_eq!(sends.len(), 1);
@@ -1578,6 +1466,102 @@ mod tests {
             optional_u32_field(desired_state, 2, "schedule_interval_s").unwrap(),
             Some(60)
         );
+        drop(sends);
+
+        let rows = store.actual_rows_for("node-1").await;
+        assert_eq!(rows.len(), 2);
+        let latest = store
+            .load_latest_actual_state("node-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.timestamp_ms, 1234);
+        assert_eq!(latest.observed_current_program_hash, Some(vec![0xAA; 32]));
+    }
+
+    #[tokio::test]
+    async fn same_timestamp_row_key_mismatch_still_evaluates_current_delivery() {
+        let store = Arc::new(SameTimestampDifferentLatestStore {
+            latest_actual: ActualStateRow {
+                row_key: next_history_row_key(1234).unwrap(),
+                node_id: "node-1".to_string(),
+                observed_current_program_hash: Some(vec![0xBB; 32]),
+                observed_assigned_program_hash: Some(vec![0xBB; 32]),
+                observed_schedule_interval_s: Some(60),
+                battery_mv: Some(3200),
+                firmware_abi_version: Some(1),
+                firmware_version: Some("1.2.3".to_string()),
+                timestamp_ms: 1234,
+            },
+            desired: desired_row("node-1", Some(vec![0xCC; 32]), Some(60), 100),
+            appended_rows: Mutex::new(Vec::new()),
+        });
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        handler
+            .handle_payload(&sample_actual_state(
+                "node-1",
+                Some(&[0xAA; 32]),
+                Some(&[0xAA; 32]),
+                Some(60),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(store.appended_rows.lock().await.len(), 1);
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        let desired = decode_map(&sends[0].1).unwrap();
+        let desired_state = map_get(&desired, 4).unwrap().as_map().unwrap();
+        assert_eq!(
+            optional_bytes_field(desired_state, 1, "assigned_program_hash").unwrap(),
+            Some(vec![0xCC; 32])
+        );
+    }
+
+    #[tokio::test]
+    async fn mismatched_desired_row_node_id_is_rejected() {
+        let store = Arc::new(MismatchedDesiredNodeStore {
+            desired: desired_row("other-node", Some(vec![0xBB; 32]), Some(60), 100),
+            latest_actual: Mutex::new(None),
+            appended_rows: Mutex::new(Vec::new()),
+        });
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        let err = handler
+            .handle_payload(&sample_actual_state(
+                "node-1",
+                Some(&[0xAA; 32]),
+                Some(&[0xAA; 32]),
+                Some(30),
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains(
+            "desired-state row node_id `other-node` did not match requested node `node-1`"
+        ));
+        assert_eq!(store.appended_rows.lock().await.len(), 1);
+        assert!(publisher.sends.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unsupported_messages_do_not_mutate_state() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        handler.handle_payload(&sample_unsupported()).await.unwrap();
+
+        assert!(store.actual_rows.lock().await.is_empty());
+        assert!(store.desired_rows.lock().await.is_empty());
+        assert!(store.routes.lock().await.is_empty());
+        assert!(publisher.sends.lock().await.is_empty());
     }
 
     #[tokio::test]
@@ -1708,242 +1692,53 @@ mod tests {
     }
 
     #[test]
-    fn node_state_row_key_candidates_are_unique_and_ordered() {
-        let candidates = node_state_row_key_candidates("node-1");
-        assert_eq!(candidates.len(), 3);
-        assert_eq!(candidates[0], encode_node_row_key("node-1"));
-        assert_eq!(candidates[1], encode_legacy_node_row_key("node-1"));
-        assert_eq!(candidates[2], "node-1");
-        assert_eq!(
-            candidates
-                .iter()
-                .collect::<std::collections::HashSet<_>>()
-                .len(),
-            candidates.len()
-        );
+    fn history_row_keys_sort_newer_timestamps_first() {
+        let newer = next_history_row_key(200).unwrap();
+        let older = next_history_row_key(100).unwrap();
+        assert!(newer < older);
     }
 
     #[test]
-    fn node_state_entity_round_trips_table_safe_row_key() {
-        let row = NodeStateRow {
+    fn history_row_keys_sort_later_appends_first_for_equal_timestamps_within_process() {
+        let first = next_history_row_key(1234).unwrap();
+        let second = next_history_row_key(1234).unwrap();
+        assert!(second < first);
+    }
+
+    #[test]
+    fn actual_state_entity_round_trips_table_safe_partition_key() {
+        let row = ActualStateRow {
+            row_key: next_history_row_key(1234).unwrap(),
             node_id: "node/with?#unsafe\\chars".to_string(),
-            desired_assigned_program_hash: Some(vec![0x11; 32]),
-            desired_schedule_interval_s: Some(60),
             observed_current_program_hash: Some(vec![0x22; 32]),
             observed_assigned_program_hash: Some(vec![0x33; 32]),
             observed_schedule_interval_s: Some(30),
             battery_mv: Some(3300),
             firmware_abi_version: Some(1),
             firmware_version: Some("1.2.3".to_string()),
-            last_checkin_ms: 1234,
+            timestamp_ms: 1234,
         };
 
-        let entity = NodeStateEntity::try_from(row.clone()).unwrap();
+        let entity = ActualStateEntity::try_from(row.clone()).unwrap();
         assert_eq!(
-            entity.row_key,
+            entity.partition_key,
             "n:6a096929d88b3094bc781fbd0fb8dc060aa75ba06339ac3a706aa06f5ac9fedd"
         );
-        assert_eq!(entity.node_id.as_deref(), Some("node/with?#unsafe\\chars"));
-        assert_eq!(NodeStateRow::try_from(entity).unwrap(), row);
+        assert_eq!(ActualStateRow::try_from(entity).unwrap(), row);
     }
 
     #[test]
-    fn node_state_entity_accepts_legacy_raw_row_key() {
-        let row = NodeStateRow::try_from(NodeStateEntity {
-            partition_key: "node".to_string(),
-            row_key: "node-1".to_string(),
-            node_id: None,
-            desired_assigned_program_hash: None,
-            desired_schedule_interval_s: None,
-            observed_current_program_hash: None,
-            observed_assigned_program_hash: None,
-            observed_schedule_interval_s: None,
-            battery_mv: None,
-            firmware_abi_version: None,
-            firmware_version: None,
-            last_checkin_ms: 1,
-        })
-        .unwrap();
-        assert_eq!(row.node_id, "node-1");
+    fn desired_state_entity_round_trips() {
+        let row = desired_row("node-1", Some(vec![0x11; 32]), Some(60), 1234);
+        let entity = DesiredStateEntity::try_from(row.clone()).unwrap();
+        assert_eq!(DesiredStateRow::try_from(entity).unwrap(), row);
     }
 
     #[test]
-    fn long_node_ids_still_produce_bounded_row_keys() {
+    fn long_node_ids_still_produce_bounded_partition_keys() {
         let node_id = "a".repeat(4096);
-        let row_key = encode_node_row_key(&node_id);
-        assert_eq!(row_key.len(), 66);
-    }
-
-    #[tokio::test]
-    async fn actual_state_uses_applied_row_without_post_update_reload() {
-        let store = Arc::new(UpdateReturnsAppliedRowStore {
-            initial_row: NodeStateRow {
-                node_id: "node-1".to_string(),
-                desired_assigned_program_hash: Some(vec![0x42; 32]),
-                desired_schedule_interval_s: Some(120),
-                observed_current_program_hash: Some(vec![0x42; 32]),
-                observed_assigned_program_hash: Some(vec![0x42; 32]),
-                observed_schedule_interval_s: Some(120),
-                battery_mv: Some(3300),
-                firmware_abi_version: Some(1),
-                firmware_version: Some("1.2.3".to_string()),
-                last_checkin_ms: 1200,
-            },
-            applied_row: NodeStateRow {
-                node_id: "node-1".to_string(),
-                desired_assigned_program_hash: Some(vec![0x42; 32]),
-                desired_schedule_interval_s: Some(120),
-                observed_current_program_hash: Some(vec![0x99; 32]),
-                observed_assigned_program_hash: Some(vec![0x99; 32]),
-                observed_schedule_interval_s: Some(60),
-                battery_mv: Some(3300),
-                firmware_abi_version: Some(1),
-                firmware_version: Some("1.2.3".to_string()),
-                last_checkin_ms: 1234,
-            },
-            load_count: Mutex::new(0),
-        });
-        let publisher = Arc::new(RecordingPublisher::default());
-        let handler =
-            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
-        handler
-            .handle_payload(&sample_actual_state(
-                "node-1",
-                Some(&[0x99; 32]),
-                Some(&[0x99; 32]),
-                Some(60),
-            ))
-            .await
-            .unwrap();
-
-        let sends = publisher.sends.lock().await;
-        assert_eq!(sends.len(), 1);
-        assert_eq!(sends[0].0, "desired-state");
-        assert_eq!(*store.load_count.lock().await, 1);
-    }
-
-    #[tokio::test]
-    async fn duplicate_actual_state_timestamp_is_ignored() {
-        let store = Arc::new(MemoryStore::default());
-        store.nodes.lock().await.insert(
-            "node-1".to_string(),
-            NodeStateRow {
-                node_id: "node-1".to_string(),
-                desired_assigned_program_hash: Some(vec![0x42; 32]),
-                desired_schedule_interval_s: Some(120),
-                observed_current_program_hash: Some(vec![0x42; 32]),
-                observed_assigned_program_hash: Some(vec![0x42; 32]),
-                observed_schedule_interval_s: Some(120),
-                battery_mv: Some(3300),
-                firmware_abi_version: Some(1),
-                firmware_version: Some("1.2.3".to_string()),
-                last_checkin_ms: 1234,
-            },
-        );
-        let publisher = Arc::new(RecordingPublisher::default());
-        let handler =
-            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
-        handler
-            .handle_payload(&sample_actual_state(
-                "node-1",
-                Some(&[0x99; 32]),
-                Some(&[0x99; 32]),
-                Some(60),
-            ))
-            .await
-            .unwrap();
-
-        assert!(publisher.sends.lock().await.is_empty());
-        let row = store.nodes.lock().await.get("node-1").cloned().unwrap();
-        assert_eq!(row.last_checkin_ms, 1234);
-        assert_eq!(row.observed_current_program_hash, Some(vec![0x42; 32]));
-    }
-
-    #[tokio::test]
-    async fn duplicate_actual_state_redelivery_retries_divergence_publish() {
-        let store = Arc::new(MemoryStore::default());
-        store.nodes.lock().await.insert(
-            "node-1".to_string(),
-            NodeStateRow {
-                node_id: "node-1".to_string(),
-                desired_assigned_program_hash: Some(vec![0xBB; 32]),
-                desired_schedule_interval_s: Some(60),
-                observed_current_program_hash: Some(vec![0x11; 32]),
-                observed_assigned_program_hash: Some(vec![0x11; 32]),
-                observed_schedule_interval_s: Some(30),
-                battery_mv: Some(3300),
-                firmware_abi_version: Some(1),
-                firmware_version: Some("1.2.3".to_string()),
-                last_checkin_ms: 1,
-            },
-        );
-        let publisher = Arc::new(FailOncePublisher {
-            sends: Mutex::new(Vec::new()),
-            failed: Mutex::new(false),
-        });
-        let handler =
-            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-        let payload = sample_actual_state("node-1", Some(&[0xAA; 32]), Some(&[0xAA; 32]), Some(30));
-
-        let err = handler.handle_payload(&payload).await.unwrap_err();
-        assert!(err.to_string().contains("simulated first publish failure"));
-
-        handler.handle_payload(&payload).await.unwrap();
-
-        let sends = publisher.sends.lock().await;
-        assert_eq!(sends.len(), 1);
-        let desired = decode_map(&sends[0].1).unwrap();
-        let desired_state = map_get(&desired, 4).unwrap().as_map().unwrap();
-        assert_eq!(
-            optional_bytes_field(desired_state, 1, "assigned_program_hash").unwrap(),
-            Some(vec![0xBB; 32])
-        );
-        assert_eq!(
-            optional_u32_field(desired_state, 2, "schedule_interval_s").unwrap(),
-            Some(60)
-        );
-        drop(sends);
-
-        let row = store.nodes.lock().await.get("node-1").cloned().unwrap();
-        assert_eq!(row.last_checkin_ms, 1234);
-        assert_eq!(row.observed_current_program_hash, Some(vec![0xAA; 32]));
-    }
-
-    #[tokio::test]
-    async fn cleared_desired_targets_do_not_republish_forever() {
-        let store = Arc::new(MemoryStore::default());
-        store.nodes.lock().await.insert(
-            "node-1".to_string(),
-            NodeStateRow {
-                node_id: "node-1".to_string(),
-                desired_assigned_program_hash: None,
-                desired_schedule_interval_s: None,
-                observed_current_program_hash: Some(vec![0x42; 32]),
-                observed_assigned_program_hash: Some(vec![0x42; 32]),
-                observed_schedule_interval_s: Some(120),
-                battery_mv: Some(3300),
-                firmware_abi_version: Some(1),
-                firmware_version: Some("1.2.3".to_string()),
-                last_checkin_ms: 1200,
-            },
-        );
-        let publisher = Arc::new(RecordingPublisher::default());
-        let handler =
-            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
-        handler
-            .handle_payload(&sample_actual_state(
-                "node-1",
-                Some(&[0x42; 32]),
-                Some(&[0x42; 32]),
-                Some(120),
-            ))
-            .await
-            .unwrap();
-
-        assert!(publisher.sends.lock().await.is_empty());
+        let partition_key = encode_node_partition_key(&node_id);
+        assert_eq!(partition_key.len(), 66);
     }
 
     #[test]
@@ -1980,20 +1775,14 @@ mod tests {
     }
 
     #[test]
-    fn node_state_row_decode_fails_closed_on_invalid_hex() {
-        let err = NodeStateRow::try_from(NodeStateEntity {
-            partition_key: "node".to_string(),
-            row_key: "node-1".to_string(),
-            node_id: None,
+    fn desired_state_row_decode_fails_closed_on_invalid_hex() {
+        let err = DesiredStateRow::try_from(DesiredStateEntity {
+            partition_key: encode_node_partition_key("node-1"),
+            row_key: next_history_row_key(1234).unwrap(),
+            node_id: "node-1".to_string(),
             desired_assigned_program_hash: Some("not-hex".to_string()),
             desired_schedule_interval_s: Some(60),
-            observed_current_program_hash: None,
-            observed_assigned_program_hash: None,
-            observed_schedule_interval_s: Some(60),
-            battery_mv: Some(3300),
-            firmware_abi_version: Some(1),
-            firmware_version: Some("1.2.3".to_string()),
-            last_checkin_ms: 1234,
+            timestamp_ms: 1234,
         })
         .unwrap_err();
         assert!(err
@@ -2002,11 +1791,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn table_write_failures_are_surfaced() {
+    async fn actual_state_table_write_failures_are_surfaced() {
         let store = Arc::new(FailingStore {
-            load_node_error: None,
-            save_error: Some("save failed".to_string()),
+            append_actual_error: Some("append failed".to_string()),
+            load_desired_error: None,
             load_route_error: None,
+            latest_actual: Mutex::new(None),
         });
         let publisher = Arc::new(RecordingPublisher::default());
         let handler =
@@ -2022,69 +1812,51 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(err.to_string().contains("save failed"));
+        assert!(err.to_string().contains("append failed"));
     }
 
     #[tokio::test]
-    async fn downstream_publish_failures_are_surfaced() {
-        let store = Arc::new(MemoryStore::default());
-        let publisher = Arc::new(FailingPublisher {
-            error: "downstream publish failed".to_string(),
+    async fn desired_state_read_failures_are_surfaced() {
+        let store = Arc::new(FailingStore {
+            append_actual_error: None,
+            load_desired_error: Some("desired read failed".to_string()),
+            load_route_error: None,
+            latest_actual: Mutex::new(None),
         });
+        let publisher = Arc::new(RecordingPublisher::default());
         let handler =
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
-        store
-            .save_node_state(&NodeStateRow {
-                node_id: "node-1".to_string(),
-                desired_assigned_program_hash: Some(vec![0xBB; 32]),
-                desired_schedule_interval_s: Some(120),
-                observed_current_program_hash: Some(vec![0xAA; 32]),
-                observed_assigned_program_hash: Some(vec![0xAA; 32]),
-                observed_schedule_interval_s: Some(60),
-                battery_mv: Some(3200),
-                firmware_abi_version: Some(1),
-                firmware_version: Some("1.0.0".to_string()),
-                last_checkin_ms: 1,
-            })
-            .await
-            .unwrap();
 
         let err = handler
             .handle_payload(&sample_actual_state(
                 "node-1",
                 Some(&[0xAA; 32]),
-                Some(&[0xAA; 32]),
+                None,
                 Some(60),
             ))
             .await
             .unwrap_err();
 
-        assert!(err.to_string().contains("downstream publish failed"));
+        assert!(err.to_string().contains("desired read failed"));
     }
 
     #[tokio::test]
-    async fn handler_queue_publish_failures_are_surfaced() {
-        let store = Arc::new(MemoryStore::default());
-        let publisher = Arc::new(FailingPublisher {
-            error: "handler queue publish failed".to_string(),
+    async fn program_route_read_failures_are_surfaced() {
+        let store = Arc::new(FailingStore {
+            append_actual_error: None,
+            load_desired_error: None,
+            load_route_error: Some("route read failed".to_string()),
+            latest_actual: Mutex::new(None),
         });
+        let publisher = Arc::new(RecordingPublisher::default());
         let handler =
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
-        store.routes.lock().await.insert(
-            hex::encode([0x44; 32]),
-            ProgramRouteRow {
-                program_hash: vec![0x44; 32],
-                handler_queue: "handler-q".to_string(),
-            },
-        );
 
         let err = handler
             .handle_payload(&sample_app_data(&[0x44; 32], &[1, 2, 3]))
             .await
             .unwrap_err();
 
-        assert!(err.to_string().contains("handler queue publish failed"));
+        assert!(err.to_string().contains("route read failed"));
     }
 }

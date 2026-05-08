@@ -24,10 +24,9 @@ adapter between the gateway's local connector socket and Azure Service Bus. The
 Azure handler owns the first Sonde-aware cloud logic:
 
 1. consume upstream connector messages from the upstream queue,
-2. reconcile node-scoped `GW-0812` actual-state messages into a combined
-   desired/observed Azure Table row,
-3. publish a complete node-scoped `GW-0811` desired-state message when desired
-   and observed node state diverge, and
+2. append node-scoped `GW-0812` actual-state messages to actual-state history,
+3. compare the latest eligible actual-state row against the latest desired-state
+   row and publish a complete node-scoped `GW-0811` when they diverge, and
 4. route `GW-0813` application-data messages to handler queues by `program_hash`.
 
 The handler does not replace the gateway's reconciler model. It expresses cloud
@@ -44,7 +43,8 @@ stack. The Function App uses a system-assigned managed identity with:
 
 1. receive permission on the upstream queue,
 2. send permission on the downstream queue,
-3. read/write permission on the Azure Tables used by the handler, and
+3. append permission on `ActualNodeState`, read permission on
+   `DesiredNodeState`, and read permission on `ProgramRoute`, and
 4. send permission on each pre-provisioned handler queue referenced by the
    program route table.
 
@@ -105,44 +105,63 @@ inside the `GW-0813` message body.
 
 ## 4  Azure Table schemas
 
-> **Requirements:** AZH-0200, AZH-0300
+> **Requirements:** AZH-0200, AZH-0205, AZH-0206, AZH-0300
 
-The design uses two Azure Tables:
+The design uses three Azure Tables:
 
-1. **`NodeState`** — combined desired/observed state keyed by `node_id`.
-2. **`ProgramRoute`** — `program_hash` to handler queue mapping.
+1. **`ActualNodeState`** — append-only actual-state history keyed for latest-per-node queries.
+2. **`DesiredNodeState`** — append-only desired-state history keyed for latest-per-node queries.
+3. **`ProgramRoute`** — `program_hash` to handler queue mapping.
 
-### 4.1  `NodeState` schema
+### 4.1  `ActualNodeState` schema
 
 Each row uses:
 
-- `PartitionKey = "node"`
-- `RowKey = "n:" + lowercase hex-encoded SHA-256(node_id UTF-8 bytes)`
+- `PartitionKey = "n:" + lowercase hex-encoded SHA-256(node_id UTF-8 bytes)`
+- `RowKey = <reverse_tick_ms as fixed-width lowercase hex> + ":" + <implementation-defined suffix that preserves append uniqueness and orders later appends first within the same timestamp for one handler process lifetime>`
 
 The row contains the following logical columns:
 
 | Column | Purpose |
 |--------|---------|
 | `node_id` | Original opaque node identifier used by gateway and handlers. |
-| `desired_assigned_program_hash` | Cloud-authored desired resident program hash, nullable. |
-| `desired_schedule_interval_s` | Cloud-authored desired schedule interval, nullable. |
 | `observed_current_program_hash` | Node-reported current resident program hash, nullable. |
 | `observed_assigned_program_hash` | Gateway-reported assigned resident program hash, nullable. |
 | `observed_schedule_interval_s` | Gateway-reported node schedule interval, nullable. |
 | `battery_mv` | Latest battery reading from `GW-0812`, nullable. |
 | `firmware_abi_version` | Latest firmware ABI version, nullable. |
 | `firmware_version` | Latest firmware version, nullable. |
-| `last_checkin_ms` | Most recent `timestamp_ms` accepted for the node. |
+| `timestamp_ms` | Check-in time carried by the source `GW-0812`. |
 
-The row deliberately separates desired and observed columns so that Azure-side
-control-plane intent is not overwritten by the next `GW-0812`.
-The hashed `RowKey` is only a storage-safe lookup key. The logical node
-identifier remains the original opaque `node_id`, which is stored in the row and
-returned unchanged when the handler loads rows. For backward compatibility, the
-handler also tolerates legacy rows whose `RowKey` used the older reversible
-hex-encoding or the literal raw node ID.
+The node-scoped `PartitionKey` keeps each node's history in one queryable
+partition. The reverse-tick `RowKey` prefix makes newer timestamps sort first.
+The suffix preserves append-only behavior when multiple deliveries share the
+same `timestamp_ms`, and it orders later appends before earlier appends only
+within one handler process lifetime. Across restarts or concurrent handler
+instances, equal-timestamp row ordering is intentionally unspecified, so the
+reconciliation path must not depend on `Top(1)` returning the most recently
+appended equal-timestamp row.
 
-### 4.2  `ProgramRoute` schema
+### 4.2  `DesiredNodeState` schema
+
+Each row uses:
+
+- `PartitionKey = "n:" + lowercase hex-encoded SHA-256(node_id UTF-8 bytes)`
+- `RowKey = <reverse_tick_ms as fixed-width lowercase hex> + ":" + <implementation-defined suffix that preserves append uniqueness and orders later appends first within the same timestamp for one handler process lifetime>`
+
+The row contains:
+
+| Column | Purpose |
+|--------|---------|
+| `node_id` | Original opaque node identifier used by gateway and handlers. |
+| `desired_assigned_program_hash` | Cloud-authored desired resident program hash, nullable. |
+| `desired_schedule_interval_s` | Cloud-authored desired schedule interval, nullable. |
+| `timestamp_ms` | Time associated with the desired-state request. |
+
+The Azure handler reads this table but does not write it. Admin/control-plane
+surfaces append desired-state rows when requested state changes.
+
+### 4.3  `ProgramRoute` schema
 
 Each row uses:
 
@@ -162,32 +181,41 @@ policy lifecycle.
 
 ## 5  Node-state reconciliation algorithm
 
-> **Requirements:** AZH-0201, AZH-0202, AZH-0203, AZH-0204
+> **Requirements:** AZH-0201, AZH-0202, AZH-0203, AZH-0204, AZH-0207
 
 For each node-scoped `GW-0812`, the handler performs the following sequence:
 
-1. Load the `NodeState` row for `node_id`.
-2. If the row is missing:
-   1. create a new row,
-   2. copy the observed fields from `GW-0812`,
-   3. seed `desired_assigned_program_hash` from `current_program_hash` when
-      present, otherwise from `assigned_program_hash`, and
-   4. seed `desired_schedule_interval_s` from `schedule_interval_s`.
-3. If the row exists:
-    1. update all observed fields from `GW-0812`,
-    2. if `desired_assigned_program_hash` is non-null, compare it to
-       `observed_current_program_hash`, and
-    3. if `desired_schedule_interval_s` is non-null, compare it to
-       `observed_schedule_interval_s`.
-4. If neither comparison diverges, complete the invocation with no downstream
+1. Append one `ActualNodeState` row for the received `GW-0812`.
+2. Query `Top(1)` from `ActualNodeState` for the node's partition.
+3. If the newest actual-state row has a `timestamp_ms` greater than the
+   appended row's `timestamp_ms`, treat the incoming message as out-of-order and
+   complete the invocation without downstream publication.
+4. Otherwise, use the appended row as the actual-state input for this
+   invocation's divergence evaluation. Equal-timestamp ordering among history
+   rows is retained for diagnostics, but reconciliation correctness does not
+   depend on `Top(1)` choosing the just-appended row when multiple rows share
+   the same `timestamp_ms`.
+5. Query `Top(1)` from `DesiredNodeState` for the same node partition.
+6. If no desired-state row exists, complete the invocation without downstream
    publication.
-5. If either comparison diverges, build one complete `GW-0811`
+7. If the desired-state row's `node_id` payload does not exactly match the
+   current `entity_id`, fail the invocation rather than publishing a command
+   for potentially corrupted cross-node state.
+8. If `desired_assigned_program_hash` is non-null, compare it to
+   `observed_current_program_hash` from the appended row selected for
+   evaluation.
+9. If `desired_schedule_interval_s` is non-null, compare it to
+   `observed_schedule_interval_s` from the appended row selected for
+   evaluation.
+10. If neither comparison diverges, complete the invocation with no downstream
+   publication.
+11. If either comparison diverges, build one complete `GW-0811`
    `DESIRED_STATE` payload using:
    1. `entity_kind = "node"`,
    2. `entity_id = node_id`,
-   3. `assigned_program_hash = desired_assigned_program_hash`, and
-   4. `schedule_interval_s = desired_schedule_interval_s`.
-6. Publish that payload to the downstream queue.
+   3. `assigned_program_hash = desired_assigned_program_hash` from the latest desired row, and
+   4. `schedule_interval_s = desired_schedule_interval_s` from the latest desired row.
+12. Publish that payload to the downstream queue.
 
 `ephemeral_program_hash` is intentionally omitted in v1. The gateway connector
 schema already defines it, but this design does not add Azure-side ownership or
@@ -196,7 +224,8 @@ comparison rules for it yet.
 A null desired program or schedule field means the cloud is intentionally not
 asserting a target for that field. The reconciliation algorithm therefore skips
 that comparison instead of republishing `GW-0811` forever against a non-null
-observed value.
+observed value. Because desired-state history is admin-authored, the handler
+never seeds or updates desired-state rows while processing `GW-0812`.
 
 ---
 

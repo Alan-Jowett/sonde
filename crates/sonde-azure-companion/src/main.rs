@@ -1684,7 +1684,9 @@ impl DownstreamConsumer for StorageQueueConsumer {
         let inflight = self.inflight.as_ref().ok_or_else(|| {
             CompanionError::Config("no inflight downstream message to abandon".to_string())
         })?;
-        self.abandon_message_direct(&inflight.message_id.clone(), &inflight.pop_receipt.clone())
+        let message_id = inflight.message_id.clone();
+        let pop_receipt = inflight.pop_receipt.clone();
+        self.abandon_message_direct(&message_id, &pop_receipt)
             .await?;
         self.inflight = None;
         Ok(())

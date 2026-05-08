@@ -85,19 +85,15 @@ caller intentionally overrides the project value.
 
 ### 3.3  Storage Queue resources
 
-The Storage Queue module provisions:
+The Storage Queue resources are provisioned within the Storage Account:
 
-1. one namespace,
+1. a queue service on the Storage Account,
 2. one upstream queue for gateway-originated connector traffic, and
 3. one downstream queue for desired-state ingress.
 
-The design keeps the queue names explicit deployment outputs so bootstrap and
-runtime configuration can consume them directly rather than relying on embedded
-defaults inside `sonde-azure-companion`. The default namespace tier is
-Standard.
-The namespace disables local/SAS authentication by default so steady-state
-access is mediated through Entra identities and the scoped RBAC grants defined
-elsewhere in this design.
+The design keeps the queue names and the queue service endpoint URI as explicit
+deployment outputs so bootstrap and runtime configuration can consume them
+directly rather than relying on embedded defaults inside `sonde-azure-companion`.
 
 ### 3.4  Storage resources
 

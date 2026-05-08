@@ -16,7 +16,7 @@ Azure companion architecture.
     - `actualstate`
     - `desiredstate`
     - `programroute`
-- An Azure handler Function App on a Classic Consumption plan (`Y1` / `Dynamic`)
+- An Azure handler Function App on a Flex Consumption plan (`FC1` / `FlexConsumption`)
 - A system-assigned managed identity on the Function App with:
   - Storage Queue Data Contributor permissions on the Storage Account
   - read/write permissions on the Azure handler tables

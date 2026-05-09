@@ -102,6 +102,8 @@ resource appSettings 'Microsoft.Web/sites/config@2024-04-01' = {
   properties: {
     AzureWebJobsStorage: storageConnectionString
     DEPLOYMENT_STORAGE_CONNECTION_STRING: storageConnectionString
+    FUNCTIONS_WORKER_RUNTIME: 'custom'
+    FUNCTIONS_EXTENSION_VERSION: '~4'
     SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT: queueServiceUri
     SONDE_AZURE_HANDLER_UPSTREAM_QUEUE: upstreamQueueName
     SONDE_AZURE_HANDLER_DOWNSTREAM_QUEUE: downstreamQueueName

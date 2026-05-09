@@ -115,12 +115,13 @@ Replace `OWNER` and `REPO` with the real repository coordinates.
 
 ## 5. Grant the Azure permissions the workflow needs
 
-As implemented today, the workflow needs permissions for four distinct jobs:
+As implemented today, the workflow needs permissions for five distinct jobs:
 
 1. create and delete the disposable resource group,
 2. run a subscription-scope Bicep deployment,
-3. create RBAC assignments inside that deployment, and
-4. send to / receive from Storage Queues during live validation.
+3. create RBAC assignments inside that deployment,
+4. send to / receive from Storage Queues during live validation, and
+5. query Azure Tables to verify handler processing.
 
 ### 5.1 Azure RBAC roles
 

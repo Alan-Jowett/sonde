@@ -204,6 +204,16 @@ jobs:
           d = json.load(open('.azure-live-state/deployment.json'))
           print(d['properties']['outputs']['functionAppName']['value'])
           ")"
+          echo "Verifying handler package contents..."
+          python3 -c "
+          import zipfile, json
+          with zipfile.ZipFile('.artifacts/azure-handler-function/sonde-azure-handler-function.zip') as z:
+              print('Files:', sorted(z.namelist()))
+              fj = json.loads(z.read('UpstreamConnector/function.json'))
+              print('function.json:', json.dumps(fj, indent=2))
+              hj = json.loads(z.read('host.json'))
+              print('host.json:', json.dumps(hj, indent=2))
+          "
           echo "Deploying handler to $FUNCTION_APP_NAME"
           # Enable App Insights before deploying the handler so the function
           # starts up with logging already configured (no restart needed).

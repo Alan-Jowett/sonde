@@ -16,6 +16,7 @@ mkdir -p "$artifact_dir"
 # linux/amd64 so the binary matches the Azure Functions x86_64 runtime
 # even when the script is run on ARM hosts.
 docker buildx build \
+    --no-cache \
     --platform linux/amd64 \
     -f "$repo_root/.github/docker/Dockerfile.azure-handler-builder" \
     -o "type=local,dest=$artifact_dir" \

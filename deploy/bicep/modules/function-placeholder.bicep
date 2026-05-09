@@ -36,6 +36,9 @@ param programRouteTableName string
 @description('Tags applied to provisioned resources.')
 param tags object
 
+@description('Application Insights connection string. When non-empty, enables telemetry and backtraces.')
+param appInsightsConnectionString string = ''
+
 resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
 }
@@ -56,20 +59,7 @@ resource hostingPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   }
 }
 
-resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
-  name: functionAppName
-  location: location
-  kind: 'functionapp,linux'
-  tags: tags
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {
-    httpsOnly: true
-    serverFarmId: hostingPlan.id
-    siteConfig: {
-      minTlsVersion: '1.2'
-      appSettings: [
+var baseAppSettings = [
         {
           name: 'AzureWebJobsStorage'
           value: storageConnectionString
@@ -115,6 +105,32 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
           value: programRouteTableName
         }
       ]
+
+var observabilityAppSettings = empty(appInsightsConnectionString) ? [] : [
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: appInsightsConnectionString
+        }
+        {
+          name: 'RUST_BACKTRACE'
+          value: '1'
+        }
+      ]
+
+resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
+  name: functionAppName
+  location: location
+  kind: 'functionapp,linux'
+  tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    httpsOnly: true
+    serverFarmId: hostingPlan.id
+    siteConfig: {
+      minTlsVersion: '1.2'
+      appSettings: concat(baseAppSettings, observabilityAppSettings)
     }
   }
 }

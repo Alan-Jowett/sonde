@@ -845,6 +845,7 @@ fn optional_bytes_field(
     field: &str,
 ) -> Result<Option<Vec<u8>>, HandlerError> {
     match map_get(map, key) {
+        Some(Value::Bytes(bytes)) if bytes.is_empty() => Ok(None),
         Some(Value::Bytes(bytes)) => Ok(Some(bytes.clone())),
         Some(Value::Null) | None => Ok(None),
         Some(_) => Err(HandlerError::Decode(format!(

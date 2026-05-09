@@ -278,6 +278,20 @@ jobs:
           az functionapp config appsettings list --name "$FUNCTION_APP_NAME" \
             --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
             --query "[].name" -o tsv
+          echo "Function app config:"
+          az functionapp show --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --query "siteConfig.{linuxFxVersion:linuxFxVersion,appCommandLine:appCommandLine}" -o json 2>/dev/null || true
+          az rest --method GET \
+            --url "https://management.azure.com/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${SONDE_AZURE_CI_RESOURCE_GROUP}/providers/Microsoft.Web/sites/${FUNCTION_APP_NAME}/config/web?api-version=2024-04-01" \
+            --query "{customHandler:customHandler,functionAppConfig:functionAppConfig}" -o json 2>/dev/null || true
+          echo "HTTP probe:"
+          curl -s -o /dev/null -w "HTTP %{http_code}" "https://${FUNCTION_APP_NAME}.azurewebsites.net" 2>/dev/null || echo "curl failed"
+          echo ""
+          echo "Deployment status:"
+          az functionapp deployment list --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --query "[0].{status:status,message:message,deployer:deployer}" -o json 2>/dev/null || true
 
       - name: Validate Azure handler processes upstream messages
         shell: bash

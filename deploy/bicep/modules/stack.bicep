@@ -36,6 +36,9 @@ param functionPlanName string
 @description('Object ID of the Azure companion runtime service principal.')
 param companionServicePrincipalObjectId string
 
+var monitoringWorkspaceName = take('${functionAppName}-logs', 63)
+var monitoringAppInsightsName = take('${functionAppName}-insights', 260)
+
 var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 var companionQueueContributorAssignmentName = guid('companion-queue-contributor', companionServicePrincipalObjectId, storageQueueDataContributorRoleId, storageAccountName)
 var deploymentStorageContainerName = 'app-package-${take(uniqueString(resourceGroup().id, functionAppName, 'deployment-package'), 20)}'
@@ -55,6 +58,16 @@ module storage './storage.bicep' = {
   }
 }
 
+module monitoring './monitoring.bicep' = {
+  name: 'monitoring'
+  params: {
+    location: location
+    workspaceName: monitoringWorkspaceName
+    appInsightsName: monitoringAppInsightsName
+    tags: tags
+  }
+}
+
 module functionPlaceholder './function-placeholder.bicep' = {
   name: 'functionPlaceholder'
   params: {
@@ -68,6 +81,7 @@ module functionPlaceholder './function-placeholder.bicep' = {
     actualStateTableName: storage.outputs.actualStateTableName
     desiredStateTableName: storage.outputs.desiredStateTableName
     programRouteTableName: storage.outputs.programRouteTableName
+    appInsightsConnectionString: monitoring.outputs.connectionString
     tags: tags
   }
 }

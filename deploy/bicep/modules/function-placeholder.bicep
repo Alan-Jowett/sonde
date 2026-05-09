@@ -12,9 +12,6 @@ param functionAppName string
 @description('Function hosting plan name.')
 param functionPlanName string
 
-@description('Blob container URL used by the Function placeholder deployment configuration.')
-param deploymentContainerUrl string
-
 @description('Storage Account name used by the Function placeholder deployment configuration.')
 param storageAccountName string
 
@@ -51,8 +48,8 @@ resource hostingPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   kind: 'functionapp'
   tags: tags
   sku: {
-    name: 'FC1'
-    tier: 'FlexConsumption'
+    name: 'Y1'
+    tier: 'Dynamic'
   }
   properties: {
     reserved: true
@@ -72,43 +69,53 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     serverFarmId: hostingPlan.id
     siteConfig: {
       minTlsVersion: '1.2'
-    }
-    functionAppConfig: {
-      deployment: {
-        storage: {
-          type: 'blobContainer'
-          value: deploymentContainerUrl
-          authentication: {
-            type: 'StorageAccountConnectionString'
-            storageAccountConnectionStringName: 'DEPLOYMENT_STORAGE_CONNECTION_STRING'
-          }
+      appSettings: [
+        {
+          name: 'AzureWebJobsStorage'
+          value: storageConnectionString
         }
-      }
-      runtime: {
-        name: 'custom'
-        version: '1.0'
-      }
-      scaleAndConcurrency: {
-        maximumInstanceCount: 100
-        instanceMemoryMB: 512
-      }
+        {
+          name: 'FUNCTIONS_WORKER_RUNTIME'
+          value: 'custom'
+        }
+        {
+          name: 'FUNCTIONS_EXTENSION_VERSION'
+          value: '~4'
+        }
+        {
+          name: 'WEBSITE_RUN_FROM_PACKAGE'
+          value: '1'
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT'
+          value: queueServiceUri
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_UPSTREAM_QUEUE'
+          value: upstreamQueueName
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_DOWNSTREAM_QUEUE'
+          value: downstreamQueueName
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_STORAGE_ACCOUNT'
+          value: storageAccountName
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_ACTUAL_STATE_TABLE'
+          value: actualStateTableName
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_DESIRED_STATE_TABLE'
+          value: desiredStateTableName
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_PROGRAM_ROUTE_TABLE'
+          value: programRouteTableName
+        }
+      ]
     }
-  }
-}
-
-resource appSettings 'Microsoft.Web/sites/config@2024-04-01' = {
-  parent: functionApp
-  name: 'appsettings'
-  properties: {
-    AzureWebJobsStorage: storageConnectionString
-    DEPLOYMENT_STORAGE_CONNECTION_STRING: storageConnectionString
-    SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT: queueServiceUri
-    SONDE_AZURE_HANDLER_UPSTREAM_QUEUE: upstreamQueueName
-    SONDE_AZURE_HANDLER_DOWNSTREAM_QUEUE: downstreamQueueName
-    SONDE_AZURE_HANDLER_STORAGE_ACCOUNT: storageAccountName
-    SONDE_AZURE_HANDLER_ACTUAL_STATE_TABLE: actualStateTableName
-    SONDE_AZURE_HANDLER_DESIRED_STATE_TABLE: desiredStateTableName
-    SONDE_AZURE_HANDLER_PROGRAM_ROUTE_TABLE: programRouteTableName
   }
 }
 

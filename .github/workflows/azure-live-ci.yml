@@ -397,9 +397,8 @@ jobs:
 
               queue_endpoint = bootstrap["storageQueueEndpoint"]
               upstream_queue = bootstrap["upstreamQueue"]
-              storage_account = outputs["storageAccountName"]["value"]
               actual_state_table = outputs["actualStateTableName"]["value"]
-              table_endpoint = f"https://{storage_account}.table.core.windows.net"
+              table_endpoint = outputs["tableServiceUri"]["value"]
 
               node_id = "ci-live-test-node"
               timestamp_ms = int(time.time() * 1000)

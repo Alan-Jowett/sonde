@@ -115,5 +115,6 @@ output desiredStateTableResourceId string = desiredStateTable.id
 output programRouteTableName string = programRouteTable.name
 output programRouteTableResourceId string = programRouteTable.id
 output queueServiceUri string = storageAccount.properties.primaryEndpoints.queue
+output tableServiceUri string = storageAccount.properties.primaryEndpoints.table
 output upstreamQueueName string = upstreamQueue.name
 output downstreamQueueName string = downstreamQueue.name

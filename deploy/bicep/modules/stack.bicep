@@ -106,6 +106,7 @@ module functionRbac './function-rbac.bicep' = {
 
 output storageAccountName string = storage.outputs.storageAccountName
 output queueServiceUri string = storage.outputs.queueServiceUri
+output tableServiceUri string = storage.outputs.tableServiceUri
 output upstreamQueueName string = storage.outputs.upstreamQueueName
 output downstreamQueueName string = storage.outputs.downstreamQueueName
 output deploymentContainerName string = storage.outputs.deploymentContainerName

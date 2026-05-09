@@ -115,6 +115,7 @@ module stack './modules/stack.bicep' = {
 output resourceGroupName string = stackResourceGroup.name
 output storageAccountName string = stack.outputs.storageAccountName
 output queueServiceUri string = stack.outputs.queueServiceUri
+output tableServiceUri string = stack.outputs.tableServiceUri
 output upstreamQueueName string = stack.outputs.upstreamQueueName
 output downstreamQueueName string = stack.outputs.downstreamQueueName
 output actualStateTableName string = stack.outputs.actualStateTableName

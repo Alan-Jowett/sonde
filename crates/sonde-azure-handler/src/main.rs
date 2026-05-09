@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let app = Router::new()
         .route("/", post(invoke))
-        .route("/*path", post(invoke))
+        .route("/{*path}", post(invoke))
         .with_state(state);
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

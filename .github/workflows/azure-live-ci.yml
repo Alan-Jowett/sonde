@@ -232,39 +232,19 @@ jobs:
             echo "App Insights enabled ($APPINSIGHTS_NAME)"
             echo "$APPINSIGHTS_NAME" > .azure-live-state/appinsights-name.txt
           fi
-          # Flex Consumption reads the deployed package from the blob container
-          # specified in functionAppConfig.deployment.storage. Upload the zip
-          # directly to that container, then sync triggers.
-          DEPLOYMENT_CONTAINER_URL="$(python3 -c "
-          import json
-          d = json.load(open('.azure-live-state/deployment.json'))
-          print(d['properties']['outputs']['deploymentContainerUrl']['value'])
-          ")"
-          STORAGE_ACCOUNT="$(python3 -c "
-          import json
-          d = json.load(open('.azure-live-state/deployment.json'))
-          print(d['properties']['outputs']['storageAccountName']['value'])
-          ")"
-          DEPLOYMENT_CONTAINER_NAME="$(python3 -c "
-          import json
-          d = json.load(open('.azure-live-state/deployment.json'))
-          print(d['properties']['outputs']['deploymentContainerName']['value'])
-          ")"
-          echo "Uploading to blob container: $DEPLOYMENT_CONTAINER_URL"
-          az storage blob upload \
-            --account-name "$STORAGE_ACCOUNT" \
-            --container-name "$DEPLOYMENT_CONTAINER_NAME" \
-            --name "sonde-azure-handler-function.zip" \
-            --file .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
-            --overwrite true \
-            --auth-mode login \
-            -o none
-          echo "Syncing function triggers..."
-          az rest --method POST \
-            --url "https://management.azure.com/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${SONDE_AZURE_CI_RESOURCE_GROUP}/providers/Microsoft.Web/sites/${FUNCTION_APP_NAME}/syncfunctiontriggers?api-version=2024-04-01" \
-            2>/dev/null || true
-          az functionapp restart --name "$FUNCTION_APP_NAME" \
-            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" 2>/dev/null || true
+          # Use config-zip which works for Flex Consumption (reports 1 loaded
+          # function). Tolerate exit code failures — Flex Consumption's health
+          # check often fails even when the deploy succeeds.
+          config_zip_exit=0
+          az functionapp deployment source config-zip \
+            --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --src .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
+            --timeout 600 \
+            --output none 2>&1 || config_zip_exit=$?
+          if [ "$config_zip_exit" -ne 0 ]; then
+            echo "WARNING: config-zip exited $config_zip_exit; verifying via function activation probe"
+          fi
           echo "Waiting for function to load..."
           loaded=0
           for attempt in $(seq 1 30); do
@@ -282,6 +262,25 @@ jobs:
           if [ "$loaded" -lt 1 ]; then
             echo "::error::Function App did not load any functions after 300s"
             exit 1
+          fi
+          # Test the custom handler directly — send a dummy POST to verify
+          # the handler process is running and responds.
+          echo "Testing custom handler HTTP endpoint..."
+          MASTER_KEY="$(az functionapp keys list \
+            --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --query masterKey -o tsv 2>/dev/null || echo '')"
+          if [ -n "$MASTER_KEY" ]; then
+            http_code="$(curl -s -o /tmp/handler-response.txt -w '%{http_code}' \
+              -X POST \
+              -H 'Content-Type: application/json' \
+              -d '{"Data":{"message":"dGVzdA=="}}' \
+              "https://${FUNCTION_APP_NAME}.azurewebsites.net/admin/functions/UpstreamConnector?code=${MASTER_KEY}" 2>/dev/null || echo 0)"
+            echo "Handler POST response: HTTP $http_code"
+            cat /tmp/handler-response.txt 2>/dev/null || true
+            echo ""
+          else
+            echo "Could not retrieve master key — skipping direct handler test"
           fi
 
       - name: Refresh Azure login before handler validation

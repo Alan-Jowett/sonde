@@ -66,7 +66,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
           python3 -m pip install --upgrade pip
-          python3 -m pip install azure-identity==1.25.3 azure-storage-queue==12.13.0
+          python3 -m pip install azure-identity==1.25.3 azure-storage-queue==12.13.0 azure-data-tables==12.7.0 aiohttp==3.11.18
 
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
 
@@ -74,8 +74,14 @@ jobs:
         with:
           key: azure-live-ci
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v3
+
       - name: Build Azure companion
         run: cargo build --locked -p sonde-azure-companion
+
+      - name: Build Azure handler function package
+        run: sh deploy/azure-bootstrap/build-function-package.sh
 
       - name: Preflight-delete disposable resource group
         shell: bash
@@ -163,6 +169,13 @@ jobs:
           )
           PY
 
+      - name: Refresh Azure login (OIDC token may have expired during Docker build)
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
       - name: Run live Azure companion validation
         run: |
           python3 ./deploy/azure-companion/live_ci.py \
@@ -174,6 +187,321 @@ jobs:
             --queue-endpoint "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['queue_endpoint'])")" \
             --upstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['upstream_queue'])")" \
             --downstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['downstream_queue'])")"
+
+      - name: Refresh Azure login before handler deployment
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Azure handler function package
+        shell: bash
+        run: |
+          set -euo pipefail
+          FUNCTION_APP_NAME="$(python3 -c "
+          import json
+          d = json.load(open('.azure-live-state/deployment.json'))
+          print(d['properties']['outputs']['functionAppName']['value'])
+          ")"
+          echo "Verifying handler package contents..."
+          python3 -c "
+          import zipfile, json
+          with zipfile.ZipFile('.artifacts/azure-handler-function/sonde-azure-handler-function.zip') as z:
+              print('Files:', sorted(z.namelist()))
+              fj = json.loads(z.read('UpstreamConnector/function.json'))
+              print('function.json:', json.dumps(fj, indent=2))
+              hj = json.loads(z.read('host.json'))
+              print('host.json:', json.dumps(hj, indent=2))
+          "
+          echo "Deploying handler to $FUNCTION_APP_NAME"
+          # Enable App Insights before deploying the handler so the function
+          # starts up with logging already configured (no restart needed).
+          APPINSIGHTS_NAME="${FUNCTION_APP_NAME}-ai"
+          CONN_STR="$(az monitor app-insights component create \
+            --app "$APPINSIGHTS_NAME" \
+            --location "$SONDE_AZURE_CI_LOCATION" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --query connectionString -o tsv 2>/dev/null || true)"
+          if [ -n "$CONN_STR" ]; then
+            az functionapp config appsettings set \
+              --name "$FUNCTION_APP_NAME" \
+              --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+              --settings "APPLICATIONINSIGHTS_CONNECTION_STRING=$CONN_STR" \
+              "AzureFunctionsJobHost__logging__console__isEnabled=true" -o none 2>/dev/null || true
+            echo "App Insights enabled ($APPINSIGHTS_NAME)"
+            echo "$APPINSIGHTS_NAME" > .azure-live-state/appinsights-name.txt
+          fi
+          # Use config-zip which works for Flex Consumption (reports 1 loaded
+          # function). Tolerate exit code failures — Flex Consumption's health
+          # check often fails even when the deploy succeeds.
+          config_zip_exit=0
+          az functionapp deployment source config-zip \
+            --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --src .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
+            --timeout 600 \
+            --output none 2>&1 || config_zip_exit=$?
+          if [ "$config_zip_exit" -ne 0 ]; then
+            echo "WARNING: config-zip exited $config_zip_exit; verifying via function activation probe"
+          fi
+          echo "Waiting for function to load..."
+          loaded=0
+          for attempt in $(seq 1 30); do
+            loaded="$(az functionapp function list \
+              --name "$FUNCTION_APP_NAME" \
+              --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+              --query 'length(@)' -o tsv 2>/dev/null || echo 0)"
+            if [ "$loaded" -ge 1 ]; then
+              echo "Function App reports $loaded loaded function(s)"
+              break
+            fi
+            echo "  attempt $attempt: $loaded functions loaded, waiting..."
+            sleep 10
+          done
+          if [ "$loaded" -lt 1 ]; then
+            echo "::error::Function App did not load any functions after 300s"
+            exit 1
+          fi
+          # Test the custom handler directly — send a dummy POST to verify
+          # the handler process is running and responds.
+          echo "Testing custom handler HTTP endpoint..."
+          MASTER_KEY="$(az functionapp keys list \
+            --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --query masterKey -o tsv 2>/dev/null || echo '')"
+          if [ -n "$MASTER_KEY" ]; then
+            http_code="$(curl -s -o /tmp/handler-response.txt -w '%{http_code}' \
+              -X POST \
+              -H 'Content-Type: application/json' \
+              -d '{"Data":{"message":"dGVzdA=="}}' \
+              "https://${FUNCTION_APP_NAME}.azurewebsites.net/admin/functions/UpstreamConnector?code=${MASTER_KEY}" 2>/dev/null || echo 0)"
+            echo "Handler POST response: HTTP $http_code"
+            cat /tmp/handler-response.txt 2>/dev/null || true
+            echo ""
+          else
+            echo "Could not retrieve master key — skipping direct handler test"
+          fi
+
+      - name: Refresh Azure login before handler validation
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check Azure handler function health
+        shell: bash
+        run: |
+          set -euo pipefail
+          FUNCTION_APP_NAME="$(python3 -c "
+          import json
+          d = json.load(open('.azure-live-state/deployment.json'))
+          print(d['properties']['outputs']['functionAppName']['value'])
+          ")"
+          echo "Checking function app $FUNCTION_APP_NAME..."
+          az functionapp show --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --query "{state:state,usageState:usageState,kind:kind}" -o json
+          echo "All app settings:"
+          az functionapp config appsettings list --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --query "[].name" -o tsv
+          echo "Function app config:"
+          az functionapp show --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --query "siteConfig.{linuxFxVersion:linuxFxVersion,appCommandLine:appCommandLine}" -o json 2>/dev/null || true
+          az rest --method GET \
+            --url "https://management.azure.com/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${SONDE_AZURE_CI_RESOURCE_GROUP}/providers/Microsoft.Web/sites/${FUNCTION_APP_NAME}/config/web?api-version=2024-04-01" \
+            --query "{customHandler:customHandler,functionAppConfig:functionAppConfig}" -o json 2>/dev/null || true
+          echo "HTTP probe:"
+          curl -s -o /dev/null -w "HTTP %{http_code}" "https://${FUNCTION_APP_NAME}.azurewebsites.net" 2>/dev/null || echo "curl failed"
+          echo ""
+          echo "Deployment status:"
+          az functionapp deployment list --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --query "[0].{status:status,message:message,deployer:deployer}" -o json 2>/dev/null || true
+
+      - name: Validate Azure handler processes upstream messages
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import asyncio
+          import base64
+          import hashlib
+          import json
+          import sys
+          import time
+
+          from azure.identity.aio import AzureCliCredential
+          from azure.storage.queue.aio import QueueServiceClient
+          from azure.data.tables.aio import TableServiceClient
+
+          TIMEOUT_SECS = 180
+
+          def build_actual_state_cbor(node_id: str, timestamp_ms: int) -> bytes:
+              """Build a minimal CBOR ACTUAL_STATE message (msg_type=2)."""
+              import io
+              # Manual CBOR encoding of integer-keyed map matching the handler's
+              # decode_connector_message() expectations.
+              # {1: 2, 2: "node", 3: node_id, 6: 3300, 7: 1, 8: "1.0.0",
+              #  9: timestamp_ms, 10: {}}
+              items = [
+                  (1, 2),            # msg_type = ACTUAL_STATE
+                  (2, "node"),       # entity_kind
+                  (3, node_id),      # entity_id
+                  (6, 3300),         # battery_mv
+                  (7, 1),            # firmware_abi_version
+                  (8, "1.0.0"),      # firmware_version
+                  (9, timestamp_ms), # timestamp_ms
+                  (10, {}),          # map_defs (empty)
+              ]
+              buf = io.BytesIO()
+              # CBOR map header: 0xA0 | count (we have 8 items)
+              buf.write(bytes([0xA0 | len(items)]))
+              for key, val in items:
+                  # Encode small unsigned int key
+                  if key < 24:
+                      buf.write(bytes([key]))
+                  else:
+                      buf.write(bytes([0x18, key]))
+                  # Encode value
+                  if isinstance(val, int):
+                      if val < 24:
+                          buf.write(bytes([val]))
+                      elif val < 256:
+                          buf.write(bytes([0x18, val]))
+                      elif val < 65536:
+                          buf.write(bytes([0x19]) + val.to_bytes(2, "big"))
+                      elif val < 2**32:
+                          buf.write(bytes([0x1A]) + val.to_bytes(4, "big"))
+                      else:
+                          buf.write(bytes([0x1B]) + val.to_bytes(8, "big"))
+                  elif isinstance(val, str):
+                      encoded = val.encode("utf-8")
+                      if len(encoded) < 24:
+                          buf.write(bytes([0x60 | len(encoded)]))
+                      else:
+                          buf.write(bytes([0x78, len(encoded)]))
+                      buf.write(encoded)
+                  elif isinstance(val, dict):
+                      buf.write(bytes([0xA0]))  # empty map
+              return buf.getvalue()
+
+          async def main() -> int:
+              state_dir = ".azure-live-state"
+              deployment = json.load(open(f"{state_dir}/deployment.json"))
+              outputs = deployment["properties"]["outputs"]
+              bootstrap = outputs["companionBootstrapValues"]["value"]
+
+              queue_endpoint = bootstrap["storageQueueEndpoint"]
+              upstream_queue = bootstrap["upstreamQueue"]
+              actual_state_table = outputs["actualStateTableName"]["value"]
+              table_endpoint = outputs["tableServiceUri"]["value"]
+
+              node_id = "ci-live-test-node"
+              timestamp_ms = int(time.time() * 1000)
+              cbor_payload = build_actual_state_cbor(node_id, timestamp_ms)
+
+              credential = AzureCliCredential()
+              try:
+                  # Send the CBOR message to the upstream queue (base64-encoded,
+                  # matching what the companion would send).
+                  async with QueueServiceClient(
+                      queue_endpoint, credential=credential
+                  ) as queue_svc:
+                      queue_client = queue_svc.get_queue_client(upstream_queue)
+                      encoded = base64.b64encode(cbor_payload).decode()
+                      await queue_client.send_message(encoded)
+                      print(f"Sent ACTUAL_STATE for node `{node_id}` (ts={timestamp_ms})")
+
+                  # Poll the actual-state table until the handler processes the
+                  # message and writes a row.
+                  digest = hashlib.sha256(node_id.encode()).hexdigest()
+                  partition_key = f"n:{digest}"
+                  print(f"Polling table `{actual_state_table}` partition `{partition_key}`...")
+
+                  async with TableServiceClient(
+                      endpoint=table_endpoint, credential=credential
+                  ) as table_svc:
+                      table_client = table_svc.get_table_client(actual_state_table)
+                      deadline = time.monotonic() + TIMEOUT_SECS
+                      found = False
+                      while time.monotonic() < deadline:
+                          query = f"PartitionKey eq '{partition_key}'"
+                          entities = []
+                          async for entity in table_client.query_entities(query):
+                              entities.append(entity)
+                          if entities:
+                              entity = entities[0]
+                              print(f"Found row: PartitionKey={entity['PartitionKey']}, "
+                                    f"RowKey={entity['RowKey']}, "
+                                    f"node_id={entity.get('node_id')}, "
+                                    f"timestamp_ms={entity.get('timestamp_ms')}")
+                              if entity.get("node_id") == node_id:
+                                  found = True
+                                  break
+                          await asyncio.sleep(5)
+
+                      if not found:
+                          # Check if the message is still in the queue (function never dequeued)
+                          async with QueueServiceClient(
+                              queue_endpoint, credential=credential
+                          ) as diag_svc:
+                              diag_client = diag_svc.get_queue_client(upstream_queue)
+                              props = await diag_client.get_queue_properties()
+                              msg_count = props.approximate_message_count
+                              print(f"Upstream queue approximate message count: {msg_count}")
+                              if msg_count and msg_count > 0:
+                                  print("::warning::Messages remain in queue — the function "
+                                        "trigger may not be dequeuing (check RBAC / trigger config)")
+                              else:
+                                  print("Queue is empty — function dequeued but may have "
+                                        "failed during processing (check App Insights logs)")
+                          print(f"::error::No row for node `{node_id}` in `{actual_state_table}` "
+                                f"after {TIMEOUT_SECS}s", file=sys.stderr)
+                          return 1
+
+                  print("Azure handler function validation passed")
+                  return 0
+              finally:
+                  await credential.close()
+
+          sys.exit(asyncio.run(main()))
+          PY
+
+      - name: Refresh Azure login before diagnostics
+        if: always()
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Dump Azure handler function logs
+        if: always()
+        shell: bash
+        run: |
+          if [ -f .azure-live-state/appinsights-name.txt ]; then
+            APPINSIGHTS_NAME="$(cat .azure-live-state/appinsights-name.txt)"
+            echo "Querying App Insights ($APPINSIGHTS_NAME) for handler logs..."
+            echo "--- Errors and warnings ---"
+            az monitor app-insights query \
+              --app "$APPINSIGHTS_NAME" \
+              --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+              --analytics-query "union traces, exceptions | where severityLevel >= 2 | order by timestamp desc | take 30 | project timestamp, message, severityLevel, outerMessage" \
+              -o table 2>/dev/null || echo "(no error data)"
+            echo ""
+            echo "--- All recent traces ---"
+            az monitor app-insights query \
+              --app "$APPINSIGHTS_NAME" \
+              --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+              --analytics-query "traces | where message != '' | order by timestamp desc | take 50 | project timestamp, message, severityLevel" \
+              -o table 2>/dev/null || echo "(no trace data)"
+          else
+            echo "No App Insights configured, skipping log dump"
+          fi
 
       - name: Upload Azure live artifacts
         if: failure()

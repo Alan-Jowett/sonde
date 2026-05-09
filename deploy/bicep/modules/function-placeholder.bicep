@@ -87,10 +87,6 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
           value: '1'
         }
         {
-          name: 'QueueConnection__queueServiceUri'
-          value: queueServiceUri
-        }
-        {
           name: 'SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT'
           value: queueServiceUri
         }

@@ -495,6 +495,7 @@ struct ActualStateEntity {
     battery_mv: Option<u32>,
     firmware_abi_version: Option<u32>,
     firmware_version: Option<String>,
+    #[serde(deserialize_with = "deserialize_u64_from_f64")]
     timestamp_ms: u64,
 }
 
@@ -507,7 +508,19 @@ struct DesiredStateEntity {
     node_id: String,
     desired_assigned_program_hash: Option<String>,
     desired_schedule_interval_s: Option<u32>,
+    #[serde(deserialize_with = "deserialize_u64_from_f64")]
     timestamp_ms: u64,
+}
+
+fn deserialize_u64_from_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    use serde::de::Error;
+    let v: f64 = Deserialize::deserialize(d)?;
+    if !v.is_finite() || v < 0.0 || v > u64::MAX as f64 || v.fract() != 0.0 {
+        return Err(D::Error::custom(format!(
+            "timestamp_ms {v} is not a valid u64"
+        )));
+    }
+    Ok(v as u64)
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -639,9 +652,15 @@ pub fn extract_trigger_payload(request_body: &[u8]) -> Result<Vec<u8>, HandlerEr
 fn extract_json_payload(value: &serde_json::Value) -> Result<Vec<u8>, HandlerError> {
     match value {
         serde_json::Value::String(text) => {
-            match base64::engine::general_purpose::STANDARD.decode(text) {
+            // The Functions runtime may double-quote string values from queue
+            // triggers (e.g. `"\"base64...\""`). Strip surrounding quotes.
+            let stripped = text
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .unwrap_or(text);
+            match base64::engine::general_purpose::STANDARD.decode(stripped) {
                 Ok(bytes) => Ok(bytes),
-                Err(_) => Ok(text.as_bytes().to_vec()),
+                Err(_) => Ok(stripped.as_bytes().to_vec()),
             }
         }
         serde_json::Value::Array(values) => values
@@ -1859,5 +1878,56 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("route read failed"));
+    }
+
+    #[test]
+    fn extract_trigger_payload_strips_double_quoted_base64() {
+        let raw = vec![0xABu8, 1, 2];
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&raw);
+        let quoted = format!("\"{b64}\"");
+        let body = serde_json::json!({
+            "Data": {
+                "message": quoted
+            }
+        });
+        let decoded =
+            extract_trigger_payload(serde_json::to_string(&body).unwrap().as_bytes()).unwrap();
+        assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn deserialize_actual_state_entity_f64_timestamp() {
+        let json = serde_json::json!({
+            "PartitionKey": "pk",
+            "RowKey": "rk",
+            "node_id": "n1",
+            "timestamp_ms": 1778385831916.0_f64
+        });
+        let entity: ActualStateEntity = serde_json::from_value(json).unwrap();
+        assert_eq!(entity.timestamp_ms, 1778385831916);
+    }
+
+    #[test]
+    fn deserialize_desired_state_entity_f64_timestamp() {
+        let json = serde_json::json!({
+            "PartitionKey": "pk",
+            "RowKey": "rk",
+            "node_id": "n1",
+            "timestamp_ms": 1000.0_f64
+        });
+        let entity: DesiredStateEntity = serde_json::from_value(json).unwrap();
+        assert_eq!(entity.timestamp_ms, 1000);
+    }
+
+    #[test]
+    fn deserialize_rejects_fractional_timestamp() {
+        let json = serde_json::json!({
+            "PartitionKey": "pk",
+            "RowKey": "rk",
+            "node_id": "n1",
+            "timestamp_ms": 1234.9
+        });
+        let err = serde_json::from_value::<ActualStateEntity>(json).unwrap_err();
+        assert!(err.to_string().contains("not a valid u64"));
     }
 }

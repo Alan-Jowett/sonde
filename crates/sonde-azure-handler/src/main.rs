@@ -69,11 +69,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn invoke(State(state): State<AppState>, body: Bytes) -> Response {
     match handle_invocation(&state, &body).await {
         Ok(()) => (StatusCode::OK, Json(json!({}))).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": err.to_string() })),
-        )
-            .into_response(),
+        Err(err) => {
+            let msg = err.to_string();
+            tracing::error!(error = msg, "handler invocation failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": msg })),
+            )
+                .into_response()
+        }
     }
 }
 

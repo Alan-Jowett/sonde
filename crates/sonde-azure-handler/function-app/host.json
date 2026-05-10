@@ -9,13 +9,13 @@
       "maxPollingInterval": "00:00:02",
       "batchSize": 1,
       "maxDequeueCount": 5,
-      "messageEncoding": "base64"
+      "messageEncoding": "none"
     }
   },
   "customHandler": {
     "description": {
       "defaultExecutablePath": "sonde-azure-handler"
     },
-    "enableForwardingHttpRequest": true
+    "enableForwardingHttpRequest": false
   }
 }

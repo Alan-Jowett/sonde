@@ -330,6 +330,7 @@ jobs:
           import asyncio
           import base64
           import hashlib
+          import io
           import json
           import sys
           import time
@@ -340,14 +341,62 @@ jobs:
 
           TIMEOUT_SECS = 180
 
-          def build_actual_state_cbor(node_id: str, timestamp_ms: int) -> bytes:
-              """Build a minimal CBOR ACTUAL_STATE message (msg_type=2)."""
-              import io
-              # Manual CBOR encoding of integer-keyed map matching the handler's
-              # decode_connector_message() expectations.
-              # {1: 2, 2: "node", 3: node_id, 6: 3300, 7: 1, 8: "1.0.0",
-              #  9: timestamp_ms, 10: {}}
-              items = [
+          def cbor_encode_uint(buf: io.BytesIO, val: int) -> None:
+              """Encode a CBOR unsigned integer."""
+              if val < 24:
+                  buf.write(bytes([val]))
+              elif val < 256:
+                  buf.write(bytes([0x18, val]))
+              elif val < 65536:
+                  buf.write(bytes([0x19]) + val.to_bytes(2, "big"))
+              elif val < 2**32:
+                  buf.write(bytes([0x1A]) + val.to_bytes(4, "big"))
+              else:
+                  buf.write(bytes([0x1B]) + val.to_bytes(8, "big"))
+
+          def cbor_encode_value(buf: io.BytesIO, val) -> None:
+              """Encode a CBOR value (int, str, bytes, dict, or None)."""
+              if val is None:
+                  buf.write(bytes([0xF6]))  # CBOR null
+              elif isinstance(val, int):
+                  cbor_encode_uint(buf, val)
+              elif isinstance(val, str):
+                  encoded = val.encode("utf-8")
+                  if len(encoded) < 24:
+                      buf.write(bytes([0x60 | len(encoded)]))
+                  else:
+                      buf.write(bytes([0x78, len(encoded)]))
+                  buf.write(encoded)
+              elif isinstance(val, bytes):
+                  if len(val) < 24:
+                      buf.write(bytes([0x40 | len(val)]))
+                  else:
+                      buf.write(bytes([0x58, len(val)]))
+                  buf.write(val)
+              elif isinstance(val, dict):
+                  buf.write(bytes([0xA0 | len(val)]))
+                  for k, v in val.items():
+                      cbor_encode_value(buf, k)
+                      cbor_encode_value(buf, v)
+
+          def build_cbor_map(items: list[tuple[int, object]]) -> bytes:
+              """Build a CBOR integer-keyed map from (key, value) pairs."""
+              buf = io.BytesIO()
+              buf.write(bytes([0xA0 | len(items)]))
+              for key, val in items:
+                  cbor_encode_uint(buf, key)
+                  cbor_encode_value(buf, val)
+              return buf.getvalue()
+
+          def build_actual_state_cbor(
+              node_id: str,
+              timestamp_ms: int,
+              *,
+              schedule_interval_s: int | None = None,
+              program_hash: bytes | None = None,
+          ) -> bytes:
+              """Build a CBOR ACTUAL_STATE message (msg_type=2)."""
+              items: list[tuple[int, object]] = [
                   (1, 2),            # msg_type = ACTUAL_STATE
                   (2, "node"),       # entity_kind
                   (3, node_id),      # entity_id
@@ -357,37 +406,59 @@ jobs:
                   (9, timestamp_ms), # timestamp_ms
                   (10, {}),          # map_defs (empty)
               ]
-              buf = io.BytesIO()
-              # CBOR map header: 0xA0 | count (we have 8 items)
-              buf.write(bytes([0xA0 | len(items)]))
-              for key, val in items:
-                  # Encode small unsigned int key
-                  if key < 24:
-                      buf.write(bytes([key]))
-                  else:
-                      buf.write(bytes([0x18, key]))
-                  # Encode value
-                  if isinstance(val, int):
-                      if val < 24:
-                          buf.write(bytes([val]))
-                      elif val < 256:
-                          buf.write(bytes([0x18, val]))
-                      elif val < 65536:
-                          buf.write(bytes([0x19]) + val.to_bytes(2, "big"))
-                      elif val < 2**32:
-                          buf.write(bytes([0x1A]) + val.to_bytes(4, "big"))
-                      else:
-                          buf.write(bytes([0x1B]) + val.to_bytes(8, "big"))
-                  elif isinstance(val, str):
-                      encoded = val.encode("utf-8")
-                      if len(encoded) < 24:
-                          buf.write(bytes([0x60 | len(encoded)]))
-                      else:
-                          buf.write(bytes([0x78, len(encoded)]))
-                      buf.write(encoded)
-                  elif isinstance(val, dict):
-                      buf.write(bytes([0xA0]))  # empty map
-              return buf.getvalue()
+              if program_hash is not None:
+                  items.insert(3, (4, program_hash))  # current_program_hash after entity_id
+              if schedule_interval_s is not None:
+                  items.append((11, schedule_interval_s))
+              return build_cbor_map(items)
+
+          def partition_key_for(node_id: str) -> str:
+              return f"n:{hashlib.sha256(node_id.encode()).hexdigest()}"
+
+          async def send_queue_message(
+              queue_client, cbor_payload: bytes
+          ) -> None:
+              """Send a base64-encoded CBOR payload to the queue."""
+              encoded = base64.b64encode(cbor_payload).decode()
+              await queue_client.send_message(encoded)
+
+          async def poll_table_row(
+              table_client,
+              partition_key: str,
+              *,
+              min_count: int = 1,
+              timeout: float = TIMEOUT_SECS,
+          ) -> list[dict]:
+              """Poll until at least min_count rows appear in the partition."""
+              deadline = time.monotonic() + timeout
+              while time.monotonic() < deadline:
+                  entities = []
+                  async for entity in table_client.query_entities(
+                      f"PartitionKey eq '{partition_key}'"
+                  ):
+                      entities.append(entity)
+                  if len(entities) >= min_count:
+                      return entities
+                  await asyncio.sleep(5)
+              return []
+
+          async def poll_queue_message(
+              queue_client,
+              *,
+              timeout: float = TIMEOUT_SECS,
+          ) -> bytes | None:
+              """Poll the queue for a message and return its decoded payload."""
+              deadline = time.monotonic() + timeout
+              while time.monotonic() < deadline:
+                  messages = queue_client.receive_messages(
+                      max_messages=1, visibility_timeout=30
+                  )
+                  async for msg in messages:
+                      raw = base64.b64decode(msg.content)
+                      await queue_client.delete_message(msg)
+                      return raw
+                  await asyncio.sleep(5)
+              return None
 
           async def main() -> int:
               state_dir = ".azure-live-state"
@@ -397,73 +468,134 @@ jobs:
 
               queue_endpoint = bootstrap["storageQueueEndpoint"]
               upstream_queue = bootstrap["upstreamQueue"]
+              downstream_queue = bootstrap["downstreamQueue"]
               actual_state_table = outputs["actualStateTableName"]["value"]
+              desired_state_table = outputs["desiredStateTableName"]["value"]
               table_endpoint = outputs["tableServiceUri"]["value"]
 
               node_id = "ci-live-test-node"
-              timestamp_ms = int(time.time() * 1000)
-              cbor_payload = build_actual_state_cbor(node_id, timestamp_ms)
+              pk = partition_key_for(node_id)
 
               credential = AzureCliCredential()
               try:
-                  # Send the CBOR message to the upstream queue (base64-encoded,
-                  # matching what the companion would send).
-                  async with QueueServiceClient(
-                      queue_endpoint, credential=credential
-                  ) as queue_svc:
-                      queue_client = queue_svc.get_queue_client(upstream_queue)
-                      encoded = base64.b64encode(cbor_payload).decode()
-                      await queue_client.send_message(encoded)
-                      print(f"Sent ACTUAL_STATE for node `{node_id}` (ts={timestamp_ms})")
+                  async with (
+                      QueueServiceClient(queue_endpoint, credential=credential) as queue_svc,
+                      TableServiceClient(endpoint=table_endpoint, credential=credential) as table_svc,
+                  ):
+                      upstream_client = queue_svc.get_queue_client(upstream_queue)
+                      downstream_client = queue_svc.get_queue_client(downstream_queue)
+                      actual_table = table_svc.get_table_client(actual_state_table)
+                      desired_table = table_svc.get_table_client(desired_state_table)
 
-                  # Poll the actual-state table until the handler processes the
-                  # message and writes a row.
-                  digest = hashlib.sha256(node_id.encode()).hexdigest()
-                  partition_key = f"n:{digest}"
-                  print(f"Polling table `{actual_state_table}` partition `{partition_key}`...")
+                      # ── Test 1: ACTUAL_STATE → row in actualstate table ──
+                      print("═══ Test 1: ACTUAL_STATE writes to actualstate table ═══")
+                      ts1 = int(time.time() * 1000)
+                      cbor1 = build_actual_state_cbor(node_id, ts1, schedule_interval_s=60)
+                      await send_queue_message(upstream_client, cbor1)
+                      print(f"  Sent ACTUAL_STATE for `{node_id}` (ts={ts1}, schedule=60)")
 
-                  async with TableServiceClient(
-                      endpoint=table_endpoint, credential=credential
-                  ) as table_svc:
-                      table_client = table_svc.get_table_client(actual_state_table)
-                      deadline = time.monotonic() + TIMEOUT_SECS
-                      found = False
-                      while time.monotonic() < deadline:
-                          query = f"PartitionKey eq '{partition_key}'"
-                          entities = []
-                          async for entity in table_client.query_entities(query):
-                              entities.append(entity)
-                          if entities:
-                              entity = entities[0]
-                              print(f"Found row: PartitionKey={entity['PartitionKey']}, "
-                                    f"RowKey={entity['RowKey']}, "
-                                    f"node_id={entity.get('node_id')}, "
-                                    f"timestamp_ms={entity.get('timestamp_ms')}")
-                              if entity.get("node_id") == node_id:
-                                  found = True
-                                  break
-                          await asyncio.sleep(5)
+                      entities = await poll_table_row(actual_table, pk)
+                      if not entities:
+                          print(f"::error::No row for `{node_id}` in `{actual_state_table}` "
+                                f"after {TIMEOUT_SECS}s", file=sys.stderr)
+                          return 1
+                      row = entities[0]
+                      print(f"  Found row: node_id={row.get('node_id')}, "
+                            f"schedule={row.get('observed_schedule_interval_s')}, "
+                            f"timestamp_ms={row.get('timestamp_ms')}")
+                      assert row.get("node_id") == node_id, "node_id mismatch"
+                      print("  ✓ Test 1 passed\n")
 
-                      if not found:
-                          # Check if the message is still in the queue (function never dequeued)
-                          async with QueueServiceClient(
-                              queue_endpoint, credential=credential
-                          ) as diag_svc:
-                              diag_client = diag_svc.get_queue_client(upstream_queue)
-                              props = await diag_client.get_queue_properties()
-                              msg_count = props.approximate_message_count
-                              print(f"Upstream queue approximate message count: {msg_count}")
-                              if msg_count and msg_count > 0:
-                                  print("::warning::Messages remain in queue — the function "
-                                        "trigger may not be dequeuing (check RBAC / trigger config)")
-                              else:
-                                  print("Queue is empty — function dequeued but may have "
-                                        "failed during processing (check App Insights logs)")
-                          print(f"::error::No row for node `{node_id}` in `{actual_state_table}` "
+                      # ── Test 2: Insert desired state, trigger divergence ──
+                      print("═══ Test 2: Desired-state divergence publishes to downstream ═══")
+                      desired_schedule = 120  # differs from the node's 60
+                      desired_hash = bytes(range(32))  # 32-byte fake hash
+                      desired_ts = int(time.time() * 1000)
+                      # Insert desired-state row via Tables API
+                      desired_entity = {
+                          "PartitionKey": pk,
+                          "RowKey": "desired-ci-test",
+                          "node_id": node_id,
+                          "desired_assigned_program_hash": desired_hash.hex(),
+                          "desired_schedule_interval_s": desired_schedule,
+                          "timestamp_ms": desired_ts,
+                      }
+                      try:
+                          await desired_table.delete_entity(pk, "desired-ci-test")
+                      except Exception:
+                          pass
+                      await desired_table.create_entity(desired_entity)
+                      print(f"  Inserted desired state: schedule={desired_schedule}, "
+                            f"hash={desired_hash.hex()[:16]}...")
+
+                      # Drain any stale messages from the downstream queue
+                      drained = 0
+                      async for msg in downstream_client.receive_messages(max_messages=32):
+                          await downstream_client.delete_message(msg)
+                          drained += 1
+                      if drained:
+                          print(f"  Drained {drained} stale downstream message(s)")
+
+                      # Send a new ACTUAL_STATE that diverges from desired
+                      ts2 = int(time.time() * 1000)
+                      cbor2 = build_actual_state_cbor(
+                          node_id, ts2, schedule_interval_s=60
+                      )
+                      await send_queue_message(upstream_client, cbor2)
+                      print(f"  Sent divergent ACTUAL_STATE (schedule=60 vs desired={desired_schedule})")
+
+                      # Poll downstream queue for the DESIRED_STATE change message
+                      print(f"  Polling `{downstream_queue}` for DESIRED_STATE message...")
+                      downstream_payload = await poll_queue_message(downstream_client)
+                      if downstream_payload is None:
+                          print(f"::error::No DESIRED_STATE message in `{downstream_queue}` "
                                 f"after {TIMEOUT_SECS}s", file=sys.stderr)
                           return 1
 
-                  print("Azure handler function validation passed")
+                      # Verify the downstream CBOR is a DESIRED_STATE message
+                      # Quick check: first bytes should be a CBOR map with msg_type key
+                      print(f"  Received downstream message ({len(downstream_payload)} bytes)")
+                      assert downstream_payload[0] & 0xE0 == 0xA0, \
+                          f"Expected CBOR map, got 0x{downstream_payload[0]:02x}"
+                      print("  ✓ Test 2 passed\n")
+
+                      # ── Test 3: Aligned state suppresses downstream publish ──
+                      print("═══ Test 3: Aligned state does not publish downstream ═══")
+                      # Update desired to match what the node reports
+                      aligned_entity = {
+                          "PartitionKey": pk,
+                          "RowKey": "desired-ci-test",
+                          "node_id": node_id,
+                          "desired_schedule_interval_s": 60,
+                          "timestamp_ms": int(time.time() * 1000),
+                      }
+                      await desired_table.upsert_entity(aligned_entity)
+                      print("  Updated desired state to schedule=60 (matches node)")
+
+                      # Drain downstream
+                      async for msg in downstream_client.receive_messages(max_messages=32):
+                          await downstream_client.delete_message(msg)
+
+                      ts3 = int(time.time() * 1000)
+                      cbor3 = build_actual_state_cbor(
+                          node_id, ts3, schedule_interval_s=60
+                      )
+                      await send_queue_message(upstream_client, cbor3)
+                      print(f"  Sent aligned ACTUAL_STATE (schedule=60 == desired)")
+
+                      # Wait for the handler to process, then verify no downstream message
+                      await asyncio.sleep(30)
+                      spurious = []
+                      async for msg in downstream_client.receive_messages(max_messages=32):
+                          spurious.append(msg)
+                          await downstream_client.delete_message(msg)
+                      if spurious:
+                          print(f"::error::Unexpected {len(spurious)} downstream message(s) "
+                                f"when state is aligned", file=sys.stderr)
+                          return 1
+                      print("  ✓ Test 3 passed (no spurious downstream message)\n")
+
+                  print("All Azure handler function validation tests passed")
                   return 0
               finally:
                   await credential.close()

@@ -18,6 +18,9 @@ param desiredStateTableName string
 @description('Table name for Azure handler program-route rows.')
 param programRouteTableName string
 
+@description('Table name for program storage.')
+param programsTableName string
+
 @description('Blob container name used by the Azure handler Function App deployment slot.')
 param deploymentContainerName string
 
@@ -103,6 +106,14 @@ resource programRouteTable 'Microsoft.Storage/storageAccounts/tableServices/tabl
   }
 }
 
+resource programsTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+  parent: tableService
+  name: programsTableName
+  properties: {
+    signedIdentifiers: []
+  }
+}
+
 output storageAccountName string = storageAccount.name
 output storageAccountResourceId string = storageAccount.id
 output blobEndpoint string = storageAccount.properties.primaryEndpoints.blob
@@ -114,6 +125,8 @@ output desiredStateTableName string = desiredStateTable.name
 output desiredStateTableResourceId string = desiredStateTable.id
 output programRouteTableName string = programRouteTable.name
 output programRouteTableResourceId string = programRouteTable.id
+output programsTableName string = programsTable.name
+output programsTableResourceId string = programsTable.id
 output queueServiceUri string = storageAccount.properties.primaryEndpoints.queue
 output tableServiceUri string = storageAccount.properties.primaryEndpoints.table
 output upstreamQueueName string = upstreamQueue.name

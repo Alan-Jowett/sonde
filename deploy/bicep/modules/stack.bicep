@@ -27,6 +27,9 @@ param desiredStateTableName string
 @description('Azure handler program-route table name.')
 param programRouteTableName string
 
+@description('Program storage table name.')
+param programsTableName string
+
 @description('Azure handler Function App name.')
 param functionAppName string
 
@@ -51,6 +54,7 @@ module storage './storage.bicep' = {
     actualStateTableName: actualStateTableName
     desiredStateTableName: desiredStateTableName
     programRouteTableName: programRouteTableName
+    programsTableName: programsTableName
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
     deploymentContainerName: deploymentStorageContainerName
@@ -81,6 +85,7 @@ module functionPlaceholder './function-placeholder.bicep' = {
     actualStateTableName: storage.outputs.actualStateTableName
     desiredStateTableName: storage.outputs.desiredStateTableName
     programRouteTableName: storage.outputs.programRouteTableName
+    programsTableName: storage.outputs.programsTableName
     appInsightsConnectionString: monitoring.outputs.connectionString
     tags: tags
   }
@@ -111,6 +116,7 @@ module functionRbac './function-rbac.bicep' = {
     actualStateTableName: storage.outputs.actualStateTableName
     desiredStateTableName: storage.outputs.desiredStateTableName
     programRouteTableName: storage.outputs.programRouteTableName
+    programsTableName: storage.outputs.programsTableName
   }
   dependsOn: [
     storage
@@ -128,5 +134,6 @@ output deploymentContainerUrl string = '${storage.outputs.blobEndpoint}${storage
 output actualStateTableName string = storage.outputs.actualStateTableName
 output desiredStateTableName string = storage.outputs.desiredStateTableName
 output programRouteTableName string = storage.outputs.programRouteTableName
+output programsTableName string = storage.outputs.programsTableName
 output functionAppName string = functionPlaceholder.outputs.functionAppName
 output functionPrincipalId string = functionPlaceholder.outputs.principalId

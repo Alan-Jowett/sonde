@@ -151,12 +151,36 @@ deployment_timeout_secs="${SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS:-600}"
 validate_positive_integer "SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS" "$activation_timeout_secs"
 validate_positive_integer "SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS" "$deployment_timeout_secs"
 
-az login --use-device-code --output none >&2
+if [ -n "${AZURE_FEDERATED_TOKEN_FILE:-}" ] && [ -n "${AZURE_CLIENT_ID:-}" ] && [ -n "${AZURE_TENANT_ID:-}" ]; then
+    # CI / federated-identity login (OIDC workload identity).
+    az login --service-principal \
+        --username "$AZURE_CLIENT_ID" \
+        --tenant "$AZURE_TENANT_ID" \
+        --federated-token "$(cat "$AZURE_FEDERATED_TOKEN_FILE")" \
+        --output none >&2
+elif [ -n "${AZURE_CLIENT_ID:-}" ] && [ -n "${AZURE_TENANT_ID:-}" ] && [ -n "${AZURE_CLIENT_SECRET:-}" ]; then
+    # Service-principal login with client secret.
+    az login --service-principal \
+        --username "$AZURE_CLIENT_ID" \
+        --tenant "$AZURE_TENANT_ID" \
+        --password "$AZURE_CLIENT_SECRET" \
+        --output none >&2
+else
+    # Interactive device-code login (default for operator bootstrap).
+    az login --use-device-code --output none >&2
+fi
 if [ -n "${SONDE_AZURE_SUBSCRIPTION_ID:-}" ]; then
     az account set --subscription "$SONDE_AZURE_SUBSCRIPTION_ID" >&2
 fi
 echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2
 deployment_name="sonde-bootstrap-$(date +%Y%m%d%H%M%S)-$$"
+extra_params=""
+if [ -n "${SONDE_AZURE_RESOURCE_GROUP_NAME:-}" ]; then
+    extra_params="$extra_params --parameters resource_group_name=$SONDE_AZURE_RESOURCE_GROUP_NAME"
+fi
+if [ -n "${SONDE_AZURE_RESOURCE_GROUP_OWNER_TAG:-}" ]; then
+    extra_params="$extra_params --parameters resourceGroupOwnerTag=$SONDE_AZURE_RESOURCE_GROUP_OWNER_TAG"
+fi
 deployment_outputs="$(az deployment sub create \
     --name "$deployment_name" \
     --location "$SONDE_AZURE_LOCATION" \
@@ -164,6 +188,7 @@ deployment_outputs="$(az deployment sub create \
     --parameters companionCertificateBase64="$COMPANION_CERT_BASE64" \
     --parameters location="$SONDE_AZURE_LOCATION" \
     --parameters project_name="$SONDE_AZURE_PROJECT_NAME" \
+    $extra_params \
     --query 'properties.outputs' \
     --output json)"
 

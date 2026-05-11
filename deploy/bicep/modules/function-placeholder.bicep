@@ -130,7 +130,6 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     serverFarmId: hostingPlan.id
     siteConfig: {
       minTlsVersion: '1.2'
-      linuxFxVersion: ''
       appSettings: concat(baseAppSettings, observabilityAppSettings)
     }
   }

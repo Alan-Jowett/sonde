@@ -495,7 +495,7 @@ struct ActualStateEntity {
     battery_mv: Option<u32>,
     firmware_abi_version: Option<u32>,
     firmware_version: Option<String>,
-    #[serde(deserialize_with = "deserialize_u64_from_f64")]
+    #[serde(deserialize_with = "deserialize_u64_flexible")]
     timestamp_ms: u64,
 }
 
@@ -508,19 +508,44 @@ struct DesiredStateEntity {
     node_id: String,
     desired_assigned_program_hash: Option<String>,
     desired_schedule_interval_s: Option<u32>,
-    #[serde(deserialize_with = "deserialize_u64_from_f64")]
+    #[serde(deserialize_with = "deserialize_u64_flexible")]
     timestamp_ms: u64,
 }
 
-fn deserialize_u64_from_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
-    use serde::de::Error;
-    let v: f64 = Deserialize::deserialize(d)?;
-    if !v.is_finite() || v < 0.0 || v > u64::MAX as f64 || v.fract() != 0.0 {
-        return Err(D::Error::custom(format!(
-            "timestamp_ms {v} is not a valid u64"
-        )));
+fn deserialize_u64_flexible<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    use serde::de::{self, Visitor};
+
+    struct U64Visitor;
+
+    impl<'de> Visitor<'de> for U64Visitor {
+        type Value = u64;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a u64, i64, f64, or numeric string")
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<u64, E> {
+            Ok(v)
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<u64, E> {
+            u64::try_from(v).map_err(|_| E::custom(format!("timestamp_ms {v} is not a valid u64")))
+        }
+
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<u64, E> {
+            if !v.is_finite() || v < 0.0 || v >= 2.0_f64.powi(64) || v.fract() != 0.0 {
+                return Err(E::custom(format!("timestamp_ms {v} is not a valid u64")));
+            }
+            Ok(v as u64)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<u64, E> {
+            v.parse::<u64>()
+                .map_err(|_| E::custom(format!("cannot parse \"{v}\" as u64")))
+        }
     }
-    Ok(v as u64)
+
+    d.deserialize_any(U64Visitor)
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1926,6 +1951,55 @@ mod tests {
             "RowKey": "rk",
             "node_id": "n1",
             "timestamp_ms": 1234.9
+        });
+        let err = serde_json::from_value::<ActualStateEntity>(json).unwrap_err();
+        assert!(err.to_string().contains("not a valid u64"));
+    }
+
+    #[test]
+    fn deserialize_string_timestamp_from_azure_tables() {
+        // Azure Tables returns Edm.Int64 values as JSON strings.
+        let json = serde_json::json!({
+            "PartitionKey": "pk",
+            "RowKey": "rk",
+            "node_id": "n1",
+            "timestamp_ms": "1778458015159"
+        });
+        let entity: DesiredStateEntity = serde_json::from_value(json).unwrap();
+        assert_eq!(entity.timestamp_ms, 1778458015159);
+    }
+
+    #[test]
+    fn deserialize_actual_state_string_timestamp_from_azure_tables() {
+        let json = serde_json::json!({
+            "PartitionKey": "pk",
+            "RowKey": "rk",
+            "node_id": "n1",
+            "timestamp_ms": "1778385831916"
+        });
+        let entity: ActualStateEntity = serde_json::from_value(json).unwrap();
+        assert_eq!(entity.timestamp_ms, 1778385831916);
+    }
+
+    #[test]
+    fn deserialize_integer_timestamp() {
+        let json = serde_json::json!({
+            "PartitionKey": "pk",
+            "RowKey": "rk",
+            "node_id": "n1",
+            "timestamp_ms": 1778385831916_u64
+        });
+        let entity: ActualStateEntity = serde_json::from_value(json).unwrap();
+        assert_eq!(entity.timestamp_ms, 1778385831916);
+    }
+
+    #[test]
+    fn deserialize_rejects_negative_integer_timestamp() {
+        let json = serde_json::json!({
+            "PartitionKey": "pk",
+            "RowKey": "rk",
+            "node_id": "n1",
+            "timestamp_ms": -1
         });
         let err = serde_json::from_value::<ActualStateEntity>(json).unwrap_err();
         assert!(err.to_string().contains("not a valid u64"));

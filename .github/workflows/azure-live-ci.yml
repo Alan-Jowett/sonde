@@ -83,6 +83,14 @@ jobs:
       - name: Build Azure handler function package
         run: sh deploy/azure-bootstrap/build-function-package.sh
 
+      - name: Build bootstrap container image
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            -f .github/docker/Dockerfile.azure-bootstrap \
+            --load -t sonde-azure-bootstrap:ci \
+            .
+
       - name: Preflight-delete disposable resource group
         shell: bash
         run: |
@@ -108,15 +116,11 @@ jobs:
           echo "::error::resource group $SONDE_AZURE_CI_RESOURCE_GROUP was not deleted before provisioning"
           exit 1
 
-      - name: Generate runtime certificate and deploy disposable stack
+      - name: Generate runtime certificate
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p .azure-live-state
-          az group create \
-            --name "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-            --location "$SONDE_AZURE_CI_LOCATION" \
-            --tags sonde-ci-owner=azure-live-ci project="$SONDE_AZURE_CI_PROJECT_NAME" > /dev/null
           openssl genpkey -algorithm EC \
             -pkeyopt ec_paramgen_curve:P-256 \
             -out .azure-live-state/key.pem
@@ -126,16 +130,49 @@ jobs:
             -out .azure-live-state/cert.pem \
             -days 730 \
             -subj "/CN=sonde-azure-live-ci"
+
+      - name: Deploy disposable stack via bootstrap container
+        shell: bash
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Request a fresh OIDC token and write it to a file the container can read.
+          OIDC_TOKEN="$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          echo "$OIDC_TOKEN" > .azure-live-state/oidc-token
+          chmod 600 .azure-live-state/oidc-token
           CERT_BASE64="$(openssl x509 -in .azure-live-state/cert.pem -outform der | base64 -w0)"
-          az deployment sub create \
-            --location "$SONDE_AZURE_CI_LOCATION" \
-            --template-file ./deploy/bicep/main.bicep \
-            --parameters location="$SONDE_AZURE_CI_LOCATION" \
-            --parameters resource_group_name="$SONDE_AZURE_CI_RESOURCE_GROUP" \
-            --parameters project_name="$SONDE_AZURE_CI_PROJECT_NAME" \
-            --parameters resourceGroupOwnerTag='azure-live-ci' \
-            --parameters companionCertificateBase64="$CERT_BASE64" \
-            --output json > .azure-live-state/deployment.json
+          # Run the bootstrap container with OIDC credentials.
+          # The container uses the pinned Azure CLI and does:
+          #   1. az login (federated OIDC)
+          #   2. az deployment sub create (Bicep)
+          #   3. az functionapp deployment source config-zip
+          #   4. wait for function activation
+          # Deployment outputs are emitted to stdout as JSON.
+          docker run --rm \
+            -e COMPANION_CERT_BASE64="$CERT_BASE64" \
+            -e SONDE_AZURE_LOCATION="$SONDE_AZURE_CI_LOCATION" \
+            -e SONDE_AZURE_PROJECT_NAME="$SONDE_AZURE_CI_PROJECT_NAME" \
+            -e SONDE_AZURE_SUBSCRIPTION_ID="$SONDE_AZURE_CI_SUBSCRIPTION_ID" \
+            -e SONDE_AZURE_RESOURCE_GROUP_NAME="$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            -e SONDE_AZURE_RESOURCE_GROUP_OWNER_TAG=azure-live-ci \
+            -e AZURE_CLIENT_ID="$AZURE_CLIENT_ID" \
+            -e AZURE_TENANT_ID="$AZURE_TENANT_ID" \
+            -e AZURE_FEDERATED_TOKEN_FILE=/run/oidc-token \
+            -v "$(pwd)/.azure-live-state/oidc-token:/run/oidc-token:ro" \
+            sonde-azure-bootstrap:ci \
+            > .azure-live-state/bootstrap-outputs.json
+          # Wrap outputs to match the shape expected by downstream steps.
+          python3 -c "
+          import json
+          outputs = json.load(open('.azure-live-state/bootstrap-outputs.json'))
+          deployment = {'properties': {'outputs': outputs}}
+          json.dump(deployment, open('.azure-live-state/deployment.json', 'w'))
+          "
+          rm -f .azure-live-state/oidc-token
 
       - name: Write Azure companion runtime state
         shell: bash
@@ -169,7 +206,7 @@ jobs:
           )
           PY
 
-      - name: Refresh Azure login (OIDC token may have expired during Docker build)
+      - name: Refresh Azure login (OIDC token may have expired during deployment)
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
@@ -188,101 +225,6 @@ jobs:
             --upstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['upstream_queue'])")" \
             --downstream-queue "$(python3 -c "import json; print(json.load(open('.azure-live-state/storage-queues.json'))['downstream_queue'])")"
 
-      - name: Refresh Azure login before handler deployment
-        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
-        with:
-          client-id: ${{ env.AZURE_CLIENT_ID }}
-          tenant-id: ${{ env.AZURE_TENANT_ID }}
-          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Deploy Azure handler function package
-        shell: bash
-        run: |
-          set -euo pipefail
-          FUNCTION_APP_NAME="$(python3 -c "
-          import json
-          d = json.load(open('.azure-live-state/deployment.json'))
-          print(d['properties']['outputs']['functionAppName']['value'])
-          ")"
-          echo "Verifying handler package contents..."
-          python3 -c "
-          import zipfile, json
-          with zipfile.ZipFile('.artifacts/azure-handler-function/sonde-azure-handler-function.zip') as z:
-              print('Files:', sorted(z.namelist()))
-              fj = json.loads(z.read('UpstreamConnector/function.json'))
-              print('function.json:', json.dumps(fj, indent=2))
-              hj = json.loads(z.read('host.json'))
-              print('host.json:', json.dumps(hj, indent=2))
-          "
-          echo "Deploying handler to $FUNCTION_APP_NAME"
-          # Enable App Insights before deploying the handler so the function
-          # starts up with logging already configured (no restart needed).
-          APPINSIGHTS_NAME="${FUNCTION_APP_NAME}-ai"
-          CONN_STR="$(az monitor app-insights component create \
-            --app "$APPINSIGHTS_NAME" \
-            --location "$SONDE_AZURE_CI_LOCATION" \
-            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-            --query connectionString -o tsv 2>/dev/null || true)"
-          if [ -n "$CONN_STR" ]; then
-            az functionapp config appsettings set \
-              --name "$FUNCTION_APP_NAME" \
-              --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-              --settings "APPLICATIONINSIGHTS_CONNECTION_STRING=$CONN_STR" \
-              "AzureFunctionsJobHost__logging__console__isEnabled=true" -o none 2>/dev/null || true
-            echo "App Insights enabled ($APPINSIGHTS_NAME)"
-            echo "$APPINSIGHTS_NAME" > .azure-live-state/appinsights-name.txt
-          fi
-          # Use config-zip which works for Flex Consumption (reports 1 loaded
-          # function). Tolerate exit code failures — Flex Consumption's health
-          # check often fails even when the deploy succeeds.
-          config_zip_exit=0
-          az functionapp deployment source config-zip \
-            --name "$FUNCTION_APP_NAME" \
-            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-            --src .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
-            --timeout 600 \
-            --output none 2>&1 || config_zip_exit=$?
-          if [ "$config_zip_exit" -ne 0 ]; then
-            echo "WARNING: config-zip exited $config_zip_exit; verifying via function activation probe"
-          fi
-          echo "Waiting for function to load..."
-          loaded=0
-          for attempt in $(seq 1 30); do
-            loaded="$(az functionapp function list \
-              --name "$FUNCTION_APP_NAME" \
-              --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-              --query 'length(@)' -o tsv 2>/dev/null || echo 0)"
-            if [ "$loaded" -ge 1 ]; then
-              echo "Function App reports $loaded loaded function(s)"
-              break
-            fi
-            echo "  attempt $attempt: $loaded functions loaded, waiting..."
-            sleep 10
-          done
-          if [ "$loaded" -lt 1 ]; then
-            echo "::error::Function App did not load any functions after 300s"
-            exit 1
-          fi
-          # Test the custom handler directly — send a dummy POST to verify
-          # the handler process is running and responds.
-          echo "Testing custom handler HTTP endpoint..."
-          MASTER_KEY="$(az functionapp keys list \
-            --name "$FUNCTION_APP_NAME" \
-            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-            --query masterKey -o tsv 2>/dev/null || echo '')"
-          if [ -n "$MASTER_KEY" ]; then
-            http_code="$(curl -s -o /tmp/handler-response.txt -w '%{http_code}' \
-              -X POST \
-              -H 'Content-Type: application/json' \
-              -d '{"Data":{"message":"dGVzdA=="}}' \
-              "https://${FUNCTION_APP_NAME}.azurewebsites.net/admin/functions/UpstreamConnector?code=${MASTER_KEY}" 2>/dev/null || echo 0)"
-            echo "Handler POST response: HTTP $http_code"
-            cat /tmp/handler-response.txt 2>/dev/null || true
-            echo ""
-          else
-            echo "Could not retrieve master key — skipping direct handler test"
-          fi
-
       - name: Refresh Azure login before handler validation
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         with:

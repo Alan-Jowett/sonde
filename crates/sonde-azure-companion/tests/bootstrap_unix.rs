@@ -492,7 +492,7 @@ exit 64
     write_executable(&bin_dir.join("curl"), "#!/bin/sh\nexit 0\n");
 
     // Create a temporary web-ui directory with the expected SPA files.
-    let web_ui_dir = tmp.path().join("web-ui");
+    let web_ui_dir = temp.path().join("web-ui");
     fs::create_dir_all(&web_ui_dir).unwrap();
     for name in &[
         "index.html",

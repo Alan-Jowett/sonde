@@ -494,8 +494,7 @@ done
 exit 0
 "#,
     );
-    write_executable(&bin_dir.join("zip"), "#!/bin/sh\n# Stub: create the output zip file (arg after -r)\nfor arg in \"$@\"; do case \"$arg\" in -*) ;; *) touch \"$arg\" 2>/dev/null; break ;; esac; done\nexit 0\n");
-    write_executable(&bin_dir.join("curl"), "#!/bin/sh\nexit 0\n");
+    write_executable(&bin_dir.join("npx"), "#!/bin/sh\nexit 0\n");
 
     // Create a temporary web-ui directory with the expected SPA files.
     let web_ui_dir = temp.path().join("web-ui");

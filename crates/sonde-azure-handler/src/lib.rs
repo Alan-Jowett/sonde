@@ -52,6 +52,7 @@ pub struct RuntimeConfig {
     pub actual_state_table: String,
     pub desired_state_table: String,
     pub program_route_table: String,
+    pub programs_table: String,
 }
 
 impl RuntimeConfig {
@@ -66,6 +67,7 @@ impl RuntimeConfig {
             actual_state_table: required_env("SONDE_AZURE_HANDLER_ACTUAL_STATE_TABLE")?,
             desired_state_table: required_env("SONDE_AZURE_HANDLER_DESIRED_STATE_TABLE")?,
             program_route_table: required_env("SONDE_AZURE_HANDLER_PROGRAM_ROUTE_TABLE")?,
+            programs_table: required_env("SONDE_AZURE_HANDLER_PROGRAMS_TABLE")?,
         })
     }
 }
@@ -164,6 +166,10 @@ pub trait HandlerStore: Send + Sync {
         &self,
         program_hash: &[u8],
     ) -> Result<Option<ProgramRouteRow>, HandlerError>;
+    async fn load_program_image(
+        &self,
+        program_hash: &[u8],
+    ) -> Result<Option<Vec<u8>>, HandlerError>;
 }
 
 #[async_trait]
@@ -272,7 +278,26 @@ where
             return Ok(());
         }
 
-        let desired = encode_desired_state(&desired_row)?;
+        let program_image = if program_diverged {
+            match desired_row.desired_assigned_program_hash.as_deref() {
+                Some(desired_hash) => {
+                    let image = self.store.load_program_image(desired_hash).await?;
+                    if image.is_none() {
+                        warn!(
+                            program_hash = hex::encode(desired_hash),
+                            node_id = %actual_state.entity_id,
+                            "program image not found in programs table; \
+                             DESIRED_STATE will omit inline image"
+                        );
+                    }
+                    image
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let desired = encode_desired_state(&desired_row, program_image)?;
         self.publisher
             .publish(&self.downstream_queue, desired)
             .await
@@ -303,6 +328,7 @@ pub struct AzureTablesStore {
     actual_state_table: azure_data_tables::clients::TableClient,
     desired_state_table: azure_data_tables::clients::TableClient,
     program_route_table: azure_data_tables::clients::TableClient,
+    programs_table: azure_data_tables::clients::TableClient,
 }
 
 impl AzureTablesStore {
@@ -318,6 +344,7 @@ impl AzureTablesStore {
             actual_state_table: service.table_client(config.actual_state_table.clone()),
             desired_state_table: service.table_client(config.desired_state_table.clone()),
             program_route_table: service.table_client(config.program_route_table.clone()),
+            programs_table: service.table_client(config.programs_table.clone()),
         })
     }
 }
@@ -408,6 +435,26 @@ impl HandlerStore for AzureTablesStore {
             Err(e) if is_legacy_not_found(&e) => Ok(None),
             Err(e) => Err(HandlerError::Store(format!(
                 "query program route failed: {e}"
+            ))),
+        }
+    }
+
+    async fn load_program_image(
+        &self,
+        program_hash: &[u8],
+    ) -> Result<Option<Vec<u8>>, HandlerError> {
+        let row_key = hex::encode(program_hash);
+        let entity_client = self
+            .programs_table
+            .partition_key_client("program")
+            .entity_client(row_key);
+        match entity_client.get::<ProgramImageEntity>().await {
+            Ok(response) => {
+                decode_base64_field(response.entity.cbor_image, "programs.cbor_image").map(Some)
+            }
+            Err(e) if is_legacy_not_found(&e) => Ok(None),
+            Err(e) => Err(HandlerError::Store(format!(
+                "query program image failed: {e}"
             ))),
         }
     }
@@ -555,6 +602,15 @@ struct ProgramRouteEntity {
     #[serde(rename = "RowKey")]
     row_key: String,
     handler_queue: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct ProgramImageEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    cbor_image: String,
 }
 
 impl TryFrom<ActualStateEntity> for ActualStateRow {
@@ -734,14 +790,21 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
     }
 }
 
-pub fn encode_desired_state(row: &DesiredStateRow) -> Result<Vec<u8>, HandlerError> {
-    let desired_state = Value::Map(vec![
+pub(crate) fn encode_desired_state(
+    row: &DesiredStateRow,
+    program_image: Option<Vec<u8>>,
+) -> Result<Vec<u8>, HandlerError> {
+    let mut desired_state_entries = vec![
         map_entry(
             1,
             opt_bytes_value(row.desired_assigned_program_hash.as_deref()),
         ),
         map_entry(2, opt_u32_value(row.desired_schedule_interval_s)),
-    ]);
+    ];
+    if let Some(image) = program_image {
+        desired_state_entries.push(map_entry(5, Value::Bytes(image)));
+    }
+    let desired_state = Value::Map(desired_state_entries);
     let value = Value::Map(vec![
         map_entry(1, Value::Integer(MSG_TYPE_DESIRED_STATE.into())),
         map_entry(2, Value::Text("node".to_string())),
@@ -949,6 +1012,12 @@ fn decode_hex_program_hash(text: String, field: &str) -> Result<Vec<u8>, Handler
     Ok(bytes)
 }
 
+fn decode_base64_field(text: String, field: &str) -> Result<Vec<u8>, HandlerError> {
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(|e| HandlerError::Store(format!("`{field}` must contain valid base64: {e}")))
+}
+
 fn validate_program_hash_length(bytes: &[u8], field: &str) -> Result<(), HandlerError> {
     if bytes.len() == 32 {
         return Ok(());
@@ -982,6 +1051,7 @@ mod tests {
         actual_rows: Mutex<HashMap<String, Vec<ActualStateRow>>>,
         desired_rows: Mutex<HashMap<String, Vec<DesiredStateRow>>>,
         routes: Mutex<HashMap<String, ProgramRouteRow>>,
+        program_images: Mutex<HashMap<String, Vec<u8>>>,
     }
 
     impl MemoryStore {
@@ -1010,6 +1080,13 @@ mod tests {
                 .get(node_id)
                 .cloned()
                 .unwrap_or_default()
+        }
+
+        async fn append_program_image(&self, program_hash: &[u8], program_image: &[u8]) {
+            self.program_images
+                .lock()
+                .await
+                .insert(hex::encode(program_hash), program_image.to_vec());
         }
     }
 
@@ -1063,6 +1140,18 @@ mod tests {
                 .get(&hex::encode(program_hash))
                 .cloned())
         }
+
+        async fn load_program_image(
+            &self,
+            program_hash: &[u8],
+        ) -> Result<Option<Vec<u8>>, HandlerError> {
+            Ok(self
+                .program_images
+                .lock()
+                .await
+                .get(&hex::encode(program_hash))
+                .cloned())
+        }
     }
 
     #[derive(Default)]
@@ -1103,6 +1192,7 @@ mod tests {
         append_actual_error: Option<String>,
         load_desired_error: Option<String>,
         load_route_error: Option<String>,
+        load_program_image_error: Option<String>,
         latest_actual: Mutex<Option<ActualStateRow>>,
     }
 
@@ -1149,6 +1239,16 @@ mod tests {
                 None => Ok(None),
             }
         }
+
+        async fn load_program_image(
+            &self,
+            _program_hash: &[u8],
+        ) -> Result<Option<Vec<u8>>, HandlerError> {
+            match &self.load_program_image_error {
+                Some(error) => Err(HandlerError::Store(error.clone())),
+                None => Ok(None),
+            }
+        }
     }
 
     struct SameTimestampDifferentLatestStore {
@@ -1182,6 +1282,13 @@ mod tests {
             &self,
             _program_hash: &[u8],
         ) -> Result<Option<ProgramRouteRow>, HandlerError> {
+            Ok(None)
+        }
+
+        async fn load_program_image(
+            &self,
+            _program_hash: &[u8],
+        ) -> Result<Option<Vec<u8>>, HandlerError> {
             Ok(None)
         }
     }
@@ -1218,6 +1325,13 @@ mod tests {
             &self,
             _program_hash: &[u8],
         ) -> Result<Option<ProgramRouteRow>, HandlerError> {
+            Ok(None)
+        }
+
+        async fn load_program_image(
+            &self,
+            _program_hash: &[u8],
+        ) -> Result<Option<Vec<u8>>, HandlerError> {
             Ok(None)
         }
     }
@@ -1337,6 +1451,9 @@ mod tests {
         store
             .append_desired(desired_row("node-1", Some(vec![0xBB; 32]), Some(120), 100))
             .await;
+        store
+            .append_program_image(&[0xBB; 32], b"program-image")
+            .await;
         let publisher = Arc::new(RecordingPublisher::default());
         let handler =
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
@@ -1367,6 +1484,10 @@ mod tests {
         assert_eq!(
             optional_u32_field(desired_state, 2, "schedule_interval_s").unwrap(),
             Some(120)
+        );
+        assert_eq!(
+            required_bytes(desired_state, 5, "program_image").unwrap(),
+            b"program-image"
         );
         assert!(map_get(desired_state, 3).is_none());
     }
@@ -1780,6 +1901,18 @@ mod tests {
     }
 
     #[test]
+    fn encode_desired_state_omits_program_image_when_absent() {
+        let encoded = encode_desired_state(
+            &desired_row("node-1", Some(vec![0x11; 32]), Some(60), 1234),
+            None,
+        )
+        .unwrap();
+        let desired = decode_map(&encoded).unwrap();
+        let desired_state = map_get(&desired, 4).unwrap().as_map().unwrap();
+        assert!(map_get(desired_state, 5).is_none());
+    }
+
+    #[test]
     fn long_node_ids_still_produce_bounded_partition_keys() {
         let node_id = "a".repeat(4096);
         let partition_key = encode_node_partition_key(&node_id);
@@ -1841,6 +1974,7 @@ mod tests {
             append_actual_error: Some("append failed".to_string()),
             load_desired_error: None,
             load_route_error: None,
+            load_program_image_error: None,
             latest_actual: Mutex::new(None),
         });
         let publisher = Arc::new(RecordingPublisher::default());
@@ -1866,6 +2000,7 @@ mod tests {
             append_actual_error: None,
             load_desired_error: Some("desired read failed".to_string()),
             load_route_error: None,
+            load_program_image_error: None,
             latest_actual: Mutex::new(None),
         });
         let publisher = Arc::new(RecordingPublisher::default());
@@ -1891,6 +2026,7 @@ mod tests {
             append_actual_error: None,
             load_desired_error: None,
             load_route_error: Some("route read failed".to_string()),
+            load_program_image_error: None,
             latest_actual: Mutex::new(None),
         });
         let publisher = Arc::new(RecordingPublisher::default());
@@ -1903,6 +2039,32 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("route read failed"));
+    }
+
+    #[tokio::test]
+    async fn program_image_read_failures_are_surfaced() {
+        let store = Arc::new(FailingStore {
+            append_actual_error: None,
+            load_desired_error: None,
+            load_route_error: None,
+            load_program_image_error: Some("program image read failed".to_string()),
+            latest_actual: Mutex::new(None),
+        });
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        let err = handler
+            .handle_payload(&sample_actual_state(
+                "node-1",
+                Some(&[0xAA; 32]),
+                Some(&[0xAA; 32]),
+                Some(60),
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("program image read failed"));
     }
 
     #[test]

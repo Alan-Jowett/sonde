@@ -33,6 +33,9 @@ param desiredStateTableName string
 @description('Azure handler program-route table name.')
 param programRouteTableName string
 
+@description('Program storage table name.')
+param programsTableName string
+
 @description('Tags applied to provisioned resources.')
 param tags object
 
@@ -103,6 +106,10 @@ var baseAppSettings = [
         {
           name: 'SONDE_AZURE_HANDLER_PROGRAM_ROUTE_TABLE'
           value: programRouteTableName
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_PROGRAMS_TABLE'
+          value: programsTableName
         }
       ]
 

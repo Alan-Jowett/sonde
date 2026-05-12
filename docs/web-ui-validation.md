@@ -1,0 +1,44 @@
+<!-- SPDX-License-Identifier: MIT -->
+<!-- Copyright (c) 2026 sonde contributors -->
+# Sonde Web UI — Validation
+
+> **Document status:** Draft  
+> **Scope:** Validation plan and traceable test matrix for the Sonde Web UI.  
+> **Audience:** Implementers (human or LLM agent) writing web UI, function, integration, and infrastructure tests.  
+> **Related:** [web-ui-design.md](web-ui-design.md)
+
+---
+
+## Test Matrix
+
+| Test ID | Requirement | Description | Method | Status |
+|---|---|---|---|---|
+| T-WEB-0101 | WEB-0101 | SPA renders node table from `actualstate` query | Manual/E2E | Planned |
+| T-WEB-0102 | WEB-0102 | All required columns displayed | Manual/E2E | Planned |
+| T-WEB-0103 | WEB-0103 | Auto-refresh polls at configured interval | Manual | Planned |
+| T-WEB-0104 | WEB-0104 | Divergence indicator shown when actual != desired | Manual/E2E | Planned |
+| T-WEB-0201 | WEB-0201 | Set desired schedule writes correct row | Integration | Planned |
+| T-WEB-0202 | WEB-0202 | Assign program hash writes correct row | Integration | Planned |
+| T-WEB-0203 | WEB-0203 | RowKey uses reverse-timestamp format | Unit (JS) | Planned |
+| T-WEB-0204 | WEB-0204 | PartitionKey = `n:{SHA-256(node_id)}` | Unit (JS) | Planned |
+| T-WEB-0205 | WEB-0205 | `timestamp_ms` stored as `Edm.Int64` | Integration | Planned |
+| T-WEB-0301 | WEB-0301 | `ProgramIngest` accepts ELF + metadata via HTTP POST | Unit (Rust) | Planned |
+| T-WEB-0302 | WEB-0302 | Prevail verification runs; invalid ELF rejected | Unit (Rust) | Planned |
+| T-WEB-0303 | WEB-0303 | Program hash matches gateway computation | Unit (Rust) | Planned |
+| T-WEB-0304 | WEB-0304 | Program stored in `programs` table with all fields | Integration | Planned |
+| T-WEB-0305 | WEB-0305 | Success returns hash+metadata; failure returns diagnostics | Unit (Rust) | Planned |
+| T-WEB-0306 | WEB-0306 | Oversized programs rejected | Unit (Rust) | Planned |
+| T-WEB-0307 | WEB-0307 | Empty ELF and multi-program ELF rejected | Unit (Rust) | Planned |
+| T-WEB-0308 | WEB-0308 | `source_filename` normalized to basename | Unit (Rust) | Planned |
+| T-WEB-0309 | WEB-0309 | `DESIRED_STATE` includes inline CBOR image on program divergence | Unit (Rust) | Planned |
+| T-WEB-0310 | WEB-0310 | `DESIRED_STATE` CBOR carries key 5 with program image bytes | Unit (Rust) | Planned |
+| T-WEB-0401 | WEB-0401 | SPA lists programs from `programs` table | Manual/E2E | Planned |
+| T-WEB-0402 | WEB-0402 | SPA creates/edits `programroute` entries | Manual/E2E | Planned |
+| T-WEB-0501 | WEB-0501 | MSAL.js login flow works | Manual | Planned |
+| T-WEB-0502 | WEB-0502 | Storage API calls use bearer token | Integration | Planned |
+| T-WEB-0503 | WEB-0503 | `ProgramIngest` rejects unauthenticated requests | Unit (Rust) | Planned |
+| T-WEB-0601 | WEB-0601 | Bicep provisions Static Web App | Infrastructure | Planned |
+| T-WEB-0602 | WEB-0602 | Bicep provisions `programs` table | Infrastructure | Planned |
+| T-WEB-0603 | WEB-0603 | `ProgramIngest` HTTP trigger deployed alongside `UpstreamConnector` | Infrastructure | Planned |
+| T-WEB-0604 | WEB-0604 | CORS configured for SPA origin | Infrastructure | Planned |
+| T-WEB-0605 | WEB-0605 | Function identity has table contributor on `programs` | Infrastructure | Planned |

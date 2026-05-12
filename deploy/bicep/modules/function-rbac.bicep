@@ -18,6 +18,9 @@ param desiredStateTableName string
 @description('Azure handler program-route table name.')
 param programRouteTableName string
 
+@description('Program storage table name.')
+param programsTableName string
+
 var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
 
@@ -43,6 +46,11 @@ resource existingDesiredStateTable 'Microsoft.Storage/storageAccounts/tableServi
 resource existingProgramRouteTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
   parent: existingTableService
   name: programRouteTableName
+}
+
+resource existingProgramsTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
+  parent: existingTableService
+  name: programsTableName
 }
 
 resource functionQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -78,6 +86,16 @@ resource functionDesiredStateTableContributor 'Microsoft.Authorization/roleAssig
 resource functionProgramRouteTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid('function-program-route-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingProgramRouteTable.id)
   scope: existingProgramRouteTable
+  properties: {
+    principalId: functionPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageTableDataContributorRoleId
+  }
+}
+
+resource functionProgramsTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid('function-programs-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingProgramsTable.id)
+  scope: existingProgramsTable
   properties: {
     principalId: functionPrincipalId
     principalType: 'ServicePrincipal'

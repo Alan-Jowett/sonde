@@ -255,32 +255,23 @@ if [ -z "$swa_deployment_token" ]; then
     exit 1
 fi
 
-# Create a zip of the SPA content for deployment
-spa_zip="$(mktemp "${TMPDIR:-/tmp}/sonde-spa-deploy.XXXXXX.zip")"
-trap_cleanup() { rm -f "$spa_zip"; }
-trap trap_cleanup EXIT
-
-(cd "$web_ui_dir" && zip -r "$spa_zip" \
-    index.html app.js style.css staticwebapp.config.json config.json \
-    2>/dev/null)
-
-# Deploy using the SWA deployment API
-swa_api_hostname="$(az staticwebapp show \
-    --name "$static_web_app_name" \
-    --resource-group "$resource_group_name" \
-    --query 'defaultHostname' \
-    --output tsv)"
-
-# The Azure Static Web Apps content API accepts zip deployments.
-# The endpoint is on the management plane via az CLI extension.
-az staticwebapp deploy \
+# Try az CLI extension first; fall back to REST API with zip upload.
+if az staticwebapp deploy \
     --name "$static_web_app_name" \
     --resource-group "$resource_group_name" \
     --source "$web_ui_dir" \
-    --output none >/dev/null 2>&1 || {
-    # Fallback: use the deployment token with the SWA CLI API endpoint.
-    # The SWA management API accepts zip uploads at the /zipdeploy endpoint.
+    --output none >/dev/null 2>&1; then
+    echo "SPA content deployed via az staticwebapp deploy" >&2
+else
     echo "az staticwebapp deploy not available; using REST API fallback" >&2
+    spa_zip="$(mktemp "${TMPDIR:-/tmp}/sonde-spa-deploy.XXXXXX.zip")"
+    trap_cleanup() { rm -f "$spa_zip"; }
+    trap trap_cleanup EXIT
+
+    (cd "$web_ui_dir" && zip -r "$spa_zip" \
+        index.html app.js style.css staticwebapp.config.json config.json \
+        2>/dev/null)
+
     curl -sf \
         -X POST \
         -H "Authorization: Bearer $swa_deployment_token" \
@@ -290,7 +281,7 @@ az staticwebapp deploy \
         echo "SPA content deployment failed" >&2
         exit 1
     }
-}
+fi
 echo "SPA content deployed to https://$static_web_app_hostname" >&2
 
 # ── Entra app configuration ─────────────────────────────────────────────────
@@ -306,7 +297,10 @@ fi
 # Register the SWA hostname as a SPA redirect URI (merge with existing)
 redirect_uri="https://$static_web_app_hostname"
 current_uris="$(az ad app show --id "$app_object_id" \
-    --query 'spa.redirectUris' --output json 2>/dev/null || echo '[]')"
+    --query 'spa.redirectUris' --output json)"
+if [ -z "$current_uris" ] || [ "$current_uris" = "null" ]; then
+    current_uris="[]"
+fi
 if echo "$current_uris" | grep -Fq "$redirect_uri"; then
     echo "SPA redirect URI already registered" >&2
 else
@@ -317,11 +311,15 @@ else
     echo "Added SPA redirect URI: $redirect_uri" >&2
 fi
 
-# Add Azure Storage user_impersonation API permission
-az ad app permission add --id "$app_object_id" \
-    --api "e406a681-f3d4-42a8-90b6-c2b029497af1" \
-    --api-permissions "da399722-a3ea-4c11-8b0d-7b37b3d5fa83=Scope" || true
-echo "Azure Storage user_impersonation permission configured" >&2
+# Add Azure Storage user_impersonation API permission (idempotent)
+if az ad app permission list --id "$app_object_id" --query "[?resourceAppId=='e406a681-f3d4-42a8-90b6-c2b029497af1'].resourceAccess[?id=='da399722-a3ea-4c11-8b0d-7b37b3d5fa83'] | [0]" --output tsv 2>/dev/null | grep -q .; then
+    echo "Azure Storage user_impersonation permission already configured" >&2
+else
+    az ad app permission add --id "$app_object_id" \
+        --api "e406a681-f3d4-42a8-90b6-c2b029497af1" \
+        --api-permissions "da399722-a3ea-4c11-8b0d-7b37b3d5fa83=Scope"
+    echo "Azure Storage user_impersonation permission configured" >&2
+fi
 
 echo "Web UI deployment complete" >&2
 

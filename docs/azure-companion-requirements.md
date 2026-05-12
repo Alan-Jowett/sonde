@@ -245,7 +245,7 @@ certificate generation, device-code authentication inside the dedicated
 deployment of the bundled Azure handler package into the provisioned Function
 App, deployment of the Web UI SPA content to the provisioned Static Web App,
 Entra app configuration (SPA redirect URI and Storage API permission), and
-local runtime artifact creation.The earlier `bootstrap-auth`
+local runtime artifact creation. The earlier `bootstrap-auth`
 subcommand is retired and replaced by this unified command. By default, the
 Rust companion launches the `sonde-azure-bootstrap:<matching companion
 version>` image tag; the image contains the Azure CLI, bundled Bicep files,
@@ -824,8 +824,8 @@ Bicep deployment outputs at deploy time.
 
 The bootstrap script MUST:
 1. Extract `staticWebAppName`, `staticWebAppHostname`, `companionClientId`,
-   `storageAccountName`, and `functionAppName` from the Bicep deployment
-   outputs.
+   `companionTenantId`, `storageAccountName`, and `functionAppName` from the
+   Bicep deployment outputs.
 2. Generate `config.json` with the MSAL client ID, tenant ID, storage account
    name, and function app name.
 3. Deploy the SPA content (including the generated `config.json`) to the Static

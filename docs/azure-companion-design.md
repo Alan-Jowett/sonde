@@ -298,10 +298,10 @@ When bootstrap is required, the Azure companion performs this sequence:
     Entra app registration. This phase runs inside the bootstrap container
     where the Azure CLI session is still authenticated. The script:
     a. Extracts `staticWebAppName`, `staticWebAppHostname`, `companionClientId`,
-       `storageAccountName`, and `functionAppName` from the Bicep deployment
-       outputs.
+       `companionTenantId`, `storageAccountName`, and `functionAppName` from
+       the Bicep deployment outputs.
     b. Generates `config.json` with MSAL client ID, authority URL (derived from
-       `tenantId`), storage account name, and function app name.
+       `companionTenantId`), storage account name, and function app name.
     c. Obtains the SWA deployment token via `az staticwebapp secrets list`.
     d. Deploys the bundled SPA content (including generated `config.json`) to
        the Static Web App.

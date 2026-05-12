@@ -42,6 +42,9 @@ param companionServicePrincipalObjectId string
 @description('Static Web App name for the management UI.')
 param staticWebAppName string
 
+@description('Azure region for the Static Web App.')
+param staticWebAppLocation string
+
 var monitoringWorkspaceName = take('${functionAppName}-logs', 63)
 var monitoringAppInsightsName = take('${functionAppName}-insights', 260)
 
@@ -78,7 +81,7 @@ module monitoring './monitoring.bicep' = {
 module staticWebApp './static-web-app.bicep' = {
   name: 'staticWebApp'
   params: {
-    location: location
+    location: staticWebAppLocation
     staticWebAppName: staticWebAppName
     tags: tags
   }

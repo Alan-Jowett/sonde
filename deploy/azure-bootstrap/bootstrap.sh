@@ -244,7 +244,9 @@ cat > "$web_ui_dir/config.json" <<CONFIGEOF
 CONFIGEOF
 echo "Generated config.json for SPA" >&2
 
-# Deploy SPA content to Static Web App
+# Deploy SPA content to Static Web App.
+# First check if az staticwebapp deploy is available; if so use it directly.
+# Otherwise fall back to REST API with zip upload.
 swa_deployment_token="$(az staticwebapp secrets list \
     --name "$static_web_app_name" \
     --resource-group "$resource_group_name" \
@@ -255,15 +257,29 @@ if [ -z "$swa_deployment_token" ]; then
     exit 1
 fi
 
-# Try az CLI extension first; fall back to REST API with zip upload.
-if az staticwebapp deploy \
-    --name "$static_web_app_name" \
-    --resource-group "$resource_group_name" \
-    --source "$web_ui_dir" \
-    --output none >/dev/null 2>&1; then
+if az staticwebapp deploy --help >/dev/null 2>&1; then
+    # The az CLI extension is available — use it for content deployment.
+    az staticwebapp deploy \
+        --name "$static_web_app_name" \
+        --resource-group "$resource_group_name" \
+        --source "$web_ui_dir" \
+        --output none 1>&2
     echo "SPA content deployed via az staticwebapp deploy" >&2
 else
+    # Fallback: zip content and deploy via REST API using the deployment token.
     echo "az staticwebapp deploy not available; using REST API fallback" >&2
+
+    # Derive the content API region from the SWA resource location.
+    swa_location="$(az staticwebapp show \
+        --name "$static_web_app_name" \
+        --resource-group "$resource_group_name" \
+        --query 'location' \
+        --output tsv)"
+    if [ -z "$swa_location" ]; then
+        echo "failed to determine Static Web App location" >&2
+        exit 1
+    fi
+
     spa_zip="$(mktemp "${TMPDIR:-/tmp}/sonde-spa-deploy.XXXXXX.zip")"
     trap_cleanup() { rm -f "$spa_zip"; }
     trap trap_cleanup EXIT
@@ -277,7 +293,7 @@ else
         -H "Authorization: Bearer $swa_deployment_token" \
         -H "Content-Type: application/zip" \
         --data-binary "@$spa_zip" \
-        "https://content-${SONDE_AZURE_LOCATION}.azurestaticapps.net/api/zipdeploy" || {
+        "https://content-${swa_location}.azurestaticapps.net/api/zipdeploy" || {
         echo "SPA content deployment failed" >&2
         exit 1
     }
@@ -301,7 +317,7 @@ current_uris="$(az ad app show --id "$app_object_id" \
 if [ -z "$current_uris" ] || [ "$current_uris" = "null" ]; then
     current_uris="[]"
 fi
-if echo "$current_uris" | grep -Fq "$redirect_uri"; then
+if echo "$current_uris" | jq -e --arg uri "$redirect_uri" 'index($uri) != null' >/dev/null 2>&1; then
     echo "SPA redirect URI already registered" >&2
 else
     merged_uris="$(echo "$current_uris" | jq -r --arg uri "$redirect_uri" \

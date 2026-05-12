@@ -247,16 +247,6 @@ echo "Generated config.json for SPA" >&2
 # Deploy SPA content to Static Web App.
 # First check if az staticwebapp deploy is available; if so use it directly.
 # Otherwise fall back to REST API with zip upload.
-swa_deployment_token="$(trim_string "$(az staticwebapp secrets list \
-    --name "$static_web_app_name" \
-    --resource-group "$resource_group_name" \
-    --query 'properties.apiKey' \
-    --output tsv)")"
-if [ -z "$swa_deployment_token" ]; then
-    echo "failed to retrieve Static Web App deployment token" >&2
-    exit 1
-fi
-
 if az staticwebapp deploy --help >/dev/null 2>&1; then
     # The az CLI extension is available — use it for content deployment.
     az staticwebapp deploy \
@@ -268,6 +258,16 @@ if az staticwebapp deploy --help >/dev/null 2>&1; then
 else
     # Fallback: zip content and deploy via REST API using the deployment token.
     echo "az staticwebapp deploy not available; using REST API fallback" >&2
+
+    swa_deployment_token="$(trim_string "$(az staticwebapp secrets list \
+        --name "$static_web_app_name" \
+        --resource-group "$resource_group_name" \
+        --query 'properties.apiKey' \
+        --output tsv)")"
+    if [ -z "$swa_deployment_token" ]; then
+        echo "failed to retrieve Static Web App deployment token" >&2
+        exit 1
+    fi
 
     # Derive the content API region from the SWA resource location.
     swa_location="$(az staticwebapp show \
@@ -317,11 +317,20 @@ current_uris="$(az ad app show --id "$app_object_id" \
 if [ -z "$current_uris" ] || [ "$current_uris" = "null" ]; then
     current_uris="[]"
 fi
-if echo "$current_uris" | jq -e --arg uri "$redirect_uri" 'index($uri) != null' >/dev/null 2>&1; then
+uri_exists=0
+echo "$current_uris" | jq -e --arg uri "$redirect_uri" 'index($uri) != null' >/dev/null 2>&1 && uri_exists=1
+if [ "$uri_exists" -eq 1 ]; then
     echo "SPA redirect URI already registered" >&2
 else
     merged_uris="$(echo "$current_uris" | jq -r --arg uri "$redirect_uri" \
-        '(. // []) + [$uri] | join(" ")')"
+        '(. // []) + [$uri] | join(" ")')" || {
+        echo "failed to merge redirect URIs" >&2
+        exit 1
+    }
+    if [ -z "$merged_uris" ]; then
+        echo "redirect URI merge produced empty result" >&2
+        exit 1
+    fi
     az ad app update --id "$app_object_id" \
         --spa-redirect-uris $merged_uris
     echo "Added SPA redirect URI: $redirect_uri" >&2

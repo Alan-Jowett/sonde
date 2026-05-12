@@ -243,7 +243,9 @@ When bootstrap is required, the Azure companion MUST provide a single unified
 certificate generation, device-code authentication inside the dedicated
 `sonde-azure-bootstrap` image, Azure deployment through the Docker API,
 deployment of the bundled Azure handler package into the provisioned Function
-App, and local runtime artifact creation. The earlier `bootstrap-auth`
+App, deployment of the Web UI SPA content to the provisioned Static Web App,
+Entra app configuration (SPA redirect URI and Storage API permission), and
+local runtime artifact creation. The earlier `bootstrap-auth`
 subcommand is retired and replaced by this unified command. By default, the
 Rust companion launches the `sonde-azure-bootstrap:<matching companion
 version>` image tag; the image contains the Azure CLI, bundled Bicep files,
@@ -800,3 +802,50 @@ does not succeed if the Function App shell exists but no functions are loaded.
 2. The deployed package matches the companion/bootstrap release rather than an ad hoc package built on the operator host during bootstrap.
 3. Bootstrap waits until Azure reports that at least one function is loaded in the provisioned Function App before reporting success.
 4. If package deployment or activation fails, bootstrap exits non-zero and does not report success-shaped completion.
+
+---
+
+### AZC-0410  Bootstrap deploys SPA content and configures Entra app for Web UI
+
+**Priority:** Must
+**Source:** USER-REQUEST: single bootstrap command that installs all Azure parts
+
+**Description:**
+After successful Function App handler deployment and activation, the unified
+`bootstrap` subcommand MUST deploy the bundled Web UI SPA content to the
+provisioned Static Web App and configure the Entra app registration for
+browser-based access. This eliminates the separate `deploy/web-ui/deploy.sh`
+manual step, making `sonde-azure-companion bootstrap` the single command that
+provisions all Azure surfaces.
+
+The bootstrap image MUST bundle the SPA static assets (`index.html`, `app.js`,
+`style.css`, `staticwebapp.config.json`) and generate `config.json` from the
+Bicep deployment outputs at deploy time.
+
+The bootstrap script MUST:
+1. Extract `staticWebAppName`, `staticWebAppHostname`, `companionClientId`,
+   `companionTenantId`, `storageAccountName`, and `functionAppName` from the
+   Bicep deployment outputs.
+2. Generate `config.json` with the MSAL client ID, tenant ID, storage account
+   name, and function app name.
+3. Deploy the SPA content (including the generated `config.json`) to the Static
+   Web App using the Azure deployment API and the SWA deployment token.
+4. Register the SWA hostname (`https://<hostname>`) as a SPA redirect URI on
+   the Entra app registration, merging with any existing redirect URIs.
+5. Add the Azure Storage `user_impersonation` API permission to the Entra app
+   registration if not already present.
+
+The SPA deployment MUST NOT require Node.js, npm, or the SWA CLI in the
+bootstrap image. The bootstrap script MUST use Azure CLI commands and the
+Azure REST API to perform the deployment.
+
+**Acceptance criteria:**
+
+1. After `sonde-azure-companion bootstrap` completes, the Static Web App serves the SPA content at its default hostname without any additional manual deployment step.
+2. The generated `config.json` contains correct MSAL client ID, authority URL, storage account name, and function app name values matching the Bicep deployment outputs.
+3. The Entra app registration includes the SWA hostname as a SPA redirect URI after bootstrap.
+4. The Entra app registration includes the Azure Storage `user_impersonation` API permission after bootstrap.
+5. Existing SPA redirect URIs on the Entra app are preserved (not overwritten) when adding the SWA hostname.
+6. Re-running bootstrap updates the SPA content and Entra configuration idempotently.
+7. If SPA deployment fails, bootstrap exits non-zero and does not report success.
+8. The bootstrap image does not depend on Node.js, npm, or the SWA CLI.

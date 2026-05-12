@@ -21,7 +21,7 @@ read_required_deployment_outputs() {
     # tab-separated columns.  A flat JMESPath array produces one value per
     # line (newline-separated), which breaks the tab-based field splitting
     # below.
-    query='[[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value]]'
+    query='[[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value, properties.outputs.staticWebAppName.value, properties.outputs.staticWebAppHostname.value, properties.outputs.companionClientId.value, properties.outputs.storageAccountName.value, properties.outputs.companionTenantId.value]]'
     stderr_file="$(mktemp "${TMPDIR:-/tmp}/sonde-azure-deployment-show.XXXXXX")"
     if ! deployment_runtime_values="$(az deployment sub show \
         --name "$deployment_name" \
@@ -46,8 +46,8 @@ read_required_deployment_outputs() {
     set -- $deployment_runtime_values
     IFS="$old_ifs"
     field_count="$#"
-    if [ "$field_count" -ne 4 ]; then
-        echo "deployment output query \`$query\` returned $field_count field(s); expected 4 tab-separated values" >&2
+    if [ "$field_count" -ne 9 ]; then
+        echo "deployment output query \`$query\` returned $field_count field(s); expected 9 tab-separated values" >&2
         exit 1
     fi
 
@@ -74,6 +74,36 @@ read_required_deployment_outputs() {
             deploymentContainerUrl \
             "$query" \
             "$4"
+    )"
+    static_web_app_name="$(
+        require_deployment_output_string \
+            staticWebAppName \
+            "$query" \
+            "$5"
+    )"
+    static_web_app_hostname="$(
+        require_deployment_output_string \
+            staticWebAppHostname \
+            "$query" \
+            "$6"
+    )"
+    companion_client_id="$(
+        require_deployment_output_string \
+            companionClientId \
+            "$query" \
+            "$7"
+    )"
+    storage_account_name="$(
+        require_deployment_output_string \
+            storageAccountName \
+            "$query" \
+            "$8"
+    )"
+    companion_tenant_id="$(
+        require_deployment_output_string \
+            companionTenantId \
+            "$query" \
+            "$9"
     )"
 }
 
@@ -193,5 +223,129 @@ if [ "$config_zip_exit" -ne 0 ]; then
 fi
 
 wait_for_function_activation "$resource_group_name" "$function_app_name" "$activation_timeout_secs"
+
+# ── SPA deployment ──────────────────────────────────────────────────────────
+echo "Deploying Web UI to Static Web App $static_web_app_name" >&2
+web_ui_dir="${SONDE_AZURE_WEB_UI_DIR:-/opt/sonde/deploy/web-ui}"
+
+if [ ! -d "$web_ui_dir" ]; then
+    echo "bundled Web UI content not found: $web_ui_dir" >&2
+    exit 1
+fi
+
+# Generate config.json from deployment outputs
+cat > "$web_ui_dir/config.json" <<CONFIGEOF
+{
+  "msalClientId": "$companion_client_id",
+  "msalAuthority": "https://login.microsoftonline.com/$companion_tenant_id",
+  "storageAccount": "$storage_account_name",
+  "functionAppName": "$function_app_name"
+}
+CONFIGEOF
+echo "Generated config.json for SPA" >&2
+
+# Deploy SPA content to Static Web App.
+# First check if az staticwebapp deploy is available; if so use it directly.
+# Otherwise fall back to REST API with zip upload.
+if az staticwebapp deploy --help >/dev/null 2>&1; then
+    # The az CLI extension is available — use it for content deployment.
+    az staticwebapp deploy \
+        --name "$static_web_app_name" \
+        --resource-group "$resource_group_name" \
+        --source "$web_ui_dir" \
+        --output none 1>&2
+    echo "SPA content deployed via az staticwebapp deploy" >&2
+else
+    # Fallback: zip content and deploy via REST API using the deployment token.
+    echo "az staticwebapp deploy not available; using REST API fallback" >&2
+
+    swa_deployment_token="$(trim_string "$(az staticwebapp secrets list \
+        --name "$static_web_app_name" \
+        --resource-group "$resource_group_name" \
+        --query 'properties.apiKey' \
+        --output tsv)")"
+    if [ -z "$swa_deployment_token" ]; then
+        echo "failed to retrieve Static Web App deployment token" >&2
+        exit 1
+    fi
+
+    # Derive the content API region from the SWA resource location.
+    swa_location="$(az staticwebapp show \
+        --name "$static_web_app_name" \
+        --resource-group "$resource_group_name" \
+        --query 'location' \
+        --output tsv)"
+    if [ -z "$swa_location" ]; then
+        echo "failed to determine Static Web App location" >&2
+        exit 1
+    fi
+
+    spa_zip="$(mktemp "${TMPDIR:-/tmp}/sonde-spa-deploy.XXXXXX.zip")"
+    trap_cleanup() { rm -f "$spa_zip"; }
+    trap trap_cleanup EXIT
+
+    (cd "$web_ui_dir" && zip -r "$spa_zip" \
+        index.html app.js style.css staticwebapp.config.json config.json \
+        2>/dev/null)
+
+    curl -sf \
+        -X POST \
+        -H "Authorization: Bearer $swa_deployment_token" \
+        -H "Content-Type: application/zip" \
+        --data-binary "@$spa_zip" \
+        "https://content-${swa_location}.azurestaticapps.net/api/zipdeploy" || {
+        echo "SPA content deployment failed" >&2
+        exit 1
+    }
+fi
+echo "SPA content deployed to https://$static_web_app_hostname" >&2
+
+# ── Entra app configuration ─────────────────────────────────────────────────
+echo "Configuring Entra app registration for Web UI" >&2
+
+# Resolve the Entra app object ID from the companion client ID
+app_object_id="$(az ad app show --id "$companion_client_id" --query 'id' --output tsv)"
+if [ -z "$app_object_id" ]; then
+    echo "failed to resolve Entra app object ID for client ID $companion_client_id" >&2
+    exit 1
+fi
+
+# Register the SWA hostname as a SPA redirect URI (merge with existing)
+redirect_uri="https://$static_web_app_hostname"
+current_uris="$(az ad app show --id "$app_object_id" \
+    --query 'spa.redirectUris' --output json)"
+if [ -z "$current_uris" ] || [ "$current_uris" = "null" ]; then
+    current_uris="[]"
+fi
+uri_exists=0
+echo "$current_uris" | jq -e --arg uri "$redirect_uri" 'index($uri) != null' >/dev/null 2>&1 && uri_exists=1
+if [ "$uri_exists" -eq 1 ]; then
+    echo "SPA redirect URI already registered" >&2
+else
+    merged_uris="$(echo "$current_uris" | jq -r --arg uri "$redirect_uri" \
+        '(. // []) + [$uri] | join(" ")')" || {
+        echo "failed to merge redirect URIs" >&2
+        exit 1
+    }
+    if [ -z "$merged_uris" ]; then
+        echo "redirect URI merge produced empty result" >&2
+        exit 1
+    fi
+    az ad app update --id "$app_object_id" \
+        --spa-redirect-uris $merged_uris
+    echo "Added SPA redirect URI: $redirect_uri" >&2
+fi
+
+# Add Azure Storage user_impersonation API permission (idempotent)
+if az ad app permission list --id "$app_object_id" --query "[?resourceAppId=='e406a681-f3d4-42a8-90b6-c2b029497af1'].resourceAccess[?id=='da399722-a3ea-4c11-8b0d-7b37b3d5fa83'] | [0]" --output tsv 2>/dev/null | grep -q .; then
+    echo "Azure Storage user_impersonation permission already configured" >&2
+else
+    az ad app permission add --id "$app_object_id" \
+        --api "e406a681-f3d4-42a8-90b6-c2b029497af1" \
+        --api-permissions "da399722-a3ea-4c11-8b0d-7b37b3d5fa83=Scope"
+    echo "Azure Storage user_impersonation permission configured" >&2
+fi
+
+echo "Web UI deployment complete" >&2
 
 printf '%s\n' "$deployment_outputs"

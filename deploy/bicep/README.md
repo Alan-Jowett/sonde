@@ -128,6 +128,12 @@ state:
 - downstream queue name
 - Function App name
 - deployment container name / URL
+- Static Web App name and hostname
+
+The unified `sonde-azure-companion bootstrap` command consumes all of these
+outputs automatically, including deploying the Web UI SPA content to the Static
+Web App and configuring the Entra app registration with the SWA redirect URI
+and Storage API permissions.
 
 You still need to place the matching PEM certificate and private key into the
 Azure companion state directory and write `service-principal.json` that points

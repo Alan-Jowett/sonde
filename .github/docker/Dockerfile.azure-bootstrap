@@ -13,9 +13,12 @@
 
 FROM mcr.microsoft.com/azure-cli@sha256:7f9ca8e6bf1c72e5fafefb6925546272776d635fb428538455c5c79bb77e2aa7
 
+RUN apk add --no-cache jq zip
+
 COPY deploy/azure-bootstrap/bootstrap.sh /opt/sonde/deploy/azure-bootstrap/bootstrap.sh
 COPY deploy/bicep/ /opt/sonde/deploy/bicep/
 COPY .artifacts/azure-handler-function/sonde-azure-handler-function.zip /opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip
+COPY deploy/web-ui/index.html deploy/web-ui/app.js deploy/web-ui/style.css deploy/web-ui/staticwebapp.config.json /opt/sonde/deploy/web-ui/
 
 RUN chmod +x /opt/sonde/deploy/azure-bootstrap/bootstrap.sh \
     && mkdir -p /cert /opt/sonde/deploy/azure-handler

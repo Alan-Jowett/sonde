@@ -51,6 +51,9 @@ param functionPlanName string = ''
 @description('Optional override for the Static Web App name.')
 param staticWebAppName string = ''
 
+@description('Azure region for the Static Web App. Defaults to centralus because Microsoft.Web/staticSites is not available in all regions.')
+param staticWebAppLocation string = 'centralus'
+
 var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
 var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
 var effectiveResourceGroupName = empty(resource_group_name) ? '${take(effectiveProjectSlug, 84)}-azure' : resource_group_name
@@ -121,6 +124,7 @@ module stack './modules/stack.bicep' = {
     functionPlanName: effectiveFunctionPlanName
     companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId
     staticWebAppName: effectiveStaticWebAppName
+    staticWebAppLocation: staticWebAppLocation
   }
 }
 

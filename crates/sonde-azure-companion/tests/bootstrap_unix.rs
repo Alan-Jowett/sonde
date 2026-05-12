@@ -546,8 +546,7 @@ exit 64
     let config_json = fs::read_to_string(web_ui_dir.join("config.json")).unwrap();
     assert!(config_json.contains(r#""msalClientId": "client-456""#));
     assert!(
-        config_json
-            .contains(r#""msalAuthority": "https://login.microsoftonline.com/tenant-123""#)
+        config_json.contains(r#""msalAuthority": "https://login.microsoftonline.com/tenant-123""#)
     );
     assert!(config_json.contains(r#""storageAccount": "stsondetest""#));
     assert!(config_json.contains(r#""functionAppName": "func-sonde""#));

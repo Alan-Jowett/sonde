@@ -115,7 +115,12 @@ When the handler publishes a `DESIRED_STATE` message due to program divergence, 
 ### 9.1 Static Web App
 
 Azure Static Web App (free tier) provisioned via `static-web-app.bicep`.
-After Bicep deployment, deploy the SPA using the deployment script.
+SPA content is deployed automatically during `sonde-azure-companion bootstrap`
+(see AZC-0410). The bootstrap flow generates `config.json`, deploys the SPA
+content to the Static Web App, registers the SWA hostname as a redirect URI on
+the Entra app, and adds the Azure Storage API permission.
+
+For standalone (non-bootstrap) deployment, use the deployment script:
 
 Prerequisites: `az` CLI (logged in), `jq`, and `npm`/`npx` (for the SWA CLI).
 

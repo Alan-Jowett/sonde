@@ -294,16 +294,32 @@ When bootstrap is required, the Azure companion performs this sequence:
     image to populate the provisioned Function App deployment target.
 16. Poll Azure for Function App activation until the uploaded package is active
     and at least one function is reported as loaded.
-17. Write `service-principal.json` and `storage-queues.json` to the staging
+17. The bootstrap script then deploys the Web UI SPA content and configures the
+    Entra app registration. This phase runs inside the bootstrap container
+    where the Azure CLI session is still authenticated. The script:
+    a. Extracts `staticWebAppName`, `staticWebAppHostname`, `companionClientId`,
+       `storageAccountName`, and `functionAppName` from the Bicep deployment
+       outputs.
+    b. Generates `config.json` with MSAL client ID, authority URL (derived from
+       `tenantId`), storage account name, and function app name.
+    c. Obtains the SWA deployment token via `az staticwebapp secrets list`.
+    d. Deploys the bundled SPA content (including generated `config.json`) to
+       the Static Web App.
+    e. Registers `https://<staticWebAppHostname>` as a SPA redirect URI on the
+       Entra app registration, merging with any existing redirect URIs.
+    f. Adds Azure Storage `user_impersonation` API permission to the Entra app.
+    If any sub-step fails, the bootstrap script exits non-zero and the
+    bootstrap container reports failure.
+18. Write `service-principal.json` and `storage-queues.json` to the staging
     directory with the extracted values and relative paths to the certificate
     and private-key PEM files.
-18. Rename the staging directory into a new generation directory under the state
+19. Rename the staging directory into a new generation directory under the state
     volume, then atomically update the `.current-state` marker to point at that
     generation, leaving the previous generation untouched until the new one is
     fully committed.
-19. Remove the bootstrap container.
-20. Display "Bootstrap complete" on the modem display.
-21. The bootstrap wrapper/entrypoint reports overall success only after
+20. Remove the bootstrap container.
+21. Display "Bootstrap complete" on the modem display.
+22. The bootstrap wrapper/entrypoint reports overall success only after
     bootstrap-complete state has been established.
 
 If any step fails, the staging directory is cleaned up, the bootstrap
@@ -321,7 +337,7 @@ non-zero status. It does not continue to a console-only fallback.
 ## 5  Rust binary interface
 
 > **Requirements:** AZC-0100, AZC-0102, AZC-0103, AZC-0104, AZC-0105, AZC-0201, AZC-0202, AZC-0205, AZC-0300, AZC-0301, AZC-0302, AZC-0304, AZC-0305,
-> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406
+> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0410
 
 The `sonde-azure-companion` binary exposes three cross-platform runtime modes
 plus Windows service-management entrypoints:
@@ -574,14 +590,16 @@ The bootstrap Dockerfile includes:
 
 ```dockerfile
 COPY deploy/bicep/ /opt/sonde/deploy/bicep/
+COPY deploy/web-ui/index.html deploy/web-ui/app.js deploy/web-ui/style.css deploy/web-ui/staticwebapp.config.json /opt/sonde/deploy/web-ui/
 ```
 
 It also includes the bootstrap script that runs `az login --use-device-code`
-and Azure deployment inside the bootstrap image.
+and Azure deployment inside the bootstrap image. The `jq` utility is installed
+for JSON manipulation during SPA deployment (Entra redirect URI merging).
 
-This bundles the complete Azure provisioning surface into the dedicated
-bootstrap image. The runtime companion image no longer needs to carry these
-bootstrap-only assets.
+This bundles the complete Azure provisioning surface and the Web UI SPA
+content into the dedicated bootstrap image. The runtime companion image no
+longer needs to carry these bootstrap-only assets.
 
 ### 8.6  Docker socket requirements
 
@@ -606,5 +624,6 @@ The bootstrap displays these messages on the modem via the admin API:
 | Device code received | "Azure login" + device code | "Device auth: open {uri} and enter code {code}" |
 | Bicep deployment | "Deploying Azure..." | "Running Bicep deployment" |
 | Config writing | "Writing config..." | "Writing runtime artifacts to state volume" |
+| SPA deployment | "Deploying Web UI..." | "Deploying Web UI to Static Web App" |
 | Bootstrap complete | "Bootstrap complete" | "Bootstrap completed successfully" |
 | Bootstrap failure | "Bootstrap failed" | Error details |

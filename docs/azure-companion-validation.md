@@ -586,3 +586,22 @@
 4. Assert: bootstrap does not report success until Azure reports at least one loaded function for that Function App.
 5. Force package activation to fail or never complete.
 6. Assert: bootstrap exits non-zero and does not report success-shaped completion.
+
+---
+
+### T-AZC-0418  Bootstrap deploys SPA content and configures Entra app for Web UI
+
+**Validates:** AZC-0410
+
+**Procedure:**
+1. Run bootstrap with device auth stubbed and Bicep deployment stubbed to return known output values including `staticWebAppName`, `staticWebAppHostname`, `companionClientId`, `tenantId`, `storageAccountName`, and `functionAppName`.
+2. Assert: bootstrap generates `config.json` containing the correct `msalClientId`, `msalAuthority` (derived from `tenantId`), `storageAccount`, and `functionAppName` values from the stubbed outputs.
+3. Assert: the bootstrap script attempts to deploy SPA content (HTML, JS, CSS, config.json) to the Static Web App named in the outputs.
+4. After bootstrap completes, assert: the Static Web App serves the SPA content at its default hostname without any additional manual deployment step.
+5. Assert: the bootstrap script registers `https://<staticWebAppHostname>` as a SPA redirect URI on the Entra app registration.
+6. Assert: existing SPA redirect URIs are preserved (not overwritten) during the registration.
+7. Assert: the bootstrap script adds the Azure Storage `user_impersonation` API permission to the Entra app.
+8. Assert: if SPA deployment fails, bootstrap exits non-zero.
+9. Assert: the bootstrap image does not contain Node.js, npm, or the SWA CLI.
+10. Re-run bootstrap with the same stubbed outputs.
+11. Assert: the SPA deployment and Entra configuration succeed idempotently.

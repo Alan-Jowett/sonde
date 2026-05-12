@@ -48,6 +48,9 @@ param functionAppName string = ''
 @description('Optional override for the Azure handler Function hosting plan name.')
 param functionPlanName string = ''
 
+@description('Optional override for the Static Web App name.')
+param staticWebAppName string = ''
+
 var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
 var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
 var effectiveResourceGroupName = empty(resource_group_name) ? '${take(effectiveProjectSlug, 84)}-azure' : resource_group_name
@@ -73,6 +76,9 @@ var effectiveFunctionAppName = empty(functionAppName)
 var effectiveFunctionPlanName = empty(functionPlanName)
   ? take('${take(effectiveProjectSlug, 24)}-func-plan', 40)
   : functionPlanName
+var effectiveStaticWebAppName = empty(staticWebAppName)
+  ? take('${take(effectiveProjectSlug, 24)}-web-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'swa'), 8)}', 40)
+  : staticWebAppName
 var tags = {
   project: project_name
 }
@@ -114,6 +120,7 @@ module stack './modules/stack.bicep' = {
     functionAppName: effectiveFunctionAppName
     functionPlanName: effectiveFunctionPlanName
     companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId
+    staticWebAppName: effectiveStaticWebAppName
   }
 }
 
@@ -131,6 +138,8 @@ output programRouteTableName string = stack.outputs.programRouteTableName
 output programsTableName string = stack.outputs.programsTableName
 output functionAppName string = stack.outputs.functionAppName
 output functionPrincipalId string = stack.outputs.functionPrincipalId
+output staticWebAppName string = stack.outputs.staticWebAppName
+output staticWebAppHostname string = stack.outputs.staticWebAppHostname
 output companionClientId string = companionIdentity.outputs.clientId
 output companionTenantId string = companionIdentity.outputs.tenantId
 output companionServicePrincipalObjectId string = companionIdentity.outputs.servicePrincipalObjectId
@@ -146,5 +155,6 @@ output companionBootstrapValues object = {
   actualStateTable: stack.outputs.actualStateTableName
   desiredStateTable: stack.outputs.desiredStateTableName
   programRouteTable: stack.outputs.programRouteTableName
+  staticWebAppHostname: stack.outputs.staticWebAppHostname
   note: 'The deployment registers the supplied certificate public material on the Entra app. The matching PEM certificate and private key remain caller-managed local artifacts for sonde-azure-companion bootstrap.'
 }

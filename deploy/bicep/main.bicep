@@ -48,6 +48,9 @@ param functionAppName string = ''
 @description('Optional override for the Azure handler Function hosting plan name.')
 param functionPlanName string = ''
 
+@description('Optional override for the Static Web App name.')
+param staticWebAppName string = ''
+
 var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
 var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
 var effectiveResourceGroupName = empty(resource_group_name) ? '${take(effectiveProjectSlug, 84)}-azure' : resource_group_name
@@ -73,7 +76,9 @@ var effectiveFunctionAppName = empty(functionAppName)
 var effectiveFunctionPlanName = empty(functionPlanName)
   ? take('${take(effectiveProjectSlug, 24)}-func-plan', 40)
   : functionPlanName
-var effectiveStaticWebAppName = take('${take(effectiveProjectSlug, 24)}-web', 40)
+var effectiveStaticWebAppName = empty(staticWebAppName)
+  ? take('${take(effectiveProjectSlug, 24)}-web-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'swa'), 8)}', 40)
+  : staticWebAppName
 var tags = {
   project: project_name
 }

@@ -478,7 +478,9 @@ exit 64
         .ok()
         .and_then(|o| {
             if o.status.success() {
-                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
             } else {
                 None
             }
@@ -543,7 +545,10 @@ exit 64
     // Verify config.json was generated with correct values
     let config_json = fs::read_to_string(web_ui_dir.join("config.json")).unwrap();
     assert!(config_json.contains(r#""msalClientId": "client-456""#));
-    assert!(config_json.contains(r#""msalAuthority": "https://login.microsoftonline.com/tenant-123""#));
+    assert!(
+        config_json
+            .contains(r#""msalAuthority": "https://login.microsoftonline.com/tenant-123""#)
+    );
     assert!(config_json.contains(r#""storageAccount": "stsondetest""#));
     assert!(config_json.contains(r#""functionAppName": "func-sonde""#));
 

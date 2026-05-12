@@ -10,13 +10,21 @@
 #   - npm/npx available (for SWA CLI)
 #
 # Usage:
-#   ./deploy/web-ui/deploy.sh [RESOURCE_GROUP]
+#   ./deploy/web-ui/deploy.sh <COMPANION_CLIENT_ID> [RESOURCE_GROUP]
 #
+# COMPANION_CLIENT_ID is the Entra app (client) ID of the Azure companion
+# app registration (output as companionClientId from Bicep deployment).
 # If RESOURCE_GROUP is omitted, defaults to 'sonde-azure'.
 
 set -euo pipefail
 
-RESOURCE_GROUP="${1:-sonde-azure}"
+if [ $# -lt 1 ]; then
+  echo "Usage: $0 <COMPANION_CLIENT_ID> [RESOURCE_GROUP]" >&2
+  exit 1
+fi
+
+COMPANION_CLIENT_ID="$1"
+RESOURCE_GROUP="${2:-sonde-azure}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== Gathering deployment outputs ==="
@@ -49,11 +57,11 @@ if [ -z "$STORAGE_ACCOUNT" ]; then
   exit 1
 fi
 
-# Get the Entra app client ID (companion app)
-CLIENT_ID="$(az ad app list --display-name '*azure-companion*' \
-  --query '[0].appId' -o tsv 2>/dev/null)"
-if [ -z "$CLIENT_ID" ]; then
-  echo "ERROR: No Entra app matching '*azure-companion*' found" >&2
+# Resolve the Entra app from the supplied client ID
+CLIENT_ID="$COMPANION_CLIENT_ID"
+APP_OBJECT_ID="$(az ad app show --id "$CLIENT_ID" --query 'id' -o tsv)"
+if [ -z "$APP_OBJECT_ID" ]; then
+  echo "ERROR: Could not resolve Entra app for client ID $CLIENT_ID" >&2
   exit 1
 fi
 TENANT_ID="$(az account show --query tenantId -o tsv)"
@@ -78,12 +86,6 @@ cat "$SCRIPT_DIR/config.json"
 
 echo ""
 echo "=== Adding SPA redirect URI to Entra app ==="
-APP_OBJECT_ID="$(az ad app list --display-name '*azure-companion*' \
-  --query '[0].id' -o tsv 2>/dev/null)"
-if [ -z "$APP_OBJECT_ID" ]; then
-  echo "ERROR: Could not resolve Entra app object ID for '*azure-companion*'" >&2
-  exit 1
-fi
 REDIRECT_URI="https://$SWA_HOSTNAME"
 
 # Get current SPA redirect URIs and add ours if not present

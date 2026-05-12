@@ -120,7 +120,7 @@ After Bicep deployment, deploy the SPA using the deployment script.
 Prerequisites: `az` CLI (logged in), `jq`, and `npm`/`npx` (for the SWA CLI).
 
 ```bash
-./deploy/web-ui/deploy.sh [RESOURCE_GROUP]
+./deploy/web-ui/deploy.sh <COMPANION_CLIENT_ID> [RESOURCE_GROUP]
 ```
 
 The script:

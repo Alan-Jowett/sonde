@@ -39,6 +39,9 @@ param functionPlanName string
 @description('Object ID of the Azure companion runtime service principal.')
 param companionServicePrincipalObjectId string
 
+@description('Static Web App name for the management UI.')
+param staticWebAppName string
+
 var monitoringWorkspaceName = take('${functionAppName}-logs', 63)
 var monitoringAppInsightsName = take('${functionAppName}-insights', 260)
 
@@ -68,6 +71,15 @@ module monitoring './monitoring.bicep' = {
     location: location
     workspaceName: monitoringWorkspaceName
     appInsightsName: monitoringAppInsightsName
+    tags: tags
+  }
+}
+
+module staticWebApp './static-web-app.bicep' = {
+  name: 'staticWebApp'
+  params: {
+    location: location
+    staticWebAppName: staticWebAppName
     tags: tags
   }
 }
@@ -137,3 +149,5 @@ output programRouteTableName string = storage.outputs.programRouteTableName
 output programsTableName string = storage.outputs.programsTableName
 output functionAppName string = functionPlaceholder.outputs.functionAppName
 output functionPrincipalId string = functionPlaceholder.outputs.principalId
+output staticWebAppName string = staticWebApp.outputs.name
+output staticWebAppHostname string = staticWebApp.outputs.defaultHostname

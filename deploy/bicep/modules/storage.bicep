@@ -52,6 +52,19 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 resource tableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' = {
   parent: storageAccount
   name: 'default'
+  properties: {
+    cors: {
+      corsRules: [
+        {
+          allowedOrigins: ['*']
+          allowedMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD', 'MERGE']
+          allowedHeaders: ['*']
+          exposedHeaders: ['x-ms-continuation-NextPartitionKey', 'x-ms-continuation-NextRowKey', 'x-ms-request-id']
+          maxAgeInSeconds: 3600
+        }
+      ]
+    }
+  }
 }
 
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {

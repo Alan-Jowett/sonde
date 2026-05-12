@@ -247,11 +247,11 @@ echo "Generated config.json for SPA" >&2
 # Deploy SPA content to Static Web App.
 # First check if az staticwebapp deploy is available; if so use it directly.
 # Otherwise fall back to REST API with zip upload.
-swa_deployment_token="$(az staticwebapp secrets list \
+swa_deployment_token="$(trim_string "$(az staticwebapp secrets list \
     --name "$static_web_app_name" \
     --resource-group "$resource_group_name" \
     --query 'properties.apiKey' \
-    --output tsv)"
+    --output tsv)")"
 if [ -z "$swa_deployment_token" ]; then
     echo "failed to retrieve Static Web App deployment token" >&2
     exit 1

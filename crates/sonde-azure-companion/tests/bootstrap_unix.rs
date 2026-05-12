@@ -471,24 +471,28 @@ exit 64
     );
     write_executable(&bin_dir.join("python3"), "#!/bin/sh\nexit 91\n");
     write_executable(&bin_dir.join("awk"), "#!/bin/sh\nexit 92\n");
-    // Find the real jq binary on the host system for pass-through
-    let jq_path = std::process::Command::new("which")
-        .arg("jq")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout)
-                    .ok()
-                    .map(|s| s.trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "/usr/bin/jq".to_string());
+    // Hermetic jq stub that handles the two invocations used by bootstrap.sh:
+    // 1. jq -e --arg uri <URI> 'index($uri) != null'  → exact membership test
+    // 2. jq -r --arg uri <URI> '(. // []) + [$uri] | join(" ")'  → merge URIs
     write_executable(
         &bin_dir.join("jq"),
-        &format!("#!/bin/sh\nexec {} \"$@\"\n", jq_path),
+        r#"#!/bin/sh
+input="$(cat)"
+for arg in "$@"; do
+  case "$arg" in
+    *index*) # Membership test: input is [] so URI is never present → exit 1
+      exit 1 ;;
+    *join*) # Merge: input is [] so result is just the URI
+      uri=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in --arg) shift; shift; uri="$1"; shift ;; *) shift ;; esac
+      done
+      printf '%s\n' "$uri"
+      exit 0 ;;
+  esac
+done
+exit 0
+"#,
     );
     write_executable(&bin_dir.join("zip"), "#!/bin/sh\n# Stub: create the output zip file (arg after -r)\nfor arg in \"$@\"; do case \"$arg\" in -*) ;; *) touch \"$arg\" 2>/dev/null; break ;; esac; done\nexit 0\n");
     write_executable(&bin_dir.join("curl"), "#!/bin/sh\nexit 0\n");

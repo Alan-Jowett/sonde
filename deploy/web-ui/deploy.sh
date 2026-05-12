@@ -6,6 +6,7 @@
 #
 # Prerequisites:
 #   - az CLI logged in
+#   - jq available (for JSON merging)
 #   - npm/npx available (for SWA CLI)
 #
 # Usage:
@@ -92,7 +93,7 @@ if echo "$CURRENT_URIS" | grep -Fq "$REDIRECT_URI"; then
   echo "  Redirect URI already registered"
 else
   # Merge with existing URIs to avoid overwriting the list
-  MERGED_URIS="$(echo "$CURRENT_URIS" | jq -r --arg uri "$REDIRECT_URI" '. + [$uri] | join(" ")')"
+  MERGED_URIS="$(echo "$CURRENT_URIS" | jq -r --arg uri "$REDIRECT_URI" '(. // []) + [$uri] | join(" ")')"
   az ad app update --id "$APP_OBJECT_ID" \
     --spa-redirect-uris $MERGED_URIS
   echo "  Added redirect URI: $REDIRECT_URI"

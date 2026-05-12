@@ -115,7 +115,9 @@ When the handler publishes a `DESIRED_STATE` message due to program divergence, 
 ### 9.1 Static Web App
 
 Azure Static Web App (free tier) provisioned via `static-web-app.bicep`.
-After Bicep deployment, deploy the SPA using the deployment script:
+After Bicep deployment, deploy the SPA using the deployment script.
+
+Prerequisites: `az` CLI (logged in), `jq`, and `npm`/`npx` (for the SWA CLI).
 
 ```bash
 ./deploy/web-ui/deploy.sh [RESOURCE_GROUP]
@@ -124,9 +126,11 @@ After Bicep deployment, deploy the SPA using the deployment script:
 The script:
 1. Discovers the SWA, function app, and storage account from the resource group
 2. Generates `config.json` with MSAL client ID, tenant ID, storage account, and function app name
-3. Registers the SWA hostname as a SPA redirect URI on the Entra app
-4. Adds Azure Storage API permission (`user_impersonation`) to the Entra app
+3. Registers the SWA hostname as a SPA redirect URI on the Entra app registration
+4. Adds Azure Storage API permission (`user_impersonation`) to the Entra app registration
 5. Deploys the web-ui content to the Static Web App using the SWA CLI
+
+> **Note:** Steps 3–4 mutate the Entra app registration associated with the Azure companion.
 
 After deployment, grant users the `Storage Table Data Contributor` role on the storage account.
 

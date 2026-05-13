@@ -304,7 +304,7 @@ When bootstrap is required, the Azure companion performs this sequence:
        `companionTenantId`), storage account name, and function app name.
     c. Obtains the SWA deployment token via `az staticwebapp secrets list`.
     d. Deploys the bundled SPA content (including generated `config.json`) to
-       the Static Web App.
+       the Static Web App using the pre-installed SWA CLI (`swa deploy`).
     e. Registers `https://<staticWebAppHostname>` as a SPA redirect URI on the
        Entra app registration, merging with any existing redirect URIs.
     f. Adds Azure Storage `user_impersonation` API permission to the Entra app.
@@ -595,7 +595,10 @@ COPY deploy/web-ui/index.html deploy/web-ui/app.js deploy/web-ui/style.css deplo
 
 It also includes the bootstrap script that runs `az login --use-device-code`
 and Azure deployment inside the bootstrap image. The `jq` utility is installed
-for JSON manipulation during SPA deployment (Entra redirect URI merging).
+for JSON manipulation during SPA deployment (Entra redirect URI merging), and
+Node.js/npm is installed and a pinned version of the SWA CLI
+(`@azure/static-web-apps-cli`) is pre-installed globally for SPA content
+deployment.
 
 This bundles the complete Azure provisioning surface and the Web UI SPA
 content into the dedicated bootstrap image. The runtime companion image no

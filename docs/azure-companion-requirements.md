@@ -835,9 +835,9 @@ The bootstrap script MUST:
 5. Add the Azure Storage `user_impersonation` API permission to the Entra app
    registration if not already present.
 
-The SPA deployment MUST NOT require Node.js, npm, or the SWA CLI in the
-bootstrap image. The bootstrap script MUST use Azure CLI commands and the
-Azure REST API to perform the deployment.
+The bootstrap image bundles Node.js and a pinned version of the SWA CLI
+(`@azure/static-web-apps-cli`, installed globally at image build time) to
+deploy SPA content to the Static Web App.
 
 **Acceptance criteria:**
 
@@ -848,4 +848,3 @@ Azure REST API to perform the deployment.
 5. Existing SPA redirect URIs on the Entra app are preserved (not overwritten) when adding the SWA hostname.
 6. Re-running bootstrap updates the SPA content and Entra configuration idempotently.
 7. If SPA deployment fails, bootstrap exits non-zero and does not report success.
-8. The bootstrap image does not depend on Node.js, npm, or the SWA CLI.

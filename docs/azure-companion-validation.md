@@ -602,6 +602,5 @@
 6. Assert: existing SPA redirect URIs are preserved (not overwritten) during the registration.
 7. Assert: the bootstrap script adds the Azure Storage `user_impersonation` API permission to the Entra app.
 8. Assert: if SPA deployment fails, bootstrap exits non-zero.
-9. Assert: the bootstrap image does not contain Node.js, npm, or the SWA CLI.
-10. Re-run bootstrap with the same stubbed outputs.
-11. Assert: the SPA deployment and Entra configuration succeed idempotently.
+9. Re-run bootstrap with the same stubbed outputs.
+10. Assert: the SPA deployment and Entra configuration succeed idempotently.

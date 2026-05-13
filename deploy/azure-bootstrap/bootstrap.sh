@@ -244,60 +244,20 @@ cat > "$web_ui_dir/config.json" <<CONFIGEOF
 CONFIGEOF
 echo "Generated config.json for SPA" >&2
 
-# Deploy SPA content to Static Web App.
-# First check if az staticwebapp deploy is available; if so use it directly.
-# Otherwise fall back to REST API with zip upload.
-if az staticwebapp deploy --help >/dev/null 2>&1; then
-    # The az CLI extension is available — use it for content deployment.
-    az staticwebapp deploy \
-        --name "$static_web_app_name" \
-        --resource-group "$resource_group_name" \
-        --source "$web_ui_dir" \
-        --output none 1>&2
-    echo "SPA content deployed via az staticwebapp deploy" >&2
-else
-    # Fallback: zip content and deploy via REST API using the deployment token.
-    echo "az staticwebapp deploy not available; using REST API fallback" >&2
-
-    swa_deployment_token="$(trim_string "$(az staticwebapp secrets list \
-        --name "$static_web_app_name" \
-        --resource-group "$resource_group_name" \
-        --query 'properties.apiKey' \
-        --output tsv)")"
-    if [ -z "$swa_deployment_token" ]; then
-        echo "failed to retrieve Static Web App deployment token" >&2
-        exit 1
-    fi
-
-    # Derive the content API region from the SWA resource location.
-    swa_location="$(az staticwebapp show \
-        --name "$static_web_app_name" \
-        --resource-group "$resource_group_name" \
-        --query 'location' \
-        --output tsv)"
-    if [ -z "$swa_location" ]; then
-        echo "failed to determine Static Web App location" >&2
-        exit 1
-    fi
-
-    spa_zip="$(mktemp "${TMPDIR:-/tmp}/sonde-spa-deploy.XXXXXX.zip")"
-    trap_cleanup() { rm -f "$spa_zip"; }
-    trap trap_cleanup EXIT
-
-    (cd "$web_ui_dir" && zip -r "$spa_zip" \
-        index.html app.js style.css staticwebapp.config.json config.json \
-        2>/dev/null)
-
-    curl -sf \
-        -X POST \
-        -H "Authorization: Bearer $swa_deployment_token" \
-        -H "Content-Type: application/zip" \
-        --data-binary "@$spa_zip" \
-        "https://content-${swa_location}.azurestaticapps.net/api/zipdeploy" || {
-        echo "SPA content deployment failed" >&2
-        exit 1
-    }
+# Deploy SPA content to Static Web App via the SWA CLI.
+swa_deployment_token="$(trim_string "$(az staticwebapp secrets list \
+    --name "$static_web_app_name" \
+    --resource-group "$resource_group_name" \
+    --query 'properties.apiKey' \
+    --output tsv)")"
+if [ -z "$swa_deployment_token" ]; then
+    echo "failed to retrieve Static Web App deployment token" >&2
+    exit 1
 fi
+
+swa deploy "$web_ui_dir" \
+    --deployment-token "$swa_deployment_token" \
+    --env production 1>&2
 echo "SPA content deployed to https://$static_web_app_hostname" >&2
 
 # ── Entra app configuration ─────────────────────────────────────────────────

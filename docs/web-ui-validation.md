@@ -25,10 +25,11 @@
 | T-WEB-0301 | WEB-0301 | `ProgramIngest` accepts ELF + metadata via JSON POST | Unit (Rust) | Pass |
 | T-WEB-0302 | WEB-0302 | Prevail verification runs; invalid ELF rejected | Unit (Rust) | Pass |
 | T-WEB-0303 | WEB-0303 | Program hash matches gateway computation | Unit (Rust) | Pass |
-| T-WEB-0304 | WEB-0304 | Program stored in `programs` table with all fields | Unit (Rust) | Pass |
+| T-WEB-0304 | WEB-0304 | Program stored in `programs` table with all fields | Integration | Planned |
 | T-WEB-0305 | WEB-0305 | Success returns hash+metadata; failure returns diagnostics | Unit (Rust) | Pass |
 | T-WEB-0306 | WEB-0306 | Oversized programs rejected | Unit (Rust) | Pass |
-| T-WEB-0307 | WEB-0307 | Empty ELF and multi-program ELF rejected | Unit (Rust) | Pass |
+| T-WEB-0307a | WEB-0307 | Empty ELF rejected | Unit (Rust) | Pass |
+| T-WEB-0307b | WEB-0307 | Multi-program ELF rejected | Unit (Rust) | Planned |
 | T-WEB-0308 | WEB-0308 | `source_filename` normalized to basename | Unit (Rust) | Pass |
 | T-WEB-0309 | WEB-0309 | `DESIRED_STATE` includes inline CBOR image on program divergence | Unit (Rust) | Planned |
 | T-WEB-0310 | WEB-0310 | `DESIRED_STATE` CBOR carries key 5 with program image bytes | Unit (Rust) | Planned |

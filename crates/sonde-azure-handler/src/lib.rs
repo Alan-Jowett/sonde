@@ -404,11 +404,15 @@ where
             }
         };
 
-        let source_filename_raw = body
-            .get("source_filename")
-            .and_then(|v| v.as_str())
-            .map(|s| Some(s.to_string()))
-            .unwrap_or(None);
+        let source_filename_raw = match body.get("source_filename") {
+            Some(serde_json::Value::String(s)) => Some(s.clone()),
+            Some(serde_json::Value::Null) | None => None,
+            Some(_) => {
+                return Err(IngestError::bad_request(
+                    "`source_filename` must be a string",
+                ));
+            }
+        };
         let source_filename = normalize_display_filename(&source_filename_raw);
 
         let abi_version = match body.get("abi_version") {
@@ -417,13 +421,14 @@ where
                 let raw = v.as_u64().ok_or_else(|| {
                     IngestError::bad_request("`abi_version` must be a non-negative integer")
                 })?;
-                let val = u32::try_from(raw).map_err(|_| {
-                    IngestError::bad_request(format!(
-                        "`abi_version` value {raw} exceeds maximum ({})",
-                        u32::MAX
-                    ))
-                })?;
-                Some(val)
+                // Azure Tables stores this as Edm.Int32, so cap at i32::MAX.
+                let max_abi = i32::MAX as u64;
+                if raw > max_abi {
+                    return Err(IngestError::bad_request(format!(
+                        "`abi_version` value {raw} exceeds Edm.Int32 maximum ({max_abi})"
+                    )));
+                }
+                Some(raw as u32)
             }
         };
 
@@ -2831,6 +2836,74 @@ mod tests {
         let hash_bytes = hex::decode(&resp1.program_hash).unwrap();
         let stored = store.load_program_image(&hash_bytes).await.unwrap();
         assert!(stored.is_some());
+    }
+
+    #[tokio::test]
+    async fn program_ingest_store_failure_returns_500() {
+        struct FailingProgramStore;
+
+        #[async_trait]
+        impl HandlerStore for FailingProgramStore {
+            async fn append_actual_state(&self, _: &ActualStateRow) -> Result<(), HandlerError> {
+                Ok(())
+            }
+            async fn load_latest_actual_state(
+                &self,
+                _: &str,
+            ) -> Result<Option<ActualStateRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn load_latest_desired_state(
+                &self,
+                _: &str,
+            ) -> Result<Option<DesiredStateRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn load_program_route(
+                &self,
+                _: &[u8],
+            ) -> Result<Option<ProgramRouteRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn load_program_image(&self, _: &[u8]) -> Result<Option<Vec<u8>>, HandlerError> {
+                Ok(None)
+            }
+            async fn store_program_image(&self, _: &ProgramImageRow) -> Result<(), HandlerError> {
+                Err(HandlerError::Store("simulated storage failure".to_string()))
+            }
+        }
+
+        let store = Arc::new(FailingProgramStore);
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(store, publisher, "downstream-queue");
+
+        let elf = make_test_elf(&minimal_bpf_code());
+        let body = make_ingest_body(&elf, None, None, None);
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 500);
+        assert!(err.message.contains("store program failed"));
+    }
+
+    #[tokio::test]
+    async fn program_ingest_rejects_non_string_source_filename() {
+        let (_store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let mut body = make_ingest_body(&elf, None, None, None);
+        body["source_filename"] = serde_json::json!(123);
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("source_filename"));
+    }
+
+    #[tokio::test]
+    async fn program_ingest_rejects_abi_version_above_i32_max() {
+        let (_store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let mut body = make_ingest_body(&elf, None, None, None);
+        body["abi_version"] = serde_json::json!(i32::MAX as u64 + 1);
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("abi_version"));
     }
 
     // Test the HTTP trigger envelope extraction.

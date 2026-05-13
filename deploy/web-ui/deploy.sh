@@ -91,25 +91,37 @@ REDIRECT_URI="https://$SWA_HOSTNAME"
 # Get current SPA redirect URIs and add ours if not present
 CURRENT_URIS="$(az ad app show --id "$APP_OBJECT_ID" \
   --query 'spa.redirectUris' -o json 2>/dev/null || echo '[]')"
-if echo "$CURRENT_URIS" | grep -Fq "$REDIRECT_URI"; then
+if [ -z "$CURRENT_URIS" ] || [ "$CURRENT_URIS" = "null" ]; then
+  CURRENT_URIS="[]"
+fi
+URI_EXISTS=0
+echo "$CURRENT_URIS" | jq -e --arg uri "$REDIRECT_URI" 'index($uri) != null' >/dev/null 2>&1 && URI_EXISTS=1
+if [ "$URI_EXISTS" -eq 1 ]; then
   echo "  Redirect URI already registered"
 else
   # Merge with existing URIs to avoid overwriting the list
   MERGED_URIS="$(echo "$CURRENT_URIS" | jq -c --arg uri "$REDIRECT_URI" '(. // []) + [$uri]')"
+  PATCH_BODY="$(jq -n -c --argjson uris "$MERGED_URIS" '{"spa":{"redirectUris":$uris}}')"
   az rest --method PATCH \
     --url "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
     --headers "Content-Type=application/json" \
-    --body "{\"spa\":{\"redirectUris\":$MERGED_URIS}}"
+    --body "$PATCH_BODY"
   echo "  Added redirect URI: $REDIRECT_URI"
 fi
 
 echo ""
 echo "=== Adding Azure Storage API permission ==="
-# Grant user_impersonation on Azure Storage (e406a681-f3d4-42a8-90b6-c2b029497af1)
+# Declare user_impersonation on Azure Storage (e406a681-f3d4-42a8-90b6-c2b029497af1)
 az ad app permission add --id "$APP_OBJECT_ID" \
   --api "e406a681-f3d4-42a8-90b6-c2b029497af1" \
   --api-permissions "da399722-a3ea-4c11-8b0d-7b37b3d5fa83=Scope" || true
-echo "  Azure Storage user_impersonation permission configured"
+# Grant admin consent so users don't need to consent individually
+az ad app permission grant \
+  --id "$COMPANION_CLIENT_ID" \
+  --api "e406a681-f3d4-42a8-90b6-c2b029497af1" \
+  --scope "user_impersonation" \
+  --output none 2>/dev/null || true
+echo "  Azure Storage user_impersonation permission granted"
 
 echo ""
 echo "=== Deploying SPA content ==="

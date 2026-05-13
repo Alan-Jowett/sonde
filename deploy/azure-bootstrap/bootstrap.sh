@@ -291,10 +291,11 @@ else
         echo "redirect URI merge produced empty result" >&2
         exit 1
     fi
+    patch_body="$(jq -n -c --argjson uris "$merged_uris" '{"spa":{"redirectUris":$uris}}')"
     az rest --method PATCH \
         --url "https://graph.microsoft.com/v1.0/applications/$app_object_id" \
         --headers "Content-Type=application/json" \
-        --body "{\"spa\":{\"redirectUris\":$merged_uris}}"
+        --body "$patch_body"
     echo "Added SPA redirect URI: $redirect_uri" >&2
 fi
 
@@ -305,8 +306,16 @@ else
     az ad app permission add --id "$app_object_id" \
         --api "e406a681-f3d4-42a8-90b6-c2b029497af1" \
         --api-permissions "da399722-a3ea-4c11-8b0d-7b37b3d5fa83=Scope"
-    echo "Azure Storage user_impersonation permission configured" >&2
+    echo "Azure Storage user_impersonation permission declared" >&2
 fi
+
+# Grant admin consent for Azure Storage so users don't need to consent individually
+az ad app permission grant \
+    --id "$companion_client_id" \
+    --api "e406a681-f3d4-42a8-90b6-c2b029497af1" \
+    --scope "user_impersonation" \
+    --output none 2>/dev/null || true
+echo "Azure Storage user_impersonation permission granted" >&2
 
 echo "Web UI deployment complete" >&2
 

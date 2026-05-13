@@ -85,7 +85,7 @@ deploy/web-ui/
   8. Return JSON: `{"program_hash": "hex", "size": N, "abi_version": N, "source_filename": "name"}`
   9. On failure: return JSON error with diagnostics
 - The uploaded ELF is verified and transformed; the persisted and delivered artifact is the deterministic CBOR program image, not the raw ELF
-- `programs` table schema: `PartitionKey="program"`, `RowKey=hex(program_hash)`, `source_filename`, `abi_version` (`Edm.Int32`), `cbor_image` (base64-encoded CBOR program image), `size_bytes` (`Edm.Int32`, CBOR image byte length), `verification_profile`, `created_at` (`Edm.DateTime`)
+- `programs` table schema: `PartitionKey="program"`, `RowKey=hex(program_hash)`, `source_filename`, `abi_version` (`Edm.Int32`), `cbor_image` (base64-encoded CBOR program image), `size_bytes` (`Edm.Int32`, CBOR image byte length), `verification_profile`, `created_at` (ISO 8601 UTC string)
 - Idempotent: re-ingesting the same ELF produces the same program hash; metadata fields (`source_filename`, `abi_version`) are overwritten on re-ingest
 - Error responses use HTTP status codes: 400 (malformed JSON, missing `elf` field, invalid base64), 413 (ELF exceeds size limit), 422 (Prevail verification failure, invalid ELF), 500 (storage/internal error)
 
@@ -207,7 +207,7 @@ After deployment, grant users the `Storage Table Data Contributor` role on the s
 - `lib.rs` implements `handle_program_ingest()` which reuses
   `ProgramLibrary::ingest_elf()` from `sonde-gateway` for Prevail verification,
   CBOR encoding, and SHA-256 hashing.
-- The HTTP trigger response uses the Azure Functions `$return` output binding
+- The HTTP trigger response uses the Azure Functions `res` output binding
   envelope format with `statusCode`, `headers`, and `body` fields.
 
 > **Note**: The `ProgramIngest` endpoint currently uses `authLevel: "function"`

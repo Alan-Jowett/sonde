@@ -382,10 +382,15 @@ where
             )));
         }
 
-        let profile_str = body
-            .get("verification_profile")
-            .and_then(|v| v.as_str())
-            .unwrap_or("resident");
+        let profile_str = match body.get("verification_profile") {
+            Some(serde_json::Value::Null) | None => "resident",
+            Some(serde_json::Value::String(s)) => s.as_str(),
+            Some(_) => {
+                return Err(IngestError::bad_request(
+                    "`verification_profile` must be a string (`resident` or `ephemeral`)",
+                ));
+            }
+        };
         let profile = match profile_str {
             "resident" => VerificationProfile::Resident,
             "ephemeral" => VerificationProfile::Ephemeral,
@@ -424,9 +429,15 @@ where
 
         let lib = ProgramLibrary::new();
         let mut record = lib.ingest_elf(&elf_bytes, profile).map_err(|e| {
-            IngestError::unprocessable(format!(
-                "program verification/ingestion failed: {e}"
-            ))
+            use sonde_gateway::program::ProgramError;
+            match &e {
+                ProgramError::Internal(_) => IngestError::internal(format!(
+                    "program ingestion internal error: {e}"
+                )),
+                _ => IngestError::unprocessable(format!(
+                    "program verification/ingestion failed: {e}"
+                )),
+            }
         })?;
         record.abi_version = abi_version;
         record.source_filename = source_filename.clone();
@@ -1380,6 +1391,7 @@ mod tests {
         desired_rows: Mutex<HashMap<String, Vec<DesiredStateRow>>>,
         routes: Mutex<HashMap<String, ProgramRouteRow>>,
         program_images: Mutex<HashMap<String, Vec<u8>>>,
+        stored_program_rows: Mutex<Vec<ProgramImageRow>>,
     }
 
     impl MemoryStore {
@@ -1486,6 +1498,7 @@ mod tests {
                 .lock()
                 .await
                 .insert(hex::encode(&row.program_hash), row.cbor_image.clone());
+            self.stored_program_rows.lock().await.push(row.clone());
             Ok(())
         }
     }
@@ -2616,6 +2629,7 @@ mod tests {
     }
 
     // T-WEB-0301: ProgramIngest accepts ELF + metadata via JSON POST
+    // T-WEB-0304: Program stored in programs table with all fields
     #[tokio::test]
     async fn program_ingest_accepts_valid_elf() {
         let (store, handler) = make_ingest_handler();
@@ -2632,6 +2646,18 @@ mod tests {
         let hash_bytes = hex::decode(&resp.program_hash).unwrap();
         let stored = store.load_program_image(&hash_bytes).await.unwrap();
         assert!(stored.is_some());
+
+        // T-WEB-0304: Assert all metadata fields were passed to storage.
+        let rows = store.stored_program_rows.lock().await;
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(hex::encode(&row.program_hash), resp.program_hash);
+        assert_eq!(row.source_filename.as_deref(), Some("sensor.o"));
+        assert_eq!(row.abi_version, Some(1));
+        assert_eq!(row.size_bytes, resp.size);
+        assert_eq!(row.verification_profile, "resident");
+        assert!(!row.created_at.is_empty());
+        assert!(!row.cbor_image.is_empty());
     }
 
     // T-WEB-0302: Prevail verification runs; invalid ELF rejected
@@ -2690,6 +2716,17 @@ mod tests {
         let err = handler.handle_program_ingest(&body).await.unwrap_err();
         assert_eq!(err.status_code, 413);
         assert!(err.message.contains("exceeds limit"));
+    }
+
+    #[tokio::test]
+    async fn program_ingest_exact_size_limit_not_rejected_as_too_large() {
+        let (_store, handler) = make_ingest_handler();
+        // Exactly at the limit — should NOT be rejected as 413.
+        // It will fail later as invalid ELF (422), but that's expected.
+        let at_limit_elf = vec![0u8; MAX_ELF_UPLOAD_SIZE];
+        let body = make_ingest_body(&at_limit_elf, None, None, None);
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_ne!(err.status_code, 413, "exact-boundary upload must not be rejected as too large");
     }
 
     // T-WEB-0307: Empty ELF rejected
@@ -2764,6 +2801,30 @@ mod tests {
         let body = make_ingest_body(&elf, None, None, None);
         let resp = handler.handle_program_ingest(&body).await.unwrap();
         assert!(!resp.program_hash.is_empty());
+    }
+
+    #[tokio::test]
+    async fn program_ingest_ephemeral_profile() {
+        let (store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let body = make_ingest_body(&elf, None, None, Some("ephemeral"));
+        let resp = handler.handle_program_ingest(&body).await.unwrap();
+        assert!(!resp.program_hash.is_empty());
+
+        let rows = store.stored_program_rows.lock().await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].verification_profile, "ephemeral");
+    }
+
+    #[tokio::test]
+    async fn program_ingest_non_string_verification_profile_rejected() {
+        let (_store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let mut body = make_ingest_body(&elf, None, None, None);
+        body["verification_profile"] = serde_json::json!(42);
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("verification_profile"));
     }
 
     #[tokio::test]

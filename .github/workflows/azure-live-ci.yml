@@ -340,7 +340,7 @@ jobs:
             --name "$SWA_NAME" \
             --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
             --query 'properties.apiKey' -o tsv)"
-          npx --yes @azure/static-web-apps-cli deploy ./deploy/web-ui \
+          npx --yes @azure/static-web-apps-cli@2.0.9 deploy ./deploy/web-ui \
             --deployment-token "$DEPLOYMENT_TOKEN" \
             --env production
 

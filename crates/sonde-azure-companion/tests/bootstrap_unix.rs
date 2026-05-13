@@ -571,7 +571,8 @@ exit 0
     assert!(az_calls.contains("ad app update") || az_calls.contains("ad app permission"));
 
     // Verify swa deploy was invoked with the web-ui directory and deployment token
-    let swa_calls = fs::read_to_string(swa_log).unwrap();
+    let swa_calls = fs::read_to_string(&swa_log)
+        .expect("swa log file not found — swa was never invoked by bootstrap");
     assert!(
         swa_calls.contains("deploy"),
         "swa deploy was not invoked: {swa_calls}"

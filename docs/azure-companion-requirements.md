@@ -835,9 +835,9 @@ The bootstrap script MUST:
 5. Add the Azure Storage `user_impersonation` API permission to the Entra app
    registration if not already present.
 
-The bootstrap image bundles Node.js and uses the SWA CLI
-(`@azure/static-web-apps-cli` via `npx`) to deploy SPA content to the Static
-Web App.
+The bootstrap image bundles Node.js and a pinned version of the SWA CLI
+(`@azure/static-web-apps-cli`, installed globally at image build time) to
+deploy SPA content to the Static Web App.
 
 **Acceptance criteria:**
 

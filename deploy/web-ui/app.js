@@ -545,7 +545,9 @@ async function renderDesiredState() {
     return;
   }
 
+  const savedMessage = APP.viewMessage;
   renderCard('Desired State', '<p class="muted">Loading desired state…</p>');
+  APP.viewMessage = savedMessage;
 
   try {
     const [programs, desiredRows] = await Promise.all([
@@ -664,7 +666,9 @@ async function renderPrograms() {
     return;
   }
 
+  const savedMessage = APP.viewMessage;
   renderCard('Programs', '<p class="muted">Loading programs…</p>');
+  APP.viewMessage = savedMessage;
 
   try {
     const programs = await listPrograms();
@@ -794,7 +798,9 @@ async function renderRoutes() {
     return;
   }
 
+  const savedMessage = APP.viewMessage;
   renderCard('Routes', '<p class="muted">Loading routes…</p>');
+  APP.viewMessage = savedMessage;
 
   try {
     const [programs, routes] = await Promise.all([

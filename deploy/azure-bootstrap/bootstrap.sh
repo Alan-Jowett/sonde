@@ -317,6 +317,21 @@ az ad app permission grant \
     --output none 2>/dev/null || true
 echo "Azure Storage user_impersonation permission granted" >&2
 
+# Assign Storage Table Data Contributor to the deploying user so they can
+# access the programs table via the SPA immediately after bootstrap.
+deployer_principal="$(az ad signed-in-user show --query id -o tsv 2>/dev/null || true)"
+if [ -z "$deployer_principal" ]; then
+    echo "WARNING: Could not determine signed-in user. Skipping role assignment." >&2
+    echo "  Grant 'Storage Table Data Contributor' manually on storage account $storage_account_name" >&2
+else
+    storage_scope="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$resource_group_name/providers/Microsoft.Storage/storageAccounts/$storage_account_name"
+    az role assignment create --assignee "$deployer_principal" \
+        --role "Storage Table Data Contributor" \
+        --scope "$storage_scope" \
+        --output none 2>/dev/null || true
+    echo "Assigned 'Storage Table Data Contributor' to deploying user" >&2
+fi
+
 echo "Web UI deployment complete" >&2
 
 printf '%s\n' "$deployment_outputs"

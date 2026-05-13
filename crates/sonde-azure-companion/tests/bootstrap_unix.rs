@@ -464,6 +464,9 @@ if [ "$#" -ge 4 ] && [ "$1" = "functionapp" ] && [ "$2" = "function" ] && [ "$3"
   printf '1\n'
   exit 0
 fi
+if [ "$#" -ge 2 ] && [ "$1" = "rest" ]; then
+  exit 0
+fi
 exit 64
 "#,
             az_log.display()
@@ -471,27 +474,30 @@ exit 64
     );
     write_executable(&bin_dir.join("python3"), "#!/bin/sh\nexit 91\n");
     write_executable(&bin_dir.join("awk"), "#!/bin/sh\nexit 92\n");
-    // Hermetic jq stub that handles the two invocations used by bootstrap.sh:
-    // 1. jq -e --arg uri <URI> 'index($uri) != null'  → exact membership test
-    // 2. jq -r --arg uri <URI> '(. // []) + [$uri] | join(" ")'  → merge URIs
+    // Hermetic jq stub that handles the invocations used by bootstrap.sh:
+    // 1. jq -e --arg uri <URI> 'index($uri) != null'  → membership test (exit 1 = not found)
+    // 2. jq -c --arg uri <URI> '(. // []) + [$uri]'   → merge URIs (output JSON array)
+    // 3. jq -n -c --argjson uris <JSON> '{"spa":...}' → build PATCH body
     write_executable(
         &bin_dir.join("jq"),
         r#"#!/bin/sh
-input="$(cat)"
-for arg in "$@"; do
-  case "$arg" in
-    *index*) # Membership test: input is [] so URI is never present → exit 1
-      exit 1 ;;
-    *join*) # Merge: input is [] so result is just the URI
-      uri=""
-      while [ "$#" -gt 0 ]; do
-        case "$1" in --arg) shift; shift; uri="$1"; shift ;; *) shift ;; esac
-      done
-      printf '%s\n' "$uri"
-      exit 0 ;;
+cat >/dev/null 2>&1 || true
+# Find the expression (last argument) and extract --arg/--argjson values
+uri_val=""
+argjson_val=""
+while [ "$#" -gt 1 ]; do
+  case "$1" in
+    --arg)   uri_val="$3"; shift 3 ;;
+    --argjson) argjson_val="$3"; shift 3 ;;
+    *)       shift ;;
   esac
 done
-exit 0
+expr="$1"
+case "$expr" in
+  *index*)  exit 1 ;;
+  *spa*)    printf '{"spa":{"redirectUris":%s}}\n' "$argjson_val"; exit 0 ;;
+  *)        printf '["%s"]\n' "$uri_val"; exit 0 ;;
+esac
 "#,
     );
     let swa_log = temp.path().join("swa.log");

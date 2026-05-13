@@ -20,12 +20,14 @@ WORKDIR /sonde
 COPY . .
 RUN cargo build --locked --release -p sonde-azure-handler
 
-RUN mkdir -p /out/UpstreamConnector /pkg \
+RUN mkdir -p /out/UpstreamConnector /out/ProgramIngest /pkg \
     && cp target/release/sonde-azure-handler /out/sonde-azure-handler \
     && chmod 0755 /out/sonde-azure-handler \
     && cp crates/sonde-azure-handler/function-app/host.json /out/host.json \
     && cp crates/sonde-azure-handler/function-app/UpstreamConnector/function.json \
        /out/UpstreamConnector/function.json \
+    && cp crates/sonde-azure-handler/function-app/ProgramIngest/function.json \
+       /out/ProgramIngest/function.json \
     && cd /out && zip -q -r /pkg/sonde-azure-handler-function.zip .
 
 # ── Stage 2: export ─────────────────────────────────────────────────────────

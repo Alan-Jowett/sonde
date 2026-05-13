@@ -184,6 +184,7 @@ unchanged".
 | `assigned_program_hash` | 1 | bstr/null | Desired resident program hash. `null` means no resident program assignment is desired. |
 | `schedule_interval_s` | 2 | uint/null | Desired node wake interval in seconds. `null` means no scheduled interval target is desired in this draft. |
 | `ephemeral_program_hash` | 3 | bstr/null | Desired ephemeral program hash to queue when reconciliation determines one is needed. `null` means no ephemeral run is requested. |
+| `assigned_program_image` | 5 | bstr/null | CBOR program image bytes for the assigned program. Present when the control plane embeds the program image inline so the gateway can ingest it into its local `ProgramLibrary` without a separate fetch. Absent or `null` means no inline image is provided; the gateway must already have the program locally. |
 
 Fields not yet defined by this draft remain reserved for future desired-state
 extension. Receivers MUST ignore unknown integer keys.

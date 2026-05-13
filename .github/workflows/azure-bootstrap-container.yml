@@ -107,6 +107,7 @@ jobs:
               expected = {
                   "host.json",
                   "UpstreamConnector/function.json",
+                  "ProgramIngest/function.json",
                   "sonde-azure-handler",
               }
               missing = expected.difference(names)
@@ -173,6 +174,7 @@ jobs:
                 names = set(archive.namelist())
                 assert "host.json" in names
                 assert "UpstreamConnector/function.json" in names
+                assert "ProgramIngest/function.json" in names
                 assert "sonde-azure-handler" in names
             PY
                     exit 0

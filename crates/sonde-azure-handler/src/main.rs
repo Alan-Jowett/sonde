@@ -12,8 +12,8 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::json;
 use sonde_azure_handler::{
-    extract_trigger_payload, AzureHandler, AzureTablesStore, HandlerError, RuntimeConfig,
-    StorageQueuePublisher,
+    extract_http_trigger_body, extract_trigger_payload, format_ingest_response, AzureHandler,
+    AzureTablesStore, HandlerError, RuntimeConfig, StorageQueuePublisher,
 };
 use tokio::net::TcpListener;
 use tracing_subscriber::prelude::*;
@@ -58,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(3000);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let app = Router::new()
+        .route("/ProgramIngest", post(program_ingest))
         .route("/", post(invoke))
         .route("/{*path}", post(invoke))
         .with_state(state);
@@ -84,4 +85,33 @@ async fn invoke(State(state): State<AppState>, body: Bytes) -> Response {
 async fn handle_invocation(state: &AppState, body: &[u8]) -> Result<(), HandlerError> {
     let payload = extract_trigger_payload(body)?;
     state.handler.handle_payload(&payload).await
+}
+
+async fn program_ingest(State(state): State<AppState>, body: Bytes) -> Response {
+    let json_body = match extract_http_trigger_body(&body) {
+        Ok(body) => body,
+        Err(err) => {
+            let msg = err.to_string();
+            tracing::error!(error = msg, "program ingest: failed to parse HTTP envelope");
+            let resp = format_ingest_response(400, &serde_json::json!({ "error": msg }));
+            return (StatusCode::OK, Json(resp)).into_response();
+        }
+    };
+
+    match state.handler.handle_program_ingest(&json_body).await {
+        Ok(ingest_resp) => {
+            let resp = format_ingest_response(
+                200,
+                &serde_json::to_value(&ingest_resp).unwrap_or_default(),
+            );
+            (StatusCode::OK, Json(resp)).into_response()
+        }
+        Err(ingest_err) => {
+            let msg = ingest_err.message.clone();
+            let status = ingest_err.status_code;
+            tracing::error!(error = msg, http_status = status, "program ingest failed");
+            let resp = format_ingest_response(status, &serde_json::json!({ "error": msg }));
+            (StatusCode::OK, Json(resp)).into_response()
+        }
+    }
 }

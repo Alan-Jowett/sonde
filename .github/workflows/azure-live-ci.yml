@@ -290,10 +290,17 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy SPA to Static Web App
+      - name: Deploy SPA via bootstrap image
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "Building bootstrap image..."
+          docker build \
+            -f .github/docker/Dockerfile.azure-bootstrap \
+            -t sonde-azure-bootstrap:ci \
+            .
+
           SWA_NAME="$(python3 -c "
           import json
           d = json.load(open('.azure-live-state/deployment.json'))
@@ -325,24 +332,29 @@ jobs:
           print(d['properties']['outputs']['functionAppName']['value'])
           ")"
 
-          echo "Generating config.json for SPA..."
-          cat > deploy/web-ui/config.json <<CFGEOF
-          {
-            "msalClientId": "$CLIENT_ID",
-            "msalAuthority": "https://login.microsoftonline.com/$TENANT_ID",
-            "storageAccount": "$STORAGE_ACCOUNT",
-            "functionAppName": "$FUNCTION_APP"
-          }
-          CFGEOF
-
-          echo "Deploying SPA to $SWA_NAME ($SWA_HOSTNAME)..."
+          echo "Deploying SPA to $SWA_NAME ($SWA_HOSTNAME) via bootstrap image..."
           DEPLOYMENT_TOKEN="$(az staticwebapp secrets list \
             --name "$SWA_NAME" \
             --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
             --query 'properties.apiKey' -o tsv)"
-          npx --yes @azure/static-web-apps-cli@2.0.9 deploy ./deploy/web-ui \
-            --deployment-token "$DEPLOYMENT_TOKEN" \
-            --env production
+
+          # Run swa deploy inside the bootstrap image to validate that the
+          # image has all required native dependencies (libicu, etc.).
+          docker run --rm \
+            sonde-azure-bootstrap:ci \
+            sh -c "
+              cat > /opt/sonde/deploy/web-ui/config.json <<'CFGEOF'
+          {
+            \"msalClientId\": \"$CLIENT_ID\",
+            \"msalAuthority\": \"https://login.microsoftonline.com/$TENANT_ID\",
+            \"storageAccount\": \"$STORAGE_ACCOUNT\",
+            \"functionAppName\": \"$FUNCTION_APP\"
+          }
+          CFGEOF
+              swa deploy /opt/sonde/deploy/web-ui \
+                --deployment-token '$DEPLOYMENT_TOKEN' \
+                --env production
+            "
 
           echo "Verifying SPA is reachable..."
           for attempt in $(seq 1 12); do

@@ -2623,7 +2623,8 @@ mod tests {
     }
 
     // T-WEB-0301: ProgramIngest accepts ELF + metadata via JSON POST
-    // T-WEB-0304: Program stored in programs table with all fields
+    // Also verifies all metadata fields are passed to the store (partial
+    // coverage toward T-WEB-0304; full integration coverage is planned).
     #[tokio::test]
     async fn program_ingest_accepts_valid_elf() {
         let (store, handler) = make_ingest_handler();
@@ -2641,7 +2642,7 @@ mod tests {
         let stored = store.load_program_image(&hash_bytes).await.unwrap();
         assert!(stored.is_some());
 
-        // T-WEB-0304: Assert all metadata fields were passed to storage.
+        // Assert all metadata fields were passed to storage.
         let rows = store.stored_program_rows.lock().await;
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
@@ -2904,6 +2905,32 @@ mod tests {
         let err = handler.handle_program_ingest(&body).await.unwrap_err();
         assert_eq!(err.status_code, 400);
         assert!(err.message.contains("abi_version"));
+    }
+
+    #[tokio::test]
+    async fn program_ingest_accepts_abi_version_at_i32_max() {
+        let (_store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let mut body = make_ingest_body(&elf, None, None, None);
+        body["abi_version"] = serde_json::json!(i32::MAX);
+        let resp = handler.handle_program_ingest(&body).await.unwrap();
+        assert_eq!(resp.abi_version, Some(i32::MAX as u32));
+    }
+
+    #[test]
+    fn chrono_iso8601_utc_now_has_valid_format() {
+        let ts = chrono_iso8601_utc_now();
+        // Must match YYYY-MM-DDTHH:MM:SSZ
+        assert_eq!(ts.len(), 20, "unexpected length: {ts}");
+        assert!(ts.ends_with('Z'), "must end with Z: {ts}");
+        assert_eq!(&ts[4..5], "-");
+        assert_eq!(&ts[7..8], "-");
+        assert_eq!(&ts[10..11], "T");
+        assert_eq!(&ts[13..14], ":");
+        assert_eq!(&ts[16..17], ":");
+        // Year must be >= 2025
+        let year: u32 = ts[0..4].parse().unwrap();
+        assert!(year >= 2025, "year {year} too low");
     }
 
     // Test the HTTP trigger envelope extraction.

@@ -86,7 +86,7 @@ deploy/web-ui/
   9. On failure: return JSON error with diagnostics
 - The uploaded ELF is verified and transformed; the persisted and delivered artifact is the deterministic CBOR program image, not the raw ELF
 - `programs` table schema: `PartitionKey="program"`, `RowKey=hex(program_hash)`, `source_filename`, `abi_version` (`Edm.Int32`), `cbor_image` (base64-encoded CBOR program image), `size_bytes` (`Edm.Int32`, CBOR image byte length), `verification_profile`, `created_at` (ISO 8601 UTC string)
-- Idempotent: re-ingesting the same ELF produces the same program hash; metadata fields (`source_filename`, `abi_version`) are overwritten on re-ingest
+- Idempotent: re-ingesting the same ELF produces the same program hash; all metadata fields (`source_filename`, `abi_version`, `verification_profile`, `created_at`) are overwritten on re-ingest (last-writer-wins)
 - Error responses use HTTP status codes: 400 (malformed JSON, missing `elf` field, invalid base64), 413 (ELF exceeds size limit), 422 (Prevail verification failure, invalid ELF), 500 (storage/internal error)
 
 #### 6.1.1 Custom Handler Routing
@@ -96,7 +96,7 @@ dedicated `handle_program_ingest` handler, separate from the catch-all
 `/{*path}` route used for queue-triggered connector messages. The handler:
 
 1. Extracts the HTTP trigger envelope from the Azure Functions invocation request
-2. Reads `Data.req.Body` (JSON string) and `Data.req.Headers`
+2. Reads `Data.req.Body` (JSON string)
 3. Parses the JSON body to extract `elf`, `source_filename`, `abi_version`, `verification_profile`
 4. Processes the program through `ProgramLibrary`
 5. Returns an Azure Functions HTTP output binding response:
@@ -132,8 +132,9 @@ async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), Handler
 When the handler publishes a `DESIRED_STATE` message due to program divergence, it fetches the CBOR program image from the `programs` table and embeds it at CBOR key 5 (`assigned_program_image`, `bstr`). The companion forwards this opaque payload to the gateway, which ingests the inline image into its local `ProgramLibrary`.
 
 > **Note**: The gateway's `DESIRED_STATE` handler (`connector.rs`) does not yet
-> read key 5. A follow-up change to `gateway-companion-api.md` and
-> `connector.rs` is required to parse and ingest the inline program image.
+> read key 5. Key 5 (`assigned_program_image`) is now documented in
+> `gateway-companion-api.md` §3.2.2. A follow-up change to `connector.rs` is
+> required to parse and ingest the inline program image.
 
 ---
 

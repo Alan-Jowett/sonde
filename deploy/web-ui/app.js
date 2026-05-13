@@ -730,9 +730,12 @@ async function renderPrograms() {
         const token = await getToken();
         const arrayBuf = await file.arrayBuffer();
         const bytes = new Uint8Array(arrayBuf);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        const elfBase64 = btoa(binary);
+        const chunkSize = 8192;
+        const chunks = [];
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize)));
+        }
+        const elfBase64 = btoa(chunks.join(''));
 
         const payload = {
           elf: elfBase64,

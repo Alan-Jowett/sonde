@@ -255,7 +255,7 @@ if [ -z "$swa_deployment_token" ]; then
     exit 1
 fi
 
-npx --yes @azure/static-web-apps-cli deploy "$web_ui_dir" \
+swa deploy "$web_ui_dir" \
     --deployment-token "$swa_deployment_token" \
     --env production 1>&2
 echo "SPA content deployed to https://$static_web_app_hostname" >&2

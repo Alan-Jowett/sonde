@@ -494,7 +494,14 @@ done
 exit 0
 "#,
     );
-    write_executable(&bin_dir.join("npx"), "#!/bin/sh\nexit 0\n");
+    let swa_log = temp.path().join("swa.log");
+    write_executable(
+        &bin_dir.join("swa"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{}\"\nexit 0\n",
+            swa_log.display()
+        ),
+    );
 
     // Create a temporary web-ui directory with the expected SPA files.
     let web_ui_dir = temp.path().join("web-ui");
@@ -562,6 +569,17 @@ exit 0
     assert!(az_calls.contains("staticwebapp secrets list"));
     assert!(az_calls.contains("ad app show"));
     assert!(az_calls.contains("ad app update") || az_calls.contains("ad app permission"));
+
+    // Verify swa deploy was invoked with the web-ui directory and deployment token
+    let swa_calls = fs::read_to_string(swa_log).unwrap();
+    assert!(
+        swa_calls.contains("deploy"),
+        "swa deploy was not invoked: {swa_calls}"
+    );
+    assert!(
+        swa_calls.contains("--deployment-token"),
+        "swa deploy missing --deployment-token: {swa_calls}"
+    );
 }
 
 #[test]

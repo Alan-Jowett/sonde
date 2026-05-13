@@ -355,7 +355,8 @@ jobs:
             sleep 10
           done
           if [ "$http_code" != "200" ]; then
-            echo "::warning::SPA not reachable after 120s (HTTP $http_code)"
+            echo "::error::SPA not reachable after 120s (HTTP $http_code)"
+            exit 1
           fi
 
       - name: Refresh Azure login before handler health check

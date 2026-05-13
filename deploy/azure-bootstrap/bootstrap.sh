@@ -282,8 +282,8 @@ echo "$current_uris" | jq -e --arg uri "$redirect_uri" 'index($uri) != null' >/d
 if [ "$uri_exists" -eq 1 ]; then
     echo "SPA redirect URI already registered" >&2
 else
-    merged_uris="$(echo "$current_uris" | jq -r --arg uri "$redirect_uri" \
-        '(. // []) + [$uri] | join(" ")')" || {
+    merged_uris="$(echo "$current_uris" | jq -c --arg uri "$redirect_uri" \
+        '(. // []) + [$uri]')" || {
         echo "failed to merge redirect URIs" >&2
         exit 1
     }
@@ -291,8 +291,10 @@ else
         echo "redirect URI merge produced empty result" >&2
         exit 1
     fi
-    az ad app update --id "$app_object_id" \
-        --spa-redirect-uris $merged_uris
+    az rest --method PATCH \
+        --url "https://graph.microsoft.com/v1.0/applications/$app_object_id" \
+        --headers "Content-Type=application/json" \
+        --body "{\"spa\":{\"redirectUris\":$merged_uris}}"
     echo "Added SPA redirect URI: $redirect_uri" >&2
 fi
 

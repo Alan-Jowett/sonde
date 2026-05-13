@@ -173,6 +173,11 @@ jobs:
           docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
             'whoami | grep -q sonde && touch /var/lib/sonde/test && rm /var/lib/sonde/test'
 
+      - name: Smoke test — runtime directory writable by non-root user
+        run: |
+          docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \
+            'whoami | grep -q sonde && touch /var/run/sonde/test && rm /var/run/sonde/test'
+
       - name: Smoke test — bundled modem images
         run: |
           docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:smoke-${{ matrix.arch }} -c \

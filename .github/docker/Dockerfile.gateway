@@ -51,10 +51,11 @@ FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d650
 # Non-root user for the gateway process (GW-1802 AC3).
 RUN addgroup -S sonde && adduser -S sonde -G sonde \
     && mkdir -p /var/lib/sonde \
+       /var/run/sonde \
        /usr/local/share/sonde/test-programs \
        /usr/local/share/sonde/firmware/modem/default \
        /usr/local/share/sonde/firmware/modem/verbose \
-    && chown sonde:sonde /var/lib/sonde
+    && chown sonde:sonde /var/lib/sonde /var/run/sonde
 
 COPY --from=builder /opt/espflash/bin/espflash             /usr/local/bin/
 COPY --from=builder /src/target/release/sonde-gateway      /usr/local/bin/

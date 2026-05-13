@@ -18,7 +18,7 @@ cd deploy/docker-compose
 
 # 1. Create your environment file
 cp .env.example .env
-# Edit .env — at minimum set SONDE_MODEM_PORT if it differs from /dev/ttyACM0
+# Edit .env — set SONDE_MODEM_GID to: stat -c '%g' /dev/ttyACM0
 
 # 2. Start the stack
 docker compose up -d
@@ -100,7 +100,7 @@ See [`.env.example`](.env.example) for the full list with documentation.
 | Variable | Description |
 |----------|-------------|
 | `SONDE_IMAGE_TAG` | Container image tag (default: `latest`) |
-| `SONDE_MODEM_GID` | Host group for modem device access (default: `dialout`) |
+| `SONDE_MODEM_GID` | Numeric host group ID for modem device access (find with `stat -c '%g' /dev/ttyACM0`) |
 | `SONDE_ESPNOW_CHANNEL` | ESP-NOW radio channel 1–14 (default: `1`) |
 | `SONDE_AZURE_SUBSCRIPTION_ID` | Azure subscription override |
 | `SONDE_AZURE_BOOTSTRAP_IMAGE` | Bootstrap container image override |
@@ -128,11 +128,13 @@ docker compose down -v
 
 ### Gateway fails to start
 
-- **Permission denied on serial port**: Check `SONDE_MODEM_GID` matches
-  the host group that owns the modem device:
+- **Permission denied on serial port**: `SONDE_MODEM_GID` must be the
+  **numeric** group ID that owns the modem device on the host, not a
+  group name (container group names may not match the host). Find it with:
   ```bash
-  stat -c '%G (%g)' /dev/ttyACM0
+  stat -c '%g' /dev/ttyACM0
   ```
+  Set the result in your `.env` file as `SONDE_MODEM_GID=<number>`.
 - **Modem not found**: Verify the device path in `SONDE_MODEM_PORT` and
   that the modem is plugged in.
 

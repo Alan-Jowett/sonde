@@ -40,7 +40,7 @@ services:
     devices:
       - "${SONDE_MODEM_PORT:-/dev/ttyACM0}:${SONDE_MODEM_PORT:-/dev/ttyACM0}"
     group_add:
-      - "${SONDE_MODEM_GID:-dialout}"
+      - "${SONDE_MODEM_GID}"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sonde-admin", "--socket", "/var/run/sonde/admin.sock", "node", "list"]

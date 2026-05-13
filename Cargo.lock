@@ -6260,25 +6260,25 @@ dependencies = [
 
 [[package]]
 name = "serial2"
-version = "0.2.36"
+version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcdbc46aa3882ec3d48ec2b5abcb4f0d863a13d7599265f3faa6d851f23c12f3"
+checksum = "9eb6ea5562eeaed6936b8b54e086aa0f88b9e5b1bef45beb038e2519fa1185b1"
 dependencies = [
  "cfg-if",
  "libc",
- "winapi",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "serial2-tokio"
-version = "0.1.23"
+version = "0.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce7e4caf7494eb5f8ce1addd7cd1bf817cb94c11ccb083e5969dce970157f66c"
+checksum = "241cf29fa78f0d2437fd66ccbe7eca453fd3e3466b51368e3faf3887e9132824"
 dependencies = [
  "libc",
  "serial2",
  "tokio",
- "winapi",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

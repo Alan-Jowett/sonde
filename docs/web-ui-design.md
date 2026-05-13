@@ -186,7 +186,7 @@ The script:
 4. Adds Azure Storage API permission (`user_impersonation`) to the Entra app registration
 5. Exposes `api://<clientId>/user_impersonation` API scope on the Entra app
    registration (required for EasyAuth token validation on the Function App)
-6. Configures EasyAuth on the Function App via `az webapp auth` CLI with the
+6. Configures EasyAuth on the Function App via ARM REST API with the
    companion Entra app as the identity provider and `Return401` for
    unauthenticated requests
 7. Deploys the web-ui content to the Static Web App using the SWA CLI
@@ -241,10 +241,10 @@ added to the Function App with the following configuration:
   — includes the companion client ID so the SPA's tokens (audience matching the
   client ID) are accepted.
 - `identityProviders.azureActiveDirectory.validation.allowedAudiences` — includes
-  `api://<clientId>` so that tokens acquired with the
-  `api://<clientId>/user_impersonation` scope are accepted. Without this field,
-  EasyAuth may reject valid SPA tokens whose audience is the Application ID URI
-  rather than the raw client ID.
+  both `api://<clientId>` and the bare `<clientId>`. The Application ID URI form
+  matches v1 access tokens (the default); the bare client ID matches v2 access
+  tokens. Including both makes EasyAuth robust against changes to the Entra app's
+  `requestedAccessTokenVersion` setting.
 
 **Queue-triggered invocations are unaffected.** Azure Functions queue triggers
 are invoked by the runtime, not via HTTP. EasyAuth only applies to HTTP-triggered

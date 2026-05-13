@@ -176,6 +176,7 @@ resource authSettings 'Microsoft.Web/sites/config@2024-04-01' = {
         validation: {
           allowedAudiences: [
             'api://${functionAuthClientId}'
+            functionAuthClientId
           ]
           defaultAuthorizationPolicy: {
             allowedApplications: [

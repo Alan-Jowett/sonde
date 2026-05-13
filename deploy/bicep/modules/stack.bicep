@@ -45,7 +45,7 @@ param staticWebAppName string
 @description('Azure region for the Static Web App.')
 param staticWebAppLocation string
 
-@description('Entra app (client) ID for Function App EasyAuth. When non-empty, configures authSettingsV2.')
+@description('Entra app (client) ID for Function App EasyAuth token validation.')
 param functionAuthClientId string
 
 @description('Entra tenant ID for Function App EasyAuth OpenID issuer URL.')

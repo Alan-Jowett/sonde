@@ -183,7 +183,7 @@ AUTH_BODY="$(jq -n -c --arg clientId "$CLIENT_ID" --arg tenantId "$TENANT_ID" '{
           openIdIssuer: ("https://login.microsoftonline.com/" + $tenantId + "/v2.0")
         },
         validation: {
-          allowedAudiences: [("api://" + $clientId)],
+          allowedAudiences: [("api://" + $clientId), $clientId],
           defaultAuthorizationPolicy: {
             allowedApplications: [$clientId]
           }

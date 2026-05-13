@@ -369,7 +369,9 @@ where
 
         let elf_bytes = base64::engine::general_purpose::STANDARD
             .decode(elf_b64)
-            .map_err(|e| IngestError::bad_request(format!("`elf` field is not valid base64: {e}")))?;
+            .map_err(|e| {
+                IngestError::bad_request(format!("`elf` field is not valid base64: {e}"))
+            })?;
 
         if elf_bytes.is_empty() {
             return Err(IngestError::bad_request("`elf` field must not be empty"));
@@ -413,9 +415,7 @@ where
             Some(serde_json::Value::Null) | None => None,
             Some(v) => {
                 let raw = v.as_u64().ok_or_else(|| {
-                    IngestError::bad_request(
-                        "`abi_version` must be a non-negative integer",
-                    )
+                    IngestError::bad_request("`abi_version` must be a non-negative integer")
                 })?;
                 let val = u32::try_from(raw).map_err(|_| {
                     IngestError::bad_request(format!(
@@ -431,9 +431,9 @@ where
         let mut record = lib.ingest_elf(&elf_bytes, profile).map_err(|e| {
             use sonde_gateway::program::ProgramError;
             match &e {
-                ProgramError::Internal(_) => IngestError::internal(format!(
-                    "program ingestion internal error: {e}"
-                )),
+                ProgramError::Internal(_) => {
+                    IngestError::internal(format!("program ingestion internal error: {e}"))
+                }
                 _ => IngestError::unprocessable(format!(
                     "program verification/ingestion failed: {e}"
                 )),
@@ -589,9 +589,7 @@ fn chrono_iso8601_utc_now() -> String {
 /// `enableForwardingHttpRequest` is `false`.
 ///
 /// Returns the parsed body as a `serde_json::Value`.
-pub fn extract_http_trigger_body(
-    request_body: &[u8],
-) -> Result<serde_json::Value, HandlerError> {
+pub fn extract_http_trigger_body(request_body: &[u8]) -> Result<serde_json::Value, HandlerError> {
     let envelope: serde_json::Value = serde_json::from_slice(request_body)?;
     let body_str = envelope
         .get("Data")
@@ -600,22 +598,16 @@ pub fn extract_http_trigger_body(
         .and_then(|req| req.get("Body").or_else(|| req.get("body")))
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            HandlerError::Decode(
-                "HTTP trigger envelope missing `Data.req.Body`".to_string(),
-            )
+            HandlerError::Decode("HTTP trigger envelope missing `Data.req.Body`".to_string())
         })?;
-    serde_json::from_str(body_str).map_err(|e| {
-        HandlerError::Decode(format!("HTTP trigger body is not valid JSON: {e}"))
-    })
+    serde_json::from_str(body_str)
+        .map_err(|e| HandlerError::Decode(format!("HTTP trigger body is not valid JSON: {e}")))
 }
 
 /// Format an `IngestResponse` as an Azure Functions HTTP output binding
 /// response envelope. The binding name `res` matches
 /// `ProgramIngest/function.json`.
-pub fn format_ingest_response(
-    status_code: u16,
-    body: &serde_json::Value,
-) -> serde_json::Value {
+pub fn format_ingest_response(status_code: u16, body: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "Outputs": {
             "res": {
@@ -780,9 +772,7 @@ impl HandlerStore for AzureTablesStore {
             .entity_client(row_key);
         entity_client
             .insert_or_replace(entity)
-            .map_err(|e| {
-                HandlerError::Store(format!("prepare program-image upsert failed: {e}"))
-            })?
+            .map_err(|e| HandlerError::Store(format!("prepare program-image upsert failed: {e}")))?
             .await
             .map_err(|e| HandlerError::Store(format!("upsert program-image row failed: {e}")))?;
         Ok(())
@@ -2602,8 +2592,7 @@ mod tests {
     ) {
         let store = Arc::new(MemoryStore::default());
         let publisher = Arc::new(RecordingPublisher::default());
-        let handler =
-            AzureHandler::new(store.clone(), publisher, "downstream-queue");
+        let handler = AzureHandler::new(store.clone(), publisher, "downstream-queue");
         (store, handler)
     }
 
@@ -2726,7 +2715,10 @@ mod tests {
         let at_limit_elf = vec![0u8; MAX_ELF_UPLOAD_SIZE];
         let body = make_ingest_body(&at_limit_elf, None, None, None);
         let err = handler.handle_program_ingest(&body).await.unwrap_err();
-        assert_ne!(err.status_code, 413, "exact-boundary upload must not be rejected as too large");
+        assert_ne!(
+            err.status_code, 413,
+            "exact-boundary upload must not be rejected as too large"
+        );
     }
 
     // T-WEB-0307: Empty ELF rejected
@@ -2744,12 +2736,7 @@ mod tests {
     async fn program_ingest_normalizes_source_filename() {
         let (_store, handler) = make_ingest_handler();
         let elf = make_test_elf(&minimal_bpf_code());
-        let body = make_ingest_body(
-            &elf,
-            Some("/path/to/sensor.o"),
-            None,
-            None,
-        );
+        let body = make_ingest_body(&elf, Some("/path/to/sensor.o"), None, None);
         let resp = handler.handle_program_ingest(&body).await.unwrap();
         assert_eq!(resp.source_filename.as_deref(), Some("sensor.o"));
     }
@@ -2858,10 +2845,8 @@ mod tests {
                 }
             }
         });
-        let body = extract_http_trigger_body(
-            serde_json::to_string(&envelope).unwrap().as_bytes(),
-        )
-        .unwrap();
+        let body = extract_http_trigger_body(serde_json::to_string(&envelope).unwrap().as_bytes())
+            .unwrap();
         assert_eq!(body.get("elf").unwrap().as_str().unwrap(), "AAAA");
         assert_eq!(
             body.get("source_filename").unwrap().as_str().unwrap(),
@@ -2872,10 +2857,8 @@ mod tests {
     #[test]
     fn extract_http_trigger_body_rejects_missing_body() {
         let envelope = serde_json::json!({"Data": {"req": {}}});
-        let err = extract_http_trigger_body(
-            serde_json::to_string(&envelope).unwrap().as_bytes(),
-        )
-        .unwrap_err();
+        let err = extract_http_trigger_body(serde_json::to_string(&envelope).unwrap().as_bytes())
+            .unwrap_err();
         assert!(err.to_string().contains("Data.req.Body"));
     }
 
@@ -2883,11 +2866,7 @@ mod tests {
     fn format_ingest_response_has_correct_structure() {
         let body = serde_json::json!({"program_hash": "abcd", "size": 42});
         let resp = format_ingest_response(200, &body);
-        let ret = resp
-            .get("Outputs")
-            .unwrap()
-            .get("res")
-            .unwrap();
+        let ret = resp.get("Outputs").unwrap().get("res").unwrap();
         assert_eq!(ret.get("statusCode").unwrap().as_u64().unwrap(), 200);
         assert_eq!(
             ret.get("headers")
@@ -2900,6 +2879,9 @@ mod tests {
         );
         let body_str = ret.get("body").unwrap().as_str().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(body_str).unwrap();
-        assert_eq!(parsed.get("program_hash").unwrap().as_str().unwrap(), "abcd");
+        assert_eq!(
+            parsed.get("program_hash").unwrap().as_str().unwrap(),
+            "abcd"
+        );
     }
 }

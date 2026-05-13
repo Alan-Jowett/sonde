@@ -93,10 +93,7 @@ async fn program_ingest(State(state): State<AppState>, body: Bytes) -> Response 
         Err(err) => {
             let msg = err.to_string();
             tracing::error!(error = msg, "program ingest: failed to parse HTTP envelope");
-            let resp = format_ingest_response(
-                400,
-                &serde_json::json!({ "error": msg }),
-            );
+            let resp = format_ingest_response(400, &serde_json::json!({ "error": msg }));
             return (StatusCode::OK, Json(resp)).into_response();
         }
     };
@@ -113,10 +110,7 @@ async fn program_ingest(State(state): State<AppState>, body: Bytes) -> Response 
             let msg = ingest_err.message.clone();
             let status = ingest_err.status_code;
             tracing::error!(error = msg, http_status = status, "program ingest failed");
-            let resp = format_ingest_response(
-                status,
-                &serde_json::json!({ "error": msg }),
-            );
+            let resp = format_ingest_response(status, &serde_json::json!({ "error": msg }));
             (StatusCode::OK, Json(resp)).into_response()
         }
     }

@@ -481,7 +481,8 @@ exit 64
     write_executable(
         &bin_dir.join("jq"),
         r#"#!/bin/sh
-cat >/dev/null 2>&1 || true
+# Drain stdin only if it is piped (not a TTY); jq -n provides no stdin.
+if [ ! -t 0 ]; then cat >/dev/null 2>&1 || true; fi
 # Find the expression (last argument) and extract --arg/--argjson values
 uri_val=""
 argjson_val=""

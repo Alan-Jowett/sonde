@@ -124,6 +124,39 @@ az ad app permission grant \
 echo "  Azure Storage user_impersonation permission granted"
 
 echo ""
+echo "=== Configuring Function App CORS ==="
+# The web UI calls the Function App ingest endpoint from the browser.
+# Without CORS, the preflight request is rejected and fetch() fails.
+EXISTING_CORS="$(az functionapp cors show --name "$FUNCTION_APP" \
+  --resource-group "$RESOURCE_GROUP" --query 'allowedOrigins' -o json 2>/dev/null || echo '[]')"
+SWA_ORIGIN="https://$SWA_HOSTNAME"
+HAS_ORIGIN=0
+echo "$EXISTING_CORS" | jq -e --arg o "$SWA_ORIGIN" 'index($o) != null' >/dev/null 2>&1 && HAS_ORIGIN=1
+if [ "$HAS_ORIGIN" -eq 1 ]; then
+  echo "  CORS origin already registered"
+else
+  az functionapp cors add --name "$FUNCTION_APP" \
+    --resource-group "$RESOURCE_GROUP" \
+    --allowed-origins "$SWA_ORIGIN" --output none
+  echo "  Added CORS origin: $SWA_ORIGIN"
+fi
+
+echo ""
+echo "=== Assigning Storage Table Data Contributor to deploying user ==="
+DEPLOYER_PRINCIPAL="$(az ad signed-in-user show --query id -o tsv 2>/dev/null || true)"
+if [ -z "$DEPLOYER_PRINCIPAL" ]; then
+  echo "  WARNING: Could not determine signed-in user. Skipping role assignment."
+  echo "  Grant 'Storage Table Data Contributor' manually — see instructions below."
+else
+  STORAGE_SCOPE="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Storage/storageAccounts/$STORAGE_ACCOUNT"
+  az role assignment create --assignee "$DEPLOYER_PRINCIPAL" \
+    --role "Storage Table Data Contributor" \
+    --scope "$STORAGE_SCOPE" \
+    --output none 2>/dev/null || true
+  echo "  Assigned 'Storage Table Data Contributor' to deploying user"
+fi
+
+echo ""
 echo "=== Deploying SPA content ==="
 DEPLOYMENT_TOKEN="$(az staticwebapp secrets list --name "$SWA_NAME" \
   --resource-group "$RESOURCE_GROUP" \

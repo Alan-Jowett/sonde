@@ -148,16 +148,16 @@ When the handler publishes a `DESIRED_STATE` message due to program divergence, 
 ## 8. Authentication (WEB-0500)
 
 - MSAL.js 2.x with authorization code flow + PKCE.
-- Scopes: `https://storage.azure.com/.default` (Table/Queue access).
 - Token caching in browser session storage.
 - Silent token renewal; redirect to login on expiry.
-
-> **Note**: The SPA acquires tokens scoped to `https://storage.azure.com/.default`
-> for Azure Table operations. The `ProgramIngest` function endpoint uses
-> `authLevel: "function"` for API key authentication. Browser-based SPA
-> access to this endpoint requires a follow-up to configure Entra/EasyAuth
-> token-based authentication with the function's API scope and appropriate
-> redirect URI configuration.
+- Two token scopes, acquired separately:
+  - `https://storage.azure.com/.default` — for Azure Table/Queue REST API calls
+    (dashboard, desired state, program list).
+  - `api://<companionClientId>/user_impersonation` — for `ProgramIngest` Function
+    App calls. This token is validated by EasyAuth on the Function App (see §9.4).
+- The SPA calls `acquireTokenSilent` (with popup fallback) for the Function App
+  scope before each `ProgramIngest` request and sends the token as a
+  `Bearer` header.
 
 ---
 
@@ -184,7 +184,12 @@ The script:
 2. Generates `config.json` with MSAL client ID, tenant ID, storage account, and function app name
 3. Registers the SWA hostname as a SPA redirect URI on the Entra app registration
 4. Adds Azure Storage API permission (`user_impersonation`) to the Entra app registration
-5. Deploys the web-ui content to the Static Web App using the SWA CLI
+5. Exposes `api://<clientId>/user_impersonation` API scope on the Entra app
+   registration (required for EasyAuth token validation on the Function App)
+6. Configures EasyAuth on the Function App via `az webapp auth` CLI with the
+   companion Entra app as the identity provider and `Return401` for
+   unauthenticated requests
+7. Deploys the web-ui content to the Static Web App using the SWA CLI
 
 > **Note:** Steps 3–4 mutate the Entra app registration associated with the Azure companion.
 
@@ -199,8 +204,9 @@ After deployment, grant users the `Storage Table Data Contributor` role on the s
 
 ### 9.3 Function App Changes
 
-- `ProgramIngest/function.json` defines the HTTP trigger (`authLevel: function`,
-  route `programs/ingest`).
+- `ProgramIngest/function.json` defines the HTTP trigger (`authLevel: anonymous`,
+  route `programs/ingest`). Authentication is handled by EasyAuth (see §9.4),
+  not by the Azure Functions runtime key mechanism.
 - `main.rs` routes `/ProgramIngest` to a dedicated handler that parses the
   Azure Functions HTTP trigger envelope and delegates to
   `AzureHandler::handle_program_ingest()`. The catch-all `/{*path}` route
@@ -211,7 +217,62 @@ After deployment, grant users the `Storage Table Data Contributor` role on the s
 - The HTTP trigger response uses the Azure Functions `res` output binding
   envelope format with `statusCode`, `headers`, and `body` fields.
 
-> **Note**: The `ProgramIngest` endpoint currently uses `authLevel: "function"`
-> for Azure Functions-level API key authentication. Browser-based SPA access
-> requires a follow-up to configure Entra/EasyAuth token-based authentication
-> with the function's API scope.
+### 9.4 EasyAuth Configuration (WEB-0606)
+
+The Function App is configured with Azure App Service Authentication
+(EasyAuth / `authSettingsV2`) to validate Entra ID bearer tokens on HTTP
+routes. This replaces the previous `authLevel: "function"` API key
+mechanism for the `ProgramIngest` endpoint.
+
+**Bicep resource** (`function-placeholder.bicep`):
+
+A `Microsoft.Web/sites/config@2024-04-01` resource named `authsettingsV2` is
+added to the Function App with the following configuration:
+
+- `platform.enabled: true`
+- `globalValidation.unauthenticatedClientAction: 'Return401'` — rejects
+  unauthenticated requests with HTTP 401 instead of redirecting to a login page.
+- `identityProviders.azureActiveDirectory.enabled: true`
+- `identityProviders.azureActiveDirectory.registration.clientId` — set to the
+  companion Entra app registration's client ID (passed as a Bicep parameter).
+- `identityProviders.azureActiveDirectory.registration.openIdIssuer` — set to
+  `https://login.microsoftonline.com/<tenantId>/v2.0` (passed as a Bicep parameter).
+- `identityProviders.azureActiveDirectory.validation.defaultAuthorizationPolicy.allowedApplications`
+  — includes the companion client ID so the SPA's tokens (audience matching the
+  client ID) are accepted.
+- `identityProviders.azureActiveDirectory.validation.allowedAudiences` — includes
+  `api://<clientId>` so that tokens acquired with the
+  `api://<clientId>/user_impersonation` scope are accepted. Without this field,
+  EasyAuth may reject valid SPA tokens whose audience is the Application ID URI
+  rather than the raw client ID.
+
+**Queue-triggered invocations are unaffected.** Azure Functions queue triggers
+are invoked by the runtime, not via HTTP. EasyAuth only applies to HTTP-triggered
+routes.
+
+**Entra app registration prerequisites:**
+
+The Entra app registration (companion client ID) must expose an API scope
+(`api://<clientId>/user_impersonation`). This is configured by:
+- The `deploy/web-ui/deploy.sh` script (standalone deployment), or
+- The bootstrap script inside the `sonde-azure-bootstrap` container (AZC-0410).
+
+Both paths ensure the scope exists and that the SPA redirect URI is registered
+before the SPA attempts to acquire tokens for the Function App audience.
+
+**CORS and preflight:**
+
+EasyAuth applies only to authenticated HTTP methods. Browser preflight
+(`OPTIONS`) requests are unauthenticated by design and are handled by the
+Function App's CORS configuration (already provisioned in Bicep via
+`corsAllowedOrigins`). The existing CORS setup passes through `OPTIONS`
+preflight requests without requiring a bearer token. Only the actual
+`POST` to `/api/programs/ingest` requires authentication.
+
+**SPA scope derivation:**
+
+The SPA derives the Function App API scope as
+`api://${CONFIG.msalClientId}/user_impersonation` — it does not require
+an additional `config.json` field. This works because the companion Entra
+app registration is shared between the SPA and the Function App EasyAuth
+configuration.

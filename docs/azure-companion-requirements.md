@@ -834,6 +834,9 @@ The bootstrap script MUST:
    the Entra app registration, merging with any existing redirect URIs.
 5. Add the Azure Storage `user_impersonation` API permission to the Entra app
    registration if not already present.
+6. Expose `api://<clientId>/user_impersonation` as an API scope on the Entra app
+   registration (required for EasyAuth token validation on the Function App).
+   If the scope already exists, this step is a no-op.
 
 The bootstrap image bundles Node.js and a pinned version of the SWA CLI
 (`@azure/static-web-apps-cli`, installed globally at image build time) to
@@ -848,3 +851,4 @@ deploy SPA content to the Static Web App.
 5. Existing SPA redirect URIs on the Entra app are preserved (not overwritten) when adding the SWA hostname.
 6. Re-running bootstrap updates the SPA content and Entra configuration idempotently.
 7. If SPA deployment fails, bootstrap exits non-zero and does not report success.
+8. The Entra app registration exposes `api://<clientId>/user_impersonation` as an API scope after bootstrap.

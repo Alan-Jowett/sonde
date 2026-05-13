@@ -124,6 +124,82 @@ az ad app permission grant \
 echo "  Azure Storage user_impersonation permission granted"
 
 echo ""
+echo "=== Exposing Function App API scope on Entra app ==="
+# Ensure the Entra app exposes api://<clientId>/user_impersonation so that
+# the SPA can acquire tokens scoped to the Function App and EasyAuth can
+# validate them.
+CURRENT_API="$(az ad app show --id "$APP_OBJECT_ID" \
+  --query 'api.oauth2PermissionScopes' -o json 2>/dev/null || echo '[]')"
+if [ -z "$CURRENT_API" ] || [ "$CURRENT_API" = "null" ]; then
+  CURRENT_API="[]"
+fi
+HAS_SCOPE=0
+echo "$CURRENT_API" | jq -e '[.[] | select(.value == "user_impersonation")] | length > 0' >/dev/null 2>&1 && HAS_SCOPE=1
+# Also check identifierUris includes our API URI
+CURRENT_IDENTIFIER_URIS="$(az ad app show --id "$APP_OBJECT_ID" \
+  --query 'identifierUris' -o json 2>/dev/null || echo '[]')"
+if [ -z "$CURRENT_IDENTIFIER_URIS" ] || [ "$CURRENT_IDENTIFIER_URIS" = "null" ]; then
+  CURRENT_IDENTIFIER_URIS="[]"
+fi
+HAS_IDENTIFIER_URI=0
+echo "$CURRENT_IDENTIFIER_URIS" | jq -e --arg uri "api://$CLIENT_ID" 'index($uri) != null' >/dev/null 2>&1 && HAS_IDENTIFIER_URI=1
+if [ "$HAS_SCOPE" -eq 1 ] && [ "$HAS_IDENTIFIER_URI" -eq 1 ]; then
+  echo "  API scope user_impersonation already exposed"
+else
+  SCOPE_ID="$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  if [ "$HAS_SCOPE" -eq 1 ]; then
+    MERGED_SCOPES="$CURRENT_API"
+  else
+    MERGED_SCOPES="$(echo "$CURRENT_API" | jq -c --arg sid "$SCOPE_ID" \
+      '. + [{"adminConsentDescription":"Allow the SPA to call the Function App on behalf of the signed-in user","adminConsentDisplayName":"Access Sonde Function App","id":$sid,"isEnabled":true,"type":"User","userConsentDescription":"Allow the app to access the Sonde Function App on your behalf","userConsentDisplayName":"Access Sonde Function App","value":"user_impersonation"}]')"
+  fi
+  MERGED_IDENTIFIER_URIS="$(echo "$CURRENT_IDENTIFIER_URIS" | jq -c --arg uri "api://$CLIENT_ID" \
+    'if index($uri) != null then . else . + [$uri] end')"
+  PATCH_BODY="$(jq -n -c --argjson uris "$MERGED_IDENTIFIER_URIS" --argjson scopes "$MERGED_SCOPES" \
+    '{"identifierUris":$uris,"api":{"oauth2PermissionScopes":$scopes}}')"
+  az rest --method PATCH \
+    --url "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+    --headers "Content-Type=application/json" \
+    --body "$PATCH_BODY"
+  echo "  Exposed api://$CLIENT_ID/user_impersonation scope"
+fi
+
+echo ""
+echo "=== Configuring Function App EasyAuth ==="
+# Configure Azure App Service Authentication (EasyAuth) on the Function App
+# to validate Entra ID bearer tokens. This replaces function-key auth.
+# Use az rest with the authSettingsV2 JSON directly for reliable configuration.
+FUNCTION_APP_ID="$(az functionapp show --name "$FUNCTION_APP" \
+  --resource-group "$RESOURCE_GROUP" --query 'id' -o tsv)"
+AUTH_BODY="$(jq -n -c --arg clientId "$CLIENT_ID" --arg tenantId "$TENANT_ID" '{
+  properties: {
+    platform: { enabled: true },
+    globalValidation: { unauthenticatedClientAction: "Return401" },
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true,
+        registration: {
+          clientId: $clientId,
+          openIdIssuer: ("https://login.microsoftonline.com/" + $tenantId + "/v2.0")
+        },
+        validation: {
+          allowedAudiences: [("api://" + $clientId)],
+          defaultAuthorizationPolicy: {
+            allowedApplications: [$clientId]
+          }
+        }
+      }
+    }
+  }
+}')"
+az rest --method PUT \
+  --url "https://management.azure.com${FUNCTION_APP_ID}/config/authsettingsV2?api-version=2024-04-01" \
+  --headers "Content-Type=application/json" \
+  --body "$AUTH_BODY" \
+  --output none
+echo "  EasyAuth configured with Entra ID provider"
+
+echo ""
 echo "=== Configuring Function App CORS ==="
 # The web UI calls the Function App ingest endpoint from the browser.
 # Without CORS, the preflight request is rejected and fetch() fails.

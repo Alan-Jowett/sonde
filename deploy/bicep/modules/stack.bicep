@@ -45,6 +45,12 @@ param staticWebAppName string
 @description('Azure region for the Static Web App.')
 param staticWebAppLocation string
 
+@description('Entra app (client) ID for Function App EasyAuth. When non-empty, configures authSettingsV2.')
+param functionAuthClientId string
+
+@description('Entra tenant ID for Function App EasyAuth OpenID issuer URL.')
+param functionAuthTenantId string
+
 var monitoringWorkspaceName = take('${functionAppName}-logs', 63)
 var monitoringAppInsightsName = take('${functionAppName}-insights', 260)
 
@@ -103,6 +109,8 @@ module functionPlaceholder './function-placeholder.bicep' = {
     programsTableName: storage.outputs.programsTableName
     appInsightsConnectionString: monitoring.outputs.connectionString
     corsAllowedOrigins: ['https://${staticWebApp.outputs.defaultHostname}']
+    functionAuthClientId: functionAuthClientId
+    functionAuthTenantId: functionAuthTenantId
     tags: tags
   }
 }

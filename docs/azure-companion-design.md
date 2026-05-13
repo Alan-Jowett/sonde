@@ -308,6 +308,9 @@ When bootstrap is required, the Azure companion performs this sequence:
     e. Registers `https://<staticWebAppHostname>` as a SPA redirect URI on the
        Entra app registration, merging with any existing redirect URIs.
     f. Adds Azure Storage `user_impersonation` API permission to the Entra app.
+    g. Exposes `api://<clientId>/user_impersonation` as an API scope on the
+       Entra app registration (required for EasyAuth token validation on the
+       Function App). If the scope already exists, this step is a no-op.
     If any sub-step fails, the bootstrap script exits non-zero and the
     bootstrap container reports failure.
 18. Write `service-principal.json` and `storage-queues.json` to the staging

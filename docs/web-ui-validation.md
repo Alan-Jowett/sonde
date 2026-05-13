@@ -37,9 +37,15 @@
 | T-WEB-0402 | WEB-0402 | SPA creates/edits `programroute` entries | Manual/E2E | Planned |
 | T-WEB-0501 | WEB-0501 | MSAL.js login flow works | Manual | Planned |
 | T-WEB-0502 | WEB-0502 | Storage API calls use bearer token | Integration | Planned |
-| T-WEB-0503 | WEB-0503 | `ProgramIngest` rejects unauthenticated requests | Unit (Rust) | Planned |
+| T-WEB-0503 | WEB-0503 | `ProgramIngest` rejects unauthenticated requests (EasyAuth returns 401) | Integration | Planned |
+| T-WEB-0504 | WEB-0504 | SPA acquires Function App-scoped token for `ProgramIngest` calls | Manual | Planned |
+| T-WEB-0505 | WEB-0505 | `ProgramIngest` rejects Storage-scoped token (wrong audience) | Integration | Planned |
+| T-WEB-0506 | WEB-0506 | `ProgramIngest` rejects expired bearer token | Integration | Planned |
+| T-WEB-0507 | WEB-0507 | `ProgramIngest` accepts valid `api://<clientId>/user_impersonation` token | Integration | Planned |
 | T-WEB-0601 | WEB-0601 | Bicep provisions Static Web App | Infrastructure | Planned |
 | T-WEB-0602 | WEB-0602 | Bicep provisions `programs` table | Infrastructure | Planned |
 | T-WEB-0603 | WEB-0603 | `ProgramIngest` HTTP trigger deployed alongside `UpstreamConnector` | Infrastructure | Planned |
 | T-WEB-0604 | WEB-0604 | CORS configured for SPA origin | Infrastructure | Planned |
 | T-WEB-0605 | WEB-0605 | Function identity has table contributor on `programs` | Infrastructure | Planned |
+| T-WEB-0606 | WEB-0606 | EasyAuth configured on Function App with Entra ID provider | Infrastructure | Planned |
+| T-WEB-0607 | WEB-0607 | `ProgramIngest` `authLevel` is `anonymous` (auth delegated to EasyAuth) | Infrastructure | Planned |

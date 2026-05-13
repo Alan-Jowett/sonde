@@ -133,6 +133,24 @@ bootstrap image carries a prebuilt Linux package for the matching Sonde
 release, uploads it into the provisioned deployment target, and waits until
 Azure reports that at least one function is loaded before reporting success.
 
+The function-placeholder module also configures Azure App Service
+Authentication (EasyAuth / `authSettingsV2`) on the Function App. This
+validates Entra ID bearer tokens on HTTP-triggered routes (e.g.,
+`ProgramIngest`) at the platform level, eliminating the need for Azure
+Functions API keys. The EasyAuth configuration requires two parameters:
+the companion Entra app client ID (used as the AAD audience) and the
+tenant ID (used to construct the OpenID issuer URL). Queue-triggered
+invocations are unaffected because they bypass HTTP auth entirely.
+
+The parameter flow is:
+- `main.bicep` accepts `companionClientId` and `companionTenantId` as
+  top-level parameters (populated from the Entra app registration).
+- `main.bicep` passes these to `stack.bicep` as module parameters.
+- `stack.bicep` passes them to `function-placeholder.bicep` as
+  `functionAuthClientId` and `functionAuthTenantId`.
+- `function-placeholder.bicep` uses them to construct the
+  `authSettingsV2` resource with the correct issuer URL and audience.
+
 ---
 
 ## 4  Runtime identity provisioning

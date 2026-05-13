@@ -123,6 +123,8 @@ module stack './modules/stack.bicep' = {
     functionAppName: effectiveFunctionAppName
     functionPlanName: effectiveFunctionPlanName
     companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId
+    functionAuthClientId: companionIdentity.outputs.clientId
+    functionAuthTenantId: companionIdentity.outputs.tenantId
     staticWebAppName: effectiveStaticWebAppName
     staticWebAppLocation: staticWebAppLocation
   }

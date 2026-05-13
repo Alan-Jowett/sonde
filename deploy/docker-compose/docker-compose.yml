@@ -72,7 +72,7 @@ services:
       - "--azure-project-name"
       - "${SONDE_AZURE_PROJECT_NAME:-sonde}"
     environment:
-      - SONDE_AZURE_SUBSCRIPTION_ID=${SONDE_AZURE_SUBSCRIPTION_ID:-}
+      - SONDE_AZURE_SUBSCRIPTION_ID
       - SONDE_AZURE_BOOTSTRAP_IMAGE=${SONDE_AZURE_BOOTSTRAP_IMAGE:-ghcr.io/alan-jowett/sonde-azure-bootstrap:${SONDE_IMAGE_TAG:-latest}}
     volumes:
       - sonde-runtime:/var/run/sonde:ro
@@ -97,9 +97,9 @@ services:
       - "/var/lib/sonde-azure-companion"
       - "run"
     environment:
-      - SONDE_AZURE_STORAGE_QUEUE_ENDPOINT=${SONDE_AZURE_STORAGE_QUEUE_ENDPOINT:-}
-      - SONDE_AZURE_STORAGE_UPSTREAM_QUEUE=${SONDE_AZURE_STORAGE_UPSTREAM_QUEUE:-}
-      - SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE=${SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE:-}
+      - SONDE_AZURE_STORAGE_QUEUE_ENDPOINT
+      - SONDE_AZURE_STORAGE_UPSTREAM_QUEUE
+      - SONDE_AZURE_STORAGE_DOWNSTREAM_QUEUE
     volumes:
       - sonde-runtime:/var/run/sonde:ro
       - sonde-companion-state:/var/lib/sonde-azure-companion

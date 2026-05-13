@@ -91,6 +91,7 @@ See [`.env.example`](.env.example) for the full list with documentation.
 
 | Variable | Description |
 |----------|-------------|
+| `SONDE_MODEM_GID` | Numeric host group ID for modem device access (find with `stat -c '%g' /dev/ttyACM0`) |
 | `SONDE_MODEM_PORT` | Host serial port for the modem (default: `/dev/ttyACM0`) |
 | `SONDE_AZURE_LOCATION` | Azure region (default: `eastus`) |
 | `SONDE_AZURE_PROJECT_NAME` | Azure resource prefix (default: `sonde`) |
@@ -100,7 +101,6 @@ See [`.env.example`](.env.example) for the full list with documentation.
 | Variable | Description |
 |----------|-------------|
 | `SONDE_IMAGE_TAG` | Container image tag (default: `latest`) |
-| `SONDE_MODEM_GID` | Numeric host group ID for modem device access (find with `stat -c '%g' /dev/ttyACM0`) |
 | `SONDE_ESPNOW_CHANNEL` | ESP-NOW radio channel 1–14 (default: `1`) |
 | `SONDE_AZURE_SUBSCRIPTION_ID` | Azure subscription override |
 | `SONDE_AZURE_BOOTSTRAP_IMAGE` | Bootstrap container image override |

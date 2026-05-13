@@ -102,6 +102,7 @@ module functionPlaceholder './function-placeholder.bicep' = {
     programRouteTableName: storage.outputs.programRouteTableName
     programsTableName: storage.outputs.programsTableName
     appInsightsConnectionString: monitoring.outputs.connectionString
+    corsAllowedOrigins: ['https://${staticWebApp.outputs.defaultHostname}']
     tags: tags
   }
 }
@@ -133,10 +134,6 @@ module functionRbac './function-rbac.bicep' = {
     programRouteTableName: storage.outputs.programRouteTableName
     programsTableName: storage.outputs.programsTableName
   }
-  dependsOn: [
-    storage
-    functionPlaceholder
-  ]
 }
 
 output storageAccountName string = storage.outputs.storageAccountName

@@ -317,6 +317,46 @@ az ad app permission grant \
     --output none 2>/dev/null || true
 echo "Azure Storage user_impersonation permission granted" >&2
 
+# Assign Storage Table Data Contributor to the deploying user so they can
+# access the programs table via the SPA immediately after bootstrap.
+deployer_principal="$(az ad signed-in-user show --query id --output tsv 2>/dev/null || true)"
+if [ -z "$deployer_principal" ]; then
+    echo "WARNING: Could not determine signed-in user. Skipping role assignment." >&2
+    echo "  Grant 'Storage Table Data Contributor' manually on storage account $storage_account_name" >&2
+else
+    subscription_id="$(az account show --query id --output tsv 2>/dev/null || true)"
+    if [ -z "$subscription_id" ]; then
+        echo "WARNING: Could not determine subscription ID. Skipping role assignment." >&2
+        echo "  Grant 'Storage Table Data Contributor' manually on storage account $storage_account_name" >&2
+    else
+        storage_scope="/subscriptions/$subscription_id/resourceGroups/$resource_group_name/providers/Microsoft.Storage/storageAccounts/$storage_account_name"
+        existing_role="$(az role assignment list \
+            --assignee "$deployer_principal" \
+            --role "Storage Table Data Contributor" \
+            --scope "$storage_scope" \
+            --query "length(@)" \
+            --output tsv 2>/dev/null || echo 0)"
+        if [ "$existing_role" -gt 0 ] 2>/dev/null; then
+            echo "'Storage Table Data Contributor' already assigned to deploying user" >&2
+        else
+            role_assign_stderr="$(mktemp "${TMPDIR:-/tmp}/sonde-role-assign.XXXXXX")"
+            role_assign_exit=0
+            az role assignment create --assignee "$deployer_principal" \
+                --role "Storage Table Data Contributor" \
+                --scope "$storage_scope" \
+                --output none 2>"$role_assign_stderr" || role_assign_exit=$?
+            if [ "$role_assign_exit" -eq 0 ]; then
+                echo "Assigned 'Storage Table Data Contributor' to deploying user" >&2
+            else
+                role_assign_error="$(cat "$role_assign_stderr")"
+                echo "WARNING: Role assignment failed (exit $role_assign_exit): $role_assign_error" >&2
+                echo "  Grant 'Storage Table Data Contributor' manually on storage account $storage_account_name" >&2
+            fi
+            rm -f "$role_assign_stderr"
+        fi
+    fi
+fi
+
 echo "Web UI deployment complete" >&2
 
 printf '%s\n' "$deployment_outputs"

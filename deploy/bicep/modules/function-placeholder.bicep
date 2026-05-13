@@ -42,6 +42,9 @@ param tags object
 @description('Application Insights connection string. When non-empty, enables telemetry and backtraces.')
 param appInsightsConnectionString string = ''
 
+@description('Allowed CORS origins for the Function App (e.g. the SWA hostname). Empty array disables CORS.')
+param corsAllowedOrigins array = []
+
 resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
 }
@@ -138,6 +141,9 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     siteConfig: {
       minTlsVersion: '1.2'
       appSettings: concat(baseAppSettings, observabilityAppSettings)
+      cors: empty(corsAllowedOrigins) ? null : {
+        allowedOrigins: corsAllowedOrigins
+      }
     }
   }
 }

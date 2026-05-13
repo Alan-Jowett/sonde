@@ -728,18 +728,29 @@ async function renderPrograms() {
       try {
         requireConfig('functionAppName', 'Function app name');
         const token = await getToken();
-        const payload = new FormData();
-        payload.append('elf', file, file.name);
-        payload.append('source_filename', String(formData.get('sourceFilename') || file.name));
-        payload.append('abi_version', String(formData.get('abiVersion') || '1'));
-        payload.append('verification_profile', String(formData.get('verificationProfile') || 'resident'));
+        const arrayBuf = await file.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuf);
+        const chunkSize = 8192;
+        const chunks = [];
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize)));
+        }
+        const elfBase64 = btoa(chunks.join(''));
+
+        const payload = {
+          elf: elfBase64,
+          source_filename: String(formData.get('sourceFilename') || file.name),
+          abi_version: Number(formData.get('abiVersion') || 1),
+          verification_profile: String(formData.get('verificationProfile') || 'resident'),
+        };
 
         const response = await fetch(`https://${CONFIG.functionAppName}.azurewebsites.net/api/programs/ingest`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
           },
-          body: payload,
+          body: JSON.stringify(payload),
         });
 
         const responseText = await response.text();

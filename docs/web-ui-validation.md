@@ -22,7 +22,7 @@
 | T-WEB-0203 | WEB-0203 | RowKey uses reverse-timestamp format | Unit (JS) | Planned |
 | T-WEB-0204 | WEB-0204 | PartitionKey = `n:{SHA-256(node_id)}` | Unit (JS) | Planned |
 | T-WEB-0205 | WEB-0205 | `timestamp_ms` stored as `Edm.Int64` | Integration | Planned |
-| T-WEB-0301 | WEB-0301 | `ProgramIngest` accepts ELF + metadata via HTTP POST | Unit (Rust) | Planned |
+| T-WEB-0301 | WEB-0301 | `ProgramIngest` accepts ELF + metadata via JSON POST | Unit (Rust) | Planned |
 | T-WEB-0302 | WEB-0302 | Prevail verification runs; invalid ELF rejected | Unit (Rust) | Planned |
 | T-WEB-0303 | WEB-0303 | Program hash matches gateway computation | Unit (Rust) | Planned |
 | T-WEB-0304 | WEB-0304 | Program stored in `programs` table with all fields | Integration | Planned |

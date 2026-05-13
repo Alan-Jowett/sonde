@@ -23,6 +23,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 sonde-gateway = { path = "../sonde-gateway", default-features = false }
+sonde-protocol = { path = "../sonde-protocol", default-features = false }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

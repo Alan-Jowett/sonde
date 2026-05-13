@@ -19,8 +19,13 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sonde_gateway::connector::{MSG_TYPE_ACTUAL_STATE, MSG_TYPE_APP_DATA, MSG_TYPE_DESIRED_STATE};
+use sonde_gateway::program::{ProgramLibrary, VerificationProfile};
+use sonde_protocol::normalize_display_filename;
 use thiserror::Error;
 use tracing::warn;
+
+/// Maximum uploaded ELF size (1 MB) — defense-in-depth before verification.
+const MAX_ELF_UPLOAD_SIZE: usize = 1_048_576;
 
 static HISTORY_ROW_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static HISTORY_ROW_PROCESS_NONCE: OnceLock<u64> = OnceLock::new();
@@ -124,6 +129,17 @@ pub struct ProgramRouteRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramImageRow {
+    pub program_hash: Vec<u8>,
+    pub cbor_image: Vec<u8>,
+    pub source_filename: Option<String>,
+    pub abi_version: Option<u32>,
+    pub size_bytes: u32,
+    pub verification_profile: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActualStateMessage {
     pub entity_kind: String,
     pub entity_id: String,
@@ -170,6 +186,7 @@ pub trait HandlerStore: Send + Sync {
         &self,
         program_hash: &[u8],
     ) -> Result<Option<Vec<u8>>, HandlerError>;
+    async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError>;
 }
 
 #[async_trait]
@@ -322,6 +339,281 @@ where
             .publish(&route.handler_queue, raw_payload.to_vec())
             .await
     }
+
+    /// Handle a ProgramIngest HTTP trigger invocation (WEB-0300).
+    ///
+    /// Accepts JSON: `{"elf": "base64...", "source_filename": "...",
+    /// "abi_version": N, "verification_profile": "resident"|"ephemeral"}`
+    ///
+    /// Returns a JSON response with the program hash and metadata, or an error.
+    pub async fn handle_program_ingest(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<IngestResponse, IngestError> {
+        let elf_b64 = body
+            .get("elf")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| IngestError::bad_request("missing or non-string `elf` field"))?;
+
+        // Pre-decode length check: base64 encodes 3 bytes → 4 chars, so
+        // MAX_ELF_UPLOAD_SIZE decoded bytes ≈ ceil(n/3)*4 encoded chars.
+        let max_encoded_len = (MAX_ELF_UPLOAD_SIZE / 3 + 1) * 4;
+        if elf_b64.len() > max_encoded_len {
+            return Err(IngestError::payload_too_large(format!(
+                "base64 `elf` field length {} exceeds maximum; \
+                 decoded ELF must not exceed {} bytes",
+                elf_b64.len(),
+                MAX_ELF_UPLOAD_SIZE
+            )));
+        }
+
+        let elf_bytes = base64::engine::general_purpose::STANDARD
+            .decode(elf_b64)
+            .map_err(|e| IngestError::bad_request(format!("`elf` field is not valid base64: {e}")))?;
+
+        if elf_bytes.is_empty() {
+            return Err(IngestError::bad_request("`elf` field must not be empty"));
+        }
+        if elf_bytes.len() > MAX_ELF_UPLOAD_SIZE {
+            return Err(IngestError::payload_too_large(format!(
+                "ELF size {} bytes exceeds limit of {} bytes",
+                elf_bytes.len(),
+                MAX_ELF_UPLOAD_SIZE
+            )));
+        }
+
+        let profile_str = body
+            .get("verification_profile")
+            .and_then(|v| v.as_str())
+            .unwrap_or("resident");
+        let profile = match profile_str {
+            "resident" => VerificationProfile::Resident,
+            "ephemeral" => VerificationProfile::Ephemeral,
+            other => {
+                return Err(IngestError::bad_request(format!(
+                    "unknown `verification_profile`: `{other}`; \
+                     expected `resident` or `ephemeral`"
+                )));
+            }
+        };
+
+        let source_filename_raw = body
+            .get("source_filename")
+            .and_then(|v| v.as_str())
+            .map(|s| Some(s.to_string()))
+            .unwrap_or(None);
+        let source_filename = normalize_display_filename(&source_filename_raw);
+
+        let abi_version = match body.get("abi_version") {
+            Some(serde_json::Value::Null) | None => None,
+            Some(v) => {
+                let raw = v.as_u64().ok_or_else(|| {
+                    IngestError::bad_request(
+                        "`abi_version` must be a non-negative integer",
+                    )
+                })?;
+                let val = u32::try_from(raw).map_err(|_| {
+                    IngestError::bad_request(format!(
+                        "`abi_version` value {raw} exceeds maximum ({})",
+                        u32::MAX
+                    ))
+                })?;
+                Some(val)
+            }
+        };
+
+        let lib = ProgramLibrary::new();
+        let mut record = lib.ingest_elf(&elf_bytes, profile).map_err(|e| {
+            IngestError::unprocessable(format!(
+                "program verification/ingestion failed: {e}"
+            ))
+        })?;
+        record.abi_version = abi_version;
+        record.source_filename = source_filename.clone();
+
+        let now = chrono_iso8601_utc_now();
+        let profile_name = match record.verification_profile {
+            VerificationProfile::Resident => "resident",
+            VerificationProfile::Ephemeral => "ephemeral",
+        };
+        let row = ProgramImageRow {
+            program_hash: record.hash.clone(),
+            cbor_image: record.image,
+            source_filename: record.source_filename.clone(),
+            abi_version: record.abi_version,
+            size_bytes: record.size,
+            verification_profile: profile_name.to_string(),
+            created_at: now,
+        };
+        self.store
+            .store_program_image(&row)
+            .await
+            .map_err(|e| IngestError::internal(format!("store program failed: {e}")))?;
+
+        Ok(IngestResponse {
+            program_hash: hex::encode(&record.hash),
+            size: record.size,
+            abi_version: record.abi_version,
+            source_filename: record.source_filename,
+        })
+    }
+}
+
+/// Successful response from program ingestion.
+#[derive(Debug, Clone, Serialize)]
+pub struct IngestResponse {
+    pub program_hash: String,
+    pub size: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abi_version: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_filename: Option<String>,
+}
+
+/// Error from program ingestion with HTTP status code.
+#[derive(Debug)]
+pub struct IngestError {
+    pub status_code: u16,
+    pub message: String,
+}
+
+impl IngestError {
+    fn bad_request(msg: impl Into<String>) -> Self {
+        Self {
+            status_code: 400,
+            message: msg.into(),
+        }
+    }
+
+    fn payload_too_large(msg: impl Into<String>) -> Self {
+        Self {
+            status_code: 413,
+            message: msg.into(),
+        }
+    }
+
+    fn unprocessable(msg: impl Into<String>) -> Self {
+        Self {
+            status_code: 422,
+            message: msg.into(),
+        }
+    }
+
+    fn internal(msg: impl Into<String>) -> Self {
+        Self {
+            status_code: 500,
+            message: msg.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for IngestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HTTP {}: {}", self.status_code, self.message)
+    }
+}
+
+fn chrono_iso8601_utc_now() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Compute year/month/day from days since epoch (1970-01-01).
+    let mut y = 1970i64;
+    let mut remaining = days as i64;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days: [i64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0;
+    for &md in &month_days {
+        if remaining < md {
+            break;
+        }
+        remaining -= md;
+        m += 1;
+    }
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        y,
+        m + 1,
+        remaining + 1,
+        hours,
+        minutes,
+        seconds
+    )
+}
+
+/// Extract the JSON body from an Azure Functions HTTP trigger invocation
+/// envelope. The envelope is the outer JSON sent by the Functions host when
+/// `enableForwardingHttpRequest` is `false`.
+///
+/// Returns the parsed body as a `serde_json::Value`.
+pub fn extract_http_trigger_body(
+    request_body: &[u8],
+) -> Result<serde_json::Value, HandlerError> {
+    let envelope: serde_json::Value = serde_json::from_slice(request_body)?;
+    let body_str = envelope
+        .get("Data")
+        .or_else(|| envelope.get("data"))
+        .and_then(|data| data.get("req").or_else(|| data.get("Req")))
+        .and_then(|req| req.get("Body").or_else(|| req.get("body")))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            HandlerError::Decode(
+                "HTTP trigger envelope missing `Data.req.Body`".to_string(),
+            )
+        })?;
+    serde_json::from_str(body_str).map_err(|e| {
+        HandlerError::Decode(format!("HTTP trigger body is not valid JSON: {e}"))
+    })
+}
+
+/// Format an `IngestResponse` as an Azure Functions HTTP output binding
+/// response envelope. The binding name `res` matches
+/// `ProgramIngest/function.json`.
+pub fn format_ingest_response(
+    status_code: u16,
+    body: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "Outputs": {
+            "res": {
+                "statusCode": status_code,
+                "headers": {"Content-Type": "application/json"},
+                "body": serde_json::to_string(body).unwrap_or_default()
+            }
+        }
+    })
 }
 
 pub struct AzureTablesStore {
@@ -457,6 +749,32 @@ impl HandlerStore for AzureTablesStore {
                 "query program image failed: {e}"
             ))),
         }
+    }
+
+    async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError> {
+        let row_key = hex::encode(&row.program_hash);
+        let entity = ProgramImageEntity {
+            partition_key: "program".to_string(),
+            row_key: row_key.clone(),
+            cbor_image: base64::engine::general_purpose::STANDARD.encode(&row.cbor_image),
+            source_filename: row.source_filename.clone(),
+            abi_version: row.abi_version,
+            size_bytes: Some(row.size_bytes),
+            verification_profile: Some(row.verification_profile.clone()),
+            created_at: Some(row.created_at.clone()),
+        };
+        let entity_client = self
+            .programs_table
+            .partition_key_client("program")
+            .entity_client(row_key);
+        entity_client
+            .insert_or_replace(entity)
+            .map_err(|e| {
+                HandlerError::Store(format!("prepare program-image upsert failed: {e}"))
+            })?
+            .await
+            .map_err(|e| HandlerError::Store(format!("upsert program-image row failed: {e}")))?;
+        Ok(())
     }
 }
 
@@ -611,6 +929,16 @@ struct ProgramImageEntity {
     #[serde(rename = "RowKey")]
     row_key: String,
     cbor_image: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    source_filename: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    abi_version: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    size_bytes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    verification_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    created_at: Option<String>,
 }
 
 impl TryFrom<ActualStateEntity> for ActualStateRow {
@@ -1152,6 +1480,14 @@ mod tests {
                 .get(&hex::encode(program_hash))
                 .cloned())
         }
+
+        async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError> {
+            self.program_images
+                .lock()
+                .await
+                .insert(hex::encode(&row.program_hash), row.cbor_image.clone());
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -1249,6 +1585,10 @@ mod tests {
                 None => Ok(None),
             }
         }
+
+        async fn store_program_image(&self, _row: &ProgramImageRow) -> Result<(), HandlerError> {
+            Ok(())
+        }
     }
 
     struct SameTimestampDifferentLatestStore {
@@ -1290,6 +1630,10 @@ mod tests {
             _program_hash: &[u8],
         ) -> Result<Option<Vec<u8>>, HandlerError> {
             Ok(None)
+        }
+
+        async fn store_program_image(&self, _row: &ProgramImageRow) -> Result<(), HandlerError> {
+            Ok(())
         }
     }
 
@@ -1333,6 +1677,10 @@ mod tests {
             _program_hash: &[u8],
         ) -> Result<Option<Vec<u8>>, HandlerError> {
             Ok(None)
+        }
+
+        async fn store_program_image(&self, _row: &ProgramImageRow) -> Result<(), HandlerError> {
+            Ok(())
         }
     }
 
@@ -2165,5 +2513,332 @@ mod tests {
         });
         let err = serde_json::from_value::<ActualStateEntity>(json).unwrap_err();
         assert!(err.to_string().contains("not a valid u64"));
+    }
+
+    // ── Program Ingest tests (T-WEB-0301 through T-WEB-0308) ──
+
+    /// Build a minimal valid BPF ELF with a `sonde` section containing the
+    /// given BPF bytecode. This mirrors `make_sonde_elf` from
+    /// `crates/sonde-gateway/src/program.rs` (test-only).
+    fn make_test_elf(bpf_code: &[u8]) -> Vec<u8> {
+        let shstrtab: &[u8] = b"\0sonde\0.shstrtab\0";
+
+        let text_offset: u64 = 64;
+        let shstrtab_offset: u64 = text_offset + bpf_code.len() as u64;
+        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
+
+        let mut elf = Vec::new();
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+        elf.push(2); // ELFCLASS64
+        elf.push(1); // ELFDATA2LSB
+        elf.push(1); // EI_VERSION
+        elf.extend_from_slice(&[0; 9]);
+        elf.extend_from_slice(&1u16.to_le_bytes()); // ET_REL
+        elf.extend_from_slice(&247u16.to_le_bytes()); // EM_BPF
+        elf.extend_from_slice(&1u32.to_le_bytes());
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
+        elf.extend_from_slice(&shdr_offset.to_le_bytes());
+        elf.extend_from_slice(&0u32.to_le_bytes());
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf.extend_from_slice(&0u16.to_le_bytes());
+        elf.extend_from_slice(&0u16.to_le_bytes());
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        elf.extend_from_slice(&3u16.to_le_bytes()); // e_shnum
+        elf.extend_from_slice(&2u16.to_le_bytes()); // e_shstrndx
+        assert_eq!(elf.len(), 64);
+        elf.extend_from_slice(bpf_code);
+        elf.extend_from_slice(shstrtab);
+
+        // Null section header
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // sonde section header
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes());
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // SHT_PROGBITS
+        let flags: u64 = 0x6; // SHF_ALLOC | SHF_EXECINSTR
+        sh[8..16].copy_from_slice(&flags.to_le_bytes());
+        sh[24..32].copy_from_slice(&text_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(bpf_code.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // .shstrtab section header
+        let mut sh2 = [0u8; 64];
+        sh2[0..4].copy_from_slice(&7u32.to_le_bytes());
+        sh2[4..8].copy_from_slice(&3u32.to_le_bytes()); // SHT_STRTAB
+        sh2[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh2[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        sh2[48..56].copy_from_slice(&1u64.to_le_bytes());
+        elf.extend_from_slice(&sh2);
+
+        elf
+    }
+
+    fn minimal_bpf_code() -> [u8; 16] {
+        [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ]
+    }
+
+    fn make_ingest_handler() -> (
+        Arc<MemoryStore>,
+        AzureHandler<MemoryStore, RecordingPublisher>,
+    ) {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(store.clone(), publisher, "downstream-queue");
+        (store, handler)
+    }
+
+    fn make_ingest_body(
+        elf: &[u8],
+        source_filename: Option<&str>,
+        abi_version: Option<u32>,
+        verification_profile: Option<&str>,
+    ) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "elf": base64::engine::general_purpose::STANDARD.encode(elf),
+        });
+        if let Some(name) = source_filename {
+            body["source_filename"] = serde_json::json!(name);
+        }
+        if let Some(abi) = abi_version {
+            body["abi_version"] = serde_json::json!(abi);
+        }
+        if let Some(profile) = verification_profile {
+            body["verification_profile"] = serde_json::json!(profile);
+        }
+        body
+    }
+
+    // T-WEB-0301: ProgramIngest accepts ELF + metadata via JSON POST
+    #[tokio::test]
+    async fn program_ingest_accepts_valid_elf() {
+        let (store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let body = make_ingest_body(&elf, Some("sensor.o"), Some(1), Some("resident"));
+        let resp = handler.handle_program_ingest(&body).await.unwrap();
+
+        assert!(!resp.program_hash.is_empty());
+        assert!(resp.size > 0);
+        assert_eq!(resp.abi_version, Some(1));
+        assert_eq!(resp.source_filename.as_deref(), Some("sensor.o"));
+
+        // Verify the image was stored and can be loaded back.
+        let hash_bytes = hex::decode(&resp.program_hash).unwrap();
+        let stored = store.load_program_image(&hash_bytes).await.unwrap();
+        assert!(stored.is_some());
+    }
+
+    // T-WEB-0302: Prevail verification runs; invalid ELF rejected
+    #[tokio::test]
+    async fn program_ingest_rejects_invalid_elf() {
+        let (_store, handler) = make_ingest_handler();
+        let body = make_ingest_body(&[0xDE, 0xAD, 0xBE, 0xEF], None, None, None);
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 422);
+        assert!(err.message.contains("verification/ingestion failed"));
+    }
+
+    // T-WEB-0303: Program hash matches gateway computation
+    #[tokio::test]
+    async fn program_ingest_hash_matches_gateway() {
+        let (_store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let body = make_ingest_body(&elf, None, None, None);
+        let resp = handler.handle_program_ingest(&body).await.unwrap();
+
+        // Independently compute the hash via ProgramLibrary.
+        let lib = sonde_gateway::program::ProgramLibrary::new();
+        let record = lib
+            .ingest_elf(&elf, sonde_gateway::program::VerificationProfile::Resident)
+            .unwrap();
+        assert_eq!(resp.program_hash, hex::encode(&record.hash));
+    }
+
+    // T-WEB-0305: Success returns hash+metadata; failure returns diagnostics
+    #[tokio::test]
+    async fn program_ingest_success_returns_metadata() {
+        let (_store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let body = make_ingest_body(&elf, Some("my-prog.o"), Some(42), Some("resident"));
+        let resp = handler.handle_program_ingest(&body).await.unwrap();
+        assert_eq!(resp.abi_version, Some(42));
+        assert_eq!(resp.source_filename.as_deref(), Some("my-prog.o"));
+        assert_eq!(resp.program_hash.len(), 64); // SHA-256 hex = 64 chars
+    }
+
+    #[tokio::test]
+    async fn program_ingest_failure_returns_diagnostics() {
+        let (_store, handler) = make_ingest_handler();
+        let body = make_ingest_body(&[0x7f, b'E', b'L', b'F'], None, None, None);
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 422);
+        assert!(!err.message.is_empty());
+    }
+
+    // T-WEB-0306: Oversized programs rejected
+    #[tokio::test]
+    async fn program_ingest_rejects_oversized_elf() {
+        let (_store, handler) = make_ingest_handler();
+        let big_elf = vec![0u8; MAX_ELF_UPLOAD_SIZE + 1];
+        let body = make_ingest_body(&big_elf, None, None, None);
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 413);
+        assert!(err.message.contains("exceeds limit"));
+    }
+
+    // T-WEB-0307: Empty ELF rejected
+    #[tokio::test]
+    async fn program_ingest_rejects_empty_elf() {
+        let (_store, handler) = make_ingest_handler();
+        let body = make_ingest_body(&[], None, None, None);
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("must not be empty"));
+    }
+
+    // T-WEB-0308: source_filename normalized to basename
+    #[tokio::test]
+    async fn program_ingest_normalizes_source_filename() {
+        let (_store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let body = make_ingest_body(
+            &elf,
+            Some("/path/to/sensor.o"),
+            None,
+            None,
+        );
+        let resp = handler.handle_program_ingest(&body).await.unwrap();
+        assert_eq!(resp.source_filename.as_deref(), Some("sensor.o"));
+    }
+
+    #[tokio::test]
+    async fn program_ingest_missing_elf_field() {
+        let (_store, handler) = make_ingest_handler();
+        let body = serde_json::json!({"source_filename": "test.o"});
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("`elf` field"));
+    }
+
+    #[tokio::test]
+    async fn program_ingest_invalid_base64() {
+        let (_store, handler) = make_ingest_handler();
+        let body = serde_json::json!({"elf": "not-valid-base64!!!"});
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("base64"));
+    }
+
+    #[tokio::test]
+    async fn program_ingest_invalid_verification_profile() {
+        let (_store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let body = make_ingest_body(&elf, None, None, Some("unknown-profile"));
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("verification_profile"));
+    }
+
+    #[tokio::test]
+    async fn program_ingest_rejects_invalid_abi_version() {
+        let (_store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let mut body = make_ingest_body(&elf, None, None, None);
+        body["abi_version"] = serde_json::json!("not-a-number");
+        let err = handler.handle_program_ingest(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("abi_version"));
+    }
+
+    #[tokio::test]
+    async fn program_ingest_defaults_to_resident_profile() {
+        let (_store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        // No verification_profile in body — should default to resident.
+        let body = make_ingest_body(&elf, None, None, None);
+        let resp = handler.handle_program_ingest(&body).await.unwrap();
+        assert!(!resp.program_hash.is_empty());
+    }
+
+    #[tokio::test]
+    async fn program_ingest_is_idempotent() {
+        let (store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let body = make_ingest_body(&elf, Some("v1.o"), Some(1), None);
+
+        let resp1 = handler.handle_program_ingest(&body).await.unwrap();
+        let body2 = make_ingest_body(&elf, Some("v2.o"), Some(2), None);
+        let resp2 = handler.handle_program_ingest(&body2).await.unwrap();
+
+        // Same hash (same ELF = same CBOR image).
+        assert_eq!(resp1.program_hash, resp2.program_hash);
+
+        // Stored image is still valid.
+        let hash_bytes = hex::decode(&resp1.program_hash).unwrap();
+        let stored = store.load_program_image(&hash_bytes).await.unwrap();
+        assert!(stored.is_some());
+    }
+
+    // Test the HTTP trigger envelope extraction.
+    #[test]
+    fn extract_http_trigger_body_parses_envelope() {
+        let inner_json = serde_json::json!({"elf": "AAAA", "source_filename": "test.o"});
+        let envelope = serde_json::json!({
+            "Data": {
+                "req": {
+                    "Body": serde_json::to_string(&inner_json).unwrap(),
+                    "Headers": {"Content-Type": "application/json"}
+                }
+            }
+        });
+        let body = extract_http_trigger_body(
+            serde_json::to_string(&envelope).unwrap().as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(body.get("elf").unwrap().as_str().unwrap(), "AAAA");
+        assert_eq!(
+            body.get("source_filename").unwrap().as_str().unwrap(),
+            "test.o"
+        );
+    }
+
+    #[test]
+    fn extract_http_trigger_body_rejects_missing_body() {
+        let envelope = serde_json::json!({"Data": {"req": {}}});
+        let err = extract_http_trigger_body(
+            serde_json::to_string(&envelope).unwrap().as_bytes(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Data.req.Body"));
+    }
+
+    #[test]
+    fn format_ingest_response_has_correct_structure() {
+        let body = serde_json::json!({"program_hash": "abcd", "size": 42});
+        let resp = format_ingest_response(200, &body);
+        let ret = resp
+            .get("Outputs")
+            .unwrap()
+            .get("res")
+            .unwrap();
+        assert_eq!(ret.get("statusCode").unwrap().as_u64().unwrap(), 200);
+        assert_eq!(
+            ret.get("headers")
+                .unwrap()
+                .get("Content-Type")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "application/json"
+        );
+        let body_str = ret.get("body").unwrap().as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(body_str).unwrap();
+        assert_eq!(parsed.get("program_hash").unwrap().as_str().unwrap(), "abcd");
     }
 }

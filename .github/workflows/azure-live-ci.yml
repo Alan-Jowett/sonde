@@ -387,9 +387,13 @@ jobs:
 
           # Run swa deploy inside the bootstrap image to validate that the
           # image has all required native dependencies (libicu, etc.).
+          # Override the ENTRYPOINT (bootstrap.sh, which uses interactive
+          # device-code login) so we run swa deploy directly with the
+          # deployment token obtained from the host.
           docker run --rm \
+            --entrypoint sh \
             sonde-azure-bootstrap:ci \
-            sh -c "
+            -c "
               cat > /opt/sonde/deploy/web-ui/config.json <<'CFGEOF'
           {
             \"msalClientId\": \"$CLIENT_ID\",

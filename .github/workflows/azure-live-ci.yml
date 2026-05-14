@@ -236,8 +236,17 @@ jobs:
           # like Classic Consumption. Wait for RBAC propagation instead (the
           # function app's managed identity needs Storage Blob Data Owner to
           # read its deployment package from the blob container).
-          echo "Waiting 60s for RBAC propagation before deploying..."
-          sleep 60
+          # The function app was created before RBAC was assigned, so its
+          # initial host startup attempt may have failed with 403. After
+          # the RBAC wait, restart it to force re-initialization.
+          echo "Waiting 90s for RBAC propagation before deploying..."
+          sleep 90
+          echo "Restarting function app to pick up RBAC permissions..."
+          az functionapp restart \
+            --name "$FUNCTION_APP_NAME" \
+            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+            --output none 2>&1 || echo "::warning::restart returned non-zero (may be normal for Flex Consumption)"
+          sleep 30
           # Deploy by uploading the zip directly to the deployment blob
           # container configured in functionAppConfig.deployment.storage.
           # Flex Consumption does not support Kudu/SCM (config-zip returns 415)

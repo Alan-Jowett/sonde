@@ -126,7 +126,10 @@ uses `WEBSITE_RUN_FROM_PACKAGE=1` so that the Azure Functions host runs the
 handler package deployed via the zip deploy API. The `AzureWebJobsStorage`
 connection string provides the runtime storage backend, and
 `FUNCTIONS_WORKER_RUNTIME=custom` tells the Azure Functions host to use the
-Sonde custom handler binary.
+Sonde custom handler binary. The bootstrap script explicitly clears
+`linuxFxVersion` via `az functionapp config set` after Bicep provisioning
+and before zip deployment, which suppresses the Azure CLI runtime-detection
+warning that otherwise appears during `config-zip`.
 
 The runnable package itself is not compiled during bootstrap. Instead, the
 bootstrap image carries a prebuilt Linux package for the matching Sonde

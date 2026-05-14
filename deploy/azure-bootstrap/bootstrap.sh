@@ -216,6 +216,14 @@ fi
 
 echo "Deploying bundled Azure handler package to Function App $function_app_name" >&2
 echo "Using deployment target $deployment_container_name ($deployment_container_url)" >&2
+# Explicitly clear linuxFxVersion so the Azure CLI does not warn about
+# missing runtime detection during zip deployment.  Custom handlers do not
+# need a managed runtime stack.
+az functionapp config set \
+    --name "$function_app_name" \
+    --resource-group "$resource_group_name" \
+    --linux-fx-version '' \
+    --output none 1>&2 || true
 # The CLI's post-deployment health check ("Failed to fetch host key") can
 # fail on Flex Consumption plans even when the zip upload (HTTP 202)
 # succeeded.  Tolerate this exit code and rely on wait_for_function_activation

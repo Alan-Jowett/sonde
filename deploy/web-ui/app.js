@@ -446,7 +446,6 @@ async function upsertEntity(tableName, partitionKey, rowKey, entity) {
       Accept: 'application/json;odata=nometadata',
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
-      'If-Match': '*',
       'x-ms-version': '2019-02-02',
     },
     body: JSON.stringify(entity),

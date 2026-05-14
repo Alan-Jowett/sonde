@@ -220,16 +220,25 @@ Admin socket (configurable via `--admin-socket`):
 
 #### Windows Azure companion bootstrap (optional)
 
-If you installed the optional Azure companion feature, bootstrap it after the
-gateway service is running and the modem display is available.
+If you installed the optional Azure companion feature, you **must** complete
+bootstrap before the Azure companion service can start. The Windows service
+fails closed when bootstrap-complete state is absent — it will not attempt
+bootstrap automatically (see
+[AZC-0205](azure-companion-requirements.md#azc-0205--windows-service-startup-fails-closed-before-bootstrap)
+and [azure-companion-design.md §3.3](azure-companion-design.md#33--bootstrap-state-decision)).
 
-Prerequisites:
+**Prerequisites:**
+
 - Docker Desktop / Docker Engine running on the Windows host
-- the gateway admin pipe available at `\\.\pipe\sonde-admin` (or your configured override)
+- The gateway service running and the modem display available
+- The gateway admin pipe available at `\\.\pipe\sonde-admin` (or your configured
+  override)
 - Azure deployment values chosen for your environment (`SONDE_AZURE_LOCATION`,
   `SONDE_AZURE_PROJECT_NAME`, and optionally `SONDE_AZURE_SUBSCRIPTION_ID`)
 
-From PowerShell:
+**Step 1 — Run bootstrap:**
+
+From an elevated PowerShell prompt:
 
 ```powershell
 $env:SONDE_AZURE_LOCATION = "eastus"
@@ -240,17 +249,51 @@ $env:SONDE_AZURE_PROJECT_NAME = "sonde-prod"
 sonde-azure-companion.exe bootstrap
 ```
 
-Bootstrap:
-- pulls `ghcr.io/alan-jowett/sonde-azure-bootstrap:<matching companion version>` by default
-- runs Azure device-code authentication inside the bootstrap container
-- deploys the bundled prebuilt `sonde-azure-handler` package into the provisioned Function App
-- waits until Azure reports at least one loaded function before reporting success
-- displays the device code and progress messages on the modem via the gateway admin pipe
-- writes runtime state under `%ProgramData%\sonde-azure-companion\`
-
 If `sonde-azure-companion.exe` is not on `PATH`, run the installed binary from
-the Sonde `bin` directory instead. If Docker is unavailable or the modem
-display cannot be updated, bootstrap fails closed; fix the dependency and retry.
+the Sonde `bin` directory instead.
+
+Bootstrap pulls the version-matched `ghcr.io/alan-jowett/sonde-azure-bootstrap`
+image and runs it in a Docker container. If Docker is unavailable or the modem
+display cannot be updated, bootstrap fails closed — fix the dependency and retry.
+
+**Step 2 — Enter the device code:**
+
+During bootstrap, a device code and a sign-in URL are displayed on the modem
+screen (and echoed to the console). Open the URL shown (typically
+`https://microsoft.com/devicelogin`) in a browser and enter the code to
+authenticate with your Azure account.
+
+**Step 3 — Wait for bootstrap to complete:**
+
+After authentication, bootstrap continues automatically:
+- deploys the bundled Bicep templates and `sonde-azure-handler` package into
+  the provisioned Function App
+- waits until Azure reports at least one loaded function before reporting
+  success
+- writes runtime state to `%ProgramData%\sonde-azure-companion\`
+
+Bootstrap-complete state requires the following files in the state directory
+(`%ProgramData%\sonde-azure-companion\`):
+
+| File | Purpose |
+|------|---------|
+| `service-principal.json` | Entra tenant ID, client ID, certificate paths |
+| `cert.pem` | Client certificate for Azure authentication |
+| `key.pem` | Private key for the client certificate |
+| `storage-queues.json` | Storage Queue endpoint and queue names |
+
+**Step 4 — Start the Azure companion service:**
+
+Once bootstrap reports success, start the companion service:
+
+```powershell
+sc.exe start sonde-azure-companion
+sc.exe query sonde-azure-companion
+```
+
+The service will now start normally on each boot. If bootstrap-complete state
+is ever removed, the service will fail closed on the next start — re-run
+bootstrap to restore it.
 
 ## 6. Verify gateway and modem (smoke test)
 

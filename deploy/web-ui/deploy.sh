@@ -66,6 +66,14 @@ if [ -z "$APP_OBJECT_ID" ]; then
 fi
 TENANT_ID="$(az account show --query tenantId -o tsv)"
 
+# Resolve login endpoint from the active cloud for sovereign cloud compatibility
+LOGIN_ENDPOINT="$(az cloud show --query endpoints.activeDirectory -o tsv)"
+LOGIN_ENDPOINT="${LOGIN_ENDPOINT%/}"
+if [ -z "$LOGIN_ENDPOINT" ]; then
+  echo "ERROR: Could not resolve Azure login endpoint from active cloud" >&2
+  exit 1
+fi
+
 echo "  Static Web App: $SWA_NAME ($SWA_HOSTNAME)"
 echo "  Function App:   $FUNCTION_APP"
 echo "  Storage Account: $STORAGE_ACCOUNT"
@@ -77,7 +85,7 @@ echo "=== Generating config.json ==="
 cat > "$SCRIPT_DIR/config.json" <<EOF
 {
   "msalClientId": "$CLIENT_ID",
-  "msalAuthority": "https://login.microsoftonline.com/$TENANT_ID",
+  "msalAuthority": "$LOGIN_ENDPOINT/$TENANT_ID",
   "storageAccount": "$STORAGE_ACCOUNT",
   "functionAppName": "$FUNCTION_APP"
 }
@@ -171,7 +179,7 @@ echo "=== Configuring Function App EasyAuth ==="
 # Use az rest with the authSettingsV2 JSON directly for reliable configuration.
 FUNCTION_APP_ID="$(az functionapp show --name "$FUNCTION_APP" \
   --resource-group "$RESOURCE_GROUP" --query 'id' -o tsv)"
-AUTH_BODY="$(jq -n -c --arg clientId "$CLIENT_ID" --arg tenantId "$TENANT_ID" '{
+AUTH_BODY="$(jq -n -c --arg clientId "$CLIENT_ID" --arg tenantId "$TENANT_ID" --arg loginEndpoint "$LOGIN_ENDPOINT" '{
   properties: {
     platform: { enabled: true },
     globalValidation: { unauthenticatedClientAction: "Return401" },
@@ -180,7 +188,7 @@ AUTH_BODY="$(jq -n -c --arg clientId "$CLIENT_ID" --arg tenantId "$TENANT_ID" '{
         enabled: true,
         registration: {
           clientId: $clientId,
-          openIdIssuer: ("https://login.microsoftonline.com/" + $tenantId + "/v2.0")
+          openIdIssuer: ($loginEndpoint + "/" + $tenantId + "/v2.0")
         },
         validation: {
           allowedAudiences: [("api://" + $clientId), $clientId],

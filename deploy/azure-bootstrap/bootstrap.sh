@@ -185,6 +185,15 @@ az login --use-device-code --output none >&2
 if [ -n "${SONDE_AZURE_SUBSCRIPTION_ID:-}" ]; then
     az account set --subscription "$SONDE_AZURE_SUBSCRIPTION_ID" >&2
 fi
+
+# Resolve login endpoint from the active cloud for sovereign cloud compatibility
+login_endpoint="$(az cloud show --query endpoints.activeDirectory -o tsv)"
+login_endpoint="${login_endpoint%/}"
+if [ -z "$login_endpoint" ]; then
+    echo "could not resolve Azure login endpoint from active cloud" >&2
+    exit 1
+fi
+
 echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2
 deployment_name="sonde-bootstrap-$(date +%Y%m%d%H%M%S)-$$"
 deployment_outputs="$(az deployment sub create \
@@ -237,7 +246,7 @@ fi
 cat > "$web_ui_dir/config.json" <<CONFIGEOF
 {
   "msalClientId": "$companion_client_id",
-  "msalAuthority": "https://login.microsoftonline.com/$companion_tenant_id",
+  "msalAuthority": "$login_endpoint/$companion_tenant_id",
   "storageAccount": "$storage_account_name",
   "functionAppName": "$function_app_name"
 }

@@ -385,6 +385,10 @@ jobs:
             --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
             --query 'properties.apiKey' -o tsv)"
 
+          # Resolve login endpoint from the active cloud for sovereign cloud compatibility
+          LOGIN_ENDPOINT="$(az cloud show --query endpoints.activeDirectory -o tsv)"
+          LOGIN_ENDPOINT="${LOGIN_ENDPOINT%/}"
+
           # Run swa deploy inside the bootstrap image to validate that the
           # image has all required native dependencies (libicu, etc.).
           # Override the ENTRYPOINT (bootstrap.sh, which uses interactive
@@ -397,7 +401,7 @@ jobs:
               cat > /opt/sonde/deploy/web-ui/config.json <<'CFGEOF'
           {
             \"msalClientId\": \"$CLIENT_ID\",
-            \"msalAuthority\": \"https://login.microsoftonline.com/$TENANT_ID\",
+            \"msalAuthority\": \"$LOGIN_ENDPOINT/$TENANT_ID\",
             \"storageAccount\": \"$STORAGE_ACCOUNT\",
             \"functionAppName\": \"$FUNCTION_APP\"
           }

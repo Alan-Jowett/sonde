@@ -31,8 +31,8 @@
 | T-WEB-0307a | WEB-0307 | Empty ELF rejected | Unit (Rust) | Pass |
 | T-WEB-0307b | WEB-0307 | Multi-program ELF rejected | Unit (Rust) | Planned |
 | T-WEB-0308 | WEB-0308 | `source_filename` normalized to basename | Unit (Rust) | Pass |
-| T-WEB-0309 | WEB-0309 | `DESIRED_STATE` includes inline CBOR image on program divergence | Unit (Rust) | Planned |
-| T-WEB-0310 | WEB-0310 | `DESIRED_STATE` CBOR carries key 5 with program image bytes | Unit (Rust) | Planned |
+| T-WEB-0309 | WEB-0309 | `DESIRED_STATE` includes inline ELF on program divergence | Unit (Rust) | Planned |
+| T-WEB-0310 | WEB-0310 | `DESIRED_STATE` carries key 5 with ELF bytes and keys 6-8 with metadata | Unit (Rust) | Planned |
 | T-WEB-0401 | WEB-0401 | SPA lists programs from `programs` table | Manual/E2E | Planned |
 | T-WEB-0402 | WEB-0402 | SPA creates/edits `programroute` entries | Manual/E2E | Planned |
 | T-WEB-0501 | WEB-0501 | MSAL.js login flow works | Manual | Planned |

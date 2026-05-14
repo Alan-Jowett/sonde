@@ -84,8 +84,8 @@ deploy/web-ui/
   7. Store in `programs` Azure Table via `HandlerStore::store_program_image()`
   8. Return JSON: `{"program_hash": "hex", "size": N, "abi_version": N, "source_filename": "name"}`
   9. On failure: return JSON error with diagnostics
-- The uploaded ELF is verified and transformed; the persisted and delivered artifact is the deterministic CBOR program image, not the raw ELF
-- `programs` table schema: `PartitionKey="program"`, `RowKey=hex(program_hash)`, `source_filename`, `abi_version` (`Edm.Int32`), `cbor_image` (base64-encoded CBOR program image), `size_bytes` (`Edm.Int32`, CBOR image byte length), `verification_profile`, `created_at` (ISO 8601 UTC string)
+- The uploaded ELF is verified and transformed; the cloud stores both the deterministic CBOR program image (for hash computation and node delivery) and the original ELF binary (for embedding in `DESIRED_STATE` messages so gateways can re-verify locally)
+- `programs` table schema: `PartitionKey="program"`, `RowKey=hex(program_hash)`, `source_filename`, `abi_version` (`Edm.Int32`), `cbor_image` (base64-encoded CBOR program image), `elf_image` (base64-encoded original ELF binary), `size_bytes` (`Edm.Int32`, CBOR image byte length), `verification_profile`, `created_at` (ISO 8601 UTC string)
 - Idempotent: re-ingesting the same ELF produces the same program hash; all metadata fields (`source_filename`, `abi_version`, `verification_profile`, `created_at`) are overwritten on re-ingest (last-writer-wins)
 - Error responses use HTTP status codes: 400 (malformed JSON, missing `elf` field, invalid base64), 413 (ELF exceeds size limit), 422 (Prevail verification failure, invalid ELF), 500 (storage/internal error)
 
@@ -121,20 +121,21 @@ async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), Handler
 ```
 
 `ProgramImageRow` contains: `program_hash` (`Vec<u8>`), `cbor_image` (`Vec<u8>`),
-`source_filename` (`Option<String>`), `abi_version` (`Option<u32>`), `size_bytes` (`u32`),
+`elf_image` (`Vec<u8>`), `source_filename` (`Option<String>`), `abi_version` (`Option<u32>`), `size_bytes` (`u32`),
 `verification_profile` (`String`), `created_at` (`String`, ISO 8601 UTC).
 
 `AzureTablesStore` implements this as an upsert to the `programs` table, encoding
-`cbor_image` as base64 and `program_hash` as hex for the `RowKey`.
+`cbor_image` and `elf_image` as base64 and `program_hash` as hex for the `RowKey`.
 
-### 6.2 Inline Program Image in DESIRED_STATE (WEB-0309, WEB-0310)
+### 6.2 Inline Program ELF in DESIRED_STATE (WEB-0309, WEB-0310)
 
-When the handler publishes a `DESIRED_STATE` message due to program divergence, it fetches the CBOR program image from the `programs` table and embeds it at CBOR key 5 (`assigned_program_image`, `bstr`). The companion forwards this opaque payload to the gateway, which ingests the inline image into its local `ProgramLibrary`.
-
-> **Note**: The gateway's `DESIRED_STATE` handler (`connector.rs`) does not yet
-> read key 5. Key 5 (`assigned_program_image`) is now documented in
-> `gateway-companion-api.md` §3.2.2. A follow-up change to `connector.rs` is
-> required to parse and ingest the inline program image.
+When the handler publishes a `DESIRED_STATE` message due to program divergence,
+it fetches the original ELF binary from the `programs` table and embeds it at
+CBOR key 5 (`assigned_program_elf`, `bstr`). Keys 6–8 carry the verification
+profile, source filename, and ABI version metadata. The companion forwards this
+opaque payload to the gateway, which runs full Prevail verification via
+`ProgramLibrary::ingest_elf()` and stores the resulting verified program in its
+local `ProgramLibrary`.
 
 ---
 

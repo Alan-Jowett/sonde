@@ -334,6 +334,7 @@ fn extract_global_section_data(data: &[u8]) -> Vec<Vec<u8>> {
 }
 
 /// Program library: stores verified programs and serves chunks.
+#[derive(Clone)]
 pub struct ProgramLibrary {
     sha256: RustCryptoSha256,
 }

@@ -1078,6 +1078,36 @@ operations such as `QueueReboot` or `AssignProgram`. Those remain internal
 effects that fall out of gateway reconciliation when desired state differs from
 actual state.
 
+#### 13A.2.1  Inline program ingestion from DESIRED_STATE
+
+When a node-scoped `DESIRED_STATE` message includes an inline ELF binary at
+CBOR key 5 (`assigned_program_elf`), the connector service ingests the program
+before validating program existence:
+
+1. Extract the raw ELF bytes from key 5.
+2. Determine the verification profile from key 6 (`assigned_program_verification_profile`);
+   default to `Resident` if absent or `null`.
+3. Call `ProgramLibrary::ingest_elf(elf_bytes, profile)` to run full Prevail
+   verification and produce a `ProgramRecord`.
+4. If key 1 (`assigned_program_hash`) is present, verify that the ingested
+   record's hash matches exactly. If they differ, reject the entire
+   `DESIRED_STATE` message — do not persist the program or update node state.
+5. Set optional metadata from key 7 (`assigned_program_source_filename`) and
+   key 8 (`assigned_program_abi_version`) on the record.
+6. Persist the record via `Storage::store_program()`.
+7. If any step fails (verification failure, size limit, invalid ELF, hash
+   mismatch), reject the entire `DESIRED_STATE` message with a descriptive error
+   and do not update the node's desired state.
+
+The `ConnectorService` holds a `ProgramLibrary` instance for this purpose. The
+inline ELF is always fully re-verified locally regardless of any verification the
+control plane may have performed.
+
+The inline ELF plus CBOR envelope overhead must fit within the connector's
+`max_frame_length` (default 1 MB). In practice, BPF ELFs are small (verified
+CBOR images are limited to 4 KB resident / 2 KB ephemeral), so framing limits
+are not a concern for well-formed programs.
+
 ### 13A.3  Upstream actual-state, status, and application-data path
 
 When the gateway accepts a node `WAKE`, it updates the node's latest-known

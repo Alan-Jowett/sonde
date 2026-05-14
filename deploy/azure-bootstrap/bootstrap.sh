@@ -317,6 +317,43 @@ az ad app permission grant \
     --output none 2>/dev/null || true
 echo "Azure Storage user_impersonation permission granted" >&2
 
+# Expose api://<clientId>/user_impersonation API scope on the Entra app
+# so EasyAuth can validate SPA-acquired tokens for the Function App.
+current_api="$(az ad app show --id "$app_object_id" \
+    --query 'api.oauth2PermissionScopes' --output json 2>/dev/null || echo '[]')"
+if [ -z "$current_api" ] || [ "$current_api" = "null" ]; then
+    current_api="[]"
+fi
+has_scope=0
+echo "$current_api" | jq -e '[.[] | select(.value == "user_impersonation")] | length > 0' >/dev/null 2>&1 && has_scope=1
+current_identifier_uris="$(az ad app show --id "$app_object_id" \
+    --query 'identifierUris' --output json 2>/dev/null || echo '[]')"
+if [ -z "$current_identifier_uris" ] || [ "$current_identifier_uris" = "null" ]; then
+    current_identifier_uris="[]"
+fi
+has_identifier_uri=0
+echo "$current_identifier_uris" | jq -e --arg uri "api://$companion_client_id" 'index($uri) != null' >/dev/null 2>&1 && has_identifier_uri=1
+if [ "$has_scope" -eq 1 ] && [ "$has_identifier_uri" -eq 1 ]; then
+    echo "API scope user_impersonation already exposed" >&2
+else
+    scope_id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c 'import uuid; print(uuid.uuid4())')"
+    if [ "$has_scope" -eq 1 ]; then
+        merged_scopes="$current_api"
+    else
+        merged_scopes="$(echo "$current_api" | jq -c --arg sid "$scope_id" \
+            '. + [{"adminConsentDescription":"Allow the SPA to call the Function App on behalf of the signed-in user","adminConsentDisplayName":"Access Sonde Function App","id":$sid,"isEnabled":true,"type":"User","userConsentDescription":"Allow the app to access the Sonde Function App on your behalf","userConsentDisplayName":"Access Sonde Function App","value":"user_impersonation"}]')"
+    fi
+    merged_identifier_uris="$(echo "$current_identifier_uris" | jq -c --arg uri "api://$companion_client_id" \
+        'if index($uri) != null then . else . + [$uri] end')"
+    patch_body="$(jq -n -c --argjson uris "$merged_identifier_uris" --argjson scopes "$merged_scopes" \
+        '{"identifierUris":$uris,"api":{"oauth2PermissionScopes":$scopes}}')"
+    az rest --method PATCH \
+        --url "https://graph.microsoft.com/v1.0/applications/$app_object_id" \
+        --headers "Content-Type=application/json" \
+        --body "$patch_body"
+    echo "Exposed api://$companion_client_id/user_impersonation scope" >&2
+fi
+
 # Assign Storage Table Data Contributor to the deploying user so they can
 # access the programs table via the SPA immediately after bootstrap.
 deployer_principal="$(az ad signed-in-user show --query id --output tsv 2>/dev/null || true)"

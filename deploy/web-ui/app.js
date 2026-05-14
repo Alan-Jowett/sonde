@@ -34,6 +34,9 @@ async function loadConfig() {
 }
 
 const STORAGE_SCOPES = ['https://storage.azure.com/.default'];
+function functionScopes() {
+  return [`api://${CONFIG.msalClientId}/user_impersonation`];
+}
 const TAB_IDS = ['dashboard', 'desired-state', 'programs', 'routes'];
 const APP = {
   msalApp: null,
@@ -270,6 +273,33 @@ async function getToken() {
     const result = await APP.msalApp.acquireTokenPopup({
       account: APP.account,
       scopes: STORAGE_SCOPES,
+    });
+    APP.account = result.account || APP.account;
+    APP.msalApp.setActiveAccount?.(APP.account);
+    updateAuthUi();
+    return result.accessToken;
+  }
+}
+
+async function getFunctionToken() {
+  if (!APP.account) {
+    await login();
+  }
+  if (!APP.msalApp || !APP.account) {
+    throw new Error('Sign in is required before calling Azure APIs.');
+  }
+
+  const scopes = functionScopes();
+  try {
+    const result = await APP.msalApp.acquireTokenSilent({
+      account: APP.account,
+      scopes,
+    });
+    return result.accessToken;
+  } catch {
+    const result = await APP.msalApp.acquireTokenPopup({
+      account: APP.account,
+      scopes,
     });
     APP.account = result.account || APP.account;
     APP.msalApp.setActiveAccount?.(APP.account);
@@ -727,7 +757,7 @@ async function renderPrograms() {
 
       try {
         requireConfig('functionAppName', 'Function app name');
-        const token = await getToken();
+        const token = await getFunctionToken();
         const arrayBuf = await file.arrayBuffer();
         const bytes = new Uint8Array(arrayBuf);
         const chunkSize = 8192;

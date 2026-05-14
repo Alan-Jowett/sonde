@@ -6,7 +6,7 @@
       "name": "req",
       "methods": ["post"],
       "route": "programs/ingest",
-      "authLevel": "function"
+      "authLevel": "anonymous"
     },
     {
       "type": "http",

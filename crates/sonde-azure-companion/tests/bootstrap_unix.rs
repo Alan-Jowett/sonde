@@ -444,6 +444,10 @@ if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "app" ] && [ "$3" = "show" ]; t
     printf 'obj-id-789\n'
   elif [ "$query" = "spa.redirectUris" ]; then
     printf '[]\n'
+  elif [ "$query" = "api.oauth2PermissionScopes" ]; then
+    printf '[]\n'
+  elif [ "$query" = "identifierUris" ]; then
+    printf '[]\n'
   fi
   exit 0
 fi
@@ -478,6 +482,10 @@ exit 64
     // 1. jq -e --arg uri <URI> 'index($uri) != null'  → membership test (exit 1 = not found)
     // 2. jq -c --arg uri <URI> '(. // []) + [$uri]'   → merge URIs (output JSON array)
     // 3. jq -n -c --argjson uris <JSON> '{"spa":...}' → build PATCH body
+    // 4. jq -e '[.[] | select(...)] | length > 0'      → scope existence check (exit 1 = none)
+    // 5. jq -c --arg sid <UUID> '. + [{...}]'          → merge scope into array
+    // 6. jq -c --arg uri <URI> 'if index(...) ...'     → merge identifier URIs
+    // 7. jq -n -c --argjson uris <J> --argjson scopes <J> '{"identifierUris":...}' → PATCH body
     write_executable(
         &bin_dir.join("jq"),
         r#"#!/bin/sh
@@ -486,18 +494,32 @@ if [ ! -t 0 ]; then cat >/dev/null 2>&1 || true; fi
 # Find the expression (last argument) and extract --arg/--argjson values
 uri_val=""
 argjson_val=""
+argjson2_val=""
 while [ "$#" -gt 1 ]; do
   case "$1" in
-    --arg)   uri_val="$3"; shift 3 ;;
-    --argjson) argjson_val="$3"; shift 3 ;;
-    *)       shift ;;
+    --arg)     uri_val="$3"; shift 3 ;;
+    --argjson) if [ -z "$argjson_val" ]; then argjson_val="$3"; else argjson2_val="$3"; fi; shift 3 ;;
+    *)         shift ;;
   esac
 done
 expr="$1"
 case "$expr" in
-  *index*)  exit 1 ;;
-  *spa*)    printf '{"spa":{"redirectUris":%s}}\n' "$argjson_val"; exit 0 ;;
-  *)        printf '["%s"]\n' "$uri_val"; exit 0 ;;
+  *select*length*)
+    # Scope existence check — no scopes exist in stub
+    exit 1 ;;
+  *if*index*)
+    # Merge identifier URIs — return array with the new URI
+    printf '["%s"]\n' "$uri_val"; exit 0 ;;
+  *index*)
+    # Membership test — URI not found
+    exit 1 ;;
+  *identifierUris*oauth2*)
+    # Build PATCH body for API scope + identifierUris
+    printf '{"identifierUris":%s,"api":{"oauth2PermissionScopes":%s}}\n' "$argjson_val" "$argjson2_val"; exit 0 ;;
+  *spa*)
+    printf '{"spa":{"redirectUris":%s}}\n' "$argjson_val"; exit 0 ;;
+  *)
+    printf '["%s"]\n' "$uri_val"; exit 0 ;;
 esac
 "#,
     );
@@ -557,6 +579,11 @@ esac
     assert!(stderr.contains("Deploying Web UI to Static Web App sonde-web-test"));
     assert!(stderr.contains("Generated config.json for SPA"));
     assert!(stderr.contains("Configuring Entra app registration for Web UI"));
+    assert!(
+        stderr.contains("Exposed api://client-456/user_impersonation scope")
+            || stderr.contains("API scope user_impersonation already exposed"),
+        "bootstrap did not report API scope exposure: {stderr}"
+    );
     assert!(stderr.contains("Web UI deployment complete"));
 
     // Verify config.json was generated with correct values

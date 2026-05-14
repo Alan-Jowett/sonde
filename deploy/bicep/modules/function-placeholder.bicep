@@ -45,6 +45,14 @@ param appInsightsConnectionString string = ''
 @description('Allowed CORS origins for the Function App (e.g. the SWA hostname). Empty array disables CORS.')
 param corsAllowedOrigins array = []
 
+@description('Entra app (client) ID for EasyAuth token validation on ProgramIngest.')
+@minLength(1)
+param functionAuthClientId string
+
+@description('Entra tenant ID for EasyAuth OpenID issuer URL.')
+@minLength(1)
+param functionAuthTenantId string
+
 resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
 }
@@ -143,6 +151,39 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       appSettings: concat(baseAppSettings, observabilityAppSettings)
       cors: empty(corsAllowedOrigins) ? null : {
         allowedOrigins: corsAllowedOrigins
+      }
+    }
+  }
+}
+
+resource authSettings 'Microsoft.Web/sites/config@2024-04-01' = {
+  parent: functionApp
+  name: 'authsettingsV2'
+  properties: {
+    platform: {
+      enabled: true
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'Return401'
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: functionAuthClientId
+          openIdIssuer: 'https://login.microsoftonline.com/${functionAuthTenantId}/v2.0'
+        }
+        validation: {
+          allowedAudiences: [
+            'api://${functionAuthClientId}'
+            functionAuthClientId
+          ]
+          defaultAuthorizationPolicy: {
+            allowedApplications: [
+              functionAuthClientId
+            ]
+          }
+        }
       }
     }
   }

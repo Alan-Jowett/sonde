@@ -249,6 +249,15 @@ $env:SONDE_AZURE_PROJECT_NAME = "sonde-prod"
 sonde-azure-companion.exe bootstrap
 ```
 
+If the gateway uses a non-default admin pipe, set the environment variable
+before running bootstrap so the companion connects to the correct pipe:
+
+```powershell
+$env:SONDE_GATEWAY_ADMIN_SOCKET = "\\.\pipe\my-custom-pipe"
+```
+
+(Alternatively, pass `--admin-socket` on the command line.)
+
 If `sonde-azure-companion.exe` is not on `PATH`, run the installed binary from
 the Sonde `bin` directory instead.
 
@@ -268,9 +277,16 @@ a browser and enter the code to authenticate with your Azure account.
 After authentication, bootstrap continues automatically:
 - deploys the bundled Bicep templates and `sonde-azure-handler` package into
   the provisioned Function App
+- deploys the Web UI SPA content to the provisioned Static Web App
+- configures the Entra app registration (SPA redirect URI, Storage API
+  permission, and `user_impersonation` scope)
 - waits until Azure reports at least one loaded function before reporting
   success
 - writes runtime state to `%ProgramData%\sonde-azure-companion\`
+
+The SPA deployment and Entra configuration require additional Azure permissions
+beyond resource-plane provisioning. If either step fails, bootstrap reports the
+error — resolve the permission issue and re-run bootstrap.
 
 Bootstrap commits its output into a **state generation** directory — a
 timestamped subdirectory named `.state-<timestamp>` under the state root

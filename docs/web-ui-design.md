@@ -55,7 +55,13 @@ deploy/web-ui/
 
 ## 5. Desired State Management (WEB-0200)
 
-- Form: Node ID (text), Schedule Interval (number, seconds), Program Hash (dropdown from `programs` table).
+- Form: Node ID (dropdown), Schedule Interval (number, seconds), Program Hash (dropdown from `programs` table).
+- **Node ID dropdown (WEB-0206):** The Node ID field is a `<select>` populated from nodes that have reported actual state (i.e., rows in the `actualstate` table, deduplicated via `latestByPartition`). A placeholder `<option>` prompts the operator to select a node. Free-text entry is not supported — only nodes known to the gateway appear; arbitrary node IDs cannot be entered or submitted.
+- **Auto-populate on selection (WEB-0206, WEB-0207):** When the operator selects a node, the Schedule Interval and Program Hash fields are pre-populated. The latest row per node is used (same `latestByPartition` dedup as the dashboard). Priority order:
+  1. **Existing desired state** for the selected node (latest row from `desiredstate` table) — `desired_schedule_interval_s` and `desired_assigned_program_hash`.
+  2. **Last reported actual state** — `observed_schedule_interval_s` and `observed_assigned_program_hash`.
+  3. **Empty** — if neither source has a value for a given field.
+- If the pre-populated program hash is not present in the Program Hash dropdown (i.e., the program was deleted from the `programs` table), the Program Hash field is left at the default "No program target" option.
 - On submit:
   - `PartitionKey`: `"n:" + SHA-256(node_id).hex()` using `SubtleCrypto`
   - `RowKey`: reverse-timestamp format `{(u64::MAX - timestamp_ms):016x}:{(u64::MAX - sequence):016x}:{random_nonce:016x}`

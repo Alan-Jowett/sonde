@@ -232,35 +232,82 @@ jobs:
             echo "App Insights enabled ($APPINSIGHTS_NAME)"
             echo "$APPINSIGHTS_NAME" > .azure-live-state/appinsights-name.txt
           fi
-          # Use config-zip which works for Flex Consumption (reports 1 loaded
-          # function). Tolerate exit code failures — Flex Consumption's health
-          # check often fails even when the deploy succeeds.
-          config_zip_exit=0
-          az functionapp deployment source config-zip \
-            --name "$FUNCTION_APP_NAME" \
-            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-            --src .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
-            --timeout 600 \
-            --output none 2>&1 || config_zip_exit=$?
-          if [ "$config_zip_exit" -ne 0 ]; then
-            echo "WARNING: config-zip exited $config_zip_exit; verifying via function activation probe"
-          fi
-          echo "Waiting for function to load..."
-          loaded=0
-          for attempt in $(seq 1 30); do
-            loaded="$(az functionapp function list \
+          # Wait for Function App to be ready before deploying. After Bicep
+          # provisioning the app may exist in ARM but not yet accept deploys.
+          echo "Waiting for Function App readiness..."
+          app_state="Unknown"
+          for ready_i in $(seq 1 12); do
+            app_state="$(az functionapp show \
               --name "$FUNCTION_APP_NAME" \
               --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-              --query 'length(@)' -o tsv 2>/dev/null || echo 0)"
-            if [ "$loaded" -ge 1 ]; then
-              echo "Function App reports $loaded loaded function(s)"
+              --query state -o tsv 2>/dev/null || echo Unknown)"
+            if [ "$app_state" = "Running" ]; then
+              echo "Function App ready (state: Running)"
               break
             fi
-            echo "  attempt $attempt: $loaded functions loaded, waiting..."
+            echo "  readiness $ready_i/12: state=$app_state, waiting 10s..."
             sleep 10
           done
+          if [ "$app_state" != "Running" ]; then
+            echo "::warning::Function App did not reach Running state; last state=$app_state — proceeding anyway"
+          fi
+          # Deploy with retries + interleaved activation probes (fixes #912).
+          # Previously a single config-zip failure fell through to a poll-only
+          # loop that never retried the deployment, causing a guaranteed 300s
+          # timeout on transient Bad Request / 5xx errors.
+          MAX_DEPLOY=4
+          loaded=0
+          config_zip_exit=1
+          for deploy_attempt in $(seq 1 "$MAX_DEPLOY"); do
+            if [ "$deploy_attempt" -gt 1 ]; then
+              backoff=$(( 15 * (2 ** (deploy_attempt - 2)) ))
+              [ "$backoff" -gt 60 ] && backoff=60
+              echo "Backing off ${backoff}s before deploy attempt $deploy_attempt..."
+              sleep "$backoff"
+            fi
+            echo "Deploy attempt $deploy_attempt/$MAX_DEPLOY..."
+            config_zip_exit=0
+            az functionapp deployment source config-zip \
+              --name "$FUNCTION_APP_NAME" \
+              --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+              --src .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
+              --timeout 600 \
+              --output none 2>&1 || config_zip_exit=$?
+            if [ "$config_zip_exit" -ne 0 ]; then
+              echo "WARNING: config-zip attempt $deploy_attempt exited $config_zip_exit"
+            else
+              echo "config-zip attempt $deploy_attempt succeeded"
+            fi
+            # Probe for function activation. Give a longer window (up to 120s)
+            # after a successful deploy, shorter (30s) after a failure since the
+            # function is unlikely to activate from a failed deployment.
+            if [ "$config_zip_exit" -eq 0 ]; then
+              max_probes=12
+            else
+              max_probes=3
+            fi
+            for probe in $(seq 1 "$max_probes"); do
+              loaded="$(az functionapp function list \
+                --name "$FUNCTION_APP_NAME" \
+                --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+                --query 'length(@)' -o tsv 2>/dev/null || echo 0)"
+              case "$loaded" in ''|*[!0-9]*) loaded=0 ;; esac
+              if [ "$loaded" -ge 1 ]; then
+                echo "Function App reports $loaded loaded function(s)"
+                break 2
+              fi
+              echo "  activation $probe/$max_probes: $loaded functions loaded, waiting 10s..."
+              sleep 10
+            done
+            # Only retry deployment if config-zip failed. If it succeeded but
+            # functions haven't loaded after 120s, something else is wrong.
+            if [ "$config_zip_exit" -eq 0 ]; then
+              echo "config-zip succeeded but functions did not activate within ${max_probes}0s"
+              break
+            fi
+          done
           if [ "$loaded" -lt 1 ]; then
-            echo "::error::Function App did not load any functions after 300s"
+            echo "::error::Function App did not load any functions after $MAX_DEPLOY deploy attempts (last config_zip_exit=$config_zip_exit, last app_state=$app_state)"
             exit 1
           fi
           # Test the custom handler directly — send a dummy POST to verify

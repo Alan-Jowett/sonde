@@ -108,6 +108,7 @@ module functionPlaceholder './function-placeholder.bicep' = {
     programRouteTableName: storage.outputs.programRouteTableName
     programsTableName: storage.outputs.programsTableName
     appInsightsConnectionString: monitoring.outputs.connectionString
+    deploymentContainerUrl: '${storage.outputs.blobEndpoint}${storage.outputs.deploymentContainerName}'
     corsAllowedOrigins: ['https://${staticWebApp.outputs.defaultHostname}']
     functionAuthClientId: functionAuthClientId
     functionAuthTenantId: functionAuthTenantId

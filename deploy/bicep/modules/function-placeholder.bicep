@@ -45,6 +45,10 @@ param appInsightsConnectionString string = ''
 @description('Allowed CORS origins for the Function App (e.g. the SWA hostname). Empty array disables CORS.')
 param corsAllowedOrigins array = []
 
+@description('Full URL of the deployment blob container (e.g. https://<account>.blob.core.windows.net/<container>). Used by Flex Consumption to fetch the function app package.')
+@minLength(1)
+param deploymentContainerUrl string
+
 @description('Entra app (client) ID for EasyAuth token validation on ProgramIngest.')
 @minLength(1)
 param functionAuthClientId string
@@ -53,20 +57,14 @@ param functionAuthClientId string
 @minLength(1)
 param functionAuthTenantId string
 
-resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
-  name: storageAccountName
-}
-
-var storageConnectionString = 'DefaultEndpointsProtocol=https;AccountName=${existingStorageAccount.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${existingStorageAccount.listKeys().keys[0].value}'
-
 resource hostingPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: functionPlanName
   location: location
-  kind: 'functionapp'
+  kind: 'functionapp,linux'
   tags: tags
   sku: {
-    name: 'Y1'
-    tier: 'Dynamic'
+    name: 'FC1'
+    tier: 'FlexConsumption'
   }
   properties: {
     reserved: true
@@ -75,20 +73,8 @@ resource hostingPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
 
 var baseAppSettings = [
         {
-          name: 'AzureWebJobsStorage'
-          value: storageConnectionString
-        }
-        {
-          name: 'FUNCTIONS_WORKER_RUNTIME'
-          value: 'custom'
-        }
-        {
-          name: 'FUNCTIONS_EXTENSION_VERSION'
-          value: '~4'
-        }
-        {
-          name: 'WEBSITE_RUN_FROM_PACKAGE'
-          value: '1'
+          name: 'AzureWebJobsStorage__accountName'
+          value: storageAccountName
         }
         {
           name: 'SONDE_AZURE_HANDLER_STORAGE_QUEUE_ENDPOINT'
@@ -146,6 +132,25 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   properties: {
     httpsOnly: true
     serverFarmId: hostingPlan.id
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: deploymentContainerUrl
+          authentication: {
+            type: 'SystemAssignedIdentity'
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        instanceMemoryMB: 512
+        maximumInstanceCount: 1
+      }
+      runtime: {
+        name: 'custom'
+        version: ''
+      }
+    }
     siteConfig: {
       minTlsVersion: '1.2'
       appSettings: concat(baseAppSettings, observabilityAppSettings)

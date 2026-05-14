@@ -252,12 +252,12 @@ jobs:
             echo "::warning::Function App did not reach Running state; last state=$app_state — proceeding anyway"
           fi
           # Deploy with retries + interleaved activation probes (fixes #912).
-          # Previously a single config-zip failure fell through to a poll-only
-          # loop that never retried the deployment, causing a guaranteed 300s
-          # timeout on transient Bad Request / 5xx errors.
+          # Flex Consumption does not support the Kudu-based config-zip endpoint.
+          # Use `az functionapp deploy --type zip` (One Deploy) which uploads the
+          # package to the deployment blob container configured in functionAppConfig.
           MAX_DEPLOY=4
           loaded=0
-          config_zip_exit=1
+          deploy_exit=1
           for deploy_attempt in $(seq 1 "$MAX_DEPLOY"); do
             if [ "$deploy_attempt" -gt 1 ]; then
               backoff=$(( 15 * (2 ** (deploy_attempt - 2)) ))
@@ -266,22 +266,22 @@ jobs:
               sleep "$backoff"
             fi
             echo "Deploy attempt $deploy_attempt/$MAX_DEPLOY..."
-            config_zip_exit=0
-            az functionapp deployment source config-zip \
+            deploy_exit=0
+            az functionapp deploy \
               --name "$FUNCTION_APP_NAME" \
               --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-              --src .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
-              --timeout 600 \
-              --output none 2>&1 || config_zip_exit=$?
-            if [ "$config_zip_exit" -ne 0 ]; then
-              echo "WARNING: config-zip attempt $deploy_attempt exited $config_zip_exit"
+              --src-path .artifacts/azure-handler-function/sonde-azure-handler-function.zip \
+              --type zip \
+              --output none 2>&1 || deploy_exit=$?
+            if [ "$deploy_exit" -ne 0 ]; then
+              echo "WARNING: deploy attempt $deploy_attempt exited $deploy_exit"
             else
-              echo "config-zip attempt $deploy_attempt succeeded"
+              echo "Deploy attempt $deploy_attempt succeeded"
             fi
             # Probe for function activation. Give a longer window (up to 120s)
             # after a successful deploy, shorter (30s) after a failure since the
             # function is unlikely to activate from a failed deployment.
-            if [ "$config_zip_exit" -eq 0 ]; then
+            if [ "$deploy_exit" -eq 0 ]; then
               max_probes=12
             else
               max_probes=3
@@ -299,15 +299,15 @@ jobs:
               echo "  activation $probe/$max_probes: $loaded functions loaded, waiting 10s..."
               sleep 10
             done
-            # Only retry deployment if config-zip failed. If it succeeded but
+            # Only retry if the deploy command failed. If it succeeded but
             # functions haven't loaded after 120s, something else is wrong.
-            if [ "$config_zip_exit" -eq 0 ]; then
-              echo "config-zip succeeded but functions did not activate within ${max_probes}0s"
+            if [ "$deploy_exit" -eq 0 ]; then
+              echo "Deploy succeeded but functions did not activate within ${max_probes}0s"
               break
             fi
           done
           if [ "$loaded" -lt 1 ]; then
-            echo "::error::Function App did not load any functions after $MAX_DEPLOY deploy attempts (last config_zip_exit=$config_zip_exit, last app_state=$app_state)"
+            echo "::error::Function App did not load any functions after $MAX_DEPLOY deploy attempts (last deploy_exit=$deploy_exit, last app_state=$app_state)"
             exit 1
           fi
           # Test the custom handler directly — send a dummy POST to verify

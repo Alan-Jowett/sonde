@@ -23,6 +23,7 @@ param programsTableName string
 
 var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
+var storageBlobDataOwnerRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
 
 resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
@@ -100,5 +101,15 @@ resource functionProgramsTableContributor 'Microsoft.Authorization/roleAssignmen
     principalId: functionPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: storageTableDataContributorRoleId
+  }
+}
+
+resource functionBlobDataOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid('function-blob-data-owner', functionPrincipalId, storageBlobDataOwnerRoleId, storageAccountName)
+  scope: existingStorageAccount
+  properties: {
+    principalId: functionPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageBlobDataOwnerRoleId
   }
 }

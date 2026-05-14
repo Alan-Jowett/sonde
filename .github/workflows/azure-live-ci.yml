@@ -286,7 +286,19 @@ jobs:
               echo "WARNING: blob upload attempt $deploy_attempt exited $deploy_exit"
             else
               echo "Blob upload attempt $deploy_attempt succeeded"
-              # Sync triggers so the function host discovers the new deployment.
+              # Flex Consumption apps scale to zero — there is no running host
+              # to receive a syncfunctiontriggers request.  Restart the function
+              # app to force a cold start that reads the newly uploaded blob
+              # from the deployment container.
+              echo "Restarting function app to pick up new deployment..."
+              az functionapp restart \
+                --name "$FUNCTION_APP_NAME" \
+                --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+                --output none 2>&1 || echo "::warning::restart returned non-zero (may be normal for Flex Consumption)"
+              sleep 30
+              # Belt-and-suspenders: sync triggers after restart so the host
+              # re-indexes functions even if it started before the blob was
+              # fully visible.
               echo "Syncing function triggers..."
               az rest --method POST \
                 --url "https://management.azure.com/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${SONDE_AZURE_CI_RESOURCE_GROUP}/providers/Microsoft.Web/sites/${FUNCTION_APP_NAME}/syncfunctiontriggers?api-version=2024-04-01" \
@@ -313,11 +325,18 @@ jobs:
               echo "  activation $probe/$max_probes: $loaded functions loaded, waiting 10s..."
               sleep 10
             done
-            # Only retry if the deploy command failed. If it succeeded but
-            # functions haven't loaded after 120s, something else is wrong.
+            # Activation failed — dump diagnostics before retrying so we can
+            # debug in the CI log without a separate diagnostic step.
             if [ "$deploy_exit" -eq 0 ]; then
-              echo "Deploy succeeded but functions did not activate within ${max_probes}0s"
-              break
+              echo "::warning::Deploy attempt $deploy_attempt succeeded but functions did not activate within ${max_probes}0s"
+              echo "--- deployment diagnostics (attempt $deploy_attempt) ---"
+              az functionapp show --name "$FUNCTION_APP_NAME" \
+                --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
+                --query "{state:state,usageState:usageState}" -o json 2>/dev/null || true
+              az rest --method GET \
+                --url "https://management.azure.com/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${SONDE_AZURE_CI_RESOURCE_GROUP}/providers/Microsoft.Web/sites/${FUNCTION_APP_NAME}/config/web?api-version=2024-04-01" \
+                --query "{functionAppConfig:functionAppConfig}" -o json 2>/dev/null || true
+              echo "--- end diagnostics ---"
             fi
           done
           if [ "$loaded" -lt 1 ]; then

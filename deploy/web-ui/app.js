@@ -580,10 +580,24 @@ async function renderDesiredState() {
   APP.viewMessage = savedMessage;
 
   try {
-    const [programs, desiredRows] = await Promise.all([
+    const [programs, desiredRows, actualRows] = await Promise.all([
       listPrograms(),
       queryTable(CONFIG.desiredStateTable, ''),
+      queryTable(CONFIG.actualStateTable, ''),
     ]);
+
+    const latestActual = latestByPartition(actualRows)
+      .filter((node) => node.node_id)
+      .sort((left, right) =>
+        String(left.node_id || '').localeCompare(String(right.node_id || '')));
+    const desiredByPartition = new Map(
+      latestByPartition(desiredRows).map((row) => [row.PartitionKey, row]));
+
+    const nodeOptions = [
+      '<option value="" disabled selected>Select a node…</option>',
+      ...latestActual.map((node) =>
+        `<option value="${escapeHtml(node.node_id || '')}">${escapeHtml(node.node_id || '—')}</option>`),
+    ].join('');
 
     const programOptions = [
       '<option value="">No program target</option>',
@@ -594,7 +608,7 @@ async function renderDesiredState() {
       <div class="panel stack">
         <form id="desired-state-form" class="form-grid">
           <label>Node ID
-            <input name="nodeId" type="text" required>
+            <select name="nodeId" required>${nodeOptions}</select>
           </label>
           <label>Schedule Interval (s)
             <input name="scheduleInterval" type="number" min="1" step="1" placeholder="60">
@@ -614,6 +628,38 @@ async function renderDesiredState() {
     `);
 
     const form = document.getElementById('desired-state-form');
+
+    // Auto-populate fields when a node is selected (WEB-0206, WEB-0207)
+    const nodeSelect = form?.querySelector('[name="nodeId"]');
+    nodeSelect?.addEventListener('change', () => {
+      const selectedNodeId = nodeSelect.value;
+      if (!selectedNodeId) return;
+
+      const actualNode = latestActual.find((node) => node.node_id === selectedNodeId);
+      const desiredNode = desiredByPartition.get(actualNode?.PartitionKey);
+
+      // Per-field desired-over-actual fallback: use the desired value for
+      // each field when present, otherwise fall back to the latest actual
+      // value.  We use ?? (not ||) so that a zero schedule or an explicit
+      // empty-string hash from a future schema change won't be skipped.
+      const scheduleValue = desiredNode?.desired_schedule_interval_s
+        ?? actualNode?.observed_schedule_interval_s
+        ?? '';
+      const hashValue = (desiredNode?.desired_assigned_program_hash
+        ?? actualNode?.observed_assigned_program_hash
+        ?? '').toLowerCase();
+
+      const scheduleInput = form.querySelector('[name="scheduleInterval"]');
+      if (scheduleInput) scheduleInput.value = scheduleValue;
+
+      const programSelect = form.querySelector('[name="programHash"]');
+      if (programSelect) {
+        const matchingOption = [...programSelect.options].find(
+          (opt) => opt.value.toLowerCase() === hashValue);
+        programSelect.value = matchingOption ? matchingOption.value : '';
+      }
+    });
+
     form?.addEventListener('submit', async (event) => {
       event.preventDefault();
       const formData = new FormData(form);

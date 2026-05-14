@@ -16,7 +16,9 @@
 | T-WEB-0101 | WEB-0101 | SPA renders node table from `actualstate` query | Manual/E2E | Planned |
 | T-WEB-0102 | WEB-0102 | All required columns displayed | Manual/E2E | Planned |
 | T-WEB-0103 | WEB-0103 | Auto-refresh polls at configured interval | Manual | Planned |
-| T-WEB-0104 | WEB-0104 | Divergence indicator shown when actual != desired | Manual/E2E | Planned |
+| T-WEB-0104 | WEB-0104 | Divergence indicator shown when desired-state row exists and actual differs from desired | Manual/E2E | Planned |
+| T-WEB-0105 | WEB-0104 | Unassigned program (desired row exists, program hash empty/missing) shows Diverged while node still reports a current program | Manual/E2E | Planned |
+| T-WEB-0106 | WEB-0104 | Node with no desired-state row shows Aligned even if actual state reports a program | Manual/E2E | Planned |
 | T-WEB-0201 | WEB-0201 | Set desired schedule writes correct row | Integration | Planned |
 | T-WEB-0202 | WEB-0202 | Assign program hash writes correct row | Integration | Planned |
 | T-WEB-0203 | WEB-0203 | RowKey uses reverse-timestamp format | Unit (JS) | Planned |

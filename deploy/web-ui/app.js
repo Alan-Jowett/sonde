@@ -481,7 +481,7 @@ async function renderDashboard() {
       const actualProgram = actual.observed_current_program_hash || '';
       const desiredSchedule = desired?.desired_schedule_interval_s;
       const actualSchedule = actual.observed_schedule_interval_s;
-      const diverged = (desiredProgram && desiredProgram !== actualProgram)
+      const diverged = (desired != null && desiredProgram !== actualProgram)
         || (desiredSchedule != null && desiredSchedule !== actualSchedule);
       const scheduleDisplay = desiredSchedule ?? actualSchedule ?? '—';
       const assignedProgram = desiredProgram || actual.observed_assigned_program_hash || '';

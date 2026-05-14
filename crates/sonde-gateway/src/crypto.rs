@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use sonde_protocol::Sha256Provider;
 
 /// SHA-256 provider using the `sha2` RustCrypto crate.
+#[derive(Clone)]
 pub struct RustCryptoSha256;
 
 impl Sha256Provider for RustCryptoSha256 {

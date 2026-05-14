@@ -1681,6 +1681,40 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0819a  Inline ELF ingestion from DESIRED_STATE
+
+**Validates:** GW-0811
+
+**Procedure:**
+1. Start the gateway and register a node. Do not pre-ingest any programs.
+2. Build a valid minimal BPF ELF binary via the test-program helpers.
+3. Send a `DESIRED_STATE` message targeting the node with `assigned_program_hash` (key 1) set to the expected program hash, `assigned_program_elf` (key 5) set to the raw ELF bytes, and `assigned_program_verification_profile` (key 6) set to `"resident"`.
+4. Assert: the gateway accepts the message without error.
+5. Assert: the program is now present in `Storage::get_program()` with the expected hash, `Resident` profile, and correct image bytes.
+6. Assert: the node's `assigned_program_hash` is updated to the new hash.
+
+### T-0819b  Inline ELF with invalid bytes is rejected
+
+**Validates:** GW-0811
+
+**Procedure:**
+1. Start the gateway and register a node.
+2. Send a `DESIRED_STATE` message with `assigned_program_hash` (key 1) set to an arbitrary 32-byte hash, `assigned_program_elf` (key 5) set to `[0xDE, 0xAD, 0xBE, 0xEF]` (invalid ELF).
+3. Assert: the gateway rejects the message with a verification error.
+4. Assert: the node's desired state is NOT updated.
+
+### T-0819c  Inline ELF hash mismatch is rejected
+
+**Validates:** GW-0811
+
+**Procedure:**
+1. Start the gateway and register a node.
+2. Build a valid BPF ELF. Compute its correct program hash.
+3. Send a `DESIRED_STATE` message with `assigned_program_hash` (key 1) set to a **different** 32-byte hash, and `assigned_program_elf` (key 5) set to the valid ELF.
+4. Assert: the gateway rejects the message because the ingested program's hash does not match the declared `assigned_program_hash`.
+
+---
+
 ### T-0820  Upstream actual-state/status update after `WAKE`
 
 **Validates:** GW-0812

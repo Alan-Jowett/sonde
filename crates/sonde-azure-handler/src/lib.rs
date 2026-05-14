@@ -14,6 +14,7 @@ use azure_data_tables::prelude::TableServiceClient;
 use azure_identity::ManagedIdentityCredential;
 use azure_identity_legacy::{AppServiceManagedIdentityCredential, TokenCredentialOptions};
 use base64::Engine as _;
+use ciborium::value::Integer;
 use ciborium::Value;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -132,6 +133,7 @@ pub struct ProgramRouteRow {
 pub struct ProgramImageRow {
     pub program_hash: Vec<u8>,
     pub cbor_image: Vec<u8>,
+    pub elf_image: Vec<u8>,
     pub source_filename: Option<String>,
     pub abi_version: Option<u32>,
     pub size_bytes: u32,
@@ -185,7 +187,7 @@ pub trait HandlerStore: Send + Sync {
     async fn load_program_image(
         &self,
         program_hash: &[u8],
-    ) -> Result<Option<Vec<u8>>, HandlerError>;
+    ) -> Result<Option<ProgramImageRow>, HandlerError>;
     async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError>;
 }
 
@@ -295,26 +297,36 @@ where
             return Ok(());
         }
 
-        let program_image = if program_diverged {
+        let program_row = if program_diverged {
             match desired_row.desired_assigned_program_hash.as_deref() {
                 Some(desired_hash) => {
-                    let image = self.store.load_program_image(desired_hash).await?;
-                    if image.is_none() {
+                    let row = self.store.load_program_image(desired_hash).await?;
+                    if let Some(ref r) = row {
+                        if r.elf_image.is_empty() {
+                            warn!(
+                                program_hash = hex::encode(desired_hash),
+                                node_id = %actual_state.entity_id,
+                                "program row has no elf_image (legacy row); \
+                                 DESIRED_STATE will omit inline ELF — \
+                                 re-ingest the program to populate elf_image"
+                            );
+                        }
+                    } else {
                         warn!(
                             program_hash = hex::encode(desired_hash),
                             node_id = %actual_state.entity_id,
-                            "program image not found in programs table; \
-                             DESIRED_STATE will omit inline image"
+                            "program not found in programs table; \
+                             DESIRED_STATE will omit inline ELF"
                         );
                     }
-                    image
+                    row
                 }
                 None => None,
             }
         } else {
             None
         };
-        let desired = encode_desired_state(&desired_row, program_image)?;
+        let desired = encode_desired_state(&desired_row, program_row.as_ref())?;
         self.publisher
             .publish(&self.downstream_queue, desired)
             .await
@@ -455,6 +467,7 @@ where
         let row = ProgramImageRow {
             program_hash: record.hash.clone(),
             cbor_image: record.image,
+            elf_image: elf_bytes.to_vec(),
             source_filename: record.source_filename.clone(),
             abi_version: record.abi_version,
             size_bytes: record.size,
@@ -742,7 +755,7 @@ impl HandlerStore for AzureTablesStore {
     async fn load_program_image(
         &self,
         program_hash: &[u8],
-    ) -> Result<Option<Vec<u8>>, HandlerError> {
+    ) -> Result<Option<ProgramImageRow>, HandlerError> {
         let row_key = hex::encode(program_hash);
         let entity_client = self
             .programs_table
@@ -750,7 +763,25 @@ impl HandlerStore for AzureTablesStore {
             .entity_client(row_key);
         match entity_client.get::<ProgramImageEntity>().await {
             Ok(response) => {
-                decode_base64_field(response.entity.cbor_image, "programs.cbor_image").map(Some)
+                let e = response.entity;
+                let cbor_image = decode_base64_field(e.cbor_image, "programs.cbor_image")?;
+                let elf_image = match e.elf_image {
+                    Some(b64) => decode_base64_field(b64, "programs.elf_image")?,
+                    None => Vec::new(),
+                };
+                Ok(Some(ProgramImageRow {
+                    program_hash: program_hash.to_vec(),
+                    cbor_image: cbor_image.clone(),
+                    elf_image,
+                    source_filename: e.source_filename,
+                    abi_version: e.abi_version,
+                    size_bytes: e.size_bytes.unwrap_or(cbor_image.len() as u32),
+                    verification_profile: e
+                        .verification_profile
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "resident".to_string()),
+                    created_at: e.created_at.unwrap_or_default(),
+                }))
             }
             Err(e) if is_legacy_not_found(&e) => Ok(None),
             Err(e) => Err(HandlerError::Store(format!(
@@ -765,6 +796,7 @@ impl HandlerStore for AzureTablesStore {
             partition_key: "program".to_string(),
             row_key: row_key.clone(),
             cbor_image: base64::engine::general_purpose::STANDARD.encode(&row.cbor_image),
+            elf_image: Some(base64::engine::general_purpose::STANDARD.encode(&row.elf_image)),
             source_filename: row.source_filename.clone(),
             abi_version: row.abi_version,
             size_bytes: Some(row.size_bytes),
@@ -935,6 +967,8 @@ struct ProgramImageEntity {
     #[serde(rename = "RowKey")]
     row_key: String,
     cbor_image: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    elf_image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     source_filename: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1126,7 +1160,7 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
 
 pub(crate) fn encode_desired_state(
     row: &DesiredStateRow,
-    program_image: Option<Vec<u8>>,
+    program_row: Option<&ProgramImageRow>,
 ) -> Result<Vec<u8>, HandlerError> {
     let mut desired_state_entries = vec![
         map_entry(
@@ -1135,8 +1169,18 @@ pub(crate) fn encode_desired_state(
         ),
         map_entry(2, opt_u32_value(row.desired_schedule_interval_s)),
     ];
-    if let Some(image) = program_image {
-        desired_state_entries.push(map_entry(5, Value::Bytes(image)));
+    if let Some(prog) = program_row {
+        if !prog.elf_image.is_empty() {
+            desired_state_entries.push(map_entry(5, Value::Bytes(prog.elf_image.clone())));
+            desired_state_entries
+                .push(map_entry(6, Value::Text(prog.verification_profile.clone())));
+            if let Some(ref filename) = prog.source_filename {
+                desired_state_entries.push(map_entry(7, Value::Text(filename.clone())));
+            }
+            if let Some(abi) = prog.abi_version {
+                desired_state_entries.push(map_entry(8, Value::Integer(Integer::from(abi))));
+            }
+        }
     }
     let desired_state = Value::Map(desired_state_entries);
     let value = Value::Map(vec![
@@ -1385,7 +1429,7 @@ mod tests {
         actual_rows: Mutex<HashMap<String, Vec<ActualStateRow>>>,
         desired_rows: Mutex<HashMap<String, Vec<DesiredStateRow>>>,
         routes: Mutex<HashMap<String, ProgramRouteRow>>,
-        program_images: Mutex<HashMap<String, Vec<u8>>>,
+        program_images: Mutex<HashMap<String, ProgramImageRow>>,
         stored_program_rows: Mutex<Vec<ProgramImageRow>>,
     }
 
@@ -1418,10 +1462,20 @@ mod tests {
         }
 
         async fn append_program_image(&self, program_hash: &[u8], program_image: &[u8]) {
+            let row = ProgramImageRow {
+                program_hash: program_hash.to_vec(),
+                cbor_image: program_image.to_vec(),
+                elf_image: program_image.to_vec(),
+                source_filename: None,
+                abi_version: None,
+                size_bytes: program_image.len() as u32,
+                verification_profile: "resident".to_string(),
+                created_at: String::new(),
+            };
             self.program_images
                 .lock()
                 .await
-                .insert(hex::encode(program_hash), program_image.to_vec());
+                .insert(hex::encode(program_hash), row);
         }
     }
 
@@ -1479,7 +1533,7 @@ mod tests {
         async fn load_program_image(
             &self,
             program_hash: &[u8],
-        ) -> Result<Option<Vec<u8>>, HandlerError> {
+        ) -> Result<Option<ProgramImageRow>, HandlerError> {
             Ok(self
                 .program_images
                 .lock()
@@ -1492,7 +1546,7 @@ mod tests {
             self.program_images
                 .lock()
                 .await
-                .insert(hex::encode(&row.program_hash), row.cbor_image.clone());
+                .insert(hex::encode(&row.program_hash), row.clone());
             self.stored_program_rows.lock().await.push(row.clone());
             Ok(())
         }
@@ -1587,7 +1641,7 @@ mod tests {
         async fn load_program_image(
             &self,
             _program_hash: &[u8],
-        ) -> Result<Option<Vec<u8>>, HandlerError> {
+        ) -> Result<Option<ProgramImageRow>, HandlerError> {
             match &self.load_program_image_error {
                 Some(error) => Err(HandlerError::Store(error.clone())),
                 None => Ok(None),
@@ -1636,7 +1690,7 @@ mod tests {
         async fn load_program_image(
             &self,
             _program_hash: &[u8],
-        ) -> Result<Option<Vec<u8>>, HandlerError> {
+        ) -> Result<Option<ProgramImageRow>, HandlerError> {
             Ok(None)
         }
 
@@ -1683,7 +1737,7 @@ mod tests {
         async fn load_program_image(
             &self,
             _program_hash: &[u8],
-        ) -> Result<Option<Vec<u8>>, HandlerError> {
+        ) -> Result<Option<ProgramImageRow>, HandlerError> {
             Ok(None)
         }
 
@@ -1842,8 +1896,12 @@ mod tests {
             Some(120)
         );
         assert_eq!(
-            required_bytes(desired_state, 5, "program_image").unwrap(),
+            required_bytes(desired_state, 5, "assigned_program_elf").unwrap(),
             b"program-image"
+        );
+        assert_eq!(
+            optional_text_field(desired_state, 6, "assigned_program_verification_profile").unwrap(),
+            Some("resident".to_string())
         );
         assert!(map_get(desired_state, 3).is_none());
     }
@@ -2866,7 +2924,10 @@ mod tests {
             ) -> Result<Option<ProgramRouteRow>, HandlerError> {
                 Ok(None)
             }
-            async fn load_program_image(&self, _: &[u8]) -> Result<Option<Vec<u8>>, HandlerError> {
+            async fn load_program_image(
+                &self,
+                _: &[u8],
+            ) -> Result<Option<ProgramImageRow>, HandlerError> {
                 Ok(None)
             }
             async fn store_program_image(&self, _: &ProgramImageRow) -> Result<(), HandlerError> {

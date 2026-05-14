@@ -213,8 +213,16 @@ For each node-scoped `GW-0812`, the handler performs the following sequence:
    `DESIRED_STATE` payload using:
    1. `entity_kind = "node"`,
    2. `entity_id = node_id`,
-   3. `assigned_program_hash = desired_assigned_program_hash` from the latest desired row, and
-   4. `schedule_interval_s = desired_schedule_interval_s` from the latest desired row.
+   3. `assigned_program_hash = desired_assigned_program_hash` from the latest desired row,
+   4. `schedule_interval_s = desired_schedule_interval_s` from the latest desired row,
+   5. if `assigned_program_hash` diverges and a program row exists for that hash,
+      fetch the program row and embed `elf_image` at key 5
+      (`assigned_program_elf`), `verification_profile` at key 6, `source_filename`
+      at key 7, and `abi_version` at key 8. If the program row exists but
+      `elf_image` is absent (legacy row ingested before ELF storage was added),
+      omit key 5 and log a warning; the gateway will reject the message if it
+      does not already have the program locally. Programs must be re-ingested
+      through `ProgramIngest` to populate the `elf_image` column.
 12. Publish that payload to the downstream queue.
 
 `ephemeral_program_hash` is intentionally omitted in v1. The gateway connector

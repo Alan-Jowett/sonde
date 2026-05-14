@@ -15,7 +15,7 @@ use tracing::{error, info, warn};
 
 use crate::admin::{system_time_to_millis, validate_program_hash_bytes};
 use crate::engine::PendingCommand;
-use crate::program::VerificationProfile;
+use crate::program::{ProgramLibrary, VerificationProfile};
 use crate::storage::Storage;
 
 pub const MSG_TYPE_DESIRED_STATE: u64 = 0x01;
@@ -248,6 +248,7 @@ impl ConnectorEventHub {
 #[derive(Clone)]
 pub struct ConnectorService {
     storage: Arc<dyn Storage>,
+    program_library: ProgramLibrary,
     pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
     event_hub: Arc<ConnectorEventHub>,
     max_message_size: usize,
@@ -262,6 +263,7 @@ impl ConnectorService {
     ) -> Self {
         Self {
             storage,
+            program_library: ProgramLibrary::new(),
             pending_commands,
             event_hub,
             max_message_size: max_message_size.max(1),
@@ -368,6 +370,64 @@ impl ConnectorService {
         let schedule_interval_s = optional_u32_field(desired_state, 2, "schedule_interval_s")?;
         let ephemeral_program_hash =
             optional_bytes_field(desired_state, 3, "ephemeral_program_hash")?;
+
+        // Ingest inline ELF (key 5) only when assigned_program_hash (key 1) is present.
+        if assigned_program_hash.is_some() {
+            let inline_elf = optional_bytes_field(desired_state, 5, "assigned_program_elf")?;
+            if let Some(elf_bytes) = inline_elf.as_deref() {
+                // Validate declared hash format before expensive Prevail verification.
+                let declared_hash = assigned_program_hash.as_deref().unwrap();
+                if declared_hash.len() != 32 {
+                    return Err(format!(
+                        "inline ELF declared hash must be exactly 32 bytes, got {}",
+                        declared_hash.len()
+                    ));
+                }
+
+                let profile_str =
+                    optional_text_field(desired_state, 6, "assigned_program_verification_profile")?;
+                let profile = match profile_str.as_deref() {
+                    Some("resident") | None => VerificationProfile::Resident,
+                    Some("ephemeral") => VerificationProfile::Ephemeral,
+                    Some(other) => {
+                        return Err(format!(
+                            "`assigned_program_verification_profile` must be \
+                             \"resident\" or \"ephemeral\", got \"{other}\""
+                        ));
+                    }
+                };
+                let source_filename =
+                    optional_text_field(desired_state, 7, "assigned_program_source_filename")?;
+                let abi_version =
+                    optional_u32_field(desired_state, 8, "assigned_program_abi_version")?;
+
+                let mut record = self
+                    .program_library
+                    .ingest_elf(elf_bytes, profile)
+                    .map_err(|e| format!("inline ELF verification failed: {e}"))?;
+                record.source_filename = source_filename;
+                record.abi_version = abi_version;
+
+                if record.hash != declared_hash {
+                    return Err(format!(
+                        "inline ELF hash mismatch: ingested `{}` but declared `{}`",
+                        hex::encode(&record.hash),
+                        hex::encode(declared_hash),
+                    ));
+                }
+
+                self.storage
+                    .store_program(&record)
+                    .await
+                    .map_err(|e| format!("store inline program failed: {e}"))?;
+                info!(
+                    program_hash = hex::encode(&record.hash),
+                    size = record.size,
+                    node_id = node_id,
+                    "ingested inline ELF from DESIRED_STATE"
+                );
+            }
+        }
 
         if let Some(program_hash) = assigned_program_hash.as_deref() {
             validate_program_exists(
@@ -709,6 +769,18 @@ fn optional_u32_field(
             .and_then(|v| u32::try_from(v).ok())
             .map(Some)
             .ok_or_else(|| format!("`{field}` must be uint or null")),
+    }
+}
+
+fn optional_text_field(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Option<String>, String> {
+    match map_get(map, key) {
+        Some(Value::Text(s)) => Ok(Some(s.clone())),
+        Some(Value::Null) | None => Ok(None),
+        Some(_) => Err(format!("`{field}` must be text or null")),
     }
 }
 

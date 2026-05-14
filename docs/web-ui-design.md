@@ -245,7 +245,9 @@ added to the Function App with the following configuration:
 - `identityProviders.azureActiveDirectory.registration.clientId` — set to the
   companion Entra app registration's client ID (passed as a Bicep parameter).
 - `identityProviders.azureActiveDirectory.registration.openIdIssuer` — set to
-  `https://login.microsoftonline.com/<tenantId>/v2.0` (passed as a Bicep parameter).
+  `${environment().authentication.loginEndpoint}<tenantId>/v2.0` using the Bicep
+  `environment()` function so the template works in sovereign clouds (Azure
+  Government, Azure China, etc.).
 - `identityProviders.azureActiveDirectory.validation.defaultAuthorizationPolicy.allowedApplications`
   — includes the companion client ID so the SPA's tokens (audience matching the
   client ID) are accepted.

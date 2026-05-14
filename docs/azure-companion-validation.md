@@ -595,7 +595,7 @@
 
 **Procedure:**
 1. Run bootstrap with device auth stubbed and Bicep deployment stubbed to return known output values including `staticWebAppName`, `staticWebAppHostname`, `companionClientId`, `companionTenantId`, `storageAccountName`, and `functionAppName`.
-2. Assert: bootstrap generates `config.json` containing the correct `msalClientId`, `msalAuthority` (derived from `companionTenantId`), `storageAccount`, and `functionAppName` values from the stubbed outputs.
+2. Assert: bootstrap generates `config.json` containing the correct `msalClientId`, `msalAuthority` (derived dynamically from the active cloud's login endpoint and `companionTenantId`), `storageAccount`, and `functionAppName` values from the stubbed outputs.
 3. Assert: the bootstrap script attempts to deploy SPA content (HTML, JS, CSS, config.json) to the Static Web App named in the outputs.
 4. After bootstrap completes, assert: the Static Web App serves the SPA content at its default hostname without any additional manual deployment step.
 5. Assert: the bootstrap script registers `https://<staticWebAppHostname>` as a SPA redirect URI on the Entra app registration.

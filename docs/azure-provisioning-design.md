@@ -148,8 +148,10 @@ The parameter flow is:
 - `main.bicep` passes these to `stack.bicep` as module parameters.
 - `stack.bicep` passes them to `function-placeholder.bicep` as
   `functionAuthClientId` and `functionAuthTenantId`.
-- `function-placeholder.bicep` uses them to construct the
-  `authSettingsV2` resource with the correct issuer URL and audience.
+- `function-placeholder.bicep` uses them together with the Bicep
+  `environment().authentication.loginEndpoint` function to construct the
+  `authSettingsV2` resource with the correct issuer URL and audience,
+  ensuring compatibility with sovereign clouds.
 
 ---
 

@@ -468,6 +468,10 @@ if [ "$#" -ge 4 ] && [ "$1" = "functionapp" ] && [ "$2" = "function" ] && [ "$3"
   printf '1\n'
   exit 0
 fi
+if [ "$#" -ge 2 ] && [ "$1" = "cloud" ] && [ "$2" = "show" ]; then
+  printf 'https://login.microsoftonline.us\n'
+  exit 0
+fi
 if [ "$#" -ge 2 ] && [ "$1" = "rest" ]; then
   exit 0
 fi
@@ -590,7 +594,7 @@ esac
     let config_json = fs::read_to_string(web_ui_dir.join("config.json")).unwrap();
     assert!(config_json.contains(r#""msalClientId": "client-456""#));
     assert!(
-        config_json.contains(r#""msalAuthority": "https://login.microsoftonline.com/tenant-123""#)
+        config_json.contains(r#""msalAuthority": "https://login.microsoftonline.us/tenant-123""#)
     );
     assert!(config_json.contains(r#""storageAccount": "stsondetest""#));
     assert!(config_json.contains(r#""functionAppName": "func-sonde""#));

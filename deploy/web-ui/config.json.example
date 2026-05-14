@@ -1,6 +1,6 @@
 {
   "msalClientId": "<your-entra-app-client-id>",
-  "msalAuthority": "https://login.microsoftonline.com/<your-tenant-id>",
+  "msalAuthority": "https://<cloud-login-endpoint>/<your-tenant-id>",
   "storageAccount": "<your-storage-account-name>",
   "functionAppName": "<your-function-app-name>"
 }

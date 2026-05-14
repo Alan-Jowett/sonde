@@ -638,12 +638,16 @@ async function renderDesiredState() {
       const actualNode = latestActual.find((node) => node.node_id === selectedNodeId);
       const desiredNode = desiredByPartition.get(actualNode?.PartitionKey);
 
-      const scheduleValue = desiredNode?.desired_schedule_interval_s
-        ?? actualNode?.observed_schedule_interval_s
-        ?? '';
-      const hashValue = (desiredNode?.desired_assigned_program_hash
-        || actualNode?.observed_assigned_program_hash
-        || '').toLowerCase();
+      // Desired-over-actual priority: if a desired-state row exists for
+      // this node, use its values exclusively (an absent program hash
+      // means "no program target" — don't fall back to actual state).
+      const scheduleValue = desiredNode
+        ? (desiredNode.desired_schedule_interval_s ?? '')
+        : (actualNode?.observed_schedule_interval_s ?? '');
+      const hashValue = (desiredNode
+        ? (desiredNode.desired_assigned_program_hash ?? '')
+        : (actualNode?.observed_assigned_program_hash ?? '')
+      ).toLowerCase();
 
       const scheduleInput = form.querySelector('[name="scheduleInterval"]');
       if (scheduleInput) scheduleInput.value = scheduleValue;

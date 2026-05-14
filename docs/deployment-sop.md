@@ -258,10 +258,10 @@ display cannot be updated, bootstrap fails closed — fix the dependency and ret
 
 **Step 2 — Enter the device code:**
 
-During bootstrap, a device code and a sign-in URL are displayed on the modem
-screen (and echoed to the console). Open the URL shown (typically
-`https://microsoft.com/devicelogin`) in a browser and enter the code to
-authenticate with your Azure account.
+During bootstrap, the device code is displayed on the modem screen (with the
+label "Azure login") and the full sign-in URL is printed to the console. Open
+the URL shown in the console (typically `https://microsoft.com/devicelogin`) in
+a browser and enter the code to authenticate with your Azure account.
 
 **Step 3 — Wait for bootstrap to complete:**
 
@@ -272,8 +272,14 @@ After authentication, bootstrap continues automatically:
   success
 - writes runtime state to `%ProgramData%\sonde-azure-companion\`
 
-Bootstrap-complete state requires the following files in the state directory
-(`%ProgramData%\sonde-azure-companion\`):
+Bootstrap commits its output into a **state generation** directory — a
+timestamped subdirectory named `.state-<timestamp>` under the state root
+(`%ProgramData%\sonde-azure-companion\`). A marker file `.current-state`
+in the state root points to the active generation. The service resolves
+the active generation at startup via this marker; if no marker exists,
+the state root itself is used as a legacy fallback.
+
+The active state generation contains the following files:
 
 | File | Purpose |
 |------|---------|

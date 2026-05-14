@@ -759,7 +759,7 @@ async function renderPrograms() {
             <input name="sourceFilename" type="text" required>
           </label>
           <label>ABI Version
-            <input name="abiVersion" type="number" min="1" step="1" value="1" required>
+            <input name="abiVersion" type="number" min="1" step="1" value="2" required>
           </label>
           <label>Verification Profile
             <select name="verificationProfile">
@@ -816,7 +816,7 @@ async function renderPrograms() {
         const payload = {
           elf: elfBase64,
           source_filename: String(formData.get('sourceFilename') || file.name),
-          abi_version: Number(formData.get('abiVersion') || 1),
+          abi_version: Number(formData.get('abiVersion') || 2),
           verification_profile: String(formData.get('verificationProfile') || 'resident'),
         };
 

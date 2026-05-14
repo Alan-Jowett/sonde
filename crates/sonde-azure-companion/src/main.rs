@@ -113,7 +113,7 @@ trait AsyncIo: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T> AsyncIo for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
 #[derive(Debug, Clone, Parser)]
-#[command(name = "sonde-azure-companion")]
+#[command(name = "sonde-azure-companion", version)]
 struct Cli {
     /// Gateway admin socket path (UDS on Unix, named pipe on Windows).
     #[arg(long, global = true, env = "SONDE_GATEWAY_ADMIN_SOCKET", default_value = DEFAULT_ADMIN_SOCKET)]

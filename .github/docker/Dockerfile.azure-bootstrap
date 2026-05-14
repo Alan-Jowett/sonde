@@ -11,7 +11,7 @@
 #   # Requires:
 #   #   .artifacts/azure-handler-function/sonde-azure-handler-function.zip
 
-FROM mcr.microsoft.com/azure-cli@sha256:2b798554ac05f878c7d328cbe9d215cd1c560b6bb6060d9ac7ba5257614a86f2
+FROM mcr.microsoft.com/azure-cli@sha256:925b5871029fe16b82650c8298201e5dd91ac8122c7af1d150b57edc8c9f316a
 
 RUN tdnf install -y jq icu nodejs24 nodejs24-npm && tdnf clean all \
     && npm install -g @azure/static-web-apps-cli@2.0.9

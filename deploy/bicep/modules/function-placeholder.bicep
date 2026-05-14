@@ -148,7 +148,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       }
       runtime: {
         name: 'custom'
-        version: ''
+        version: '1.0'
       }
     }
     siteConfig: {

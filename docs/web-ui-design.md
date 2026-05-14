@@ -47,7 +47,9 @@ deploy/web-ui/
 
 - Queries `actualstate` Azure Table via REST API.
 - Groups entities by `PartitionKey` (one per node), displays most recent row (smallest `RowKey` due to reverse-timestamp ordering).
-- Cross-references `desiredstate` table to compute divergence indicators.
+- Cross-references `desiredstate` table to compute divergence indicators:
+  - **Program divergence**: When a desired-state row exists for the node, divergence is flagged if the desired program hash differs from the actual current program hash. Missing, null, or empty `desired_assigned_program_hash` is treated as "no program desired" — so a node that still reports a current program hash is diverged until it confirms clearing. When no desired-state row exists at all, program divergence is not flagged (node is unmanaged).
+  - **Schedule divergence**: Flagged when `desired_schedule_interval_s` is set and differs from `observed_schedule_interval_s`.
 - Auto-refresh every 30s by default (configurable).
 - Columns: Node ID, Battery (mV), Firmware, ABI Version, Schedule (s), Current Program Hash, Assigned Program Hash, Last Seen, Status (aligned/diverged).
 

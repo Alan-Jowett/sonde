@@ -53,5 +53,5 @@
 | T-WEB-0702 | WEB-0701 | Time-series graph renders lines per (node, program, reading) | Manual/E2E | Planned |
 | T-WEB-0703 | WEB-0701 | Time range selector filters data correctly | Manual/E2E | Planned |
 | T-WEB-0704 | WEB-0702 | Table view shows all SensorData columns | Manual/E2E | Planned |
-| T-WEB-0705 | WEB-0700 | SPA handles empty `decoded_readings` gracefully (shows "—") | Manual/E2E | Planned |
+| T-WEB-0705 | WEB-0702 | SPA handles empty `decoded_readings` gracefully (shows "—") | Manual/E2E | Planned |
 | T-WEB-0706 | WEB-0701 | SPA handles int64 values near `Number.MAX_SAFE_INTEGER` | Manual | Planned |

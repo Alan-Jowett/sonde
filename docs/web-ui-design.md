@@ -315,10 +315,9 @@ reverse-tick `RowKey`); the Y-axis is the reading value.
 - Maximum 1000 rows per query (`$top=1000`). For longer time ranges,
   the SPA downsamples by querying with wider `RowKey` strides.
 - Int64 values exceeding `Number.MAX_SAFE_INTEGER` (2^53 - 1) are displayed
-  as strings. The Azure handler MUST encode such values as JSON strings
-  (e.g., `"temperature_raw": "9007199254740993"`) in the `decoded_readings`
-  column so that `JSON.parse` preserves them. Values within safe integer
-  range are encoded as JSON numbers.
+  as strings. The Azure handler encodes such values as JSON strings in the
+  `decoded_readings` column (see AZH-0501 AC-5). The SPA MUST handle both
+  numeric and string-encoded int64 values in `decoded_readings` JSON.
 
 The chart library is vanilla JS (Canvas-based) or a lightweight dependency
 (e.g., Chart.js loaded from CDN) — no build step required, consistent with

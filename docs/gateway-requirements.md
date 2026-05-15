@@ -2507,8 +2507,8 @@ The gateway's ELF ingestion pipeline (GW-0400) MUST be extended to extract an op
 
 **Description:**
 The gateway MUST define a separate `DecoderPlatform` for Prevail verification of decoder BPF programs. The `DecoderPlatform` defines:
-- A program type named `"decoder"` with section prefix `"decoder"`.
-- A context descriptor for the decoder input: `struct decoder_context { const uint8_t *input_data; uint32_t input_len; }`.
+- A program type named `"decoder"` with section name `"decoder"` (exact match, not prefix — see GW-1900 AC-6).
+- A context descriptor for the decoder input: `struct decoder_context { const uint64_t input_data; uint32_t input_len; uint32_t _padding; }` (16 bytes, 8-byte aligned — see bpf-environment.md §4.2).
 - Helper prototypes for the decoder-permitted helpers only: `emit_reading` (ID 18), `map_lookup_elem` (ID 10), `map_update_elem` (ID 11), `bpf_trace_printk` (ID 16).
 - No hardware helpers (no I2C, SPI, GPIO, ADC, send, recv, delay, etc.).
 
@@ -2578,9 +2578,11 @@ The decoder BPF program operates in a restricted environment. Its execution cont
 **Context (passed in R1):**
 ```c
 struct decoder_context {
-    const uint8_t *input_data;  // read-only pointer to raw APP_DATA blob
+    const uint64_t input_data;  // read-only pointer to raw APP_DATA blob (uint64_t for BPF verifier compatibility)
     uint32_t input_len;         // length of input_data in bytes
+    uint32_t _padding;          // explicit padding; must be zero
 };
+// Total: 16 bytes, 8-byte aligned. See bpf-environment.md §4.2.
 ```
 
 The `input_data` memory is read-only — writes cause verification failure.

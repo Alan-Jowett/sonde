@@ -419,6 +419,7 @@ failure), `decoded_readings` is an empty string.
 2. Multiple readings produce a single JSON object with all key-value pairs.
 3. The column is an `Edm.String` Azure Table property.
 4. Empty readings (no decoder) result in `""` (empty string), not `null`.
+5. Int64 values within JavaScript's `Number.MAX_SAFE_INTEGER` (2^53 - 1) are encoded as JSON numbers. Values exceeding this threshold are encoded as JSON strings (e.g., `"9007199254740993"`) to preserve precision for SPA consumers that use `JSON.parse`.
 
 ---
 

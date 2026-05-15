@@ -320,9 +320,18 @@ fi
 if az ad app permission list --id "$app_object_id" --query "[?resourceAppId=='e406a681-f3d4-42a8-90b6-c2b029497af1'].resourceAccess[?id=='da399722-a3ea-4c11-8b0d-7b37b3d5fa83'] | [0]" --output tsv 2>/dev/null | grep -q .; then
     echo "Azure Storage user_impersonation permission already configured" >&2
 else
-    az ad app permission add --id "$app_object_id" \
+    # Suppress the "Invoking `az ad app permission grant` is needed" warning
+    # emitted by `az ad app permission add` — the grant is performed below.
+    _perm_err="$(mktemp)"
+    if ! az ad app permission add --id "$app_object_id" \
         --api "e406a681-f3d4-42a8-90b6-c2b029497af1" \
-        --api-permissions "da399722-a3ea-4c11-8b0d-7b37b3d5fa83=Scope"
+        --api-permissions "da399722-a3ea-4c11-8b0d-7b37b3d5fa83=Scope" 2>"$_perm_err"; then
+        cat "$_perm_err" >&2
+        rm -f "$_perm_err"
+        exit 1
+    fi
+    grep -v 'is needed to make the change effective' "$_perm_err" >&2 || true
+    rm -f "$_perm_err"
     echo "Azure Storage user_impersonation permission declared" >&2
 fi
 

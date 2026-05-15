@@ -603,7 +603,7 @@ Emit a named sensor reading. The gateway collects all emitted readings into a `r
 | `name_len` | Length of the name in bytes. Maximum 64 bytes. |
 | `value` | Reading value as a signed 64-bit integer. |
 
-**Returns:** `0` on success, `-1` if `name_len` exceeds 64, `-2` if the reading limit is exceeded (max 32 readings per execution, max 2048 bytes total reading-name bytes).
+**Returns:** `0` on success, `-1` if `name_len` exceeds 64, `-2` if the reading-count limit is exceeded (max 32 readings per execution).
 
 **Duplicate names:** Last-write-wins — if the decoder emits the same name multiple times, only the final value is included.
 

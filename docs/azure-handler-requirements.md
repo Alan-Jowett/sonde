@@ -408,7 +408,9 @@ keys and uniqueness-suffixed row keys.
 **Description:**
 The `decoded_readings` column in the `SensorData` table MUST store the
 `readings` map from enriched CBOR as a JSON string. The JSON format is
-`{ "reading_name": value, ... }` where values are integers. If no `readings`
+`{ "reading_name": value, ... }` where values are JSON numbers for int64
+values within JavaScript's `Number.MAX_SAFE_INTEGER` (2^53 - 1), or JSON
+strings for values exceeding that threshold (see AC-5). If no `readings`
 key is present in the upstream message (no decoder configured or decoder
 failure), `decoded_readings` is an empty string.
 

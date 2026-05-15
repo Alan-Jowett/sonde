@@ -616,8 +616,8 @@ On receiving APP_DATA from a node:
       `blob` / `data` field is preserved byte-for-byte.
    3. If execution fails (budget exceeded, invalid memory access), log the
       error at WARN level and forward the original unenriched message.
-   4. Limits: max 32 readings, max 2048 bytes total reading-name bytes, max 64
-      bytes per name. Overflow → stop accepting, log, include partial readings.
+   4. Limits: max 32 readings, max 64 bytes per name. Overflow → stop
+      accepting, log, include partial readings.
 3. If match → forward (enriched or original) to handler as a DATA message (GW-0505).
 
 ### 9.3  Handler process lifecycle

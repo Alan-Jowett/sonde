@@ -2591,12 +2591,12 @@ The `input_data` memory is read-only — writes cause verification failure.
 
 | ID | Name | Signature | Description |
 |----|------|-----------|-------------|
-| 18 | `emit_reading` | `(name_ptr, name_len, value_i64) → 0 or -1 or -2` | Emit a named reading. Name is UTF-8 bytes in BPF memory (max 64 bytes). Value is a signed 64-bit integer. Returns `-1` if `name_len` exceeds 64, `-2` if the reading-count limit (32) or total-name-bytes limit (2048) is exceeded. |
+| 18 | `emit_reading` | `(name_ptr, name_len, value_i64) → 0 or -1 or -2` | Emit a named reading. Name is UTF-8 bytes in BPF memory (max 64 bytes). Value is a signed 64-bit integer. Returns `-1` if `name_len` exceeds 64, `-2` if the reading-count limit (32) is exceeded. |
 | 10 | `map_lookup_elem` | `(map_fd, key_ptr) → value_ptr_or_null` | Existing BPF map lookup. |
 | 11 | `map_update_elem` | `(map_fd, key_ptr, value_ptr) → 0_or_error` | Existing BPF map update (no flags argument — sonde convention). |
 | 16 | `bpf_trace_printk` | `(fmt_ptr, fmt_len, arg1, arg2, arg3) → 0` | Debug tracing. |
 
-**Limits:** Maximum 32 readings per decoder execution. Maximum total reading-name bytes: 2048. If either limit is exceeded, subsequent `emit_reading` calls return `-2` (overflow), the gateway logs a warning, and readings collected so far are still included in the enriched message.
+**Limits:** Maximum 32 readings per decoder execution. If the limit is exceeded, subsequent `emit_reading` calls return `-2` (overflow), the gateway logs a warning, and readings collected so far are still included in the enriched message.
 
 **Decoder map lifecycle:** Decoder maps are ephemeral — allocated and initialized from the decoder `ProgramImage` map definitions (including `map_initial_data`) on every APP_DATA execution. No state persists across executions. `.rodata`-backed maps are read-only at runtime — `map_update_elem` on a `.rodata` map returns error. `.data` and `.bss` maps are writable but reset on each execution.
 

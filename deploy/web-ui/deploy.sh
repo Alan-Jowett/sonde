@@ -120,9 +120,14 @@ fi
 echo ""
 echo "=== Adding Azure Storage API permission ==="
 # Declare user_impersonation on Azure Storage (e406a681-f3d4-42a8-90b6-c2b029497af1)
+# Suppress the "Invoking `az ad app permission grant` is needed" warning
+# emitted by `az ad app permission add` — the grant is performed below.
+_perm_err="$(mktemp)"
 az ad app permission add --id "$APP_OBJECT_ID" \
   --api "e406a681-f3d4-42a8-90b6-c2b029497af1" \
-  --api-permissions "da399722-a3ea-4c11-8b0d-7b37b3d5fa83=Scope" 2>/dev/null || true
+  --api-permissions "da399722-a3ea-4c11-8b0d-7b37b3d5fa83=Scope" 2>"$_perm_err" || true
+grep -v 'is needed to make the change effective' "$_perm_err" >&2 || true
+rm -f "$_perm_err"
 # Grant admin consent so users don't need to consent individually
 az ad app permission grant \
   --id "$COMPANION_CLIENT_ID" \

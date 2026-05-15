@@ -276,7 +276,8 @@ fn helper_trace_printk(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     let fmt_len = r2 as usize;
 
     if !fmt_ptr.is_null() && fmt_len > 0 {
-        // SAFETY: pointer validated by interpreter before call.
+        // SAFETY: Relies on Prevail verification at ingestion time — see
+        // `execute_decoder` doc for the safety precondition.
         let bytes = unsafe { std::slice::from_raw_parts(fmt_ptr, fmt_len) };
         if let Ok(msg) = std::str::from_utf8(bytes) {
             tracing::debug!(target: "decoder_bpf", "{}", msg.trim_end());
@@ -327,6 +328,17 @@ fn decoder_helpers() -> Vec<HelperDescriptor> {
 /// helper functions dereference raw register values as host pointers, relying
 /// on the verifier to guarantee that pointer arguments are within valid
 /// memory regions.
+///
+/// # Context ABI limitation
+///
+/// The decoder context provides `{ input_data, input_end }` pointers at
+/// offsets 0 and 8. Currently, `sonde-bpf` does not tag pointers loaded
+/// from context via `LDX` — they are treated as scalars. This means
+/// C-compiled decoders that dereference `ctx->input_data` will fail with
+/// `NonDereferenceableAccess`. Decoders must access the raw blob via the
+/// context pointer (r1) directly using bounded offsets (r1 is already tagged
+/// by the interpreter as a context region). Extending `sonde-bpf` to support
+/// data/data_end context-pointer tagging is tracked as a future enhancement.
 pub fn execute_decoder(
     decoder_image_cbor: &[u8],
     raw_blob: &[u8],
@@ -351,6 +363,13 @@ pub fn execute_decoder(
 
     for (i, map_def) in image.maps.iter().enumerate() {
         // Decoder maps must be array-style with u32 keys.
+        // Supported types: 0 (global variable / .rodata / .data / .bss), 1 (array).
+        if map_def.map_type > 1 {
+            return Err(DecoderError::ImageDecodeError(format!(
+                "map {i}: unsupported map_type {} (expected 0 or 1)",
+                map_def.map_type
+            )));
+        }
         if map_def.key_size != 4 {
             return Err(DecoderError::ImageDecodeError(format!(
                 "map {i}: unsupported key_size {} (expected 4)",

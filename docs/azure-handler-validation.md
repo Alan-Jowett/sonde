@@ -302,6 +302,19 @@ divergence publication instead of treating that redelivery as permanently stale.
 
 ---
 
+### T-AZH-0500b  Same upstream message retried produces single row
+
+**Validates:** AZH-0500
+
+**Procedure:**
+1. Deliver the same `GW-0813` message twice (same upstream message ID /
+   envelope sequence number).
+2. Assert: only one `SensorData` row exists (the retry overwrites, not
+   appends).
+3. Assert: row content matches the message payload.
+
+---
+
 ### T-AZH-0501  Decoded readings stored as JSON
 
 **Validates:** AZH-0501

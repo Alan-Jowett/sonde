@@ -4024,6 +4024,43 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1902a  Decoder image replacement on re-ingest
+
+**Traces to:** GW-1902 (AC-7)
+
+**Preconditions:** Ingested ELF with decoder producing `emit_reading("v1", 1)`.
+
+**Steps:**
+1. Build a second ELF with identical `sonde` section but different `decoder`
+   section (producing `emit_reading("v2", 2)`).
+2. Re-ingest the second ELF.
+3. Simulate APP_DATA and inspect enriched readings.
+
+**Expected:**
+1. Program hash is unchanged (same `sonde` bytecode).
+2. Decoder image is replaced — readings contain `v2`, not `v1`.
+3. Gateway logs decoder change at INFO level.
+
+---
+
+### T-1902b  Decoder removal on re-ingest without decoder
+
+**Traces to:** GW-1902 (AC-8)
+
+**Preconditions:** Ingested ELF with decoder section.
+
+**Steps:**
+1. Build a new ELF with identical `sonde` section but no `decoder` section.
+2. Re-ingest.
+3. Simulate APP_DATA and inspect forwarded message.
+
+**Expected:**
+1. Program hash is unchanged.
+2. Decoder image is removed.
+3. APP_DATA forwarded without `readings` field.
+
+---
+
 ### T-1903  APP_DATA enrichment with decoder
 
 **Traces to:** GW-1903 (AC-1, AC-3, AC-6)
@@ -4225,7 +4262,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1806 | T-1806a, T-1807 |
 | GW-1900 | T-1900, T-1900a, T-1900b, T-1900c, T-1900d |
 | GW-1901 | T-1901, T-1901a, T-1901b |
-| GW-1902 | T-1902 |
+| GW-1902 | T-1902, T-1902a, T-1902b |
 | GW-1903 | T-1903, T-1903a, T-1903b, T-1903c, T-1903d |
 | GW-1904 | T-1904, T-1904a, T-1904b, T-1904c, T-1904d, T-1904e |
 | GW-1905 | T-1900a, T-1903a |

@@ -389,7 +389,11 @@ A node may send **multiple `APP_DATA` messages per wake cycle** (one per `send()
 APP_DATA's program hash, it executes the decoder on the raw `blob` bytes and
 adds the `readings` map to the CBOR message before forwarding to handlers and
 the connector. The `blob` field is always present and unchanged — `readings`
-is purely additive. See [gateway-design.md §9.2](gateway-design.md).
+is purely additive. If the node's APP_DATA CBOR already contains a key 16,
+the gateway MUST discard the node-supplied value and replace it with the
+decoder-produced readings (or omit it if no decoder exists). Nodes cannot
+inject `readings` — only the gateway's decoder produces them.
+See [gateway-design.md §9.2](gateway-design.md).
 
 The BPF program and its corresponding gateway-side handler agree a priori on whether a reply is expected for each message. The protocol carries no explicit flag — the gateway sends `APP_DATA_REPLY` only when the handler provides a non-zero-length response.
 

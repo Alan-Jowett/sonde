@@ -461,7 +461,7 @@ pub unsafe fn execute_decoder(
     // offsets 0 and 8 are pointers into the blob region so that BPF
     // programs can dereference ctx->input_data after loading it.
     let data_region = interpreter::Region {
-        tag: interpreter::RegionTag::Memory,
+        tag: interpreter::RegionTag::Context,
         base: blob_addr,
         end: blob_end_addr,
     };

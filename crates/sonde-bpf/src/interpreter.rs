@@ -647,6 +647,11 @@ pub fn execute_program_no_maps(
 ///   executed before the program is terminated with
 ///   [`BpfError::InstructionBudgetExceeded`].  Pass [`UNLIMITED_BUDGET`] to
 ///   disable metering.
+/// * `ctx_ptrs` — context pointer field descriptors.  Each entry declares
+///   a u64 offset within `ctx` that holds a pointer to a memory region.
+///   When `LD_DW_REG` loads from that offset, the result is tagged with the
+///   described region so the BPF program can dereference it.  Pass `&[]`
+///   when the context contains no embedded pointers.
 ///
 /// # Returns
 /// The value of `r0` when the program exits.

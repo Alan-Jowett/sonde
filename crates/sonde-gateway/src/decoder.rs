@@ -126,10 +126,16 @@ fn find_map(state: &DecoderState, relocated_ptr: u64) -> Option<&MapInfo> {
 ///
 /// The sonde-bpf helper calling convention passes raw register values.
 /// The name bytes are in BPF memory at the address pointed to by r1.
-/// The Prevail verifier ensures at ingestion time that all pointer arguments
-/// to emit_reading are within valid memory regions (PtrToReadableMem +
-/// ConstSize). The interpreter further enforces region bounds at runtime
-/// via tagged registers before dispatching to helpers.
+///
+/// # Safety invariant
+///
+/// Pointer arguments are valid only when the decoder image was verified by
+/// Prevail at ingestion time (see `execute_decoder` doc). The Prevail
+/// verifier ensures pointer arguments satisfy type constraints
+/// (PtrToReadableMem + ConstSize). The interpreter does NOT validate
+/// helper pointer arguments at dispatch — it only validates returned
+/// map pointers (MapValueOrNull). Runtime helper-argument validation
+/// in sonde-bpf is a future hardening item (see issue backlog).
 fn helper_emit_reading(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
     let name_ptr = r1 as *const u8;
     let name_len = r2 as usize;
@@ -149,9 +155,9 @@ fn helper_emit_reading(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
         // Check if adding a new unique name would exceed the limit.
         // Last-write-wins: updating an existing name doesn't count as new.
         let name = if name_len > 0 && !name_ptr.is_null() {
-            // SAFETY: The BPF interpreter validated the pointer and length
-            // before calling this helper. The memory is within a valid BPF
-            // region (context or stack) and remains live during execution.
+            // SAFETY: Relies on Prevail verification at ingestion time — the
+            // verifier guarantees r1 is PtrToReadableMem of length r2 within
+            // a valid BPF region (context or stack). See `execute_decoder` doc.
             let bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
             match std::str::from_utf8(bytes) {
                 Ok(s) => s.to_owned(),

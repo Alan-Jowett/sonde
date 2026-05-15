@@ -1351,7 +1351,11 @@ impl Gateway {
                         None
                     }
                     Err(e) => {
-                        warn!(error = %e, "decoder task panicked — forwarding unenriched");
+                        if e.is_panic() {
+                            warn!(error = %e, "decoder task panicked — forwarding unenriched");
+                        } else {
+                            warn!(error = %e, "decoder task cancelled — forwarding unenriched");
+                        }
                         None
                     }
                 }

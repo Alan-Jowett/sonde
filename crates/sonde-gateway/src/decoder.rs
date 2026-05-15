@@ -23,6 +23,12 @@ const MAX_NAME_LEN: usize = 64;
 /// Instruction budget for decoder programs — same as ephemeral.
 const DECODER_INSTRUCTION_BUDGET: u64 = 100_000;
 
+/// Maximum total map backing memory per decoder execution (64 KiB).
+const MAX_DECODER_MAP_MEMORY: usize = 64 * 1024;
+
+/// Maximum number of maps a decoder program may declare.
+const MAX_DECODER_MAPS: usize = 16;
+
 /// Errors from decoder execution.
 #[derive(Debug)]
 pub enum DecoderError {
@@ -248,8 +254,10 @@ fn helper_map_update(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
 
         // SAFETY: dst is within the map backing storage (heap-allocated Vec<u8>
         // that outlives this call), and value_ptr is within a valid BPF region.
+        // Use `copy` (not `copy_nonoverlapping`) because value_ptr may alias
+        // dst when a program updates a map entry from a lookup on the same key.
         unsafe {
-            std::ptr::copy_nonoverlapping(value_ptr, dst, map.value_size as usize);
+            std::ptr::copy(value_ptr, dst, map.value_size as usize);
         }
 
         0u64
@@ -304,6 +312,15 @@ fn decoder_helpers() -> Vec<HelperDescriptor> {
 /// Returns the collected readings on success, or an error if execution fails.
 /// This function is synchronous — call it from `spawn_blocking` in async
 /// contexts to avoid blocking the tokio event loop.
+///
+/// # Safety precondition
+///
+/// `decoder_image_cbor` **must** be a CBOR image that was previously verified
+/// by Prevail via `DecoderPlatform` during ELF ingestion (`extract_decoder`).
+/// Executing unverified bytecode can cause undefined behavior because BPF
+/// helper functions dereference raw register values as host pointers, relying
+/// on the verifier to guarantee that pointer arguments are within valid
+/// memory regions.
 pub fn execute_decoder(
     decoder_image_cbor: &[u8],
     raw_blob: &[u8],
@@ -312,12 +329,28 @@ pub fn execute_decoder(
     let image = ProgramImage::decode(decoder_image_cbor)
         .map_err(|e| DecoderError::ImageDecodeError(format!("{e}")))?;
 
+    // Validate map count.
+    if image.maps.len() > MAX_DECODER_MAPS {
+        return Err(DecoderError::ImageDecodeError(format!(
+            "decoder declares {} maps, max is {MAX_DECODER_MAPS}",
+            image.maps.len()
+        )));
+    }
+
     // Allocate and initialize map storage.
     let mut map_backing: Vec<Vec<u8>> = Vec::with_capacity(image.maps.len());
     let mut map_regions: Vec<MapRegion> = Vec::with_capacity(image.maps.len());
     let mut map_infos: Vec<MapInfo> = Vec::with_capacity(image.maps.len());
+    let mut total_map_memory: usize = 0;
 
     for (i, map_def) in image.maps.iter().enumerate() {
+        // Decoder maps must be array-style with u32 keys.
+        if map_def.key_size != 4 {
+            return Err(DecoderError::ImageDecodeError(format!(
+                "map {i}: unsupported key_size {} (expected 4)",
+                map_def.key_size
+            )));
+        }
         let total_size = (map_def.value_size as usize)
             .checked_mul(map_def.max_entries as usize)
             .ok_or_else(|| {
@@ -330,6 +363,12 @@ pub fn execute_decoder(
             return Err(DecoderError::ImageDecodeError(format!(
                 "map {i}: zero-size map (value_size={}, max_entries={})",
                 map_def.value_size, map_def.max_entries
+            )));
+        }
+        total_map_memory = total_map_memory.saturating_add(total_size);
+        if total_map_memory > MAX_DECODER_MAP_MEMORY {
+            return Err(DecoderError::ImageDecodeError(format!(
+                "decoder map memory ({total_map_memory} bytes) exceeds limit ({MAX_DECODER_MAP_MEMORY})"
             )));
         }
         let mut backing = vec![0u8; total_size];

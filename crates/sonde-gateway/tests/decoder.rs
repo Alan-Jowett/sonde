@@ -602,3 +602,147 @@ fn handler_data_message_with_readings_roundtrip() {
     let decoded = HandlerMessage::decode(&encoded).unwrap();
     assert_eq!(msg, decoded);
 }
+
+// T-1904d: map_lookup_elem reads .rodata initial data
+#[test]
+fn t1904d_map_lookup_reads_rodata() {
+    // Decoder program: lookup map[0], read value, emit as reading.
+    //
+    // Map 0: rodata, value_size=4, max_entries=1, initial_data = [0x39, 0x05, 0x00, 0x00] (1337 LE)
+    //
+    // BPF:
+    //   r1 = map_fd[0]    (LDDW with src=1, imm=0)
+    //   *(u32*)(r10-4) = 0  // key = 0
+    //   r2 = r10 - 4
+    //   call map_lookup_elem (10)
+    //   if r0 == 0 goto exit
+    //   r3 = *(u32*)(r0 + 0)  // read value
+    //   *(u8*)(r10-8) = 'v'
+    //   r1 = r10 - 8
+    //   r2 = 1
+    //   call emit_reading (18)
+    //   r0 = 0
+    //   exit
+    let mut bytecode = Vec::new();
+    // LDDW r1, map_fd=0 (opcode 0x18, src_reg=1, imm=0, next insn imm=0)
+    bytecode.extend_from_slice(&bpf_insn(0x18, 0x11, 0, 0));
+    bytecode.extend_from_slice(&[0u8; 8]); // second half of LDDW
+                                           // *(u32*)(r10-4) = 0  (store key)
+    bytecode.extend_from_slice(&st_mem_w(10, -4, 0));
+    // r2 = r10 - 4
+    bytecode.extend_from_slice(&mov_reg(2, 10));
+    bytecode.extend_from_slice(&add_imm(2, -4));
+    // call map_lookup_elem (10)
+    bytecode.extend_from_slice(&call_helper(10));
+    // if r0 == 0 goto +5 (skip to exit)
+    bytecode.extend_from_slice(&bpf_insn(0x15, 0x00, 5, 0)); // jeq r0, 0, +5
+                                                             // r3 = *(u32*)(r0 + 0)
+    bytecode.extend_from_slice(&bpf_insn(0x61, 0x03 | (0x00 << 4), 0, 0)); // ldxw r3, [r0+0]
+                                                                           // *(u8*)(r10-8) = 'v'
+    bytecode.extend_from_slice(&st_mem_b(10, -8, b'v' as i32));
+    // r1 = r10 - 8
+    bytecode.extend_from_slice(&mov_reg(1, 10));
+    bytecode.extend_from_slice(&add_imm(1, -8));
+    // r2 = 1
+    bytecode.extend_from_slice(&mov_imm(2, 1));
+    // call emit_reading (18)
+    bytecode.extend_from_slice(&call_helper(18));
+    // r0 = 0
+    bytecode.extend_from_slice(&mov_imm(0, 0));
+    // exit
+    bytecode.extend_from_slice(&exit_insn());
+
+    let image = sonde_protocol::ProgramImage {
+        bytecode,
+        maps: vec![sonde_protocol::MapDef {
+            map_type: 0,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        }],
+        map_initial_data: vec![vec![0x39, 0x05, 0x00, 0x00]], // 1337 LE
+        map_readonly: vec![true],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+
+    let readings = decoder::execute_decoder(&cbor, &[0u8; 4]).unwrap();
+    assert_eq!(
+        readings.get("v"),
+        Some(&1337i64),
+        "expected .rodata value 1337 to be read via map_lookup"
+    );
+}
+
+// T-1904e: map_update_elem on .rodata returns error
+#[test]
+fn t1904e_map_update_rodata_rejected() {
+    // Decoder program: try to update map[0] (rodata), should return -1.
+    //
+    // BPF:
+    //   r1 = map_fd[0]    (LDDW with src=1, imm=0)
+    //   *(u32*)(r10-4) = 0  // key = 0
+    //   *(u32*)(r10-8) = 42 // value = 42
+    //   r2 = r10 - 4
+    //   r3 = r10 - 8
+    //   r4 = 0 (flags)
+    //   call map_update_elem (11)
+    //   // r0 should be -1 (error), emit as reading to capture the return value
+    //   r3 = r0  // value = return code
+    //   *(u8*)(r10-12) = 'r'
+    //   r1 = r10 - 12
+    //   r2 = 1
+    //   call emit_reading (18)
+    //   r0 = 0
+    //   exit
+    let mut bytecode = Vec::new();
+    // LDDW r1, map_fd=0
+    bytecode.extend_from_slice(&bpf_insn(0x18, 0x11, 0, 0));
+    bytecode.extend_from_slice(&[0u8; 8]);
+    // *(u32*)(r10-4) = 0
+    bytecode.extend_from_slice(&st_mem_w(10, -4, 0));
+    // *(u32*)(r10-8) = 42
+    bytecode.extend_from_slice(&st_mem_w(10, -8, 42));
+    // r2 = r10 - 4
+    bytecode.extend_from_slice(&mov_reg(2, 10));
+    bytecode.extend_from_slice(&add_imm(2, -4));
+    // r3 = r10 - 8
+    bytecode.extend_from_slice(&mov_reg(3, 10));
+    bytecode.extend_from_slice(&add_imm(3, -8));
+    // r4 = 0
+    bytecode.extend_from_slice(&mov_imm(4, 0));
+    // call map_update_elem (11)
+    bytecode.extend_from_slice(&call_helper(11));
+    // r3 = r0 (capture return value)
+    bytecode.extend_from_slice(&mov_reg(3, 0));
+    // *(u8*)(r10-12) = 'r'
+    bytecode.extend_from_slice(&st_mem_b(10, -12, b'r' as i32));
+    // r1 = r10 - 12
+    bytecode.extend_from_slice(&mov_reg(1, 10));
+    bytecode.extend_from_slice(&add_imm(1, -12));
+    // r2 = 1
+    bytecode.extend_from_slice(&mov_imm(2, 1));
+    // call emit_reading (18)
+    bytecode.extend_from_slice(&call_helper(18));
+    // r0 = 0
+    bytecode.extend_from_slice(&mov_imm(0, 0));
+    // exit
+    bytecode.extend_from_slice(&exit_insn());
+
+    let image = sonde_protocol::ProgramImage {
+        bytecode,
+        maps: vec![sonde_protocol::MapDef {
+            map_type: 0,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        }],
+        map_initial_data: vec![vec![0xAA, 0xBB, 0xCC, 0xDD]],
+        map_readonly: vec![true],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+
+    let readings = decoder::execute_decoder(&cbor, &[0u8; 4]).unwrap();
+    // map_update returns -1 (0xFFFFFFFFFFFFFFFF as u64, reinterpreted as i64 = -1)
+    let ret = readings.get("r").expect("expected return value reading");
+    assert_eq!(*ret, -1i64, "map_update on .rodata should return -1");
+}

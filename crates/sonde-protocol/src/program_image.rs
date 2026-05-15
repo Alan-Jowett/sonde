@@ -189,7 +189,9 @@ impl ProgramImage {
                                         .to_vec();
                                 }
                                 MAP_KEY_READONLY => {
-                                    readonly = mv.as_bool().unwrap_or(false);
+                                    readonly = mv
+                                        .as_bool()
+                                        .ok_or(DecodeError::InvalidFieldType(MAP_KEY_READONLY))?;
                                 }
                                 _ => {} // ignore unknown keys
                             }

@@ -2591,7 +2591,7 @@ The `input_data` memory is read-only — writes cause verification failure.
 
 | ID | Name | Signature | Description |
 |----|------|-----------|-------------|
-| 18 | `emit_reading` | `(name_ptr, name_len, value_i64) → 0 or -1 or -2` | Emit a named reading. Name is UTF-8 bytes in BPF memory (max 64 bytes). Value is a signed 64-bit integer. Returns `-1` if `name_len` exceeds 64, `-2` on reading-count overflow. |
+| 18 | `emit_reading` | `(name_ptr, name_len, value_i64) → 0 or -1 or -2` | Emit a named reading. Name is UTF-8 bytes in BPF memory (max 64 bytes). Value is a signed 64-bit integer. Returns `-1` if `name_len` exceeds 64, `-2` if the reading-count limit (32) or total-name-bytes limit (2048) is exceeded. |
 | 10 | `map_lookup_elem` | `(map_fd, key_ptr) → value_ptr_or_null` | Existing BPF map lookup. |
 | 11 | `map_update_elem` | `(map_fd, key_ptr, value_ptr) → 0_or_error` | Existing BPF map update (no flags argument — sonde convention). |
 | 16 | `bpf_trace_printk` | `(fmt_ptr, fmt_len, arg1, arg2, arg3) → 0` | Debug tracing. |

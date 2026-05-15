@@ -441,5 +441,5 @@ No additional API endpoint is required — the SPA queries Azure Tables directly
 **Acceptance criteria:**
 
 1. The SPA can query `SensorData` rows for a specific node within a time range.
-2. The SPA can query all `SensorData` rows across nodes for a specific program hash.
+2. The SPA can query `SensorData` rows for a specific program hash within a single node's partition. Cross-node program-hash queries are performed as parallel per-node requests by the SPA.
 3. Query performance is acceptable for time-series visualization (< 2 seconds for 1000 rows).

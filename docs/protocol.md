@@ -145,7 +145,7 @@ This makes direction unambiguous from `msg_type` alone, simplifying routing, log
 
 ## 5  Message definitions
 
-All payload fields below are CBOR-encoded maps with **integer keys** for compactness (saves ~3–5 bytes per field vs. string keys). The string names in the tables below are for documentation only — on the wire, only the integer key is used.
+All payload fields below are CBOR-encoded maps with **integer keys** for compactness (saves ~3–5 bytes per field vs. string keys). The string names in the tables below are for documentation only — on the wire, only the integer key is used. **Exception:** the `readings` map (key 16, added by gateway decoder enrichment) uses UTF-8 text keys internally — its keys are sensor reading names, not integer protocol keys.
 
 ### CBOR key mapping
 

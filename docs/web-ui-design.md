@@ -291,7 +291,10 @@ The Sensor Data tab reads from the `SensorData` Azure Table (AZH-0500). Each
 row contains `node_id`, `timestamp_ms`, `program_hash`, `raw_payload`, and
 `decoded_readings` (JSON string), plus `PartitionKey` and `RowKey` for
 querying. The tab parses `decoded_readings` JSON to extract reading names
-and values for plotting. Timestamps for the X-axis are derived from
+and values for plotting. When `decoded_readings` is the empty string
+(`""`), the row has no decoded readings — the SPA skips it for plotting
+and shows "—" in table view. The SPA MUST check for empty string before
+calling `JSON.parse`. Timestamps for the X-axis are derived from
 `timestamp_ms`.
 
 Data is queried using the same MSAL.js bearer token as other tabs — no

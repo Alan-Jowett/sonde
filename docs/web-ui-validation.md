@@ -53,3 +53,9 @@
 | T-WEB-0605 | WEB-0605 | Function identity has table contributor on `programs` | Infrastructure | Planned |
 | T-WEB-0606 | WEB-0606 | EasyAuth configured on Function App with Entra ID provider | Infrastructure | Planned |
 | T-WEB-0607 | WEB-0607 | `ProgramIngest` `authLevel` is `anonymous` (auth delegated to EasyAuth) | Infrastructure | Planned |
+| T-WEB-0701 | WEB-0700 | Sensor Data tab appears in tab bar and loads data from `SensorData` table | Manual/E2E | Planned |
+| T-WEB-0702 | WEB-0701 | Time-series graph renders lines per (node, program, reading) | Manual/E2E | Planned |
+| T-WEB-0703 | WEB-0701 | Time range selector filters data correctly | Manual/E2E | Planned |
+| T-WEB-0704 | WEB-0702 | Table view shows all SensorData columns | Manual/E2E | Planned |
+| T-WEB-0705 | WEB-0702 | SPA handles empty `decoded_readings` gracefully (shows "—") | Manual/E2E | Planned |
+| T-WEB-0706 | WEB-0701 | SPA displays string-encoded int64 values (above `Number.MAX_SAFE_INTEGER`) correctly and renders in-range values as numbers | Manual | Planned |

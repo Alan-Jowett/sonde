@@ -273,3 +273,91 @@ published when both desired fields diverge simultaneously.
 For downstream `GW-0811` publication failures, repeat delivery of the same
 `GW-0812` with the same `timestamp_ms` and assert that the handler retries the
 divergence publication instead of treating that redelivery as permanently stale.
+
+---
+
+### T-AZH-0500  SensorData table row creation
+
+**Validates:** AZH-0500
+
+**Procedure:**
+1. Deliver a `GW-0813` app-data message through the handler with a known
+   `node_id` and `program_hash`.
+2. Assert: a row is created in the `SensorData` table with correct
+   `PartitionKey` (`"n:" + lowercase-hex-encoded SHA-256(node_id UTF-8 bytes)`),
+   `node_id`, `program_hash`, and `raw_payload` (base64 of original blob).
+3. Assert: `RowKey` is a reverse-tick key with uniqueness suffix.
+
+---
+
+### T-AZH-0500a  Duplicate-timestamp writes use unique RowKey suffixes
+
+**Validates:** AZH-0500
+
+**Procedure:**
+1. Deliver two `GW-0813` messages for the same node with identical
+   `timestamp_ms`.
+2. Assert: both messages produce distinct rows (different `RowKey` suffixes).
+3. Assert: no overwrite or conflict.
+
+---
+
+### T-AZH-0500b  Same upstream message retried produces single row
+
+**Validates:** AZH-0500
+
+**Procedure:**
+1. Deliver the same `GW-0813` message twice (same upstream message ID /
+   envelope sequence number).
+2. Assert: only one `SensorData` row exists (the retry overwrites, not
+   appends).
+3. Assert: row content matches the message payload.
+
+---
+
+### T-AZH-0501  Decoded readings stored as JSON
+
+**Validates:** AZH-0501
+
+**Procedure:**
+1. Deliver a `GW-0813` message whose CBOR contains a `readings` map
+   (key 16) with `{ "temperature_mc": 25125, "humidity_pct": 4500 }`.
+2. Assert: parsing the `decoded_readings` column as JSON yields an object
+   containing `temperature_mc` = `25125` and `humidity_pct` = `4500`
+   (comparison is on parsed values, not exact string representation).
+
+---
+
+### T-AZH-0501a  Missing readings stored as empty string
+
+**Validates:** AZH-0501
+
+**Procedure:**
+1. Deliver a `GW-0813` message without a `readings` key.
+2. Assert: `decoded_readings` is `""` (empty string).
+
+---
+
+### T-AZH-0501b  Large int64 values encoded as JSON strings
+
+**Validates:** AZH-0501 (AC-5)
+
+**Procedure:**
+1. Deliver a `GW-0813` message whose CBOR `readings` map contains
+   `{ "big_value": 9007199254740993 }` (one above `Number.MAX_SAFE_INTEGER`).
+2. Assert: parsing the `decoded_readings` column as JSON yields
+   `big_value` encoded as a JSON string `"9007199254740993"`, not a number.
+3. Deliver a second message with `{ "small_value": 42 }`.
+4. Assert: `small_value` is encoded as a JSON number `42`.
+
+---
+
+### T-AZH-0502  SensorData queryable by node and time range
+
+**Validates:** AZH-0502
+
+**Procedure:**
+1. Insert 10 `SensorData` rows for the same node at 1-second intervals.
+2. Query with `PartitionKey` filter and `RowKey` range covering the middle
+   5 rows.
+3. Assert: exactly 5 rows returned in reverse-chronological order.

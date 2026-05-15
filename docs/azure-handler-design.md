@@ -95,11 +95,14 @@ this document and are therefore logged and ignored by the reconciliation path.
 
 For `APP_DATA`, the handler decodes:
 
-1. `program_hash` for route lookup, and
-2. the raw connector payload bytes for transparent delivery.
+1. `program_hash` for route lookup,
+2. `node_id`, `timestamp_ms`, raw `blob`, and optional `readings` (key 16)
+   for `SensorData` table storage (§6.1), and
+3. the raw connector payload bytes for transparent delivery to the handler
+   queue.
 
-The handler does not reinterpret or normalize the opaque application payload
-inside the `GW-0813` message body.
+Fields beyond `program_hash` were previously opaque to the handler; the
+`SensorData` feature (AZH-0500) extends the handler's parsing scope.
 
 ---
 
@@ -244,15 +247,56 @@ never seeds or updates desired-state rows while processing `GW-0812`.
 For each `GW-0813` invocation:
 
 1. decode the top-level connector payload enough to extract `program_hash`,
-2. look up the `ProgramRoute` row for that hash,
-3. if the row exists, send the original raw connector payload bytes unchanged to
+   `node_id`, `timestamp_ms`, raw `blob`, and optional `readings` (key 16),
+2. append a `SensorData` row (§6.1) using the extracted fields. To avoid
+   duplicate rows on at-least-once retries, derive the `RowKey` uniqueness
+   suffix from the upstream queue message ID (or connector envelope
+   sequence number). This makes the `SensorData` write idempotent — a
+   retry with the same message produces the same `RowKey` and overwrites
+   the existing row rather than appending a duplicate. Do NOT use a hash
+   of the raw payload alone, as distinct messages with identical payloads
+   would collide,
+3. look up the `ProgramRoute` row for that hash,
+4. if the row exists, send the original raw connector payload bytes unchanged to
    the queue named by `handler_queue`, and
-4. if the row is missing, log the missing mapping and fail the invocation so the
+5. if the row is missing, log the missing mapping and fail the invocation so the
    upstream message is not reported as successfully handled.
 
 The design does not route unmapped application-data messages to a default queue.
 It also does not attempt to create the mapped queue if it does not already
 exist.
+
+### 6.1  SensorData table storage (AZH-0500)
+
+In addition to routing `GW-0813` to the handler queue, the Azure handler MUST
+append a row to the `SensorData` table for every `GW-0813` message. This
+provides a queryable time-series store of sensor readings for the SPA.
+
+**Table schema:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `PartitionKey` | `String` | `"n:" + lowercase-hex-encoded SHA-256(node_id UTF-8 bytes)` |
+| `RowKey` | `String` | Reverse-tick key + `":"` + uniqueness suffix |
+| `node_id` | `String` | Originating node identifier |
+| `timestamp_ms` | `Edm.Int64` | Message timestamp in milliseconds |
+| `program_hash` | `String` | BPF program hash (hex) |
+| `raw_payload` | `String` | Base64-encoded raw APP_DATA blob |
+| `decoded_readings` | `String` | JSON string of `readings` map, or `""` |
+
+If the upstream CBOR message contains a `readings` key (CBOR key 16, added by
+gateway decoder enrichment per GW-1903), the handler extracts it and serializes
+as JSON into `decoded_readings`. Int64 values within JavaScript's
+`Number.MAX_SAFE_INTEGER` (2^53 - 1) are encoded as JSON numbers; values
+exceeding that threshold are encoded as JSON strings to preserve precision
+(AZH-0501 AC-5). Otherwise `decoded_readings` is `""`.
+
+The `PartitionKey` and `RowKey` follow the same patterns as `ActualNodeState`
+(§4.1) — hashed partition key for safe table keys, reverse-tick plus uniqueness
+suffix for chronological ordering and append uniqueness.
+
+`SensorData` writes are independent of `ProgramRoute` routing — the table is
+populated even if no handler queue is configured for the program hash.
 
 ---
 

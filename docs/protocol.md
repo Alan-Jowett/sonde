@@ -145,7 +145,7 @@ This makes direction unambiguous from `msg_type` alone, simplifying routing, log
 
 ## 5  Message definitions
 
-All payload fields below are CBOR-encoded maps with **integer keys** for compactness (saves ~3–5 bytes per field vs. string keys). The string names in the tables below are for documentation only — on the wire, only the integer key is used.
+All payload fields below are CBOR-encoded maps with **integer keys** for compactness (saves ~3–5 bytes per field vs. string keys). The string names in the tables below are for documentation only — on the wire, only the integer key is used. **Exception:** the `readings` map (key 16, added by gateway decoder enrichment) uses UTF-8 text keys internally — its keys are sensor reading names, not integer protocol keys.
 
 ### CBOR key mapping
 
@@ -166,6 +166,7 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 | 13 | `starting_seq` | COMMAND |
 | 14 | `timestamp_ms` | COMMAND |
 | 15 | `firmware_version` | WAKE |
+| 16 | `readings` | APP_DATA (enriched by gateway decoder, GW-1903) |
 
 #### Diagnostic message keyspace
 
@@ -212,11 +213,12 @@ Key 5 (`initial_data`) carries the ELF section content for global variable maps 
 
 #### Program hash
 
-The `program_hash` used throughout the protocol is the SHA-256 hash of the **complete CBOR-encoded program image**:
+The `program_hash` used throughout the protocol is the SHA-256 hash of the **complete CBOR-encoded node program image** (the image built from the `SEC("sonde")` ELF section):
 
-- The hash covers bytecode, map definitions, **and** initial map data.
+- The hash covers node bytecode, map definitions, **and** initial map data.
+- The hash does NOT cover the decoder program image — see "Decoder program image" below.
 - Two programs with identical bytecode but different map layouts have different hashes.
-- The gateway computes the hash after encoding the image; the node computes it after reassembling all chunks.
+- The gateway computes the hash after encoding the node image; the node computes it after reassembling all chunks.
 - This CBOR-encoded program image is the canonical byte sequence for all size- and chunk-related fields in this specification (i.e., `program_size` and `chunk_count` in UPDATE_PROGRAM / RUN_EPHEMERAL refer to the byte length and chunking of the CBOR-encoded program image, not the ELF file or raw bytecode).
 
 **Deterministic encoding:** The program image MUST be encoded using CBOR deterministic encoding (RFC 8949 §4.2) to ensure that all gateways produce identical bytes (and therefore identical hashes) for the same program.
@@ -250,6 +252,25 @@ BPF ELF file (developer artifact)
 ```
 
 The ELF is never transmitted to the node. The node receives only the CBOR program image.
+
+#### Decoder program image
+
+An ELF file may contain an optional `SEC("decoder")` section in addition to
+the required `SEC("sonde")` section (GW-1900). The gateway extracts both
+sections into separate `ProgramImage` CBOR structures:
+
+- **Node image:** From `SEC("sonde")`. Hashed, stored, and sent to nodes as
+  today.
+- **Decoder image:** From `SEC("decoder")`. Stored alongside the node image,
+  keyed by the same program hash. Never sent to nodes. Used by the gateway for
+  APP_DATA enrichment (GW-1903).
+
+The decoder image uses the same CBOR structure as the node image
+(`{ 1: bytecode, 2: [map_defs...] }`), including optional per-map key 5
+(`initial_data`) for `.rodata`/`.data` global variable maps. The decoder
+image is NOT included in the `program_hash` computation — the hash covers
+only the node image (GW-1906). This ensures that adding or modifying a
+decoder does not trigger program re-downloads on nodes.
 
 ### 5.1  WAKE (Node → Gateway)
 
@@ -360,8 +381,19 @@ Sent by the firmware when the BPF program calls `send()` or `send_recv()`.
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
 | `blob` | bstr | Yes | Opaque application data. Content defined by the BPF program. |
+| `readings` | map | No | Decoded sensor readings, added by the gateway when a decoder BPF program exists for the sending program (GW-1903). Keys are UTF-8 text strings (reading names); values are signed 64-bit integers. Absent when no decoder is configured or decoder execution fails. Consumers MUST tolerate absence. |
 
 A node may send **multiple `APP_DATA` messages per wake cycle** (one per `send()` or `send_recv()` call in the BPF program). Each `APP_DATA` frame carries an **incrementing sequence number** in the `nonce` header field, consistent with the session-scoped replay protection scheme (see §7.4). The gateway accepts them as independent authenticated messages.
+
+**Decoder enrichment:** When the gateway has a decoder program image for the
+APP_DATA's program hash, it executes the decoder on the raw `blob` bytes and
+adds the `readings` map to the CBOR message before forwarding to handlers and
+the connector. The `blob` field is always present and unchanged — `readings`
+is purely additive. If the node's APP_DATA CBOR already contains a key 16,
+the gateway MUST discard the node-supplied value and replace it with the
+decoder-produced readings (or omit it if no decoder exists). Nodes cannot
+inject `readings` — only the gateway's decoder produces them.
+See [gateway-design.md §9.2](gateway-design.md).
 
 The BPF program and its corresponding gateway-side handler agree a priori on whether a reply is expected for each message. The protocol carries no explicit flag — the gateway sends `APP_DATA_REPLY` only when the handler provides a non-zero-length response.
 

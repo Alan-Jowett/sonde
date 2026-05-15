@@ -55,6 +55,8 @@ struct MapInfo {
     value_size: u32,
     /// Number of entries (array length).
     max_entries: u32,
+    /// True if this map is `.rodata`-backed (writes rejected at runtime).
+    read_only: bool,
 }
 
 /// State collected during a single decoder execution.
@@ -228,6 +230,11 @@ fn helper_map_update(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
             None => return (-1i64) as u64,
         };
 
+        // GW-1904 AC-10: .rodata maps are read-only at runtime.
+        if map.read_only {
+            return (-1i64) as u64;
+        }
+
         // SAFETY: pointers validated by the interpreter.
         let key_index = unsafe { *(key_ptr as *const u32) };
 
@@ -356,6 +363,10 @@ pub fn execute_decoder(
             data_start: base_ptr,
             value_size: map_def.value_size,
             max_entries: map_def.max_entries,
+            // map_type == 0 with non-empty initial_data → .rodata global
+            // variable map. Writes are rejected at runtime (GW-1904 AC-10).
+            read_only: map_def.map_type == 0
+                && image.map_initial_data.get(i).is_some_and(|d| !d.is_empty()),
         });
     }
 

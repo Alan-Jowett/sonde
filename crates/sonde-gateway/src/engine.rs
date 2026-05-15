@@ -1314,43 +1314,11 @@ impl Gateway {
         let timestamp = now_duration.as_secs();
         let timestamp_ms = now_duration.as_millis() as u64;
 
-        // Find the matching handler under the read lock, then release before I/O.
-        let handler_result = {
-            let router = self.handler_router.read().await;
-            match router.find_handler_cloned(&program_hash) {
-                Some(result) => Ok(result),
-                None => Err(router.handler_count()),
-            }
-        }; // read lock released here
-        let (config, process_arc) = match handler_result {
-            Ok(result) => result,
-            Err(handler_count) => {
-                // No handler — still emit to connector (unenriched) and return.
-                self.connector_event_hub.emit_app_data(
-                    node.node_id.clone(),
-                    program_hash.clone(),
-                    blob.clone(),
-                    timestamp_ms,
-                    ConnectorPayloadOrigin::AppData,
-                    None,
-                );
-                let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
-                warn!(
-                    node_id = %node.node_id,
-                    program_hash = %ph_hex,
-                    handler_count,
-                    "APP_DATA dropped: no handler matched `program_hash`"
-                );
-                return None;
-            }
-        };
-
         // ── Decoder enrichment (GW-1903) ────────────────────────────────
         //
-        // If a decoder image exists for this program hash, execute it on
-        // the raw blob to produce named readings. Both the handler DATA
-        // message and the connector APP_DATA message receive the same
-        // readings (GW-1903 AC-6).
+        // Run decoder before handler routing so that both the connector and
+        // handler receive the same enriched readings (GW-1903 AC-6), even
+        // when no handler is registered.
         let readings = {
             let decoder_image = match self.storage.get_program(&program_hash).await {
                 Ok(Some(record)) => record.decoder_image,
@@ -1392,7 +1360,16 @@ impl Gateway {
             }
         };
 
-        // Emit to connector with the same readings as the handler (GW-1903 AC-6).
+        // Find the matching handler under the read lock, then release before I/O.
+        let handler_result = {
+            let router = self.handler_router.read().await;
+            match router.find_handler_cloned(&program_hash) {
+                Some(result) => Ok(result),
+                None => Err(router.handler_count()),
+            }
+        }; // read lock released here
+
+        // Always emit to connector with enriched readings (GW-1903 AC-6).
         self.connector_event_hub.emit_app_data(
             node.node_id.clone(),
             program_hash.clone(),
@@ -1401,6 +1378,20 @@ impl Gateway {
             ConnectorPayloadOrigin::AppData,
             readings.clone(),
         );
+
+        let (config, process_arc) = match handler_result {
+            Ok(result) => result,
+            Err(handler_count) => {
+                let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
+                warn!(
+                    node_id = %node.node_id,
+                    program_hash = %ph_hex,
+                    handler_count,
+                    "APP_DATA dropped: no handler matched `program_hash`"
+                );
+                return None;
+            }
+        };
 
         // GW-1308 AC1: log APP_DATA received with node_id, program_hash, len.
         if tracing::enabled!(tracing::Level::INFO) {

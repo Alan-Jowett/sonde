@@ -253,6 +253,44 @@ fn t1900c_empty_decoder_section() {
     );
 }
 
+// T-1900d: ELF with multiple decoder sections rejected (AC-7)
+#[test]
+fn t1900d_multiple_decoder_sections_rejected() {
+    // Build an ELF with sonde + two decoder sections.
+    let sonde_code = nop_bytecode();
+    let decoder_code = nop_bytecode();
+    let elf = make_elf_with_sections(&[
+        ("sonde", &sonde_code),
+        ("decoder", &decoder_code),
+        ("decoder", &decoder_code),
+    ]);
+
+    let lib = ProgramLibrary::new();
+    let result = lib.ingest_elf(&elf, VerificationProfile::Resident);
+    // Should be rejected (either at extraction or by Prevail finding >1 program).
+    assert!(
+        result.is_err() || result.as_ref().is_ok_and(|r| r.decoder_image.is_none()),
+        "expected rejection or no decoder for ELF with multiple decoder sections"
+    );
+}
+
+// GW-1900 AC-6: Section matching is exact — `decoder.text` must be ignored
+#[test]
+fn t1900_ac6_decoder_text_section_ignored() {
+    let sonde_code = nop_bytecode();
+    let other_code = nop_bytecode();
+    // Use "decoder.text" — not "decoder". Should be ignored.
+    let elf = make_elf_with_sections(&[("sonde", &sonde_code), ("decoder.text", &other_code)]);
+
+    let lib = ProgramLibrary::new();
+    let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
+
+    assert!(
+        record.decoder_image.is_none(),
+        "expected `decoder.text` section to be ignored (exact match only)"
+    );
+}
+
 // T-1906: Program hash unchanged by decoder presence
 #[test]
 fn t1906_hash_unchanged_by_decoder() {

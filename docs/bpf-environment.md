@@ -622,7 +622,7 @@ All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) on
 | **Loops** | Bounded | None or tightly bounded | Bounded |
 | **Map access** | Read/write | None (ephemeral programs must not declare maps) | Read/write (per-execution, not persistent) |
 | **Instruction budget** | Larger | Small | Same as ephemeral |
-| **Helper set** | Full (all 17 helpers) | Limited — see table below | Restricted (4 helpers) — see table below |
+| **Helper set** | Full node set (IDs 1–17) | Limited — see table below | Restricted (4 helpers, including decoder-only ID 18) — see table below |
 | **Side effects** | Allowed | No persistent node state changes under program control; `send_async` may enqueue outbound data for transmission on the next wake cycle | None (no hardware, no network I/O) |
 
 #### Ephemeral helper availability

@@ -518,7 +518,7 @@ The `input_data` pointer is typed as readable memory; writes cause verification
 failure. Pointer width is `uint64_t` consistent with the existing `sonde_context`
 convention (see bpf-environment.md §4).
 
-**Program type:** `"decoder"` with section prefix `"decoder"`.
+**Program type:** `"decoder"` with section name `"decoder"` (exact match, not prefix — see GW-1900 AC-6).
 
 **Helper prototypes:**
 

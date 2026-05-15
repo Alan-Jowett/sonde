@@ -78,7 +78,7 @@ fn t_bpf_002_store_via_map_descriptor() {
         data_end: map_ptr + 64,
     }];
     assert!(matches!(
-        unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET) },
+        unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET, &[]) },
         Err(BpfError::NonDereferenceableAccess { .. })
     ));
     drop(map_buf);
@@ -239,7 +239,7 @@ fn t_bpf_009_map_descriptor_add() {
         data_end: map_ptr + 64,
     }];
     assert!(matches!(
-        unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET) },
+        unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET, &[]) },
         Err(BpfError::InvalidPointerArithmetic { .. })
     ));
     drop(map_buf);
@@ -559,7 +559,7 @@ fn t_bpf_024_map_value_or_null_returns_null() {
         ret: HelperReturn::MapValueOrNull { map_arg: 1 },
     }];
     assert!(matches!(
-        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET) },
+        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET, &[]) },
         Err(BpfError::NonDereferenceableAccess { .. })
     ));
     drop(map_buf);
@@ -598,7 +598,7 @@ fn t_bpf_025_map_value_or_null_returns_valid() {
         ret: HelperReturn::MapValueOrNull { map_arg: 1 },
     }];
     let result =
-        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET) };
+        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET, &[]) };
     assert_eq!(result.unwrap(), 0xBB);
     drop(map_buf);
 }
@@ -635,7 +635,7 @@ fn t_bpf_026_helper_returns_oob_pointer() {
         ret: HelperReturn::MapValueOrNull { map_arg: 1 },
     }];
     assert!(matches!(
-        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET) },
+        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET, &[]) },
         Err(BpfError::MemoryAccessViolation { .. })
     ));
     drop(map_buf);
@@ -672,7 +672,7 @@ fn t_bpf_027_helper_expects_map_descriptor_gets_scalar() {
         ret: HelperReturn::MapValueOrNull { map_arg: 1 },
     }];
     assert!(matches!(
-        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET) },
+        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET, &[]) },
         Err(BpfError::InvalidHelperArgument { .. })
     ));
     drop(map_buf);
@@ -699,7 +699,7 @@ fn t_bpf_028_ld_dw_imm_negative_map_index() {
         data_start: map_ptr,
         data_end: map_ptr + 64,
     }];
-    let result = unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET) };
+    let result = unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET, &[]) };
     assert!(
         matches!(result, Err(BpfError::InvalidMapIndex { index: -1, .. })),
         "expected InvalidMapIndex with index=-1, got {:?}",
@@ -735,7 +735,7 @@ fn t_bpf_029_ld_dw_imm_out_of_bounds_map_index() {
             data_end: map_ptr_1 + 64,
         },
     ];
-    let result = unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET) };
+    let result = unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET, &[]) };
     assert!(
         matches!(result, Err(BpfError::InvalidMapIndex { index: 5, .. })),
         "expected InvalidMapIndex with index=5, got {:?}",
@@ -782,9 +782,194 @@ fn t_bpf_030_ld_dw_imm_map_descriptor_happy_path() {
     // verify the MapDescriptor tag on R1. If the tag were missing, the call
     // would fail with InvalidHelperArgument.
     assert_eq!(
-        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET) }
+        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET, &[]) }
             .unwrap(),
         1
     );
     drop(map_buf);
+}
+
+// ── Context pointer field tests ─────────────────────────────────────
+
+use sonde_bpf::interpreter::{ContextPointerField, Region, RegionTag};
+
+/// Load a u64 pointer from ctx offset 0, then dereference it.
+/// Without ContextPointerField this would fail with NonDereferenceableAccess.
+#[test]
+fn ctx_pointer_field_load_and_deref() {
+    // Context layout: [ptr_to_data (u64)] [data: 0xAB]
+    let header_size = 8usize;
+    let mut ctx = vec![0u8; header_size + 1];
+    ctx[header_size] = 0xAB;
+
+    let data_addr = ctx.as_ptr() as u64 + header_size as u64;
+    let data_end = data_addr + 1;
+    ctx[0..8].copy_from_slice(&data_addr.to_le_bytes());
+
+    let ctx_ptrs = [ContextPointerField {
+        offset: 0,
+        region: Region {
+            tag: RegionTag::Memory,
+            base: data_addr,
+            end: data_end,
+        },
+    }];
+
+    // r2 = *(u64 *)(r1 + 0)   — load data pointer (tagged via ctx_ptrs)
+    // r3 = *(u8 *)(r2 + 0)    — dereference the loaded pointer
+    // r0 = r3
+    // exit
+    #[rustfmt::skip]
+    let prog: Vec<u8> = vec![
+        ebpf::LD_DW_REG, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r2 = *(u64 *)(r1 + 0)
+        ebpf::LD_B_REG,  0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r3 = *(u8 *)(r2 + 0)
+        ebpf::MOV64_REG, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = r3
+        ebpf::EXIT,      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+    ];
+
+    let result = unsafe {
+        execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &ctx_ptrs)
+    };
+    assert_eq!(result.unwrap(), 0xAB);
+}
+
+/// Without ctx_ptrs, loading a pointer from context and dereferencing it
+/// must fail with NonDereferenceableAccess.
+#[test]
+fn ctx_pointer_field_absent_fails() {
+    let header_size = 8usize;
+    let mut ctx = vec![0u8; header_size + 1];
+    ctx[header_size] = 0xAB;
+
+    let data_addr = ctx.as_ptr() as u64 + header_size as u64;
+    ctx[0..8].copy_from_slice(&data_addr.to_le_bytes());
+
+    // Same program as above, but no ctx_ptrs.
+    #[rustfmt::skip]
+    let prog: Vec<u8> = vec![
+        ebpf::LD_DW_REG, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r2 = *(u64 *)(r1 + 0)
+        ebpf::LD_B_REG,  0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r3 = *(u8 *)(r2 + 0)
+        ebpf::MOV64_REG, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = r3
+        ebpf::EXIT,      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+    ];
+
+    let result = unsafe {
+        execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &[])
+    };
+    assert!(matches!(
+        result,
+        Err(BpfError::NonDereferenceableAccess { pc: 1 })
+    ));
+}
+
+/// Decoder-style program: load data_start and data_end from context,
+/// bounds-check, then read bytes from the data region.
+#[test]
+fn ctx_pointer_field_decoder_pattern() {
+    // Context: [input_data (u64)] [input_end (u64)] [blob: 0x01, 0x02, 0x03]
+    let header_size = 16usize;
+    let blob = [0x01u8, 0x02, 0x03];
+    let mut ctx = vec![0u8; header_size + blob.len()];
+    ctx[header_size..].copy_from_slice(&blob);
+
+    let blob_addr = ctx.as_ptr() as u64 + header_size as u64;
+    let blob_end = blob_addr + blob.len() as u64;
+    ctx[0..8].copy_from_slice(&blob_addr.to_le_bytes());
+    ctx[8..16].copy_from_slice(&blob_end.to_le_bytes());
+
+    let data_region = Region {
+        tag: RegionTag::Memory,
+        base: blob_addr,
+        end: blob_end,
+    };
+    let ctx_ptrs = [
+        ContextPointerField {
+            offset: 0,
+            region: data_region,
+        },
+        ContextPointerField {
+            offset: 8,
+            region: data_region,
+        },
+    ];
+
+    // Mimics the decoder assembly from the bug report:
+    //   r2 = *(u64 *)(r1 + 8)    — load input_end
+    //   r1 = *(u64 *)(r1 + 0)    — load input_data
+    //   r3 = r1
+    //   r3 += 3
+    //   if r3 > r2 goto exit_zero
+    //   r0 = *(u8 *)(r1 + 2)     — read third byte
+    //   exit
+    //   exit_zero: r0 = 0; exit
+    #[rustfmt::skip]
+    let prog: Vec<u8> = vec![
+        ebpf::LD_DW_REG,  0x12, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, // r2 = *(u64 *)(r1 + 8)
+        ebpf::LD_DW_REG,  0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r1 = *(u64 *)(r1 + 0)
+        ebpf::MOV64_REG,  0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r3 = r1
+        ebpf::ADD64_IMM,  0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, // r3 += 3
+        ebpf::JGT_REG,    0x23, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, // if r3 > r2 goto +2
+        ebpf::LD_B_REG,   0x10, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = *(u8 *)(r1 + 2)
+        ebpf::EXIT,       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        0xb7,             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = 0  (MOV64_IMM)
+        ebpf::EXIT,       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+    ];
+
+    let result = unsafe {
+        execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &ctx_ptrs)
+    };
+    assert_eq!(result.unwrap(), 0x03);
+}
+
+/// Context pointer field with adjusted base register (r2 = r1 + 8,
+/// then load from r2 + 0 should match offset 8).
+#[test]
+fn ctx_pointer_field_adjusted_base() {
+    let header_size = 16usize;
+    let blob = [0x42u8];
+    let mut ctx = vec![0u8; header_size + blob.len()];
+    ctx[header_size..].copy_from_slice(&blob);
+
+    let blob_addr = ctx.as_ptr() as u64 + header_size as u64;
+    let blob_end = blob_addr + blob.len() as u64;
+    ctx[0..8].copy_from_slice(&blob_addr.to_le_bytes());
+    ctx[8..16].copy_from_slice(&blob_end.to_le_bytes());
+
+    let data_region = Region {
+        tag: RegionTag::Memory,
+        base: blob_addr,
+        end: blob_end,
+    };
+    let ctx_ptrs = [
+        ContextPointerField {
+            offset: 0,
+            region: data_region,
+        },
+        ContextPointerField {
+            offset: 8,
+            region: data_region,
+        },
+    ];
+
+    // r2 = r1         — copy ctx pointer
+    // r2 += 8         — adjust to point at offset 8
+    // r3 = *(u64 *)(r2 + 0)  — load input_end from adjusted ptr
+    //   (effective ctx offset = 8, should match ctx_ptrs[1])
+    // r1 = *(u64 *)(r1 + 0)  — load input_data
+    // r0 = *(u8 *)(r1 + 0)   — dereference input_data
+    // exit
+    #[rustfmt::skip]
+    let prog: Vec<u8> = vec![
+        ebpf::MOV64_REG,  0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r2 = r1
+        ebpf::ADD64_IMM,  0x02, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // r2 += 8
+        ebpf::LD_DW_REG,  0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r3 = *(u64 *)(r2 + 0)
+        ebpf::LD_DW_REG,  0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r1 = *(u64 *)(r1 + 0)
+        ebpf::LD_B_REG,   0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = *(u8 *)(r1 + 0)
+        ebpf::EXIT,       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+    ];
+
+    let result = unsafe {
+        execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &ctx_ptrs)
+    };
+    assert_eq!(result.unwrap(), 0x42);
 }

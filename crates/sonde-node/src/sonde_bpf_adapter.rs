@@ -146,6 +146,7 @@ impl BpfInterpreter for SondeBpfInterpreter {
                 &self.map_regions,
                 true, // read_only_ctx
                 instruction_budget,
+                &[], // no context pointer fields on node
             )
         };
 

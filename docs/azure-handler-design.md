@@ -286,7 +286,10 @@ provides a queryable time-series store of sensor readings for the SPA.
 
 If the upstream CBOR message contains a `readings` key (CBOR key 16, added by
 gateway decoder enrichment per GW-1903), the handler extracts it and serializes
-as JSON into `decoded_readings`. Otherwise `decoded_readings` is `""`.
+as JSON into `decoded_readings`. Int64 values within JavaScript's
+`Number.MAX_SAFE_INTEGER` (2^53 - 1) are encoded as JSON numbers; values
+exceeding that threshold are encoded as JSON strings to preserve precision
+(AZH-0501 AC-5). Otherwise `decoded_readings` is `""`.
 
 The `PartitionKey` and `RowKey` follow the same patterns as `ActualNodeState`
 (§4.1) — hashed partition key for safe table keys, reverse-tick plus uniqueness

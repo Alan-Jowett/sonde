@@ -2477,6 +2477,184 @@ The nightly/release orchestrator workflow MUST build and publish standalone sens
 
 ---
 
+## 19  Decoder BPF programs
+
+### GW-1900  Decoder BPF section extraction from ELF
+
+**Priority:** Must
+**Source:** User request
+
+**Description:**
+The gateway's ELF ingestion pipeline (GW-0400) MUST be extended to extract an optional `SEC("decoder")` section from the ELF file in addition to the required `SEC("sonde")` section. If the `decoder` section is present, the gateway extracts its bytecode and map definitions into a separate `ProgramImage` (the "decoder image"). If the `decoder` section is absent, ingestion proceeds as today with no decoder image.
+
+**Acceptance criteria:**
+
+1. An ELF with both `SEC("sonde")` and `SEC("decoder")` sections is ingested successfully, producing both a node image and a decoder image.
+2. An ELF with only `SEC("sonde")` is ingested successfully with no decoder image (backward compatible).
+3. An ELF with only `SEC("decoder")` and no `SEC("sonde")` is rejected.
+4. An ELF with an invalid `decoder` section (fails Prevail verification) is rejected even if the `sonde` section is valid.
+5. Global data sections (`.rodata`, `.data`) shared between both programs are handled correctly — each image receives the map definitions and initial data relevant to its section.
+6. Section matching is exact: only `SEC("decoder")` is recognized. Sections with similar names (e.g., `decoder.text`) are ignored.
+7. An ELF with multiple `SEC("decoder")` sections is rejected.
+8. An ELF with an empty `SEC("decoder")` section (zero bytecode) is treated as having no decoder.
+
+---
+
+### GW-1901  DecoderPlatform for Prevail verification
+
+**Priority:** Must
+**Source:** User request
+
+**Description:**
+The gateway MUST define a separate `DecoderPlatform` for Prevail verification of decoder BPF programs. The `DecoderPlatform` defines:
+- A program type named `"decoder"` with section prefix `"decoder"`.
+- A context descriptor for the decoder input: `struct decoder_context { const uint8_t *input_data; uint32_t input_len; }`.
+- Helper prototypes for the decoder-permitted helpers only: `emit_reading` (ID 18), `map_lookup_elem` (ID 10), `map_update_elem` (ID 11), `bpf_trace_printk` (ID 16).
+- No hardware helpers (no I2C, SPI, GPIO, ADC, send, recv, delay, etc.).
+
+**Acceptance criteria:**
+
+1. Decoder programs that use only permitted helpers pass verification.
+2. Decoder programs that call hardware helpers (e.g., `i2c_read`, `send`) fail verification with a descriptive error.
+3. The decoder context descriptor accurately models the `{ input_data, input_len }` struct.
+4. The `DecoderPlatform` is distinct from `SondePlatform` — changing one does not affect the other.
+
+---
+
+### GW-1902  Decoder program storage
+
+**Priority:** Must
+**Source:** User request
+
+**Description:**
+The gateway MUST store the decoder `ProgramImage` alongside the node `ProgramImage`, indexed by the same node program hash. The decoder image MUST be retrievable by node program hash. The decoder image is never sent to nodes — it is used only by the gateway for APP_DATA enrichment (GW-1903).
+
+**Acceptance criteria:**
+
+1. When a program with a decoder section is ingested, both the node image and decoder image are stored.
+2. The decoder image can be retrieved by the node program hash.
+3. Re-ingesting the same ELF is idempotent — the decoder image is updated in place.
+4. When a program is removed (GW-0802 `RemoveProgram`), the decoder image is also removed.
+5. State export/import (GW-0805) includes decoder images.
+6. The decoder image does NOT affect the node program hash — the hash covers only the node image.
+7. Ingesting an ELF with the same node program hash but a different decoder replaces the existing decoder image (upsert). The gateway logs the decoder change at INFO level.
+8. Ingesting an ELF without a decoder section for a hash that previously had a decoder removes the decoder image.
+
+---
+
+### GW-1903  APP_DATA enrichment via decoder execution
+
+**Priority:** Must
+**Source:** User request
+
+**Description:**
+When the gateway receives an `APP_DATA` message (GW-0500) and a decoder image exists for the sending node's current program hash, the gateway MUST execute the decoder BPF program with the raw APP_DATA payload as input. The decoder program calls the `emit_reading` helper to produce named readings. The gateway adds a `readings` field to the handler DATA message (GW-0505) and the connector GW-0813 upstream message as a sibling field alongside the existing `data` / `payload` field. The raw `blob` from the node's APP_DATA is always preserved unchanged in the `data` field. The `readings` field is purely additive — it never mutates the raw payload.
+
+If no decoder image exists for the program hash, the message is forwarded unchanged (backward compatible).
+
+If the decoder program fails (runtime error, budget exceeded), the gateway MUST log the failure and forward the original unenriched message. Decoder failures MUST NOT prevent data delivery.
+
+**Acceptance criteria:**
+
+1. APP_DATA from a program with a decoder is enriched with a `readings` field before forwarding.
+2. APP_DATA from a program without a decoder is forwarded unchanged.
+3. The `readings` field contains the name-value pairs emitted by `emit_reading` during decoder execution.
+4. Reading names are UTF-8 strings; values are signed 64-bit integers.
+5. Decoder runtime failures (e.g., budget exceeded, invalid memory access) are logged and the unenriched message is forwarded.
+6. Both the handler and the connector receive the same enriched message.
+7. Decoder execution does not block or delay other node wake cycles.
+8. The raw `blob` / `data` field is preserved byte-for-byte — enrichment never mutates the raw payload.
+
+---
+
+### GW-1904  Decoder BPF context and helper API
+
+**Priority:** Must
+**Source:** User request
+
+**Description:**
+The decoder BPF program operates in a restricted environment. Its execution context and helpers are:
+
+**Context (passed in R1):**
+```c
+struct decoder_context {
+    const uint8_t *input_data;  // read-only pointer to raw APP_DATA blob
+    uint32_t input_len;         // length of input_data in bytes
+};
+```
+
+The `input_data` memory is read-only — writes cause verification failure.
+
+**Helpers:**
+
+| ID | Name | Signature | Description |
+|----|------|-----------|-------------|
+| 18 | `emit_reading` | `(name_ptr, name_len, value_i64) → 0` | Emit a named reading. Name is UTF-8 bytes in BPF memory (max 64 bytes). Value is a signed 64-bit integer. |
+| 10 | `map_lookup_elem` | `(map_fd, key_ptr) → value_ptr_or_null` | Existing BPF map lookup. |
+| 11 | `map_update_elem` | `(map_fd, key_ptr, value_ptr, flags) → 0_or_error` | Existing BPF map update. |
+| 16 | `bpf_trace_printk` | `(fmt_ptr, fmt_len, arg1, arg2, arg3) → 0` | Debug tracing. |
+
+**Limits:** Maximum 32 readings per decoder execution. Maximum total reading-name bytes: 2048. If either limit is exceeded, subsequent `emit_reading` calls return `-2` (overflow), the gateway logs a warning, and readings collected so far are still included in the enriched message.
+
+**Decoder map lifecycle:** Decoder maps are ephemeral — allocated and initialized from the decoder `ProgramImage` map definitions (including `map_initial_data`) on every APP_DATA execution. No state persists across executions. `.rodata`-backed maps are read-only at runtime — `map_update_elem` on a `.rodata` map returns error. `.data` and `.bss` maps are writable but reset on each execution.
+
+**Acceptance criteria:**
+
+1. The decoder receives a valid `decoder_context` with pointer to raw payload and its length.
+2. `emit_reading` captures the name and value for inclusion in the `readings` field.
+3. Multiple calls to `emit_reading` with different names are accumulated.
+4. Duplicate names in `emit_reading` calls: last-write-wins.
+5. `map_lookup_elem` and `map_update_elem` work with decoder-image maps.
+6. `bpf_trace_printk` output is logged by the gateway.
+7. Hardware helpers (I2C, SPI, GPIO, ADC, send, recv) are NOT available — calling them fails verification (GW-1901).
+8. `emit_reading` with `name_len` > 64 returns `-1`.
+9. The 33rd `emit_reading` call returns `-2` (overflow).
+10. `map_update_elem` on a `.rodata`-backed map returns error.
+
+---
+
+### GW-1905  Decoder backward compatibility
+
+**Priority:** Must
+**Source:** User request
+
+**Description:**
+The decoder feature MUST be fully backward compatible:
+- ELFs without a `SEC("decoder")` section are ingested and used exactly as today.
+- Programs already stored in the gateway (without decoder images) continue to function.
+- The handler protocol DATA message format is unchanged — the `readings` field is additive.
+- Connectors that do not understand the `readings` field ignore it (CBOR maps are extensible).
+- Nodes are completely unaware of decoders.
+
+**Acceptance criteria:**
+
+1. Existing ELFs without decoder sections ingest successfully.
+2. Existing programs in the database are unaffected by the schema migration.
+3. Handlers that do not parse the `readings` field continue to function.
+4. Connectors that do not parse the `readings` field continue to function.
+5. No changes to the node firmware or wire protocol are required.
+
+---
+
+### GW-1906  Node program hash stability
+
+**Priority:** Must
+**Source:** User request
+
+**Description:**
+The node-facing `program_hash` MUST remain the SHA-256 of the CBOR-encoded node `ProgramImage` only (bytecode from `SEC("sonde")` + maps). The decoder bytecode MUST NOT be included in the node program hash computation. This ensures:
+- Updating only the decoder does not trigger a program re-download on nodes.
+- Existing node assignments are unaffected when a decoder is added to a program.
+- The wire protocol `program_hash` fields (WAKE, UPDATE_PROGRAM, PROGRAM_ACK) remain consistent.
+
+**Acceptance criteria:**
+
+1. Ingesting an ELF with a decoder section produces the same node program hash as ingesting the same ELF without the decoder section (assuming identical `sonde` bytecode and maps).
+2. Adding a decoder to a previously ingested program does not change the program hash stored in node assignments.
+3. The hash is computed exactly as specified in `protocol.md` §5 (SHA-256 of CBOR node image).
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -2611,3 +2789,10 @@ The nightly/release orchestrator workflow MUST build and publish standalone sens
 | GW-1804 | Bundled modem flashing assets | Must |
 | GW-1805 | Bundled BPF test-program assets | Must |
 | GW-1806 | Nightly release sensor assets | Must |
+| GW-1900 | Decoder BPF section extraction from ELF | Must |
+| GW-1901 | DecoderPlatform for Prevail verification | Must |
+| GW-1902 | Decoder program storage | Must |
+| GW-1903 | APP_DATA enrichment via decoder execution | Must |
+| GW-1904 | Decoder BPF context and helper API | Must |
+| GW-1905 | Decoder backward compatibility | Must |
+| GW-1906 | Node program hash stability | Must |

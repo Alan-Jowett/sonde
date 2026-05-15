@@ -166,6 +166,7 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 | 13 | `starting_seq` | COMMAND |
 | 14 | `timestamp_ms` | COMMAND |
 | 15 | `firmware_version` | WAKE |
+| 16 | `readings` | APP_DATA (enriched by gateway decoder, GW-1903) |
 
 #### Diagnostic message keyspace
 
@@ -250,6 +251,24 @@ BPF ELF file (developer artifact)
 ```
 
 The ELF is never transmitted to the node. The node receives only the CBOR program image.
+
+#### Decoder program image
+
+An ELF file may contain an optional `SEC("decoder")` section in addition to
+the required `SEC("sonde")` section (GW-1900). The gateway extracts both
+sections into separate `ProgramImage` CBOR structures:
+
+- **Node image:** From `SEC("sonde")`. Hashed, stored, and sent to nodes as
+  today.
+- **Decoder image:** From `SEC("decoder")`. Stored alongside the node image,
+  keyed by the same program hash. Never sent to nodes. Used by the gateway for
+  APP_DATA enrichment (GW-1903).
+
+The decoder image uses the same CBOR structure as the node image
+(`{ 1: bytecode, 2: [map_defs...] }`). The decoder image is NOT included in
+the `program_hash` computation — the hash covers only the node image
+(GW-1906). This ensures that adding or modifying a decoder does not trigger
+program re-downloads on nodes.
 
 ### 5.1  WAKE (Node → Gateway)
 
@@ -360,8 +379,15 @@ Sent by the firmware when the BPF program calls `send()` or `send_recv()`.
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
 | `blob` | bstr | Yes | Opaque application data. Content defined by the BPF program. |
+| `readings` | map | No | Decoded sensor readings, added by the gateway when a decoder BPF program exists for the sending program (GW-1903). Keys are UTF-8 text strings (reading names); values are signed 64-bit integers. Absent when no decoder is configured or decoder execution fails. Consumers MUST tolerate absence. |
 
 A node may send **multiple `APP_DATA` messages per wake cycle** (one per `send()` or `send_recv()` call in the BPF program). Each `APP_DATA` frame carries an **incrementing sequence number** in the `nonce` header field, consistent with the session-scoped replay protection scheme (see §7.4). The gateway accepts them as independent authenticated messages.
+
+**Decoder enrichment:** When the gateway has a decoder program image for the
+APP_DATA's program hash, it executes the decoder on the raw `blob` bytes and
+adds the `readings` map to the CBOR message before forwarding to handlers and
+the connector. The `blob` field is always present and unchanged — `readings`
+is purely additive. See [gateway-design.md §9.2a](gateway-design.md).
 
 The BPF program and its corresponding gateway-side handler agree a priori on whether a reply is expected for each message. The protocol carries no explicit flag — the gateway sends `APP_DATA_REPLY` only when the handler provides a non-zero-length response.
 

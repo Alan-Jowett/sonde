@@ -3898,6 +3898,298 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1900  Decoder section extraction from ELF
+
+**Traces to:** GW-1900 (AC-1)
+
+**Preconditions:** A test ELF with both `SEC("sonde")` and `SEC("decoder")` sections.
+
+**Steps:**
+1. Ingest the dual-section ELF via `IngestProgram`.
+2. Query the stored program record.
+
+**Expected:**
+1. Program stored with both node image and decoder image.
+2. Node program hash matches hash of node image only (decoder excluded).
+
+---
+
+### T-1900a  ELF without decoder section (backward compat)
+
+**Traces to:** GW-1900 (AC-2), GW-1905 (AC-1)
+
+**Preconditions:** An existing single-section ELF (e.g., `tmp102_sensor.o`).
+
+**Steps:**
+1. Ingest a standard single-section ELF.
+
+**Expected:**
+1. Program stored with no decoder image.
+2. Behavior identical to pre-feature gateway.
+
+---
+
+### T-1900b  ELF with decoder only (no sonde section) rejected
+
+**Traces to:** GW-1900 (AC-3)
+
+**Steps:**
+1. Build an ELF with only `SEC("decoder")`, no `SEC("sonde")`.
+2. Ingest via `IngestProgram`.
+
+**Expected:**
+1. Rejected with error indicating missing sonde section.
+
+---
+
+### T-1900c  ELF with empty decoder section treated as no decoder
+
+**Traces to:** GW-1900 (AC-8)
+
+**Steps:**
+1. Build an ELF with `SEC("sonde")` and an empty `SEC("decoder")` (zero bytecode).
+2. Ingest via `IngestProgram`.
+
+**Expected:**
+1. Program stored with no decoder image (empty section ignored).
+
+---
+
+### T-1900d  ELF with multiple decoder sections rejected
+
+**Traces to:** GW-1900 (AC-7)
+
+**Steps:**
+1. Build an ELF with `SEC("sonde")` and two `SEC("decoder")` sections.
+2. Ingest via `IngestProgram`.
+
+**Expected:**
+1. Rejected with error indicating multiple decoder sections.
+
+---
+
+### T-1901  Decoder verification with DecoderPlatform
+
+**Traces to:** GW-1901 (AC-1)
+
+**Preconditions:** A decoder program that calls only permitted helpers (`emit_reading`, `map_lookup_elem`, `bpf_trace_printk`).
+
+**Steps:**
+1. Ingest the ELF with valid sonde and decoder sections.
+
+**Expected:**
+1. Verification passes, decoder image stored.
+
+---
+
+### T-1901a  Decoder using hardware helpers rejected
+
+**Traces to:** GW-1901 (AC-2)
+
+**Steps:**
+1. Build a decoder program that calls `i2c_read`.
+2. Ingest the ELF.
+
+**Expected:**
+1. Verification fails with error about invalid/unknown helper.
+
+---
+
+### T-1901b  Decoder using send helper rejected
+
+**Traces to:** GW-1901 (AC-2)
+
+**Steps:**
+1. Build a decoder program that calls `send`.
+2. Ingest the ELF.
+
+**Expected:**
+1. Verification fails with error about invalid/unknown helper.
+
+---
+
+### T-1902  Decoder image storage and retrieval
+
+**Traces to:** GW-1902 (AC-1, AC-2, AC-4)
+
+**Steps:**
+1. Ingest an ELF with decoder section.
+2. Retrieve the program record by hash.
+3. Assert decoder image is present and decodable as valid `ProgramImage`.
+4. Remove the program via `RemoveProgram`.
+
+**Expected:**
+1. Decoder image present after ingest.
+2. Decoder image removed after `RemoveProgram`.
+
+---
+
+### T-1903  APP_DATA enrichment with decoder
+
+**Traces to:** GW-1903 (AC-1, AC-3, AC-6)
+
+**Preconditions:** Ingested program with a decoder that calls `emit_reading("temp_mc", 25125)`.
+
+**Steps:**
+1. Assign program to a test node. Simulate an APP_DATA from that node.
+2. Inspect the DATA message forwarded to the handler.
+3. Inspect the GW-0813 message forwarded to the connector.
+
+**Expected:**
+1. Both messages contain a `readings` field with `{ "temp_mc": 25125 }`.
+2. Raw `data`/`blob` field is preserved byte-for-byte.
+
+---
+
+### T-1903a  APP_DATA without decoder forwarded unchanged
+
+**Traces to:** GW-1903 (AC-2), GW-1905 (AC-3, AC-4)
+
+**Preconditions:** Ingested program without a decoder section.
+
+**Steps:**
+1. Simulate an APP_DATA from a node running the program.
+
+**Expected:**
+1. DATA message has no `readings` field.
+
+---
+
+### T-1903b  Decoder failure does not block data delivery
+
+**Traces to:** GW-1903 (AC-5)
+
+**Preconditions:** Ingested program with a decoder that exceeds the instruction budget.
+
+**Steps:**
+1. Simulate an APP_DATA from a node.
+
+**Expected:**
+1. Warning logged.
+2. Original unenriched message forwarded to handler and connector.
+
+---
+
+### T-1903c  Enriched message preserves raw blob unchanged
+
+**Traces to:** GW-1903 (AC-8)
+
+**Steps:**
+1. Ingest a program with a decoder.
+2. Simulate APP_DATA with known blob bytes.
+3. Inspect forwarded DATA message.
+
+**Expected:**
+1. `data` field matches original blob bytes exactly.
+2. `readings` field present as a separate sibling field.
+
+---
+
+### T-1903d  Both handler and connector receive identical enriched message
+
+**Traces to:** GW-1903 (AC-6)
+
+**Steps:**
+1. Capture the DATA message sent to the handler and the GW-0813 message
+   sent to the connector for the same APP_DATA.
+
+**Expected:**
+1. Both contain the same `readings` content.
+
+---
+
+### T-1904  emit_reading helper captures readings
+
+**Traces to:** GW-1904 (AC-2, AC-3, AC-4)
+
+**Steps:**
+1. Execute a decoder BPF program that calls `emit_reading("a", 1)`,
+   `emit_reading("b", 2)`, `emit_reading("a", 3)`.
+2. Inspect the resulting readings.
+
+**Expected:**
+1. Readings map is `{ "a": 3, "b": 2 }` (last-write-wins for "a").
+
+---
+
+### T-1904a  emit_reading with name_len=64 succeeds
+
+**Traces to:** GW-1904 (AC-8)
+
+**Steps:**
+1. Call `emit_reading` with a 64-byte name.
+
+**Expected:**
+1. Returns `0` (success).
+2. Reading is included.
+
+---
+
+### T-1904b  emit_reading with name_len=65 returns -1
+
+**Traces to:** GW-1904 (AC-8)
+
+**Steps:**
+1. Call `emit_reading` with a 65-byte name.
+
+**Expected:**
+1. Returns `-1`.
+2. Reading is NOT included.
+
+---
+
+### T-1904c  emit_reading overflow (33rd reading) returns -2
+
+**Traces to:** GW-1904 (AC-9)
+
+**Steps:**
+1. Call `emit_reading` 33 times with distinct names.
+
+**Expected:**
+1. First 32 calls return `0`.
+2. 33rd call returns `-2`.
+3. First 32 readings are included in the readings map.
+
+---
+
+### T-1904d  Decoder with rodata map reads initial data correctly
+
+**Traces to:** GW-1904 (AC-5)
+
+**Steps:**
+1. Build a decoder with a `.rodata` global variable containing a lookup table.
+2. Execute the decoder. It uses `map_lookup_elem` to read from the table.
+
+**Expected:**
+1. `map_lookup_elem` returns the expected initial data values.
+
+---
+
+### T-1904e  map_update_elem on rodata map returns error
+
+**Traces to:** GW-1904 (AC-10)
+
+**Steps:**
+1. Build a decoder that calls `map_update_elem` on a `.rodata`-backed map.
+
+**Expected:**
+1. `map_update_elem` returns error (non-zero).
+
+---
+
+### T-1906  Program hash unchanged by decoder presence
+
+**Traces to:** GW-1906 (AC-1)
+
+**Steps:**
+1. Build two ELFs from identical `sonde` source: one without decoder, one with.
+2. Ingest both.
+
+**Expected:**
+1. Both produce the same node program hash.
+
+---
+
 | GW-1306 | T-1306a, T-1306b, T-1306c, T-1306d |
 | GW-1307 | T-1307a, T-1307b, T-1307c, T-1307d, T-1307e, T-1307f, T-1307g, T-1307h, T-1307i |
 | GW-1308 | T-1308 |
@@ -3931,3 +4223,10 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1804 | T-1800, T-1802a, T-1806 |
 | GW-1805 | T-1800, T-1802b, T-1806a |
 | GW-1806 | T-1806a, T-1807 |
+| GW-1900 | T-1900, T-1900a, T-1900b, T-1900c, T-1900d |
+| GW-1901 | T-1901, T-1901a, T-1901b |
+| GW-1902 | T-1902 |
+| GW-1903 | T-1903, T-1903a, T-1903b, T-1903c, T-1903d |
+| GW-1904 | T-1904, T-1904a, T-1904b, T-1904c, T-1904d, T-1904e |
+| GW-1905 | T-1900a, T-1903a |
+| GW-1906 | T-1906 |

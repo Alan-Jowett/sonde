@@ -254,6 +254,35 @@ The design does not route unmapped application-data messages to a default queue.
 It also does not attempt to create the mapped queue if it does not already
 exist.
 
+### 6.1  SensorData table storage (AZH-0500)
+
+In addition to routing `GW-0813` to the handler queue, the Azure handler MUST
+append a row to the `SensorData` table for every `GW-0813` message. This
+provides a queryable time-series store of sensor readings for the SPA.
+
+**Table schema:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `PartitionKey` | `String` | `"n:" + SHA-256(node_id).hex()` |
+| `RowKey` | `String` | Reverse-tick key + `":"` + uniqueness suffix |
+| `node_id` | `String` | Originating node identifier |
+| `timestamp_ms` | `Edm.Int64` | Message timestamp in milliseconds |
+| `program_hash` | `String` | BPF program hash (hex) |
+| `raw_payload` | `String` | Base64-encoded raw APP_DATA blob |
+| `decoded_readings` | `String` | JSON string of `readings` map, or `""` |
+
+If the upstream CBOR message contains a `readings` key (CBOR key 16, added by
+gateway decoder enrichment per GW-1903), the handler extracts it and serializes
+as JSON into `decoded_readings`. Otherwise `decoded_readings` is `""`.
+
+The `PartitionKey` and `RowKey` follow the same patterns as `ActualNodeState`
+(§4.1) — hashed partition key for safe table keys, reverse-tick plus uniqueness
+suffix for chronological ordering and append uniqueness.
+
+`SensorData` writes are independent of `ProgramRoute` routing — the table is
+populated even if no handler queue is configured for the program hash.
+
 ---
 
 ## 7  Failure handling

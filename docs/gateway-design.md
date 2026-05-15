@@ -415,12 +415,13 @@ The program library stores verified BPF programs and serves chunks.
 
 ```rust
 pub struct ProgramRecord {
-    pub hash: Vec<u8>,         // SHA-256 of CBOR-encoded program image
-    pub image: Vec<u8>,        // CBOR-encoded program image (bytecode + map definitions)
-    pub size: u32,             // byte length of the CBOR image
+    pub hash: Vec<u8>,         // SHA-256 of CBOR-encoded node program image
+    pub image: Vec<u8>,        // CBOR-encoded node program image (bytecode + map definitions)
+    pub size: u32,             // byte length of the CBOR node image
     pub verification_profile: VerificationProfile,
     pub abi_version: Option<u32>,        // ABI version (None = any ABI)
     pub source_filename: Option<String>, // original filename passed at ingestion time
+    pub decoder_image: Option<Vec<u8>>,  // CBOR-encoded decoder ProgramImage (GW-1902)
 }
 
 pub enum VerificationProfile {
@@ -438,6 +439,15 @@ basename as the default program identifier, falling back to the hash when the
 metadata is absent. It does NOT affect the program hash — the hash covers only
 the CBOR image.
 
+The `decoder_image` field (GW-1902) stores the CBOR-encoded decoder
+`ProgramImage` extracted from the `SEC("decoder")` ELF section. It is `None`
+for ELFs without a decoder section. The decoder image is never sent to nodes —
+it is used only by the gateway for APP_DATA enrichment (§9.2a). The decoder
+image does NOT affect `hash` — the hash covers only the node image. Ingesting
+an ELF with the same node program hash but a different decoder replaces the
+existing decoder image (upsert). Ingesting without a decoder for a hash that
+previously had one removes the decoder image.
+
 ### 8.2  Program ingestion
 
 1. Accept pre-compiled BPF ELF (GW-0400).
@@ -450,6 +460,9 @@ the CBOR image.
 8. Enforce size limits on the CBOR image: 4 KB resident, 2 KB ephemeral (GW-0403).
 9. Compute `program_hash` using `sonde_protocol::program_hash()` with the gateway's SHA-256 provider (GW-0402).
 10. Store in library. Verification and encoding complete at ingestion time — chunk serving is immediate (GW-0400).
+11. **Decoder extraction (GW-1900):** Check for an optional `decoder` ELF section — `elf.get_programs("decoder", "", &mut decoder_platform)`. If no programs are found, `decoder_image` = `None`. If exactly one program is found, proceed to step 12. If more than one is found, reject the ELF. An empty decoder section (zero bytecode) is treated as no decoder. Section matching is exact: only `SEC("decoder")` is recognized.
+12. **Decoder verification (GW-1901):** Verify the decoder program with `DecoderPlatform` (§8.2.2) — uses a restricted helper set and decoder-specific context descriptor. If verification fails, reject the entire ELF (even if the `sonde` section is valid).
+13. **Decoder image construction:** Extract decoder bytecode and map definitions. Build a separate `ProgramImage` for the decoder. Encode with `encode_deterministic()`. Store as `decoder_image` alongside the node image. The decoder image is NOT included in the node program hash computation (GW-1906).
 
 ### 8.2.1  Sonde verifier platform (`SondePlatform`)
 
@@ -491,6 +504,39 @@ The gateway uses a custom Prevail platform (`SondePlatform`) instead of `LinuxPl
 **Workaround:** after calling `get_programs`, the gateway copies the full set of map descriptors from `RawProgram.info.map_descriptors` into `SondePlatform` via `sync_map_descriptors(&[EbpfMapDescriptor])`. `SondePlatform` maintains a mirror `Vec<EbpfMapDescriptor>` that is checked first in `get_map_descriptor()`, falling back to the inner `LinuxPlatform` for maps parsed via `parse_maps_section`.
 
 **Section name prefix matching:** the initial data extraction (step 5 above) uses prefix matching rather than exact equality for global data section names. Prevail promotes sections such as `.rodata.str1.1` and `.data.rel.ro` — not just `.rodata` and `.data` — so the scanner matches any section whose name equals or starts with a known global data prefix followed by `.`.
+
+### 8.2.2  Decoder verifier platform (`DecoderPlatform`)
+
+The gateway defines a separate `DecoderPlatform` for Prevail verification of
+decoder BPF programs (GW-1901). Like `SondePlatform`, it wraps `LinuxPlatform`
+via composition.
+
+**Module:** `crate::decoder_platform` (`crates/sonde-gateway/src/decoder_platform.rs`)
+
+**Context descriptor:** 8 bytes — `{ input_data: ptr (4B), input_len: u32 (4B) }`.
+The `input_data` pointer is typed as readable memory; writes cause verification
+failure.
+
+**Program type:** `"decoder"` with section prefix `"decoder"`.
+
+**Helper prototypes:**
+
+| ID | Name | Return | Args |
+|----|------|--------|------|
+| 10 | `map_lookup_elem` | `PtrToMapValueOrNull` | `(*map, *key)` |
+| 11 | `map_update_elem` | `Integer` | `(*map, *key, *value)` |
+| 16 | `bpf_trace_printk` | `Integer` | `(*readable, size)` |
+| 18 | `emit_reading` | `Integer` | `(*readable, size, value_i64)` |
+
+All other helper IDs (1–9, 12–15, 17) return `None` from
+`get_helper_prototype()`, causing Prevail to reject programs that reference
+them.
+
+**Map type mapping:** Same as `SondePlatform` (§8.2.1) — reuses the existing
+array/global-variable map semantics.
+
+**Global variable map sync:** Same `sync_map_descriptors` pattern as
+`SondePlatform` (§8.2.1.1).
 
 ### 8.3  Chunk serving
 
@@ -552,7 +598,25 @@ On receiving APP_DATA from a node:
 
 1. Look up the node's current `program_hash` in the handler config.
 2. If no match and no catch-all → do not send APP_DATA_REPLY to the node (GW-0504).
-3. If match → forward to handler as a DATA message (GW-0505).
+2a. **Decoder enrichment (GW-1903):** If the program record for the node's
+   `current_program_hash` has a non-`None` `decoder_image`:
+   1. Load the decoder `ProgramImage` and execute it via `sonde-bpf` with:
+      - Context: raw APP_DATA `blob` bytes as `decoder_context { input_data, input_len }`.
+      - Helpers: `emit_reading` (collects name→value pairs), `map_lookup_elem`,
+        `map_update_elem`, `bpf_trace_printk`.
+      - Maps: allocated and initialized from the decoder image's map definitions
+        on every execution. No state persists across executions. `.rodata` maps
+        are read-only; `.data`/`.bss` maps are writable but reset each time.
+      - Instruction budget: same as ephemeral programs.
+   2. If execution succeeds, add a `readings` field (CBOR key 16) to the DATA
+      message and the connector GW-0813 message. The value is a CBOR map of
+      `{ text_name: int64_value, ... }` from `emit_reading` calls. The raw
+      `blob` / `data` field is preserved byte-for-byte.
+   3. If execution fails (budget exceeded, invalid memory access), log the
+      error at WARN level and forward the original unenriched message.
+   4. Limits: max 32 readings, max 2048 bytes total reading-name bytes, max 64
+      bytes per name. Overflow → stop accepting, log, include partial readings.
+3. If match → forward (enriched or original) to handler as a DATA message (GW-0505).
 
 ### 9.3  Handler process lifecycle
 
@@ -575,6 +639,11 @@ The `DATA_REPLY` message supports an optional `delivery` field (CBOR key 4). Whe
 APP_DATA from node
   │
   ├── route by program_hash
+  │
+  ├── decoder enrichment (if decoder_image exists, GW-1903):
+  │     ├── execute decoder BPF with raw blob as input
+  │     ├── collect emit_reading() outputs (max 32 readings)
+  │     └── add readings map (key 16) as sibling of data field
   │
   ├── construct DATA message:
   │     msg_type: 0x01

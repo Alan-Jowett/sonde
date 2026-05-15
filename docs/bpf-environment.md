@@ -51,6 +51,36 @@ Ephemeral programs are one-shot diagnostics pushed by the gateway.
 
 Ephemeral programs are used for remote introspection: dump map contents, read sensor values, or report node state — without disturbing the resident program.
 
+### 2.3  Decoder programs
+
+Decoder programs run in the gateway (not on nodes) to decode raw sensor bytes into named readings (GW-1900, GW-1903).
+
+| Property | Value |
+|---|---|
+| **Execution location** | Gateway (server-side) |
+| **Storage** | Gateway program library, alongside node image |
+| **Lifetime** | Executed per APP_DATA message |
+| **ELF section** | `SEC("decoder")` |
+| **Map access** | Read/write (per-execution, not persistent) |
+| **Helper set** | Restricted — `emit_reading`, `map_lookup_elem`, `map_update_elem`, `bpf_trace_printk` only |
+| **Side effects** | None (no hardware access, no network I/O) |
+| **Context** | `decoder_context` — pointer to raw APP_DATA bytes + length |
+| **Max size** | Same as ephemeral (2 KB) |
+
+Decoder programs receive the raw `blob` bytes from an APP_DATA message and call `emit_reading()` to produce named sensor values. The gateway collects these readings and enriches the APP_DATA message with a `readings` map (CBOR key 16) before forwarding to handlers and the connector.
+
+**Decoder map lifecycle:** Decoder maps are ephemeral — allocated and initialized from the decoder `ProgramImage` map definitions (including `map_initial_data`) on every APP_DATA execution. No state persists across executions. `.rodata`-backed maps are read-only at runtime. `.data` and `.bss` maps are writable but reset on each execution.
+
+```c
+SEC("decoder")
+int decode(struct decoder_context *ctx) {
+    // Read raw bytes from ctx->input_data (read-only)
+    // Parse sensor-specific encoding
+    // Call emit_reading() for each decoded value
+    return 0;
+}
+```
+
 ---
 
 ## 3  Execution lifecycle
@@ -125,6 +155,23 @@ struct sonde_context {
 ```
 
 The `timestamp` is derived from the gateway's `timestamp_ms` field in the COMMAND response (see [protocol.md §5.2](protocol.md)). The node has no independent clock source across deep sleep — the gateway is the authoritative time reference. Within a wake cycle, the firmware adds local elapsed time to the gateway-supplied value.
+
+### 4.2  Decoder context
+
+Decoder programs (§2.3) run in the gateway and receive a different context
+than node programs. The decoder context provides read-only access to the raw
+APP_DATA payload bytes:
+
+```c
+struct decoder_context {
+    const uint8_t *input_data;  // read-only pointer to raw APP_DATA blob
+    uint32_t input_len;         // length of input_data in bytes
+};
+/* Total: 8 bytes (BPF pointer width + u32).
+ * input_data is typed as readable memory — writes cause verification failure.
+ * The decoder reads sensor-specific bytes from input_data and calls
+ * emit_reading() to produce named values. */
+```
 
 ### Wake reasons
 
@@ -534,21 +581,47 @@ int bpf_trace_printk(const char *fmt, uint32_t fmt_len, ...);
 
 Emit a debug trace message. Output is platform-dependent (serial console, log buffer, etc.). Not intended for production use.
 
-**Availability:** Resident and ephemeral.
+**Availability:** Resident, ephemeral, and decoder.
+
+---
+
+### 6.6  Decoder
+
+#### `emit_reading`
+
+```c
+int emit_reading(const char *name, uint32_t name_len, int64_t value);
+```
+
+Emit a named sensor reading. The gateway collects all emitted readings into a `readings` map (CBOR key 16) that is added to the APP_DATA message before forwarding to handlers and the connector.
+
+| Parameter | Description |
+|---|---|
+| `name` | Pointer to UTF-8 reading name in BPF memory (e.g., `"temperature_mc"`). |
+| `name_len` | Length of the name in bytes. Maximum 64 bytes. |
+| `value` | Reading value as a signed 64-bit integer. |
+
+**Returns:** `0` on success, `-1` if `name_len` exceeds 64, `-2` if the reading limit is exceeded (max 32 readings per execution, max 2048 bytes total reading-name bytes).
+
+**Duplicate names:** Last-write-wins — if the decoder emits the same name multiple times, only the final value is included.
+
+**Helper ID:** 18
+
+**Availability:** Decoder only. Not available in resident or ephemeral programs.
 
 ---
 
 ## 7  Verification profiles
 
-All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) on the gateway before distribution. Two profiles enforce different safety guarantees:
+All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) on the gateway before distribution. Three profiles enforce different safety guarantees:
 
-| Property | Resident | Ephemeral |
-|---|---|---|
-| **Loops** | Bounded | None or tightly bounded |
-| **Map access** | Read/write | None (ephemeral programs must not declare maps) |
-| **Instruction budget** | Larger | Small |
-| **Helper set** | Full (all 17 helpers) | Limited — see table below |
-| **Side effects** | Allowed | No persistent node state changes under program control; `send_async` may enqueue outbound data for transmission on the next wake cycle |
+| Property | Resident | Ephemeral | Decoder |
+|---|---|---|---|
+| **Loops** | Bounded | None or tightly bounded | Bounded |
+| **Map access** | Read/write | None (ephemeral programs must not declare maps) | Read/write (per-execution, not persistent) |
+| **Instruction budget** | Larger | Small | Same as ephemeral |
+| **Helper set** | Full (all 17 helpers) | Limited — see table below | Restricted (4 helpers) — see table below |
+| **Side effects** | Allowed | No persistent node state changes under program control; `send_async` may enqueue outbound data for transmission on the next wake cycle | None (no hardware, no network I/O) |
 
 #### Ephemeral helper availability
 
@@ -571,6 +644,29 @@ All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) on
 | `set_next_wake` | ❌ | Blocked — ephemeral programs cannot modify the schedule (ND-0604 AC5) |
 | `bpf_trace_printk` | ✅ | |
 | `send_async` | ✅ | Enqueues data for next wake cycle (ND-0602 AC6) |
+
+#### Decoder helper availability
+
+| Helper | Available | Notes |
+|---|---|---|
+| `i2c_read` | ❌ | No hardware access |
+| `i2c_write` | ❌ | No hardware access |
+| `i2c_write_read` | ❌ | No hardware access |
+| `spi_transfer` | ❌ | No hardware access |
+| `gpio_read` | ❌ | No hardware access |
+| `gpio_write` | ❌ | No hardware access |
+| `adc_read` | ❌ | No hardware access |
+| `send` | ❌ | No network I/O |
+| `send_recv` | ❌ | No network I/O |
+| `map_lookup_elem` | ✅ | Decoder maps (per-execution) |
+| `map_update_elem` | ✅ | Decoder maps (per-execution); `.rodata` maps are read-only |
+| `get_time` | ❌ | Not needed |
+| `get_battery_mv` | ❌ | Not needed |
+| `delay_us` | ❌ | No blocking |
+| `set_next_wake` | ❌ | No schedule control |
+| `bpf_trace_printk` | ✅ | Debug tracing |
+| `send_async` | ❌ | No network I/O |
+| `emit_reading` | ✅ | **Decoder only** (ID 18) |
 
 A program that fails verification is rejected with a diagnostic explaining why. It never reaches the node.
 

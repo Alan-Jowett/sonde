@@ -363,3 +363,82 @@ and fail closed for the affected message.
 4. Downstream `GW-0811` publish failures are surfaced through logging, function failure, or both.
 5. Mapped handler-queue publish failures are surfaced through logging, function failure, or both.
 6. The Azure handler does not silently claim success after a detected storage or broker failure.
+
+---
+
+## 7  Sensor data storage
+
+### AZH-0500  SensorData table storage
+
+**Priority:** Must
+**Source:** User request (GW-1903 enrichment)
+
+**Description:**
+The Azure handler MUST store enriched APP_DATA messages in an Azure Storage
+Table named `SensorData`. Each `GW-0813` app-data message results in one row.
+The table uses the same safety patterns as existing tables: hashed partition
+keys and uniqueness-suffixed row keys.
+
+**Table schema:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `PartitionKey` | `String` | `"n:" + SHA-256(node_id).hex()` |
+| `RowKey` | `String` | Reverse-tick key + `":"` + uniqueness suffix |
+| `node_id` | `String` | Originating node identifier (display) |
+| `timestamp_ms` | `Edm.Int64` | Message timestamp in milliseconds |
+| `program_hash` | `String` | BPF program hash (hex) |
+| `raw_payload` | `String` | Base64-encoded raw APP_DATA blob |
+| `decoded_readings` | `String` | JSON string of `readings` map, or `""` |
+
+**Acceptance criteria:**
+
+1. Every `GW-0813` app-data message results in a row in the `SensorData` table.
+2. Rows are queryable by node ID (partition key) and time range (row key).
+3. Multiple messages within the same millisecond produce distinct rows (uniqueness suffix).
+4. The `SensorData` table is pre-provisioned (added to Bicep/provisioning).
+
+---
+
+### AZH-0501  SensorData decoded readings column
+
+**Priority:** Must
+**Source:** User request (GW-1903 enrichment)
+
+**Description:**
+The `decoded_readings` column in the `SensorData` table MUST store the
+`readings` map from enriched CBOR as a JSON string. The JSON format is
+`{ "reading_name": value, ... }` where values are integers. If no `readings`
+key is present in the upstream message (no decoder configured or decoder
+failure), `decoded_readings` is an empty string.
+
+**Acceptance criteria:**
+
+1. A reading emitted as `emit_reading("temperature_mc", 25125)` produces
+   `decoded_readings` containing `{"temperature_mc":25125}`.
+2. Multiple readings produce a single JSON object with all key-value pairs.
+3. The column is an `Edm.String` Azure Table property.
+4. Empty readings (no decoder) result in `""` (empty string), not `null`.
+
+---
+
+### AZH-0502  SensorData query support
+
+**Priority:** Must
+**Source:** User request (WEB-0700 visualization)
+
+**Description:**
+The `SensorData` table MUST be queryable by the SPA via Azure Table Storage
+REST API using the logged-in user's bearer token. The table MUST support
+queries by:
+- Node ID (partition key filter)
+- Time range (row key range, using reverse-timestamp convention)
+- Program hash (property filter)
+
+No additional API endpoint is required — the SPA queries Azure Tables directly.
+
+**Acceptance criteria:**
+
+1. The SPA can query `SensorData` rows for a specific node within a time range.
+2. The SPA can query all `SensorData` rows across nodes for a specific program hash.
+3. Query performance is acceptable for time-series visualization (< 2 seconds for 1000 rows).

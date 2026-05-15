@@ -22,7 +22,8 @@ Browser (SPA)
 ├── Dashboard (read actualstate table)
 ├── Desired State (read/write desiredstate table)
 ├── Program Upload (POST ELF to ProgramIngest function)
-└── Program List (read programs + programroute tables)
+├── Program List (read programs + programroute tables)
+└── Sensor Data (read sensordata table, time-series graph)
      │
      │ MSAL.js Bearer Token
      ▼
@@ -277,3 +278,53 @@ The SPA derives the Function App API scope as
 an additional `config.json` field. This works because the companion Entra
 app registration is shared between the SPA and the Function App EasyAuth
 configuration.
+
+---
+
+## 10. Sensor Data (WEB-0700)
+
+> **Requirements:** WEB-0700, WEB-0701, WEB-0702
+
+### 10.1  Data source
+
+The Sensor Data tab reads from the `SensorData` Azure Table (AZH-0500). Each
+row contains `node_id`, `program_hash`, `raw_payload`, and `decoded_readings`
+(JSON string). The tab parses `decoded_readings` JSON to extract reading names
+and values for plotting.
+
+Data is queried using the same MSAL.js bearer token as other tabs — no
+additional authentication is required. Queries use `PartitionKey` filters
+(per node or all nodes) and `RowKey` range (time window) with `$top=1000`.
+
+### 10.2  Time-series graph (WEB-0701)
+
+Each unique `(NodeId, ProgramHash, ReadingName)` tuple is rendered as a
+separate line on a time-series chart. The X-axis is time (derived from the
+reverse-tick `RowKey`); the Y-axis is the reading value.
+
+**Controls:**
+- Time range selector: Last 1h, 24h, 7d, custom.
+- Auto-refresh toggle with configurable interval (default 30s).
+- Hover tooltip: timestamp, node ID, reading name, value.
+- Series selector: checkboxes to choose which (node, program, reading)
+  combinations to display.
+
+**Scale constraints:**
+- Maximum 20 concurrent lines on the graph. If more combinations exist,
+  the admin selects which to display via the series selector.
+- Maximum 1000 rows per query (`$top=1000`). For longer time ranges,
+  the SPA downsamples by querying with wider `RowKey` strides.
+- Int64 values exceeding `Number.MAX_SAFE_INTEGER` (2^53 - 1) are displayed
+  as strings.
+
+The chart library is vanilla JS (Canvas-based) or a lightweight dependency
+(e.g., Chart.js loaded from CDN) — no build step required, consistent with
+the existing zero-build SPA architecture.
+
+### 10.3  Table view (WEB-0702)
+
+A toggle switches between graph and table views. The table displays all
+`SensorData` columns: Timestamp, Node ID, Program Hash, Decoded Readings,
+Raw Payload (truncated). Sorted by timestamp descending (newest first).
+Rows with empty `decoded_readings` display "—" in the Decoded Readings
+column.

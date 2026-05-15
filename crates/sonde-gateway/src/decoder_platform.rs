@@ -28,8 +28,8 @@ use EbpfReturnType as Ret;
 /// `data`/`end` offsets to track packet-style pointer bounds.
 static DECODER_CONTEXT: EbpfContextDescriptor = EbpfContextDescriptor {
     size: 16,
-    data: 0,  // input_data at offset 0
-    end: 8,   // input_end at offset 8
+    data: 0, // input_data at offset 0
+    end: 8,  // input_end at offset 8
     meta: -1,
 };
 

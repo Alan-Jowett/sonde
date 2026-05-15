@@ -201,9 +201,7 @@ fn t1900_dual_section_elf_ingestion() {
     let elf = make_dual_section_elf(&sonde_code, &decoder_code);
 
     let lib = ProgramLibrary::new();
-    let record = lib
-        .ingest_elf(&elf, VerificationProfile::Resident)
-        .unwrap();
+    let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
 
     assert!(
         record.decoder_image.is_some(),
@@ -220,9 +218,7 @@ fn t1900a_elf_without_decoder() {
     let elf = make_sonde_elf(&sonde_code);
 
     let lib = ProgramLibrary::new();
-    let record = lib
-        .ingest_elf(&elf, VerificationProfile::Resident)
-        .unwrap();
+    let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
 
     assert!(
         record.decoder_image.is_none(),
@@ -249,9 +245,7 @@ fn t1900c_empty_decoder_section() {
     let elf = make_dual_section_elf(&sonde_code, empty);
 
     let lib = ProgramLibrary::new();
-    let record = lib
-        .ingest_elf(&elf, VerificationProfile::Resident)
-        .unwrap();
+    let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
 
     assert!(
         record.decoder_image.is_none(),
@@ -392,7 +386,10 @@ fn t1904b_emit_reading_name_too_long() {
     let readings = decoder::execute_decoder(&cbor, &[0u8; 10]).unwrap();
 
     // The reading should NOT have been included (name too long).
-    assert!(readings.is_empty(), "expected no readings for name_len > 64");
+    assert!(
+        readings.is_empty(),
+        "expected no readings for name_len > 64"
+    );
 }
 
 // T-1904a: emit_reading with name_len=64 succeeds
@@ -451,7 +448,10 @@ fn t1903b_decoder_failure_returns_error() {
     let cbor = image.encode_deterministic().unwrap();
 
     let result = decoder::execute_decoder(&cbor, &[0u8; 10]);
-    assert!(result.is_err(), "expected decoder to fail with budget exceeded");
+    assert!(
+        result.is_err(),
+        "expected decoder to fail with budget exceeded"
+    );
 }
 
 // T-1901: Decoder verification passes with permitted helpers
@@ -503,7 +503,7 @@ fn t1904c_emit_reading_overflow() {
     for i in 0u8..33 {
         // Write name byte to stack at r10 - 4
         insns.push(st_mem_b(10, -4, i as i32 + 0x30)); // '0', '1', ..., 'P'
-        // r1 = r10 - 4
+                                                       // r1 = r10 - 4
         insns.push(mov_reg(1, 10));
         insns.push(add_imm(1, -4));
         // r2 = 1 (name length)

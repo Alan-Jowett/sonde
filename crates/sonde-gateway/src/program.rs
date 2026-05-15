@@ -726,21 +726,22 @@ impl ProgramLibrary {
 
         // GW-1901: verify the decoder program with DecoderPlatform.
         let mut notes: Vec<Vec<String>> = Vec::new();
-        let inst_seq =
-            unmarshal::unmarshal(&decoder_prog.prog, &mut notes, &decoder_prog.info, &decoder_platform, opts)
-                .map_err(|e| {
-                    ProgramError::VerificationFailed(format!(
-                        "decoder unmarshal: {e}"
-                    ))
-                })?;
+        let inst_seq = unmarshal::unmarshal(
+            &decoder_prog.prog,
+            &mut notes,
+            &decoder_prog.info,
+            &decoder_platform,
+            opts,
+        )
+        .map_err(|e| ProgramError::VerificationFailed(format!("decoder unmarshal: {e}")))?;
 
-        let program =
-            PrevailProgram::from_sequence(&inst_seq, &decoder_prog.info, &decoder_platform, opts)
-                .map_err(|e| {
-                    ProgramError::VerificationFailed(format!(
-                        "decoder control flow: {e}"
-                    ))
-                })?;
+        let program = PrevailProgram::from_sequence(
+            &inst_seq,
+            &decoder_prog.info,
+            &decoder_platform,
+            opts,
+        )
+        .map_err(|e| ProgramError::VerificationFailed(format!("decoder control flow: {e}")))?;
 
         let ctx = DomainContext {
             program_info: &decoder_prog.info,

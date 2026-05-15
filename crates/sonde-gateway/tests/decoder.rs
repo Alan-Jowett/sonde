@@ -637,7 +637,7 @@ fn t1904d_map_lookup_reads_rodata() {
     // if r0 == 0 goto +5 (skip to exit)
     bytecode.extend_from_slice(&bpf_insn(0x15, 0x00, 5, 0)); // jeq r0, 0, +5
                                                              // r3 = *(u32*)(r0 + 0)
-    bytecode.extend_from_slice(&bpf_insn(0x61, 0x03 | (0x00 << 4), 0, 0)); // ldxw r3, [r0+0]
+    bytecode.extend_from_slice(&bpf_insn(0x61, 0x03, 0, 0)); // ldxw r3, [r0+0]
                                                                            // *(u8*)(r10-8) = 'v'
     bytecode.extend_from_slice(&st_mem_b(10, -8, b'v' as i32));
     // r1 = r10 - 8

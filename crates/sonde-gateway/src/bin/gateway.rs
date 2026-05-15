@@ -2093,6 +2093,7 @@ mod tests {
             verification_profile: sonde_gateway::program::VerificationProfile::Resident,
             abi_version: None,
             source_filename: source_filename.map(str::to_string),
+            decoder_image: None,
         }
     }
 

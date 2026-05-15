@@ -6586,6 +6586,7 @@ dependencies = [
  "serde_yaml_ng",
  "serial2-tokio",
  "sha2 0.10.9",
+ "sonde-bpf",
  "sonde-protocol",
  "tempfile",
  "tokio",

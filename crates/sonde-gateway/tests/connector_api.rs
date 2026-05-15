@@ -159,6 +159,7 @@ async fn store_program_with_profile(
             verification_profile,
             abi_version: None,
             source_filename: None,
+            decoder_image: None,
         })
         .await
         .unwrap();

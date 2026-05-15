@@ -2508,7 +2508,7 @@ The gateway's ELF ingestion pipeline (GW-0400) MUST be extended to extract an op
 **Description:**
 The gateway MUST define a separate `DecoderPlatform` for Prevail verification of decoder BPF programs. The `DecoderPlatform` defines:
 - A program type named `"decoder"` with section name `"decoder"` (exact match, not prefix — see GW-1900 AC-6).
-- A context descriptor for the decoder input: `struct decoder_context { const uint64_t input_data; uint32_t input_len; uint32_t _padding; }` (16 bytes, 8-byte aligned — see bpf-environment.md §4.2).
+- A context descriptor for the decoder input: `struct decoder_context { const uint64_t input_data; const uint64_t input_end; }` (16 bytes, 8-byte aligned — see bpf-environment.md §4.2). Uses the standard BPF data/data_end pointer pair pattern for verifier compatibility.
 - Helper prototypes for the decoder-permitted helpers only: `emit_reading` (ID 18), `map_lookup_elem` (ID 10), `map_update_elem` (ID 11), `bpf_trace_printk` (ID 16).
 - No hardware helpers (no I2C, SPI, GPIO, ADC, send, recv, delay, etc.).
 
@@ -2516,7 +2516,7 @@ The gateway MUST define a separate `DecoderPlatform` for Prevail verification of
 
 1. Decoder programs that use only permitted helpers pass verification.
 2. Decoder programs that call hardware helpers (e.g., `i2c_read`, `send`) fail verification with a descriptive error.
-3. The decoder context descriptor accurately models the `{ input_data, input_len }` struct.
+3. The decoder context descriptor accurately models the `{ input_data, input_end }` struct using the Prevail verifier's data/end pointer pair mechanism.
 4. The `DecoderPlatform` is distinct from `SondePlatform` — changing one does not affect the other.
 
 ---
@@ -2578,11 +2578,12 @@ The decoder BPF program operates in a restricted environment. Its execution cont
 **Context (passed in R1):**
 ```c
 struct decoder_context {
-    const uint64_t input_data;  // read-only pointer to raw APP_DATA blob (uint64_t for BPF verifier compatibility)
-    uint32_t input_len;         // length of input_data in bytes
-    uint32_t _padding;          // explicit padding; must be zero
+    const uint64_t input_data;  // read-only pointer to raw APP_DATA blob start (uint64_t for BPF verifier compatibility)
+    const uint64_t input_end;   // pointer past end of raw APP_DATA blob
 };
 // Total: 16 bytes, 8-byte aligned. See bpf-environment.md §4.2.
+// Uses the standard BPF data/data_end pointer pair pattern.
+// Input length = (uint32_t)(input_end - input_data).
 ```
 
 The `input_data` memory is read-only — writes cause verification failure.
@@ -2602,7 +2603,7 @@ The `input_data` memory is read-only — writes cause verification failure.
 
 **Acceptance criteria:**
 
-1. The decoder receives a valid `decoder_context` with pointer to raw payload and its length.
+1. The decoder receives a valid `decoder_context` with `input_data`/`input_end` pointers bounding the raw payload.
 2. `emit_reading` captures the name and value for inclusion in the `readings` field.
 3. Multiple calls to `emit_reading` with different names are accumulated.
 4. Duplicate names in `emit_reading` calls: last-write-wins.

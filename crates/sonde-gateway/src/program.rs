@@ -4,7 +4,10 @@
 use std::fmt;
 use std::io::Write;
 
+use tracing::info;
+
 use crate::crypto::RustCryptoSha256;
+use crate::decoder_platform::DecoderPlatform;
 use crate::sonde_platform::SondePlatform;
 use prevail::crab::ebpf_domain::DomainContext;
 use prevail::crab::var_registry::VariableRegistry;
@@ -28,11 +31,11 @@ pub enum VerificationProfile {
 /// A stored program record: the CBOR-encoded image plus metadata.
 #[derive(Debug, Clone)]
 pub struct ProgramRecord {
-    /// SHA-256 of the CBOR-encoded program image.
+    /// SHA-256 of the CBOR-encoded node program image.
     pub hash: Vec<u8>,
-    /// CBOR-encoded program image (bytecode + map definitions).
+    /// CBOR-encoded node program image (bytecode + map definitions).
     pub image: Vec<u8>,
-    /// Byte length of the CBOR image.
+    /// Byte length of the CBOR node image.
     pub size: u32,
     /// Verification profile used at ingestion time.
     pub verification_profile: VerificationProfile,
@@ -40,6 +43,11 @@ pub struct ProgramRecord {
     pub abi_version: Option<u32>,
     /// Original filename passed at ingestion time (operator-supplied metadata).
     pub source_filename: Option<String>,
+    /// CBOR-encoded decoder `ProgramImage` extracted from `SEC("decoder")` (GW-1902).
+    ///
+    /// `None` for ELFs without a decoder section. Never sent to nodes — used
+    /// only by the gateway for APP_DATA enrichment (GW-1903).
+    pub decoder_image: Option<Vec<u8>>,
 }
 
 /// Errors from program library operations.
@@ -378,6 +386,7 @@ impl ProgramLibrary {
             verification_profile: profile,
             abi_version: None,
             source_filename: None,
+            decoder_image: None,
         })
     }
 
@@ -643,7 +652,179 @@ impl ProgramLibrary {
             .map_err(|e| ProgramError::Internal(format!("CBOR encoding failed: {e}")))?;
 
         // Delegate size-limit and hashing logic to the canonical ingest path.
-        self.ingest_unverified(cbor, profile)
+        let mut record = self.ingest_unverified(cbor, profile)?;
+
+        // ── Decoder extraction (GW-1900, GW-1901, GW-1906) ─────────────
+        //
+        // Check for an optional `SEC("decoder")` section. The decoder image
+        // is stored alongside the node image but does NOT affect the node
+        // program hash.
+        let decoder_image = self.extract_decoder(elf_bytes, tmp_path, &opts)?;
+        if decoder_image.is_some() {
+            info!("decoder section extracted and verified");
+        }
+        record.decoder_image = decoder_image;
+
+        Ok(record)
+    }
+
+    /// Extract and verify an optional decoder section from a BPF ELF (GW-1900).
+    ///
+    /// Returns `Ok(Some(cbor_bytes))` if a valid decoder section is found,
+    /// `Ok(None)` if no decoder section exists (or it is empty), and
+    /// `Err(...)` if the decoder section is invalid (verification failure,
+    /// multiple sections, etc.).
+    fn extract_decoder(
+        &self,
+        elf_bytes: &[u8],
+        tmp_path: &str,
+        opts: &EbpfVerifierOptions,
+    ) -> Result<Option<Vec<u8>>, ProgramError> {
+        // Parse the ELF again with a DecoderPlatform to extract the decoder
+        // section. We re-parse rather than reusing the ElfObject because
+        // get_programs() mutates internal state (map descriptors).
+        let mut elf = ElfObject::new(tmp_path, *opts)
+            .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
+
+        let mut decoder_platform = DecoderPlatform::new();
+        let decoder_programs = match elf.get_programs("decoder", "", &mut decoder_platform) {
+            Ok(progs) => progs,
+            Err(e) => {
+                let msg = e.to_string();
+                // "Section not found" (or similar) means no decoder section —
+                // this is the common case for ELFs without SEC("decoder").
+                if msg.contains("not found") || msg.contains("Not found") {
+                    return Ok(None);
+                }
+                return Err(ProgramError::ElfParseError(format!(
+                    "decoder section extraction failed: {msg}"
+                )));
+            }
+        };
+
+        if decoder_programs.is_empty() {
+            return Ok(None);
+        }
+
+        // GW-1900 AC-7: reject ELFs with multiple decoder sections.
+        if decoder_programs.len() > 1 {
+            return Err(ProgramError::ElfParseError(format!(
+                "ELF contains {} decoder programs; expected at most one",
+                decoder_programs.len()
+            )));
+        }
+
+        let decoder_prog = &decoder_programs[0];
+
+        // GW-1900 AC-8: empty decoder section (zero bytecode) → no decoder.
+        if decoder_prog.prog.is_empty() {
+            return Ok(None);
+        }
+
+        // Sync map descriptors for the decoder platform.
+        decoder_platform.sync_map_descriptors(&decoder_prog.info.map_descriptors);
+
+        // GW-1901: verify the decoder program with DecoderPlatform.
+        let mut notes: Vec<Vec<String>> = Vec::new();
+        let inst_seq =
+            unmarshal::unmarshal(&decoder_prog.prog, &mut notes, &decoder_prog.info, &decoder_platform, opts)
+                .map_err(|e| {
+                    ProgramError::VerificationFailed(format!(
+                        "decoder unmarshal: {e}"
+                    ))
+                })?;
+
+        let program =
+            PrevailProgram::from_sequence(&inst_seq, &decoder_prog.info, &decoder_platform, opts)
+                .map_err(|e| {
+                    ProgramError::VerificationFailed(format!(
+                        "decoder control flow: {e}"
+                    ))
+                })?;
+
+        let ctx = DomainContext {
+            program_info: &decoder_prog.info,
+            options: opts,
+            platform: &decoder_platform,
+        };
+        let mut registry = VariableRegistry::new();
+        let result = fwd_analyzer::analyze(&program, &ctx, &mut registry);
+
+        if result.failed {
+            let mut diag = String::new();
+            if let Some(first_error) = result.find_first_error() {
+                let mut buf = Vec::new();
+                let _ = printing::print_error(&mut buf, &first_error);
+                if let Ok(s) = String::from_utf8(buf) {
+                    diag.push_str(s.trim_end());
+                }
+            }
+            return Err(ProgramError::VerificationFailed(format!(
+                "decoder program failed verification: {diag}"
+            )));
+        }
+
+        // Build the decoder ProgramImage.
+        let mut bytecode = Vec::with_capacity(decoder_prog.prog.len() * 8);
+        for inst in &decoder_prog.prog {
+            bytecode.push(inst.opcode);
+            bytecode.push(inst.dst_src);
+            bytecode.extend_from_slice(&inst.offset.to_le_bytes());
+            bytecode.extend_from_slice(&inst.imm.to_le_bytes());
+        }
+
+        let maps: Vec<MapDef> = decoder_prog
+            .info
+            .map_descriptors
+            .iter()
+            .map(|md| MapDef {
+                map_type: md.map_type,
+                key_size: md.key_size,
+                value_size: md.value_size,
+                max_entries: md.max_entries,
+            })
+            .collect();
+
+        // Extract initial data for decoder global variable maps.
+        let global_sections = extract_global_section_data(elf_bytes);
+        // Decoder shares ELF global sections with sonde — we need to build
+        // a fresh global section iterator scoped to decoder map descriptors.
+        // Since both sonde and decoder parse the same ELF, the global
+        // sections are the same set. We consume them in map_type==0 order.
+        let mut global_iter = global_sections.into_iter();
+        let map_initial_data: Vec<Vec<u8>> = decoder_prog
+            .info
+            .map_descriptors
+            .iter()
+            .map(|md| {
+                if md.map_type == 0 {
+                    global_iter.next().unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+
+        let decoder_image = ProgramImage {
+            bytecode,
+            maps,
+            map_initial_data,
+        };
+
+        // Enforce size limit: decoder image same as ephemeral (GW-1904).
+        let cbor = decoder_image
+            .encode_deterministic()
+            .map_err(|e| ProgramError::Internal(format!("decoder CBOR encoding failed: {e}")))?;
+
+        let decoder_size = cbor.len() as u32;
+        if decoder_size > MAX_EPHEMERAL_SIZE {
+            return Err(ProgramError::ImageTooLarge {
+                size: decoder_size,
+                limit: MAX_EPHEMERAL_SIZE,
+            });
+        }
+
+        Ok(Some(cbor))
     }
 
     /// Look up a program by its hash in the given storage snapshot.

@@ -88,3 +88,36 @@ int program(struct sonde_context *ctx)
     send(payload, sizeof(payload));
     return 0;
 }
+
+/**
+ * Decoder: parse the 6-byte TMP102 APP_DATA payload and emit named readings.
+ *
+ * Payload layout (from the sonde program above):
+ *   [0]   raw_hi   (MSB of 12-bit temperature register)
+ *   [1]   raw_lo   (LSB, upper 4 bits are D3..D0)
+ *   [2:5] temp_mC  (little-endian i32, millidegrees Celsius)
+ */
+SEC("decoder")
+int decode(struct decoder_context *ctx)
+{
+    const __u8 *data = (const __u8 *)(__u64)ctx->input_data;
+    const __u8 *data_end = (const __u8 *)(__u64)ctx->input_end;
+
+    /* Need at least 6 bytes. */
+    if (data + 6 > data_end)
+        return 0;
+
+    /* Extract temp_mC from bytes [2..5] (little-endian i32). */
+    __s32 temp_mc = (__s32)(
+        (__u32)data[2] |
+        ((__u32)data[3] << 8) |
+        ((__u32)data[4] << 16) |
+        ((__u32)data[5] << 24)
+    );
+
+    /* Emit the temperature reading in millidegrees Celsius. */
+    char name_temp[] = "temp_mc";
+    emit_reading(name_temp, 7, (__s64)temp_mc);
+
+    return 0;
+}

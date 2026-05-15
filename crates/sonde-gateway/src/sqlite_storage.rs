@@ -650,6 +650,25 @@ impl SqliteStorage {
                 })?;
             }
         }
+        // Migration: add decoder_image column to programs table (GW-1902).
+        {
+            let prog_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(programs)")
+                .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration check failed (table: programs, column: decoder_image): {e}"
+                    ))
+                })?;
+            if !prog_cols.iter().any(|n| n == "decoder_image") {
+                conn.execute_batch("ALTER TABLE programs ADD COLUMN decoder_image BLOB")
+                    .map_err(|e| {
+                        StorageError::Internal(format!(
+                            "migration failed: ALTER TABLE programs ADD COLUMN decoder_image: {e}"
+                        ))
+                    })?;
+            }
+        }
         // Migrate any legacy plaintext 32-byte PSK blobs to AES-256-GCM encrypted
         // form. This must run before `validate_master_key` since validation only
         // checks encrypted blobs.
@@ -1033,17 +1052,17 @@ impl Storage for SqliteStorage {
         let hash = hash.to_vec();
         self.with_conn(move |conn| {
             conn.query_row(
-                "SELECT hash, image, size, verification_profile, abi_version, source_filename FROM programs WHERE hash = ?1",
+                "SELECT hash, image, size, verification_profile, abi_version, source_filename, decoder_image FROM programs WHERE hash = ?1",
                 params![hash],
                 |row| {
                     let profile_str: String = row.get(3)?;
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str, row.get(4)?, row.get(5)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str, row.get(4)?, row.get(5)?, row.get(6)?))
                 },
             )
             .optional()
             .map_err(map_err)?
             .map(
-                |(hash, image, size, profile_str, abi_version, source_filename): (Vec<u8>, Vec<u8>, u32, String, Option<u32>, Option<String>)| {
+                |(hash, image, size, profile_str, abi_version, source_filename, decoder_image): (Vec<u8>, Vec<u8>, u32, String, Option<u32>, Option<String>, Option<Vec<u8>>)| {
                     Ok(ProgramRecord {
                         hash,
                         image,
@@ -1051,6 +1070,7 @@ impl Storage for SqliteStorage {
                         verification_profile: parse_profile(&profile_str)?,
                         abi_version,
                         source_filename,
+                        decoder_image,
                     })
                 },
             )
@@ -1064,13 +1084,14 @@ impl Storage for SqliteStorage {
         record.source_filename = normalize_display_filename(&record.source_filename);
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO programs (hash, image, size, verification_profile, abi_version, source_filename) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+                "INSERT INTO programs (hash, image, size, verification_profile, abi_version, source_filename, decoder_image) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
                  ON CONFLICT(hash) DO UPDATE SET \
                  image=excluded.image, size=excluded.size, \
                  verification_profile=excluded.verification_profile, \
                  abi_version=excluded.abi_version, \
-                 source_filename=excluded.source_filename",
+                 source_filename=excluded.source_filename, \
+                 decoder_image=excluded.decoder_image",
                 params![
                     record.hash,
                     record.image,
@@ -1078,6 +1099,7 @@ impl Storage for SqliteStorage {
                     profile_to_str(&record.verification_profile),
                     record.abi_version,
                     record.source_filename,
+                    record.decoder_image,
                 ],
             )
             .map_err(map_err)?;
@@ -1100,7 +1122,7 @@ impl Storage for SqliteStorage {
         self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT hash, image, size, verification_profile, abi_version, source_filename FROM programs",
+                    "SELECT hash, image, size, verification_profile, abi_version, source_filename, decoder_image FROM programs",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -1113,18 +1135,20 @@ impl Storage for SqliteStorage {
                         profile_str,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
                     ))
                 })
                 .map_err(map_err)?;
             let mut programs = Vec::new();
             for row in rows {
-                let (hash, image, size, profile_str, abi_version, source_filename): (
+                let (hash, image, size, profile_str, abi_version, source_filename, decoder_image): (
                     Vec<u8>,
                     Vec<u8>,
                     u32,
                     String,
                     Option<u32>,
                     Option<String>,
+                    Option<Vec<u8>>,
                 ) = row.map_err(map_err)?;
                 programs.push(ProgramRecord {
                     hash,
@@ -1133,6 +1157,7 @@ impl Storage for SqliteStorage {
                     verification_profile: parse_profile(&profile_str)?,
                     abi_version,
                     source_filename,
+                    decoder_image,
                 });
             }
             Ok(programs)
@@ -1804,6 +1829,7 @@ mod tests {
             verification_profile: VerificationProfile::Resident,
             abi_version: None,
             source_filename: None,
+            decoder_image: None,
         }
     }
 

@@ -53,6 +53,7 @@ fn make_program_from_bytecode(
         verification_profile: profile,
         abi_version: None,
         source_filename: None,
+        decoder_image: None,
     };
     (record, hash)
 }
@@ -1381,6 +1382,7 @@ async fn t_e2e_081_ephemeral_restrictions() {
         verification_profile: VerificationProfile::Resident,
         abi_version: None,
         source_filename: None,
+        decoder_image: None,
     };
     env.storage.store_program(&resident_record).await.unwrap();
 
@@ -1523,6 +1525,7 @@ async fn t_e2e_080_map_access_through_full_stack() {
         verification_profile: VerificationProfile::Resident,
         abi_version: None,
         source_filename: None,
+        decoder_image: None,
     };
     env.storage.store_program(&program).await.unwrap();
 

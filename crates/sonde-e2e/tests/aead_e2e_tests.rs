@@ -55,6 +55,7 @@ fn make_program_from_bytecode(bytecode: &[u8]) -> (ProgramRecord, Vec<u8>) {
         verification_profile: VerificationProfile::Resident,
         abi_version: None,
         source_filename: None,
+        decoder_image: None,
     };
     (record, hash)
 }
@@ -906,6 +907,7 @@ async fn t_e2e_022_run_ephemeral_via_admin() {
         verification_profile: VerificationProfile::Ephemeral,
         abi_version: None,
         source_filename: None,
+        decoder_image: None,
     };
     env.storage.store_program(&eph_program).await.unwrap();
 

@@ -91,6 +91,7 @@ const PROG_KEY_SIZE: i64 = 3;
 const PROG_KEY_PROFILE: i64 = 4;
 const PROG_KEY_ABI: i64 = 5;
 const PROG_KEY_SRC_FILENAME: i64 = 6;
+const PROG_KEY_DECODER_IMAGE: i64 = 7;
 
 // ── CBOR key IDs (gateway identity map) ─────────────────────────────────────
 
@@ -472,6 +473,13 @@ fn program_to_cbor(p: &ProgramRecord) -> ciborium::value::Value {
             Value::Integer(PROG_KEY_SRC_FILENAME.into()),
             match &p.source_filename {
                 Some(s) => Value::Text(s.clone()),
+                None => Value::Null,
+            },
+        ),
+        (
+            Value::Integer(PROG_KEY_DECODER_IMAGE.into()),
+            match &p.decoder_image {
+                Some(b) => Value::Bytes(b.clone()),
                 None => Value::Null,
             },
         ),
@@ -950,6 +958,7 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
     let mut profile_int: Option<u32> = None;
     let mut abi_version: Option<Option<u32>> = None;
     let mut source_filename: Option<String> = None;
+    let mut decoder_image: Option<Vec<u8>> = None;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -995,6 +1004,17 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
                         _ => {
                             return Err(BundleError::Decode(
                                 "source_filename must be text or null".into(),
+                            ))
+                        }
+                    };
+                }
+                Some(PROG_KEY_DECODER_IMAGE) => {
+                    decoder_image = match v {
+                        Value::Bytes(b) => Some(b),
+                        Value::Null => None,
+                        _ => {
+                            return Err(BundleError::Decode(
+                                "decoder_image must be bytes or null".into(),
                             ))
                         }
                     };
@@ -1045,6 +1065,7 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
         verification_profile,
         abi_version: abi_version.flatten(),
         source_filename,
+        decoder_image,
     })
 }
 
@@ -1406,6 +1427,7 @@ mod tests {
             verification_profile: profile,
             abi_version: None,
             source_filename: None,
+            decoder_image: None,
         }
     }
 
@@ -1557,6 +1579,7 @@ mod tests {
             verification_profile: VerificationProfile::Ephemeral,
             abi_version: Some(2),
             source_filename: None,
+            decoder_image: None,
         };
 
         let bundle = encrypt_state(&[node], &[prog], "abi-pass").unwrap();

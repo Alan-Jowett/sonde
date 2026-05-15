@@ -204,10 +204,47 @@
 **Validates:** AZC-0305
 
 **Procedure:**
-1. Prepare bootstrap-complete state containing the required certificate PEM, private-key PEM, and service-principal metadata.
+1. Prepare bootstrap-complete state containing the required certificate PEM, private-key PEM, and service-principal metadata including a `login_endpoint` value.
 2. Start the runtime with a broker test double that records the credential path used.
 3. Assert: runtime startup uses the provisioned certificate and private-key material rather than entering device-code login.
-4. Remove or corrupt the certificate or private-key material and assert: runtime startup fails closed.
+4. Assert: the constructed OAuth token endpoint uses the persisted `login_endpoint` value, not a hardcoded `login.microsoftonline.com`.
+5. Remove or corrupt the certificate or private-key material and assert: runtime startup fails closed.
+
+---
+
+### T-AZC-0305-2  Absent login_endpoint defaults to public cloud
+
+**Validates:** AZC-0305
+
+**Procedure:**
+1. Prepare a `service-principal.json` that does not contain a `login_endpoint` field (simulating a pre-existing deployment).
+2. Load the runtime credential state from this file.
+3. Assert: the resulting `login_endpoint` is `https://login.microsoftonline.com`.
+4. Assert: the OAuth token endpoint is constructed correctly using the default.
+
+---
+
+### T-AZC-0305-3  Present-but-empty login_endpoint fails closed
+
+**Validates:** AZC-0305
+
+**Procedure:**
+1. Prepare a `service-principal.json` with `login_endpoint` set to an empty string.
+2. Attempt to load the runtime credential state.
+3. Assert: loading fails with a configuration error indicating the `login_endpoint` is invalid.
+4. Repeat with a whitespace-only value and assert the same failure.
+
+---
+
+### T-AZC-0305-4  Trailing-slash normalization in login_endpoint
+
+**Validates:** AZC-0305
+
+**Procedure:**
+1. Prepare a `service-principal.json` with `login_endpoint` set to `https://login.microsoftonline.com/` (trailing slash).
+2. Load the runtime credential state and construct the token endpoint.
+3. Assert: the resulting URL is `https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token` (no double slash).
+4. Repeat with `login_endpoint` set to `https://login.microsoftonline.com` (no trailing slash) and assert the same result.
 
 ---
 
@@ -398,8 +435,8 @@
 **Procedure:**
 1. Run the bootstrap subcommand with device-flow stubbed to succeed and Bicep deployment stubbed to return known output values (tenantId, clientId, namespace, queue names).
 2. Assert: `service-principal.json` exists in the state volume after bootstrap completes.
-3. Parse `service-principal.json` and assert: it contains `tenant_id`, `client_id`, `certificate_path`, and `private_key_path`.
-4. Assert: `tenant_id` and `client_id` match the stubbed Bicep output values.
+3. Parse `service-principal.json` and assert: it contains `tenant_id`, `client_id`, `certificate_path`, `private_key_path`, and `login_endpoint`.
+4. Assert: `tenant_id`, `client_id`, and `login_endpoint` match the stubbed Bicep output values.
 5. Assert: `certificate_path` and `private_key_path` are relative paths that resolve to existing PEM files in the state volume.
 6. Assert: `check-runtime-ready` succeeds after bootstrap completes.
 

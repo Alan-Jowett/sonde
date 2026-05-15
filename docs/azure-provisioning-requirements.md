@@ -250,7 +250,7 @@ and private-key PEM.
 **Acceptance criteria:**
 
 1. The workflow documents which values and artifacts must be handed off to bootstrap for runtime starts.
-2. The handoff contract includes the tenant ID, client ID, certificate reference or material, private-key reference or material, Storage Queue endpoint/queue configuration, and the Function App / deployment-target values needed for package deployment and activation checks.
+2. The handoff contract includes the tenant ID, client ID, login endpoint, certificate reference or material, private-key reference or material, Storage Queue endpoint/queue configuration, and the Function App / deployment-target values needed for package deployment and activation checks.
 3. The handoff contract is compatible with the current Azure companion runtime expectations in `azure-companion-requirements.md`.
 
 ---

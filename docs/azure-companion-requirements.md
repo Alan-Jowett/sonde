@@ -467,6 +467,7 @@ required RBAC roles are assumed to be preconfigured outside this document.
 1. Normal runtime starts use the provisioned certificate and private-key material rather than device-code login.
 2. Runtime startup fails closed if the required certificate or private-key material is absent or unusable.
 3. The runtime design does not require interactive Azure authentication after bootstrap-complete state exists.
+4. The OAuth token endpoint used for client-assertion authentication is derived from the `login_endpoint` field in `service-principal.json`, normalized by stripping any trailing slash before constructing the full URL. When the field is absent (pre-existing deployments), the runtime defaults to `https://login.microsoftonline.com`. When the field is present but empty or whitespace-only, startup fails with a configuration error.
 
 ---
 
@@ -677,8 +678,8 @@ the state volume.
 **Acceptance criteria:**
 
 1. Bootstrap writes `service-principal.json` to the mounted state volume after successful Bicep deployment.
-2. The `service-principal.json` contains `tenant_id`, `client_id`, `certificate_path`, and `private_key_path` fields.
-3. The `tenant_id` and `client_id` values are extracted from the Bicep deployment outputs.
+2. The `service-principal.json` contains `tenant_id`, `client_id`, `certificate_path`, `private_key_path`, and `login_endpoint` fields.
+3. The `tenant_id`, `client_id`, and `login_endpoint` values are extracted from the Bicep deployment outputs. The `login_endpoint` is sourced from `environment().authentication.loginEndpoint` exposed through the `companionBootstrapValues` output.
 4. The `certificate_path` and `private_key_path` values are relative paths within the state volume pointing to the generated PEM files.
 5. The resulting state satisfies the `check-runtime-ready` validation without manual intervention.
 

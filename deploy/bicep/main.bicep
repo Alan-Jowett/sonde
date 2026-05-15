@@ -152,6 +152,7 @@ output companionServicePrincipalObjectId string = companionIdentity.outputs.serv
 output companionBootstrapValues object = {
   tenantId: companionIdentity.outputs.tenantId
   clientId: companionIdentity.outputs.clientId
+  loginEndpoint: environment().authentication.loginEndpoint
   storageQueueEndpoint: stack.outputs.queueServiceUri
   upstreamQueue: stack.outputs.upstreamQueueName
   downstreamQueue: stack.outputs.downstreamQueueName

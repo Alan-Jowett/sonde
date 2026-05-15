@@ -1368,7 +1368,15 @@ impl Gateway {
                 })
                 .await
                 {
-                    Ok(Ok(r)) if !r.is_empty() => Some(r),
+                    Ok(Ok(r)) if !r.is_empty() => {
+                        info!(
+                            node_id = %node.node_id,
+                            reading_count = r.len(),
+                            readings = ?r,
+                            "decoder enriched APP_DATA"
+                        );
+                        Some(r)
+                    }
                     Ok(Ok(_)) => None,
                     Ok(Err(e)) => {
                         warn!(error = %e, "decoder execution failed — forwarding unenriched");

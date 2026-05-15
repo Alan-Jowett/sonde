@@ -495,7 +495,7 @@ Look up a value in a BPF map.
 
 **Returns:** Pointer to the value on success, `NULL` if the key is not found.
 
-**Availability:** Resident only. Ephemeral programs cannot declare maps and therefore cannot use map helpers (see §2.2 and §7).
+**Availability:** Resident and decoder. Ephemeral programs cannot declare maps and therefore cannot use map helpers (see §2.2 and §7). Decoder maps are per-execution and not persistent (see §2.3).
 
 #### `map_update_elem`
 
@@ -513,7 +513,7 @@ Insert or update a key-value pair in a BPF map.
 
 **Returns:** `0` on success, negative on failure (key/index out of range for array type).
 
-**Availability:** Resident only. Ephemeral programs cannot modify maps.
+**Availability:** Resident and decoder. Ephemeral programs cannot modify maps.
 
 ---
 

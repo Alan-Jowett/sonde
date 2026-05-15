@@ -4152,6 +4152,22 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1904f  emit_reading total-name-bytes overflow returns -2
+
+**Traces to:** GW-1904 (AC-9)
+
+**Steps:**
+1. Call `emit_reading` with 32 distinct 64-byte names (total = 2048 bytes, at limit).
+2. Assert all 32 return `0`.
+3. Call `emit_reading` one more time with a 1-byte name (total would exceed 2048).
+
+**Expected:**
+1. The 33rd call returns `-2` (total-name-bytes overflow).
+2. First 32 readings are included in the readings map.
+3. Warning logged.
+
+---
+
 ### T-1904d  Decoder with rodata map reads initial data correctly
 
 **Traces to:** GW-1904 (AC-5)

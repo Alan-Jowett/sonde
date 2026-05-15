@@ -309,8 +309,9 @@ divergence publication instead of treating that redelivery as permanently stale.
 **Procedure:**
 1. Deliver a `GW-0813` message whose CBOR contains a `readings` map
    (key 16) with `{ "temperature_mc": 25125, "humidity_pct": 4500 }`.
-2. Assert: the `decoded_readings` column contains
-   `{"temperature_mc":25125,"humidity_pct":4500}`.
+2. Assert: parsing the `decoded_readings` column as JSON yields an object
+   containing `temperature_mc` = `25125` and `humidity_pct` = `4500`
+   (comparison is on parsed values, not exact string representation).
 
 ---
 

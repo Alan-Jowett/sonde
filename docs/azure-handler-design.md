@@ -244,10 +244,12 @@ never seeds or updates desired-state rows while processing `GW-0812`.
 For each `GW-0813` invocation:
 
 1. decode the top-level connector payload enough to extract `program_hash`,
-2. look up the `ProgramRoute` row for that hash,
-3. if the row exists, send the original raw connector payload bytes unchanged to
+   `node_id`, `timestamp_ms`, raw `blob`, and optional `readings` (key 16),
+2. append a `SensorData` row (§6.1) using the extracted fields,
+3. look up the `ProgramRoute` row for that hash,
+4. if the row exists, send the original raw connector payload bytes unchanged to
    the queue named by `handler_queue`, and
-4. if the row is missing, log the missing mapping and fail the invocation so the
+5. if the row is missing, log the missing mapping and fail the invocation so the
    upstream message is not reported as successfully handled.
 
 The design does not route unmapped application-data messages to a default queue.

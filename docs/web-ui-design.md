@@ -313,7 +313,9 @@ reverse-tick `RowKey`); the Y-axis is the reading value.
 - Maximum 20 concurrent lines on the graph. If more combinations exist,
   the admin selects which to display via the series selector.
 - Maximum 1000 rows per query (`$top=1000`). For longer time ranges,
-  the SPA downsamples by querying with wider `RowKey` strides.
+  the SPA downsamples client-side: fetch up to 1000 rows for the
+  requested window, then thin the data points to a displayable density
+  (e.g., pick one point per pixel or per time bucket).
 - Int64 values exceeding `Number.MAX_SAFE_INTEGER` (2^53 - 1) are displayed
   as strings. The Azure handler encodes such values as JSON strings in the
   `decoded_readings` column (see AZH-0501 AC-5). The SPA MUST handle both

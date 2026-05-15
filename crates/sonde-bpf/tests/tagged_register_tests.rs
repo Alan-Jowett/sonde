@@ -559,7 +559,17 @@ fn t_bpf_024_map_value_or_null_returns_null() {
         ret: HelperReturn::MapValueOrNull { map_arg: 1 },
     }];
     assert!(matches!(
-        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET, &[]) },
+        unsafe {
+            execute_program(
+                &prog,
+                &mut ctx,
+                &helpers,
+                &maps,
+                false,
+                UNLIMITED_BUDGET,
+                &[],
+            )
+        },
         Err(BpfError::NonDereferenceableAccess { .. })
     ));
     drop(map_buf);
@@ -597,8 +607,17 @@ fn t_bpf_025_map_value_or_null_returns_valid() {
         func: helper_func,
         ret: HelperReturn::MapValueOrNull { map_arg: 1 },
     }];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            &helpers,
+            &maps,
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert_eq!(result.unwrap(), 0xBB);
     drop(map_buf);
 }
@@ -635,7 +654,17 @@ fn t_bpf_026_helper_returns_oob_pointer() {
         ret: HelperReturn::MapValueOrNull { map_arg: 1 },
     }];
     assert!(matches!(
-        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET, &[]) },
+        unsafe {
+            execute_program(
+                &prog,
+                &mut ctx,
+                &helpers,
+                &maps,
+                false,
+                UNLIMITED_BUDGET,
+                &[],
+            )
+        },
         Err(BpfError::MemoryAccessViolation { .. })
     ));
     drop(map_buf);
@@ -672,7 +701,17 @@ fn t_bpf_027_helper_expects_map_descriptor_gets_scalar() {
         ret: HelperReturn::MapValueOrNull { map_arg: 1 },
     }];
     assert!(matches!(
-        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET, &[]) },
+        unsafe {
+            execute_program(
+                &prog,
+                &mut ctx,
+                &helpers,
+                &maps,
+                false,
+                UNLIMITED_BUDGET,
+                &[],
+            )
+        },
         Err(BpfError::InvalidHelperArgument { .. })
     ));
     drop(map_buf);
@@ -699,7 +738,8 @@ fn t_bpf_028_ld_dw_imm_negative_map_index() {
         data_start: map_ptr,
         data_end: map_ptr + 64,
     }];
-    let result = unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET, &[]) };
+    let result =
+        unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET, &[]) };
     assert!(
         matches!(result, Err(BpfError::InvalidMapIndex { index: -1, .. })),
         "expected InvalidMapIndex with index=-1, got {:?}",
@@ -735,7 +775,8 @@ fn t_bpf_029_ld_dw_imm_out_of_bounds_map_index() {
             data_end: map_ptr_1 + 64,
         },
     ];
-    let result = unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET, &[]) };
+    let result =
+        unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET, &[]) };
     assert!(
         matches!(result, Err(BpfError::InvalidMapIndex { index: 5, .. })),
         "expected InvalidMapIndex with index=5, got {:?}",
@@ -782,8 +823,18 @@ fn t_bpf_030_ld_dw_imm_map_descriptor_happy_path() {
     // verify the MapDescriptor tag on R1. If the tag were missing, the call
     // would fail with InvalidHelperArgument.
     assert_eq!(
-        unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET, &[]) }
-            .unwrap(),
+        unsafe {
+            execute_program(
+                &prog,
+                &mut ctx,
+                &helpers,
+                &maps,
+                false,
+                UNLIMITED_BUDGET,
+                &[],
+            )
+        }
+        .unwrap(),
         1
     );
     drop(map_buf);
@@ -827,9 +878,8 @@ fn ctx_pointer_field_load_and_deref() {
         ebpf::EXIT,      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
     ];
 
-    let result = unsafe {
-        execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &ctx_ptrs)
-    };
+    let result =
+        unsafe { execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &ctx_ptrs) };
     assert_eq!(result.unwrap(), 0xAB);
 }
 
@@ -853,9 +903,7 @@ fn ctx_pointer_field_absent_fails() {
         ebpf::EXIT,      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
     ];
 
-    let result = unsafe {
-        execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &[])
-    };
+    let result = unsafe { execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &[]) };
     assert!(matches!(
         result,
         Err(BpfError::NonDereferenceableAccess { pc: 1 })
@@ -915,9 +963,8 @@ fn ctx_pointer_field_decoder_pattern() {
         ebpf::EXIT,       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
     ];
 
-    let result = unsafe {
-        execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &ctx_ptrs)
-    };
+    let result =
+        unsafe { execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &ctx_ptrs) };
     assert_eq!(result.unwrap(), 0x03);
 }
 
@@ -968,8 +1015,7 @@ fn ctx_pointer_field_adjusted_base() {
         ebpf::EXIT,       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
     ];
 
-    let result = unsafe {
-        execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &ctx_ptrs)
-    };
+    let result =
+        unsafe { execute_program(&prog, &mut ctx, &[], &[], true, UNLIMITED_BUDGET, &ctx_ptrs) };
     assert_eq!(result.unwrap(), 0x42);
 }

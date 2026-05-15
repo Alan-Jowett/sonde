@@ -620,7 +620,17 @@ pub fn execute_program_no_maps(
     instruction_budget: u64,
 ) -> Result<u64, BpfError> {
     // SAFETY: maps and ctx_ptrs are empty — no raw pointer invariants to uphold.
-    unsafe { execute_program(prog, ctx, helpers, &[], read_only_ctx, instruction_budget, &[]) }
+    unsafe {
+        execute_program(
+            prog,
+            ctx,
+            helpers,
+            &[],
+            read_only_ctx,
+            instruction_budget,
+            &[],
+        )
+    }
 }
 
 /// Execute a BPF program.

@@ -84,7 +84,8 @@ fn test_ld_dw_imm_src1_valid_map_index() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result = unsafe { execute_program(&prog, &mut ctx, &[], &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result =
+        unsafe { execute_program(&prog, &mut ctx, &[], &[map], false, UNLIMITED_BUDGET, &[]) };
     assert_eq!(result.unwrap(), 0x42);
 }
 
@@ -118,8 +119,17 @@ fn test_ld_dw_imm_src1_out_of_bounds() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, &[], &[m0, m1], false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            &[],
+            &[m0, m1],
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert!(
         matches!(result, Err(BpfError::InvalidMapIndex { index: 5, .. })),
         "out-of-bounds map index must yield InvalidMapIndex, got: {result:?}"
@@ -169,8 +179,17 @@ fn test_map_value_or_null_returns_null_is_scalar() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, helpers, &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            helpers,
+            &[map],
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert!(
         matches!(result, Err(BpfError::NonDereferenceableAccess { .. })),
         "dereferencing scalar(0) must yield NonDereferenceableAccess, got: {result:?}"
@@ -220,8 +239,17 @@ fn test_map_value_or_null_returns_valid_ptr_is_map_value() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, helpers, &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            helpers,
+            &[map],
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert_eq!(
         result.unwrap(),
         1,
@@ -264,8 +292,17 @@ fn test_map_value_or_null_returns_out_of_bounds_ptr() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, helpers, &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            helpers,
+            &[map],
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert!(
         matches!(
             result,
@@ -302,8 +339,17 @@ fn test_map_value_or_null_returns_ptr_just_past_end() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, helpers, &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            helpers,
+            &[map],
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert!(
         matches!(result, Err(BpfError::MemoryAccessViolation { .. })),
         "pointer just past valid end must yield MemoryAccessViolation, got: {result:?}"
@@ -335,8 +381,17 @@ fn test_map_value_or_null_returns_ptr_before_start() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, helpers, &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            helpers,
+            &[map],
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert!(
         matches!(result, Err(BpfError::MemoryAccessViolation { .. })),
         "pointer before data_start must yield MemoryAccessViolation, got: {result:?}"
@@ -369,8 +424,17 @@ fn test_map_value_or_null_exact_boundary_succeeds() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, helpers, &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            helpers,
+            &[map],
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert_eq!(
         result.unwrap(),
         1,
@@ -406,8 +470,17 @@ fn test_invalid_helper_argument_scalar_for_map_descriptor() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, helpers, &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            helpers,
+            &[map],
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert!(
         matches!(result, Err(BpfError::InvalidHelperArgument { arg: 1, .. })),
         "scalar in map_arg register must yield InvalidHelperArgument, got: {result:?}"
@@ -453,8 +526,17 @@ fn test_invalid_helper_argument_map_value_for_map_descriptor() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, helpers, &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            helpers,
+            &[map],
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert!(
         matches!(result, Err(BpfError::InvalidHelperArgument { arg: 1, .. })),
         "MapValue tag in map_arg register must yield InvalidHelperArgument, got: {result:?}"
@@ -513,8 +595,17 @@ fn test_helper_call_clobbers_r1_r5_tags() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, helpers, &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            helpers,
+            &[map],
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert!(
         matches!(result, Err(BpfError::InvalidHelperArgument { arg: 1, .. })),
         "R1 tag should be clobbered after first helper call, got: {result:?}"
@@ -543,8 +634,17 @@ fn test_map_value_or_null_null_skips_map_arg_validation() {
         insn(ebpf::EXIT, 0, 0, 0, 0),         // exit with r0 = 0
     ]);
     let mut ctx = [];
-    let result =
-        unsafe { execute_program(&prog, &mut ctx, helpers, &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result = unsafe {
+        execute_program(
+            &prog,
+            &mut ctx,
+            helpers,
+            &[map],
+            false,
+            UNLIMITED_BUDGET,
+            &[],
+        )
+    };
     assert_eq!(
         result.unwrap(),
         0,
@@ -568,7 +668,8 @@ fn test_map_descriptor_not_dereferenceable() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result = unsafe { execute_program(&prog, &mut ctx, &[], &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result =
+        unsafe { execute_program(&prog, &mut ctx, &[], &[map], false, UNLIMITED_BUDGET, &[]) };
     assert!(
         matches!(result, Err(BpfError::NonDereferenceableAccess { .. })),
         "dereferencing MapDescriptor must fail, got: {result:?}"
@@ -591,7 +692,8 @@ fn test_map_descriptor_arithmetic_rejected() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result = unsafe { execute_program(&prog, &mut ctx, &[], &[map], false, UNLIMITED_BUDGET, &[]) };
+    let result =
+        unsafe { execute_program(&prog, &mut ctx, &[], &[map], false, UNLIMITED_BUDGET, &[]) };
     assert!(
         matches!(result, Err(BpfError::InvalidPointerArithmetic { .. })),
         "arithmetic on MapDescriptor must yield InvalidPointerArithmetic, got: {result:?}"

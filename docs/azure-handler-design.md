@@ -95,11 +95,14 @@ this document and are therefore logged and ignored by the reconciliation path.
 
 For `APP_DATA`, the handler decodes:
 
-1. `program_hash` for route lookup, and
-2. the raw connector payload bytes for transparent delivery.
+1. `program_hash` for route lookup,
+2. `node_id`, `timestamp_ms`, raw `blob`, and optional `readings` (key 16)
+   for `SensorData` table storage (§6.1), and
+3. the raw connector payload bytes for transparent delivery to the handler
+   queue.
 
-The handler does not reinterpret or normalize the opaque application payload
-inside the `GW-0813` message body.
+Fields beyond `program_hash` were previously opaque to the handler; the
+`SensorData` feature (AZH-0500) extends the handler's parsing scope.
 
 ---
 
@@ -247,11 +250,12 @@ For each `GW-0813` invocation:
    `node_id`, `timestamp_ms`, raw `blob`, and optional `readings` (key 16),
 2. append a `SensorData` row (§6.1) using the extracted fields. To avoid
    duplicate rows on at-least-once retries, derive the `RowKey` uniqueness
-   suffix deterministically from the upstream message (e.g., a hash of the
-   raw payload bytes or the upstream queue message ID). This makes the
-   `SensorData` write idempotent — a retry with the same message produces
-   the same `RowKey` and overwrites the existing row rather than appending
-   a duplicate,
+   suffix from the upstream queue message ID (or connector envelope
+   sequence number). This makes the `SensorData` write idempotent — a
+   retry with the same message produces the same `RowKey` and overwrites
+   the existing row rather than appending a duplicate. Do NOT use a hash
+   of the raw payload alone, as distinct messages with identical payloads
+   would collide,
 3. look up the `ProgramRoute` row for that hash,
 4. if the row exists, send the original raw connector payload bytes unchanged to
    the queue named by `handler_queue`, and

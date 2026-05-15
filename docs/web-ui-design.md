@@ -292,17 +292,19 @@ row contains `node_id`, `timestamp_ms`, `program_hash`, `raw_payload`, and
 `decoded_readings` (JSON string), plus `PartitionKey` and `RowKey` for
 querying. The tab parses `decoded_readings` JSON to extract reading names
 and values for plotting. Timestamps for the X-axis are derived from
-`timestamp_ms` (not from `RowKey`).
+`timestamp_ms`.
 
 Data is queried using the same MSAL.js bearer token as other tabs — no
 additional authentication is required. Queries use `PartitionKey` filters
-(per node or all nodes) and `RowKey` range (time window) with `$top=1000`.
+(per node) and `RowKey` range (time window) with `$top=1000`. Cross-node
+queries issue parallel per-node requests for each selected node's partition,
+since Azure Tables do not efficiently support cross-partition range scans.
 
 ### 10.2  Time-series graph (WEB-0701)
 
 Each unique `(NodeId, ProgramHash, ReadingName)` tuple is rendered as a
-separate line on a time-series chart. The X-axis is time (derived from the
-reverse-tick `RowKey`); the Y-axis is the reading value.
+separate line on a time-series chart. The X-axis is time (derived from
+`timestamp_ms`); the Y-axis is the reading value.
 
 **Controls:**
 - Time range selector: Last 1h, 24h, 7d, custom.

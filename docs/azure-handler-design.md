@@ -245,7 +245,13 @@ For each `GW-0813` invocation:
 
 1. decode the top-level connector payload enough to extract `program_hash`,
    `node_id`, `timestamp_ms`, raw `blob`, and optional `readings` (key 16),
-2. append a `SensorData` row (§6.1) using the extracted fields,
+2. append a `SensorData` row (§6.1) using the extracted fields. To avoid
+   duplicate rows on at-least-once retries, derive the `RowKey` uniqueness
+   suffix deterministically from the upstream message (e.g., a hash of the
+   raw payload bytes or the upstream queue message ID). This makes the
+   `SensorData` write idempotent — a retry with the same message produces
+   the same `RowKey` and overwrites the existing row rather than appending
+   a duplicate,
 3. look up the `ProgramRoute` row for that hash,
 4. if the row exists, send the original raw connector payload bytes unchanged to
    the queue named by `handler_queue`, and

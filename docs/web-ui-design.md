@@ -288,9 +288,11 @@ configuration.
 ### 10.1  Data source
 
 The Sensor Data tab reads from the `SensorData` Azure Table (AZH-0500). Each
-row contains `node_id`, `program_hash`, `raw_payload`, and `decoded_readings`
-(JSON string). The tab parses `decoded_readings` JSON to extract reading names
-and values for plotting.
+row contains `node_id`, `timestamp_ms`, `program_hash`, `raw_payload`, and
+`decoded_readings` (JSON string), plus `PartitionKey` and `RowKey` for
+querying. The tab parses `decoded_readings` JSON to extract reading names
+and values for plotting. Timestamps for the X-axis are derived from
+`timestamp_ms` (not from `RowKey`).
 
 Data is queried using the same MSAL.js bearer token as other tabs — no
 additional authentication is required. Queries use `PartitionKey` filters

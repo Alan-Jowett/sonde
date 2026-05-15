@@ -531,7 +531,8 @@ convention (see bpf-environment.md §4).
 
 All other helper IDs (1–9, 12–15, 17) return `None` from
 `get_helper_prototype()`, causing Prevail to reject programs that reference
-them.
+them. Note: ID 17 (`send_async`) is a valid node helper defined in
+`SondePlatform` (§8.2.1) but is explicitly excluded from the decoder set.
 
 **Map type mapping:** Same as `SondePlatform` (§8.2.1) — reuses the existing
 array/global-variable map semantics.

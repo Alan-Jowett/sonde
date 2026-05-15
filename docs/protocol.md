@@ -266,10 +266,11 @@ sections into separate `ProgramImage` CBOR structures:
   APP_DATA enrichment (GW-1903).
 
 The decoder image uses the same CBOR structure as the node image
-(`{ 1: bytecode, 2: [map_defs...] }`). The decoder image is NOT included in
-the `program_hash` computation — the hash covers only the node image
-(GW-1906). This ensures that adding or modifying a decoder does not trigger
-program re-downloads on nodes.
+(`{ 1: bytecode, 2: [map_defs...] }`), including optional per-map key 5
+(`initial_data`) for `.rodata`/`.data` global variable maps. The decoder
+image is NOT included in the `program_hash` computation — the hash covers
+only the node image (GW-1906). This ensures that adding or modifying a
+decoder does not trigger program re-downloads on nodes.
 
 ### 5.1  WAKE (Node → Gateway)
 

@@ -325,6 +325,20 @@ divergence publication instead of treating that redelivery as permanently stale.
 
 ---
 
+### T-AZH-0501b  Large int64 values encoded as JSON strings
+
+**Validates:** AZH-0501 (AC-5)
+
+**Procedure:**
+1. Deliver a `GW-0813` message whose CBOR `readings` map contains
+   `{ "big_value": 9007199254740993 }` (one above `Number.MAX_SAFE_INTEGER`).
+2. Assert: parsing the `decoded_readings` column as JSON yields
+   `big_value` encoded as a JSON string `"9007199254740993"`, not a number.
+3. Deliver a second message with `{ "small_value": 42 }`.
+4. Assert: `small_value` is encoded as a JSON number `42`.
+
+---
+
 ### T-AZH-0502  SensorData queryable by node and time range
 
 **Validates:** AZH-0502

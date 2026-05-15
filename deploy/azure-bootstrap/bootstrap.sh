@@ -322,7 +322,7 @@ if az ad app permission list --id "$app_object_id" --query "[?resourceAppId=='e4
 else
     az ad app permission add --id "$app_object_id" \
         --api "e406a681-f3d4-42a8-90b6-c2b029497af1" \
-        --api-permissions "da399722-a3ea-4c11-8b0d-7b37b3d5fa83=Scope"
+        --api-permissions "da399722-a3ea-4c11-8b0d-7b37b3d5fa83=Scope" 2>/dev/null
     echo "Azure Storage user_impersonation permission declared" >&2
 fi
 

@@ -43,6 +43,7 @@ fn make_program_from_bytecode(bytecode: &[u8]) -> (ProgramRecord, Vec<u8>) {
         bytecode: bytecode.to_vec(),
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let sha = TestSha256;
@@ -896,6 +897,7 @@ async fn t_e2e_022_run_ephemeral_via_admin() {
         bytecode: nop_bytecode.to_vec(),
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let eph_cbor = eph_image.encode_deterministic().unwrap();
     let sha = TestSha256;

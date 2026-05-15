@@ -267,10 +267,11 @@ fn t1900d_multiple_decoder_sections_rejected() {
 
     let lib = ProgramLibrary::new();
     let result = lib.ingest_elf(&elf, VerificationProfile::Resident);
-    // Should be rejected (either at extraction or by Prevail finding >1 program).
+    // Multiple decoder sections must be rejected.
     assert!(
-        result.is_err() || result.as_ref().is_ok_and(|r| r.decoder_image.is_none()),
-        "expected rejection or no decoder for ELF with multiple decoder sections"
+        result.is_err(),
+        "expected error for ELF with multiple decoder sections, got {:?}",
+        result
     );
 }
 
@@ -372,6 +373,7 @@ fn t1904_emit_reading_captures_readings() {
         bytecode,
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
 
@@ -418,6 +420,7 @@ fn t1904b_emit_reading_name_too_long() {
         bytecode,
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
 
@@ -456,6 +459,7 @@ fn t1904a_emit_reading_max_name_ok() {
         bytecode,
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
 
@@ -482,6 +486,7 @@ fn t1903b_decoder_failure_returns_error() {
         bytecode,
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
 
@@ -517,6 +522,7 @@ fn t1903c_enriched_preserves_raw_blob() {
         bytecode,
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
 
@@ -560,6 +566,7 @@ fn t1904c_emit_reading_overflow() {
         bytecode,
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
 

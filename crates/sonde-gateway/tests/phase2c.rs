@@ -3062,6 +3062,7 @@ async fn t0523_deferred_not_delivered_on_non_nop() {
         ],
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let prog_record = lib

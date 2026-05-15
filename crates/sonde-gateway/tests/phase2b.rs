@@ -139,6 +139,7 @@ async fn store_test_program_with_profile(
         bytecode: bytecode.to_vec(),
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let record = lib.ingest_unverified(cbor, profile).unwrap();
@@ -158,6 +159,7 @@ async fn store_test_program_with_abi(
         bytecode: bytecode.to_vec(),
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let mut record = lib
@@ -1171,6 +1173,7 @@ async fn t0705_abi_incompatibility_skips_run_ephemeral() {
         bytecode: b"eph-abi3".to_vec(),
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let mut eph_record = lib
@@ -1206,6 +1209,7 @@ async fn t0705_abi_incompatibility_skips_run_ephemeral() {
         bytecode: b"eph-abi2".to_vec(),
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     }
     .encode_deterministic()
     .unwrap();

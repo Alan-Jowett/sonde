@@ -41,6 +41,7 @@ fn make_program_from_bytecode(
         bytecode: bytecode.to_vec(),
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let sha = TestSha256;
@@ -1370,6 +1371,7 @@ async fn t_e2e_081_ephemeral_restrictions() {
             max_entries: 1,
         }],
         map_initial_data: vec![vec![]],
+        map_readonly: vec![false; 1],
     };
     let resident_cbor = resident_image.encode_deterministic().unwrap();
     let sha = TestSha256;
@@ -1513,6 +1515,7 @@ async fn t_e2e_080_map_access_through_full_stack() {
             max_entries: 1,
         }],
         map_initial_data: vec![vec![0x42, 0x00, 0x00, 0x00]],
+        map_readonly: vec![false; 1],
     };
     let cbor = image.encode_deterministic().unwrap();
     let sha = TestSha256;

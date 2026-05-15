@@ -117,13 +117,13 @@ fn find_map(state: &DecoderState, relocated_ptr: u64) -> Option<&MapInfo> {
 /// Helper 18: emit_reading(name_ptr, name_len, value_i64, _, _) -> 0 | -1 | -2
 ///
 /// The name_ptr and name_len refer to the BPF program's virtual address space.
-/// We cannot dereference them directly — the interpreter resolves them to
-/// actual memory before calling the helper (via PtrToReadableMem + ConstSize).
 ///
-/// However, the sonde-bpf helper calling convention passes raw register values.
-/// The name bytes are in BPF memory at the address pointed to by r1. Since
-/// the interpreter validates the pointer before calling us, we can safely
-/// read from that address.
+/// The sonde-bpf helper calling convention passes raw register values.
+/// The name bytes are in BPF memory at the address pointed to by r1.
+/// The Prevail verifier ensures at ingestion time that all pointer arguments
+/// to emit_reading are within valid memory regions (PtrToReadableMem +
+/// ConstSize). The interpreter further enforces region bounds at runtime
+/// via tagged registers before dispatching to helpers.
 fn helper_emit_reading(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
     let name_ptr = r1 as *const u8;
     let name_len = r2 as usize;
@@ -192,9 +192,10 @@ fn helper_map_lookup(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
             None => return 0,
         };
 
-        // Read key as u32 index.
-        // SAFETY: key_ptr was validated by the interpreter (PtrToMapKey).
-        let key_index = unsafe { *(key_ptr as *const u32) };
+        // Read key as u32 index (may be unaligned).
+        // SAFETY: key_ptr points into valid BPF memory (Prevail verifier
+        // ensures PtrToMapKey constraints, interpreter enforces bounds).
+        let key_index = unsafe { std::ptr::read_unaligned(key_ptr as *const u32) };
 
         if key_index >= map.max_entries {
             return 0; // out of bounds → null
@@ -235,8 +236,8 @@ fn helper_map_update(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
             return (-1i64) as u64;
         }
 
-        // SAFETY: pointers validated by the interpreter.
-        let key_index = unsafe { *(key_ptr as *const u32) };
+        // SAFETY: key_ptr points into valid BPF memory (may be unaligned).
+        let key_index = unsafe { std::ptr::read_unaligned(key_ptr as *const u32) };
 
         if key_index >= map.max_entries {
             return (-1i64) as u64;
@@ -336,8 +337,14 @@ pub fn execute_decoder(
         // Initialize from initial_data if present.
         if let Some(initial) = image.map_initial_data.get(i) {
             if !initial.is_empty() {
-                let copy_len = initial.len().min(backing.len());
-                backing[..copy_len].copy_from_slice(&initial[..copy_len]);
+                if initial.len() > backing.len() {
+                    return Err(DecoderError::ImageDecodeError(format!(
+                        "map {i}: initial_data size ({}) exceeds backing size ({})",
+                        initial.len(),
+                        backing.len()
+                    )));
+                }
+                backing[..initial.len()].copy_from_slice(initial);
             }
         }
 
@@ -349,24 +356,20 @@ pub fn execute_decoder(
         let backing = &map_backing[i];
         let base_ptr = backing.as_ptr() as u64;
         let end_ptr = base_ptr + backing.len() as u64;
-        let relocated_ptr = (i + 1) as u64;
 
         map_regions.push(MapRegion {
-            relocated_ptr,
+            relocated_ptr: base_ptr,
             value_size: map_def.value_size,
             data_start: base_ptr,
             data_end: end_ptr,
         });
 
         map_infos.push(MapInfo {
-            relocated_ptr,
+            relocated_ptr: base_ptr,
             data_start: base_ptr,
             value_size: map_def.value_size,
             max_entries: map_def.max_entries,
-            // map_type == 0 with non-empty initial_data → .rodata global
-            // variable map. Writes are rejected at runtime (GW-1904 AC-10).
-            read_only: map_def.map_type == 0
-                && image.map_initial_data.get(i).is_some_and(|d| !d.is_empty()),
+            read_only: image.map_readonly.get(i).copied().unwrap_or(false),
         });
     }
 

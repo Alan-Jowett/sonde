@@ -1502,6 +1502,7 @@ mod tests {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
             map_initial_data: vec![],
+            map_readonly: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
 
@@ -1593,6 +1594,7 @@ mod tests {
                 max_entries: 512,
             }],
             map_initial_data: vec![Vec::new()],
+            map_readonly: vec![false; 1],
         };
         let image_cbor = image.encode_deterministic().unwrap();
 
@@ -2008,6 +2010,7 @@ mod tests {
                 bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
                 maps: vec![],
                 map_initial_data: vec![],
+                map_readonly: vec![],
             };
             let image_cbor = image.encode_deterministic().unwrap();
 
@@ -2143,6 +2146,7 @@ mod tests {
                 bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
                 maps: vec![],
                 map_initial_data: vec![],
+                map_readonly: vec![],
             };
             let image_cbor = image.encode_deterministic().unwrap();
             let chunk_size = image_cbor.len() as u32; // single chunk
@@ -2323,6 +2327,7 @@ mod tests {
                 bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
                 maps: vec![],
                 map_initial_data: vec![],
+                map_readonly: vec![],
             };
             let image_cbor = image.encode_deterministic().unwrap();
             let mut storage = MockStorage::new().with_key(key_hint, psk);
@@ -2400,6 +2405,7 @@ mod tests {
                 bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
                 maps: vec![],
                 map_initial_data: vec![],
+                map_readonly: vec![],
             };
             let image_cbor = image.encode_deterministic().unwrap();
             let image_hash = sha.hash(&image_cbor);

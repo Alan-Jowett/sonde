@@ -1116,6 +1116,7 @@ fn test_p040() {
             max_entries: 16,
         }],
         map_initial_data: vec![Vec::new()],
+        map_readonly: vec![false],
     };
     let cbor = img.encode_deterministic().unwrap();
     let decoded = ProgramImage::decode(&cbor).unwrap();
@@ -1133,6 +1134,7 @@ fn test_p041() {
         bytecode: vec![0x01],
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = img.encode_deterministic().unwrap();
     let decoded = ProgramImage::decode(&cbor).unwrap();
@@ -1150,6 +1152,7 @@ fn test_p042() {
             max_entries: 16,
         }],
         map_initial_data: vec![Vec::new()],
+        map_readonly: vec![false],
     };
     let cbor_a = make_img().encode_deterministic().unwrap();
     let cbor_b = make_img().encode_deterministic().unwrap();
@@ -1170,6 +1173,7 @@ fn test_p043() {
             max_entries: 16,
         }],
         map_initial_data: vec![Vec::new()],
+        map_readonly: vec![false],
     };
     let cbor = img.encode_deterministic().unwrap();
     let reference_hash = program_hash(&cbor, &SoftwareSha256);
@@ -1191,6 +1195,7 @@ fn test_p044() {
             max_entries: 16,
         }],
         map_initial_data: vec![Vec::new()],
+        map_readonly: vec![false],
     };
     let img_b = ProgramImage {
         bytecode,
@@ -1201,6 +1206,7 @@ fn test_p044() {
             max_entries: 32,
         }],
         map_initial_data: vec![Vec::new()],
+        map_readonly: vec![false],
     };
     let ha = program_hash(&img_a.encode_deterministic().unwrap(), &SoftwareSha256);
     let hb = program_hash(&img_b.encode_deterministic().unwrap(), &SoftwareSha256);
@@ -1219,10 +1225,12 @@ fn test_p045() {
         bytecode: vec![0x01],
         maps: maps.clone(),
         map_initial_data: vec![Vec::new(); maps.len()],
+        map_readonly: vec![false; maps.len()],
     };
     let img_b = ProgramImage {
         bytecode: vec![0x02],
         map_initial_data: vec![Vec::new(); maps.len()],
+        map_readonly: vec![false; maps.len()],
         maps,
     };
     let ha = program_hash(&img_a.encode_deterministic().unwrap(), &SoftwareSha256);
@@ -1241,6 +1249,7 @@ fn test_p046() {
             max_entries: 16,
         }],
         map_initial_data: vec![Vec::new()],
+        map_readonly: vec![false],
     };
     let cbor = img.encode_deterministic().unwrap();
     // Decode as generic CBOR and verify key ordering.
@@ -1278,6 +1287,7 @@ fn test_p047() {
             max_entries: 16,
         }],
         map_initial_data: vec![Vec::new()],
+        map_readonly: vec![false],
     };
     let cbor = img.encode_deterministic().unwrap();
     let decoded = ProgramImage::decode(&cbor).unwrap();
@@ -1293,6 +1303,7 @@ fn test_p047() {
         bytecode: vec![],
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor2 = img2.encode_deterministic().unwrap();
     let decoded2 = ProgramImage::decode(&cbor2).unwrap();
@@ -1352,6 +1363,7 @@ fn test_p053() {
             },
         ],
         map_initial_data: vec![Vec::new(); 2],
+        map_readonly: vec![false, false],
     };
     let cbor = img.encode_deterministic().unwrap();
     let n = chunk_count(cbor.len(), 190).unwrap();
@@ -1433,6 +1445,7 @@ fn test_p062() {
             },
         ],
         map_initial_data: vec![Vec::new(); 3],
+        map_readonly: vec![false, false, false],
     };
     let cbor = img.encode_deterministic().unwrap();
     let hash_orig = program_hash(&cbor, &SoftwareSha256);
@@ -1611,6 +1624,7 @@ fn test_p048() {
             max_entries: 256, // boundary: first 3-byte value
         }],
         map_initial_data: vec![Vec::new()],
+        map_readonly: vec![false],
     };
 
     let cbor = img.encode_deterministic().unwrap();
@@ -1679,6 +1693,7 @@ fn test_p049a() {
             max_entries: 16,
         }],
         map_initial_data: vec![Vec::new()],
+        map_readonly: vec![false],
     };
     let cbor = img.encode_deterministic().unwrap();
     assert!(cbor.len() > 10, "encoded image must be non-trivial");
@@ -1897,6 +1912,7 @@ fn test_p070() {
             max_entries: 1,
         }],
         map_initial_data: vec![initial.clone()],
+        map_readonly: vec![false],
     };
     let cbor = img.encode_deterministic().unwrap();
     let decoded = ProgramImage::decode(&cbor).unwrap();
@@ -1929,6 +1945,7 @@ fn test_p071() {
             max_entries: 16,
         }],
         map_initial_data: vec![Vec::new()],
+        map_readonly: vec![false],
     };
     let cbor = img.encode_deterministic().unwrap();
 
@@ -1965,6 +1982,7 @@ fn test_p072() {
         }],
         // 2 entries vs 1 map — mismatch
         map_initial_data: vec![vec![0xDE, 0xAD, 0xBE, 0xEF], vec![0x01, 0x02, 0x03, 0x04]],
+        map_readonly: vec![false],
     };
     let result = img.encode_deterministic();
     assert!(result.is_err(), "length mismatch must be rejected");

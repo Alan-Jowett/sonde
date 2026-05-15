@@ -88,6 +88,7 @@ pub const MAP_KEY_KEY_SIZE: u64 = 2;
 pub const MAP_KEY_VALUE_SIZE: u64 = 3;
 pub const MAP_KEY_MAX_ENTRIES: u64 = 4;
 pub const MAP_KEY_INITIAL_DATA: u64 = 5;
+pub const MAP_KEY_READONLY: u64 = 6;
 
 // CBOR integer keys (DIAG_REQUEST / DIAG_REPLY -- separate keyspace)
 // Keys are scoped per msg_type — key 1 in DIAG_REQUEST (diagnostic_type)

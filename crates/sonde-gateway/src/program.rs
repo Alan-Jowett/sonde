@@ -333,7 +333,7 @@ fn elf_has_section(data: &[u8], target: &str) -> bool {
 /// returned for them since map storage is already zero-initialized.
 ///
 /// Returns an empty Vec if the ELF is malformed.
-fn extract_global_section_data(data: &[u8]) -> Vec<Vec<u8>> {
+fn extract_global_section_data(data: &[u8]) -> Vec<(Vec<u8>, bool)> {
     if data.len() < 64 {
         return Vec::new();
     }
@@ -430,16 +430,21 @@ fn extract_global_section_data(data: &[u8]) -> Vec<Vec<u8>> {
         let sec_off = read_u64(hdr + 24) as usize;
         let sec_size = read_u64(hdr + 32) as usize;
 
+        let is_readonly = name == ".rodata"
+            || name
+                .strip_prefix(".rodata")
+                .is_some_and(|rest| rest.starts_with('.'));
+
         if sh_type == SHT_PROGBITS {
             // .rodata / .data — extract file content.
             let sec_end = match sec_off.checked_add(sec_size) {
                 Some(end) if end <= data.len() => end,
                 _ => continue,
             };
-            sections.push(data[sec_off..sec_end].to_vec());
+            sections.push((data[sec_off..sec_end].to_vec(), is_readonly));
         } else {
             // .bss (SHT_NOBITS) — no file data; maps are zero-initialized.
-            sections.push(Vec::new());
+            sections.push((Vec::new(), false));
         }
     }
     sections
@@ -717,19 +722,18 @@ impl ProgramLibrary {
         let global_sections = extract_global_section_data(elf_bytes);
         let global_count = global_sections.len();
         let mut global_iter = global_sections.into_iter();
-        let map_initial_data: Vec<Vec<u8>> = first
-            .info
-            .map_descriptors
-            .iter()
-            .map(|md| {
-                if md.map_type == 0 {
-                    // Global variable map — consume next section data.
-                    global_iter.next().unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
-            })
-            .collect();
+        let mut map_initial_data: Vec<Vec<u8>> = Vec::with_capacity(maps.len());
+        let mut map_readonly: Vec<bool> = Vec::with_capacity(maps.len());
+        for md in &first.info.map_descriptors {
+            if md.map_type == 0 {
+                let (data, readonly) = global_iter.next().unwrap_or_default();
+                map_initial_data.push(data);
+                map_readonly.push(readonly);
+            } else {
+                map_initial_data.push(Vec::new());
+                map_readonly.push(false);
+            }
+        }
 
         // Verify 1:1 correspondence between ELF global sections and
         // Prevail map_type==0 descriptors (GW-0405 criterion 4).
@@ -750,6 +754,7 @@ impl ProgramLibrary {
             bytecode,
             maps,
             map_initial_data,
+            map_readonly,
         };
         let cbor = image
             .encode_deterministic()
@@ -891,18 +896,18 @@ impl ProgramLibrary {
         let global_sections = extract_global_section_data(elf_bytes);
         let global_count = global_sections.len();
         let mut global_iter = global_sections.into_iter();
-        let map_initial_data: Vec<Vec<u8>> = decoder_prog
-            .info
-            .map_descriptors
-            .iter()
-            .map(|md| {
-                if md.map_type == 0 {
-                    global_iter.next().unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
-            })
-            .collect();
+        let mut map_initial_data: Vec<Vec<u8>> = Vec::with_capacity(maps.len());
+        let mut map_readonly: Vec<bool> = Vec::with_capacity(maps.len());
+        for md in &decoder_prog.info.map_descriptors {
+            if md.map_type == 0 {
+                let (data, readonly) = global_iter.next().unwrap_or_default();
+                map_initial_data.push(data);
+                map_readonly.push(readonly);
+            } else {
+                map_initial_data.push(Vec::new());
+                map_readonly.push(false);
+            }
+        }
 
         // Validate 1:1 correspondence between ELF global sections and
         // map_type==0 descriptors (same check as the node image path).
@@ -923,6 +928,7 @@ impl ProgramLibrary {
             bytecode,
             maps,
             map_initial_data,
+            map_readonly,
         };
 
         // Enforce size limit: decoder image same as ephemeral (GW-1904).
@@ -1515,7 +1521,11 @@ mod tests {
             1,
             "expected one global data section (.rodata)"
         );
-        assert_eq!(sections[0], rodata_content);
+        assert_eq!(sections[0].0, rodata_content);
+        assert!(
+            sections[0].1,
+            "expected .rodata section to be marked read-only"
+        );
     }
 
     /// T-0412: ELF .bss section (SHT_NOBITS) produces empty data (GW-0405).
@@ -1588,9 +1598,10 @@ mod tests {
         let sections = extract_global_section_data(&elf);
         assert_eq!(sections.len(), 1, "expected one global data section (.bss)");
         assert!(
-            sections[0].is_empty(),
+            sections[0].0.is_empty(),
             ".bss section should produce empty data"
         );
+        assert!(!sections[0].1, ".bss section should not be read-only");
     }
 
     /// Non-BPF ELF (wrong e_machine) returns no sections.
@@ -1718,9 +1729,10 @@ mod tests {
             "only .rodata should produce initial data; .maps must be excluded"
         );
         assert_eq!(
-            sections[0], rodata_content,
+            sections[0].0, rodata_content,
             "the single initial data entry should match .rodata content"
         );
+        assert!(sections[0].1, ".rodata section should be marked read-only");
     }
 
     /// GW-0405 criterion 6: prefix matching captures `.rodata.str1.1` etc.
@@ -1807,7 +1819,8 @@ mod tests {
             1,
             "prefixed .rodata.str1.1 should be matched"
         );
-        assert_eq!(sections[0], rodata_content);
+        assert_eq!(sections[0].0, rodata_content);
+        assert!(sections[0].1, ".rodata.str1.1 should be marked read-only");
     }
 
     /// Build a minimal BPF ELF whose only non-`.text` section has the given

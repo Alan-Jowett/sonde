@@ -2588,6 +2588,13 @@ struct decoder_context {
 
 The `input_data` memory is read-only — writes cause verification failure.
 
+> **Limitation:** The current `sonde-bpf` interpreter does not preserve
+> pointer tags for values loaded from context fields via `LDX` — they are
+> treated as scalars. Until data/data\_end pointer tagging is added to
+> `sonde-bpf`, decoders must access the raw blob via the context pointer
+> (R1) with bounded offsets rather than loading and dereferencing
+> `ctx->input_data`. See `execute_decoder` documentation for details.
+
 **Helpers:**
 
 | ID | Name | Signature | Description |

@@ -93,6 +93,12 @@ struct sonde_context {
  * input_data points to the first byte of the raw blob; input_end points
  * past the last byte. Use the standard BPF packet access pattern:
  *   if (data + offset + sizeof(value) <= data_end) { ... }
+ *
+ * NOTE: The current sonde-bpf interpreter does not preserve pointer tags
+ * for values loaded from context fields (LDX yields a scalar). Until
+ * data/data_end pointer tagging is added to sonde-bpf, decoders must
+ * access the raw blob via the context pointer (R1) with bounded offsets
+ * rather than loading and dereferencing ctx->input_data.
  * ---------------------------------------------------------------------- */
 
 struct decoder_context {

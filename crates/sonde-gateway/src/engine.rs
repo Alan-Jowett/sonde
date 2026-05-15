@@ -1332,7 +1332,10 @@ impl Gateway {
                 let decoder_cbor = decoder_cbor.clone();
                 let blob_clone = blob.clone();
                 match tokio::task::spawn_blocking(move || {
-                    crate::decoder::execute_decoder(&decoder_cbor, &blob_clone)
+                    // SAFETY: decoder_cbor was produced by Prevail-verified
+                    // `extract_decoder` during ELF ingestion and stored in
+                    // ProgramRecord. It has not been modified since verification.
+                    unsafe { crate::decoder::execute_decoder(&decoder_cbor, &blob_clone) }
                 })
                 .await
                 {

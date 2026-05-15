@@ -175,7 +175,14 @@ struct decoder_context {
  *   if (data + offset + sizeof(value) <= data_end) { // safe to read }
  * The decoder reads sensor-specific bytes from input_data and calls
  * emit_reading() to produce named values.
- * Input length can be computed as: (uint32_t)(input_end - input_data). */
+ * Input length can be computed as: (uint32_t)(input_end - input_data).
+ *
+ * NOTE: The current sonde-bpf interpreter does not preserve pointer tags
+ * for values loaded from context fields via LDX — they are treated as
+ * scalars. Until data/data_end pointer tagging is added to sonde-bpf,
+ * decoders must access the raw blob via the context pointer (R1) with
+ * bounded offsets rather than loading and dereferencing ctx->input_data.
+ */
 ```
 
 ### Wake reasons

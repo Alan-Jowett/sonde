@@ -339,7 +339,13 @@ fn decoder_helpers() -> Vec<HelperDescriptor> {
 /// context pointer (r1) directly using bounded offsets (r1 is already tagged
 /// by the interpreter as a context region). Extending `sonde-bpf` to support
 /// data/data_end context-pointer tagging is tracked as a future enhancement.
-pub fn execute_decoder(
+///
+/// # Safety
+///
+/// Caller must ensure `decoder_image_cbor` was produced by a Prevail-verified
+/// ingestion path (i.e., `extract_decoder`). Passing unverified bytecode
+/// causes undefined behavior.
+pub unsafe fn execute_decoder(
     decoder_image_cbor: &[u8],
     raw_blob: &[u8],
 ) -> Result<BTreeMap<String, i64>, DecoderError> {

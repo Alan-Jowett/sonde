@@ -97,6 +97,12 @@ int program(struct sonde_context *ctx)
  *   [1]   raw_lo   (LSB, upper 4 bits are D3..D0)
  *   [2:5] temp_mC  (little-endian i32, millidegrees Celsius)
  */
+/*
+ * NOTE: The ctx->input_data dereference pattern below requires sonde-bpf
+ * data/data_end pointer tagging (not yet implemented). Until then, decoders
+ * must access the blob via R1 bounded offsets at runtime.  This source file
+ * documents the intended ABI; hand-crafted bytecode is used for gateway tests.
+ */
 SEC("decoder")
 int decode(struct decoder_context *ctx)
 {

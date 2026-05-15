@@ -383,7 +383,7 @@ fn t1904_emit_reading_captures_readings() {
     blob[1] = 0x80;
     blob[2..6].copy_from_slice(&25125i32.to_le_bytes());
 
-    let readings = decoder::execute_decoder(&cbor, &blob).unwrap();
+    let readings = unsafe { decoder::execute_decoder(&cbor, &blob) }.unwrap();
 
     assert_eq!(readings.len(), 1);
     assert_eq!(readings.get("temp_mc"), Some(&25125i64));
@@ -424,7 +424,7 @@ fn t1904b_emit_reading_name_too_long() {
     };
     let cbor = image.encode_deterministic().unwrap();
 
-    let readings = decoder::execute_decoder(&cbor, &[0u8; 10]).unwrap();
+    let readings = unsafe { decoder::execute_decoder(&cbor, &[0u8; 10]) }.unwrap();
 
     // The reading should NOT have been included (name too long).
     assert!(
@@ -463,7 +463,7 @@ fn t1904a_emit_reading_max_name_ok() {
     };
     let cbor = image.encode_deterministic().unwrap();
 
-    let readings = decoder::execute_decoder(&cbor, &[0u8; 10]).unwrap();
+    let readings = unsafe { decoder::execute_decoder(&cbor, &[0u8; 10]) }.unwrap();
 
     assert_eq!(readings.len(), 1, "expected one reading with 64-byte name");
     let name = "A".repeat(64);
@@ -490,7 +490,7 @@ fn t1903b_decoder_failure_returns_error() {
     };
     let cbor = image.encode_deterministic().unwrap();
 
-    let result = decoder::execute_decoder(&cbor, &[0u8; 10]);
+    let result = unsafe { decoder::execute_decoder(&cbor, &[0u8; 10]) };
     assert!(
         result.is_err(),
         "expected decoder to fail with budget exceeded"
@@ -527,7 +527,7 @@ fn t1903c_enriched_preserves_raw_blob() {
     let cbor = image.encode_deterministic().unwrap();
 
     let original_blob: Vec<u8> = vec![0x19, 0x80, 0x45, 0x62, 0x00, 0x00];
-    let readings = decoder::execute_decoder(&cbor, &original_blob).unwrap();
+    let readings = unsafe { decoder::execute_decoder(&cbor, &original_blob) }.unwrap();
 
     // Readings should be non-empty.
     assert!(!readings.is_empty());
@@ -570,7 +570,7 @@ fn t1904c_emit_reading_overflow() {
     };
     let cbor = image.encode_deterministic().unwrap();
 
-    let readings = decoder::execute_decoder(&cbor, &[0u8; 10]).unwrap();
+    let readings = unsafe { decoder::execute_decoder(&cbor, &[0u8; 10]) }.unwrap();
 
     // First 32 readings should be present, 33rd rejected.
     assert_eq!(
@@ -665,7 +665,7 @@ fn t1904d_map_lookup_reads_rodata() {
     };
     let cbor = image.encode_deterministic().unwrap();
 
-    let readings = decoder::execute_decoder(&cbor, &[0u8; 4]).unwrap();
+    let readings = unsafe { decoder::execute_decoder(&cbor, &[0u8; 4]) }.unwrap();
     assert_eq!(
         readings.get("v"),
         Some(&1337i64),
@@ -741,7 +741,7 @@ fn t1904e_map_update_rodata_rejected() {
     };
     let cbor = image.encode_deterministic().unwrap();
 
-    let readings = decoder::execute_decoder(&cbor, &[0u8; 4]).unwrap();
+    let readings = unsafe { decoder::execute_decoder(&cbor, &[0u8; 4]) }.unwrap();
     // map_update returns -1 (0xFFFFFFFFFFFFFFFF as u64, reinterpreted as i64 = -1)
     let ret = readings.get("r").expect("expected return value reading");
     assert_eq!(*ret, -1i64, "map_update on .rodata should return -1");

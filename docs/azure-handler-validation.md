@@ -284,7 +284,7 @@ divergence publication instead of treating that redelivery as permanently stale.
 1. Deliver a `GW-0813` app-data message through the handler with a known
    `node_id` and `program_hash`.
 2. Assert: a row is created in the `SensorData` table with correct
-   `PartitionKey` (`"n:" + SHA-256(node_id).hex()`), `node_id`,
+   `PartitionKey` (`"n:" + lowercase-hex-encoded SHA-256(node_id)`), `node_id`,
    `program_hash`, and `raw_payload` (base64 of original blob).
 3. Assert: `RowKey` is a reverse-tick key with uniqueness suffix.
 

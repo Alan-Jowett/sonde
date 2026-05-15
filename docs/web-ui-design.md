@@ -23,7 +23,7 @@ Browser (SPA)
 ├── Desired State (read/write desiredstate table)
 ├── Program Upload (POST ELF to ProgramIngest function)
 ├── Program List (read programs + programroute tables)
-└── Sensor Data (read sensordata table, time-series graph)
+└── Sensor Data (read SensorData table, time-series graph)
      │
      │ MSAL.js Bearer Token
      ▼
@@ -315,7 +315,10 @@ reverse-tick `RowKey`); the Y-axis is the reading value.
 - Maximum 1000 rows per query (`$top=1000`). For longer time ranges,
   the SPA downsamples by querying with wider `RowKey` strides.
 - Int64 values exceeding `Number.MAX_SAFE_INTEGER` (2^53 - 1) are displayed
-  as strings.
+  as strings. The Azure handler MUST encode such values as JSON strings
+  (e.g., `"temperature_raw": "9007199254740993"`) in the `decoded_readings`
+  column so that `JSON.parse` preserves them. Values within safe integer
+  range are encoded as JSON numbers.
 
 The chart library is vanilla JS (Canvas-based) or a lightweight dependency
 (e.g., Chart.js loaded from CDN) — no build step required, consistent with

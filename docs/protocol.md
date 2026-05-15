@@ -213,11 +213,12 @@ Key 5 (`initial_data`) carries the ELF section content for global variable maps 
 
 #### Program hash
 
-The `program_hash` used throughout the protocol is the SHA-256 hash of the **complete CBOR-encoded program image**:
+The `program_hash` used throughout the protocol is the SHA-256 hash of the **complete CBOR-encoded node program image** (the image built from the `SEC("sonde")` ELF section):
 
-- The hash covers bytecode, map definitions, **and** initial map data.
+- The hash covers node bytecode, map definitions, **and** initial map data.
+- The hash does NOT cover the decoder program image — see "Decoder program image" below.
 - Two programs with identical bytecode but different map layouts have different hashes.
-- The gateway computes the hash after encoding the image; the node computes it after reassembling all chunks.
+- The gateway computes the hash after encoding the node image; the node computes it after reassembling all chunks.
 - This CBOR-encoded program image is the canonical byte sequence for all size- and chunk-related fields in this specification (i.e., `program_size` and `chunk_count` in UPDATE_PROGRAM / RUN_EPHEMERAL refer to the byte length and chunking of the CBOR-encoded program image, not the ELF file or raw bytecode).
 
 **Deterministic encoding:** The program image MUST be encoded using CBOR deterministic encoding (RFC 8949 §4.2) to ensure that all gateways produce identical bytes (and therefore identical hashes) for the same program.
@@ -387,7 +388,7 @@ A node may send **multiple `APP_DATA` messages per wake cycle** (one per `send()
 APP_DATA's program hash, it executes the decoder on the raw `blob` bytes and
 adds the `readings` map to the CBOR message before forwarding to handlers and
 the connector. The `blob` field is always present and unchanged — `readings`
-is purely additive. See [gateway-design.md §9.2a](gateway-design.md).
+is purely additive. See [gateway-design.md §9.2](gateway-design.md).
 
 The BPF program and its corresponding gateway-side handler agree a priori on whether a reply is expected for each message. The protocol carries no explicit flag — the gateway sends `APP_DATA_REPLY` only when the handler provides a non-zero-length response.
 

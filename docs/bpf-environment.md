@@ -164,11 +164,13 @@ APP_DATA payload bytes:
 
 ```c
 struct decoder_context {
-    const uint8_t *input_data;  // read-only pointer to raw APP_DATA blob
+    const uint64_t input_data;  // read-only pointer to raw APP_DATA blob (uint64_t for BPF verifier compatibility)
     uint32_t input_len;         // length of input_data in bytes
+    uint32_t _padding;          // explicit padding; must be zero
 };
-/* Total: 8 bytes (BPF pointer width + u32).
+/* Total: 16 bytes, 8-byte aligned.
  * input_data is typed as readable memory — writes cause verification failure.
+ * Pointer width is uint64_t consistent with sonde_context (see §4).
  * The decoder reads sensor-specific bytes from input_data and calls
  * emit_reading() to produce named values. */
 ```

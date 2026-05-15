@@ -383,7 +383,7 @@ keys and uniqueness-suffixed row keys.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `PartitionKey` | `String` | `"n:" + SHA-256(node_id).hex()` |
+| `PartitionKey` | `String` | `"n:" + lowercase-hex-encoded SHA-256(node_id UTF-8 bytes)` |
 | `RowKey` | `String` | Reverse-tick key + `":"` + uniqueness suffix |
 | `node_id` | `String` | Originating node identifier (display) |
 | `timestamp_ms` | `Edm.Int64` | Message timestamp in milliseconds |

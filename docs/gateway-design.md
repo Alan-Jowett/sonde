@@ -442,7 +442,7 @@ the CBOR image.
 The `decoder_image` field (GW-1902) stores the CBOR-encoded decoder
 `ProgramImage` extracted from the `SEC("decoder")` ELF section. It is `None`
 for ELFs without a decoder section. The decoder image is never sent to nodes —
-it is used only by the gateway for APP_DATA enrichment (§9.2a). The decoder
+it is used only by the gateway for APP_DATA enrichment (§9.2). The decoder
 image does NOT affect `hash` — the hash covers only the node image. Ingesting
 an ELF with the same node program hash but a different decoder replaces the
 existing decoder image (upsert). Ingesting without a decoder for a hash that
@@ -513,9 +513,10 @@ via composition.
 
 **Module:** `crate::decoder_platform` (`crates/sonde-gateway/src/decoder_platform.rs`)
 
-**Context descriptor:** 8 bytes — `{ input_data: ptr (4B), input_len: u32 (4B) }`.
+**Context descriptor:** 16 bytes — `{ input_data: ptr (8B, uint64_t for BPF verifier compatibility), input_len: u32 (4B), _padding: 4B }`.
 The `input_data` pointer is typed as readable memory; writes cause verification
-failure.
+failure. Pointer width is `uint64_t` consistent with the existing `sonde_context`
+convention (see bpf-environment.md §4).
 
 **Program type:** `"decoder"` with section prefix `"decoder"`.
 

@@ -217,6 +217,110 @@ fn elf_has_map_sections(data: &[u8]) -> bool {
     false
 }
 
+/// Check whether a BPF ELF contains a section with the given exact name.
+///
+/// Lightweight scan of section headers — does not invoke the full prevail
+/// loader. Returns `false` on any malformed input.
+fn elf_has_section(data: &[u8], target: &str) -> bool {
+    if data.len() < 64 {
+        return false;
+    }
+    if data[0..4] != [0x7f, b'E', b'L', b'F'] || data[4] != 2 || data[5] != 1 {
+        return false;
+    }
+    let e_machine = u16::from_le_bytes([data[18], data[19]]);
+    if e_machine != 0x00F7 {
+        return false;
+    }
+
+    let read_u16 = |off: usize| u16::from_le_bytes([data[off], data[off + 1]]);
+    let read_u64 = |off: usize| {
+        u64::from_le_bytes([
+            data[off],
+            data[off + 1],
+            data[off + 2],
+            data[off + 3],
+            data[off + 4],
+            data[off + 5],
+            data[off + 6],
+            data[off + 7],
+        ])
+    };
+
+    let sh_off = read_u64(40) as usize;
+    let sh_entsize = read_u16(58) as usize;
+    let sh_num = read_u16(60) as usize;
+    let sh_strndx = read_u16(62) as usize;
+
+    if sh_strndx >= sh_num || sh_entsize < 64 {
+        return false;
+    }
+    let str_sh = match sh_strndx
+        .checked_mul(sh_entsize)
+        .and_then(|offset| sh_off.checked_add(offset))
+    {
+        Some(v) => v,
+        None => return false,
+    };
+    if str_sh > data.len().saturating_sub(40) {
+        return false;
+    }
+    let strtab_off = read_u64(str_sh + 24) as usize;
+    let strtab_size = read_u64(str_sh + 32) as usize;
+    let strtab_end = match strtab_off.checked_add(strtab_size) {
+        Some(end) => end,
+        None => return false,
+    };
+    if strtab_end > data.len() {
+        return false;
+    }
+    let strtab = &data[strtab_off..strtab_end];
+
+    for i in 0..sh_num {
+        let hdr = match i
+            .checked_mul(sh_entsize)
+            .and_then(|offset| sh_off.checked_add(offset))
+        {
+            Some(v) => v,
+            None => return false,
+        };
+        if hdr > data.len().saturating_sub(4) {
+            break;
+        }
+        let name_off =
+            u32::from_le_bytes([data[hdr], data[hdr + 1], data[hdr + 2], data[hdr + 3]]) as usize;
+        if name_off >= strtab.len() {
+            continue;
+        }
+        let name_end = strtab[name_off..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(strtab.len(), |p| name_off + p);
+        if let Ok(name) = std::str::from_utf8(&strtab[name_off..name_end]) {
+            if name == target {
+                // Also check that the section has non-zero size (GW-1900 AC-8:
+                // empty decoder section is treated as no decoder).
+                if hdr + 40 <= data.len() {
+                    let sec_size = u64::from_le_bytes([
+                        data[hdr + 32],
+                        data[hdr + 33],
+                        data[hdr + 34],
+                        data[hdr + 35],
+                        data[hdr + 36],
+                        data[hdr + 37],
+                        data[hdr + 38],
+                        data[hdr + 39],
+                    ]);
+                    if sec_size > 0 {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Extract initial data for global variable sections from a BPF ELF.
 ///
 /// Returns section content for `.rodata`, `.data`, and `.bss` sections in
@@ -680,6 +784,12 @@ impl ProgramLibrary {
         tmp_path: &str,
         opts: &EbpfVerifierOptions,
     ) -> Result<Option<Vec<u8>>, ProgramError> {
+        // Lightweight check: scan ELF section headers for a "decoder" section
+        // before invoking Prevail. This avoids relying on error message strings.
+        if !elf_has_section(elf_bytes, "decoder") {
+            return Ok(None);
+        }
+
         // Parse the ELF again with a DecoderPlatform to extract the decoder
         // section. We re-parse rather than reusing the ElfObject because
         // get_programs() mutates internal state (map descriptors).
@@ -687,20 +797,11 @@ impl ProgramLibrary {
             .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
 
         let mut decoder_platform = DecoderPlatform::new();
-        let decoder_programs = match elf.get_programs("decoder", "", &mut decoder_platform) {
-            Ok(progs) => progs,
-            Err(e) => {
-                let msg = e.to_string();
-                // "Section not found" (or similar) means no decoder section —
-                // this is the common case for ELFs without SEC("decoder").
-                if msg.contains("not found") || msg.contains("Not found") {
-                    return Ok(None);
-                }
-                return Err(ProgramError::ElfParseError(format!(
-                    "decoder section extraction failed: {msg}"
-                )));
-            }
-        };
+        let decoder_programs = elf
+            .get_programs("decoder", "", &mut decoder_platform)
+            .map_err(|e| {
+                ProgramError::ElfParseError(format!("decoder section extraction failed: {e}"))
+            })?;
 
         if decoder_programs.is_empty() {
             return Ok(None);
@@ -788,10 +889,7 @@ impl ProgramLibrary {
 
         // Extract initial data for decoder global variable maps.
         let global_sections = extract_global_section_data(elf_bytes);
-        // Decoder shares ELF global sections with sonde — we need to build
-        // a fresh global section iterator scoped to decoder map descriptors.
-        // Since both sonde and decoder parse the same ELF, the global
-        // sections are the same set. We consume them in map_type==0 order.
+        let global_count = global_sections.len();
         let mut global_iter = global_sections.into_iter();
         let map_initial_data: Vec<Vec<u8>> = decoder_prog
             .info
@@ -805,6 +903,21 @@ impl ProgramLibrary {
                 }
             })
             .collect();
+
+        // Validate 1:1 correspondence between ELF global sections and
+        // map_type==0 descriptors (same check as the node image path).
+        let type0_count = decoder_prog
+            .info
+            .map_descriptors
+            .iter()
+            .filter(|md| md.map_type == 0)
+            .count();
+        if type0_count != global_count {
+            return Err(ProgramError::ElfParseError(format!(
+                "decoder global section count mismatch: ELF has {global_count} sections \
+                 but Prevail reports {type0_count} map_type==0 descriptors"
+            )));
+        }
 
         let decoder_image = ProgramImage {
             bytecode,

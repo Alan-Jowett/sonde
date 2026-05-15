@@ -45,12 +45,24 @@ impl std::error::Error for DecoderError {}
 
 // ── Thread-local readings collection ────────────────────────────────────
 
+/// Metadata for a single map during decoder execution.
+struct MapInfo {
+    /// The `relocated_ptr` value that identifies this map in BPF registers.
+    relocated_ptr: u64,
+    /// Start address of the map backing storage.
+    data_start: u64,
+    /// Size of each value in bytes.
+    value_size: u32,
+    /// Number of entries (array length).
+    max_entries: u32,
+}
+
 /// State collected during a single decoder execution.
 struct DecoderState {
     readings: BTreeMap<String, i64>,
     count: usize,
-    /// Per-map read-only flag: true if the map is .rodata (writes rejected).
-    map_readonly: Vec<bool>,
+    /// Map metadata for helper implementations.
+    map_infos: Vec<MapInfo>,
 }
 
 thread_local! {
@@ -61,12 +73,12 @@ thread_local! {
 struct DecoderStateGuard;
 
 impl DecoderStateGuard {
-    fn install(map_readonly: Vec<bool>) -> Self {
+    fn install(map_infos: Vec<MapInfo>) -> Self {
         DECODER_STATE.with(|cell| {
             *cell.borrow_mut() = Some(DecoderState {
                 readings: BTreeMap::new(),
                 count: 0,
-                map_readonly,
+                map_infos,
             });
         });
         DecoderStateGuard
@@ -91,6 +103,14 @@ impl Drop for DecoderStateGuard {
 }
 
 // ── BPF helper implementations ─────────────────────────────────────────
+
+/// Find a map by its `relocated_ptr` value.
+fn find_map(state: &DecoderState, relocated_ptr: u64) -> Option<&MapInfo> {
+    state
+        .map_infos
+        .iter()
+        .find(|m| m.relocated_ptr == relocated_ptr)
+}
 
 /// Helper 18: emit_reading(name_ptr, name_len, value_i64, _, _) -> 0 | -1 | -2
 ///
@@ -149,27 +169,81 @@ fn helper_emit_reading(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
 
 /// Helper 10: map_lookup_elem(map_fd, key_ptr) -> value_ptr or null
 ///
-/// Standard BPF map lookup — handled entirely by the interpreter's
-/// built-in map support. This is a pass-through.
-fn helper_map_lookup(_r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
-    // The interpreter handles map_lookup_elem internally via MapRegion.
-    // This should not be called directly. Return null.
-    0
+/// For array maps: key is a u32 index, returns pointer to the value at
+/// `data_start + index * value_size`. Returns 0 (null) if out of bounds.
+fn helper_map_lookup(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
+    let map_fd = r1;
+    let key_ptr = r2 as *const u8;
+
+    if key_ptr.is_null() {
+        return 0;
+    }
+
+    DECODER_STATE.with(|cell| {
+        let state = cell.borrow();
+        let state = match state.as_ref() {
+            Some(s) => s,
+            None => return 0,
+        };
+        let map = match find_map(state, map_fd) {
+            Some(m) => m,
+            None => return 0,
+        };
+
+        // Read key as u32 index.
+        // SAFETY: key_ptr was validated by the interpreter (PtrToMapKey).
+        let key_index = unsafe { *(key_ptr as *const u32) };
+
+        if key_index >= map.max_entries {
+            return 0; // out of bounds → null
+        }
+
+        // Return pointer to value at data_start + index * value_size.
+        let offset = key_index as u64 * map.value_size as u64;
+        map.data_start + offset
+    })
 }
 
 /// Helper 11: map_update_elem(map_fd, key_ptr, value_ptr) -> 0 or error
 ///
-/// For .rodata maps, returns error (-1). Otherwise handled by interpreter.
-fn helper_map_update(r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
-    // Check if the map is read-only (.rodata).
-    let map_idx = r1 as usize;
+/// For array maps: copies `value_size` bytes from `value_ptr` into the map
+/// at the index given by `*key_ptr`.
+fn helper_map_update(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
+    let map_fd = r1;
+    let key_ptr = r2 as *const u8;
+    let value_ptr = r3 as *const u8;
+
+    if key_ptr.is_null() || value_ptr.is_null() {
+        return (-1i64) as u64;
+    }
+
     DECODER_STATE.with(|cell| {
         let state = cell.borrow();
-        if let Some(ref s) = *state {
-            if map_idx < s.map_readonly.len() && s.map_readonly[map_idx] {
-                return (-1i64) as u64; // .rodata — write rejected
-            }
+        let state = match state.as_ref() {
+            Some(s) => s,
+            None => return (-1i64) as u64,
+        };
+        let map = match find_map(state, map_fd) {
+            Some(m) => m,
+            None => return (-1i64) as u64,
+        };
+
+        // SAFETY: pointers validated by the interpreter.
+        let key_index = unsafe { *(key_ptr as *const u32) };
+
+        if key_index >= map.max_entries {
+            return (-1i64) as u64;
         }
+
+        let offset = key_index as u64 * map.value_size as u64;
+        let dst = (map.data_start + offset) as *mut u8;
+
+        // SAFETY: dst is within the map backing storage (heap-allocated Vec<u8>
+        // that outlives this call), and value_ptr is within a valid BPF region.
+        unsafe {
+            std::ptr::copy_nonoverlapping(value_ptr, dst, map.value_size as usize);
+        }
+
         0u64
     })
 }
@@ -230,38 +304,26 @@ pub fn execute_decoder(
     let image = ProgramImage::decode(decoder_image_cbor)
         .map_err(|e| DecoderError::ImageDecodeError(format!("{e}")))?;
 
-    // Determine which maps are read-only (.rodata).
-    // Convention: map_type == 0 maps with non-empty initial_data that exactly
-    // fills the value_size are considered read-only (from .rodata). Maps with
-    // empty initial_data (from .bss) or map_type != 0 are writable.
-    // This is a heuristic — a more precise approach would track provenance
-    // from the ELF section name, but for decoder maps this is sufficient
-    // since .rodata always has initial data and .bss/.data patterns differ.
-    //
-    // NOTE: This heuristic treats .data maps (which also have initial data)
-    // as read-only, which is actually correct for decoder semantics — decoder
-    // maps are ephemeral and reset each execution, so there's no persistence
-    // concern. The spec says .data maps ARE writable though, so we only mark
-    // map_type==0 maps as readonly if they have initial data. This matches
-    // .rodata behavior. For .data (also map_type==0 with initial data), we
-    // cannot distinguish from .rodata using ProgramImage alone.
-    // For safety, we'll treat ALL map_type==0 maps as writable (the program
-    // resets each time anyway), and only enforce read-only at the verifier
-    // level (DecoderPlatform prevents writes to .rodata via Prevail checks).
-    let map_readonly: Vec<bool> = image
-        .maps
-        .iter()
-        .map(|_| false) // All maps writable at runtime; verifier enforces .rodata
-        .collect();
-
     // Allocate and initialize map storage.
     let mut map_backing: Vec<Vec<u8>> = Vec::with_capacity(image.maps.len());
     let mut map_regions: Vec<MapRegion> = Vec::with_capacity(image.maps.len());
+    let mut map_infos: Vec<MapInfo> = Vec::with_capacity(image.maps.len());
 
     for (i, map_def) in image.maps.iter().enumerate() {
         let total_size = (map_def.value_size as usize)
             .checked_mul(map_def.max_entries as usize)
-            .unwrap_or(0);
+            .ok_or_else(|| {
+                DecoderError::ImageDecodeError(format!(
+                    "map {i}: value_size * max_entries overflow ({} * {})",
+                    map_def.value_size, map_def.max_entries
+                ))
+            })?;
+        if total_size == 0 {
+            return Err(DecoderError::ImageDecodeError(format!(
+                "map {i}: zero-size map (value_size={}, max_entries={})",
+                map_def.value_size, map_def.max_entries
+            )));
+        }
         let mut backing = vec![0u8; total_size];
 
         // Initialize from initial_data if present.
@@ -275,16 +337,11 @@ pub fn execute_decoder(
         map_backing.push(backing);
     }
 
-    // Build MapRegion descriptors pointing to the backing storage.
-    // Use a two-pass approach: first allocate all backing, then build regions.
-    // This avoids lifetime issues with Vec reallocation.
+    // Build MapRegion descriptors and MapInfo entries pointing to backing storage.
     for (i, map_def) in image.maps.iter().enumerate() {
         let backing = &map_backing[i];
         let base_ptr = backing.as_ptr() as u64;
         let end_ptr = base_ptr + backing.len() as u64;
-
-        // relocated_ptr: the "fd" value that BPF LDDW instructions resolve to.
-        // In sonde-bpf, map indices start at 1 for the first map.
         let relocated_ptr = (i + 1) as u64;
 
         map_regions.push(MapRegion {
@@ -292,6 +349,13 @@ pub fn execute_decoder(
             value_size: map_def.value_size,
             data_start: base_ptr,
             data_end: end_ptr,
+        });
+
+        map_infos.push(MapInfo {
+            relocated_ptr,
+            data_start: base_ptr,
+            value_size: map_def.value_size,
+            max_entries: map_def.max_entries,
         });
     }
 
@@ -313,7 +377,7 @@ pub fn execute_decoder(
     ctx_buf[8..16].copy_from_slice(&blob_end_addr.to_le_bytes());
 
     // Install thread-local state and execute.
-    let guard = DecoderStateGuard::install(map_readonly);
+    let guard = DecoderStateGuard::install(map_infos);
     let helpers = decoder_helpers();
 
     let result = if map_regions.is_empty() {

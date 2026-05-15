@@ -31,6 +31,12 @@ pub struct ProgramImage {
     /// ELF section content so the node can pre-populate map memory before
     /// BPF execution.
     pub map_initial_data: Vec<Vec<u8>>,
+    /// Read-only flag for each map, parallel to `maps`.
+    ///
+    /// `map_readonly[i]` is `true` when `maps[i]` corresponds to a `.rodata`
+    /// ELF section and must not be modified at runtime. Defaults to `false`
+    /// for maps without this flag.
+    pub map_readonly: Vec<bool>,
 }
 
 impl ProgramImage {
@@ -43,6 +49,13 @@ impl ProgramImage {
             return Err(EncodeError::CborError(format!(
                 "map_initial_data length ({}) != maps length ({})",
                 self.map_initial_data.len(),
+                self.maps.len()
+            )));
+        }
+        if self.map_readonly.len() != self.maps.len() {
+            return Err(EncodeError::CborError(format!(
+                "map_readonly length ({}) != maps length ({})",
+                self.map_readonly.len(),
                 self.maps.len()
             )));
         }
@@ -79,6 +92,10 @@ impl ProgramImage {
                             Value::Bytes(data.clone()),
                         ));
                     }
+                }
+                // Include readonly flag (key 6) only when true.
+                if self.map_readonly.get(i).copied().unwrap_or(false) {
+                    entries.push((Value::Integer(MAP_KEY_READONLY.into()), Value::Bool(true)));
                 }
                 Value::Map(entries)
             })
@@ -118,6 +135,7 @@ impl ProgramImage {
         let mut bytecode: Option<Vec<u8>> = None;
         let mut maps: Vec<MapDef> = Vec::new();
         let mut map_initial_data: Vec<Vec<u8>> = Vec::new();
+        let mut map_readonly: Vec<bool> = Vec::new();
 
         for (k, v) in fields {
             let key = k
@@ -147,6 +165,7 @@ impl ProgramImage {
                         let mut value_size = None;
                         let mut max_entries = None;
                         let mut initial_data: Vec<u8> = Vec::new();
+                        let mut readonly = false;
 
                         for (mk, mv) in map_fields {
                             let mkey = mk
@@ -169,6 +188,11 @@ impl ProgramImage {
                                         .ok_or(DecodeError::InvalidFieldType(MAP_KEY_INITIAL_DATA))?
                                         .to_vec();
                                 }
+                                MAP_KEY_READONLY => {
+                                    readonly = mv
+                                        .as_bool()
+                                        .ok_or(DecodeError::InvalidFieldType(MAP_KEY_READONLY))?;
+                                }
                                 _ => {} // ignore unknown keys
                             }
                         }
@@ -183,6 +207,7 @@ impl ProgramImage {
                                 .ok_or(DecodeError::MissingField(MAP_KEY_MAX_ENTRIES))?,
                         });
                         map_initial_data.push(initial_data);
+                        map_readonly.push(readonly);
                     }
                 }
                 _ => {} // ignore unknown keys
@@ -193,6 +218,7 @@ impl ProgramImage {
             bytecode: bytecode.ok_or(DecodeError::MissingField(IMG_KEY_BYTECODE))?,
             maps,
             map_initial_data,
+            map_readonly,
         })
     }
 }

@@ -64,6 +64,7 @@ async fn store_test_program(storage: &InMemoryStorage, bytecode: &[u8]) -> Vec<u
         bytecode: bytecode.to_vec(),
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let record = lib

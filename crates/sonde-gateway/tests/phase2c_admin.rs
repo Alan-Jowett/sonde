@@ -126,6 +126,7 @@ fn make_cbor_image(bytecode: &[u8]) -> Vec<u8> {
         bytecode: bytecode.to_vec(),
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     image.encode_deterministic().unwrap()
 }

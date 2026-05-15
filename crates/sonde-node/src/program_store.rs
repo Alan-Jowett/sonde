@@ -281,6 +281,7 @@ mod tests {
             bytecode: bytecode.to_vec(),
             maps: maps.to_vec(),
             map_initial_data: vec![Vec::new(); maps.len()],
+            map_readonly: vec![false; maps.len()],
         };
         let cbor = image.encode_deterministic().unwrap();
         let hash = TestSha256.hash(&cbor).to_vec();

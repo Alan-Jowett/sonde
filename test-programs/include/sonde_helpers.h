@@ -84,6 +84,29 @@ struct sonde_context {
 /* Total size: 8 + 2 + 2 + 1 + 3 + 8 + 8 = 32 bytes; 8-byte aligned.
  * The BPF interpreter bounds-checks R1 accesses against this size. */
 
+/* -------------------------------------------------------------------------
+ * decoder_context — execution context for decoder BPF programs (GW-1904).
+ *
+ * Decoder programs run in the gateway (not on nodes) and receive the raw
+ * APP_DATA payload bytes for decoding into named readings.
+ *
+ * input_data points to the first byte of the raw blob; input_end points
+ * past the last byte. Use the standard BPF packet access pattern:
+ *   if (data + offset + sizeof(value) <= data_end) { ... }
+ *
+ * NOTE: The current sonde-bpf interpreter does not preserve pointer tags
+ * for values loaded from context fields (LDX yields a scalar). Until
+ * data/data_end pointer tagging is added to sonde-bpf, decoders must
+ * access the raw blob via the context pointer (R1) with bounded offsets
+ * rather than loading and dereferencing ctx->input_data.
+ * ---------------------------------------------------------------------- */
+
+struct decoder_context {
+    __u64 input_data;            /**< Read-only pointer to raw APP_DATA blob start */
+    __u64 input_end;             /**< Pointer past end of blob                     */
+};
+/* Total size: 8 + 8 = 16 bytes; 8-byte aligned. */
+
 /** Normal scheduled wake. */
 #define WAKE_SCHEDULED      0x00u
 
@@ -338,6 +361,23 @@ static int (*bpf_trace_printk)(const char *fmt, __u32 fmt_len, ...) = (void *)16
  *          too large or ptr is null
  */
 static int (*send_async)(const void *ptr, __u32 len) = (void *)17;
+
+/**
+ * emit_reading — emit a named sensor reading (decoder programs only).
+ *
+ * The gateway collects all emitted readings into a CBOR map that is added
+ * to the APP_DATA message before forwarding to handlers and connectors.
+ *
+ * @name:     pointer to UTF-8 reading name in BPF memory
+ * @name_len: length of the name in bytes (max 64)
+ * @value:    reading value as a signed 64-bit integer
+ * Returns:   0 on success, -1 if name_len exceeds 64 or name is invalid,
+ *            -2 if the reading-count limit is exceeded (max 32 per execution)
+ *
+ * Duplicate names: last-write-wins — only the final value is included.
+ * Helper ID: 18. Availability: decoder only.
+ */
+static int (*emit_reading)(const char *name, __u32 name_len, __s64 value) = (void *)18;
 
 #pragma GCC diagnostic pop
 

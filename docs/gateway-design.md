@@ -513,10 +513,11 @@ via composition.
 
 **Module:** `crate::decoder_platform` (`crates/sonde-gateway/src/decoder_platform.rs`)
 
-**Context descriptor:** 16 bytes — `{ input_data: ptr (8B, uint64_t for BPF verifier compatibility), input_len: u32 (4B), _padding: 4B }`.
-The `input_data` pointer is typed as readable memory; writes cause verification
-failure. Pointer width is `uint64_t` consistent with the existing `sonde_context`
-convention (see bpf-environment.md §4).
+**Context descriptor:** 16 bytes — `{ input_data: ptr (8B), input_end: ptr (8B) }`.
+Uses the standard BPF data/data_end pointer pair pattern (Prevail context
+descriptor: `data=0`, `end=8`). The `input_data` pointer is typed as readable
+memory; writes cause verification failure. Pointer width is `uint64_t`
+consistent with the existing `sonde_context` convention (see bpf-environment.md §4).
 
 **Program type:** `"decoder"` with section name `"decoder"` (exact match, not prefix — see GW-1900 AC-6).
 
@@ -603,7 +604,7 @@ On receiving APP_DATA from a node:
 2a. **Decoder enrichment (GW-1903):** If the program record for the node's
    `current_program_hash` has a non-`None` `decoder_image`:
    1. Load the decoder `ProgramImage` and execute it via `sonde-bpf` with:
-      - Context: raw APP_DATA `blob` bytes as `decoder_context { input_data, input_len }`.
+      - Context: raw APP_DATA `blob` bytes as `decoder_context { input_data, input_end }`.
       - Helpers: `emit_reading` (collects name→value pairs), `map_lookup_elem`,
         `map_update_elem`, `bpf_trace_printk`.
       - Maps: allocated and initialized from the decoder image's map definitions

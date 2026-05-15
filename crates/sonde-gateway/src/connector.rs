@@ -76,6 +76,8 @@ enum ConnectorOutboundMessage {
         payload: Vec<u8>,
         timestamp_ms: u64,
         payload_origin: ConnectorPayloadOrigin,
+        /// Decoded sensor readings from decoder BPF execution (GW-1903).
+        readings: Option<std::collections::BTreeMap<String, i64>>,
     },
     Health {
         health_state: ConnectorHealthState,
@@ -118,14 +120,28 @@ impl ConnectorOutboundMessage {
                 payload,
                 timestamp_ms,
                 payload_origin,
-            } => Value::Map(vec![
-                map_entry(1, Value::Integer(MSG_TYPE_APP_DATA.into())),
-                map_entry(2, Value::Text(node_id.clone())),
-                map_entry(3, Value::Bytes(program_hash.clone())),
-                map_entry(4, Value::Bytes(payload.clone())),
-                map_entry(5, Value::Integer((*timestamp_ms).into())),
-                map_entry(6, Value::Text(payload_origin.as_str().to_string())),
-            ]),
+                readings,
+            } => {
+                let mut pairs = vec![
+                    map_entry(1, Value::Integer(MSG_TYPE_APP_DATA.into())),
+                    map_entry(2, Value::Text(node_id.clone())),
+                    map_entry(3, Value::Bytes(program_hash.clone())),
+                    map_entry(4, Value::Bytes(payload.clone())),
+                    map_entry(5, Value::Integer((*timestamp_ms).into())),
+                    map_entry(6, Value::Text(payload_origin.as_str().to_string())),
+                ];
+                // GW-1903: append readings at CBOR key 16 when present.
+                if let Some(ref readings_map) = readings {
+                    let readings_cbor = Value::Map(
+                        readings_map
+                            .iter()
+                            .map(|(k, v)| (Value::Text(k.clone()), Value::Integer((*v).into())))
+                            .collect(),
+                    );
+                    pairs.push(map_entry(16, readings_cbor));
+                }
+                Value::Map(pairs)
+            }
             Self::Health {
                 health_state,
                 timestamp_ms,
@@ -217,6 +233,7 @@ impl ConnectorEventHub {
         payload: Vec<u8>,
         timestamp_ms: u64,
         payload_origin: ConnectorPayloadOrigin,
+        readings: Option<std::collections::BTreeMap<String, i64>>,
     ) {
         let _ = self.tx.send(ConnectorOutboundMessage::AppData {
             node_id,
@@ -224,6 +241,7 @@ impl ConnectorEventHub {
             payload,
             timestamp_ms,
             payload_origin,
+            readings,
         });
     }
 

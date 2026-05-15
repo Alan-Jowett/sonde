@@ -4,7 +4,10 @@
 use std::fmt;
 use std::io::Write;
 
+use tracing::info;
+
 use crate::crypto::RustCryptoSha256;
+use crate::decoder_platform::DecoderPlatform;
 use crate::sonde_platform::SondePlatform;
 use prevail::crab::ebpf_domain::DomainContext;
 use prevail::crab::var_registry::VariableRegistry;
@@ -28,11 +31,11 @@ pub enum VerificationProfile {
 /// A stored program record: the CBOR-encoded image plus metadata.
 #[derive(Debug, Clone)]
 pub struct ProgramRecord {
-    /// SHA-256 of the CBOR-encoded program image.
+    /// SHA-256 of the CBOR-encoded node program image.
     pub hash: Vec<u8>,
-    /// CBOR-encoded program image (bytecode + map definitions).
+    /// CBOR-encoded node program image (bytecode + map definitions).
     pub image: Vec<u8>,
-    /// Byte length of the CBOR image.
+    /// Byte length of the CBOR node image.
     pub size: u32,
     /// Verification profile used at ingestion time.
     pub verification_profile: VerificationProfile,
@@ -40,6 +43,11 @@ pub struct ProgramRecord {
     pub abi_version: Option<u32>,
     /// Original filename passed at ingestion time (operator-supplied metadata).
     pub source_filename: Option<String>,
+    /// CBOR-encoded decoder `ProgramImage` extracted from `SEC("decoder")` (GW-1902).
+    ///
+    /// `None` for ELFs without a decoder section. Never sent to nodes — used
+    /// only by the gateway for APP_DATA enrichment (GW-1903).
+    pub decoder_image: Option<Vec<u8>>,
 }
 
 /// Errors from program library operations.
@@ -209,6 +217,110 @@ fn elf_has_map_sections(data: &[u8]) -> bool {
     false
 }
 
+/// Check whether a BPF ELF contains a section with the given exact name.
+///
+/// Lightweight scan of section headers — does not invoke the full prevail
+/// loader. Returns `false` on any malformed input.
+fn elf_has_section(data: &[u8], target: &str) -> bool {
+    if data.len() < 64 {
+        return false;
+    }
+    if data[0..4] != [0x7f, b'E', b'L', b'F'] || data[4] != 2 || data[5] != 1 {
+        return false;
+    }
+    let e_machine = u16::from_le_bytes([data[18], data[19]]);
+    if e_machine != 0x00F7 {
+        return false;
+    }
+
+    let read_u16 = |off: usize| u16::from_le_bytes([data[off], data[off + 1]]);
+    let read_u64 = |off: usize| {
+        u64::from_le_bytes([
+            data[off],
+            data[off + 1],
+            data[off + 2],
+            data[off + 3],
+            data[off + 4],
+            data[off + 5],
+            data[off + 6],
+            data[off + 7],
+        ])
+    };
+
+    let sh_off = read_u64(40) as usize;
+    let sh_entsize = read_u16(58) as usize;
+    let sh_num = read_u16(60) as usize;
+    let sh_strndx = read_u16(62) as usize;
+
+    if sh_strndx >= sh_num || sh_entsize < 64 {
+        return false;
+    }
+    let str_sh = match sh_strndx
+        .checked_mul(sh_entsize)
+        .and_then(|offset| sh_off.checked_add(offset))
+    {
+        Some(v) => v,
+        None => return false,
+    };
+    if str_sh > data.len().saturating_sub(40) {
+        return false;
+    }
+    let strtab_off = read_u64(str_sh + 24) as usize;
+    let strtab_size = read_u64(str_sh + 32) as usize;
+    let strtab_end = match strtab_off.checked_add(strtab_size) {
+        Some(end) => end,
+        None => return false,
+    };
+    if strtab_end > data.len() {
+        return false;
+    }
+    let strtab = &data[strtab_off..strtab_end];
+
+    for i in 0..sh_num {
+        let hdr = match i
+            .checked_mul(sh_entsize)
+            .and_then(|offset| sh_off.checked_add(offset))
+        {
+            Some(v) => v,
+            None => return false,
+        };
+        if hdr > data.len().saturating_sub(4) {
+            break;
+        }
+        let name_off =
+            u32::from_le_bytes([data[hdr], data[hdr + 1], data[hdr + 2], data[hdr + 3]]) as usize;
+        if name_off >= strtab.len() {
+            continue;
+        }
+        let name_end = strtab[name_off..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(strtab.len(), |p| name_off + p);
+        if let Ok(name) = std::str::from_utf8(&strtab[name_off..name_end]) {
+            if name == target {
+                // Also check that the section has non-zero size (GW-1900 AC-8:
+                // empty decoder section is treated as no decoder).
+                if hdr + 40 <= data.len() {
+                    let sec_size = u64::from_le_bytes([
+                        data[hdr + 32],
+                        data[hdr + 33],
+                        data[hdr + 34],
+                        data[hdr + 35],
+                        data[hdr + 36],
+                        data[hdr + 37],
+                        data[hdr + 38],
+                        data[hdr + 39],
+                    ]);
+                    if sec_size > 0 {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Extract initial data for global variable sections from a BPF ELF.
 ///
 /// Returns section content for `.rodata`, `.data`, and `.bss` sections in
@@ -221,7 +333,7 @@ fn elf_has_map_sections(data: &[u8]) -> bool {
 /// returned for them since map storage is already zero-initialized.
 ///
 /// Returns an empty Vec if the ELF is malformed.
-fn extract_global_section_data(data: &[u8]) -> Vec<Vec<u8>> {
+fn extract_global_section_data(data: &[u8]) -> Vec<(Vec<u8>, bool)> {
     if data.len() < 64 {
         return Vec::new();
     }
@@ -318,16 +430,21 @@ fn extract_global_section_data(data: &[u8]) -> Vec<Vec<u8>> {
         let sec_off = read_u64(hdr + 24) as usize;
         let sec_size = read_u64(hdr + 32) as usize;
 
+        let is_readonly = name == ".rodata"
+            || name
+                .strip_prefix(".rodata")
+                .is_some_and(|rest| rest.starts_with('.'));
+
         if sh_type == SHT_PROGBITS {
             // .rodata / .data — extract file content.
             let sec_end = match sec_off.checked_add(sec_size) {
                 Some(end) if end <= data.len() => end,
                 _ => continue,
             };
-            sections.push(data[sec_off..sec_end].to_vec());
+            sections.push((data[sec_off..sec_end].to_vec(), is_readonly));
         } else {
             // .bss (SHT_NOBITS) — no file data; maps are zero-initialized.
-            sections.push(Vec::new());
+            sections.push((Vec::new(), false));
         }
     }
     sections
@@ -378,6 +495,7 @@ impl ProgramLibrary {
             verification_profile: profile,
             abi_version: None,
             source_filename: None,
+            decoder_image: None,
         })
     }
 
@@ -604,19 +722,18 @@ impl ProgramLibrary {
         let global_sections = extract_global_section_data(elf_bytes);
         let global_count = global_sections.len();
         let mut global_iter = global_sections.into_iter();
-        let map_initial_data: Vec<Vec<u8>> = first
-            .info
-            .map_descriptors
-            .iter()
-            .map(|md| {
-                if md.map_type == 0 {
-                    // Global variable map — consume next section data.
-                    global_iter.next().unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
-            })
-            .collect();
+        let mut map_initial_data: Vec<Vec<u8>> = Vec::with_capacity(maps.len());
+        let mut map_readonly: Vec<bool> = Vec::with_capacity(maps.len());
+        for md in &first.info.map_descriptors {
+            if md.map_type == 0 {
+                let (data, readonly) = global_iter.next().unwrap_or_default();
+                map_initial_data.push(data);
+                map_readonly.push(readonly);
+            } else {
+                map_initial_data.push(Vec::new());
+                map_readonly.push(false);
+            }
+        }
 
         // Verify 1:1 correspondence between ELF global sections and
         // Prevail map_type==0 descriptors (GW-0405 criterion 4).
@@ -637,13 +754,197 @@ impl ProgramLibrary {
             bytecode,
             maps,
             map_initial_data,
+            map_readonly,
         };
         let cbor = image
             .encode_deterministic()
             .map_err(|e| ProgramError::Internal(format!("CBOR encoding failed: {e}")))?;
 
         // Delegate size-limit and hashing logic to the canonical ingest path.
-        self.ingest_unverified(cbor, profile)
+        let mut record = self.ingest_unverified(cbor, profile)?;
+
+        // ── Decoder extraction (GW-1900, GW-1901, GW-1906) ─────────────
+        //
+        // Check for an optional `SEC("decoder")` section. The decoder image
+        // is stored alongside the node image but does NOT affect the node
+        // program hash.
+        let decoder_image = self.extract_decoder(elf_bytes, tmp_path, &opts)?;
+        if decoder_image.is_some() {
+            info!("decoder section extracted and verified");
+        }
+        record.decoder_image = decoder_image;
+
+        Ok(record)
+    }
+
+    /// Extract and verify an optional decoder section from a BPF ELF (GW-1900).
+    ///
+    /// Returns `Ok(Some(cbor_bytes))` if a valid decoder section is found,
+    /// `Ok(None)` if no decoder section exists (or it is empty), and
+    /// `Err(...)` if the decoder section is invalid (verification failure,
+    /// multiple sections, etc.).
+    fn extract_decoder(
+        &self,
+        elf_bytes: &[u8],
+        tmp_path: &str,
+        opts: &EbpfVerifierOptions,
+    ) -> Result<Option<Vec<u8>>, ProgramError> {
+        // Lightweight check: scan ELF section headers for a "decoder" section
+        // before invoking Prevail. This avoids relying on error message strings.
+        if !elf_has_section(elf_bytes, "decoder") {
+            return Ok(None);
+        }
+
+        // Parse the ELF again with a DecoderPlatform to extract the decoder
+        // section. We re-parse rather than reusing the ElfObject because
+        // get_programs() mutates internal state (map descriptors).
+        let mut elf = ElfObject::new(tmp_path, *opts)
+            .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
+
+        let mut decoder_platform = DecoderPlatform::new();
+        let decoder_programs = elf
+            .get_programs("decoder", "", &mut decoder_platform)
+            .map_err(|e| {
+                ProgramError::ElfParseError(format!("decoder section extraction failed: {e}"))
+            })?;
+
+        if decoder_programs.is_empty() {
+            return Ok(None);
+        }
+
+        // GW-1900 AC-7: reject ELFs with multiple decoder sections.
+        if decoder_programs.len() > 1 {
+            return Err(ProgramError::ElfParseError(format!(
+                "ELF contains {} decoder programs; expected at most one",
+                decoder_programs.len()
+            )));
+        }
+
+        let decoder_prog = &decoder_programs[0];
+
+        // GW-1900 AC-8: empty decoder section (zero bytecode) → no decoder.
+        if decoder_prog.prog.is_empty() {
+            return Ok(None);
+        }
+
+        // Sync map descriptors for the decoder platform.
+        decoder_platform.sync_map_descriptors(&decoder_prog.info.map_descriptors);
+
+        // GW-1901: verify the decoder program with DecoderPlatform.
+        let mut notes: Vec<Vec<String>> = Vec::new();
+        let inst_seq = unmarshal::unmarshal(
+            &decoder_prog.prog,
+            &mut notes,
+            &decoder_prog.info,
+            &decoder_platform,
+            opts,
+        )
+        .map_err(|e| ProgramError::VerificationFailed(format!("decoder unmarshal: {e}")))?;
+
+        let program = PrevailProgram::from_sequence(
+            &inst_seq,
+            &decoder_prog.info,
+            &decoder_platform,
+            opts,
+        )
+        .map_err(|e| ProgramError::VerificationFailed(format!("decoder control flow: {e}")))?;
+
+        let ctx = DomainContext {
+            program_info: &decoder_prog.info,
+            options: opts,
+            platform: &decoder_platform,
+        };
+        let mut registry = VariableRegistry::new();
+        let result = fwd_analyzer::analyze(&program, &ctx, &mut registry);
+
+        if result.failed {
+            let mut diag = String::new();
+            if let Some(first_error) = result.find_first_error() {
+                let mut buf = Vec::new();
+                let _ = printing::print_error(&mut buf, &first_error);
+                if let Ok(s) = String::from_utf8(buf) {
+                    diag.push_str(s.trim_end());
+                }
+            }
+            return Err(ProgramError::VerificationFailed(format!(
+                "decoder program failed verification: {diag}"
+            )));
+        }
+
+        // Build the decoder ProgramImage.
+        let mut bytecode = Vec::with_capacity(decoder_prog.prog.len() * 8);
+        for inst in &decoder_prog.prog {
+            bytecode.push(inst.opcode);
+            bytecode.push(inst.dst_src);
+            bytecode.extend_from_slice(&inst.offset.to_le_bytes());
+            bytecode.extend_from_slice(&inst.imm.to_le_bytes());
+        }
+
+        let maps: Vec<MapDef> = decoder_prog
+            .info
+            .map_descriptors
+            .iter()
+            .map(|md| MapDef {
+                map_type: md.map_type,
+                key_size: md.key_size,
+                value_size: md.value_size,
+                max_entries: md.max_entries,
+            })
+            .collect();
+
+        // Extract initial data for decoder global variable maps.
+        let global_sections = extract_global_section_data(elf_bytes);
+        let global_count = global_sections.len();
+        let mut global_iter = global_sections.into_iter();
+        let mut map_initial_data: Vec<Vec<u8>> = Vec::with_capacity(maps.len());
+        let mut map_readonly: Vec<bool> = Vec::with_capacity(maps.len());
+        for md in &decoder_prog.info.map_descriptors {
+            if md.map_type == 0 {
+                let (data, readonly) = global_iter.next().unwrap_or_default();
+                map_initial_data.push(data);
+                map_readonly.push(readonly);
+            } else {
+                map_initial_data.push(Vec::new());
+                map_readonly.push(false);
+            }
+        }
+
+        // Validate 1:1 correspondence between ELF global sections and
+        // map_type==0 descriptors (same check as the node image path).
+        let type0_count = decoder_prog
+            .info
+            .map_descriptors
+            .iter()
+            .filter(|md| md.map_type == 0)
+            .count();
+        if type0_count != global_count {
+            return Err(ProgramError::ElfParseError(format!(
+                "decoder global section count mismatch: ELF has {global_count} sections \
+                 but Prevail reports {type0_count} map_type==0 descriptors"
+            )));
+        }
+
+        let decoder_image = ProgramImage {
+            bytecode,
+            maps,
+            map_initial_data,
+            map_readonly,
+        };
+
+        // Enforce size limit: decoder image same as ephemeral (GW-1904).
+        let cbor = decoder_image
+            .encode_deterministic()
+            .map_err(|e| ProgramError::Internal(format!("decoder CBOR encoding failed: {e}")))?;
+
+        let decoder_size = cbor.len() as u32;
+        if decoder_size > MAX_EPHEMERAL_SIZE {
+            return Err(ProgramError::ImageTooLarge {
+                size: decoder_size,
+                limit: MAX_EPHEMERAL_SIZE,
+            });
+        }
+
+        Ok(Some(cbor))
     }
 
     /// Look up a program by its hash in the given storage snapshot.
@@ -1220,7 +1521,11 @@ mod tests {
             1,
             "expected one global data section (.rodata)"
         );
-        assert_eq!(sections[0], rodata_content);
+        assert_eq!(sections[0].0, rodata_content);
+        assert!(
+            sections[0].1,
+            "expected .rodata section to be marked read-only"
+        );
     }
 
     /// T-0412: ELF .bss section (SHT_NOBITS) produces empty data (GW-0405).
@@ -1293,9 +1598,10 @@ mod tests {
         let sections = extract_global_section_data(&elf);
         assert_eq!(sections.len(), 1, "expected one global data section (.bss)");
         assert!(
-            sections[0].is_empty(),
+            sections[0].0.is_empty(),
             ".bss section should produce empty data"
         );
+        assert!(!sections[0].1, ".bss section should not be read-only");
     }
 
     /// Non-BPF ELF (wrong e_machine) returns no sections.
@@ -1423,9 +1729,10 @@ mod tests {
             "only .rodata should produce initial data; .maps must be excluded"
         );
         assert_eq!(
-            sections[0], rodata_content,
+            sections[0].0, rodata_content,
             "the single initial data entry should match .rodata content"
         );
+        assert!(sections[0].1, ".rodata section should be marked read-only");
     }
 
     /// GW-0405 criterion 6: prefix matching captures `.rodata.str1.1` etc.
@@ -1512,7 +1819,8 @@ mod tests {
             1,
             "prefixed .rodata.str1.1 should be matched"
         );
-        assert_eq!(sections[0], rodata_content);
+        assert_eq!(sections[0].0, rodata_content);
+        assert!(sections[0].1, ".rodata.str1.1 should be marked read-only");
     }
 
     /// Build a minimal BPF ELF whose only non-`.text` section has the given

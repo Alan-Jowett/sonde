@@ -168,3 +168,53 @@ int program(struct sonde_context *ctx)
     }
     return 0;
 }
+
+/**
+ * Decoder: parse the 22-byte SHT40 APP_DATA payload and emit named readings.
+ *
+ * Payload layout (from the sonde program above):
+ *   [0..7]   timestamp (little-endian u64, ms since epoch)
+ *   [8..13]  raw frame (T_msb, T_lsb, CRC_T, RH_msb, RH_lsb, CRC_RH)
+ *   [14..17] temp_mC (little-endian i32, millidegrees Celsius)
+ *   [18..21] rh_mpermille (little-endian i32, milli-%RH)
+ */
+/*
+ * NOTE: The ctx->input_data dereference pattern below requires sonde-bpf
+ * data/data_end pointer tagging (not yet implemented). Until then, decoders
+ * must access the blob via R1 bounded offsets at runtime.  This source file
+ * documents the intended ABI; hand-crafted bytecode is used for gateway tests.
+ */
+SEC("decoder")
+int decode(struct decoder_context *ctx)
+{
+    const __u8 *data = (const __u8 *)(__u64)ctx->input_data;
+    const __u8 *data_end = (const __u8 *)(__u64)ctx->input_end;
+
+    /* Need at least 22 bytes. */
+    if (data + 22 > data_end)
+        return 0;
+
+    /* Extract temp_mC from bytes [14..17] (little-endian i32). */
+    __s32 temp_mc = (__s32)(
+        (__u32)data[14] |
+        ((__u32)data[15] << 8) |
+        ((__u32)data[16] << 16) |
+        ((__u32)data[17] << 24)
+    );
+
+    /* Extract rh_mpermille from bytes [18..21] (little-endian i32). */
+    __s32 rh_mpermille = (__s32)(
+        (__u32)data[18] |
+        ((__u32)data[19] << 8) |
+        ((__u32)data[20] << 16) |
+        ((__u32)data[21] << 24)
+    );
+
+    char name_temp[] = "temp_mc";
+    emit_reading(name_temp, 7, (__s64)temp_mc);
+
+    char name_rh[] = "rh_mpermille";
+    emit_reading(name_rh, 12, (__s64)rh_mpermille);
+
+    return 0;
+}

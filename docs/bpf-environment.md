@@ -160,19 +160,29 @@ The `timestamp` is derived from the gateway's `timestamp_ms` field in the COMMAN
 
 Decoder programs (§2.3) run in the gateway and receive a different context
 than node programs. The decoder context provides read-only access to the raw
-APP_DATA payload bytes:
+APP_DATA payload bytes using the standard BPF data/data_end pointer pair
+pattern:
 
 ```c
 struct decoder_context {
-    const uint64_t input_data;  // read-only pointer to raw APP_DATA blob (uint64_t for BPF verifier compatibility)
-    uint32_t input_len;         // length of input_data in bytes
-    uint32_t _padding;          // explicit padding; must be zero
+    const uint64_t input_data;  // read-only pointer to raw APP_DATA blob start (uint64_t for BPF verifier compatibility)
+    const uint64_t input_end;   // pointer past end of raw APP_DATA blob
 };
 /* Total: 16 bytes, 8-byte aligned.
  * input_data is typed as readable memory — writes cause verification failure.
  * Pointer width is uint64_t consistent with sonde_context (see §4).
+ * Use the standard BPF packet access pattern:
+ *   if (data + offset + sizeof(value) <= data_end) { // safe to read }
  * The decoder reads sensor-specific bytes from input_data and calls
- * emit_reading() to produce named values. */
+ * emit_reading() to produce named values.
+ * Input length can be computed as: (uint32_t)(input_end - input_data).
+ *
+ * NOTE: The current sonde-bpf interpreter does not preserve pointer tags
+ * for values loaded from context fields via LDX — they are treated as
+ * scalars. Until data/data_end pointer tagging is added to sonde-bpf,
+ * decoders must access the raw blob via the context pointer (R1) with
+ * bounded offsets rather than loading and dereferencing ctx->input_data.
+ */
 ```
 
 ### Wake reasons

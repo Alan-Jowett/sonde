@@ -182,6 +182,7 @@ async fn seed_program(
             verification_profile: VerificationProfile::Resident,
             abi_version: None,
             source_filename: source_filename.map(str::to_string),
+            decoder_image: None,
         })
         .await
         .unwrap();

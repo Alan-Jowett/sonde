@@ -141,6 +141,7 @@ fn make_cbor_image(bytecode: &[u8]) -> Vec<u8> {
         bytecode: bytecode.to_vec(),
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     image.encode_deterministic().unwrap()
 }
@@ -159,6 +160,7 @@ async fn store_program_with_profile(
             verification_profile,
             abi_version: None,
             source_filename: None,
+            decoder_image: None,
         })
         .await
         .unwrap();

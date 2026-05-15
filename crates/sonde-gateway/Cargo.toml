@@ -6,6 +6,7 @@ license = "MIT"
 
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol" }
+sonde-bpf = { path = "../sonde-bpf" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 sha2 = "0.10"

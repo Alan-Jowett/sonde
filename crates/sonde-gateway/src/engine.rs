@@ -1018,6 +1018,7 @@ impl Gateway {
                             wake_data.clone(),
                             timestamp_ms,
                             ConnectorPayloadOrigin::WakeBlob,
+                            None,
                         );
                         let deferred_replies = Arc::clone(&self.deferred_replies);
                         let nonce = header.nonce;
@@ -1032,6 +1033,7 @@ impl Gateway {
                                 program_hash: program_hash.clone(),
                                 data: wake_data,
                                 timestamp,
+                                readings: None,
                             };
                             info!(
                                 node_id = %node_id,
@@ -1068,6 +1070,7 @@ impl Gateway {
                             wake_data.clone(),
                             timestamp_ms,
                             ConnectorPayloadOrigin::WakeBlob,
+                            None,
                         );
                         let ph_hex: String =
                             program_hash.iter().map(|b| format!("{b:02x}")).collect();
@@ -1311,6 +1314,59 @@ impl Gateway {
         let timestamp = now_duration.as_secs();
         let timestamp_ms = now_duration.as_millis() as u64;
 
+        // ── Decoder enrichment (GW-1903) ────────────────────────────────
+        //
+        // Run decoder before handler routing so that both the connector and
+        // handler receive the same enriched readings (GW-1903 AC-6), even
+        // when no handler is registered.
+        let readings = {
+            let decoder_image = match self.storage.get_program(&program_hash).await {
+                Ok(Some(record)) => record.decoder_image,
+                Ok(None) => None,
+                Err(e) => {
+                    warn!(error = %e, "failed to look up program record for decoder — forwarding unenriched");
+                    None
+                }
+            };
+            if let Some(ref decoder_cbor) = decoder_image {
+                let decoder_cbor = decoder_cbor.clone();
+                let blob_clone = blob.clone();
+                match tokio::task::spawn_blocking(move || {
+                    // SAFETY: decoder_cbor was produced by Prevail-verified
+                    // `extract_decoder` during ELF ingestion and stored in
+                    // ProgramRecord. It has not been modified since verification.
+                    unsafe { crate::decoder::execute_decoder(&decoder_cbor, &blob_clone) }
+                })
+                .await
+                {
+                    Ok(Ok(r)) if !r.is_empty() => {
+                        info!(
+                            node_id = %node.node_id,
+                            reading_count = r.len(),
+                            readings = ?r,
+                            "decoder enriched APP_DATA"
+                        );
+                        Some(r)
+                    }
+                    Ok(Ok(_)) => None,
+                    Ok(Err(e)) => {
+                        warn!(error = %e, "decoder execution failed — forwarding unenriched");
+                        None
+                    }
+                    Err(e) => {
+                        if e.is_panic() {
+                            warn!(error = %e, "decoder task panicked — forwarding unenriched");
+                        } else {
+                            warn!(error = %e, "decoder task cancelled — forwarding unenriched");
+                        }
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        };
+
         // Find the matching handler under the read lock, then release before I/O.
         let handler_result = {
             let router = self.handler_router.read().await;
@@ -1319,25 +1375,20 @@ impl Gateway {
                 None => Err(router.handler_count()),
             }
         }; // read lock released here
+
+        // Always emit to connector with enriched readings (GW-1903 AC-6).
+        self.connector_event_hub.emit_app_data(
+            node.node_id.clone(),
+            program_hash.clone(),
+            blob.clone(),
+            timestamp_ms,
+            ConnectorPayloadOrigin::AppData,
+            readings.clone(),
+        );
+
         let (config, process_arc) = match handler_result {
-            Ok(result) => {
-                self.connector_event_hub.emit_app_data(
-                    node.node_id.clone(),
-                    program_hash.clone(),
-                    blob.clone(),
-                    timestamp_ms,
-                    ConnectorPayloadOrigin::AppData,
-                );
-                result
-            }
+            Ok(result) => result,
             Err(handler_count) => {
-                self.connector_event_hub.emit_app_data(
-                    node.node_id.clone(),
-                    program_hash.clone(),
-                    blob.clone(),
-                    timestamp_ms,
-                    ConnectorPayloadOrigin::AppData,
-                );
                 let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
                 warn!(
                     node_id = %node.node_id,
@@ -1379,6 +1430,7 @@ impl Gateway {
             program_hash: program_hash.to_vec(),
             data: blob,
             timestamp,
+            readings,
         };
 
         let mut process = process_arc.lock().await;

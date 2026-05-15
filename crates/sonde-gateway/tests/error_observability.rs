@@ -279,6 +279,7 @@ async fn t1307i_queue_ephemeral_wrong_profile_includes_details() {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
             map_initial_data: vec![],
+            map_readonly: vec![],
         };
         img.encode_deterministic().unwrap()
     };

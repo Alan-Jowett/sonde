@@ -84,6 +84,7 @@ async fn store_test_program(storage: &InMemoryStorage, bytecode: &[u8]) -> Vec<u
         bytecode: bytecode.to_vec(),
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let record = lib
@@ -371,6 +372,7 @@ async fn t1001_program_hash_consistency() {
         bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
         maps: vec![],
         map_initial_data: vec![],
+        map_readonly: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
 

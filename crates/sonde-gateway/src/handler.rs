@@ -38,6 +38,9 @@ pub enum HandlerMessage {
         program_hash: Vec<u8>,
         data: Vec<u8>,
         timestamp: u64,
+        /// Decoded sensor readings from decoder BPF execution (GW-1903).
+        /// `None` when no decoder exists or decoder execution failed.
+        readings: Option<BTreeMap<String, i64>>,
     },
     Event {
         node_id: String,
@@ -65,23 +68,37 @@ impl HandlerMessage {
                 program_hash,
                 data,
                 timestamp,
-            } => Value::Map(vec![
-                (
-                    Value::Integer(1.into()),
-                    Value::Integer(MSG_TYPE_DATA.into()),
-                ),
-                (
-                    Value::Integer(2.into()),
-                    Value::Integer((*request_id).into()),
-                ),
-                (Value::Integer(3.into()), Value::Text(node_id.clone())),
-                (Value::Integer(4.into()), Value::Bytes(program_hash.clone())),
-                (Value::Integer(5.into()), Value::Bytes(data.clone())),
-                (
-                    Value::Integer(6.into()),
-                    Value::Integer((*timestamp).into()),
-                ),
-            ]),
+                readings,
+            } => {
+                let mut pairs = vec![
+                    (
+                        Value::Integer(1.into()),
+                        Value::Integer(MSG_TYPE_DATA.into()),
+                    ),
+                    (
+                        Value::Integer(2.into()),
+                        Value::Integer((*request_id).into()),
+                    ),
+                    (Value::Integer(3.into()), Value::Text(node_id.clone())),
+                    (Value::Integer(4.into()), Value::Bytes(program_hash.clone())),
+                    (Value::Integer(5.into()), Value::Bytes(data.clone())),
+                    (
+                        Value::Integer(6.into()),
+                        Value::Integer((*timestamp).into()),
+                    ),
+                ];
+                // GW-1903: append readings at CBOR key 16 when present.
+                if let Some(ref readings_map) = readings {
+                    let readings_cbor = Value::Map(
+                        readings_map
+                            .iter()
+                            .map(|(k, v)| (Value::Text(k.clone()), Value::Integer((*v).into())))
+                            .collect(),
+                    );
+                    pairs.push((Value::Integer(16.into()), readings_cbor));
+                }
+                Value::Map(pairs)
+            }
             HandlerMessage::Event {
                 node_id,
                 event_type,
@@ -166,12 +183,15 @@ impl HandlerMessage {
                 let data = get_bytes(map, 5).ok_or_else(|| DecodeError("missing data".into()))?;
                 let timestamp =
                     get_uint(map, 6).ok_or_else(|| DecodeError("missing timestamp".into()))?;
+                // GW-1903: readings at CBOR key 16 (optional).
+                let readings = get_readings_map(map, 16);
                 Ok(HandlerMessage::Data {
                     request_id,
                     node_id,
                     program_hash,
                     data,
                     timestamp,
+                    readings,
                 })
             }
             MSG_TYPE_EVENT => {
@@ -251,6 +271,24 @@ fn get_text(map: &[(Value, Value)], key: i128) -> Option<String> {
 fn get_bytes(map: &[(Value, Value)], key: i128) -> Option<Vec<u8>> {
     get_value(map, key).and_then(|v| match v {
         Value::Bytes(b) => Some(b.clone()),
+        _ => None,
+    })
+}
+
+/// Extract a `readings` map (text keys → integer values) at the given CBOR key.
+fn get_readings_map(map: &[(Value, Value)], key: i128) -> Option<BTreeMap<String, i64>> {
+    get_value(map, key).and_then(|v| match v {
+        Value::Map(entries) => {
+            let mut readings = BTreeMap::new();
+            for (k, v) in entries {
+                if let (Value::Text(name), Value::Integer(val)) = (k, v) {
+                    if let Ok(i) = i128::from(*val).try_into() {
+                        readings.insert(name.clone(), i);
+                    }
+                }
+            }
+            Some(readings)
+        }
         _ => None,
     })
 }
@@ -1012,6 +1050,7 @@ mod tests {
             program_hash: vec![0xAA, 0xBB, 0xCC],
             data: vec![0x01, 0x02, 0x03],
             timestamp: 1700000000,
+            readings: None,
         };
         let encoded = msg.encode().unwrap();
         let decoded = HandlerMessage::decode(&encoded).unwrap();
@@ -1109,6 +1148,7 @@ mod tests {
             program_hash: vec![0xFF],
             data: vec![0x00],
             timestamp: 100,
+            readings: None,
         };
         let encoded = msg.encode().unwrap();
         let val: Value = ciborium::from_reader(&encoded[..]).unwrap();

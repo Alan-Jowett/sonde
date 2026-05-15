@@ -50,6 +50,7 @@ const DEFAULT_CONNECTOR_SOCKET: &str = r"\\.\pipe\sonde-connector";
 const DEFAULT_STATE_DIR: &str = "/var/lib/sonde-azure-companion";
 
 const SERVICE_PRINCIPAL_STATE_FILENAME: &str = "service-principal.json";
+const DEFAULT_LOGIN_ENDPOINT: &str = "https://login.microsoftonline.com";
 const DEFAULT_BOOTSTRAP_IMAGE_REPOSITORY: &str = "ghcr.io/alan-jowett/sonde-azure-bootstrap";
 const CERT_PEM_FILENAME: &str = "cert.pem";
 const KEY_PEM_FILENAME: &str = "key.pem";
@@ -187,6 +188,8 @@ struct RuntimeConfig {
 struct ServicePrincipalStateFile {
     tenant_id: String,
     client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    login_endpoint: Option<String>,
     certificate_path: String,
     private_key_path: String,
 }
@@ -202,6 +205,7 @@ struct StorageQueuesConfigFile {
 struct RuntimeCredentialState {
     tenant_id: String,
     client_id: String,
+    login_endpoint: String,
     certificate_path: PathBuf,
     private_key_path: PathBuf,
 }
@@ -229,6 +233,11 @@ struct BicepBootstrapValues {
     tenant_id: String,
     #[serde(rename = "clientId", deserialize_with = "deserialize_bicep_string")]
     client_id: String,
+    #[serde(
+        rename = "loginEndpoint",
+        deserialize_with = "deserialize_bicep_string"
+    )]
+    login_endpoint: String,
     #[serde(
         rename = "storageQueueEndpoint",
         deserialize_with = "deserialize_bicep_string"
@@ -1001,6 +1010,33 @@ fn canonicalize_state_file_path(
     Ok(canonical_path)
 }
 
+/// Resolves an optional `login_endpoint` from the service-principal state file.
+///
+/// - `None` (field absent): returns the public-cloud default.
+/// - `Some(value)` with non-empty trimmed content: returns the value with any
+///   trailing slash stripped.
+/// - `Some("")` or whitespace-only: returns a configuration error.
+fn resolve_login_endpoint(value: Option<String>) -> Result<String, CompanionError> {
+    match value {
+        None => Ok(DEFAULT_LOGIN_ENDPOINT.to_string()),
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err(CompanionError::Config(
+                    "service principal login_endpoint must not be empty when present".to_string(),
+                ));
+            }
+            let normalized = trimmed.trim_end_matches('/');
+            if normalized.is_empty() {
+                return Err(CompanionError::Config(
+                    "service principal login_endpoint must not be empty when present".to_string(),
+                ));
+            }
+            Ok(normalized.to_string())
+        }
+    }
+}
+
 fn load_runtime_credential_state(
     state_dir: &Path,
 ) -> Result<RuntimeCredentialState, CompanionError> {
@@ -1019,6 +1055,7 @@ fn load_runtime_credential_state(
     let state: ServicePrincipalStateFile = serde_json::from_slice(&state_bytes)?;
     let tenant_id = require_non_empty(state.tenant_id, "service principal tenant_id")?;
     let client_id = require_non_empty(state.client_id, "service principal client_id")?;
+    let login_endpoint = resolve_login_endpoint(state.login_endpoint)?;
     let certificate_path_value =
         require_non_empty(state.certificate_path, "service principal certificate_path")?;
     let certificate_path =
@@ -1052,6 +1089,7 @@ fn load_runtime_credential_state(
     Ok(RuntimeCredentialState {
         tenant_id,
         client_id,
+        login_endpoint,
         certificate_path,
         private_key_path,
     })
@@ -1284,6 +1322,7 @@ fn parse_bicep_outputs(
     let sp = ServicePrincipalStateFile {
         tenant_id: bootstrap_values.tenant_id,
         client_id: bootstrap_values.client_id,
+        login_endpoint: Some(bootstrap_values.login_endpoint),
         certificate_path: CERT_PEM_FILENAME.to_string(),
         private_key_path: KEY_PEM_FILENAME.to_string(),
     };
@@ -1391,8 +1430,8 @@ fn build_storage_queue_credential(
     let certificate_thumbprint = load_certificate_thumbprint(&runtime_state.certificate_path)?;
     let (signing_algorithm, signing_key) = load_signing_key(&runtime_state.private_key_path)?;
     let token_endpoint = format!(
-        "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
-        runtime_state.tenant_id
+        "{}/{}/oauth2/v2.0/token",
+        runtime_state.login_endpoint, runtime_state.tenant_id
     );
     let http_client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(TOKEN_HTTP_CONNECT_TIMEOUT_SECS))
@@ -2748,13 +2787,13 @@ mod tests {
         generate_certificate, load_runtime_config, load_runtime_credential_state, load_signing_key,
         parse_bicep_outputs, parse_queue_message_xml, prepare_staging_dir, pump_downstream_once,
         pump_upstream_once, read_framed, resolve_bootstrap_image, resolve_effective_state_dir,
-        resolve_state_relative_path, run_bootstrap_deployment_with_docker_and_image,
-        trim_buffer_to_max_len, urlencoding_encode, validate_display_lines, write_framed,
-        ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
-        RuntimeCredentialState, ServicePrincipalStateFile, StorageQueuesConfigFile,
-        UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH,
-        KEY_PEM_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX,
-        STORAGE_QUEUES_CONFIG_FILENAME,
+        resolve_login_endpoint, resolve_state_relative_path,
+        run_bootstrap_deployment_with_docker_and_image, trim_buffer_to_max_len, urlencoding_encode,
+        validate_display_lines, write_framed, ClientAssertionCredential, CompanionError,
+        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState, ServicePrincipalStateFile,
+        StorageQueuesConfigFile, UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME,
+        CONNECTOR_MAX_FRAME_LENGTH, DEFAULT_LOGIN_ENDPOINT, KEY_PEM_FILENAME,
+        SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX, STORAGE_QUEUES_CONFIG_FILENAME,
     };
     #[cfg(windows)]
     use super::{
@@ -2828,6 +2867,7 @@ mod tests {
         let state = ServicePrincipalStateFile {
             tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
             client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            login_endpoint: None,
             certificate_path: "client-cert.pem".to_string(),
             private_key_path: "client-key.pem".to_string(),
         };
@@ -2841,6 +2881,7 @@ mod tests {
         let state = ServicePrincipalStateFile {
             tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
             client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            login_endpoint: None,
             certificate_path: "client-cert.pem".to_string(),
             private_key_path: "client-key.pem".to_string(),
         };
@@ -3656,6 +3697,7 @@ mod tests {
                 "value": {
                     "tenantId": "11111111-1111-1111-1111-111111111111",
                     "clientId": "22222222-2222-2222-2222-222222222222",
+                    "loginEndpoint": "https://login.microsoftonline.com/",
                     "storageQueueEndpoint": "https://example.queue.core.windows.net",
                     "upstreamQueue": "upstream",
                     "downstreamQueue": "downstream"
@@ -3669,6 +3711,7 @@ mod tests {
             ServicePrincipalStateFile {
                 tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
                 client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                login_endpoint: Some("https://login.microsoftonline.com/".to_string()),
                 certificate_path: CERT_PEM_FILENAME.to_string(),
                 private_key_path: KEY_PEM_FILENAME.to_string(),
             }
@@ -3690,6 +3733,7 @@ mod tests {
                 "value": {
                     "tenantId": { "value": "11111111-1111-1111-1111-111111111111" },
                     "clientId": { "value": "22222222-2222-2222-2222-222222222222" },
+                    "loginEndpoint": { "value": "https://login.microsoftonline.com/" },
                     "storageQueueEndpoint": { "value": "https://example.queue.core.windows.net" },
                     "upstreamQueue": { "value": "upstream" },
                     "downstreamQueue": { "value": "downstream" }
@@ -3700,9 +3744,33 @@ mod tests {
         let (sp, sb) = parse_bicep_outputs(json).unwrap();
         assert_eq!(sp.tenant_id, "11111111-1111-1111-1111-111111111111");
         assert_eq!(sp.client_id, "22222222-2222-2222-2222-222222222222");
+        assert_eq!(
+            sp.login_endpoint.as_deref(),
+            Some("https://login.microsoftonline.com/")
+        );
         assert_eq!(sb.queue_endpoint, "https://example.queue.core.windows.net");
         assert_eq!(sb.upstream_queue, "upstream");
         assert_eq!(sb.downstream_queue, "downstream");
+    }
+
+    #[test]
+    fn test_parse_bicep_outputs_rejects_missing_login_endpoint() {
+        let json = r#"{
+            "companionBootstrapValues": {
+                "value": {
+                    "tenantId": "11111111-1111-1111-1111-111111111111",
+                    "clientId": "22222222-2222-2222-2222-222222222222",
+                    "storageQueueEndpoint": "https://example.queue.core.windows.net",
+                    "upstreamQueue": "upstream",
+                    "downstreamQueue": "downstream"
+                }
+            }
+        }"#;
+
+        let err = parse_bicep_outputs(json).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("failed to parse companionBootstrapValues"));
     }
 
     #[test]
@@ -3716,6 +3784,7 @@ mod tests {
             serde_json::to_vec(&ServicePrincipalStateFile {
                 tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
                 client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                login_endpoint: None,
                 certificate_path: CERT_PEM_FILENAME.to_string(),
                 private_key_path: KEY_PEM_FILENAME.to_string(),
             })
@@ -3781,6 +3850,7 @@ mod tests {
             serde_json::to_vec(&ServicePrincipalStateFile {
                 tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
                 client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                login_endpoint: None,
                 certificate_path: CERT_PEM_FILENAME.to_string(),
                 private_key_path: KEY_PEM_FILENAME.to_string(),
             })
@@ -3934,6 +4004,7 @@ mod tests {
                 RuntimeCredentialState {
                     tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
                     client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                    login_endpoint: DEFAULT_LOGIN_ENDPOINT.to_string(),
                     certificate_path: temp.path().join("client-cert.pem").canonicalize().unwrap(),
                     private_key_path: temp.path().join("client-key.pem").canonicalize().unwrap(),
                 }
@@ -3947,6 +4018,7 @@ mod tests {
         let state = ServicePrincipalStateFile {
             tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
             client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            login_endpoint: None,
             certificate_path: " ".to_string(),
             private_key_path: "client-key.pem".to_string(),
         };
@@ -3961,6 +4033,85 @@ mod tests {
             assert!(err
                 .to_string()
                 .contains("service principal certificate_path must be set and non-empty"));
+        });
+    }
+
+    #[test]
+    fn resolve_login_endpoint_defaults_when_absent() {
+        let result = resolve_login_endpoint(None).unwrap();
+        assert_eq!(result, DEFAULT_LOGIN_ENDPOINT);
+    }
+
+    #[test]
+    fn resolve_login_endpoint_strips_trailing_slash() {
+        let result =
+            resolve_login_endpoint(Some("https://login.microsoftonline.com/".to_string())).unwrap();
+        assert_eq!(result, "https://login.microsoftonline.com");
+    }
+
+    #[test]
+    fn resolve_login_endpoint_preserves_no_trailing_slash() {
+        let result =
+            resolve_login_endpoint(Some("https://login.microsoftonline.com".to_string())).unwrap();
+        assert_eq!(result, "https://login.microsoftonline.com");
+    }
+
+    #[test]
+    fn resolve_login_endpoint_rejects_empty() {
+        let err = resolve_login_endpoint(Some("".to_string())).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("login_endpoint must not be empty when present"));
+    }
+
+    #[test]
+    fn resolve_login_endpoint_rejects_whitespace_only() {
+        let err = resolve_login_endpoint(Some("   ".to_string())).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("login_endpoint must not be empty when present"));
+    }
+
+    #[test]
+    fn resolve_login_endpoint_sovereign_cloud() {
+        let result =
+            resolve_login_endpoint(Some("https://login.microsoftonline.us/".to_string())).unwrap();
+        assert_eq!(result, "https://login.microsoftonline.us");
+    }
+
+    #[test]
+    fn resolve_login_endpoint_rejects_slash_only() {
+        let err = resolve_login_endpoint(Some("/".to_string())).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("login_endpoint must not be empty when present"));
+    }
+
+    #[test]
+    fn runtime_ready_uses_default_login_endpoint_when_absent() {
+        let temp = TempDir::new().unwrap();
+        write_service_principal_state(&temp);
+        with_runtime_env(|| {
+            let state = load_runtime_credential_state(temp.path()).unwrap();
+            assert_eq!(state.login_endpoint, DEFAULT_LOGIN_ENDPOINT);
+        });
+    }
+
+    #[test]
+    fn runtime_ready_rejects_empty_login_endpoint() {
+        let temp = TempDir::new().unwrap();
+        write_service_principal_state(&temp);
+        let state_path = temp.path().join("service-principal.json");
+        std::fs::write(
+            &state_path,
+            br#"{"tenant_id":"11111111-1111-1111-1111-111111111111","client_id":"22222222-2222-2222-2222-222222222222","login_endpoint":"","certificate_path":"client-cert.pem","private_key_path":"client-key.pem"}"#,
+        )
+        .unwrap();
+        with_runtime_env(|| {
+            let err = load_runtime_credential_state(temp.path()).unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("login_endpoint must not be empty when present"));
         });
     }
 
@@ -4476,6 +4627,7 @@ mod tests {
         let state = ServicePrincipalStateFile {
             tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
             client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            login_endpoint: None,
             certificate_path: "client-cert.pem".to_string(),
             private_key_path: "client-key.pem".to_string(),
         };
@@ -4524,6 +4676,7 @@ mod tests {
         let runtime_state = RuntimeCredentialState {
             tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
             client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            login_endpoint: DEFAULT_LOGIN_ENDPOINT.to_string(),
             certificate_path: temp.path().join("client-cert.pem"),
             private_key_path: temp.path().join("client-key.pem"),
         };

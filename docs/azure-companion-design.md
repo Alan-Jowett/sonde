@@ -140,9 +140,9 @@ Bootstrap-complete state is defined by the combination of:
    persisted `storage-queues.json` in the state directory).
 
 The current runtime artifact shape is a companion-owned `service-principal.json`
-file containing the Entra tenant ID, client ID, PEM certificate path, and PEM
-private-key path, plus the referenced certificate and key files in the state
-directory. After bootstrap, the state directory also contains
+file containing the Entra tenant ID, client ID, login endpoint, PEM certificate
+path, and PEM private-key path, plus the referenced certificate and key files in
+the state directory. After bootstrap, the state directory also contains
 `storage-queues.json` with the Storage Queue endpoint and queue names. New bootstrap
 commits are written into a generation directory under the state directory and made
 current by atomically updating a `.current-state` marker file. For backward
@@ -434,6 +434,13 @@ from the bootstrap-complete state and authenticate to Azure as an Entra
 application / service principal. Interactive device auth is bootstrap-only and
 is not part of normal runtime operation.
 
+The OAuth token endpoint URL is constructed from the `login_endpoint` field
+persisted in `service-principal.json`, with any trailing slash stripped before
+appending `/{tenant_id}/oauth2/v2.0/token`. When the field is absent (pre-existing
+deployments that predate sovereign-cloud support), the runtime defaults to
+`https://login.microsoftonline.com`. When the field is present but empty or
+whitespace-only, startup fails with a configuration error.
+
 ### 7.4  Transparent message bodies
 
 The Storage Queue message body carries the raw Sonde connector payload bytes
@@ -557,6 +564,7 @@ staging directory:
    {
      "tenant_id": "<from companionBootstrapValues.tenantId>",
      "client_id": "<from companionBootstrapValues.clientId>",
+     "login_endpoint": "<from companionBootstrapValues.loginEndpoint>",
      "certificate_path": "cert.pem",
      "private_key_path": "key.pem"
    }

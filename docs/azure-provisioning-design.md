@@ -156,6 +156,12 @@ The parameter flow is:
   `authSettingsV2` resource with the correct issuer URL and audience,
   ensuring compatibility with sovereign clouds.
 
+The `companionBootstrapValues` Bicep output also includes a `loginEndpoint`
+field populated from `environment().authentication.loginEndpoint`. The Azure
+companion bootstrap persists this value in `service-principal.json` so the
+runtime can construct the correct OAuth token endpoint for the target cloud
+without hardcoding a public-cloud URL.
+
 ---
 
 ## 4  Runtime identity provisioning

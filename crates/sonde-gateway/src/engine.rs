@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use sonde_protocol::{
     decode_frame, encode_frame, open_frame, CommandPayload, FrameHeader, GatewayMessage,
@@ -1072,14 +1072,25 @@ impl Gateway {
                             ConnectorPayloadOrigin::WakeBlob,
                             None,
                         );
+                        let connector_subscribers = self.connector_event_hub.subscriber_count();
                         let ph_hex: String =
                             program_hash.iter().map(|b| format!("{b:02x}")).collect();
-                        warn!(
-                            node_id = %node_id,
-                            program_hash = %ph_hex,
-                            handler_count,
-                            "WAKE blob dropped: no handler matched `program_hash`"
-                        );
+                        if connector_subscribers > 0 {
+                            debug!(
+                                node_id = %node_id,
+                                program_hash = %ph_hex,
+                                handler_count,
+                                connector_subscribers,
+                                "WAKE blob: no handler matched `program_hash` (forwarded to connector)"
+                            );
+                        } else {
+                            warn!(
+                                node_id = %node_id,
+                                program_hash = %ph_hex,
+                                handler_count,
+                                "WAKE blob dropped: no handler matched `program_hash`"
+                            );
+                        }
                     }
                 }
             }
@@ -1389,13 +1400,24 @@ impl Gateway {
         let (config, process_arc) = match handler_result {
             Ok(result) => result,
             Err(handler_count) => {
+                let connector_subscribers = self.connector_event_hub.subscriber_count();
                 let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
-                warn!(
-                    node_id = %node.node_id,
-                    program_hash = %ph_hex,
-                    handler_count,
-                    "APP_DATA dropped: no handler matched `program_hash`"
-                );
+                if connector_subscribers > 0 {
+                    debug!(
+                        node_id = %node.node_id,
+                        program_hash = %ph_hex,
+                        handler_count,
+                        connector_subscribers,
+                        "APP_DATA: no handler matched `program_hash` (forwarded to connector)"
+                    );
+                } else {
+                    warn!(
+                        node_id = %node.node_id,
+                        program_hash = %ph_hex,
+                        handler_count,
+                        "APP_DATA dropped: no handler matched `program_hash`"
+                    );
+                }
                 return None;
             }
         };

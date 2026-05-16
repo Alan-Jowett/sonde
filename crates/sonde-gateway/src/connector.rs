@@ -201,6 +201,11 @@ impl ConnectorEventHub {
         self.tx.subscribe()
     }
 
+    /// Number of active connector subscribers (companion processes).
+    pub fn subscriber_count(&self) -> usize {
+        self.tx.receiver_count()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn emit_actual_state_for_node(
         &self,

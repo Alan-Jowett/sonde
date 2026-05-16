@@ -2876,10 +2876,12 @@ A configurable stub handler process (or in-process mock) that:
 9. Assert: a log with `"handler exited"` includes the `code` field (AC5).
 10. Simulate a node with `current_program_hash = None` sending APP_DATA.
 11. Assert: a WARN log with `"APP_DATA dropped"` includes `node_id` and indicates missing `current_program_hash` (AC6).
-12. Simulate a node whose `current_program_hash` does not match any handler.
+12. Simulate a node whose `current_program_hash` does not match any handler, with no connector subscribers.
 13. Assert: a WARN log with `"APP_DATA dropped"` includes `node_id`, `program_hash`, and `handler_count` (AC6).
-14. Register a handler whose stderr produces output (e.g., a script that writes to stderr on startup).
-15. Assert: the handler's stderr lines appear in the gateway log at WARN level, tagged with the handler command (AC7).
+14. Simulate a node whose `current_program_hash` does not match any handler, with an active connector subscriber.
+15. Assert: a DEBUG log with `"forwarded to connector"` includes `node_id`, `program_hash`, `handler_count`, and `connector_subscribers` (AC6). No WARN is emitted.
+16. Register a handler whose stderr produces output (e.g., a script that writes to stderr on startup).
+17. Assert: the handler's stderr lines appear in the gateway log at WARN level, tagged with the handler command (AC7).
 
 ---
 

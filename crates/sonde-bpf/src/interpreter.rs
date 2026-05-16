@@ -158,6 +158,25 @@ pub struct MapRegion {
     pub data_end: u64,
 }
 
+/// Describes a u64 field within the context buffer that holds a pointer
+/// to a memory region.
+///
+/// When `LD_DW_REG` loads from the context at the byte offset described by
+/// `offset`, the loaded value is tagged with `region` instead of being
+/// treated as a plain scalar.  This enables C-compiled BPF programs that
+/// use the standard `ctx->data` / `ctx->data_end` pattern.
+///
+/// The match is computed as `effective_address - ctx_base == offset`, so
+/// it works regardless of whether the source register points at ctx_base
+/// or has been adjusted via pointer arithmetic.
+#[derive(Clone, Copy, Debug)]
+pub struct ContextPointerField {
+    /// Byte offset within the context buffer where the u64 pointer lives.
+    pub offset: u16,
+    /// Region descriptor to attach to the loaded pointer value.
+    pub region: Region,
+}
+
 // ── Spill tracker ───────────────────────────────────────────────────
 
 const MAX_SPILL_SLOTS: usize = 32;
@@ -600,8 +619,18 @@ pub fn execute_program_no_maps(
     read_only_ctx: bool,
     instruction_budget: u64,
 ) -> Result<u64, BpfError> {
-    // SAFETY: maps is empty — no raw pointer invariants to uphold.
-    unsafe { execute_program(prog, ctx, helpers, &[], read_only_ctx, instruction_budget) }
+    // SAFETY: maps and ctx_ptrs are empty — no raw pointer invariants to uphold.
+    unsafe {
+        execute_program(
+            prog,
+            ctx,
+            helpers,
+            &[],
+            read_only_ctx,
+            instruction_budget,
+            &[],
+        )
+    }
 }
 
 /// Execute a BPF program.
@@ -618,6 +647,11 @@ pub fn execute_program_no_maps(
 ///   executed before the program is terminated with
 ///   [`BpfError::InstructionBudgetExceeded`].  Pass [`UNLIMITED_BUDGET`] to
 ///   disable metering.
+/// * `ctx_ptrs` — context pointer field descriptors.  Each entry declares
+///   a u64 offset within `ctx` that holds a pointer to a memory region.
+///   When `LD_DW_REG` loads from that offset, the result is tagged with the
+///   described region so the BPF program can dereference it.  Pass `&[]`
+///   when the context contains no embedded pointers.
 ///
 /// # Returns
 /// The value of `r0` when the program exits.
@@ -630,12 +664,18 @@ pub fn execute_program_no_maps(
 /// - The map storage must not alias `ctx` or the interpreter's internal
 ///   BPF stack.
 ///
+/// Each [`ContextPointerField`] in `ctx_ptrs` must satisfy:
+/// - `region.base..region.end` covers a valid, live allocation that
+///   remains valid for the duration of this call.
+/// - The described region must not alias the interpreter's internal
+///   BPF stack.
+///
 /// Violating these invariants may cause undefined behavior, because the
-/// interpreter dereferences addresses within the declared map bounds via
+/// interpreter dereferences addresses within the declared bounds via
 /// raw pointers.
 ///
-/// If `maps` is empty (no map access), these requirements are trivially
-/// satisfied and the call is safe.
+/// If `maps` and `ctx_ptrs` are both empty, these requirements are
+/// trivially satisfied and the call is safe.
 ///
 /// # Zero-allocation guarantee
 /// All interpreter state (registers, call stack, BPF stack) lives on the
@@ -648,6 +688,7 @@ pub unsafe fn execute_program(
     maps: &[MapRegion],
     read_only_ctx: bool,
     instruction_budget: u64,
+    ctx_ptrs: &[ContextPointerField],
 ) -> Result<u64, BpfError> {
     let num_insns = prog.len() / INSN_SIZE;
     if !prog.len().is_multiple_of(INSN_SIZE) {
@@ -814,6 +855,33 @@ pub unsafe fn execute_program(
                     } else {
                         reg[dst] = TaggedReg::scalar(val);
                     }
+                } else if matches!(
+                    reg[src].region,
+                    Some(Region {
+                        tag: RegionTag::Context | RegionTag::Memory,
+                        ..
+                    })
+                ) {
+                    // Context pointer field tagging: when loading a u64 from
+                    // the context at a known pointer-field offset, tag the
+                    // result so that the BPF program can dereference it.
+                    let addr = reg[src].value.wrapping_add_signed(insn.off as i64);
+                    let ctx_off = addr.wrapping_sub(ctx_base);
+                    let tagged = if ctx_off.wrapping_add(8) <= ctx.len() as u64 {
+                        ctx_ptrs.iter().find_map(|cpf| {
+                            if ctx_off == cpf.offset as u64 {
+                                Some(TaggedReg {
+                                    value: val,
+                                    region: Some(cpf.region),
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                    reg[dst] = tagged.unwrap_or_else(|| TaggedReg::scalar(val));
                 } else {
                     reg[dst] = TaggedReg::scalar(val);
                 }

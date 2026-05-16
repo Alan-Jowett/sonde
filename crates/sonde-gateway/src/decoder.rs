@@ -329,16 +329,13 @@ fn decoder_helpers() -> Vec<HelperDescriptor> {
 /// on the verifier to guarantee that pointer arguments are within valid
 /// memory regions.
 ///
-/// # Context ABI limitation
+/// # Context ABI
 ///
 /// The decoder context provides `{ input_data, input_end }` pointers at
-/// offsets 0 and 8. Currently, `sonde-bpf` does not tag pointers loaded
-/// from context via `LDX` — they are treated as scalars. This means
-/// C-compiled decoders that dereference `ctx->input_data` will fail with
-/// `NonDereferenceableAccess`. Decoders must access the raw blob via the
-/// context pointer (r1) directly using bounded offsets (r1 is already tagged
-/// by the interpreter as a context region). Extending `sonde-bpf` to support
-/// data/data_end context-pointer tagging is tracked as a future enhancement.
+/// offsets 0 and 8.  [`ContextPointerField`](interpreter::ContextPointerField)
+/// descriptors tell the interpreter to tag these loaded values as pointers
+/// into the blob region, enabling C-compiled decoders that use
+/// `ctx->input_data` / `ctx->input_end` to work correctly.
 ///
 /// # Safety
 ///
@@ -460,33 +457,47 @@ pub unsafe fn execute_decoder(
     let blob_end_addr = blob_addr + raw_blob.len() as u64;
     ctx_buf[8..16].copy_from_slice(&blob_end_addr.to_le_bytes());
 
+    // Context pointer fields: tell the interpreter that the u64 values at
+    // offsets 0 and 8 are pointers into the blob region so that BPF
+    // programs can dereference ctx->input_data after loading it.
+    let data_region = interpreter::Region {
+        tag: interpreter::RegionTag::Context,
+        base: blob_addr,
+        end: blob_end_addr,
+    };
+    let ctx_ptrs = [
+        interpreter::ContextPointerField {
+            offset: 0,
+            region: data_region,
+        },
+        interpreter::ContextPointerField {
+            offset: 8,
+            region: data_region,
+        },
+    ];
+
     // Install thread-local state and execute.
     let guard = DecoderStateGuard::install(map_infos);
     let helpers = decoder_helpers();
 
-    let result = if map_regions.is_empty() {
-        interpreter::execute_program_no_maps(
+    // SAFETY:
+    // - Each MapRegion's data_start..data_end covers valid, live heap
+    //   allocations (the Vec<u8> in map_backing). They do not alias ctx_buf
+    //   or the interpreter's stack. The map_backing Vecs outlive this call.
+    // - Each ContextPointerField region covers blob_addr..blob_end_addr
+    //   which is a sub-range of ctx_buf (offset 16..). ctx_buf is live for
+    //   the duration of this call and does not alias the BPF stack.
+    // - When map_regions is empty the MapRegion invariants are trivially met.
+    let result = unsafe {
+        interpreter::execute_program(
             &image.bytecode,
             &mut ctx_buf,
             &helpers,
+            &map_regions,
             true, // read_only_ctx
             DECODER_INSTRUCTION_BUDGET,
+            &ctx_ptrs,
         )
-    } else {
-        // SAFETY: each MapRegion's data_start..data_end covers valid, live
-        // heap allocations (the Vec<u8> in map_backing). They do not alias
-        // ctx_buf or the interpreter's stack. The map_backing Vecs outlive
-        // the execute_program call.
-        unsafe {
-            interpreter::execute_program(
-                &image.bytecode,
-                &mut ctx_buf,
-                &helpers,
-                &map_regions,
-                true, // read_only_ctx
-                DECODER_INSTRUCTION_BUDGET,
-            )
-        }
     };
 
     match result {

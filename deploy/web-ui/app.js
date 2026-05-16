@@ -1100,14 +1100,12 @@ function extractSeries(rows, nodeIdMap) {
 
 function downsamplePoints(points, maxPoints) {
   if (points.length <= maxPoints) return points;
-  const step = points.length / maxPoints;
+  const step = points.length / (maxPoints - 1);
   const result = [];
-  for (let i = 0; i < maxPoints; i++) {
+  for (let i = 0; i < maxPoints - 1; i++) {
     result.push(points[Math.floor(i * step)]);
   }
-  if (result[result.length - 1] !== points[points.length - 1]) {
-    result.push(points[points.length - 1]);
-  }
+  result.push(points[points.length - 1]);
   return result;
 }
 
@@ -1129,9 +1127,15 @@ function renderSensorChart(allSeries) {
   if (selected.length === 0) {
     const chartArea = contentEl.querySelector('.sensor-chart-area');
     if (chartArea) {
-      const message = allSeries.length === 0
-        ? 'No decoded sensor readings found for the selected time range.'
-        : 'No series selected. Use the checkboxes below to select data to plot.';
+      const plottableCount = allSeries.filter((s) => s.points.length > 0).length;
+      let message;
+      if (allSeries.length === 0) {
+        message = 'No decoded sensor readings found for the selected time range.';
+      } else if (plottableCount === 0) {
+        message = 'All readings contain non-numeric values that cannot be plotted. Switch to table view to inspect the data.';
+      } else {
+        message = 'No series selected. Use the series picker above to select data to plot.';
+      }
       chartArea.innerHTML = `<p class="muted">${message}</p>`;
     }
     return;
@@ -1294,25 +1298,25 @@ async function renderSensorData() {
     const sensorRows = await querySensorData(partitionKeys, rangeMs);
     const allSeries = extractSeries(sensorRows, nodeIdMap);
 
-    if (!SENSOR_STATE.seriesInitialized) {
-      const plottable = allSeries.filter((s) => s.points.length > 0);
-      if (plottable.length > 0) {
-        SENSOR_STATE.seriesInitialized = true;
-        for (const s of plottable.slice(0, Math.min(plottable.length, 5))) {
-          SENSOR_STATE.selectedSeries.add(s.key);
-        }
-      }
-    }
-
-    // Prune stale selections that no longer exist in current data
-    const currentKeys = new Set(allSeries.map((s) => s.key));
+    // Prune stale and non-plottable selections before auto-selection
+    const currentPlottableKeys = new Set(
+      allSeries.filter((s) => s.points.length > 0).map((s) => s.key)
+    );
     for (const key of [...SENSOR_STATE.selectedSeries]) {
-      if (!currentKeys.has(key)) {
+      if (!currentPlottableKeys.has(key)) {
         SENSOR_STATE.selectedSeries.delete(key);
       }
     }
     if (SENSOR_STATE.selectedSeries.size === 0) {
       SENSOR_STATE.seriesInitialized = false;
+    }
+
+    if (!SENSOR_STATE.seriesInitialized && currentPlottableKeys.size > 0) {
+      SENSOR_STATE.seriesInitialized = true;
+      const plottable = allSeries.filter((s) => s.points.length > 0);
+      for (const s of plottable.slice(0, Math.min(plottable.length, 5))) {
+        SENSOR_STATE.selectedSeries.add(s.key);
+      }
     }
 
     const timeRangeButtons = Object.keys(TIME_RANGE_MS).map((range) => {

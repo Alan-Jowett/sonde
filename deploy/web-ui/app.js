@@ -1294,11 +1294,13 @@ async function renderSensorData() {
     const sensorRows = await querySensorData(partitionKeys, rangeMs);
     const allSeries = extractSeries(sensorRows, nodeIdMap);
 
-    if (!SENSOR_STATE.seriesInitialized && allSeries.length > 0) {
-      SENSOR_STATE.seriesInitialized = true;
+    if (!SENSOR_STATE.seriesInitialized) {
       const plottable = allSeries.filter((s) => s.points.length > 0);
-      for (const s of plottable.slice(0, Math.min(plottable.length, 5))) {
-        SENSOR_STATE.selectedSeries.add(s.key);
+      if (plottable.length > 0) {
+        SENSOR_STATE.seriesInitialized = true;
+        for (const s of plottable.slice(0, Math.min(plottable.length, 5))) {
+          SENSOR_STATE.selectedSeries.add(s.key);
+        }
       }
     }
 
@@ -1308,6 +1310,9 @@ async function renderSensorData() {
       if (!currentKeys.has(key)) {
         SENSOR_STATE.selectedSeries.delete(key);
       }
+    }
+    if (SENSOR_STATE.selectedSeries.size === 0) {
+      SENSOR_STATE.seriesInitialized = false;
     }
 
     const timeRangeButtons = Object.keys(TIME_RANGE_MS).map((range) => {
@@ -1322,7 +1327,9 @@ async function renderSensorData() {
 
     const seriesCheckboxes = allSeries.map((s) => {
       const checked = SENSOR_STATE.selectedSeries.has(s.key) ? ' checked' : '';
-      return `<label class="sensor-series-label"><input type="checkbox" value="${escapeHtml(s.key)}"${checked}> ${escapeHtml(s.label)}</label>`;
+      const plottable = s.points.length > 0;
+      const suffix = plottable ? '' : ' <span class="muted">(no numeric data)</span>';
+      return `<label class="sensor-series-label"><input type="checkbox" value="${escapeHtml(s.key)}"${checked}${plottable ? '' : ' disabled'}> ${escapeHtml(s.label)}${suffix}</label>`;
     }).join('');
 
     const autoRefreshChecked = SENSOR_STATE.autoRefresh ? ' checked' : '';
@@ -1416,6 +1423,13 @@ async function renderSensorData() {
     }
   } catch (error) {
     renderError('Sensor Data', error);
+    if (SENSOR_STATE.autoRefresh) {
+      setAutoRefresh(async () => {
+        if (APP.activeTab === 'sensor-data') {
+          await renderSensorData();
+        }
+      });
+    }
   }
 }
 

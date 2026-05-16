@@ -115,3 +115,38 @@ code { font-family: Consolas, "Courier New", monospace; }
   .topbar, .tabs { padding-left: 1rem; padding-right: 1rem; }
   .content { padding: 1rem; }
 }
+.sensor-controls { display: grid; gap: 0.75rem; }
+.sensor-control-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+.sensor-control-group {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+.sensor-control-group .secondary.active {
+  background: var(--accent);
+  color: #fff;
+}
+.sensor-series-picker { margin-top: 0.25rem; }
+.sensor-series-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  padding-top: 0.5rem;
+}
+.sensor-series-label {
+  display: inline-flex;
+  gap: 0.3rem;
+  align-items: center;
+  font-weight: 400;
+  font-size: 0.9rem;
+}
+.sensor-controls input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+}
+.chart-container { position: relative; height: 400px; }

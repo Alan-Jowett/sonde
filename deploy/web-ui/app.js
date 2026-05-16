@@ -10,6 +10,7 @@ const CONFIG = {
   actualStateTable: 'actualstate',
   desiredStateTable: 'desiredstate',
   programsTable: 'programs',
+  sensorDataTable: 'sensordata',
   refreshIntervalMs: 30000,
 };
 
@@ -36,7 +37,7 @@ const STORAGE_SCOPES = ['https://storage.azure.com/.default'];
 function functionScopes() {
   return [`api://${CONFIG.msalClientId}/user_impersonation`];
 }
-const TAB_IDS = ['dashboard', 'desired-state', 'programs'];
+const TAB_IDS = ['dashboard', 'desired-state', 'programs', 'sensor-data'];
 const APP = {
   msalApp: null,
   account: null,
@@ -44,6 +45,7 @@ const APP = {
   refreshHandle: null,
   refreshToken: 0,
   viewMessage: null,
+  sensorChart: null,
 };
 
 const contentEl = document.getElementById('content');
@@ -853,6 +855,487 @@ async function renderPrograms() {
   }
 }
 
+// 8. Sensor Data Tab (WEB-0700)
+const SENSOR_STATE = {
+  timeRange: '24h',
+  viewMode: 'graph',
+  selectedSeries: new Set(),
+  seriesInitialized: false,
+  autoRefresh: false,
+};
+
+const TIME_RANGE_MS = {
+  '1h': 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+};
+
+function reverseTimestampHex(ms) {
+  const max = BigInt('0xffffffffffffffff');
+  return (max - BigInt(ms)).toString(16).padStart(16, '0');
+}
+
+async function querySensorData(partitionKeys, timeRangeMs) {
+  const token = await getToken();
+  const now = Date.now();
+  const start = now - timeRangeMs;
+  const rkStart = reverseTimestampHex(now);
+  const rkEnd = reverseTimestampHex(start);
+
+  const fetchPartition = async (pk) => {
+    const filter = `PartitionKey eq '${pk}' and RowKey ge '${rkStart}' and RowKey le '${rkEnd}~'`;
+    const url = new URL(tableQueryUrl(CONFIG.sensorDataTable));
+    url.searchParams.set('$filter', filter);
+    url.searchParams.set('$top', '1000');
+
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json;odata=nometadata',
+        Authorization: `Bearer ${token}`,
+        'x-ms-version': '2019-02-02',
+      },
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`SensorData query failed (${response.status}): ${text}`);
+    }
+
+    const payload = await response.json();
+    return Array.isArray(payload.value) ? payload.value : [];
+  };
+
+  const allEntities = [];
+  const batchSize = 6;
+  for (let i = 0; i < partitionKeys.length; i += batchSize) {
+    const batch = partitionKeys.slice(i, i + batchSize);
+    const results = await Promise.all(batch.map(fetchPartition));
+    for (const entities of results) {
+      allEntities.push(...entities);
+    }
+  }
+  return allEntities;
+}
+
+function parseSensorReadings(decodedReadings) {
+  if (!decodedReadings || decodedReadings === '') {
+    return null;
+  }
+  try {
+    return JSON.parse(decodedReadings);
+  } catch {
+    return null;
+  }
+}
+
+function toPlottableNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const num = Number(value);
+    if (Number.isFinite(num) && Math.abs(num) <= Number.MAX_SAFE_INTEGER) {
+      return num;
+    }
+  }
+  return null;
+}
+
+function formatReadingValue(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return String(value);
+  }
+  return '—';
+}
+
+function extractSeries(rows, nodeIdMap) {
+  const seriesMap = new Map();
+
+  for (const row of rows) {
+    const readings = parseSensorReadings(row.decoded_readings);
+    if (!readings) continue;
+
+    const nodeId = nodeIdMap.get(row.PartitionKey) || row.PartitionKey;
+    const programHash = row.program_hash || '';
+    const timestampMs = Number(row.timestamp_ms);
+    if (!Number.isFinite(timestampMs)) continue;
+
+    for (const [readingName, value] of Object.entries(readings)) {
+      const key = `${row.PartitionKey}|${programHash}|${readingName}`;
+      if (!seriesMap.has(key)) {
+        seriesMap.set(key, {
+          key,
+          nodeId,
+          programHash,
+          readingName,
+          label: `${truncHash(nodeId)} / ${truncHash(programHash)} / ${readingName}`,
+          points: [],
+        });
+      }
+      const plottable = toPlottableNumber(value);
+      if (plottable !== null) {
+        seriesMap.get(key).points.push({ x: timestampMs, y: plottable });
+      }
+    }
+  }
+
+  for (const series of seriesMap.values()) {
+    series.points.sort((a, b) => a.x - b.x);
+  }
+
+  return [...seriesMap.values()];
+}
+
+function downsamplePoints(points, maxPoints) {
+  if (points.length <= maxPoints) return points;
+  const step = points.length / (maxPoints - 1);
+  const result = [];
+  for (let i = 0; i < maxPoints - 1; i++) {
+    result.push(points[Math.floor(i * step)]);
+  }
+  result.push(points[points.length - 1]);
+  return result;
+}
+
+const CHART_COLORS = [
+  '#2f6fed', '#e74c3c', '#27ae60', '#f39c12', '#8e44ad',
+  '#1abc9c', '#d35400', '#2c3e50', '#c0392b', '#16a085',
+  '#e67e22', '#9b59b6', '#3498db', '#2ecc71', '#e74c3c',
+  '#f1c40f', '#1abc9c', '#e91e63', '#00bcd4', '#ff9800',
+];
+
+function renderSensorChart(allSeries) {
+  const selected = allSeries.filter((s) => SENSOR_STATE.selectedSeries.has(s.key));
+
+  if (APP.sensorChart) {
+    APP.sensorChart.destroy();
+    APP.sensorChart = null;
+  }
+
+  if (selected.length === 0) {
+    const chartArea = contentEl.querySelector('.sensor-chart-area');
+    if (chartArea) {
+      const plottableCount = allSeries.filter((s) => s.points.length > 0).length;
+      let message;
+      if (allSeries.length === 0) {
+        message = 'No decoded sensor readings found for the selected time range.';
+      } else if (plottableCount === 0) {
+        message = 'All readings contain non-numeric values that cannot be plotted. Switch to table view to inspect the data.';
+      } else {
+        message = 'No series selected. Use the series picker above to select data to plot.';
+      }
+      chartArea.innerHTML = `<p class="muted">${message}</p>`;
+    }
+    return;
+  }
+
+  const chartArea = contentEl.querySelector('.sensor-chart-area');
+  if (!chartArea) return;
+  chartArea.innerHTML = '<canvas id="sensor-canvas"></canvas>';
+
+  const canvas = document.getElementById('sensor-canvas');
+  if (!canvas || typeof Chart === 'undefined') {
+    chartArea.innerHTML = '<p class="alert error">Chart.js is not available. Switch to table view.</p>';
+    return;
+  }
+
+  const datasets = selected.slice(0, 20).map((series, i) => ({
+    label: series.label,
+    nodeId: series.nodeId,
+    programHash: series.programHash,
+    readingName: series.readingName,
+    data: downsamplePoints(series.points, 500),
+    borderColor: CHART_COLORS[i % CHART_COLORS.length],
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    pointRadius: series.points.length > 100 ? 0 : 2,
+    tension: 0.1,
+  }));
+
+  APP.sensorChart = new Chart(canvas, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      scales: {
+        x: {
+          type: 'linear',
+          title: { display: true, text: 'Time' },
+          ticks: {
+            callback(value) {
+              const d = new Date(value);
+              const hh = d.getHours().toString().padStart(2, '0');
+              const mm = d.getMinutes().toString().padStart(2, '0');
+              if (SENSOR_STATE.timeRange === '7d') {
+                return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+              }
+              return `${hh}:${mm}`;
+            },
+            maxTicksLimit: 12,
+          },
+        },
+        y: {
+          title: { display: true, text: 'Value' },
+        },
+      },
+      plugins: {
+        tooltip: {
+          callbacks: {
+            title(items) {
+              if (!items.length) return '';
+              return new Date(items[0].parsed.x).toLocaleString();
+            },
+            label(item) {
+              const ds = item.dataset;
+              const parts = [`Node: ${ds.nodeId || '—'}`, `Program: ${ds.programHash || '—'}`, `${ds.readingName || '—'}: ${item.parsed.y}`];
+              return parts;
+            },
+          },
+        },
+        legend: {
+          position: 'bottom',
+          labels: { boxWidth: 12, padding: 8 },
+        },
+      },
+    },
+  });
+}
+
+function renderSensorTable(rows, nodeIdMap) {
+  const sorted = [...rows].sort((a, b) => {
+    const ta = Number(a.timestamp_ms) || 0;
+    const tb = Number(b.timestamp_ms) || 0;
+    return tb - ta;
+  });
+
+  const rowsHtml = sorted.map((row) => {
+    const ts = Number(row.timestamp_ms);
+    const timeStr = Number.isFinite(ts) ? new Date(ts).toLocaleString() : '—';
+    const nodeId = nodeIdMap.get(row.PartitionKey) || row.PartitionKey;
+    const readings = parseSensorReadings(row.decoded_readings);
+    let readingsDisplay = '—';
+    if (readings) {
+      readingsDisplay = Object.entries(readings)
+        .map(([k, v]) => `${escapeHtml(k)}: ${escapeHtml(formatReadingValue(v))}`)
+        .join(', ');
+    }
+    const rawPayload = row.raw_payload || '—';
+    const truncatedRaw = rawPayload.length > 40 ? rawPayload.slice(0, 40) + '…' : rawPayload;
+
+    return `
+      <tr>
+        <td>${escapeHtml(timeStr)}</td>
+        <td>${escapeHtml(nodeId)}</td>
+        <td>${formatHashCell(row.program_hash)}</td>
+        <td>${readingsDisplay}</td>
+        <td><code title="${escapeHtml(rawPayload)}">${escapeHtml(truncatedRaw)}</code></td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Node ID</th>
+            <th>Program Hash</th>
+            <th>Decoded Readings</th>
+            <th>Raw Payload</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml || '<tr><td colspan="5" class="muted">No sensor data found.</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function renderSensorData() {
+  if (!APP.account) {
+    requireAuthenticatedView('Sensor Data');
+    return;
+  }
+
+  renderCard('Sensor Data', '<p class="muted">Loading sensor data…</p>');
+
+  if (APP.sensorChart) {
+    APP.sensorChart.destroy();
+    APP.sensorChart = null;
+  }
+
+  try {
+    const actualRows = await queryTable(CONFIG.actualStateTable, '');
+    const latestActual = latestByPartition(actualRows).sort((a, b) =>
+      String(a.node_id || '').localeCompare(String(b.node_id || ''))
+    );
+
+    const nodeIdMap = new Map(latestActual.map((r) => [r.PartitionKey, r.node_id]));
+    const partitionKeys = latestActual.map((r) => r.PartitionKey);
+
+    if (partitionKeys.length === 0) {
+      renderCard('Sensor Data', '<p class="muted">No nodes have reported state yet.</p>');
+      if (SENSOR_STATE.autoRefresh) {
+        setAutoRefresh(async () => {
+          if (APP.activeTab === 'sensor-data') {
+            await renderSensorData();
+          }
+        });
+      }
+      return;
+    }
+
+    const rangeMs = TIME_RANGE_MS[SENSOR_STATE.timeRange] || TIME_RANGE_MS['24h'];
+    const sensorRows = await querySensorData(partitionKeys, rangeMs);
+    const allSeries = extractSeries(sensorRows, nodeIdMap);
+
+    // Prune stale and non-plottable selections before auto-selection
+    const currentPlottableKeys = new Set(
+      allSeries.filter((s) => s.points.length > 0).map((s) => s.key)
+    );
+    const sizeBefore = SENSOR_STATE.selectedSeries.size;
+    for (const key of [...SENSOR_STATE.selectedSeries]) {
+      if (!currentPlottableKeys.has(key)) {
+        SENSOR_STATE.selectedSeries.delete(key);
+      }
+    }
+    const prunedCount = sizeBefore - SENSOR_STATE.selectedSeries.size;
+    if (SENSOR_STATE.selectedSeries.size === 0 && prunedCount > 0) {
+      SENSOR_STATE.seriesInitialized = false;
+    }
+
+    if (!SENSOR_STATE.seriesInitialized && currentPlottableKeys.size > 0) {
+      SENSOR_STATE.seriesInitialized = true;
+      const plottable = allSeries.filter((s) => s.points.length > 0);
+      for (const s of plottable.slice(0, Math.min(plottable.length, 5))) {
+        SENSOR_STATE.selectedSeries.add(s.key);
+      }
+    }
+
+    const timeRangeButtons = Object.keys(TIME_RANGE_MS).map((range) => {
+      const active = SENSOR_STATE.timeRange === range ? ' active' : '';
+      return `<button type="button" class="secondary sensor-range-btn${active}" data-range="${range}">${escapeHtml(range)}</button>`;
+    }).join('');
+
+    const viewToggle = `
+      <button type="button" class="secondary sensor-view-btn${SENSOR_STATE.viewMode === 'graph' ? ' active' : ''}" data-view="graph">Graph</button>
+      <button type="button" class="secondary sensor-view-btn${SENSOR_STATE.viewMode === 'table' ? ' active' : ''}" data-view="table">Table</button>
+    `;
+
+    const seriesCheckboxes = allSeries.map((s) => {
+      const checked = SENSOR_STATE.selectedSeries.has(s.key) ? ' checked' : '';
+      const plottable = s.points.length > 0;
+      const suffix = plottable ? '' : ' <span class="muted">(no numeric data)</span>';
+      return `<label class="sensor-series-label"><input type="checkbox" value="${escapeHtml(s.key)}"${checked}${plottable ? '' : ' disabled'}> ${escapeHtml(s.label)}${suffix}</label>`;
+    }).join('');
+
+    const autoRefreshChecked = SENSOR_STATE.autoRefresh ? ' checked' : '';
+
+    renderCard('Sensor Data', `
+      <div class="panel sensor-controls">
+        <div class="sensor-control-row">
+          <span class="sensor-control-group">
+            <strong>Time range:</strong> ${timeRangeButtons}
+          </span>
+          <span class="sensor-control-group">
+            <strong>View:</strong> ${viewToggle}
+          </span>
+          <label class="sensor-control-group">
+            <input type="checkbox" id="sensor-auto-refresh"${autoRefreshChecked}> Auto-refresh
+          </label>
+        </div>
+        ${allSeries.length > 0 ? `
+          <details class="sensor-series-picker" open>
+            <summary><strong>Series</strong> (${allSeries.length} available, max 20 plotted)</summary>
+            <div class="sensor-series-grid">${seriesCheckboxes}</div>
+          </details>
+        ` : ''}
+      </div>
+      <div class="panel">
+        ${SENSOR_STATE.viewMode === 'graph'
+          ? '<div class="sensor-chart-area chart-container"><p class="muted">Rendering chart…</p></div>'
+          : renderSensorTable(sensorRows, nodeIdMap)}
+      </div>
+    `);
+
+    if (SENSOR_STATE.viewMode === 'graph') {
+      renderSensorChart(allSeries);
+    }
+
+    // Attach event handlers
+    for (const btn of contentEl.querySelectorAll('.sensor-range-btn')) {
+      btn.addEventListener('click', async () => {
+        SENSOR_STATE.timeRange = btn.dataset.range;
+        await renderSensorData();
+      });
+    }
+
+    for (const btn of contentEl.querySelectorAll('.sensor-view-btn')) {
+      btn.addEventListener('click', async () => {
+        SENSOR_STATE.viewMode = btn.dataset.view;
+        await renderSensorData();
+      });
+    }
+
+    const seriesCheckboxEls = contentEl.querySelectorAll('.sensor-series-grid input[type="checkbox"]');
+    for (const cb of seriesCheckboxEls) {
+      cb.addEventListener('change', () => {
+        if (cb.checked) {
+          if (SENSOR_STATE.selectedSeries.size >= 20) {
+            cb.checked = false;
+            return;
+          }
+          SENSOR_STATE.selectedSeries.add(cb.value);
+        } else {
+          SENSOR_STATE.selectedSeries.delete(cb.value);
+        }
+        if (SENSOR_STATE.viewMode === 'graph') {
+          renderSensorChart(allSeries);
+        }
+      });
+    }
+
+    const autoRefreshCb = document.getElementById('sensor-auto-refresh');
+    if (autoRefreshCb) {
+      autoRefreshCb.addEventListener('change', () => {
+        SENSOR_STATE.autoRefresh = autoRefreshCb.checked;
+        if (SENSOR_STATE.autoRefresh) {
+          setAutoRefresh(async () => {
+            if (APP.activeTab === 'sensor-data') {
+              await renderSensorData();
+            }
+          });
+        } else {
+          clearRefresh();
+        }
+      });
+    }
+
+    if (SENSOR_STATE.autoRefresh) {
+      setAutoRefresh(async () => {
+        if (APP.activeTab === 'sensor-data') {
+          await renderSensorData();
+        }
+      });
+    }
+  } catch (error) {
+    renderError('Sensor Data', error);
+    if (SENSOR_STATE.autoRefresh) {
+      setAutoRefresh(async () => {
+        if (APP.activeTab === 'sensor-data') {
+          await renderSensorData();
+        }
+      });
+    }
+  }
+}
+
 // 9. Tab Router
 function setActiveTab(tabId) {
   APP.activeTab = TAB_IDS.includes(tabId) ? tabId : 'dashboard';
@@ -863,6 +1346,10 @@ function setActiveTab(tabId) {
 
 async function renderActiveTab() {
   clearRefresh();
+  if (APP.sensorChart) {
+    APP.sensorChart.destroy();
+    APP.sensorChart = null;
+  }
   const requestedTab = location.hash.replace(/^#/, '') || 'dashboard';
   setActiveTab(requestedTab);
 
@@ -872,6 +1359,9 @@ async function renderActiveTab() {
       break;
     case 'programs':
       await renderPrograms();
+      break;
+    case 'sensor-data':
+      await renderSensorData();
       break;
     case 'dashboard':
     default:

@@ -30,6 +30,9 @@ param programRouteTableName string
 @description('Program storage table name.')
 param programsTableName string
 
+@description('Sensor data table name.')
+param sensorDataTableName string
+
 @description('Azure handler Function App name.')
 param functionAppName string
 
@@ -67,6 +70,7 @@ module storage './storage.bicep' = {
     desiredStateTableName: desiredStateTableName
     programRouteTableName: programRouteTableName
     programsTableName: programsTableName
+    sensorDataTableName: sensorDataTableName
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
     deploymentContainerName: deploymentStorageContainerName
@@ -107,6 +111,7 @@ module functionPlaceholder './function-placeholder.bicep' = {
     desiredStateTableName: storage.outputs.desiredStateTableName
     programRouteTableName: storage.outputs.programRouteTableName
     programsTableName: storage.outputs.programsTableName
+    sensorDataTableName: storage.outputs.sensorDataTableName
     appInsightsConnectionString: monitoring.outputs.connectionString
     corsAllowedOrigins: ['https://${staticWebApp.outputs.defaultHostname}']
     functionAuthClientId: functionAuthClientId
@@ -141,6 +146,7 @@ module functionRbac './function-rbac.bicep' = {
     desiredStateTableName: storage.outputs.desiredStateTableName
     programRouteTableName: storage.outputs.programRouteTableName
     programsTableName: storage.outputs.programsTableName
+    sensorDataTableName: storage.outputs.sensorDataTableName
   }
 }
 
@@ -155,6 +161,7 @@ output actualStateTableName string = storage.outputs.actualStateTableName
 output desiredStateTableName string = storage.outputs.desiredStateTableName
 output programRouteTableName string = storage.outputs.programRouteTableName
 output programsTableName string = storage.outputs.programsTableName
+output sensorDataTableName string = storage.outputs.sensorDataTableName
 output functionAppName string = functionPlaceholder.outputs.functionAppName
 output functionPrincipalId string = functionPlaceholder.outputs.principalId
 output staticWebAppName string = staticWebApp.outputs.name

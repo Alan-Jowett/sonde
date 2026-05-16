@@ -36,6 +36,9 @@ param programRouteTableName string
 @description('Program storage table name.')
 param programsTableName string
 
+@description('Sensor data table name.')
+param sensorDataTableName string
+
 @description('Tags applied to provisioned resources.')
 param tags object
 
@@ -121,6 +124,10 @@ var baseAppSettings = [
         {
           name: 'SONDE_AZURE_HANDLER_PROGRAMS_TABLE'
           value: programsTableName
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_SENSOR_DATA_TABLE'
+          value: sensorDataTableName
         }
       ]
 

@@ -3520,4 +3520,71 @@ mod tests {
         assert!(entity.partition_key.starts_with("n:"));
         assert_eq!(entity.partition_key.len(), 2 + 64);
     }
+
+    // ── decode_optional_readings error path tests ──────────────────────
+
+    #[test]
+    fn decode_readings_rejects_non_map_value() {
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_APP_DATA.into())),
+            map_entry(2, Value::Text("node-1".to_string())),
+            map_entry(3, Value::Bytes(vec![0x42u8; 32])),
+            map_entry(4, Value::Bytes(b"payload".to_vec())),
+            map_entry(5, Value::Integer(100u64.into())),
+            map_entry(16, Value::Text("not-a-map".to_string())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        let err = decode_connector_message(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("CBOR map or null"),
+            "expected map-type error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn decode_readings_rejects_non_text_key() {
+        let readings = Value::Map(vec![(
+            Value::Integer(42.into()),
+            Value::Integer(100.into()),
+        )]);
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_APP_DATA.into())),
+            map_entry(2, Value::Text("node-1".to_string())),
+            map_entry(3, Value::Bytes(vec![0x42u8; 32])),
+            map_entry(4, Value::Bytes(b"payload".to_vec())),
+            map_entry(5, Value::Integer(100u64.into())),
+            map_entry(16, readings),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        let err = decode_connector_message(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("key must be text"),
+            "expected text-key error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn decode_readings_rejects_non_integer_value() {
+        let readings = Value::Map(vec![(
+            Value::Text("temp".to_string()),
+            Value::Text("not-a-number".to_string()),
+        )]);
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_APP_DATA.into())),
+            map_entry(2, Value::Text("node-1".to_string())),
+            map_entry(3, Value::Bytes(vec![0x42u8; 32])),
+            map_entry(4, Value::Bytes(b"payload".to_vec())),
+            map_entry(5, Value::Integer(100u64.into())),
+            map_entry(16, readings),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        let err = decode_connector_message(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("signed integer"),
+            "expected integer-value error, got: {err}"
+        );
+    }
 }

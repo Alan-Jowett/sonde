@@ -15,9 +15,6 @@ param actualStateTableName string
 @description('Table name for Azure handler desired-state rows.')
 param desiredStateTableName string
 
-@description('Table name for Azure handler program-route rows.')
-param programRouteTableName string
-
 @description('Table name for program storage.')
 param programsTableName string
 
@@ -114,14 +111,6 @@ resource desiredStateTable 'Microsoft.Storage/storageAccounts/tableServices/tabl
   }
 }
 
-resource programRouteTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
-  parent: tableService
-  name: programRouteTableName
-  properties: {
-    signedIdentifiers: []
-  }
-}
-
 resource programsTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
   parent: tableService
   name: programsTableName
@@ -147,8 +136,6 @@ output actualStateTableName string = actualStateTable.name
 output actualStateTableResourceId string = actualStateTable.id
 output desiredStateTableName string = desiredStateTable.name
 output desiredStateTableResourceId string = desiredStateTable.id
-output programRouteTableName string = programRouteTable.name
-output programRouteTableResourceId string = programRouteTable.id
 output programsTableName string = programsTable.name
 output programsTableResourceId string = programsTable.id
 output sensorDataTableName string = sensorDataTable.name

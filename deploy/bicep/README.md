@@ -12,10 +12,9 @@ Azure companion architecture.
   - Two Storage Queues:
     - `connector-upstream`
     - `desired-state`
-  - Three Azure Table resources for the Azure handler:
+  - Two Azure Table resources for the Azure handler:
     - `actualstate`
     - `desiredstate`
-    - `programroute`
 - An Azure handler Function App on a Classic Consumption plan (`Y1` / `Dynamic`)
 - A system-assigned managed identity on the Function App with:
   - Storage Queue Data Contributor permissions on the Storage Account
@@ -40,7 +39,6 @@ Azure companion architecture.
 | `storageAccountName` | derived | Optional Storage Account override |
 | `actualStateTableName` | `actualstate` | Azure handler actual-state table |
 | `desiredStateTableName` | `desiredstate` | Azure handler desired-state table |
-| `programRouteTableName` | `programroute` | Azure handler program-route table |
 | `functionAppName` | derived | Optional Function App override |
 | `functionPlanName` | derived | Optional Function hosting plan override |
 

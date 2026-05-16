@@ -15,9 +15,6 @@ param actualStateTableName string
 @description('Azure handler desired-state table name.')
 param desiredStateTableName string
 
-@description('Azure handler program-route table name.')
-param programRouteTableName string
-
 @description('Program storage table name.')
 param programsTableName string
 
@@ -44,11 +41,6 @@ resource existingActualStateTable 'Microsoft.Storage/storageAccounts/tableServic
 resource existingDesiredStateTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
   parent: existingTableService
   name: desiredStateTableName
-}
-
-resource existingProgramRouteTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
-  parent: existingTableService
-  name: programRouteTableName
 }
 
 resource existingProgramsTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
@@ -84,16 +76,6 @@ resource functionActualStateTableContributor 'Microsoft.Authorization/roleAssign
 resource functionDesiredStateTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid('function-desired-state-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingDesiredStateTable.id)
   scope: existingDesiredStateTable
-  properties: {
-    principalId: functionPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: storageTableDataContributorRoleId
-  }
-}
-
-resource functionProgramRouteTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid('function-program-route-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingProgramRouteTable.id)
-  scope: existingProgramRouteTable
   properties: {
     principalId: functionPrincipalId
     principalType: 'ServicePrincipal'

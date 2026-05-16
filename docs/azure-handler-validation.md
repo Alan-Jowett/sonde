@@ -4,7 +4,7 @@
 
 > **Document status:** Draft
 > **Scope:** Validation for the Azure Function App that owns Sonde cloud-side
-> node reconciliation and `GW-0813` routing.
+> node reconciliation and `GW-0813` sensor data storage.
 > **Audience:** Implementers and reviewers validating the Azure handler against
 > the connector contract.
 > **Related:** [azure-handler-requirements.md](azure-handler-requirements.md),
@@ -24,8 +24,8 @@
 1. Start the Azure handler against test doubles for Azure Tables and Storage Queue senders.
 2. Deliver one node-scoped `GW-0812`, one `GW-0813`, and one unsupported connector payload through the upstream trigger path.
 3. Assert: the `GW-0812` is routed to node-state reconciliation.
-4. Assert: the `GW-0813` is routed to application-data delivery.
-5. Assert: the unsupported message does not mutate the actual-state, desired-state, or program-route tables.
+4. Assert: the `GW-0813` is routed to sensor data storage.
+5. Assert: the unsupported message does not mutate the actual-state, desired-state, or sensor-data tables.
 
 ---
 
@@ -211,52 +211,11 @@ published when both desired fields diverge simultaneously.
 
 ---
 
-### T-AZH-0300  ProgramRoute rows map `program_hash` to handler queue name
+### ~~T-AZH-0300 through T-AZH-0303~~ (Retired)
 
-**Validates:** AZH-0300
-
-**Procedure:**
-1. Seed a `ProgramRoute` row for a known `program_hash`.
-2. Deliver a `GW-0813` carrying that hash.
-3. Assert: the handler performs a route lookup by `program_hash`.
-4. Assert: the lookup resolves to the expected queue name.
-
----
-
-### T-AZH-0301  `GW-0813` payloads are forwarded unchanged to the mapped queue
-
-**Validates:** AZH-0301
-
-**Procedure:**
-1. Seed a `ProgramRoute` row mapping a test `program_hash` to a test queue.
-2. Deliver a representative `GW-0813` payload through the upstream trigger path.
-3. Assert: exactly one queue message is sent to the mapped queue.
-4. Assert: the queue message body matches the original raw `GW-0813` connector payload bytes byte-for-byte.
-
----
-
-### T-AZH-0302  Missing program routes fail closed
-
-**Validates:** AZH-0302
-
-**Procedure:**
-1. Ensure no `ProgramRoute` row exists for a test `program_hash`.
-2. Deliver a `GW-0813` carrying that hash.
-3. Assert: the handler reports failure through logging, function failure, or both.
-4. Assert: no fallback or default queue delivery occurs.
-
----
-
-### T-AZH-0303  Mapped queues are treated as external dependencies
-
-**Validates:** AZH-0303
-
-**Procedure:**
-1. Configure a `ProgramRoute` row that references a queue name.
-2. Inspect the route storage, handler behavior, and deployment documentation.
-3. Assert: the route stores only the queue reference.
-4. Assert: the handler does not attempt queue creation when processing the route.
-5. Assert: the deployment documentation identifies mapped handler queues as pre-provisioned dependencies.
+> Retired. These test cases validated ProgramRoute-based queue delivery of
+> `GW-0813` messages, which has been superseded by direct `SensorData` table
+> storage (AZH-0500).
 
 ---
 
@@ -265,7 +224,7 @@ published when both desired fields diverge simultaneously.
 **Validates:** AZH-0400
 
 **Procedure:**
-1. Inject one actual-state table append failure, one desired-state table read failure, one program-route table read failure, one downstream `GW-0811` send failure, and one mapped handler-queue send failure in separate sub-cases.
+1. Inject one actual-state table append failure, one desired-state table read failure, one `SensorData` table append failure, and one downstream `GW-0811` send failure in separate sub-cases.
 2. Trigger the corresponding handler path in each sub-case.
 3. Assert: each failure is surfaced through logging, function failure, or both.
 4. Assert: the handler does not report success for the failed message path.

@@ -1070,7 +1070,12 @@ function renderSensorChart(allSeries) {
           ticks: {
             callback(value) {
               const d = new Date(value);
-              return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+              const hh = d.getHours().toString().padStart(2, '0');
+              const mm = d.getMinutes().toString().padStart(2, '0');
+              if (SENSOR_STATE.timeRange === '7d') {
+                return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+              }
+              return `${hh}:${mm}`;
             },
             maxTicksLimit: 12,
           },
@@ -1194,12 +1199,14 @@ async function renderSensorData() {
     const currentPlottableKeys = new Set(
       allSeries.filter((s) => s.points.length > 0).map((s) => s.key)
     );
+    const sizeBefore = SENSOR_STATE.selectedSeries.size;
     for (const key of [...SENSOR_STATE.selectedSeries]) {
       if (!currentPlottableKeys.has(key)) {
         SENSOR_STATE.selectedSeries.delete(key);
       }
     }
-    if (SENSOR_STATE.selectedSeries.size === 0) {
+    const prunedCount = sizeBefore - SENSOR_STATE.selectedSeries.size;
+    if (SENSOR_STATE.selectedSeries.size === 0 && prunedCount > 0) {
       SENSOR_STATE.seriesInitialized = false;
     }
 

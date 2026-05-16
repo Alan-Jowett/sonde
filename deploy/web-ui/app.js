@@ -1328,6 +1328,13 @@ function showSeriesEditDialog(seriesKey, rawLabel) {
 
     const divisor = divisorStr ? Number(divisorStr) : 0;
 
+    if (divisorStr && (!Number.isFinite(divisor) || divisor === 0)) {
+      const divisorInput = document.getElementById('series-edit-divisor');
+      if (divisorInput) divisorInput.focus();
+      alert('Scale divisor must be a finite non-zero number.');
+      return;
+    }
+
     if (name || (divisor && divisor !== 0) || unit) {
       ov[seriesKey] = {
         displayName: name || '',
@@ -1427,7 +1434,7 @@ async function renderSensorData() {
       const hasOverride = displayLabel !== s.label;
       const overrideTitle = hasOverride ? ` title="Raw: ${escapeHtml(s.label)}"` : '';
       const ariaLabel = `Edit display settings for ${displayLabel}`;
-      return `<label class="sensor-series-label"${overrideTitle}><input type="checkbox" value="${escapeHtml(s.key)}"${checked}${plottable ? '' : ' disabled'}> ${escapeHtml(displayLabel)}${suffix}</label><button type="button" class="sensor-series-edit-btn" data-series-key="${escapeHtml(s.key)}" data-series-label="${escapeHtml(s.label)}" title="Edit display settings" aria-label="${escapeHtml(ariaLabel)}">✏️</button>`;
+      return `<span class="sensor-series-item"><label class="sensor-series-label"${overrideTitle}><input type="checkbox" value="${escapeHtml(s.key)}"${checked}${plottable ? '' : ' disabled'}> ${escapeHtml(displayLabel)}${suffix}</label><button type="button" class="sensor-series-edit-btn" data-series-key="${escapeHtml(s.key)}" data-series-label="${escapeHtml(s.label)}" title="Edit display settings" aria-label="${escapeHtml(ariaLabel)}">✏️</button></span>`;
     }).join('');
 
     const autoRefreshChecked = SENSOR_STATE.autoRefresh ? ' checked' : '';

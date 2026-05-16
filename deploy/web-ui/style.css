@@ -161,6 +161,11 @@ code { font-family: Consolas, "Courier New", monospace; }
   vertical-align: middle;
 }
 .sensor-series-edit-btn:hover { opacity: 1; }
+.sensor-series-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
 .series-edit-overlay {
   position: fixed;
   inset: 0;

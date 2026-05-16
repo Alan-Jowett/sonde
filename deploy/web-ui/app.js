@@ -11,7 +11,7 @@ const CONFIG = {
   desiredStateTable: 'desiredstate',
   programsTable: 'programs',
   programRouteTable: 'programroute',
-  sensorDataTable: 'SensorData',
+  sensorDataTable: 'sensordata',
   refreshIntervalMs: 30000,
 };
 
@@ -990,7 +990,7 @@ async function querySensorData(partitionKeys, timeRangeMs) {
   const rkStart = reverseTimestampHex(now);
   const rkEnd = reverseTimestampHex(start);
 
-  const requests = partitionKeys.map(async (pk) => {
+  const fetchPartition = async (pk) => {
     const filter = `PartitionKey eq '${pk}' and RowKey ge '${rkStart}' and RowKey le '${rkEnd}~'`;
     const url = new URL(tableQueryUrl(CONFIG.sensorDataTable));
     url.searchParams.set('$filter', filter);
@@ -1012,10 +1012,18 @@ async function querySensorData(partitionKeys, timeRangeMs) {
 
     const payload = await response.json();
     return Array.isArray(payload.value) ? payload.value : [];
-  });
+  };
 
-  const results = await Promise.all(requests);
-  return results.flat();
+  const allEntities = [];
+  const batchSize = 6;
+  for (let i = 0; i < partitionKeys.length; i += batchSize) {
+    const batch = partitionKeys.slice(i, i + batchSize);
+    const results = await Promise.all(batch.map(fetchPartition));
+    for (const entities of results) {
+      allEntities.push(...entities);
+    }
+  }
+  return allEntities;
 }
 
 function parseSensorReadings(decodedReadings) {
@@ -1112,20 +1120,26 @@ const CHART_COLORS = [
 
 function renderSensorChart(allSeries) {
   const selected = allSeries.filter((s) => SENSOR_STATE.selectedSeries.has(s.key));
+
+  if (APP.sensorChart) {
+    APP.sensorChart.destroy();
+    APP.sensorChart = null;
+  }
+
   if (selected.length === 0) {
-    contentEl.querySelector('.sensor-chart-area').innerHTML =
-      '<p class="muted">No series selected. Use the checkboxes below to select data to plot.</p>';
+    const chartArea = contentEl.querySelector('.sensor-chart-area');
+    if (chartArea) {
+      const message = allSeries.length === 0
+        ? 'No decoded sensor readings found for the selected time range.'
+        : 'No series selected. Use the checkboxes below to select data to plot.';
+      chartArea.innerHTML = `<p class="muted">${message}</p>`;
+    }
     return;
   }
 
   const chartArea = contentEl.querySelector('.sensor-chart-area');
   if (!chartArea) return;
   chartArea.innerHTML = '<canvas id="sensor-canvas"></canvas>';
-
-  if (APP.sensorChart) {
-    APP.sensorChart.destroy();
-    APP.sensorChart = null;
-  }
 
   const canvas = document.getElementById('sensor-canvas');
   if (!canvas || typeof Chart === 'undefined') {
@@ -1250,6 +1264,11 @@ async function renderSensorData() {
 
   renderCard('Sensor Data', '<p class="muted">Loading sensor data…</p>');
 
+  if (APP.sensorChart) {
+    APP.sensorChart.destroy();
+    APP.sensorChart = null;
+  }
+
   try {
     const actualRows = await queryTable(CONFIG.actualStateTable, '');
     const latestActual = latestByPartition(actualRows).sort((a, b) =>
@@ -1277,8 +1296,17 @@ async function renderSensorData() {
 
     if (!SENSOR_STATE.seriesInitialized && allSeries.length > 0) {
       SENSOR_STATE.seriesInitialized = true;
-      for (const s of allSeries.slice(0, Math.min(allSeries.length, 5))) {
+      const plottable = allSeries.filter((s) => s.points.length > 0);
+      for (const s of plottable.slice(0, Math.min(plottable.length, 5))) {
         SENSOR_STATE.selectedSeries.add(s.key);
+      }
+    }
+
+    // Prune stale selections that no longer exist in current data
+    const currentKeys = new Set(allSeries.map((s) => s.key));
+    for (const key of [...SENSOR_STATE.selectedSeries]) {
+      if (!currentKeys.has(key)) {
+        SENSOR_STATE.selectedSeries.delete(key);
       }
     }
 

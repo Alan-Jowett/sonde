@@ -939,7 +939,8 @@ The gateway logs the complete APP_DATA handler pipeline at INFO level so operato
 |---|---|---|---|---|
 | APP_DATA received | INFO | `engine.rs` | `node_id`, `program_hash`, `len` | AC1 |
 | APP_DATA dropped (no program hash) | WARN | `engine.rs` | `node_id` | AC6 |
-| APP_DATA dropped (no handler match) | WARN | `engine.rs` | `node_id`, `program_hash`, `handler_count` | AC6 |
+| APP_DATA dropped (no handler, no connector) | WARN | `engine.rs` | `node_id`, `program_hash`, `handler_count` | AC6 |
+| APP_DATA forwarded to connector (no handler) | DEBUG | `engine.rs` | `node_id`, `program_hash`, `handler_count`, `connector_subscribers` | AC6 |
 | Handler matched | INFO | `engine.rs` | `program_hash`, `command` | AC2 |
 | Handler invoked | INFO | `engine.rs` | `command` | AC3 |
 | Handler replied | INFO | `engine.rs` | `len` | AC4 |
@@ -962,7 +963,7 @@ All protocol errors result in **silent discard** — no error response is sent t
 | Malformed CBOR (post-auth) | Discard. Log at warn level. |
 | Unexpected `msg_type` | Discard. Log at warn level. |
 | APP_DATA with no `current_program_hash` | Discard. Log at warn level. |
-| APP_DATA with no matching handler | Discard. Log at warn level (includes `program_hash` and `handler_count`). |
+| APP_DATA with no matching handler | If connector subscribers exist: forward to connector, log at debug level. Otherwise: discard, log at warn level (includes `program_hash`, `handler_count`). |
 | Handler crash mid-request | No APP_DATA_REPLY sent. Log at error level. |
 | Storage failure | Log at error level. Retry or degrade gracefully. |
 

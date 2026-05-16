@@ -1142,8 +1142,8 @@ function renderSensorChart(allSeries) {
           title: {
             display: true,
             text: (() => {
-              const suffixes = [...new Set(datasets.map((d) => d.unitSuffix).filter(Boolean))];
-              return suffixes.length === 1 ? `Value (${suffixes[0]})` : 'Value';
+              const suffixes = [...new Set(datasets.map((d) => d.unitSuffix))];
+              return suffixes.length === 1 && suffixes[0] ? `Value (${suffixes[0]})` : 'Value';
             })(),
           },
         },
@@ -1158,8 +1158,7 @@ function renderSensorChart(allSeries) {
             label(item) {
               const ds = item.dataset;
               const suffix = ds.unitSuffix || '';
-              const parts = [`Node: ${ds.nodeId || '—'}`, `Program: ${ds.programHash || '—'}`, `${ds.readingName || '—'}: ${item.parsed.y}${suffix}`];
-              return parts;
+              return `${ds.label}: ${item.parsed.y}${suffix}`;
             },
           },
         },
@@ -1271,15 +1270,43 @@ function showSeriesEditDialog(seriesKey, rawLabel) {
 
   document.body.appendChild(dialog);
 
+  const previousFocus = document.activeElement;
   const nameInput = document.getElementById('series-edit-name');
   if (nameInput) nameInput.focus();
 
+  function closeDialog() {
+    dialog.remove();
+    if (previousFocus && typeof previousFocus.focus === 'function') {
+      previousFocus.focus();
+    }
+  }
+
+  // Focus trap: cycle through focusable elements within the dialog
+  dialog.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeDialog();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const focusable = dialog.querySelectorAll('input, button, [tabindex]:not([tabindex="-1"])');
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  });
+
   dialog.addEventListener('click', (e) => {
-    if (e.target === dialog) dialog.remove();
+    if (e.target === dialog) closeDialog();
   });
 
   document.getElementById('series-edit-cancel').addEventListener('click', () => {
-    dialog.remove();
+    closeDialog();
   });
 
   document.getElementById('series-edit-reset').addEventListener('click', async () => {
@@ -1289,7 +1316,7 @@ function showSeriesEditDialog(seriesKey, rawLabel) {
       alert('Failed to save settings — browser storage may be full or disabled.');
       return;
     }
-    dialog.remove();
+    closeDialog();
     await renderSensorData();
   });
 
@@ -1315,7 +1342,7 @@ function showSeriesEditDialog(seriesKey, rawLabel) {
       alert('Failed to save settings — browser storage may be full or disabled.');
       return;
     }
-    dialog.remove();
+    closeDialog();
     await renderSensorData();
   });
 }

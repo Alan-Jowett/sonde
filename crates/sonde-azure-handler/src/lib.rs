@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -59,6 +60,7 @@ pub struct RuntimeConfig {
     pub desired_state_table: String,
     pub program_route_table: String,
     pub programs_table: String,
+    pub sensor_data_table: String,
 }
 
 impl RuntimeConfig {
@@ -74,6 +76,7 @@ impl RuntimeConfig {
             desired_state_table: required_env("SONDE_AZURE_HANDLER_DESIRED_STATE_TABLE")?,
             program_route_table: required_env("SONDE_AZURE_HANDLER_PROGRAM_ROUTE_TABLE")?,
             programs_table: required_env("SONDE_AZURE_HANDLER_PROGRAMS_TABLE")?,
+            sensor_data_table: required_env("SONDE_AZURE_HANDLER_SENSOR_DATA_TABLE")?,
         })
     }
 }
@@ -141,6 +144,19 @@ pub struct ProgramImageRow {
     pub created_at: String,
 }
 
+/// One row in the `SensorData` Azure Table (AZH-0500).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SensorDataRow {
+    pub row_key: String,
+    pub node_id: String,
+    pub timestamp_ms: u64,
+    pub program_hash: Vec<u8>,
+    /// Raw APP_DATA blob bytes (base64-encoded when written to Azure Table).
+    pub raw_payload: Vec<u8>,
+    /// JSON string of decoded readings, or `""` if no decoder or failure.
+    pub decoded_readings: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActualStateMessage {
     pub entity_kind: String,
@@ -160,6 +176,9 @@ pub struct AppDataMessage {
     pub program_hash: Vec<u8>,
     pub payload: Vec<u8>,
     pub timestamp_ms: u64,
+    /// Decoded sensor readings from decoder BPF execution (GW-1903),
+    /// extracted from CBOR key 16 of the upstream connector message.
+    pub readings: Option<BTreeMap<String, i64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +208,8 @@ pub trait HandlerStore: Send + Sync {
         program_hash: &[u8],
     ) -> Result<Option<ProgramImageRow>, HandlerError>;
     async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError>;
+    /// Append a row to the `SensorData` table for a `GW-0813` message (AZH-0500).
+    async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError>;
 }
 
 #[async_trait]
@@ -337,14 +358,27 @@ where
         raw_payload: &[u8],
         app_data: AppDataMessage,
     ) -> Result<(), HandlerError> {
+        // AZH-0500: write SensorData row before ProgramRoute routing.
+        // SensorData writes are independent of routing (azure-handler-design §6.1).
+        let decoded_readings = readings_to_json(&app_data.readings);
+        let sensor_row = SensorDataRow {
+            row_key: next_history_row_key(app_data.timestamp_ms)?,
+            node_id: app_data.node_id,
+            timestamp_ms: app_data.timestamp_ms,
+            program_hash: app_data.program_hash,
+            raw_payload: app_data.payload,
+            decoded_readings,
+        };
+        self.store.append_sensor_data(&sensor_row).await?;
+
         let route = self
             .store
-            .load_program_route(&app_data.program_hash)
+            .load_program_route(&sensor_row.program_hash)
             .await?
             .ok_or_else(|| {
                 HandlerError::Publish(format!(
                     "no ProgramRoute row exists for program hash `{}`",
-                    hex::encode(&app_data.program_hash)
+                    hex::encode(&sensor_row.program_hash)
                 ))
             })?;
         self.publisher
@@ -642,6 +676,7 @@ pub struct AzureTablesStore {
     desired_state_table: azure_data_tables::clients::TableClient,
     program_route_table: azure_data_tables::clients::TableClient,
     programs_table: azure_data_tables::clients::TableClient,
+    sensor_data_table: azure_data_tables::clients::TableClient,
 }
 
 impl AzureTablesStore {
@@ -658,6 +693,7 @@ impl AzureTablesStore {
             desired_state_table: service.table_client(config.desired_state_table.clone()),
             program_route_table: service.table_client(config.program_route_table.clone()),
             programs_table: service.table_client(config.programs_table.clone()),
+            sensor_data_table: service.table_client(config.sensor_data_table.clone()),
         })
     }
 }
@@ -812,6 +848,16 @@ impl HandlerStore for AzureTablesStore {
             .map_err(|e| HandlerError::Store(format!("prepare program-image upsert failed: {e}")))?
             .await
             .map_err(|e| HandlerError::Store(format!("upsert program-image row failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError> {
+        let entity = SensorDataEntity::try_from(row.clone())?;
+        self.sensor_data_table
+            .insert::<_, SensorDataEntity>(&entity)
+            .map_err(|e| HandlerError::Store(format!("prepare sensor-data insert failed: {e}")))?
+            .await
+            .map_err(|e| HandlerError::Store(format!("append sensor-data row failed: {e}")))?;
         Ok(())
     }
 }
@@ -1153,6 +1199,7 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
             program_hash: required_program_hash(&map, 3, "program_hash")?,
             payload: required_bytes(&map, 4, "payload")?,
             timestamp_ms: required_u64(&map, 5, "timestamp_ms")?,
+            readings: decode_optional_readings(&map, 16)?,
         })),
         other => Ok(ConnectorMessage::Unsupported(other)),
     }
@@ -1197,6 +1244,66 @@ pub(crate) fn encode_desired_state(
 
 fn encode_optional_hex(value: Option<Vec<u8>>) -> Option<String> {
     value.map(hex::encode)
+}
+
+/// JavaScript's `Number.MAX_SAFE_INTEGER` (2^53 - 1).
+const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
+/// Convert an optional readings map to a JSON string (AZH-0501).
+///
+/// Int64 values within JavaScript's `Number.MAX_SAFE_INTEGER` (±2^53 - 1) are
+/// encoded as JSON numbers. Values exceeding that threshold are encoded as JSON
+/// strings to preserve precision for SPA consumers that use `JSON.parse`.
+/// Returns `""` when no readings are present.
+fn readings_to_json(readings: &Option<BTreeMap<String, i64>>) -> String {
+    let Some(map) = readings else {
+        return String::new();
+    };
+    if map.is_empty() {
+        return String::new();
+    }
+    let json_map: serde_json::Map<String, serde_json::Value> = map
+        .iter()
+        .map(|(k, &v)| {
+            let json_val = if (-JS_MAX_SAFE_INTEGER..=JS_MAX_SAFE_INTEGER).contains(&v) {
+                serde_json::Value::Number(serde_json::Number::from(v))
+            } else {
+                serde_json::Value::String(v.to_string())
+            };
+            (k.clone(), json_val)
+        })
+        .collect();
+    serde_json::to_string(&json_map).unwrap_or_default()
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct SensorDataEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    node_id: String,
+    #[serde(deserialize_with = "deserialize_u64_flexible")]
+    timestamp_ms: u64,
+    program_hash: String,
+    raw_payload: String,
+    decoded_readings: String,
+}
+
+impl TryFrom<SensorDataRow> for SensorDataEntity {
+    type Error = HandlerError;
+
+    fn try_from(value: SensorDataRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            partition_key: encode_node_partition_key(&value.node_id),
+            row_key: value.row_key,
+            node_id: value.node_id,
+            timestamp_ms: value.timestamp_ms,
+            program_hash: hex::encode(&value.program_hash),
+            raw_payload: base64::engine::general_purpose::STANDARD.encode(&value.raw_payload),
+            decoded_readings: value.decoded_readings,
+        })
+    }
 }
 
 fn encode_node_partition_key(node_id: &str) -> String {
@@ -1405,6 +1512,40 @@ fn validate_program_hash_length(bytes: &[u8], field: &str) -> Result<(), Handler
     )))
 }
 
+/// Decode an optional CBOR readings map (key 16) as `BTreeMap<String, i64>`.
+///
+/// Returns `Ok(None)` when the key is absent or null. Returns an error when the
+/// key is present but not a valid `{ text → signed integer }` map.
+fn decode_optional_readings(
+    map: &[(Value, Value)],
+    key: u64,
+) -> Result<Option<BTreeMap<String, i64>>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::Map(entries)) => {
+            let mut result = BTreeMap::new();
+            for (k, v) in entries {
+                let name = k.as_text().ok_or_else(|| {
+                    HandlerError::Decode("readings map key must be text".to_string())
+                })?;
+                let val = v
+                    .as_integer()
+                    .and_then(|i| i64::try_from(i).ok())
+                    .ok_or_else(|| {
+                        HandlerError::Decode(format!(
+                            "readings value for `{name}` must be a signed integer"
+                        ))
+                    })?;
+                result.insert(name.to_string(), val);
+            }
+            Ok(Some(result))
+        }
+        Some(_) => Err(HandlerError::Decode(
+            "`readings` (key 16) must be a CBOR map or null".to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1431,6 +1572,7 @@ mod tests {
         routes: Mutex<HashMap<String, ProgramRouteRow>>,
         program_images: Mutex<HashMap<String, ProgramImageRow>>,
         stored_program_rows: Mutex<Vec<ProgramImageRow>>,
+        sensor_data_rows: Mutex<Vec<SensorDataRow>>,
     }
 
     impl MemoryStore {
@@ -1550,6 +1692,11 @@ mod tests {
             self.stored_program_rows.lock().await.push(row.clone());
             Ok(())
         }
+
+        async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError> {
+            self.sensor_data_rows.lock().await.push(row.clone());
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -1651,6 +1798,10 @@ mod tests {
         async fn store_program_image(&self, _row: &ProgramImageRow) -> Result<(), HandlerError> {
             Ok(())
         }
+
+        async fn append_sensor_data(&self, _row: &SensorDataRow) -> Result<(), HandlerError> {
+            Ok(())
+        }
     }
 
     struct SameTimestampDifferentLatestStore {
@@ -1695,6 +1846,10 @@ mod tests {
         }
 
         async fn store_program_image(&self, _row: &ProgramImageRow) -> Result<(), HandlerError> {
+            Ok(())
+        }
+
+        async fn append_sensor_data(&self, _row: &SensorDataRow) -> Result<(), HandlerError> {
             Ok(())
         }
     }
@@ -1742,6 +1897,10 @@ mod tests {
         }
 
         async fn store_program_image(&self, _row: &ProgramImageRow) -> Result<(), HandlerError> {
+            Ok(())
+        }
+
+        async fn append_sensor_data(&self, _row: &SensorDataRow) -> Result<(), HandlerError> {
             Ok(())
         }
     }
@@ -1809,6 +1968,31 @@ mod tests {
             map_entry(4, Value::Bytes(payload.to_vec())),
             map_entry(5, Value::Integer(321u64.into())),
             map_entry(6, Value::Text("app_data".to_string())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        bytes
+    }
+
+    fn sample_app_data_with_readings(
+        program_hash: &[u8],
+        payload: &[u8],
+        readings: &[(&str, i64)],
+    ) -> Vec<u8> {
+        let readings_cbor = Value::Map(
+            readings
+                .iter()
+                .map(|(k, v)| (Value::Text(k.to_string()), Value::Integer((*v).into())))
+                .collect(),
+        );
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_APP_DATA.into())),
+            map_entry(2, Value::Text("node-1".to_string())),
+            map_entry(3, Value::Bytes(program_hash.to_vec())),
+            map_entry(4, Value::Bytes(payload.to_vec())),
+            map_entry(5, Value::Integer(321u64.into())),
+            map_entry(6, Value::Text("app_data".to_string())),
+            map_entry(16, readings_cbor),
         ]);
         let mut bytes = Vec::new();
         ciborium::into_writer(&value, &mut bytes).unwrap();
@@ -2933,6 +3117,9 @@ mod tests {
             async fn store_program_image(&self, _: &ProgramImageRow) -> Result<(), HandlerError> {
                 Err(HandlerError::Store("simulated storage failure".to_string()))
             }
+            async fn append_sensor_data(&self, _: &SensorDataRow) -> Result<(), HandlerError> {
+                Ok(())
+            }
         }
 
         let store = Arc::new(FailingProgramStore);
@@ -3043,6 +3230,361 @@ mod tests {
         assert_eq!(
             parsed.get("program_hash").unwrap().as_str().unwrap(),
             "abcd"
+        );
+    }
+
+    // ── SensorData table tests (AZH-0500, AZH-0501) ───────────────────
+
+    /// T-AZH-0500: SensorData table row creation.
+    /// Delivering a GW-0813 app-data message writes a SensorData row with
+    /// correct node_id, program_hash, raw_payload, and row_key.
+    #[tokio::test]
+    async fn t_azh_0500_sensor_data_row_created_on_app_data() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        let program_hash = [0x42u8; 32];
+        let payload = b"sensor-blob";
+        store.routes.lock().await.insert(
+            hex::encode(program_hash),
+            ProgramRouteRow {
+                program_hash: program_hash.to_vec(),
+                handler_queue: "handler-q".to_string(),
+            },
+        );
+
+        let msg = sample_app_data(&program_hash, payload);
+        handler.handle_payload(&msg).await.unwrap();
+
+        let rows = store.sensor_data_rows.lock().await;
+        assert_eq!(rows.len(), 1, "exactly one SensorData row");
+        assert_eq!(rows[0].node_id, "node-1");
+        assert_eq!(rows[0].program_hash, program_hash.to_vec());
+        assert_eq!(rows[0].raw_payload, payload.to_vec());
+        assert_eq!(rows[0].timestamp_ms, 321);
+        assert!(!rows[0].row_key.is_empty());
+    }
+
+    /// T-AZH-0500a: Two APP_DATA messages with the same timestamp_ms get
+    /// distinct row keys.
+    #[tokio::test]
+    async fn t_azh_0500a_duplicate_timestamps_produce_distinct_row_keys() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        let program_hash = [0x42u8; 32];
+        store.routes.lock().await.insert(
+            hex::encode(program_hash),
+            ProgramRouteRow {
+                program_hash: program_hash.to_vec(),
+                handler_queue: "handler-q".to_string(),
+            },
+        );
+
+        let msg = sample_app_data(&program_hash, b"blob-1");
+        handler.handle_payload(&msg).await.unwrap();
+        let msg = sample_app_data(&program_hash, b"blob-2");
+        handler.handle_payload(&msg).await.unwrap();
+
+        let rows = store.sensor_data_rows.lock().await;
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].row_key, rows[1].row_key);
+    }
+
+    /// T-AZH-0501: Decoded readings stored as JSON.
+    /// A readings map with multiple entries is round-tripped to a JSON
+    /// object in decoded_readings.
+    #[tokio::test]
+    async fn t_azh_0501_decoded_readings_stored_as_json() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        let program_hash = [0x42u8; 32];
+        store.routes.lock().await.insert(
+            hex::encode(program_hash),
+            ProgramRouteRow {
+                program_hash: program_hash.to_vec(),
+                handler_queue: "handler-q".to_string(),
+            },
+        );
+
+        let msg = sample_app_data_with_readings(
+            &program_hash,
+            b"raw",
+            &[("temperature_mc", 25125), ("humidity_pct", 4500)],
+        );
+        handler.handle_payload(&msg).await.unwrap();
+
+        let rows = store.sensor_data_rows.lock().await;
+        assert_eq!(rows.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(&rows[0].decoded_readings).unwrap();
+        assert_eq!(parsed["temperature_mc"], 25125);
+        assert_eq!(parsed["humidity_pct"], 4500);
+    }
+
+    /// T-AZH-0501a: Missing readings stored as empty string.
+    /// When no readings key is present, decoded_readings is "".
+    #[tokio::test]
+    async fn t_azh_0501a_missing_readings_stored_as_empty_string() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        let program_hash = [0x42u8; 32];
+        store.routes.lock().await.insert(
+            hex::encode(program_hash),
+            ProgramRouteRow {
+                program_hash: program_hash.to_vec(),
+                handler_queue: "handler-q".to_string(),
+            },
+        );
+
+        let msg = sample_app_data(&program_hash, b"no-decoder");
+        handler.handle_payload(&msg).await.unwrap();
+
+        let rows = store.sensor_data_rows.lock().await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].decoded_readings, "");
+    }
+
+    /// T-AZH-0501b: Large int64 values encoded as JSON strings.
+    /// Values above MAX_SAFE_INTEGER are JSON strings; values at or below
+    /// are JSON numbers.
+    #[tokio::test]
+    async fn t_azh_0501b_large_int64_values_encoded_as_json_strings() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        let program_hash = [0x42u8; 32];
+        store.routes.lock().await.insert(
+            hex::encode(program_hash),
+            ProgramRouteRow {
+                program_hash: program_hash.to_vec(),
+                handler_queue: "handler-q".to_string(),
+            },
+        );
+
+        // 9007199254740993 = MAX_SAFE_INTEGER + 2 (exceeds threshold)
+        let above_safe = 9_007_199_254_740_993i64;
+        let msg = sample_app_data_with_readings(
+            &program_hash,
+            b"raw",
+            &[("big_value", above_safe), ("small_value", 42)],
+        );
+        handler.handle_payload(&msg).await.unwrap();
+
+        let rows = store.sensor_data_rows.lock().await;
+        assert_eq!(rows.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(&rows[0].decoded_readings).unwrap();
+        // big_value must be a JSON string to preserve precision
+        assert_eq!(
+            parsed["big_value"],
+            serde_json::Value::String("9007199254740993".to_string())
+        );
+        // small_value must be a JSON number
+        assert_eq!(parsed["small_value"], serde_json::json!(42));
+    }
+
+    /// T-AZH-0501b (negative): Large negative int64 values also encoded as
+    /// JSON strings.
+    #[tokio::test]
+    async fn t_azh_0501b_large_negative_int64_encoded_as_json_string() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        let program_hash = [0x42u8; 32];
+        store.routes.lock().await.insert(
+            hex::encode(program_hash),
+            ProgramRouteRow {
+                program_hash: program_hash.to_vec(),
+                handler_queue: "handler-q".to_string(),
+            },
+        );
+
+        let below_safe = -9_007_199_254_740_993i64;
+        let msg = sample_app_data_with_readings(&program_hash, b"raw", &[("neg_big", below_safe)]);
+        handler.handle_payload(&msg).await.unwrap();
+
+        let rows = store.sensor_data_rows.lock().await;
+        let parsed: serde_json::Value = serde_json::from_str(&rows[0].decoded_readings).unwrap();
+        assert_eq!(
+            parsed["neg_big"],
+            serde_json::Value::String("-9007199254740993".to_string())
+        );
+    }
+
+    /// SensorData write happens even when ProgramRoute is missing.
+    /// Per azure-handler-design §6.1, SensorData writes are independent of
+    /// ProgramRoute routing.
+    #[tokio::test]
+    async fn sensor_data_written_even_when_program_route_missing() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        let program_hash = [0x42u8; 32];
+        // No route configured for this program_hash.
+        let msg = sample_app_data(&program_hash, b"orphan-data");
+        let result = handler.handle_payload(&msg).await;
+
+        // Should fail because no route, but SensorData row should exist.
+        assert!(result.is_err());
+        let rows = store.sensor_data_rows.lock().await;
+        assert_eq!(rows.len(), 1, "SensorData row written before route lookup");
+        assert_eq!(rows[0].node_id, "node-1");
+    }
+
+    #[test]
+    fn readings_to_json_returns_empty_for_none() {
+        assert_eq!(readings_to_json(&None), "");
+    }
+
+    #[test]
+    fn readings_to_json_returns_empty_for_empty_map() {
+        assert_eq!(readings_to_json(&Some(BTreeMap::new())), "");
+    }
+
+    #[test]
+    fn readings_to_json_encodes_safe_integers_as_numbers() {
+        let mut map = BTreeMap::new();
+        map.insert("temp".to_string(), 25125i64);
+        map.insert("hum".to_string(), -100i64);
+        let json = readings_to_json(&Some(map));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["temp"], 25125);
+        assert_eq!(parsed["hum"], -100);
+    }
+
+    #[test]
+    fn readings_to_json_boundary_max_safe_integer_is_number() {
+        let mut map = BTreeMap::new();
+        map.insert("at_limit".to_string(), 9_007_199_254_740_991i64);
+        let json = readings_to_json(&Some(map));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed["at_limit"].is_number());
+    }
+
+    #[test]
+    fn readings_to_json_boundary_above_max_safe_integer_is_string() {
+        let mut map = BTreeMap::new();
+        map.insert("above_limit".to_string(), 9_007_199_254_740_992i64);
+        let json = readings_to_json(&Some(map));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed["above_limit"].is_string());
+    }
+
+    #[test]
+    fn readings_to_json_i64_min_does_not_overflow() {
+        let mut map = BTreeMap::new();
+        map.insert("extreme".to_string(), i64::MIN);
+        let json = readings_to_json(&Some(map));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed["extreme"].is_string(), "i64::MIN exceeds safe range");
+        assert_eq!(parsed["extreme"].as_str().unwrap(), i64::MIN.to_string());
+    }
+
+    #[test]
+    fn sensor_data_entity_from_row_encodes_fields_correctly() {
+        let row = SensorDataRow {
+            row_key: "000000000000fcb6:fffffffffffffffe:abcdef".to_string(),
+            node_id: "node-42".to_string(),
+            timestamp_ms: 999,
+            program_hash: vec![0x42u8; 32],
+            raw_payload: b"hello sensor".to_vec(),
+            decoded_readings: r#"{"temp":25}"#.to_string(),
+        };
+        let entity = SensorDataEntity::try_from(row.clone()).unwrap();
+        assert_eq!(entity.row_key, row.row_key);
+        assert_eq!(entity.node_id, "node-42");
+        assert_eq!(entity.timestamp_ms, 999);
+        assert_eq!(entity.program_hash, hex::encode(&row.program_hash));
+        assert_eq!(entity.program_hash.len(), 64);
+        assert_eq!(
+            entity.raw_payload,
+            base64::engine::general_purpose::STANDARD.encode(b"hello sensor")
+        );
+        assert_eq!(entity.decoded_readings, r#"{"temp":25}"#);
+        // PartitionKey is "n:" + SHA-256 hex of node_id
+        assert!(entity.partition_key.starts_with("n:"));
+        assert_eq!(entity.partition_key.len(), 2 + 64);
+    }
+
+    // ── decode_optional_readings error path tests ──────────────────────
+
+    #[test]
+    fn decode_readings_rejects_non_map_value() {
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_APP_DATA.into())),
+            map_entry(2, Value::Text("node-1".to_string())),
+            map_entry(3, Value::Bytes(vec![0x42u8; 32])),
+            map_entry(4, Value::Bytes(b"payload".to_vec())),
+            map_entry(5, Value::Integer(100u64.into())),
+            map_entry(16, Value::Text("not-a-map".to_string())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        let err = decode_connector_message(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("CBOR map or null"),
+            "expected map-type error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn decode_readings_rejects_non_text_key() {
+        let readings = Value::Map(vec![(
+            Value::Integer(42.into()),
+            Value::Integer(100.into()),
+        )]);
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_APP_DATA.into())),
+            map_entry(2, Value::Text("node-1".to_string())),
+            map_entry(3, Value::Bytes(vec![0x42u8; 32])),
+            map_entry(4, Value::Bytes(b"payload".to_vec())),
+            map_entry(5, Value::Integer(100u64.into())),
+            map_entry(16, readings),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        let err = decode_connector_message(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("key must be text"),
+            "expected text-key error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn decode_readings_rejects_non_integer_value() {
+        let readings = Value::Map(vec![(
+            Value::Text("temp".to_string()),
+            Value::Text("not-a-number".to_string()),
+        )]);
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_APP_DATA.into())),
+            map_entry(2, Value::Text("node-1".to_string())),
+            map_entry(3, Value::Bytes(vec![0x42u8; 32])),
+            map_entry(4, Value::Bytes(b"payload".to_vec())),
+            map_entry(5, Value::Integer(100u64.into())),
+            map_entry(16, readings),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        let err = decode_connector_message(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("signed integer"),
+            "expected integer-value error, got: {err}"
         );
     }
 }

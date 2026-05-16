@@ -42,6 +42,9 @@ param programRouteTableName string = 'programroute'
 @description('Table name for program storage.')
 param programsTableName string = ''
 
+@description('Table name for sensor data rows.')
+param sensorDataTableName string = ''
+
 @description('Optional override for the Azure handler Function App name.')
 param functionAppName string = ''
 
@@ -70,6 +73,7 @@ var effectiveProgramRouteTableName = empty(programRouteTableName)
   ? 'programroute'
   : programRouteTableName
 var effectiveProgramsTableName = empty(programsTableName) ? 'programs' : programsTableName
+var effectiveSensorDataTableName = empty(sensorDataTableName) ? 'sensordata' : sensorDataTableName
 // Keep the historical `-decoder-` stem as the derived default to avoid replacing
 // existing Function App resources during in-place redeploys. New deployments can
 // still override `functionAppName` if they want a handler-specific resource name.
@@ -120,6 +124,7 @@ module stack './modules/stack.bicep' = {
     desiredStateTableName: effectiveDesiredStateTableName
     programRouteTableName: effectiveProgramRouteTableName
     programsTableName: effectiveProgramsTableName
+    sensorDataTableName: effectiveSensorDataTableName
     functionAppName: effectiveFunctionAppName
     functionPlanName: effectiveFunctionPlanName
     companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId
@@ -142,6 +147,7 @@ output deploymentContainerName string = stack.outputs.deploymentContainerName
 output deploymentContainerUrl string = stack.outputs.deploymentContainerUrl
 output programRouteTableName string = stack.outputs.programRouteTableName
 output programsTableName string = stack.outputs.programsTableName
+output sensorDataTableName string = stack.outputs.sensorDataTableName
 output functionAppName string = stack.outputs.functionAppName
 output functionPrincipalId string = stack.outputs.functionPrincipalId
 output staticWebAppName string = stack.outputs.staticWebAppName

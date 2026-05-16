@@ -429,6 +429,7 @@ failure), `decoded_readings` is an empty string.
 
 **Priority:** Must
 **Source:** User request (WEB-0700 visualization)
+**Scope:** SPA + provisioning (not the Azure handler function)
 
 **Description:**
 The `SensorData` table MUST be queryable by the SPA via Azure Table Storage
@@ -438,10 +439,14 @@ queries by:
 - Time range (row key range, using reverse-timestamp convention)
 - Program hash (property filter)
 
-No additional API endpoint is required — the SPA queries Azure Tables directly.
+No additional API endpoint in the Azure handler is required — the SPA queries
+Azure Table Storage directly. The handler's responsibility is limited to
+writing rows (AZH-0500). The provisioning stack (AZH-0400) must grant the
+SPA's Entra identity read access to the `SensorData` table.
 
 **Acceptance criteria:**
 
-1. The SPA can query `SensorData` rows for a specific node within a time range.
+1. The SPA can query `SensorData` rows for a specific node within a time range via the Azure Table Storage REST API.
 2. The SPA can query `SensorData` rows for a specific program hash within a single node's partition. Cross-node program-hash queries are performed as parallel per-node requests by the SPA.
 3. Query performance is acceptable for time-series visualization (< 2 seconds for 1000 rows).
+4. The provisioning stack grants the SPA read access to the `SensorData` table.

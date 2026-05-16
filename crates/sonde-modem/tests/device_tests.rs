@@ -151,7 +151,14 @@ fn t0101_modem_ready_after_reset() {
         return;
     };
     let mr = reset_and_wait(&mut *port);
-    assert_eq!(mr.firmware_version, [0, 1, 0, 0]);
+    // Derive expected version from Cargo.toml: MAJOR.MINOR.PATCH → [MAJOR, MINOR, PATCH, 0].
+    let expected_version = {
+        let major: u8 = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap();
+        let minor: u8 = env!("CARGO_PKG_VERSION_MINOR").parse().unwrap();
+        let patch: u8 = env!("CARGO_PKG_VERSION_PATCH").parse().unwrap();
+        [major, minor, patch, 0]
+    };
+    assert_eq!(mr.firmware_version, expected_version);
     assert_ne!(mr.mac_address, [0; 6], "MAC should not be all zeros");
     eprintln!(
         "MODEM_READY: fw={}.{}.{}.{} mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
@@ -332,7 +339,17 @@ fn t0303_repeated_reset() {
 
     for i in 0..5 {
         let mr = reset_and_wait(&mut *port);
-        assert_eq!(mr.firmware_version, [0, 1, 0, 0], "iteration {} failed", i);
+        let expected_version = {
+            let major: u8 = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap();
+            let minor: u8 = env!("CARGO_PKG_VERSION_MINOR").parse().unwrap();
+            let patch: u8 = env!("CARGO_PKG_VERSION_PATCH").parse().unwrap();
+            [major, minor, patch, 0]
+        };
+        assert_eq!(
+            mr.firmware_version, expected_version,
+            "iteration {} failed",
+            i
+        );
     }
 }
 
@@ -391,7 +408,13 @@ fn t0402_framing_error_recovery() {
 
     // RESET should recover.
     let mr = reset_and_wait(&mut *port);
-    assert_eq!(mr.firmware_version, [0, 1, 0, 0]);
+    let expected_version = {
+        let major: u8 = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap();
+        let minor: u8 = env!("CARGO_PKG_VERSION_MINOR").parse().unwrap();
+        let patch: u8 = env!("CARGO_PKG_VERSION_PATCH").parse().unwrap();
+        [major, minor, patch, 0]
+    };
+    assert_eq!(mr.firmware_version, expected_version);
 }
 
 /// T-0302: Status counter accuracy (uptime > 0 after delay).

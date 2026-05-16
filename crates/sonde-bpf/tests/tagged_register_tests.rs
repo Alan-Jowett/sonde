@@ -1002,16 +1002,16 @@ fn ctx_pointer_field_adjusted_base() {
     // r2 += 8         — adjust to point at offset 8
     // r3 = *(u64 *)(r2 + 0)  — load input_end from adjusted ptr
     //   (effective ctx offset = 8, should match ctx_ptrs[1])
-    // r1 = *(u64 *)(r1 + 0)  — load input_data
-    // r0 = *(u8 *)(r1 + 0)   — dereference input_data
+    // r3 += -1        — point to last blob byte (input_end - 1)
+    // r0 = *(u8 *)(r3 + 0)   — dereference: succeeds only if r3 is tagged
     // exit
     #[rustfmt::skip]
     let prog: Vec<u8> = vec![
         ebpf::MOV64_REG,  0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r2 = r1
         ebpf::ADD64_IMM,  0x02, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // r2 += 8
         ebpf::LD_DW_REG,  0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r3 = *(u64 *)(r2 + 0)
-        ebpf::LD_DW_REG,  0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r1 = *(u64 *)(r1 + 0)
-        ebpf::LD_B_REG,   0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = *(u8 *)(r1 + 0)
+        ebpf::ADD64_IMM,  0x03, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, // r3 += -1
+        ebpf::LD_B_REG,   0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = *(u8 *)(r3 + 0)
         ebpf::EXIT,       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
     ];
 

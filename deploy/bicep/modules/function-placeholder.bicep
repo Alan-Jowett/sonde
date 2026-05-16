@@ -30,9 +30,6 @@ param actualStateTableName string
 @description('Azure handler desired-state table name.')
 param desiredStateTableName string
 
-@description('Azure handler program-route table name.')
-param programRouteTableName string
-
 @description('Program storage table name.')
 param programsTableName string
 
@@ -116,10 +113,6 @@ var baseAppSettings = [
         {
           name: 'SONDE_AZURE_HANDLER_DESIRED_STATE_TABLE'
           value: desiredStateTableName
-        }
-        {
-          name: 'SONDE_AZURE_HANDLER_PROGRAM_ROUTE_TABLE'
-          value: programRouteTableName
         }
         {
           name: 'SONDE_AZURE_HANDLER_PROGRAMS_TABLE'

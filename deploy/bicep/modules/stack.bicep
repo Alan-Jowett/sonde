@@ -24,9 +24,6 @@ param actualStateTableName string
 @description('Azure handler desired-state table name.')
 param desiredStateTableName string
 
-@description('Azure handler program-route table name.')
-param programRouteTableName string
-
 @description('Program storage table name.')
 param programsTableName string
 
@@ -68,7 +65,6 @@ module storage './storage.bicep' = {
     storageAccountName: storageAccountName
     actualStateTableName: actualStateTableName
     desiredStateTableName: desiredStateTableName
-    programRouteTableName: programRouteTableName
     programsTableName: programsTableName
     sensorDataTableName: sensorDataTableName
     upstreamQueueName: upstreamQueueName
@@ -109,7 +105,6 @@ module functionPlaceholder './function-placeholder.bicep' = {
     downstreamQueueName: downstreamQueueName
     actualStateTableName: storage.outputs.actualStateTableName
     desiredStateTableName: storage.outputs.desiredStateTableName
-    programRouteTableName: storage.outputs.programRouteTableName
     programsTableName: storage.outputs.programsTableName
     sensorDataTableName: storage.outputs.sensorDataTableName
     appInsightsConnectionString: monitoring.outputs.connectionString
@@ -144,7 +139,6 @@ module functionRbac './function-rbac.bicep' = {
     storageAccountName: storageAccountName
     actualStateTableName: storage.outputs.actualStateTableName
     desiredStateTableName: storage.outputs.desiredStateTableName
-    programRouteTableName: storage.outputs.programRouteTableName
     programsTableName: storage.outputs.programsTableName
     sensorDataTableName: storage.outputs.sensorDataTableName
   }
@@ -159,7 +153,6 @@ output deploymentContainerName string = storage.outputs.deploymentContainerName
 output deploymentContainerUrl string = '${storage.outputs.blobEndpoint}${storage.outputs.deploymentContainerName}'
 output actualStateTableName string = storage.outputs.actualStateTableName
 output desiredStateTableName string = storage.outputs.desiredStateTableName
-output programRouteTableName string = storage.outputs.programRouteTableName
 output programsTableName string = storage.outputs.programsTableName
 output sensorDataTableName string = storage.outputs.sensorDataTableName
 output functionAppName string = functionPlaceholder.outputs.functionAppName

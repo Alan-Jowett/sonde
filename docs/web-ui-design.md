@@ -148,10 +148,9 @@ local `ProgramLibrary`.
 
 ---
 
-## 7. Program List and Routes (WEB-0400)
+## 7. Program List (WEB-0400)
 
 - Queries `programs` table (`PartitionKey eq 'program'`), displays table with hash, filename, `abi_version`, size, upload time.
-- Program route management: queries `programroute` table, allows insert/update of `handler_queue` for a given program hash.
 
 ---
 
@@ -161,8 +160,8 @@ local `ProgramLibrary`.
 - Token caching in browser session storage.
 - Silent token renewal; redirect to login on expiry.
 - Two token scopes, acquired separately:
-  - `https://storage.azure.com/.default` — for Azure Table/Queue REST API calls
-    (dashboard, desired state, program list).
+  - `https://storage.azure.com/.default` — for Azure Table REST API calls
+    (dashboard, desired state, program list, sensor data).
   - `api://<companionClientId>/user_impersonation` — for `ProgramIngest` Function
     App calls. This token is validated by EasyAuth on the Function App (see §9.4).
 - The SPA calls `acquireTokenSilent` (with popup fallback) for the Function App

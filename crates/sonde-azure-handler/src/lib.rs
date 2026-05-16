@@ -58,7 +58,6 @@ pub struct RuntimeConfig {
     pub storage_account: String,
     pub actual_state_table: String,
     pub desired_state_table: String,
-    pub program_route_table: String,
     pub programs_table: String,
     pub sensor_data_table: String,
 }
@@ -74,7 +73,6 @@ impl RuntimeConfig {
             storage_account: required_env("SONDE_AZURE_HANDLER_STORAGE_ACCOUNT")?,
             actual_state_table: required_env("SONDE_AZURE_HANDLER_ACTUAL_STATE_TABLE")?,
             desired_state_table: required_env("SONDE_AZURE_HANDLER_DESIRED_STATE_TABLE")?,
-            program_route_table: required_env("SONDE_AZURE_HANDLER_PROGRAM_ROUTE_TABLE")?,
             programs_table: required_env("SONDE_AZURE_HANDLER_PROGRAMS_TABLE")?,
             sensor_data_table: required_env("SONDE_AZURE_HANDLER_SENSOR_DATA_TABLE")?,
         })
@@ -124,12 +122,6 @@ pub struct DesiredStateRow {
     pub desired_assigned_program_hash: Option<Vec<u8>>,
     pub desired_schedule_interval_s: Option<u32>,
     pub timestamp_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProgramRouteRow {
-    pub program_hash: Vec<u8>,
-    pub handler_queue: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,10 +191,6 @@ pub trait HandlerStore: Send + Sync {
         &self,
         node_id: &str,
     ) -> Result<Option<DesiredStateRow>, HandlerError>;
-    async fn load_program_route(
-        &self,
-        program_hash: &[u8],
-    ) -> Result<Option<ProgramRouteRow>, HandlerError>;
     async fn load_program_image(
         &self,
         program_hash: &[u8],
@@ -250,7 +238,7 @@ where
                 }
                 Ok(())
             }
-            ConnectorMessage::AppData(app_data) => self.handle_app_data(payload, app_data).await,
+            ConnectorMessage::AppData(app_data) => self.handle_app_data(app_data).await,
             ConnectorMessage::Unsupported(msg_type) => {
                 warn!(msg_type, "ignoring unsupported connector message");
                 Ok(())
@@ -353,13 +341,7 @@ where
             .await
     }
 
-    async fn handle_app_data(
-        &self,
-        raw_payload: &[u8],
-        app_data: AppDataMessage,
-    ) -> Result<(), HandlerError> {
-        // AZH-0500: write SensorData row before ProgramRoute routing.
-        // SensorData writes are independent of routing (azure-handler-design §6.1).
+    async fn handle_app_data(&self, app_data: AppDataMessage) -> Result<(), HandlerError> {
         let decoded_readings = readings_to_json(&app_data.readings);
         let sensor_row = SensorDataRow {
             row_key: next_history_row_key(app_data.timestamp_ms)?,
@@ -369,21 +351,7 @@ where
             raw_payload: app_data.payload,
             decoded_readings,
         };
-        self.store.append_sensor_data(&sensor_row).await?;
-
-        let route = self
-            .store
-            .load_program_route(&sensor_row.program_hash)
-            .await?
-            .ok_or_else(|| {
-                HandlerError::Publish(format!(
-                    "no ProgramRoute row exists for program hash `{}`",
-                    hex::encode(&sensor_row.program_hash)
-                ))
-            })?;
-        self.publisher
-            .publish(&route.handler_queue, raw_payload.to_vec())
-            .await
+        self.store.append_sensor_data(&sensor_row).await
     }
 
     /// Handle a ProgramIngest HTTP trigger invocation (WEB-0300).
@@ -674,7 +642,6 @@ pub fn format_ingest_response(status_code: u16, body: &serde_json::Value) -> ser
 pub struct AzureTablesStore {
     actual_state_table: azure_data_tables::clients::TableClient,
     desired_state_table: azure_data_tables::clients::TableClient,
-    program_route_table: azure_data_tables::clients::TableClient,
     programs_table: azure_data_tables::clients::TableClient,
     sensor_data_table: azure_data_tables::clients::TableClient,
 }
@@ -691,7 +658,6 @@ impl AzureTablesStore {
         Ok(Self {
             actual_state_table: service.table_client(config.actual_state_table.clone()),
             desired_state_table: service.table_client(config.desired_state_table.clone()),
-            program_route_table: service.table_client(config.program_route_table.clone()),
             programs_table: service.table_client(config.programs_table.clone()),
             sensor_data_table: service.table_client(config.sensor_data_table.clone()),
         })
@@ -767,24 +733,6 @@ impl HandlerStore for AzureTablesStore {
                 "query latest desired-state row failed: {e}"
             ))),
             None => Ok(None),
-        }
-    }
-
-    async fn load_program_route(
-        &self,
-        program_hash: &[u8],
-    ) -> Result<Option<ProgramRouteRow>, HandlerError> {
-        let row_key = hex::encode(program_hash);
-        let entity_client = self
-            .program_route_table
-            .partition_key_client("program")
-            .entity_client(row_key);
-        match entity_client.get::<ProgramRouteEntity>().await {
-            Ok(response) => Ok(Some(ProgramRouteRow::try_from(response.entity)?)),
-            Err(e) if is_legacy_not_found(&e) => Ok(None),
-            Err(e) => Err(HandlerError::Store(format!(
-                "query program route failed: {e}"
-            ))),
         }
     }
 
@@ -998,15 +946,6 @@ fn deserialize_u64_flexible<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u6
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct ProgramRouteEntity {
-    #[serde(rename = "PartitionKey")]
-    partition_key: String,
-    #[serde(rename = "RowKey")]
-    row_key: String,
-    handler_queue: String,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
 struct ProgramImageEntity {
     #[serde(rename = "PartitionKey")]
     partition_key: String,
@@ -1100,17 +1039,6 @@ impl TryFrom<DesiredStateRow> for DesiredStateEntity {
             desired_assigned_program_hash: encode_optional_hex(value.desired_assigned_program_hash),
             desired_schedule_interval_s: value.desired_schedule_interval_s,
             timestamp_ms: value.timestamp_ms,
-        })
-    }
-}
-
-impl TryFrom<ProgramRouteEntity> for ProgramRouteRow {
-    type Error = HandlerError;
-
-    fn try_from(value: ProgramRouteEntity) -> Result<Self, Self::Error> {
-        Ok(Self {
-            program_hash: decode_hex_program_hash(value.row_key, "ProgramRoute.RowKey")?,
-            handler_queue: value.handler_queue,
         })
     }
 }
@@ -1569,7 +1497,6 @@ mod tests {
     struct MemoryStore {
         actual_rows: Mutex<HashMap<String, Vec<ActualStateRow>>>,
         desired_rows: Mutex<HashMap<String, Vec<DesiredStateRow>>>,
-        routes: Mutex<HashMap<String, ProgramRouteRow>>,
         program_images: Mutex<HashMap<String, ProgramImageRow>>,
         stored_program_rows: Mutex<Vec<ProgramImageRow>>,
         sensor_data_rows: Mutex<Vec<SensorDataRow>>,
@@ -1660,18 +1587,6 @@ mod tests {
                 }))
         }
 
-        async fn load_program_route(
-            &self,
-            program_hash: &[u8],
-        ) -> Result<Option<ProgramRouteRow>, HandlerError> {
-            Ok(self
-                .routes
-                .lock()
-                .await
-                .get(&hex::encode(program_hash))
-                .cloned())
-        }
-
         async fn load_program_image(
             &self,
             program_hash: &[u8],
@@ -1736,7 +1651,6 @@ mod tests {
     struct FailingStore {
         append_actual_error: Option<String>,
         load_desired_error: Option<String>,
-        load_route_error: Option<String>,
         load_program_image_error: Option<String>,
         latest_actual: Mutex<Option<ActualStateRow>>,
     }
@@ -1772,16 +1686,6 @@ mod tests {
                     Some(60),
                     1234,
                 ))),
-            }
-        }
-
-        async fn load_program_route(
-            &self,
-            _program_hash: &[u8],
-        ) -> Result<Option<ProgramRouteRow>, HandlerError> {
-            match &self.load_route_error {
-                Some(error) => Err(HandlerError::Store(error.clone())),
-                None => Ok(None),
             }
         }
 
@@ -1831,13 +1735,6 @@ mod tests {
             Ok(Some(self.desired.clone()))
         }
 
-        async fn load_program_route(
-            &self,
-            _program_hash: &[u8],
-        ) -> Result<Option<ProgramRouteRow>, HandlerError> {
-            Ok(None)
-        }
-
         async fn load_program_image(
             &self,
             _program_hash: &[u8],
@@ -1880,13 +1777,6 @@ mod tests {
             _node_id: &str,
         ) -> Result<Option<DesiredStateRow>, HandlerError> {
             Ok(Some(self.desired.clone()))
-        }
-
-        async fn load_program_route(
-            &self,
-            _program_hash: &[u8],
-        ) -> Result<Option<ProgramRouteRow>, HandlerError> {
-            Ok(None)
         }
 
         async fn load_program_image(
@@ -2324,47 +2214,6 @@ mod tests {
 
         assert!(store.actual_rows.lock().await.is_empty());
         assert!(store.desired_rows.lock().await.is_empty());
-        assert!(store.routes.lock().await.is_empty());
-        assert!(publisher.sends.lock().await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn app_data_routes_to_mapped_queue() {
-        let store = Arc::new(MemoryStore::default());
-        let publisher = Arc::new(RecordingPublisher::default());
-        let handler =
-            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-        store.routes.lock().await.insert(
-            hex::encode([0x44; 32]),
-            ProgramRouteRow {
-                program_hash: vec![0x44; 32],
-                handler_queue: "handler-q".to_string(),
-            },
-        );
-
-        let payload = sample_app_data(&[0x44; 32], &[1, 2, 3]);
-        handler.handle_payload(&payload).await.unwrap();
-
-        let sends = publisher.sends.lock().await;
-        assert_eq!(sends.len(), 1);
-        assert_eq!(sends[0].0, "handler-q");
-        assert_eq!(sends[0].1, payload);
-    }
-
-    #[tokio::test]
-    async fn unmapped_app_data_fails_closed() {
-        let store = Arc::new(MemoryStore::default());
-        let publisher = Arc::new(RecordingPublisher::default());
-        let handler =
-            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
-        let err = handler
-            .handle_payload(&sample_app_data(&[0x11; 32], &[9, 8, 7]))
-            .await
-            .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("no ProgramRoute row exists for program hash"));
         assert!(publisher.sends.lock().await.is_empty());
     }
 
@@ -2571,7 +2420,6 @@ mod tests {
         let store = Arc::new(FailingStore {
             append_actual_error: Some("append failed".to_string()),
             load_desired_error: None,
-            load_route_error: None,
             load_program_image_error: None,
             latest_actual: Mutex::new(None),
         });
@@ -2597,7 +2445,6 @@ mod tests {
         let store = Arc::new(FailingStore {
             append_actual_error: None,
             load_desired_error: Some("desired read failed".to_string()),
-            load_route_error: None,
             load_program_image_error: None,
             latest_actual: Mutex::new(None),
         });
@@ -2619,32 +2466,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn program_route_read_failures_are_surfaced() {
-        let store = Arc::new(FailingStore {
-            append_actual_error: None,
-            load_desired_error: None,
-            load_route_error: Some("route read failed".to_string()),
-            load_program_image_error: None,
-            latest_actual: Mutex::new(None),
-        });
-        let publisher = Arc::new(RecordingPublisher::default());
-        let handler =
-            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
-
-        let err = handler
-            .handle_payload(&sample_app_data(&[0x44; 32], &[1, 2, 3]))
-            .await
-            .unwrap_err();
-
-        assert!(err.to_string().contains("route read failed"));
-    }
-
-    #[tokio::test]
     async fn program_image_read_failures_are_surfaced() {
         let store = Arc::new(FailingStore {
             append_actual_error: None,
             load_desired_error: None,
-            load_route_error: None,
             load_program_image_error: Some("program image read failed".to_string()),
             latest_actual: Mutex::new(None),
         });
@@ -3102,12 +2927,6 @@ mod tests {
             ) -> Result<Option<DesiredStateRow>, HandlerError> {
                 Ok(None)
             }
-            async fn load_program_route(
-                &self,
-                _: &[u8],
-            ) -> Result<Option<ProgramRouteRow>, HandlerError> {
-                Ok(None)
-            }
             async fn load_program_image(
                 &self,
                 _: &[u8],
@@ -3247,13 +3066,6 @@ mod tests {
 
         let program_hash = [0x42u8; 32];
         let payload = b"sensor-blob";
-        store.routes.lock().await.insert(
-            hex::encode(program_hash),
-            ProgramRouteRow {
-                program_hash: program_hash.to_vec(),
-                handler_queue: "handler-q".to_string(),
-            },
-        );
 
         let msg = sample_app_data(&program_hash, payload);
         handler.handle_payload(&msg).await.unwrap();
@@ -3277,13 +3089,6 @@ mod tests {
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
 
         let program_hash = [0x42u8; 32];
-        store.routes.lock().await.insert(
-            hex::encode(program_hash),
-            ProgramRouteRow {
-                program_hash: program_hash.to_vec(),
-                handler_queue: "handler-q".to_string(),
-            },
-        );
 
         let msg = sample_app_data(&program_hash, b"blob-1");
         handler.handle_payload(&msg).await.unwrap();
@@ -3306,13 +3111,6 @@ mod tests {
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
 
         let program_hash = [0x42u8; 32];
-        store.routes.lock().await.insert(
-            hex::encode(program_hash),
-            ProgramRouteRow {
-                program_hash: program_hash.to_vec(),
-                handler_queue: "handler-q".to_string(),
-            },
-        );
 
         let msg = sample_app_data_with_readings(
             &program_hash,
@@ -3338,13 +3136,6 @@ mod tests {
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
 
         let program_hash = [0x42u8; 32];
-        store.routes.lock().await.insert(
-            hex::encode(program_hash),
-            ProgramRouteRow {
-                program_hash: program_hash.to_vec(),
-                handler_queue: "handler-q".to_string(),
-            },
-        );
 
         let msg = sample_app_data(&program_hash, b"no-decoder");
         handler.handle_payload(&msg).await.unwrap();
@@ -3365,13 +3156,6 @@ mod tests {
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
 
         let program_hash = [0x42u8; 32];
-        store.routes.lock().await.insert(
-            hex::encode(program_hash),
-            ProgramRouteRow {
-                program_hash: program_hash.to_vec(),
-                handler_queue: "handler-q".to_string(),
-            },
-        );
 
         // 9007199254740993 = MAX_SAFE_INTEGER + 2 (exceeds threshold)
         let above_safe = 9_007_199_254_740_993i64;
@@ -3404,13 +3188,6 @@ mod tests {
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
 
         let program_hash = [0x42u8; 32];
-        store.routes.lock().await.insert(
-            hex::encode(program_hash),
-            ProgramRouteRow {
-                program_hash: program_hash.to_vec(),
-                handler_queue: "handler-q".to_string(),
-            },
-        );
 
         let below_safe = -9_007_199_254_740_993i64;
         let msg = sample_app_data_with_readings(&program_hash, b"raw", &[("neg_big", below_safe)]);
@@ -3424,26 +3201,22 @@ mod tests {
         );
     }
 
-    /// SensorData write happens even when ProgramRoute is missing.
-    /// Per azure-handler-design §6.1, SensorData writes are independent of
-    /// ProgramRoute routing.
+    /// APP_DATA messages write SensorData rows and succeed.
     #[tokio::test]
-    async fn sensor_data_written_even_when_program_route_missing() {
+    async fn app_data_writes_sensor_data_and_succeeds() {
         let store = Arc::new(MemoryStore::default());
         let publisher = Arc::new(RecordingPublisher::default());
         let handler =
             AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
 
         let program_hash = [0x42u8; 32];
-        // No route configured for this program_hash.
         let msg = sample_app_data(&program_hash, b"orphan-data");
-        let result = handler.handle_payload(&msg).await;
+        handler.handle_payload(&msg).await.unwrap();
 
-        // Should fail because no route, but SensorData row should exist.
-        assert!(result.is_err());
         let rows = store.sensor_data_rows.lock().await;
-        assert_eq!(rows.len(), 1, "SensorData row written before route lookup");
+        assert_eq!(rows.len(), 1, "SensorData row written");
         assert_eq!(rows[0].node_id, "node-1");
+        assert!(publisher.sends.lock().await.is_empty());
     }
 
     #[test]

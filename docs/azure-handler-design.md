@@ -6,7 +6,7 @@
 > **Scope:** Internal design for the Azure cloud-side handler hosted in the
 > Azure Function App. Covers upstream connector message intake, Azure Table
 > schemas, node-state reconciliation, downstream `GW-0811` publication, and
-> `GW-0813` queue routing.
+> `GW-0813` sensor data storage.
 > **Audience:** Implementers building the Azure Function App and reviewers
 > auditing traceability to the gateway connector contract.
 > **Related:** [azure-handler-requirements.md](azure-handler-requirements.md),
@@ -27,7 +27,7 @@ Azure handler owns the first Sonde-aware cloud logic:
 2. append node-scoped `GW-0812` actual-state messages to actual-state history,
 3. compare the latest eligible actual-state row against the latest desired-state
    row and publish a complete node-scoped `GW-0811` when they diverge, and
-4. route `GW-0813` application-data messages to handler queues by `program_hash`.
+4. store `GW-0813` application-data messages in the `SensorData` table.
 
 The handler does not replace the gateway's reconciler model. It expresses cloud
 intent only by publishing `GW-0811` desired-state messages.
@@ -42,14 +42,12 @@ The Azure handler runs inside the Azure Function App provisioned by the Bicep
 stack. The Function App uses a system-assigned managed identity with:
 
 1. receive permission on the upstream queue,
-2. send permission on the downstream queue,
+2. send permission on the downstream queue, and
 3. append permission on `ActualNodeState`, read permission on
-   `DesiredNodeState`, and read permission on `ProgramRoute`, and
-4. send permission on each pre-provisioned handler queue referenced by the
-   program route table.
+   `DesiredNodeState`, and read/write permission on `SensorData`.
 
-The final permission is an external dependency when a mapped handler queue is
-not provisioned by the Sonde Bicep stack.
+The final permission set covers the handler's own tables. No external handler
+queue permissions are required.
 
 ### 2.1  Trigger model
 
@@ -60,7 +58,7 @@ queue and performs the following dispatch:
 1. decode the top-level connector `msg_type`,
 2. if `msg_type = ACTUAL_STATE` and `entity_kind = "node"`, invoke node-state
    reconciliation,
-3. if `msg_type = APP_DATA`, invoke program-route delivery, and
+3. if `msg_type = APP_DATA`, invoke sensor data storage, and
 4. otherwise log the unsupported or out-of-scope message and complete without
    mutating handler-owned tables.
 
@@ -95,11 +93,9 @@ this document and are therefore logged and ignored by the reconciliation path.
 
 For `APP_DATA`, the handler decodes:
 
-1. `program_hash` for route lookup,
-2. `node_id`, `timestamp_ms`, raw `blob`, and optional `readings` (key 16)
+1. `node_id`, `timestamp_ms`, raw `blob`, and optional `readings` (key 16)
    for `SensorData` table storage (§6.1), and
-3. the raw connector payload bytes for transparent delivery to the handler
-   queue.
+2. `program_hash` for the `SensorData` row's `program_hash` column.
 
 Fields beyond `program_hash` were previously opaque to the handler; the
 `SensorData` feature (AZH-0500) extends the handler's parsing scope.
@@ -108,13 +104,12 @@ Fields beyond `program_hash` were previously opaque to the handler; the
 
 ## 4  Azure Table schemas
 
-> **Requirements:** AZH-0200, AZH-0205, AZH-0206, AZH-0300
+> **Requirements:** AZH-0200, AZH-0205, AZH-0206
 
-The design uses three Azure Tables:
+The design uses two Azure Tables:
 
 1. **`ActualNodeState`** — append-only actual-state history keyed for latest-per-node queries.
 2. **`DesiredNodeState`** — append-only desired-state history keyed for latest-per-node queries.
-3. **`ProgramRoute`** — `program_hash` to handler queue mapping.
 
 ### 4.1  `ActualNodeState` schema
 
@@ -163,22 +158,6 @@ The row contains:
 
 The Azure handler reads this table but does not write it. Admin/control-plane
 surfaces append desired-state rows when requested state changes.
-
-### 4.3  `ProgramRoute` schema
-
-Each row uses:
-
-- `PartitionKey = "program"`
-- `RowKey = <lowercase hex-encoded program_hash>`
-
-The row contains:
-
-| Column | Purpose |
-|--------|---------|
-| `handler_queue` | Storage Queue name for `GW-0813` delivery. |
-
-The table stores only queue references. It does not own queue creation or queue
-policy lifecycle.
 
 ---
 
@@ -240,9 +219,9 @@ never seeds or updates desired-state rows while processing `GW-0812`.
 
 ---
 
-## 6  `GW-0813` routing algorithm
+## 6  `GW-0813` sensor data storage
 
-> **Requirements:** AZH-0300, AZH-0301, AZH-0302, AZH-0303
+> **Requirements:** AZH-0500, AZH-0501
 
 For each `GW-0813` invocation:
 
@@ -255,20 +234,12 @@ For each `GW-0813` invocation:
    retry with the same message produces the same `RowKey` and overwrites
    the existing row rather than appending a duplicate. Do NOT use a hash
    of the raw payload alone, as distinct messages with identical payloads
-   would collide,
-3. look up the `ProgramRoute` row for that hash,
-4. if the row exists, send the original raw connector payload bytes unchanged to
-   the queue named by `handler_queue`, and
-5. if the row is missing, log the missing mapping and fail the invocation so the
-   upstream message is not reported as successfully handled.
-
-The design does not route unmapped application-data messages to a default queue.
-It also does not attempt to create the mapped queue if it does not already
-exist.
+   would collide, and
+3. complete the invocation successfully.
 
 ### 6.1  SensorData table storage (AZH-0500)
 
-In addition to routing `GW-0813` to the handler queue, the Azure handler MUST
+In addition to node-state reconciliation, the Azure handler MUST
 append a row to the `SensorData` table for every `GW-0813` message. This
 provides a queryable time-series store of sensor readings for the SPA.
 
@@ -295,23 +266,22 @@ The `PartitionKey` and `RowKey` follow the same patterns as `ActualNodeState`
 (§4.1) — hashed partition key for safe table keys, reverse-tick plus uniqueness
 suffix for chronological ordering and append uniqueness.
 
-`SensorData` writes are independent of `ProgramRoute` routing — the table is
-populated even if no handler queue is configured for the program hash.
+`SensorData` writes complete the `GW-0813` handling path — no further routing
+or delivery is performed.
 
 ---
 
 ## 7  Failure handling
 
-> **Requirements:** AZH-0302, AZH-0400
+> **Requirements:** AZH-0400
 
 The handler follows a fail-closed rule for all Azure Table and Storage Queue
 operations that determine externally visible control-plane behavior:
 
 1. Table read/write failure aborts the invocation.
 2. Downstream `GW-0811` publish failure aborts the invocation.
-3. Handler-queue publish failure aborts the invocation.
-4. Missing `ProgramRoute` rows are treated as failures, not soft drops.
+3. `SensorData` table append failure aborts the invocation.
 
 This failure model preserves at-least-once retry behavior from the Azure
 Function runtime instead of silently pretending that state was reconciled or
-application data was delivered.
+sensor data was stored.

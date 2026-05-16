@@ -864,32 +864,41 @@ const SERIES_OVERRIDES_KEY = 'sonde_series_overrides';
 function loadSeriesOverrides() {
   try {
     const raw = localStorage.getItem(SERIES_OVERRIDES_KEY);
-    return raw ? JSON.parse(raw) : {};
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+    return parsed;
   } catch { return {}; }
 }
 
 function saveSeriesOverrides(overrides) {
-  localStorage.setItem(SERIES_OVERRIDES_KEY, JSON.stringify(overrides));
+  try {
+    localStorage.setItem(SERIES_OVERRIDES_KEY, JSON.stringify(overrides));
+  } catch {
+    // Storage disabled or quota exceeded — surface to caller via return value
+    return false;
+  }
+  return true;
 }
 
-function getSeriesDisplayLabel(series) {
-  const overrides = loadSeriesOverrides();
-  const o = overrides[series.key];
+function getSeriesDisplayLabel(series, overrides) {
+  const ov = overrides || loadSeriesOverrides();
+  const o = ov[series.key];
   return (o && o.displayName) ? o.displayName : series.label;
 }
 
-function applySeriesScale(value, seriesKey) {
-  const overrides = loadSeriesOverrides();
-  const o = overrides[seriesKey];
-  if (o && o.scaleDivisor && o.scaleDivisor !== 0) {
-    return value / o.scaleDivisor;
+function getSeriesScale(seriesKey, overrides) {
+  const ov = overrides || loadSeriesOverrides();
+  const o = ov[seriesKey];
+  if (o && typeof o.scaleDivisor === 'number' && Number.isFinite(o.scaleDivisor) && o.scaleDivisor !== 0) {
+    return o.scaleDivisor;
   }
-  return value;
+  return null;
 }
 
-function getSeriesUnitSuffix(seriesKey) {
-  const overrides = loadSeriesOverrides();
-  const o = overrides[seriesKey];
+function getSeriesUnitSuffix(seriesKey, overrides) {
+  const ov = overrides || loadSeriesOverrides();
+  const o = ov[seriesKey];
   return (o && o.unitSuffix) ? o.unitSuffix : '';
 }
 
@@ -1080,14 +1089,17 @@ function renderSensorChart(allSeries) {
     return;
   }
 
+  const overrides = loadSeriesOverrides();
+
   const datasets = selected.slice(0, 20).map((series, i) => {
+    const divisor = getSeriesScale(series.key, overrides);
     const scaledPoints = downsamplePoints(series.points, 500).map((p) => ({
       x: p.x,
-      y: applySeriesScale(p.y, series.key),
+      y: divisor ? p.y / divisor : p.y,
     }));
-    const suffix = getSeriesUnitSuffix(series.key);
+    const suffix = getSeriesUnitSuffix(series.key, overrides);
     return {
-      label: getSeriesDisplayLabel(series),
+      label: getSeriesDisplayLabel(series, overrides),
       nodeId: series.nodeId,
       programHash: series.programHash,
       readingName: series.readingName,
@@ -1210,17 +1222,22 @@ function renderSensorTable(rows, nodeIdMap) {
   `;
 }
 
-function showSeriesEditDialog(seriesKey, rawLabel, allSeries) {
+function showSeriesEditDialog(seriesKey, rawLabel) {
   // Remove any existing dialog
   const existing = document.getElementById('series-edit-dialog');
   if (existing) existing.remove();
 
   const overrides = loadSeriesOverrides();
   const current = overrides[seriesKey] || {};
+  const safeDivisor = (typeof current.scaleDivisor === 'number' && Number.isFinite(current.scaleDivisor))
+    ? current.scaleDivisor : '';
 
   const dialog = document.createElement('div');
   dialog.id = 'series-edit-dialog';
   dialog.className = 'series-edit-overlay';
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-label', 'Edit series display settings');
   dialog.innerHTML = `
     <div class="series-edit-panel panel">
       <h3>Edit Series Display</h3>
@@ -1234,7 +1251,7 @@ function showSeriesEditDialog(seriesKey, rawLabel, allSeries) {
         <label>
           Scale Divisor
           <input type="number" id="series-edit-divisor" step="any" placeholder="1"
-                 value="${current.scaleDivisor || ''}">
+                 value="${safeDivisor}">
           <span class="muted small">e.g. 1000 to convert milli-units → units</span>
         </label>
         <label>
@@ -1254,6 +1271,9 @@ function showSeriesEditDialog(seriesKey, rawLabel, allSeries) {
 
   document.body.appendChild(dialog);
 
+  const nameInput = document.getElementById('series-edit-name');
+  if (nameInput) nameInput.focus();
+
   dialog.addEventListener('click', (e) => {
     if (e.target === dialog) dialog.remove();
   });
@@ -1265,7 +1285,10 @@ function showSeriesEditDialog(seriesKey, rawLabel, allSeries) {
   document.getElementById('series-edit-reset').addEventListener('click', async () => {
     const ov = loadSeriesOverrides();
     delete ov[seriesKey];
-    saveSeriesOverrides(ov);
+    if (!saveSeriesOverrides(ov)) {
+      alert('Failed to save settings — browser storage may be full or disabled.');
+      return;
+    }
     dialog.remove();
     await renderSensorData();
   });
@@ -1288,7 +1311,10 @@ function showSeriesEditDialog(seriesKey, rawLabel, allSeries) {
       delete ov[seriesKey];
     }
 
-    saveSeriesOverrides(ov);
+    if (!saveSeriesOverrides(ov)) {
+      alert('Failed to save settings — browser storage may be full or disabled.');
+      return;
+    }
     dialog.remove();
     await renderSensorData();
   });
@@ -1365,14 +1391,16 @@ async function renderSensorData() {
       <button type="button" class="secondary sensor-view-btn${SENSOR_STATE.viewMode === 'table' ? ' active' : ''}" data-view="table">Table</button>
     `;
 
+    const pickerOverrides = loadSeriesOverrides();
     const seriesCheckboxes = allSeries.map((s) => {
       const checked = SENSOR_STATE.selectedSeries.has(s.key) ? ' checked' : '';
       const plottable = s.points.length > 0;
       const suffix = plottable ? '' : ' <span class="muted">(no numeric data)</span>';
-      const displayLabel = getSeriesDisplayLabel(s);
+      const displayLabel = getSeriesDisplayLabel(s, pickerOverrides);
       const hasOverride = displayLabel !== s.label;
       const overrideTitle = hasOverride ? ` title="Raw: ${escapeHtml(s.label)}"` : '';
-      return `<label class="sensor-series-label"${overrideTitle}><input type="checkbox" value="${escapeHtml(s.key)}"${checked}${plottable ? '' : ' disabled'}> ${escapeHtml(displayLabel)}${suffix}</label><button type="button" class="sensor-series-edit-btn" data-series-key="${escapeHtml(s.key)}" data-series-label="${escapeHtml(s.label)}" title="Edit display settings">✏️</button>`;
+      const ariaLabel = `Edit display settings for ${displayLabel}`;
+      return `<label class="sensor-series-label"${overrideTitle}><input type="checkbox" value="${escapeHtml(s.key)}"${checked}${plottable ? '' : ' disabled'}> ${escapeHtml(displayLabel)}${suffix}</label><button type="button" class="sensor-series-edit-btn" data-series-key="${escapeHtml(s.key)}" data-series-label="${escapeHtml(s.label)}" title="Edit display settings" aria-label="${escapeHtml(ariaLabel)}">✏️</button>`;
     }).join('');
 
     const autoRefreshChecked = SENSOR_STATE.autoRefresh ? ' checked' : '';
@@ -1445,7 +1473,7 @@ async function renderSensorData() {
       btn.addEventListener('click', () => {
         const seriesKey = btn.dataset.seriesKey;
         const rawLabel = btn.dataset.seriesLabel;
-        showSeriesEditDialog(seriesKey, rawLabel, allSeries);
+        showSeriesEditDialog(seriesKey, rawLabel);
       });
     }
 

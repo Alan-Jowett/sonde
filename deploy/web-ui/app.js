@@ -856,6 +856,52 @@ async function renderPrograms() {
 }
 
 // 8. Sensor Data Tab (WEB-0700)
+
+// Series display overrides persisted in localStorage.
+// Shape: { [seriesKey]: { displayName, scaleDivisor, unitSuffix } }
+const SERIES_OVERRIDES_KEY = 'sonde_series_overrides';
+
+function loadSeriesOverrides() {
+  try {
+    const raw = localStorage.getItem(SERIES_OVERRIDES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch { return {}; }
+}
+
+function saveSeriesOverrides(overrides) {
+  try {
+    localStorage.setItem(SERIES_OVERRIDES_KEY, JSON.stringify(overrides));
+  } catch {
+    // Storage disabled or quota exceeded — surface to caller via return value
+    return false;
+  }
+  return true;
+}
+
+function getSeriesDisplayLabel(series, overrides) {
+  const ov = overrides || loadSeriesOverrides();
+  const o = ov[series.key];
+  return (o && o.displayName) ? o.displayName : series.label;
+}
+
+function getSeriesScale(seriesKey, overrides) {
+  const ov = overrides || loadSeriesOverrides();
+  const o = ov[seriesKey];
+  if (o && typeof o.scaleDivisor === 'number' && Number.isFinite(o.scaleDivisor) && o.scaleDivisor !== 0) {
+    return o.scaleDivisor;
+  }
+  return null;
+}
+
+function getSeriesUnitSuffix(seriesKey, overrides) {
+  const ov = overrides || loadSeriesOverrides();
+  const o = ov[seriesKey];
+  return (o && o.unitSuffix) ? o.unitSuffix : '';
+}
+
 const SENSOR_STATE = {
   timeRange: '24h',
   viewMode: 'graph',
@@ -1043,18 +1089,30 @@ function renderSensorChart(allSeries) {
     return;
   }
 
-  const datasets = selected.slice(0, 20).map((series, i) => ({
-    label: series.label,
-    nodeId: series.nodeId,
-    programHash: series.programHash,
-    readingName: series.readingName,
-    data: downsamplePoints(series.points, 500),
-    borderColor: CHART_COLORS[i % CHART_COLORS.length],
-    backgroundColor: 'transparent',
-    borderWidth: 1.5,
-    pointRadius: series.points.length > 100 ? 0 : 2,
-    tension: 0.1,
-  }));
+  const overrides = loadSeriesOverrides();
+
+  const datasets = selected.slice(0, 20).map((series, i) => {
+    const divisor = getSeriesScale(series.key, overrides);
+    const scaledPoints = downsamplePoints(series.points, 500).map((p) => ({
+      x: p.x,
+      y: divisor ? p.y / divisor : p.y,
+    }));
+    const suffix = getSeriesUnitSuffix(series.key, overrides);
+    return {
+      label: getSeriesDisplayLabel(series, overrides),
+      nodeId: series.nodeId,
+      programHash: series.programHash,
+      readingName: series.readingName,
+      seriesKey: series.key,
+      unitSuffix: suffix,
+      data: scaledPoints,
+      borderColor: CHART_COLORS[i % CHART_COLORS.length],
+      backgroundColor: 'transparent',
+      borderWidth: 1.5,
+      pointRadius: series.points.length > 100 ? 0 : 2,
+      tension: 0.1,
+    };
+  });
 
   APP.sensorChart = new Chart(canvas, {
     type: 'line',
@@ -1081,7 +1139,13 @@ function renderSensorChart(allSeries) {
           },
         },
         y: {
-          title: { display: true, text: 'Value' },
+          title: {
+            display: true,
+            text: (() => {
+              const suffixes = [...new Set(datasets.map((d) => d.unitSuffix))];
+              return suffixes.length === 1 && suffixes[0] ? `Value (${suffixes[0]})` : 'Value';
+            })(),
+          },
         },
       },
       plugins: {
@@ -1093,8 +1157,8 @@ function renderSensorChart(allSeries) {
             },
             label(item) {
               const ds = item.dataset;
-              const parts = [`Node: ${ds.nodeId || '—'}`, `Program: ${ds.programHash || '—'}`, `${ds.readingName || '—'}: ${item.parsed.y}`];
-              return parts;
+              const suffix = ds.unitSuffix || '';
+              return `${ds.label}: ${item.parsed.y}${suffix}`;
             },
           },
         },
@@ -1155,6 +1219,139 @@ function renderSensorTable(rows, nodeIdMap) {
       </table>
     </div>
   `;
+}
+
+function showSeriesEditDialog(seriesKey, rawLabel) {
+  // Remove any existing dialog
+  const existing = document.getElementById('series-edit-dialog');
+  if (existing) existing.remove();
+
+  const overrides = loadSeriesOverrides();
+  const current = overrides[seriesKey] || {};
+  const safeDivisor = (typeof current.scaleDivisor === 'number' && Number.isFinite(current.scaleDivisor))
+    ? current.scaleDivisor : '';
+
+  const dialog = document.createElement('div');
+  dialog.id = 'series-edit-dialog';
+  dialog.className = 'series-edit-overlay';
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-label', 'Edit series display settings');
+  dialog.innerHTML = `
+    <div class="series-edit-panel panel">
+      <h3>Edit Series Display</h3>
+      <p class="muted small">Raw label: ${escapeHtml(rawLabel)}</p>
+      <div class="stack">
+        <label>
+          Display Name
+          <input type="text" id="series-edit-name" placeholder="${escapeHtml(rawLabel)}"
+                 value="${escapeHtml(current.displayName || '')}">
+        </label>
+        <label>
+          Scale Divisor
+          <input type="number" id="series-edit-divisor" step="any" placeholder="1"
+                 value="${safeDivisor}">
+          <span class="muted small">e.g. 1000 to convert milli-units → units</span>
+        </label>
+        <label>
+          Unit Suffix
+          <input type="text" id="series-edit-unit" placeholder=""
+                 value="${escapeHtml(current.unitSuffix || '')}">
+          <span class="muted small">e.g. °C, %, hPa — appended to values</span>
+        </label>
+        <div style="display:flex;gap:0.5rem;justify-content:flex-end">
+          <button type="button" class="secondary" id="series-edit-reset">Reset to Default</button>
+          <button type="button" class="secondary" id="series-edit-cancel">Cancel</button>
+          <button type="button" class="primary" id="series-edit-save">Save</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(dialog);
+
+  const previousFocus = document.activeElement;
+  const nameInput = document.getElementById('series-edit-name');
+  if (nameInput) nameInput.focus();
+
+  function closeDialog() {
+    dialog.remove();
+    if (previousFocus && typeof previousFocus.focus === 'function') {
+      previousFocus.focus();
+    }
+  }
+
+  // Focus trap: cycle through focusable elements within the dialog
+  dialog.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeDialog();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const focusable = dialog.querySelectorAll('input, button, [tabindex]:not([tabindex="-1"])');
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  });
+
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) closeDialog();
+  });
+
+  document.getElementById('series-edit-cancel').addEventListener('click', () => {
+    closeDialog();
+  });
+
+  document.getElementById('series-edit-reset').addEventListener('click', async () => {
+    const ov = loadSeriesOverrides();
+    delete ov[seriesKey];
+    if (!saveSeriesOverrides(ov)) {
+      alert('Failed to save settings — browser storage may be full or disabled.');
+      return;
+    }
+    closeDialog();
+    await renderSensorData();
+  });
+
+  document.getElementById('series-edit-save').addEventListener('click', async () => {
+    const ov = loadSeriesOverrides();
+    const name = document.getElementById('series-edit-name').value.trim();
+    const divisorStr = document.getElementById('series-edit-divisor').value.trim();
+    const unit = document.getElementById('series-edit-unit').value.trim();
+
+    const divisor = divisorStr ? Number(divisorStr) : 0;
+
+    if (divisorStr && (!Number.isFinite(divisor) || divisor === 0)) {
+      const divisorInput = document.getElementById('series-edit-divisor');
+      if (divisorInput) divisorInput.focus();
+      alert('Scale divisor must be a finite non-zero number.');
+      return;
+    }
+
+    if (name || (divisor && divisor !== 0) || unit) {
+      ov[seriesKey] = {
+        displayName: name || '',
+        scaleDivisor: (divisor && Number.isFinite(divisor) && divisor !== 0) ? divisor : 0,
+        unitSuffix: unit || '',
+      };
+    } else {
+      delete ov[seriesKey];
+    }
+
+    if (!saveSeriesOverrides(ov)) {
+      alert('Failed to save settings — browser storage may be full or disabled.');
+      return;
+    }
+    closeDialog();
+    await renderSensorData();
+  });
 }
 
 async function renderSensorData() {
@@ -1228,11 +1425,16 @@ async function renderSensorData() {
       <button type="button" class="secondary sensor-view-btn${SENSOR_STATE.viewMode === 'table' ? ' active' : ''}" data-view="table">Table</button>
     `;
 
+    const pickerOverrides = loadSeriesOverrides();
     const seriesCheckboxes = allSeries.map((s) => {
       const checked = SENSOR_STATE.selectedSeries.has(s.key) ? ' checked' : '';
       const plottable = s.points.length > 0;
       const suffix = plottable ? '' : ' <span class="muted">(no numeric data)</span>';
-      return `<label class="sensor-series-label"><input type="checkbox" value="${escapeHtml(s.key)}"${checked}${plottable ? '' : ' disabled'}> ${escapeHtml(s.label)}${suffix}</label>`;
+      const displayLabel = getSeriesDisplayLabel(s, pickerOverrides);
+      const hasOverride = displayLabel !== s.label;
+      const overrideTitle = hasOverride ? ` title="Raw: ${escapeHtml(s.label)}"` : '';
+      const ariaLabel = `Edit display settings for ${displayLabel}`;
+      return `<span class="sensor-series-item"><label class="sensor-series-label"${overrideTitle}><input type="checkbox" value="${escapeHtml(s.key)}"${checked}${plottable ? '' : ' disabled'}> ${escapeHtml(displayLabel)}${suffix}</label><button type="button" class="sensor-series-edit-btn" data-series-key="${escapeHtml(s.key)}" data-series-label="${escapeHtml(s.label)}" title="Edit display settings" aria-label="${escapeHtml(ariaLabel)}">✏️</button></span>`;
     }).join('');
 
     const autoRefreshChecked = SENSOR_STATE.autoRefresh ? ' checked' : '';
@@ -1298,6 +1500,14 @@ async function renderSensorData() {
         if (SENSOR_STATE.viewMode === 'graph') {
           renderSensorChart(allSeries);
         }
+      });
+    }
+
+    for (const btn of contentEl.querySelectorAll('.sensor-series-edit-btn')) {
+      btn.addEventListener('click', () => {
+        const seriesKey = btn.dataset.seriesKey;
+        const rawLabel = btn.dataset.seriesLabel;
+        showSeriesEditDialog(seriesKey, rawLabel);
       });
     }
 

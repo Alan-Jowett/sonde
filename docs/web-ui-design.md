@@ -292,7 +292,7 @@ configuration.
 
 ## 10. Sensor Data (WEB-0700)
 
-> **Requirements:** WEB-0700, WEB-0701, WEB-0702
+> **Requirements:** WEB-0700, WEB-0701, WEB-0702, WEB-0703
 
 ### 10.1  Data source
 
@@ -348,3 +348,35 @@ A toggle switches between graph and table views. The table displays all
 Raw Payload (truncated). Sorted by timestamp descending (newest first).
 Rows with empty `decoded_readings` display "—" in the Decoded Readings
 column.
+
+### 10.4  Series display customization (WEB-0703)
+
+Each series in the series selector has a ✏️ edit button that opens a modal
+dialog for customizing how the series is displayed:
+
+- **Display name** — override the default
+  `truncHash(nodeId) / truncHash(programHash) / readingName` label with a
+  friendly name (e.g., "Office Temperature"). The original raw label is
+  shown in a hover tooltip and in the edit dialog.
+- **Scale divisor** — divide raw values by a constant before plotting.
+  For example, a divisor of `1000` converts milli-degrees (21500) to
+  degrees (21.5). A divisor of `0` or empty means no scaling.
+- **Unit suffix** — a string appended to values in tooltips and, when all
+  selected series share the same suffix, in the Y-axis title
+  (e.g., `°C`, `%`, `hPa`).
+
+A **Reset to Default** button clears overrides for the series.
+
+#### Persistence
+
+Overrides are stored in `localStorage` under the key
+`sonde_series_overrides` as a JSON object keyed by series key
+(`partitionKey|programHash|readingName`). Each entry has the shape:
+
+```json
+{ "displayName": "string", "scaleDivisor": number, "unitSuffix": "string" }
+```
+
+Overrides survive page reloads and browser restarts. They are scoped to
+the browser origin (per localStorage rules) and are not shared across
+devices.

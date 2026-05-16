@@ -8,7 +8,7 @@ use std::time::UNIX_EPOCH;
 use sonde_protocol::normalize_display_filename;
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
-use tracing::warn;
+use tracing::{info, warn};
 use zeroize::Zeroizing;
 
 use crate::ble_pairing::BlePairingController;
@@ -722,6 +722,23 @@ impl GatewayAdmin for AdminService {
         record.abi_version = req.abi_version;
         record.source_filename = normalized_source_filename;
         let hash_hex = fmt_hex(&record.hash);
+
+        // GW-1902 AC-7: detect decoder image changes on re-ingest and log at INFO.
+        if let Ok(Some(existing)) = self.storage.get_program(&record.hash).await {
+            match (&existing.decoder_image, &record.decoder_image) {
+                (Some(_), Some(new_img)) if existing.decoder_image.as_ref() != Some(new_img) => {
+                    info!(program_hash = %hash_hex, "decoder image replaced on re-ingest");
+                }
+                (Some(_), None) => {
+                    info!(program_hash = %hash_hex, "decoder image removed on re-ingest");
+                }
+                (None, Some(_)) => {
+                    info!(program_hash = %hash_hex, "decoder image added on re-ingest");
+                }
+                _ => {}
+            }
+        }
+
         let resp = IngestProgramResponse {
             program_hash: record.hash.clone(),
             program_size: record.size,

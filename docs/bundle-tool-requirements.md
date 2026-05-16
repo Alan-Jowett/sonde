@@ -149,7 +149,9 @@ and that at most one catch-all handler exists.
 2. A handler with `program: "*"` is accepted.
 3. Two handlers with `program: "*"` are rejected with "duplicate catch-all handler".
 4. A handler with an empty `command` is rejected.
-5. A handler with `reply_timeout_ms: 0` or negative is rejected.
+5. A handler with `reply_timeout_ms: 0` is rejected (the field is `u32`, so negative values are rejected at the deserialization layer).
+6. A handler whose `working_dir` contains path-traversal sequences (`..`) or is not a directory is rejected.
+7. A handler whose `command` or any element of `args` contains path-traversal sequences (`..`) is rejected.
 
 ---
 

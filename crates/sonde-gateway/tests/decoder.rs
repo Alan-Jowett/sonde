@@ -1078,3 +1078,114 @@ fn t1903d_handler_and_connector_same_readings() {
         panic!("expected HandlerMessage::Data with readings");
     }
 }
+
+// T-1904f: Decoder context ABI — input_data and input_end pointers
+//
+// Traces to: GW-1904 AC-1
+//
+// Verifies that the decoder context provides correct `input_data` and
+// `input_end` pointers that bracket the APP_DATA payload.  The decoder
+// program loads both pointers from the context, computes the blob length
+// via `input_end - input_data`, and emits it as a reading.
+#[test]
+fn t1904f_decoder_context_abi() {
+    // BPF program that reads context pointers and emits blob length:
+    //   r6 = *(u64*)(r1 + 0)     // input_data
+    //   r7 = *(u64*)(r1 + 8)     // input_end
+    //   r3 = r7 - r6             // blob length
+    //   *(u8*)(r10 - 4) = 'L'    // name = "L"
+    //   r1 = r10 - 4
+    //   r2 = 1
+    //   call emit_reading (18)
+    //   r0 = 0
+    //   exit
+    let insns: Vec<[u8; 8]> = vec![
+        // r6 = *(u64*)(r1 + 0)  — load input_data pointer
+        bpf_insn(0x79, 0x16, 0, 0),
+        // r7 = *(u64*)(r1 + 8)  — load input_end pointer
+        bpf_insn(0x79, 0x17, 8, 0),
+        // r3 = r7
+        mov_reg(3, 7),
+        // r3 -= r6  (input_end - input_data = blob length)
+        bpf_insn(0x1f, 0x63, 0, 0), // sub64 r3, r6
+        // *(u8*)(r10 - 4) = 'L'
+        st_mem_b(10, -4, b'L' as i32),
+        // r1 = r10 - 4
+        mov_reg(1, 10),
+        add_imm(1, -4),
+        // r2 = 1
+        mov_imm(2, 1),
+        // call emit_reading (18)
+        call_helper(18),
+        // r0 = 0; exit
+        mov_imm(0, 0),
+        exit_insn(),
+    ];
+    let bytecode = assemble(&insns);
+    let image = sonde_protocol::ProgramImage {
+        bytecode,
+        maps: vec![],
+        map_initial_data: vec![],
+        map_readonly: vec![],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+
+    // Use a 13-byte blob to verify the pointers bracket exactly this length.
+    let blob = vec![0xAAu8; 13];
+    let readings = unsafe { decoder::execute_decoder(&cbor, &blob) }.unwrap();
+
+    assert_eq!(
+        readings.get("L"),
+        Some(&13i64),
+        "decoder context input_data/input_end must bracket the 13-byte APP_DATA blob"
+    );
+}
+
+// T-1904g: bpf_trace_printk executes without error
+//
+// Traces to: GW-1904 AC-6
+//
+// Smoke test: verifies that a decoder calling bpf_trace_printk runs
+// without error.  Full tracing-output assertion (confirming the message
+// appears at target `decoder_bpf`) requires `tracing-test` infrastructure
+// not yet set up in this test module.
+#[test]
+fn t1904g_trace_printk_logged() {
+    // BPF program that calls bpf_trace_printk("hello", 5):
+    //   *(u32*)(r10 - 8) = "hell"   (0x6c6c6568 LE)
+    //   *(u8*)(r10 - 4) = 'o'
+    //   r1 = r10 - 8
+    //   r2 = 5
+    //   r3 = 0
+    //   call bpf_trace_printk (16)
+    //   r0 = 0; exit
+    let insns: Vec<[u8; 8]> = vec![
+        st_mem_w(10, -8, 0x6c6c6568_u32 as i32), // "hell"
+        st_mem_b(10, -4, b'o' as i32),           // "o"
+        mov_reg(1, 10),
+        add_imm(1, -8),
+        mov_imm(2, 5),
+        mov_imm(3, 0),
+        call_helper(16), // bpf_trace_printk
+        mov_imm(0, 0),
+        exit_insn(),
+    ];
+    let bytecode = assemble(&insns);
+    let image = sonde_protocol::ProgramImage {
+        bytecode,
+        maps: vec![],
+        map_initial_data: vec![],
+        map_readonly: vec![],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+
+    // Execute — the test verifies the program runs without error.
+    // Full tracing assertion would require tracing-test infrastructure;
+    // this test confirms the helper executes and returns 0 without panic.
+    let result = unsafe { decoder::execute_decoder(&cbor, &[0u8; 4]) };
+    assert!(
+        result.is_ok(),
+        "bpf_trace_printk should execute without error: {:?}",
+        result.err()
+    );
+}

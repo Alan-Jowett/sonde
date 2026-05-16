@@ -2129,7 +2129,7 @@ The `secret-service` dependency (D-Bus keyring via `zbus`) is gated behind a `ke
 
 | Trigger | Tags |
 |---------|------|
-| Release tag (`v*`) | `latest`, semver (e.g., `0.6.0`), `sha-<short>` |
+| Release tag (`v*`) | `latest`, semver (e.g., `0.7.0`), `sha-<short>` |
 | Nightly / schedule / dispatch | `nightly`, `nightly-YYYYMMDD`, `sha-<short>` |
 
 Public tags are created only after both architectures pass smoke tests.

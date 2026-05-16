@@ -145,4 +145,8 @@ code { font-family: Consolas, "Courier New", monospace; }
   font-weight: 400;
   font-size: 0.9rem;
 }
+.sensor-controls input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+}
 .chart-container { position: relative; height: 400px; }

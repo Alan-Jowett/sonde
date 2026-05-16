@@ -968,7 +968,8 @@ const SENSOR_STATE = {
   timeRange: '24h',
   viewMode: 'graph',
   selectedSeries: new Set(),
-  autoRefresh: true,
+  seriesInitialized: false,
+  autoRefresh: false,
 };
 
 const TIME_RANGE_MS = {
@@ -1177,7 +1178,7 @@ function renderSensorChart(allSeries) {
             },
             label(item) {
               const ds = item.dataset;
-              const parts = [`Node: ${ds.nodeId || '—'}`, `Program: ${truncHash(ds.programHash)}`, `${ds.readingName || '—'}: ${item.parsed.y}`];
+              const parts = [`Node: ${ds.nodeId || '—'}`, `Program: ${ds.programHash || '—'}`, `${ds.readingName || '—'}: ${item.parsed.y}`];
               return parts;
             },
           },
@@ -1260,6 +1261,13 @@ async function renderSensorData() {
 
     if (partitionKeys.length === 0) {
       renderCard('Sensor Data', '<p class="muted">No nodes have reported state yet.</p>');
+      if (SENSOR_STATE.autoRefresh) {
+        setAutoRefresh(async () => {
+          if (APP.activeTab === 'sensor-data') {
+            await renderSensorData();
+          }
+        });
+      }
       return;
     }
 
@@ -1267,7 +1275,8 @@ async function renderSensorData() {
     const sensorRows = await querySensorData(partitionKeys, rangeMs);
     const allSeries = extractSeries(sensorRows, nodeIdMap);
 
-    if (SENSOR_STATE.selectedSeries.size === 0 && allSeries.length > 0) {
+    if (!SENSOR_STATE.seriesInitialized && allSeries.length > 0) {
+      SENSOR_STATE.seriesInitialized = true;
       for (const s of allSeries.slice(0, Math.min(allSeries.length, 5))) {
         SENSOR_STATE.selectedSeries.add(s.key);
       }
@@ -1283,7 +1292,7 @@ async function renderSensorData() {
       <button type="button" class="secondary sensor-view-btn${SENSOR_STATE.viewMode === 'table' ? ' active' : ''}" data-view="table">Table</button>
     `;
 
-    const seriesCheckboxes = allSeries.slice(0, 20).map((s) => {
+    const seriesCheckboxes = allSeries.map((s) => {
       const checked = SENSOR_STATE.selectedSeries.has(s.key) ? ' checked' : '';
       return `<label class="sensor-series-label"><input type="checkbox" value="${escapeHtml(s.key)}"${checked}> ${escapeHtml(s.label)}</label>`;
     }).join('');
@@ -1305,7 +1314,7 @@ async function renderSensorData() {
         </div>
         ${allSeries.length > 0 ? `
           <details class="sensor-series-picker" open>
-            <summary><strong>Series</strong> (${allSeries.length} available, max 20)</summary>
+            <summary><strong>Series</strong> (${allSeries.length} available, max 20 plotted)</summary>
             <div class="sensor-series-grid">${seriesCheckboxes}</div>
           </details>
         ` : ''}
@@ -1340,6 +1349,10 @@ async function renderSensorData() {
     for (const cb of seriesCheckboxEls) {
       cb.addEventListener('change', () => {
         if (cb.checked) {
+          if (SENSOR_STATE.selectedSeries.size >= 20) {
+            cb.checked = false;
+            return;
+          }
           SENSOR_STATE.selectedSeries.add(cb.value);
         } else {
           SENSOR_STATE.selectedSeries.delete(cb.value);

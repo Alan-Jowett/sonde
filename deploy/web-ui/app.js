@@ -222,6 +222,7 @@ async function initMsal() {
     auth: {
       clientId: CONFIG.msalClientId,
       authority: CONFIG.msalAuthority,
+      redirectUri: window.location.origin,
     },
     cache: {
       cacheLocation: 'sessionStorage',

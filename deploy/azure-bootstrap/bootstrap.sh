@@ -196,13 +196,21 @@ fi
 
 echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2
 deployment_name="sonde-bootstrap-$(date +%Y%m%d%H%M%S)-$$"
+bicep_params="companionCertificateBase64=$COMPANION_CERT_BASE64 location=$SONDE_AZURE_LOCATION project_name=$SONDE_AZURE_PROJECT_NAME"
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
+    bicep_params="$bicep_params customDomainName=$SONDE_AZURE_CUSTOM_DOMAIN_NAME"
+fi
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP:-}" ]; then
+    bicep_params="$bicep_params customDomainDnsResourceGroup=$SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP"
+fi
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME:-}" ]; then
+    bicep_params="$bicep_params customDomainDnsZoneName=$SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME"
+fi
 deployment_outputs="$(az deployment sub create \
     --name "$deployment_name" \
     --location "$SONDE_AZURE_LOCATION" \
     --template-file /opt/sonde/deploy/bicep/main.bicep \
-    --parameters companionCertificateBase64="$COMPANION_CERT_BASE64" \
-    --parameters location="$SONDE_AZURE_LOCATION" \
-    --parameters project_name="$SONDE_AZURE_PROJECT_NAME" \
+    --parameters $bicep_params \
     --query 'properties.outputs' \
     --output json)"
 
@@ -314,6 +322,32 @@ else
         --headers "Content-Type=application/json" \
         --body "$patch_body"
     echo "Added SPA redirect URI: $redirect_uri" >&2
+fi
+
+# If a custom domain was configured, also register it as a SPA redirect URI
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
+    custom_redirect_uri="https://$SONDE_AZURE_CUSTOM_DOMAIN_NAME"
+    custom_uris="$(az ad app show --id "$app_object_id" \
+        --query 'spa.redirectUris' --output json 2>/dev/null || echo '[]')"
+    if [ -z "$custom_uris" ] || [ "$custom_uris" = "null" ]; then
+        custom_uris="[]"
+    fi
+    custom_uri_exists=0
+    echo "$custom_uris" | jq -e --arg uri "$custom_redirect_uri" 'index($uri) != null' >/dev/null 2>&1 && custom_uri_exists=1
+    if [ "$custom_uri_exists" -eq 1 ]; then
+        echo "Custom domain redirect URI already registered" >&2
+    else
+        custom_merged="$(echo "$custom_uris" | jq -c --arg uri "$custom_redirect_uri" '. + [$uri]')" || {
+            echo "failed to merge custom domain redirect URI" >&2
+            exit 1
+        }
+        custom_patch="$(jq -n -c --argjson uris "$custom_merged" '{"spa":{"redirectUris":$uris}}')"
+        az rest --method PATCH \
+            --url "https://graph.microsoft.com/v1.0/applications/$app_object_id" \
+            --headers "Content-Type=application/json" \
+            --body "$custom_patch"
+        echo "Added custom domain redirect URI: $custom_redirect_uri" >&2
+    fi
 fi
 
 # Add Azure Storage user_impersonation API permission (idempotent)

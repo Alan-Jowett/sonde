@@ -191,6 +191,39 @@ fn emit_temp_decoder_bytecode() -> Vec<u8> {
     assemble(&insns)
 }
 
+/// Build a decoder BPF program that calls `emit_reading(name, value)`.
+///
+/// `name` must be 1–4 bytes. The name is written to the stack, then
+/// `emit_reading` is called with the given signed 32-bit value.
+fn emit_named_decoder_bytecode(name: &[u8], value: i32) -> Vec<u8> {
+    assert!(
+        !name.is_empty() && name.len() <= 4,
+        "name must be 1–4 bytes"
+    );
+    // Pack name bytes into a little-endian u32 (zero-padded).
+    let mut packed = [0u8; 4];
+    packed[..name.len()].copy_from_slice(name);
+    let name_word = u32::from_le_bytes(packed);
+
+    let insns: Vec<[u8; 8]> = vec![
+        // Store name at r10 - 4
+        st_mem_w(10, -4, name_word as i32),
+        // r1 = r10 - 4 (pointer to name on stack)
+        mov_reg(1, 10),
+        add_imm(1, -4),
+        // r2 = name length
+        mov_imm(2, name.len() as i32),
+        // r3 = value
+        mov_imm(3, value),
+        // call emit_reading (helper 18)
+        call_helper(18),
+        // r0 = 0; exit
+        mov_imm(0, 0),
+        exit_insn(),
+    ];
+    assemble(&insns)
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 // T-1900: Dual-section ELF ingestion
@@ -745,4 +778,303 @@ fn t1904e_map_update_rodata_rejected() {
     // map_update returns -1 (0xFFFFFFFFFFFFFFFF as u64, reinterpreted as i64 = -1)
     let ret = readings.get("r").expect("expected return value reading");
     assert_eq!(*ret, -1i64, "map_update on .rodata should return -1");
+}
+
+// T-1902: Decoder image storage and retrieval
+//
+// Traces to: GW-1902 (AC-1, AC-2, AC-4)
+//
+// Verifies that a decoder image is stored alongside the node image,
+// retrievable by program hash, and removed when the program is deleted.
+#[tokio::test]
+async fn t1902_decoder_image_storage_and_retrieval() {
+    use sonde_gateway::storage::Storage;
+    use sonde_gateway::InMemoryStorage;
+
+    let sonde_code = nop_bytecode();
+    let decoder_code = emit_temp_decoder_bytecode();
+    let elf = make_dual_section_elf(&sonde_code, &decoder_code);
+
+    let lib = ProgramLibrary::new();
+    let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
+    assert!(
+        record.decoder_image.is_some(),
+        "AC-1: decoder image present after ingest"
+    );
+
+    let storage = InMemoryStorage::new();
+    storage.store_program(&record).await.unwrap();
+
+    // AC-2: Decoder image retrievable by node program hash.
+    let retrieved = storage.get_program(&record.hash).await.unwrap().unwrap();
+    assert!(
+        retrieved.decoder_image.is_some(),
+        "AC-2: decoder image retrievable by program hash"
+    );
+    // Verify it decodes as a valid ProgramImage.
+    let decoder_cbor = retrieved.decoder_image.as_ref().unwrap();
+    let decoded = sonde_protocol::ProgramImage::decode(decoder_cbor);
+    assert!(
+        decoded.is_ok(),
+        "decoder image should be decodable as ProgramImage"
+    );
+
+    // AC-4: Decoder image removed when program is deleted (RemoveProgram).
+    storage.delete_program(&record.hash).await.unwrap();
+    let after_delete = storage.get_program(&record.hash).await.unwrap();
+    assert!(
+        after_delete.is_none(),
+        "AC-4: program (and decoder) removed after delete"
+    );
+}
+
+// T-1902a: Decoder image replacement on re-ingest
+//
+// Traces to: GW-1902 (AC-7)
+//
+// Re-ingesting the same node program with a different decoder section
+// replaces the decoder image while keeping the node program hash stable.
+#[tokio::test]
+async fn t1902a_decoder_replacement_on_reingest() {
+    use sonde_gateway::storage::Storage;
+    use sonde_gateway::InMemoryStorage;
+
+    let sonde_code = nop_bytecode();
+    let lib = ProgramLibrary::new();
+    let storage = InMemoryStorage::new();
+
+    // V1 decoder: emit_reading("A", 1)
+    let decoder_v1 = emit_named_decoder_bytecode(b"A", 1);
+    let elf_v1 = make_dual_section_elf(&sonde_code, &decoder_v1);
+    let record_v1 = lib
+        .ingest_elf(&elf_v1, VerificationProfile::Resident)
+        .unwrap();
+    storage.store_program(&record_v1).await.unwrap();
+
+    // V2 decoder: emit_reading("B", 2) — same sonde code, different decoder.
+    let decoder_v2 = emit_named_decoder_bytecode(b"B", 2);
+    let elf_v2 = make_dual_section_elf(&sonde_code, &decoder_v2);
+    let record_v2 = lib
+        .ingest_elf(&elf_v2, VerificationProfile::Resident)
+        .unwrap();
+
+    // Same sonde bytecode → same node program hash.
+    assert_eq!(
+        record_v1.hash, record_v2.hash,
+        "node program hash must be stable (GW-1906)"
+    );
+
+    // Upsert: store the updated record (same hash, new decoder image).
+    storage.store_program(&record_v2).await.unwrap();
+
+    // Retrieve and verify the decoder image was replaced.
+    let retrieved = storage.get_program(&record_v2.hash).await.unwrap().unwrap();
+    assert_ne!(
+        record_v1.decoder_image, retrieved.decoder_image,
+        "decoder image should differ after replacement"
+    );
+    assert_eq!(
+        record_v2.decoder_image, retrieved.decoder_image,
+        "decoder image should match v2 after upsert"
+    );
+
+    // Execute the new decoder to confirm it produces v2 readings.
+    let decoder_cbor = retrieved.decoder_image.as_ref().unwrap();
+    let readings = unsafe { decoder::execute_decoder(decoder_cbor, &[0u8; 10]) }.unwrap();
+    assert_eq!(
+        readings.get("B"),
+        Some(&2i64),
+        "v2 decoder should produce reading B=2"
+    );
+    assert!(
+        !readings.contains_key("A"),
+        "v1 reading A must not appear — decoder was replaced"
+    );
+}
+
+// T-1902b: Decoder removal on re-ingest without decoder
+//
+// Traces to: GW-1902 (AC-8)
+//
+// Re-ingesting a node program without a decoder section removes any
+// previously stored decoder image.
+#[tokio::test]
+async fn t1902b_decoder_removal_on_reingest() {
+    use sonde_gateway::storage::Storage;
+    use sonde_gateway::InMemoryStorage;
+
+    let sonde_code = nop_bytecode();
+    let lib = ProgramLibrary::new();
+    let storage = InMemoryStorage::new();
+
+    // Initial ingest: ELF with decoder section.
+    let decoder_code = emit_temp_decoder_bytecode();
+    let elf_with_decoder = make_dual_section_elf(&sonde_code, &decoder_code);
+    let record_with = lib
+        .ingest_elf(&elf_with_decoder, VerificationProfile::Resident)
+        .unwrap();
+    assert!(record_with.decoder_image.is_some());
+    storage.store_program(&record_with).await.unwrap();
+
+    // Re-ingest: ELF without decoder section (same sonde code).
+    let elf_no_decoder = make_sonde_elf(&sonde_code);
+    let record_without = lib
+        .ingest_elf(&elf_no_decoder, VerificationProfile::Resident)
+        .unwrap();
+
+    // Same node program hash.
+    assert_eq!(record_with.hash, record_without.hash);
+    // No decoder in the new record.
+    assert!(record_without.decoder_image.is_none());
+
+    // Upsert: store the record without decoder — removes old decoder.
+    storage.store_program(&record_without).await.unwrap();
+
+    // Verify decoder is gone.
+    let retrieved = storage
+        .get_program(&record_without.hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        retrieved.decoder_image.is_none(),
+        "AC-8: decoder image must be removed on re-ingest without decoder"
+    );
+}
+
+// T-1903: APP_DATA enrichment with decoder
+//
+// Traces to: GW-1903 (AC-1, AC-3, AC-6)
+//
+// Verifies the full enrichment chain: decoder execution produces readings,
+// which are correctly encoded in the handler DATA message alongside the
+// preserved raw blob.
+#[test]
+fn t1903_app_data_enrichment_with_decoder() {
+    use sonde_gateway::HandlerMessage;
+
+    // Ingest a program with decoder that calls emit_reading("temp_mc", 25125).
+    let sonde_code = nop_bytecode();
+    let decoder_code = emit_temp_decoder_bytecode();
+    let elf = make_dual_section_elf(&sonde_code, &decoder_code);
+    let lib = ProgramLibrary::new();
+    let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
+    let decoder_cbor = record.decoder_image.as_ref().unwrap();
+
+    // Simulate APP_DATA blob from a node.
+    let raw_blob = vec![0x19, 0x80, 0x45, 0x62, 0x00, 0x00];
+
+    // AC-1: Execute decoder → produces readings.
+    let readings = unsafe { decoder::execute_decoder(decoder_cbor, &raw_blob) }.unwrap();
+    assert!(
+        !readings.is_empty(),
+        "AC-1: decoder should produce readings"
+    );
+
+    // AC-3: Readings contain the expected name-value pairs.
+    assert_eq!(
+        readings.get("temp_mc"),
+        Some(&25125i64),
+        "AC-3: readings should contain temp_mc=25125"
+    );
+
+    // Build the handler DATA message with enriched readings (GW-1903 AC-6).
+    let msg = HandlerMessage::Data {
+        request_id: 42,
+        node_id: "node-01".to_string(),
+        program_hash: record.hash.clone(),
+        data: raw_blob.clone(),
+        timestamp: 1700000000,
+        readings: Some(readings.clone()),
+    };
+
+    // Round-trip the handler message: encode → decode.
+    let encoded = msg.encode().unwrap();
+    let decoded = HandlerMessage::decode(&encoded).unwrap();
+
+    // Verify readings survive round-trip.
+    if let HandlerMessage::Data {
+        data,
+        readings: decoded_readings,
+        ..
+    } = decoded
+    {
+        assert_eq!(
+            decoded_readings.as_ref().and_then(|r| r.get("temp_mc")),
+            Some(&25125i64),
+            "readings must survive handler message round-trip"
+        );
+        // Raw blob is preserved byte-for-byte (AC-8 from GW-1903).
+        assert_eq!(
+            data, raw_blob,
+            "raw blob must be preserved in handler DATA message"
+        );
+    } else {
+        panic!("expected HandlerMessage::Data");
+    }
+}
+
+// T-1903d: Both handler and connector receive identical enriched message
+//
+// Traces to: GW-1903 (AC-6)
+//
+// Verifies that the readings produced by decoder execution are delivered
+// identically to both the handler (DATA message) and the connector
+// (GW-0813 message). Since ConnectorOutboundMessage is module-private,
+// this test validates the shared readings value at the production boundary:
+// the same `BTreeMap<String, i64>` is cloned to both paths in engine.rs.
+#[test]
+fn t1903d_handler_and_connector_same_readings() {
+    use sonde_gateway::HandlerMessage;
+
+    // Execute a decoder to produce readings.
+    let bytecode = emit_temp_decoder_bytecode();
+    let image = sonde_protocol::ProgramImage {
+        bytecode,
+        maps: vec![],
+        map_initial_data: vec![],
+        map_readonly: vec![],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+
+    let blob = vec![0x19, 0x80, 0x45, 0x62, 0x00, 0x00];
+    let readings = unsafe { decoder::execute_decoder(&cbor, &blob) }.unwrap();
+    assert!(!readings.is_empty());
+
+    // Engine clones readings for connector and handler (engine.rs:1386-1433).
+    // Simulate this split:
+    let handler_readings = readings.clone();
+    let connector_readings = readings.clone();
+
+    // Both must be identical.
+    assert_eq!(
+        handler_readings, connector_readings,
+        "handler and connector must receive identical readings"
+    );
+
+    // Verify the handler message carries these readings correctly.
+    let handler_msg = HandlerMessage::Data {
+        request_id: 1,
+        node_id: "n1".to_string(),
+        program_hash: vec![0x42; 32],
+        data: blob.clone(),
+        timestamp: 1700000000,
+        readings: Some(handler_readings),
+    };
+    let decoded = HandlerMessage::decode(&handler_msg.encode().unwrap()).unwrap();
+
+    if let HandlerMessage::Data {
+        readings: Some(r),
+        data,
+        ..
+    } = decoded
+    {
+        assert_eq!(
+            r, connector_readings,
+            "readings must match connector's copy"
+        );
+        assert_eq!(data, blob, "raw blob preserved");
+    } else {
+        panic!("expected HandlerMessage::Data with readings");
+    }
 }

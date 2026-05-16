@@ -10,7 +10,6 @@ const CONFIG = {
   actualStateTable: 'actualstate',
   desiredStateTable: 'desiredstate',
   programsTable: 'programs',
-  programRouteTable: 'programroute',
   refreshIntervalMs: 30000,
 };
 
@@ -37,7 +36,7 @@ const STORAGE_SCOPES = ['https://storage.azure.com/.default'];
 function functionScopes() {
   return [`api://${CONFIG.msalClientId}/user_impersonation`];
 }
-const TAB_IDS = ['dashboard', 'desired-state', 'programs', 'routes'];
+const TAB_IDS = ['dashboard', 'desired-state', 'programs'];
 const APP = {
   msalApp: null,
   account: null,
@@ -854,113 +853,6 @@ async function renderPrograms() {
   }
 }
 
-// 7. Routes Tab
-function routeRowsTable(routes) {
-  return `
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Program Hash</th>
-            <th>Handler Queue</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${routes.map((route) => `
-            <tr>
-              <td>${formatHashCell(route.RowKey)}</td>
-              <td>${escapeHtml(route.handler_queue || '—')}</td>
-            </tr>
-          `).join('') || '<tr><td colspan="2" class="muted">No routes found.</td></tr>'}
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
-async function renderRoutes() {
-  if (!APP.account) {
-    requireAuthenticatedView('Routes');
-    return;
-  }
-
-  const savedMessage = APP.viewMessage;
-  renderCard('Routes', '<p class="muted">Loading routes…</p>');
-  APP.viewMessage = savedMessage;
-
-  try {
-    const [programs, routes] = await Promise.all([
-      listPrograms(),
-      queryTable(CONFIG.programRouteTable, "PartitionKey eq 'program'"),
-    ]);
-
-    const routeMap = new Map(routes.map((route) => [String(route.RowKey || '').toLowerCase(), route]));
-    const programOptions = programs.map((program) => `<option value="${escapeHtml(program.RowKey)}">${escapeHtml(truncHash(program.RowKey))} — ${escapeHtml(program.source_filename || 'unnamed')}</option>`).join('');
-
-    renderCard('Routes', `
-      <div class="panel stack">
-        <form id="route-form" class="form-grid">
-          <label>Program Hash
-            <select name="programHash" required>${programOptions}</select>
-          </label>
-          <label>Handler Queue
-            <input name="handlerQueue" type="text" required>
-          </label>
-          <div>
-            <button type="submit" class="primary">Save Route</button>
-          </div>
-        </form>
-      </div>
-      <div class="panel stack">
-        <h2>Program Routes</h2>
-        ${routeRowsTable(routes)}
-      </div>
-    `);
-
-    const form = document.getElementById('route-form');
-    const programSelect = form?.querySelector('select[name="programHash"]');
-    const queueInput = form?.querySelector('input[name="handlerQueue"]');
-
-    const syncQueue = () => {
-      const selected = String(programSelect?.value || '').toLowerCase();
-      const route = routeMap.get(selected);
-      if (queueInput) {
-        queueInput.value = route?.handler_queue || '';
-      }
-    };
-
-    programSelect?.addEventListener('change', syncQueue);
-    syncQueue();
-
-    form?.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const selectedHash = String(programSelect?.value || '').trim().toLowerCase();
-      const handlerQueue = String(queueInput?.value || '').trim();
-      if (!selectedHash || !handlerQueue) {
-        showViewMessage('error', 'Program hash and handler queue are required.');
-        await renderRoutes();
-        return;
-      }
-
-      try {
-        const entity = {
-          PartitionKey: 'program',
-          RowKey: selectedHash,
-          handler_queue: handlerQueue,
-        };
-        await upsertEntity(CONFIG.programRouteTable, 'program', selectedHash, entity);
-        showViewMessage('success', 'Program route saved.');
-      } catch (error) {
-        showViewMessage('error', parseErrorPayload(error, 'Failed to save program route.'));
-      }
-
-      await renderRoutes();
-    });
-  } catch (error) {
-    renderError('Routes', error);
-  }
-}
-
 // 9. Tab Router
 function setActiveTab(tabId) {
   APP.activeTab = TAB_IDS.includes(tabId) ? tabId : 'dashboard';
@@ -980,9 +872,6 @@ async function renderActiveTab() {
       break;
     case 'programs':
       await renderPrograms();
-      break;
-    case 'routes':
-      await renderRoutes();
       break;
     case 'dashboard':
     default:

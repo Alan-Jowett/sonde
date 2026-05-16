@@ -36,9 +36,6 @@ param actualStateTableName string = ''
 @description('Table name for Azure handler desired-state rows.')
 param desiredStateTableName string = ''
 
-@description('Table name for Azure handler program-route rows.')
-param programRouteTableName string = 'programroute'
-
 @description('Table name for program storage.')
 param programsTableName string = ''
 
@@ -69,9 +66,6 @@ var effectiveActualStateTableName = empty(actualStateTableName)
 var effectiveDesiredStateTableName = empty(desiredStateTableName)
   ? 'desiredstate'
   : desiredStateTableName
-var effectiveProgramRouteTableName = empty(programRouteTableName)
-  ? 'programroute'
-  : programRouteTableName
 var effectiveProgramsTableName = empty(programsTableName) ? 'programs' : programsTableName
 var effectiveSensorDataTableName = empty(sensorDataTableName) ? 'sensordata' : sensorDataTableName
 // Keep the historical `-decoder-` stem as the derived default to avoid replacing
@@ -122,7 +116,6 @@ module stack './modules/stack.bicep' = {
     downstreamQueueName: downstreamQueueName
     actualStateTableName: effectiveActualStateTableName
     desiredStateTableName: effectiveDesiredStateTableName
-    programRouteTableName: effectiveProgramRouteTableName
     programsTableName: effectiveProgramsTableName
     sensorDataTableName: effectiveSensorDataTableName
     functionAppName: effectiveFunctionAppName
@@ -145,7 +138,6 @@ output actualStateTableName string = stack.outputs.actualStateTableName
 output desiredStateTableName string = stack.outputs.desiredStateTableName
 output deploymentContainerName string = stack.outputs.deploymentContainerName
 output deploymentContainerUrl string = stack.outputs.deploymentContainerUrl
-output programRouteTableName string = stack.outputs.programRouteTableName
 output programsTableName string = stack.outputs.programsTableName
 output sensorDataTableName string = stack.outputs.sensorDataTableName
 output functionAppName string = stack.outputs.functionAppName
@@ -167,7 +159,6 @@ output companionBootstrapValues object = {
   deploymentContainerUrl: stack.outputs.deploymentContainerUrl
   actualStateTable: stack.outputs.actualStateTableName
   desiredStateTable: stack.outputs.desiredStateTableName
-  programRouteTable: stack.outputs.programRouteTableName
   staticWebAppHostname: stack.outputs.staticWebAppHostname
   note: 'The deployment registers the supplied certificate public material on the Entra app. The matching PEM certificate and private key remain caller-managed local artifacts for sonde-azure-companion bootstrap.'
 }

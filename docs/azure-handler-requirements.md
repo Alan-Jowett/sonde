@@ -9,9 +9,9 @@
 > Azure Function App provisioned for the Sonde Azure integration. It owns the
 > Azure Table state used for node reconciliation, consumes upstream connector
 > traffic from Storage Queue, emits downstream `GW-0811` desired-state messages,
-> and routes `GW-0813` application-data messages to handler queues. It does not
-> cover the gateway-local Azure companion bridge or Azure resource provisioning
-> beyond the handler's runtime dependencies.
+> and stores `GW-0813` application-data messages in the `SensorData` table. It
+> does not cover the gateway-local Azure companion bridge or Azure resource
+> provisioning beyond the handler's runtime dependencies.
 > **Related:** [gateway-companion-api.md](gateway-companion-api.md),
 > [gateway-requirements.md](gateway-requirements.md),
 > [azure-handler-design.md](azure-handler-design.md),
@@ -24,10 +24,10 @@
 
 | Term | Definition |
 |------|------------|
-| **Azure handler** | The Azure-hosted control-plane process that consumes upstream Sonde connector traffic from Storage Queue and produces downstream desired-state messages or handler-queue deliveries. |
+| **Azure handler** | The Azure-hosted control-plane process that consumes upstream Sonde connector traffic from Storage Queue, produces downstream desired-state messages, and stores application-data messages in the `SensorData` table. |
 | **Actual state row** | One append-only Azure Table row that records a received node-scoped `GW-0812` observation for a Sonde `node_id`. |
 | **Desired state row** | One append-only Azure Table row that records a requested desired state for a Sonde `node_id`. Desired rows are authored by admin/control-plane surfaces, not by the Azure handler reconciliation path. |
-| **Program route row** | One Azure Table row keyed by `program_hash` that names the Storage Queue that should receive `GW-0813` application-data messages for that program. |
+| ~~**Program route row**~~ | _Retired._ Previously mapped `program_hash` to a handler queue for `GW-0813` delivery. Superseded by direct `SensorData` table storage (AZH-0500). |
 | **Observed fields** | The subset of node state reported by `GW-0812` and copied into an actual state row, including current program state, observed schedule as reported by the gateway, firmware data, battery, and check-in time. |
 | **Desired fields** | The cloud-authored fields stored in a desired state row and used to build a complete `GW-0811` `DESIRED_STATE` payload for the node. In v1 this document defines `assigned_program_hash` and `schedule_interval_s`. |
 | **Reverse-tick key** | A row-key prefix derived from `u64::MAX - timestamp_ms`, so newer timestamps sort before older timestamps for `Top(1)` queries within one node partition. |
@@ -65,8 +65,8 @@ logic.
 
 1. The Azure handler accepts raw connector payload bytes from the configured upstream queue.
 2. A node-scoped `GW-0812` message is routed to node-state reconciliation logic.
-3. A `GW-0813` message is routed to application-data delivery logic.
-4. Unsupported or out-of-scope connector messages do not mutate actual-state, desired-state, or program-route tables.
+3. A `GW-0813` message is routed to `SensorData` table storage logic.
+4. Unsupported or out-of-scope connector messages do not mutate actual-state, desired-state, or sensor-data tables.
 
 ---
 
@@ -267,78 +267,13 @@ evaluation or downstream `GW-0811` publication.
 
 ---
 
-## 5  Program-hash routing for `GW-0813`
+## 5  ~~Program-hash routing for `GW-0813`~~ (Retired)
 
-### AZH-0300  Program route mapping table
-
-**Priority:** Must
-**Source:** Azure handler discovery review, GW-0813
-
-**Description:**
-The Azure handler MUST own an Azure Table that stores one program route row per
-`program_hash`. Each row maps the Sonde program hash to the Azure Storage Queue
-queue that should receive `GW-0813` messages for that program.
-
-**Acceptance criteria:**
-
-1. The table stores one route row per `program_hash`.
-2. Each route row identifies the handler queue name for that program.
-3. The Azure handler can look up a route row using the `program_hash` carried by `GW-0813`.
-
----
-
-### AZH-0301  Queue delivery of `GW-0813` messages
-
-**Priority:** Must
-**Source:** Azure handler discovery review, GW-0813
-
-**Description:**
-When the Azure handler receives a `GW-0813` message whose `program_hash` has a
-program route row, it MUST deliver that message to the mapped Azure Storage Queue
-queue. The delivered message body MUST preserve the raw `GW-0813` connector
-payload bytes unchanged.
-
-**Acceptance criteria:**
-
-1. A mapped `GW-0813` is forwarded to the queue named by the corresponding route row.
-2. The queue message body contains the raw `GW-0813` connector payload bytes unchanged.
-3. The Azure handler uses the `program_hash` from the message rather than a node-local default route.
-
----
-
-### AZH-0302  Missing program route rows fail closed
-
-**Priority:** Must
-**Source:** Azure handler discovery review
-
-**Description:**
-If a `GW-0813` message arrives for a `program_hash` that has no program route
-row, the Azure handler MUST log the condition and fail closed. It MUST NOT drop
-the message silently and MUST NOT reroute the message to a default queue.
-
-**Acceptance criteria:**
-
-1. Missing route rows are surfaced through logging, function failure, or both.
-2. The Azure handler does not route an unmapped `GW-0813` message to a shared default queue.
-3. The Azure handler does not report success for an unmapped `GW-0813` message.
-
----
-
-### AZH-0303  Pre-provisioned handler queue boundary
-
-**Priority:** Must
-**Source:** Azure handler discovery review
-
-**Description:**
-The Azure handler MUST treat mapped handler queues as pre-provisioned external
-dependencies. The program route table references those queues, but this
-document's scope does not include queue creation or lifecycle management.
-
-**Acceptance criteria:**
-
-1. The program route table stores queue names rather than queue-creation directives.
-2. The handler design and deployment docs identify mapped handler queues as pre-provisioned dependencies.
-3. Queue provisioning failure is not hidden by silently creating a replacement queue.
+> **Status:** Retired. Program-route-based queue delivery of `GW-0813` messages
+> has been superseded by direct `SensorData` table storage (AZH-0500). The
+> `ProgramRoute` table, handler queue delivery, and related fail-closed
+> semantics are no longer part of the handler. Requirements AZH-0300 through
+> AZH-0303 are retired.
 
 ---
 
@@ -351,18 +286,17 @@ document's scope does not include queue creation or lifecycle management.
 
 **Description:**
 If the Azure handler cannot append to the actual-state table, cannot read the
-desired-state table, cannot read the program route table, cannot publish
-`GW-0811`, or cannot publish a mapped `GW-0813`, it MUST surface the failure
-and fail closed for the affected message.
+desired-state table, cannot publish `GW-0811`, or cannot append to the
+`SensorData` table, it MUST surface the failure and fail closed for the affected
+message.
 
 **Acceptance criteria:**
 
 1. Actual-state table append failures are surfaced through logging, function failure, or both.
 2. Desired-state table read failures are surfaced through logging, function failure, or both.
-3. Program route table read failures are surfaced through logging, function failure, or both.
-4. Downstream `GW-0811` publish failures are surfaced through logging, function failure, or both.
-5. Mapped handler-queue publish failures are surfaced through logging, function failure, or both.
-6. The Azure handler does not silently claim success after a detected storage or broker failure.
+3. Downstream `GW-0811` publish failures are surfaced through logging, function failure, or both.
+4. `SensorData` table append failures are surfaced through logging, function failure, or both.
+5. The Azure handler does not silently claim success after a detected storage or broker failure.
 
 ---
 

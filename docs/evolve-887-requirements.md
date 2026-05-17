@@ -136,9 +136,11 @@ node-scoped `ACTUAL_STATE` payload:
 | Field | CBOR key | Type | Description |
 |-------|----------|------|-------------|
 | `encrypted_psk_escrow` | 12 | bstr/null | CBOR-encoded escrow blob (GW-2002 format). `null` when escrow is disabled or not yet bootstrapped. |
+| `escrow_key_hint` | 13 | uint/null | `key_hint` (u16) from the escrow blob metadata. Sent alongside the blob so that the Azure handler can index by `key_hint` without inspecting blob ciphertext. `null` when escrow is disabled. |
 
 For phone PSKs, the gateway MUST emit phone-scoped `ACTUAL_STATE` messages
-(new `entity_kind = "phone"`) with the same `encrypted_psk_escrow` field.
+(new `entity_kind = "phone"`) with the same `encrypted_psk_escrow` and
+`escrow_key_hint` fields.
 
 **Acceptance criteria:**
 
@@ -218,7 +220,8 @@ receipt, the gateway:
    the gateway's current public key epoch.
 3. Increments `key_version`.
 4. Re-encrypts all local PSK records (node + phone) from the old master key
-   to the new master key, transactionally.
+   to the new master key, incrementally with per-record crash safety
+   (see GW-2007 for the crash-safe migration approach).
 5. Re-encrypts the recovery private key (`escrow_keypair.secret_enc`) under
    the new master key.
 6. Updates the master key in the `KeyProvider` storage.
@@ -226,16 +229,19 @@ receipt, the gateway:
 8. Transitions escrow state to `ready` (or `rotation_in_progress` → `ready`).
 9. Zeroes the old master key from memory.
 
-The `MASTER_KEY_INSTALL` message format:
+The `MASTER_KEY_INSTALL` message format (matches specification §3.9):
 
 | Field | CBOR key | Type | Description |
 |-------|----------|------|-------------|
 | `msg_type` | 1 | uint | `0x13` (`MASTER_KEY_INSTALL`) |
 | `target_key_epoch` | 2 | uint | Must match gateway's current public key epoch |
-| `encrypted_master_key` | 3 | bstr | Master key encrypted with gateway's public key |
-| `operation_id` | 4 | bstr | Unique operation ID for idempotency |
-| `rotation_counter` | 5 | uint | Monotonic rotation counter for replay protection |
-| `expiry_ms` | 6 | uint | Message expiry timestamp (Unix ms). Gateway rejects expired messages. |
+| `sender_public_key` | 3 | bstr (32 bytes) | Admin's ephemeral X25519 public key |
+| `encrypted_master_key` | 4 | bstr | AES-256-GCM ciphertext of the new master key |
+| `nonce` | 5 | bstr (12 bytes) | AES-256-GCM nonce |
+| `tag` | 6 | bstr (16 bytes) | AES-256-GCM authentication tag |
+| `operation_id` | 7 | bstr (16 bytes) | Unique operation ID for idempotency |
+| `rotation_counter` | 8 | uint | Monotonic rotation counter for replay protection |
+| `expiry_ms` | 9 | uint | Message expiry timestamp (Unix ms). Gateway rejects expired messages. |
 
 **Acceptance criteria:**
 

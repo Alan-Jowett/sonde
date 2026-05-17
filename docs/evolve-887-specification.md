@@ -113,9 +113,12 @@ pub enum SubjectKind {
 (matching GW-2002 field 3).
 
 CBOR encoding uses integer keys (1–8) as defined in GW-2002. The AAD for
-AES-256-GCM encryption is the CBOR-encoded map of fields 1–5 (escrow_version,
-key_version, subject_kind, subject_id, key_hint). This binds the ciphertext
-to the subject identity, preventing blob swap attacks.
+AES-256-GCM encryption is the deterministically CBOR-encoded map of fields
+1–5 (escrow_version, key_version, subject_kind, subject_id, key_hint),
+following RFC 8949 §4.2 (sorted integer keys, definite-length encoding).
+This binds the ciphertext to the subject identity, preventing blob swap
+attacks. Both encoder and decoder MUST use identical deterministic encoding
+to ensure AAD bytes match exactly.
 
 Total CBOR-encoded size: ≤ 120 bytes typical.
 
@@ -517,24 +520,32 @@ migration resumes.
 | KdfParams | string | JSON: `{"m_cost":65536,"t_cost":3,"p_cost":1,"version":1}` |
 | CreatedAt | int64 | Unix milliseconds |
 
-**ActualNodeState table extension** (existing table):
+**`ActualNodeState` table extension** (existing append-only table, §4.1):
+
+Escrow fields are appended as additional columns on each `ActualNodeState`
+row. Recovery queries use `Top(1)` per node partition to retrieve the
+latest escrow blob.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| EncryptedPskEscrow | binary/null | Opaque escrow blob from gateway |
-| EscrowKeyVersion | int64/null | Key version of the escrow blob |
-| KeyHint | int64/null | `key_hint` (u16) from escrow blob metadata, indexed for recovery queries |
+| `encrypted_psk_escrow` | binary/null | Opaque escrow blob from gateway |
+| `escrow_key_version` | int64/null | Key version of the escrow blob |
+| `key_hint` | int64/null | `key_hint` (u16) from escrow blob metadata, indexed for recovery queries |
 
-**ActualPhoneState table** (new):
+**`ActualPhoneState` table** (new, append-only with same key structure as
+`ActualNodeState`):
+
+Each row uses:
+- `PartitionKey = "p:" + lowercase hex-encoded SHA-256(phone_id UTF-8 bytes)`
+- `RowKey = <reverse_tick_ms> + ":" + <uniqueness suffix>`
 
 | Column | Type | Description |
 |--------|------|-------------|
-| PartitionKey | string | Gateway identifier |
-| RowKey | string | Phone ID |
-| EncryptedPskEscrow | binary | Opaque escrow blob |
-| EscrowKeyVersion | int64 | Key version |
-| KeyHint | int64 | `key_hint` (u16) from escrow blob metadata, indexed for recovery queries |
-| TimestampMs | int64 | Last update timestamp |
+| `phone_id` | string | Original phone identifier |
+| `encrypted_psk_escrow` | binary | Opaque escrow blob |
+| `escrow_key_version` | int64 | Key version |
+| `key_hint` | int64 | `key_hint` (u16) from escrow blob metadata, indexed for recovery queries |
+| `timestamp_ms` | int64 | Last update timestamp |
 
 #### 8.2  Message handling
 

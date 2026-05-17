@@ -27,7 +27,7 @@ use tracing_test::traced_test;
 
 // ─── Test helpers ──────────────────────────────────────────────────────
 
-const TEST_FIRMWARE_VERSION: &str = "0.6.0";
+const TEST_FIRMWARE_VERSION: &str = "0.7.0";
 
 struct TestNode {
     node_id: String,
@@ -1025,7 +1025,7 @@ async fn t0602_wrong_key_rejected() {
         firmware_abi_version: 1,
         program_hash: vec![0u8; 32],
         battery_mv: 3300,
-        firmware_version: "0.6.0".into(),
+        firmware_version: "0.7.0".into(),
         blob: None,
     };
     let cbor = msg.encode().unwrap();

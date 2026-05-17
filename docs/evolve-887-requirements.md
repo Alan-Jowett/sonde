@@ -230,7 +230,7 @@ The `MASTER_KEY_INSTALL` message format:
 
 | Field | CBOR key | Type | Description |
 |-------|----------|------|-------------|
-| `msg_type` | 1 | uint | New message type TBD |
+| `msg_type` | 1 | uint | `0x13` (`MASTER_KEY_INSTALL`) |
 | `target_key_epoch` | 2 | uint | Must match gateway's current public key epoch |
 | `encrypted_master_key` | 3 | bstr | Master key encrypted with gateway's public key |
 | `operation_id` | 4 | bstr | Unique operation ID for idempotency |
@@ -345,7 +345,7 @@ default is at most 1 request per `key_hint` per 60 seconds.
 
 | Field | CBOR key | Type | Description |
 |-------|----------|------|-------------|
-| `msg_type` | 1 | uint | New message type TBD |
+| `msg_type` | 1 | uint | `0x11` (`KEY_ESCROW_REQUEST`) |
 | `key_hint` | 2 | uint | The key_hint from the undecryptable frame |
 | `request_id` | 3 | bstr | Unique request ID for correlation |
 
@@ -383,7 +383,7 @@ time (default: 30 seconds) while awaiting the recovery response.
 
 | Field | CBOR key | Type | Description |
 |-------|----------|------|-------------|
-| `msg_type` | 1 | uint | New message type TBD |
+| `msg_type` | 1 | uint | `0x12` (`KEY_ESCROW_RESPONSE`) |
 | `request_id` | 2 | bstr | Correlates to the `KEY_ESCROW_REQUEST` |
 | `candidates` | 3 | array of bstr | Array of escrow blobs (GW-2002 format) |
 | `key_hint` | 4 | uint | The requested key_hint |
@@ -525,8 +525,10 @@ extends the existing node state table:
 - Node PSKs: stored in the existing node state row (new column).
 - Phone PSKs: stored in phone-scoped rows (new `entity_kind = "phone"`).
 
-The handler MUST NOT decrypt or inspect the escrow blob contents. The blob
-is opaque ciphertext from the handler's perspective.
+The handler MUST NOT decrypt the escrow blob ciphertext. The blob body is
+opaque from the handler's perspective. However, the handler MAY read the
+unencrypted `escrow_key_hint` field (CBOR key 13) sent alongside the blob
+in ACTUAL_STATE for indexing purposes (see AZH-0601).
 
 **Acceptance criteria:**
 

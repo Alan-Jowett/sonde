@@ -37,7 +37,7 @@
 
 ### 2.1  New section: §20 PSK Key Escrow (gateway-design.md)
 
-> **Requirements:** GW-2000–GW-2011
+> **Requirements:** GW-2000–GW-2013
 
 #### 20.1  Overview
 
@@ -109,6 +109,9 @@ pub enum SubjectKind {
 }
 ```
 
+`SubjectKind` is encoded as a CBOR `tstr` on the wire: `"node"` or `"phone"`
+(matching GW-2002 field 3).
+
 CBOR encoding uses integer keys (1–8) as defined in GW-2002. The AAD for
 AES-256-GCM encryption is the CBOR-encoded map of fields 1–5 (escrow_version,
 key_version, subject_kind, subject_id, key_hint). This binds the ciphertext
@@ -137,7 +140,9 @@ Escrow blobs are emitted:
 - After key rotation (re-encrypted blobs for all subjects).
 - On connector reconnection (full state replay).
 
-When escrow state is `disabled`, the field is `null`.
+When escrow state is `disabled`, both `encrypted_psk_escrow` (key 12) and
+`escrow_key_hint` (key 13) are `null` (or omitted). During `bootstrapping`,
+blobs for PSKs not yet re-encrypted are also `null`.
 
 #### 20.5  Escrow lifecycle state machine (GW-2004)
 
@@ -315,7 +320,7 @@ The BIP-39 wordlist fingerprint is computed as:
 fn compute_fingerprint(public_key: &[u8; 32]) -> [&'static str; 6] {
     let hash = sha256(public_key);
     let mut words = [""; 6];
-    // Extract 66 bits (6 × 11-bit indices) from hash bytes 0..8
+    // Extract 66 bits (6 × 11-bit indices) from hash bytes 0–8 (9 bytes, 72 bits; 66 used)
     let bits = u128::from_be_bytes([
         hash[0], hash[1], hash[2], hash[3],
         hash[4], hash[5], hash[6], hash[7],
@@ -423,6 +428,7 @@ New field in node-scoped ACTUAL_STATE:
 | Field | CBOR key | Type | Description |
 |-------|----------|------|-------------|
 | `encrypted_psk_escrow` | 12 | bstr/null | CBOR-encoded EscrowBlob |
+| `escrow_key_hint` | 13 | uint/null | `key_hint` (u16) from escrow blob metadata, for Azure indexing without inspecting the encrypted blob |
 
 New `entity_kind = "phone"` for phone PSK escrow.
 
@@ -563,6 +569,18 @@ On receiving a gateway ACTUAL_STATE with `escrow_salt`:
 - If a row exists, ignore the incoming salt (first-writer-wins).
 - On subsequent gateway-scoped DESIRED_STATE emissions (e.g., after
   reconnect), include the stored salt so the gateway can adopt it.
+
+**Gateway-scoped DESIRED_STATE fields for salt adoption:**
+
+| Field | CBOR key (in `desired_state`) | Type | Description |
+|-------|-------------------------------|------|-------------|
+| `escrow_salt` | 1 | bstr/null | KDF salt (16 bytes) from Azure, or null if none stored |
+| `escrow_kdf_params` | 2 | map/null | `{1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}` |
+
+The gateway inspects these fields on each DESIRED_STATE receipt. If the
+gateway has no local salt and the DESIRED_STATE provides one, it adopts
+the values. If both exist and differ, the gateway logs a warning and
+keeps its local salt (local is authoritative).
 
 #### 8.4  Key hint index
 

@@ -97,6 +97,12 @@ pub struct ActualStateRow {
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
     pub timestamp_ms: u64,
+    /// Encrypted PSK escrow blob (AZH-0600).
+    pub encrypted_psk_escrow: Option<Vec<u8>>,
+    /// Key hint for escrow recovery lookup (AZH-0601).
+    pub escrow_key_hint: Option<u16>,
+    /// Master key version for escrow blob versioning.
+    pub escrow_key_version: Option<u64>,
 }
 
 impl ActualStateRow {
@@ -111,6 +117,9 @@ impl ActualStateRow {
             firmware_abi_version: message.firmware_abi_version,
             firmware_version: message.firmware_version.clone(),
             timestamp_ms: message.timestamp_ms,
+            encrypted_psk_escrow: message.encrypted_psk_escrow.clone(),
+            escrow_key_hint: message.escrow_key_hint,
+            escrow_key_version: message.escrow_key_version,
         })
     }
 }
@@ -160,6 +169,12 @@ pub struct ActualStateMessage {
     pub firmware_version: Option<String>,
     pub timestamp_ms: u64,
     pub schedule_interval_s: Option<u32>,
+    /// Encrypted PSK escrow blob (CBOR key 12, GW-2003).
+    pub encrypted_psk_escrow: Option<Vec<u8>>,
+    /// Key hint from escrow blob metadata (CBOR key 13, GW-2003).
+    pub escrow_key_hint: Option<u16>,
+    /// Master key version from escrow blob metadata (CBOR key 14, GW-2003).
+    pub escrow_key_version: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +192,27 @@ pub struct AppDataMessage {
 pub enum ConnectorMessage {
     ActualState(ActualStateMessage),
     AppData(AppDataMessage),
+    /// KEY_ESCROW_PUBKEY (msg_type 0x10, GW-2001).
+    KeyEscrowPubkey(KeyEscrowPubkeyMessage),
+    /// KEY_ESCROW_REQUEST (msg_type 0x11, GW-2009).
+    KeyEscrowRequest(KeyEscrowRequestMessage),
     Unsupported(u64),
+}
+
+/// Gateway recovery public key publication (AZH-0602).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyEscrowPubkeyMessage {
+    pub public_key: Vec<u8>,
+    pub key_epoch: u64,
+    pub created_at: u64,
+    pub fingerprint_words: Vec<String>,
+}
+
+/// Request for escrowed PSK(s) matching a key_hint (AZH-0601).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyEscrowRequestMessage {
+    pub key_hint: u16,
+    pub request_id: Vec<u8>,
 }
 
 #[async_trait]
@@ -198,6 +233,31 @@ pub trait HandlerStore: Send + Sync {
     async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError>;
     /// Append a row to the `SensorData` table for a `GW-0813` message (AZH-0500).
     async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError>;
+
+    // ── PSK key escrow (AZH-0600–AZH-0605) ────────────────────
+
+    /// Store or update the gateway's recovery public key (AZH-0602).
+    /// Only updates if `key_epoch` >= stored epoch (monotonic guard).
+    async fn store_gateway_escrow_pubkey(
+        &self,
+        public_key: &[u8],
+        key_epoch: u64,
+        created_at: u64,
+    ) -> Result<(), HandlerError> {
+        let _ = (public_key, key_epoch, created_at);
+        Ok(())
+    }
+
+    /// Load escrowed PSK blobs matching a key_hint (AZH-0601).
+    /// Returns at most `max_candidates` blobs.
+    async fn load_escrow_blobs_by_key_hint(
+        &self,
+        key_hint: u16,
+        max_candidates: usize,
+    ) -> Result<Vec<Vec<u8>>, HandlerError> {
+        let _ = (key_hint, max_candidates);
+        Ok(Vec::new())
+    }
 }
 
 #[async_trait]
@@ -227,18 +287,38 @@ where
     pub async fn handle_payload(&self, payload: &[u8]) -> Result<(), HandlerError> {
         match decode_connector_message(payload)? {
             ConnectorMessage::ActualState(actual_state) => {
-                if actual_state.entity_kind == "node" {
-                    self.handle_actual_state(actual_state).await?;
-                } else {
-                    warn!(
-                        entity_kind = %actual_state.entity_kind,
-                        entity_id = %actual_state.entity_id,
-                        "ignoring non-node ACTUAL_STATE message"
-                    );
+                match actual_state.entity_kind.as_str() {
+                    "node" => self.handle_actual_state(actual_state).await?,
+                    "phone" => {
+                        // Phone escrow ACTUAL_STATE (AZH-0600): store escrow blob only
+                        if actual_state.encrypted_psk_escrow.is_some() {
+                            let row = ActualStateRow::from_message(&actual_state)?;
+                            self.store.append_actual_state(&row).await?;
+                        }
+                    }
+                    "gateway" => {
+                        // Gateway-scoped ACTUAL_STATE (AZH-0605): escrow state observability
+                        // Stored as informational; no reconciliation triggered.
+                    }
+                    other => {
+                        warn!(
+                            entity_kind = %other,
+                            entity_id = %actual_state.entity_id,
+                            "ignoring ACTUAL_STATE for unknown entity_kind"
+                        );
+                    }
                 }
                 Ok(())
             }
             ConnectorMessage::AppData(app_data) => self.handle_app_data(app_data).await,
+            ConnectorMessage::KeyEscrowPubkey(msg) => {
+                self.store
+                    .store_gateway_escrow_pubkey(&msg.public_key, msg.key_epoch, msg.created_at)
+                    .await
+            }
+            ConnectorMessage::KeyEscrowRequest(msg) => {
+                self.handle_key_escrow_request(msg).await
+            }
             ConnectorMessage::Unsupported(msg_type) => {
                 warn!(msg_type, "ignoring unsupported connector message");
                 Ok(())
@@ -338,6 +418,23 @@ where
         let desired = encode_desired_state(&desired_row, program_row.as_ref())?;
         self.publisher
             .publish(&self.downstream_queue, desired)
+            .await
+    }
+
+    /// Handle KEY_ESCROW_REQUEST: look up escrow blobs by key_hint and
+    /// respond with KEY_ESCROW_RESPONSE (AZH-0601).
+    async fn handle_key_escrow_request(
+        &self,
+        msg: KeyEscrowRequestMessage,
+    ) -> Result<(), HandlerError> {
+        let candidates = self
+            .store
+            .load_escrow_blobs_by_key_hint(msg.key_hint, 16)
+            .await?;
+
+        let response = encode_key_escrow_response(&msg.request_id, msg.key_hint, &candidates)?;
+        self.publisher
+            .publish(&self.downstream_queue, response)
             .await
     }
 
@@ -894,6 +991,15 @@ struct ActualStateEntity {
     firmware_version: Option<String>,
     #[serde(deserialize_with = "deserialize_u64_flexible")]
     timestamp_ms: u64,
+    /// Base64-encoded encrypted PSK escrow blob (AZH-0600).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    encrypted_psk_escrow: Option<String>,
+    /// Key hint for escrow recovery lookup (AZH-0601).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    escrow_key_hint: Option<u32>,
+    /// Master key version for escrow blob versioning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    escrow_key_version: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -986,6 +1092,11 @@ impl TryFrom<ActualStateEntity> for ActualStateRow {
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
             timestamp_ms: value.timestamp_ms,
+            encrypted_psk_escrow: value
+                .encrypted_psk_escrow
+                .and_then(|b64| base64::prelude::BASE64_STANDARD.decode(&b64).ok()),
+            escrow_key_hint: value.escrow_key_hint.map(|h| h as u16),
+            escrow_key_version: value.escrow_key_version,
         })
     }
 }
@@ -1007,6 +1118,11 @@ impl TryFrom<ActualStateRow> for ActualStateEntity {
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
             timestamp_ms: value.timestamp_ms,
+            encrypted_psk_escrow: value
+                .encrypted_psk_escrow
+                .map(|b| base64::prelude::BASE64_STANDARD.encode(&b)),
+            escrow_key_hint: value.escrow_key_hint.map(|h| h as u32),
+            escrow_key_version: value.escrow_key_version,
         })
     }
 }
@@ -1121,6 +1237,9 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
             firmware_version: optional_text_field(&map, 8, "firmware_version")?,
             timestamp_ms: required_u64(&map, 9, "timestamp_ms")?,
             schedule_interval_s: optional_u32_field(&map, 11, "schedule_interval_s")?,
+            encrypted_psk_escrow: optional_bytes_field(&map, 12, "encrypted_psk_escrow")?,
+            escrow_key_hint: optional_u16_field(&map, 13, "escrow_key_hint")?,
+            escrow_key_version: optional_u64_field(&map, 14, "escrow_key_version")?,
         })),
         MSG_TYPE_APP_DATA => Ok(ConnectorMessage::AppData(AppDataMessage {
             node_id: required_text(&map, 2, "node_id")?,
@@ -1129,6 +1248,20 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
             timestamp_ms: required_u64(&map, 5, "timestamp_ms")?,
             readings: decode_optional_readings(&map, 16)?,
         })),
+        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY => {
+            Ok(ConnectorMessage::KeyEscrowPubkey(KeyEscrowPubkeyMessage {
+                public_key: required_bytes(&map, 2, "public_key")?,
+                key_epoch: required_u64(&map, 3, "key_epoch")?,
+                created_at: required_u64(&map, 4, "created_at")?,
+                fingerprint_words: optional_text_array_field(&map, 5)?,
+            }))
+        }
+        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST => {
+            Ok(ConnectorMessage::KeyEscrowRequest(KeyEscrowRequestMessage {
+                key_hint: required_u64(&map, 2, "key_hint")? as u16,
+                request_id: required_bytes(&map, 3, "request_id")?,
+            }))
+        }
         other => Ok(ConnectorMessage::Unsupported(other)),
     }
 }
@@ -1172,6 +1305,28 @@ pub(crate) fn encode_desired_state(
 
 fn encode_optional_hex(value: Option<Vec<u8>>) -> Option<String> {
     value.map(hex::encode)
+}
+
+/// Encode a KEY_ESCROW_RESPONSE message (msg_type 0x12, AZH-0601).
+fn encode_key_escrow_response(
+    request_id: &[u8],
+    key_hint: u16,
+    candidates: &[Vec<u8>],
+) -> Result<Vec<u8>, HandlerError> {
+    let candidate_values: Vec<Value> = candidates.iter().map(|c| Value::Bytes(c.clone())).collect();
+    let value = Value::Map(vec![
+        map_entry(
+            1,
+            Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE.into()),
+        ),
+        map_entry(2, Value::Bytes(request_id.to_vec())),
+        map_entry(3, Value::Array(candidate_values)),
+        map_entry(4, Value::Integer((key_hint as u64).into())),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&value, &mut bytes)
+        .map_err(|e| HandlerError::Decode(format!("encode KEY_ESCROW_RESPONSE failed: {e}")))?;
+    Ok(bytes)
 }
 
 /// JavaScript's `Number.MAX_SAFE_INTEGER` (2^53 - 1).
@@ -1401,6 +1556,56 @@ fn optional_text_field(
             .as_text()
             .map(|text| Some(text.to_string()))
             .ok_or_else(|| HandlerError::Decode(format!("`{field}` must be text or null"))),
+    }
+}
+
+fn optional_u16_field(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Option<u16>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(value) => value
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .and_then(|v| u16::try_from(v).ok())
+            .map(Some)
+            .ok_or_else(|| HandlerError::Decode(format!("`{field}` must be uint or null"))),
+    }
+}
+
+fn optional_u64_field(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Option<u64>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(value) => value
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .map(Some)
+            .ok_or_else(|| HandlerError::Decode(format!("`{field}` must be uint or null"))),
+    }
+}
+
+fn optional_text_array_field(
+    map: &[(Value, Value)],
+    key: u64,
+) -> Result<Vec<String>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Array(arr)) => {
+            let mut result = Vec::with_capacity(arr.len());
+            for v in arr {
+                if let Value::Text(s) = v {
+                    result.push(s.clone());
+                }
+            }
+            Ok(result)
+        }
+        Some(Value::Null) | None => Ok(Vec::new()),
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -2039,6 +2244,9 @@ mod tests {
                 firmware_abi_version: Some(2),
                 firmware_version: Some("2.0.0".to_string()),
                 timestamp_ms: 5000,
+                encrypted_psk_escrow: None,
+                escrow_key_hint: None,
+                escrow_key_version: None,
             })
             .await
             .unwrap();
@@ -2146,6 +2354,9 @@ mod tests {
                 firmware_abi_version: Some(1),
                 firmware_version: Some("1.2.3".to_string()),
                 timestamp_ms: 1234,
+                encrypted_psk_escrow: None,
+                escrow_key_hint: None,
+                escrow_key_version: None,
             },
             desired: desired_row("node-1", Some(vec![0xCC; 32]), Some(60), 100),
             appended_rows: Mutex::new(Vec::new()),
@@ -2330,6 +2541,9 @@ mod tests {
             firmware_abi_version: Some(1),
             firmware_version: Some("1.2.3".to_string()),
             timestamp_ms: 1234,
+            encrypted_psk_escrow: None,
+            escrow_key_hint: None,
+            escrow_key_version: None,
         };
 
         let entity = ActualStateEntity::try_from(row.clone()).unwrap();

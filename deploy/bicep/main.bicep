@@ -54,6 +54,15 @@ param staticWebAppName string = ''
 @description('Azure region for the Static Web App. Defaults to centralus because Microsoft.Web/staticSites is not available in all regions.')
 param staticWebAppLocation string = 'centralus'
 
+@description('Custom domain FQDN to bind to the Static Web App (e.g., sondeplatform.com). Empty = no custom domain.')
+param customDomainName string = ''
+
+@description('Resource group containing the Azure DNS zone for the custom domain. Required when customDomainName is set.')
+param customDomainDnsResourceGroup string = ''
+
+@description('Azure DNS zone name for the custom domain. Defaults to customDomainName when empty (correct for apex domains).')
+param customDomainDnsZoneName string = ''
+
 var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
 var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
 var effectiveResourceGroupName = empty(resource_group_name) ? '${take(effectiveProjectSlug, 84)}-azure' : resource_group_name
@@ -80,6 +89,10 @@ var effectiveFunctionPlanName = empty(functionPlanName)
 var effectiveStaticWebAppName = empty(staticWebAppName)
   ? take('${take(effectiveProjectSlug, 24)}-web-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'swa'), 8)}', 40)
   : staticWebAppName
+var effectiveCustomDomainDnsZoneName = empty(customDomainDnsZoneName)
+  ? customDomainName
+  : customDomainDnsZoneName
+var isCustomDomainEnabled = !empty(customDomainName) && !empty(customDomainDnsResourceGroup)
 var tags = {
   project: project_name
 }
@@ -125,6 +138,20 @@ module stack './modules/stack.bicep' = {
     functionAuthTenantId: companionIdentity.outputs.tenantId
     staticWebAppName: effectiveStaticWebAppName
     staticWebAppLocation: staticWebAppLocation
+    customDomainName: isCustomDomainEnabled ? customDomainName : ''
+  }
+}
+
+// DNS records for custom domain — deployed to the external resource group
+// containing the Azure DNS zone.  Only created when custom domain is enabled.
+// Domain ownership validation and binding are handled by deploy.sh via
+// `az staticwebapp hostname set` after DNS propagation.
+module dnsRecord './modules/dns-record.bicep' = if (isCustomDomainEnabled) {
+  name: 'dnsRecord'
+  scope: resourceGroup(customDomainDnsResourceGroup)
+  params: {
+    dnsZoneName: effectiveCustomDomainDnsZoneName
+    staticWebAppResourceId: stack.outputs.staticWebAppResourceId
   }
 }
 
@@ -144,6 +171,7 @@ output functionAppName string = stack.outputs.functionAppName
 output functionPrincipalId string = stack.outputs.functionPrincipalId
 output staticWebAppName string = stack.outputs.staticWebAppName
 output staticWebAppHostname string = stack.outputs.staticWebAppHostname
+output customDomainUrl string = isCustomDomainEnabled ? 'https://${customDomainName}' : ''
 output companionClientId string = companionIdentity.outputs.clientId
 output companionTenantId string = companionIdentity.outputs.tenantId
 output companionServicePrincipalObjectId string = companionIdentity.outputs.servicePrincipalObjectId
@@ -160,5 +188,6 @@ output companionBootstrapValues object = {
   actualStateTable: stack.outputs.actualStateTableName
   desiredStateTable: stack.outputs.desiredStateTableName
   staticWebAppHostname: stack.outputs.staticWebAppHostname
+  customDomainUrl: isCustomDomainEnabled ? 'https://${customDomainName}' : ''
   note: 'The deployment registers the supplied certificate public material on the Entra app. The matching PEM certificate and private key remain caller-managed local artifacts for sonde-azure-companion bootstrap.'
 }

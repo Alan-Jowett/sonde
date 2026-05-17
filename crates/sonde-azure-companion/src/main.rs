@@ -175,6 +175,18 @@ struct BootstrapArgs {
     /// Optional bootstrap image override for development and test workflows.
     #[arg(long, env = "SONDE_AZURE_BOOTSTRAP_IMAGE")]
     bootstrap_image: Option<String>,
+
+    /// Optional custom domain FQDN for the Static Web App (e.g., sondeplatform.com).
+    #[arg(long, env = "SONDE_AZURE_CUSTOM_DOMAIN_NAME")]
+    custom_domain_name: Option<String>,
+
+    /// Resource group containing the Azure DNS zone for the custom domain.
+    #[arg(long, env = "SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP")]
+    custom_domain_dns_resource_group: Option<String>,
+
+    /// DNS zone name for the custom domain (defaults to custom_domain_name for apex domains).
+    #[arg(long, env = "SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME")]
+    custom_domain_dns_zone_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1409,6 +1421,15 @@ fn build_container_env(cert_base64: &str, args: &BootstrapArgs) -> Vec<String> {
     ];
     if let Some(sub_id) = &args.azure_subscription_id {
         env.push(format!("SONDE_AZURE_SUBSCRIPTION_ID={sub_id}"));
+    }
+    if let Some(domain) = &args.custom_domain_name {
+        env.push(format!("SONDE_AZURE_CUSTOM_DOMAIN_NAME={domain}"));
+    }
+    if let Some(rg) = &args.custom_domain_dns_resource_group {
+        env.push(format!("SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP={rg}"));
+    }
+    if let Some(zone) = &args.custom_domain_dns_zone_name {
+        env.push(format!("SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME={zone}"));
     }
     env
 }
@@ -3939,6 +3960,9 @@ mod tests {
             azure_project_name: "sonde".to_string(),
             azure_subscription_id: None,
             bootstrap_image: Some("sonde-azure-bootstrap:test-override".to_string()),
+            custom_domain_name: None,
+            custom_domain_dns_resource_group: None,
+            custom_domain_dns_zone_name: None,
         };
 
         let err = run_bootstrap_deployment_with_docker_and_image(
@@ -4407,6 +4431,9 @@ mod tests {
             azure_project_name: "sonde".to_string(),
             azure_subscription_id: None,
             bootstrap_image: None,
+            custom_domain_name: None,
+            custom_domain_dns_resource_group: None,
+            custom_domain_dns_zone_name: None,
         };
 
         let err = super::bootstrap("/tmp/sonde-missing-admin.sock", temp.path(), args)

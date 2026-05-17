@@ -45,10 +45,12 @@
 | T-WEB-0505 | WEB-0505 | `ProgramIngest` rejects Storage-scoped token (wrong audience) | Integration | Planned |
 | T-WEB-0506 | WEB-0506 | `ProgramIngest` rejects expired bearer token | Integration | Planned |
 | T-WEB-0507 | WEB-0507 | `ProgramIngest` accepts valid `api://<clientId>/user_impersonation` token | Integration | Planned |
+| T-WEB-0508 | WEB-0508 | MSAL `redirectUri` set to `window.location.origin` so auth works on both default and custom domain hostnames | Manual | Planned |
 | T-WEB-0601 | WEB-0601 | Bicep provisions Static Web App | Infrastructure | Planned |
 | T-WEB-0602 | WEB-0602 | Bicep provisions `programs` table | Infrastructure | Planned |
 | T-WEB-0603 | WEB-0603 | `ProgramIngest` HTTP trigger deployed alongside `UpstreamConnector` | Infrastructure | Planned |
 | T-WEB-0604 | WEB-0604 | CORS configured for SPA origin | Infrastructure | Planned |
+| T-WEB-0604b | WEB-0604 | CORS configured for both default hostname and custom domain origins when custom domain is set | Infrastructure | Planned |
 | T-WEB-0605 | WEB-0605 | Function identity has table contributor on `programs` | Infrastructure | Planned |
 | T-WEB-0606 | WEB-0606 | EasyAuth configured on Function App with Entra ID provider | Infrastructure | Planned |
 | T-WEB-0607 | WEB-0607 | `ProgramIngest` `authLevel` is `anonymous` (auth delegated to EasyAuth) | Infrastructure | Planned |
@@ -64,3 +66,9 @@
 | T-WEB-0710 | WEB-0703 | Unit suffix appears in tooltip values and Y-axis title when all series share the same suffix | Manual | Planned |
 | T-WEB-0711 | WEB-0703 | Overrides persist across page reloads via `localStorage` | Manual | Planned |
 | T-WEB-0712 | WEB-0703 | Reset to Default clears overrides and restores original label/scale | Manual | Planned |
+| T-WEB-0608a | WEB-0608 | Bicep deploys DNS ALIAS record in external resource group pointing to SWA | Infrastructure | Planned |
+| T-WEB-0608b | WEB-0608 | Deploy script binds custom domain to SWA; managed SSL certificate provisioned | Infrastructure | Planned |
+| T-WEB-0608c | WEB-0608 | Custom domain parameters empty → no DNS records or custom domain binding created | Infrastructure | Planned |
+| T-WEB-0609a | WEB-0609 | Deploy script registers custom domain redirect URI on Entra app | Infrastructure | Planned |
+| T-WEB-0609b | WEB-0609 | Deploy script adds custom domain CORS origin to Function App | Infrastructure | Planned |
+| T-WEB-0610 | WEB-0610 | `companionBootstrapValues` output includes `customDomainUrl` field | Infrastructure | Planned |

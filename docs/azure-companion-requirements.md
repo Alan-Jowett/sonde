@@ -840,11 +840,11 @@ The bootstrap script MUST:
    registration (required for EasyAuth token validation on the Function App).
    If the scope already exists, this step is a no-op.
 
-The bootstrap image deploys SPA content to the Static Web App using the ARM
-REST API (`Microsoft.Web/staticSites/{name}/zipdeploy`) via `az rest`. The
-content is zipped using Python (bundled with `az` CLI), uploaded as a temporary
-blob to the provisioned storage account, and referenced by SAS URL in the
-zipdeploy request. This approach requires no Node.js, npm, or
+The bootstrap image deploys SPA content to the Static Web App using the
+`StaticSitesClient` binary from the multi-arch Docker image
+(`mcr.microsoft.com/appsvc/staticappsclient:stable`). The deployment token
+is obtained via `az staticwebapp secrets list` and passed to the client
+as an environment variable. This approach requires no Node.js, npm, or
 architecture-specific binaries, enabling native arm64 execution.
 
 **Acceptance criteria:**

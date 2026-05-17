@@ -297,92 +297,23 @@ fi
 echo ""
 echo "=== Deploying SPA content ==="
 
-# Zip the SPA content using Python (always available with az CLI).
-SPA_ZIP="$(mktemp "${TMPDIR:-/tmp}/sonde-spa-XXXXXX.zip")"
-_SPA_BLOB_NAME="spa-deploy-$(date +%s)-$$-${RANDOM}.zip"
-cleanup_spa_blob() {
-    rm -f "$SPA_ZIP"
-    if [ -n "${_SPA_BLOB_UPLOADED:-}" ]; then
-        az storage blob delete \
-            --account-name "$STORAGE_ACCOUNT" \
-            --container-name "spa-deploy" \
-            --name "$_SPA_BLOB_NAME" \
-            --output none 2>/dev/null || true
-    fi
-}
-trap cleanup_spa_blob EXIT
+# Deploy SPA content using the StaticSitesClient multi-arch Docker image.
+# This replaces the SWA CLI npm package (which shipped amd64-only native
+# binaries) with the same underlying deployment binary in a multi-arch image.
+DEPLOYMENT_TOKEN="$(az staticwebapp secrets list --name "$SWA_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query 'properties.apiKey' -o tsv)"
 
-python3 - "$SCRIPT_DIR" "$SPA_ZIP" <<'PYEOF'
-import os, sys, zipfile
-src_dir, dst_zip = sys.argv[1], sys.argv[2]
-with zipfile.ZipFile(dst_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-    for root, _dirs, files in os.walk(src_dir):
-        for f in sorted(files):
-            full = os.path.join(root, f)
-            arcname = os.path.relpath(full, src_dir)
-            zf.write(full, arcname)
-PYEOF
-
-# Upload the zip to a temporary blob in the storage account.
-# Use key-based auth: the deployer has Contributor/Owner from az login,
-# so they can access storage account keys directly.
-az storage container create \
-    --account-name "$STORAGE_ACCOUNT" \
-    --name "spa-deploy" \
-    --public-access off \
-    --output none 2>/dev/null || true
-az storage blob upload \
-    --account-name "$STORAGE_ACCOUNT" \
-    --container-name "spa-deploy" \
-    --name "$_SPA_BLOB_NAME" \
-    --file "$SPA_ZIP" \
-    --overwrite \
-    --output none
-_SPA_BLOB_UPLOADED=1
-
-# Generate a short-lived read-only SAS URL for the blob.
-# Resolve the blob endpoint from the storage account to support sovereign clouds.
-SAS_EXPIRY="$(python3 -c "from datetime import datetime,timedelta,timezone;print((datetime.now(timezone.utc)+timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
-BLOB_ENDPOINT="$(az storage account show \
-    --name "$STORAGE_ACCOUNT" \
-    --resource-group "$RESOURCE_GROUP" \
-    --query 'primaryEndpoints.blob' \
-    --output tsv)"
-BLOB_ENDPOINT="${BLOB_ENDPOINT%/}"
-SAS_TOKEN="$(az storage blob generate-sas \
-    --account-name "$STORAGE_ACCOUNT" \
-    --container-name "spa-deploy" \
-    --name "$_SPA_BLOB_NAME" \
-    --permissions r \
-    --expiry "$SAS_EXPIRY" \
-    --output tsv)"
-BLOB_URL="${BLOB_ENDPOINT}/spa-deploy/${_SPA_BLOB_NAME}?${SAS_TOKEN}"
-
-# Deploy via ARM zipdeploy REST API.
-# Resolve the ARM endpoint from the active cloud for sovereign cloud support.
-SUBSCRIPTION_ID="$(az account show --query id --output tsv)"
-ARM_ENDPOINT="$(az cloud show --query endpoints.resourceManager --output tsv)"
-ARM_ENDPOINT="${ARM_ENDPOINT%/}"
-ZIPDEPLOY_URL="${ARM_ENDPOINT}/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Web/staticSites/${SWA_NAME}/builds/default/zipdeploy?api-version=2024-04-01"
-az rest --method POST \
-    --url "$ZIPDEPLOY_URL" \
-    --body "{\"properties\":{\"appZipUrl\":\"${BLOB_URL}\",\"provider\":\"sonde-deploy\"}}" \
-    --output none
-
-# Wait for deployment to complete by polling for config.json content.
-echo "  Waiting for deployment..."
-SPA_DEADLINE="$(( $(date +%s) + 120 ))"
-while :; do
-    FETCHED_CONFIG="$(curl -sf "https://$SWA_HOSTNAME/config.json" 2>/dev/null || true)"
-    if echo "$FETCHED_CONFIG" | grep -q "$CLIENT_ID" 2>/dev/null; then
-        break
-    fi
-    if [ "$(date +%s)" -ge "$SPA_DEADLINE" ]; then
-        echo "  ERROR: timed out verifying SPA deployment after 120s"
-        exit 1
-    fi
-    sleep 5
-done
+docker run --rm \
+  -v "$SCRIPT_DIR:/app" \
+  -e "DEPLOYMENT_TOKEN=$DEPLOYMENT_TOKEN" \
+  -e "DEPLOYMENT_ACTION=upload" \
+  -e "DEPLOYMENT_PROVIDER=sonde-deploy" \
+  -e "APP_LOCATION=/app" \
+  -e "SKIP_APP_BUILD=true" \
+  -e "SKIP_API_BUILD=true" \
+  -e "VERBOSE=false" \
+  mcr.microsoft.com/appsvc/staticappsclient:stable
 
 echo ""
 echo "=== Deployment complete ==="

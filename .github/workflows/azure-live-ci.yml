@@ -379,37 +379,11 @@ jobs:
           print(d['properties']['outputs']['functionAppName']['value'])
           ")"
 
-          echo "Deploying SPA to $SWA_NAME ($SWA_HOSTNAME) via ARM zipdeploy..."
+          echo "Deploying SPA to $SWA_NAME ($SWA_HOSTNAME) via StaticSitesClient..."
 
           # Resolve login endpoint from the active cloud for sovereign cloud compatibility
           LOGIN_ENDPOINT="$(az cloud show --query endpoints.activeDirectory -o tsv)"
           LOGIN_ENDPOINT="${LOGIN_ENDPOINT%/}"
-
-          # Deploy SPA content using the ARM zipdeploy REST API.
-          # This replaces the SWA CLI which required amd64-only native binaries.
-          SPA_ZIP="$(mktemp /tmp/sonde-spa-XXXXXX.zip)"
-          _SPA_BLOB_NAME="spa-deploy-ci-$(date +%s)-$$-${RANDOM}.zip"
-          cleanup_spa_blob() {
-              rm -f "$SPA_ZIP"
-              if [ -n "${_SPA_BLOB_UPLOADED:-}" ]; then
-                  az storage blob delete \
-                      --account-name "$STORAGE_ACCOUNT" \
-                      --container-name "spa-deploy" \
-                      --name "$_SPA_BLOB_NAME" \
-                      --output none 2>/dev/null || true
-              fi
-          }
-          trap cleanup_spa_blob EXIT
-
-          # Generate config.json for the SPA
-          cat > /tmp/sonde-spa-config.json <<CFGEOF
-          {
-            "msalClientId": "$CLIENT_ID",
-            "msalAuthority": "$LOGIN_ENDPOINT/$TENANT_ID",
-            "storageAccount": "$STORAGE_ACCOUNT",
-            "functionAppName": "$FUNCTION_APP"
-          }
-          CFGEOF
 
           # Verify the bootstrap image has the required tools (az, python3, no swa).
           docker run --rm --entrypoint sh sonde-azure-bootstrap:ci -c \
@@ -421,55 +395,32 @@ jobs:
           docker create --name "$SPA_COPY_CTR" --entrypoint sh sonde-azure-bootstrap:ci -c true >/dev/null
           docker cp "$SPA_COPY_CTR:/opt/sonde/deploy/web-ui/." "$SPA_STAGE/"
           docker rm "$SPA_COPY_CTR" >/dev/null
-          cp /tmp/sonde-spa-config.json "$SPA_STAGE/config.json"
+          cat > "$SPA_STAGE/config.json" <<CFGEOF
+          {
+            "msalClientId": "$CLIENT_ID",
+            "msalAuthority": "$LOGIN_ENDPOINT/$TENANT_ID",
+            "storageAccount": "$STORAGE_ACCOUNT",
+            "functionAppName": "$FUNCTION_APP"
+          }
+          CFGEOF
 
-          # Zip the staged SPA content using the host python3.
-          python3 -c "
-          import os, sys, zipfile
-          src, dst = sys.argv[1], sys.argv[2]
-          with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
-              for root, _dirs, files in os.walk(src):
-                  for f in sorted(files):
-                      full = os.path.join(root, f)
-                      zf.write(full, os.path.relpath(full, src))
-          " "$SPA_STAGE" "$SPA_ZIP"
-          rm -rf "$SPA_STAGE"
-
-          az storage container create \
-            --account-name "$STORAGE_ACCOUNT" \
-            --name "spa-deploy" \
-            --public-access off \
-            --output none 2>/dev/null || true
-          az storage blob upload \
-            --account-name "$STORAGE_ACCOUNT" \
-            --container-name "spa-deploy" \
-            --name "$_SPA_BLOB_NAME" \
-            --file "$SPA_ZIP" \
-            --overwrite \
-            --output none
-          _SPA_BLOB_UPLOADED=1
-          SAS_EXPIRY="$(python3 -c "from datetime import datetime,timedelta,timezone;print((datetime.now(timezone.utc)+timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
-          BLOB_ENDPOINT="$(az storage account show \
-            --name "$STORAGE_ACCOUNT" \
+          # Deploy SPA content using the StaticSitesClient multi-arch Docker image.
+          DEPLOYMENT_TOKEN="$(az staticwebapp secrets list \
+            --name "$SWA_NAME" \
             --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-            --query 'primaryEndpoints.blob' \
-            --output tsv)"
-          BLOB_ENDPOINT="${BLOB_ENDPOINT%/}"
-          SAS_TOKEN="$(az storage blob generate-sas \
-            --account-name "$STORAGE_ACCOUNT" \
-            --container-name "spa-deploy" \
-            --name "$_SPA_BLOB_NAME" \
-            --permissions r \
-            --expiry "$SAS_EXPIRY" \
-            --output tsv)"
-          BLOB_URL="${BLOB_ENDPOINT}/spa-deploy/${_SPA_BLOB_NAME}?${SAS_TOKEN}"
-          SUBSCRIPTION_ID="$(az account show --query id --output tsv)"
-          ARM_ENDPOINT="$(az cloud show --query endpoints.resourceManager --output tsv)"
-          ARM_ENDPOINT="${ARM_ENDPOINT%/}"
-          az rest --method POST \
-            --url "${ARM_ENDPOINT}/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${SONDE_AZURE_CI_RESOURCE_GROUP}/providers/Microsoft.Web/staticSites/${SWA_NAME}/builds/default/zipdeploy?api-version=2024-04-01" \
-            --body "{\"properties\":{\"appZipUrl\":\"${BLOB_URL}\",\"provider\":\"sonde-ci\"}}" \
-            --output none
+            --query 'properties.apiKey' -o tsv)"
+
+          docker run --rm \
+            -v "$SPA_STAGE:/app" \
+            -e "DEPLOYMENT_TOKEN=$DEPLOYMENT_TOKEN" \
+            -e "DEPLOYMENT_ACTION=upload" \
+            -e "DEPLOYMENT_PROVIDER=sonde-ci" \
+            -e "APP_LOCATION=/app" \
+            -e "SKIP_APP_BUILD=true" \
+            -e "SKIP_API_BUILD=true" \
+            -e "VERBOSE=false" \
+            mcr.microsoft.com/appsvc/staticappsclient:stable
+          rm -rf "$SPA_STAGE"
 
           echo "Verifying SPA is reachable..."
           for attempt in $(seq 1 12); do

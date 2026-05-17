@@ -202,7 +202,7 @@ The script:
 6. Configures EasyAuth on the Function App via ARM REST API with the
    companion Entra app as the identity provider and `Return401` for
    unauthenticated requests
-7. Deploys the web-ui content to the Static Web App using the ARM zipdeploy REST API
+7. Deploys the web-ui content to the Static Web App using the `StaticSitesClient` Docker image
 8. If the SWA has custom domains, registers `https://<customDomain>` as an
    additional SPA redirect URI on the Entra app registration (additive merge
    with existing URIs)

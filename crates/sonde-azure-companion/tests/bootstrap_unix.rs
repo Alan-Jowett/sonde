@@ -419,25 +419,8 @@ if [ "$#" -ge 4 ] && [ "$1" = "deployment" ] && [ "$2" = "sub" ] && [ "$3" = "sh
   printf 'rg-sonde\tfunc-sonde\tdeploypkg\thttps://example.blob.core.windows.net/deploypkg\tsonde-web-test\tsonde-web-test.azurestaticapps.net\tclient-456\tstsondetest\ttenant-123\n'
   exit 0
 fi
-if [ "$#" -ge 3 ] && [ "$1" = "storage" ] && [ "$2" = "container" ] && [ "$3" = "create" ]; then
-  exit 0
-fi
-if [ "$#" -ge 3 ] && [ "$1" = "storage" ] && [ "$2" = "blob" ] && [ "$3" = "upload" ]; then
-  exit 0
-fi
-if [ "$#" -ge 3 ] && [ "$1" = "storage" ] && [ "$2" = "blob" ] && [ "$3" = "generate-sas" ]; then
-  printf 'sv=2023-01-01&sig=fakesas\n'
-  exit 0
-fi
-if [ "$#" -ge 3 ] && [ "$1" = "storage" ] && [ "$2" = "blob" ] && [ "$3" = "delete" ]; then
-  exit 0
-fi
-if [ "$#" -ge 3 ] && [ "$1" = "storage" ] && [ "$2" = "account" ] && [ "$3" = "show" ]; then
-  printf 'https://stsondetest.blob.core.windows.net/\n'
-  exit 0
-fi
-if [ "$#" -ge 2 ] && [ "$1" = "account" ] && [ "$2" = "show" ]; then
-  printf 'fake-sub-id\n'
+if [ "$#" -ge 3 ] && [ "$1" = "staticwebapp" ] && [ "$2" = "secrets" ] && [ "$3" = "list" ]; then
+  printf 'fake-deployment-token\n'
   exit 0
 fi
 if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "app" ] && [ "$3" = "show" ]; then
@@ -522,11 +505,17 @@ exit 64
         &format!("#!/bin/sh\nexec \"{system_python3}\" \"$@\"\n"),
     );
     write_executable(&bin_dir.join("awk"), "#!/bin/sh\nexit 92\n");
-    // curl stub: return config.json content containing the expected client ID
-    // for SPA deployment verification polling.
+    // curl stub: no longer needed for SPA verification (StaticSitesClient
+    // handles deployment verification internally). Keep as a no-op.
+    write_executable(&bin_dir.join("curl"), "#!/bin/sh\nexit 0\n");
+    // docker stub: log invocations and succeed for StaticSitesClient deploy.
+    let docker_log = temp.path().join("docker.log");
     write_executable(
-        &bin_dir.join("curl"),
-        "#!/bin/sh\nprintf '{\"msalClientId\":\"client-456\"}'\nexit 0\n",
+        &bin_dir.join("docker"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{}\"\nexit 0\n",
+            docker_log.display()
+        ),
     );
     // Hermetic jq stub that handles the invocations used by bootstrap.sh:
     // 1. jq -e --arg uri <URI> 'index($uri) != null'  → membership test (exit 1 = not found)
@@ -642,15 +631,17 @@ esac
     assert_eq!(az_calls.matches("deployment sub show").count(), 1);
     assert!(az_calls.contains("functionapp deployment source config-zip"));
     assert!(az_calls.contains("functionapp function list"));
-    assert!(az_calls.contains("storage container create"));
-    assert!(az_calls.contains("storage blob upload"));
-    assert!(az_calls.contains("storage blob generate-sas"));
-    assert!(
-        az_calls.contains("rest --method POST"),
-        "ARM zipdeploy request not found in az calls: {az_calls}"
-    );
+    assert!(az_calls.contains("staticwebapp secrets list"));
     assert!(az_calls.contains("ad app show"));
     assert!(az_calls.contains("ad app update") || az_calls.contains("ad app permission"));
+
+    // Verify docker was invoked with StaticSitesClient image
+    let docker_calls = fs::read_to_string(&docker_log)
+        .expect("docker log file not found — docker was never invoked by bootstrap");
+    assert!(
+        docker_calls.contains("mcr.microsoft.com/appsvc/staticappsclient:stable"),
+        "StaticSitesClient docker image not invoked: {docker_calls}"
+    );
 }
 
 #[test]

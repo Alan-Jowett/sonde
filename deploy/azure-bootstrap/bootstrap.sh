@@ -303,106 +303,32 @@ cat > "$web_ui_dir/config.json" <<CONFIGEOF
 CONFIGEOF
 echo "Generated config.json for SPA" >&2
 
-# Deploy SPA content to Static Web App via the ARM zipdeploy REST API.
-# This replaces the SWA CLI (which required amd64-only native binaries)
-# with a portable approach using only az CLI + Python (bundled with az).
+# Deploy SPA content to Static Web App using the StaticSitesClient binary
+# from the multi-arch Docker image. This replaces the SWA CLI npm package
+# (which required amd64-only native binaries) with the same underlying
+# deployment binary packaged as a multi-arch container image.
 
-# 1. Zip the SPA content using Python (always available with az CLI).
-spa_zip="$(mktemp "${TMPDIR:-/tmp}/sonde-spa-XXXXXX.zip")"
-cleanup_spa_blob() {
-    rm -f "$spa_zip"
-    if [ -n "${_spa_blob_uploaded:-}" ]; then
-        az storage blob delete \
-            --account-name "$storage_account_name" \
-            --container-name "spa-deploy" \
-            --name "$_spa_blob_name" \
-            --output none 2>/dev/null || true
-    fi
-}
-trap cleanup_spa_blob EXIT
-
-python3 - "$web_ui_dir" "$spa_zip" <<'PYEOF'
-import os, sys, zipfile
-src_dir, dst_zip = sys.argv[1], sys.argv[2]
-with zipfile.ZipFile(dst_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-    for root, _dirs, files in os.walk(src_dir):
-        for f in sorted(files):
-            full = os.path.join(root, f)
-            arcname = os.path.relpath(full, src_dir)
-            zf.write(full, arcname)
-PYEOF
-echo "Zipped SPA content to temporary file" >&2
-
-# 2. Upload the zip to a temporary blob in the provisioned storage account.
-#    Use key-based auth: the deploying user has Contributor/Owner (they just
-#    created the resources via Bicep), so they can access storage account keys
-#    directly. This avoids RBAC propagation delays with login-based auth.
-_spa_blob_name="spa-deploy-$(date +%s)-$$-$(od -An -N4 -tx1 /dev/urandom | tr -d ' ').zip"
-az storage container create \
-    --account-name "$storage_account_name" \
-    --name "spa-deploy" \
-    --public-access off \
-    --output none 2>/dev/null || true
-az storage blob upload \
-    --account-name "$storage_account_name" \
-    --container-name "spa-deploy" \
-    --name "$_spa_blob_name" \
-    --file "$spa_zip" \
-    --overwrite \
-    --output none 1>&2
-_spa_blob_uploaded=1
-echo "Uploaded SPA zip to blob: $_spa_blob_name" >&2
-
-# 3. Generate a short-lived read-only SAS URL for the blob.
-#    Resolve the blob endpoint from the storage account to support sovereign clouds.
-sas_expiry="$(python3 -c "from datetime import datetime,timedelta,timezone;print((datetime.now(timezone.utc)+timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
-blob_endpoint="$(az storage account show \
-    --name "$storage_account_name" \
+swa_deployment_token="$(trim_string "$(az staticwebapp secrets list \
+    --name "$static_web_app_name" \
     --resource-group "$resource_group_name" \
-    --query 'primaryEndpoints.blob' \
-    --output tsv)"
-blob_endpoint="${blob_endpoint%/}"
-sas_token="$(az storage blob generate-sas \
-    --account-name "$storage_account_name" \
-    --container-name "spa-deploy" \
-    --name "$_spa_blob_name" \
-    --permissions r \
-    --expiry "$sas_expiry" \
-    --output tsv)"
-blob_url="${blob_endpoint}/spa-deploy/${_spa_blob_name}?${sas_token}"
+    --query 'properties.apiKey' \
+    --output tsv)")"
+if [ -z "$swa_deployment_token" ]; then
+    echo "failed to retrieve Static Web App deployment token" >&2
+    exit 1
+fi
 
-# 4. Deploy via ARM zipdeploy REST API.
-#    Resolve the ARM endpoint from the active cloud for sovereign cloud support.
-subscription_id_for_deploy="$(az account show --query id --output tsv)"
-arm_endpoint="$(az cloud show --query endpoints.resourceManager --output tsv)"
-arm_endpoint="${arm_endpoint%/}"
-zipdeploy_url="${arm_endpoint}/subscriptions/${subscription_id_for_deploy}/resourceGroups/${resource_group_name}/providers/Microsoft.Web/staticSites/${static_web_app_name}/builds/default/zipdeploy?api-version=2024-04-01"
-az rest --method POST \
-    --url "$zipdeploy_url" \
-    --body "{\"properties\":{\"appZipUrl\":\"${blob_url}\",\"provider\":\"sonde-bootstrap\"}}" \
-    --output none 1>&2
-echo "ARM zipdeploy request submitted" >&2
+docker run --rm \
+    -v "$web_ui_dir:/app" \
+    -e "DEPLOYMENT_TOKEN=$swa_deployment_token" \
+    -e "DEPLOYMENT_ACTION=upload" \
+    -e "DEPLOYMENT_PROVIDER=sonde-bootstrap" \
+    -e "APP_LOCATION=/app" \
+    -e "SKIP_APP_BUILD=true" \
+    -e "SKIP_API_BUILD=true" \
+    -e "VERBOSE=false" \
+    mcr.microsoft.com/appsvc/staticappsclient:stable 1>&2
 
-# 5. Wait for deployment to complete by polling for our generated config.json.
-#    Polling for HTTP 200 alone is insufficient — a freshly-provisioned SWA
-#    serves a default placeholder page that returns 200 before zipdeploy content
-#    is published. Instead, fetch /config.json and verify it contains the
-#    expected msalClientId value from this deployment.
-spa_verify_deadline="$(( $(date +%s) + 120 ))"
-while :; do
-    fetched_config="$(curl -sf "https://$static_web_app_hostname/config.json" 2>/dev/null || true)"
-    if echo "$fetched_config" | grep -q "$companion_client_id" 2>/dev/null; then
-        echo "SPA content verified at https://$static_web_app_hostname" >&2
-        break
-    fi
-    if [ "$(date +%s)" -ge "$spa_verify_deadline" ]; then
-        echo "SPA deployment verification timed out after 120s" >&2
-        exit 1
-    fi
-    sleep 5
-done
-
-# 6. Cleanup happens via the EXIT trap (cleanup_spa_blob).
 echo "SPA content deployed to https://$static_web_app_hostname" >&2
 
 # ── Custom domain binding ───────────────────────────────────────────────────

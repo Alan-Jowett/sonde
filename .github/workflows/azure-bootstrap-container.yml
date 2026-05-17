@@ -225,14 +225,9 @@ jobs:
                     ;;
                 esac
                 ;;
-              storage)
-                # Handle storage container create, blob upload/generate-sas/delete
-                if [ "${2:-}" = "account" ] && [ "${3:-}" = "show" ]; then
-                  printf "https://stsondecitest.blob.core.windows.net/\n"
-                  exit 0
-                fi
-                if [ "${2:-}" = "blob" ] && [ "${3:-}" = "generate-sas" ]; then
-                  printf "sv=2023-01-01&sig=fakesas\n"
+              staticwebapp)
+                if [ "${2:-}" = "secrets" ] && [ "${3:-}" = "list" ]; then
+                  printf "fake-deployment-token\n"
                   exit 0
                 fi
                 exit 0
@@ -273,10 +268,16 @@ jobs:
 
             cat > /tmp/fakebin/curl <<'"'"'SH'"'"'
             #!/bin/sh
-            printf '{"msalClientId":"22222222-2222-2222-2222-222222222222"}'
             exit 0
             SH
             chmod +x /tmp/fakebin/curl
+
+            cat > /tmp/fakebin/docker <<'"'"'SH'"'"'
+            #!/bin/sh
+            printf "%s\n" "$*" >> /tmp/docker-calls.log
+            exit 0
+            SH
+            chmod +x /tmp/fakebin/docker
 
             cat > /tmp/fakebin/jq <<'"'"'SH'"'"'
             #!/bin/sh
@@ -317,9 +318,9 @@ jobs:
             grep -q "functionapp deployment source config-zip" /tmp/az-calls.log
             test "$(cat /tmp/function-list-count)" = "2"
             grep -q "Deploying Web UI to Static Web App" /tmp/bootstrap-stderr.txt
-            grep -q "Zipped SPA content" /tmp/bootstrap-stderr.txt
-            grep -q "storage blob upload" /tmp/az-calls.log
-            grep -q "rest --method POST" /tmp/az-calls.log
+            grep -q "Generated config.json for SPA" /tmp/bootstrap-stderr.txt
+            grep -q "staticwebapp secrets list" /tmp/az-calls.log
+            grep -q "mcr.microsoft.com/appsvc/staticappsclient:stable" /tmp/docker-calls.log
             grep -q "SPA content deployed" /tmp/bootstrap-stderr.txt
 
             python3 - <<'"'"'PY'"'"'

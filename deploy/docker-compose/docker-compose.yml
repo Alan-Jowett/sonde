@@ -18,6 +18,7 @@ services:
   gateway:
     image: ghcr.io/alan-jowett/sonde-gateway:${SONDE_IMAGE_TAG:-latest}
     container_name: sonde-gateway
+    user: "0:0"
     command:
       - "--db"
       - "/var/lib/sonde/sonde.db"
@@ -60,6 +61,7 @@ services:
   bootstrap:
     image: ghcr.io/alan-jowett/sonde-azure-companion:${SONDE_IMAGE_TAG:-latest}
     container_name: sonde-bootstrap
+    user: "0:0"
     entrypoint: ["sonde-azure-companion"]
     command:
       - "--admin-socket"
@@ -89,6 +91,7 @@ services:
   companion:
     image: ghcr.io/alan-jowett/sonde-azure-companion:${SONDE_IMAGE_TAG:-latest}
     container_name: sonde-companion
+    user: "0:0"
     entrypoint: ["sonde-azure-companion"]
     command:
       - "--connector-socket"

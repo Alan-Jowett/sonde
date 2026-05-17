@@ -144,6 +144,12 @@ docker compose down -v
   The device code is displayed on the modem's screen. Check
   `docker compose logs bootstrap` for the URL and code if needed.
 
+### Containers run as root
+
+All services currently run as `root` (`user: "0:0"`) because the container
+images do not yet create non-root users with the correct file ownership.
+This will be revised once the images support running as an unprivileged user.
+
 ### Security: Docker socket access
 
 The bootstrap service mounts `/var/run/docker.sock` because it needs to

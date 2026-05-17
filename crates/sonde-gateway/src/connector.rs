@@ -18,6 +18,15 @@ use crate::engine::PendingCommand;
 use crate::program::{ProgramLibrary, VerificationProfile};
 use crate::storage::Storage;
 
+/// Inbound escrow messages received from the control plane.
+#[derive(Debug)]
+pub enum EscrowInboundMessage {
+    /// KEY_ESCROW_RESPONSE (msg_type 0x12) — raw CBOR bytes.
+    KeyEscrowResponse(Vec<u8>),
+    /// MASTER_KEY_INSTALL (msg_type 0x13) — raw CBOR bytes.
+    MasterKeyInstall(Vec<u8>),
+}
+
 pub const MSG_TYPE_DESIRED_STATE: u64 = 0x01;
 pub const MSG_TYPE_ACTUAL_STATE: u64 = 0x02;
 pub const MSG_TYPE_APP_DATA: u64 = 0x03;
@@ -69,6 +78,14 @@ enum ConnectorOutboundMessage {
         firmware_abi_version: Option<u32>,
         firmware_version: Option<String>,
         timestamp_ms: u64,
+        /// Encrypted PSK escrow blob (CBOR-encoded EscrowBlob), CBOR key 12.
+        encrypted_psk_escrow: Option<Vec<u8>>,
+        /// Key hint from escrow blob metadata, CBOR key 13.
+        escrow_key_hint: Option<u16>,
+        /// Master key version from escrow blob metadata, CBOR key 14.
+        escrow_key_version: Option<u64>,
+        /// Gateway-scoped status_details extension (escrow state + salt).
+        status_details: Option<StatusDetails>,
     },
     AppData {
         node_id: String,
@@ -86,6 +103,36 @@ enum ConnectorOutboundMessage {
         stale_scope: Vec<String>,
         remediation: String,
     },
+    /// Recovery public key publication (GW-2001).
+    KeyEscrowPubkey {
+        public_key: Vec<u8>,
+        key_epoch: u64,
+        created_at: u64,
+        fingerprint_words: Vec<String>,
+    },
+    /// Request escrowed PSK(s) for an unknown key_hint (GW-2009).
+    KeyEscrowRequest {
+        key_hint: u16,
+        request_id: Vec<u8>,
+    },
+}
+
+/// Gateway-scoped ACTUAL_STATE status_details for escrow.
+#[derive(Clone, Debug, Default)]
+pub struct StatusDetails {
+    pub escrow_state: Option<String>,
+    pub escrow_key_version: Option<u64>,
+    pub escrow_salt: Option<Vec<u8>>,
+    pub escrow_kdf_params: Option<KdfParams>,
+}
+
+/// KDF parameters for Argon2id.
+#[derive(Clone, Debug)]
+pub struct KdfParams {
+    pub m_cost: u32,
+    pub t_cost: u32,
+    pub p_cost: u32,
+    pub kdf_version: u32,
 }
 
 impl ConnectorOutboundMessage {
@@ -101,19 +148,74 @@ impl ConnectorOutboundMessage {
                 firmware_abi_version,
                 firmware_version,
                 timestamp_ms,
-            } => Value::Map(vec![
-                map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
-                map_entry(2, Value::Text((*entity_kind).to_string())),
-                map_entry(3, Value::Text(entity_id.clone())),
-                map_entry(4, opt_bytes_value(current_program_hash.as_deref())),
-                map_entry(5, opt_bytes_value(assigned_program_hash.as_deref())),
-                map_entry(6, opt_u32_value(*battery_mv)),
-                map_entry(7, opt_u32_value(*firmware_abi_version)),
-                map_entry(8, opt_text_value(firmware_version.as_deref())),
-                map_entry(9, Value::Integer((*timestamp_ms).into())),
-                map_entry(10, Value::Map(Vec::new())),
-                map_entry(11, opt_u32_value(*schedule_interval_s)),
-            ]),
+                encrypted_psk_escrow,
+                escrow_key_hint,
+                escrow_key_version,
+                status_details,
+            } => {
+                let mut pairs = vec![
+                    map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+                    map_entry(2, Value::Text((*entity_kind).to_string())),
+                    map_entry(3, Value::Text(entity_id.clone())),
+                    map_entry(4, opt_bytes_value(current_program_hash.as_deref())),
+                    map_entry(5, opt_bytes_value(assigned_program_hash.as_deref())),
+                    map_entry(6, opt_u32_value(*battery_mv)),
+                    map_entry(7, opt_u32_value(*firmware_abi_version)),
+                    map_entry(8, opt_text_value(firmware_version.as_deref())),
+                    map_entry(9, Value::Integer((*timestamp_ms).into())),
+                ];
+
+                // Build status_details map (key 10)
+                let mut sd_pairs = Vec::new();
+                if let Some(ref sd) = status_details {
+                    if let Some(ref state_str) = sd.escrow_state {
+                        sd_pairs.push(map_entry(1, Value::Text(state_str.clone())));
+                    }
+                    if let Some(kv) = sd.escrow_key_version {
+                        sd_pairs.push(map_entry(2, Value::Integer(kv.into())));
+                    }
+                    if let Some(ref salt) = sd.escrow_salt {
+                        sd_pairs.push(map_entry(3, Value::Bytes(salt.clone())));
+                    }
+                    if let Some(ref kdf) = sd.escrow_kdf_params {
+                        let kdf_map = Value::Map(vec![
+                            map_entry(1, Value::Integer((kdf.m_cost as u64).into())),
+                            map_entry(2, Value::Integer((kdf.t_cost as u64).into())),
+                            map_entry(3, Value::Integer((kdf.p_cost as u64).into())),
+                            map_entry(4, Value::Integer((kdf.kdf_version as u64).into())),
+                        ]);
+                        sd_pairs.push(map_entry(4, kdf_map));
+                    }
+                }
+                pairs.push(map_entry(10, Value::Map(sd_pairs)));
+
+                pairs.push(map_entry(11, opt_u32_value(*schedule_interval_s)));
+
+                // Escrow fields (keys 12, 13, 14) — GW-2003
+                pairs.push(map_entry(
+                    12,
+                    match encrypted_psk_escrow {
+                        Some(ref blob) => Value::Bytes(blob.clone()),
+                        None => Value::Null,
+                    },
+                ));
+                pairs.push(map_entry(
+                    13,
+                    match escrow_key_hint {
+                        Some(kh) => Value::Integer((*kh as u64).into()),
+                        None => Value::Null,
+                    },
+                ));
+                pairs.push(map_entry(
+                    14,
+                    match escrow_key_version {
+                        Some(kv) => Value::Integer((*kv).into()),
+                        None => Value::Null,
+                    },
+                ));
+
+                Value::Map(pairs)
+            }
             Self::AppData {
                 node_id,
                 program_hash,
@@ -169,6 +271,45 @@ impl ConnectorOutboundMessage {
                         map_entry(3, Value::Text(remediation.clone())),
                     ]),
                 ),
+            ]),
+            Self::KeyEscrowPubkey {
+                public_key,
+                key_epoch,
+                created_at,
+                fingerprint_words,
+            } => Value::Map(vec![
+                map_entry(
+                    1,
+                    Value::Integer(
+                        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY.into(),
+                    ),
+                ),
+                map_entry(2, Value::Bytes(public_key.clone())),
+                map_entry(3, Value::Integer((*key_epoch).into())),
+                map_entry(4, Value::Integer((*created_at).into())),
+                map_entry(
+                    5,
+                    Value::Array(
+                        fingerprint_words
+                            .iter()
+                            .cloned()
+                            .map(Value::Text)
+                            .collect(),
+                    ),
+                ),
+            ]),
+            Self::KeyEscrowRequest {
+                key_hint,
+                request_id,
+            } => Value::Map(vec![
+                map_entry(
+                    1,
+                    Value::Integer(
+                        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST.into(),
+                    ),
+                ),
+                map_entry(2, Value::Integer((*key_hint as u64).into())),
+                map_entry(3, Value::Bytes(request_id.clone())),
             ]),
         };
 
@@ -228,6 +369,86 @@ impl ConnectorEventHub {
             firmware_abi_version: Some(firmware_abi_version),
             firmware_version: Some(firmware_version),
             timestamp_ms,
+            encrypted_psk_escrow: None,
+            escrow_key_hint: None,
+            escrow_key_version: None,
+            status_details: None,
+        });
+    }
+
+    /// Emit ACTUAL_STATE for a node with escrow blob (GW-2003).
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_actual_state_for_node_with_escrow(
+        &self,
+        node_id: String,
+        current_program_hash: Vec<u8>,
+        assigned_program_hash: Option<Vec<u8>>,
+        schedule_interval_s: u32,
+        battery_mv: u32,
+        firmware_abi_version: u32,
+        firmware_version: String,
+        timestamp_ms: u64,
+        encrypted_psk_escrow: Option<Vec<u8>>,
+        escrow_key_hint: Option<u16>,
+        escrow_key_version: Option<u64>,
+    ) {
+        let _ = self.tx.send(ConnectorOutboundMessage::ActualState {
+            entity_kind: "node",
+            entity_id: node_id,
+            current_program_hash: Some(current_program_hash),
+            assigned_program_hash,
+            schedule_interval_s: Some(schedule_interval_s),
+            battery_mv: Some(battery_mv),
+            firmware_abi_version: Some(firmware_abi_version),
+            firmware_version: Some(firmware_version),
+            timestamp_ms,
+            encrypted_psk_escrow,
+            escrow_key_hint,
+            escrow_key_version,
+            status_details: None,
+        });
+    }
+
+    /// Emit gateway-scoped ACTUAL_STATE with escrow status details (GW-2004).
+    pub fn emit_gateway_escrow_state(&self, details: StatusDetails) {
+        let _ = self.tx.send(ConnectorOutboundMessage::ActualState {
+            entity_kind: "gateway",
+            entity_id: String::new(),
+            current_program_hash: None,
+            assigned_program_hash: None,
+            schedule_interval_s: None,
+            battery_mv: None,
+            firmware_abi_version: None,
+            firmware_version: None,
+            timestamp_ms: current_time_ms(),
+            encrypted_psk_escrow: None,
+            escrow_key_hint: None,
+            escrow_key_version: None,
+            status_details: Some(details),
+        });
+    }
+
+    /// Emit KEY_ESCROW_PUBKEY (GW-2001).
+    pub fn emit_key_escrow_pubkey(
+        &self,
+        public_key: Vec<u8>,
+        key_epoch: u64,
+        created_at: u64,
+        fingerprint_words: Vec<String>,
+    ) {
+        let _ = self.tx.send(ConnectorOutboundMessage::KeyEscrowPubkey {
+            public_key,
+            key_epoch,
+            created_at,
+            fingerprint_words,
+        });
+    }
+
+    /// Emit KEY_ESCROW_REQUEST (GW-2009).
+    pub fn emit_key_escrow_request(&self, key_hint: u16, request_id: Vec<u8>) {
+        let _ = self.tx.send(ConnectorOutboundMessage::KeyEscrowRequest {
+            key_hint,
+            request_id,
         });
     }
 
@@ -275,6 +496,8 @@ pub struct ConnectorService {
     pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
     event_hub: Arc<ConnectorEventHub>,
     max_message_size: usize,
+    /// Channel for forwarding escrow inbound messages to the gateway engine.
+    escrow_inbound_tx: Option<tokio::sync::mpsc::UnboundedSender<EscrowInboundMessage>>,
 }
 
 impl ConnectorService {
@@ -290,7 +513,16 @@ impl ConnectorService {
             pending_commands,
             event_hub,
             max_message_size: max_message_size.max(1),
+            escrow_inbound_tx: None,
         }
+    }
+
+    /// Set the channel for forwarding escrow inbound messages.
+    pub fn set_escrow_inbound_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<EscrowInboundMessage>,
+    ) {
+        self.escrow_inbound_tx = Some(tx);
     }
 
     pub async fn handle_connection<T>(&self, stream: T) -> Result<(), String>
@@ -357,28 +589,45 @@ impl ConnectorService {
     async fn handle_inbound_message(&self, bytes: &[u8]) -> Result<(), String> {
         let map = decode_map(bytes)?;
         let msg_type = required_u64(&map, 1, "msg_type")?;
-        if msg_type != MSG_TYPE_DESIRED_STATE {
-            return Err(format!(
-                "unsupported inbound connector msg_type `{msg_type}`"
-            ));
-        }
 
-        let entity_kind = required_text(&map, 2, "entity_kind")?;
-        let entity_id = required_text(&map, 3, "entity_id")?;
-        let desired_state = required_map(&map, 4, "desired_state")?;
+        match msg_type {
+            MSG_TYPE_DESIRED_STATE => {
+                let entity_kind = required_text(&map, 2, "entity_kind")?;
+                let entity_id = required_text(&map, 3, "entity_id")?;
+                let desired_state = required_map(&map, 4, "desired_state")?;
 
-        match entity_kind.as_str() {
-            "gateway" => {
-                // The current draft defines an empty gateway desired-state map.
-                let _ = entity_id;
-                let _ = desired_state;
+                match entity_kind.as_str() {
+                    "gateway" => {
+                        let _ = entity_id;
+                        let _ = desired_state;
+                        Ok(())
+                    }
+                    "node" => {
+                        self.apply_node_desired_state(&entity_id, &desired_state)
+                            .await
+                    }
+                    other => Err(format!("unknown entity_kind `{other}`")),
+                }
+            }
+            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE => {
+                // Handled by the escrow subsystem via the inbound escrow channel.
+                if let Some(ref tx) = self.escrow_inbound_tx {
+                    tx.send(EscrowInboundMessage::KeyEscrowResponse(bytes.to_vec()))
+                        .map_err(|_| "escrow channel closed".to_string())?;
+                }
                 Ok(())
             }
-            "node" => {
-                self.apply_node_desired_state(&entity_id, &desired_state)
-                    .await
+            sonde_protocol::CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL => {
+                // Handled by the escrow subsystem via the inbound escrow channel.
+                if let Some(ref tx) = self.escrow_inbound_tx {
+                    tx.send(EscrowInboundMessage::MasterKeyInstall(bytes.to_vec()))
+                        .map_err(|_| "escrow channel closed".to_string())?;
+                }
+                Ok(())
             }
-            other => Err(format!("unknown entity_kind `{other}`")),
+            _ => Err(format!(
+                "unsupported inbound connector msg_type `{msg_type:#x}`"
+            )),
         }
     }
 
@@ -823,6 +1072,10 @@ mod tests {
             firmware_abi_version: Some(1),
             firmware_version: Some("1.2.3".to_string()),
             timestamp_ms: 1234,
+            encrypted_psk_escrow: None,
+            escrow_key_hint: None,
+            escrow_key_version: None,
+            status_details: None,
         };
 
         let encoded = message.encode().unwrap();

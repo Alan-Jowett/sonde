@@ -64,6 +64,34 @@ pub struct ProgramSummaryRecord {
     pub source_filename: Option<String>,
 }
 
+/// Escrow keypair record for PSK key escrow (GW-2000).
+#[derive(Debug, Clone)]
+pub struct EscrowKeypairRecord {
+    /// X25519 private key, AES-256-GCM encrypted with the master key.
+    pub secret_enc: Vec<u8>,
+    /// X25519 public key (32 bytes).
+    pub public_key: [u8; 32],
+    /// Monotonic key epoch, incremented on each regeneration.
+    pub epoch: u64,
+    /// Creation timestamp (Unix milliseconds).
+    pub created_at: u64,
+}
+
+/// Pending key rotation record for crash-safe migration (GW-2007).
+#[derive(Debug, Clone)]
+pub struct PendingRotationRecord {
+    /// New master key, AES-256-GCM encrypted with the OLD master key.
+    pub new_master_key_enc: Vec<u8>,
+    /// Target key version for this rotation.
+    pub new_key_version: u64,
+    /// Unique operation ID for idempotency.
+    pub operation_id: Vec<u8>,
+    /// Whether the recovery private key has been rewrapped under the new key.
+    pub privkey_rewrapped: bool,
+    /// Rotation start timestamp (Unix milliseconds).
+    pub started_at: u64,
+}
+
 /// Abstract storage backend for node registry and program library.
 #[async_trait]
 pub trait Storage: Send + Sync {
@@ -217,6 +245,32 @@ pub trait Storage: Send + Sync {
         }
         Ok(())
     }
+
+    // ── PSK key escrow (GW-2000–GW-2007) ──────────────────────
+
+    /// Retrieve the persisted escrow keypair, if any.
+    async fn get_escrow_keypair(&self) -> Result<Option<EscrowKeypairRecord>, StorageError>;
+
+    /// Persist an escrow keypair (insert or replace).
+    async fn store_escrow_keypair(&self, record: &EscrowKeypairRecord) -> Result<(), StorageError>;
+
+    /// Check whether a key-management operation has already been processed.
+    async fn is_operation_processed(&self, operation_id: &[u8]) -> Result<bool, StorageError>;
+
+    /// Record a key-management operation as processed.
+    async fn record_operation(&self, operation_id: &[u8]) -> Result<(), StorageError>;
+
+    /// Retrieve a pending key rotation record, if any.
+    async fn get_pending_rotation(&self) -> Result<Option<PendingRotationRecord>, StorageError>;
+
+    /// Persist a pending key rotation record.
+    async fn store_pending_rotation(
+        &self,
+        record: &PendingRotationRecord,
+    ) -> Result<(), StorageError>;
+
+    /// Delete the pending rotation record after successful completion.
+    async fn delete_pending_rotation(&self) -> Result<(), StorageError>;
 }
 
 /// In-memory storage backend for testing.
@@ -228,6 +282,9 @@ pub struct InMemoryStorage {
     next_phone_id: RwLock<u32>,
     config: RwLock<HashMap<String, String>>,
     handlers: RwLock<Vec<HandlerRecord>>,
+    escrow_keypair: RwLock<Option<EscrowKeypairRecord>>,
+    escrow_operations: RwLock<std::collections::HashSet<Vec<u8>>>,
+    pending_rotation: RwLock<Option<PendingRotationRecord>>,
 }
 
 impl InMemoryStorage {
@@ -240,6 +297,9 @@ impl InMemoryStorage {
             next_phone_id: RwLock::new(1),
             config: RwLock::new(HashMap::new()),
             handlers: RwLock::new(Vec::new()),
+            escrow_keypair: RwLock::new(None),
+            escrow_operations: RwLock::new(std::collections::HashSet::new()),
+            pending_rotation: RwLock::new(None),
         }
     }
 
@@ -527,6 +587,46 @@ impl Storage for InMemoryStorage {
             stored.program_hash = stored.program_hash.to_ascii_lowercase();
             handlers.push(stored);
         }
+        Ok(())
+    }
+
+    // ── PSK key escrow ─────────────────────────────────────────
+
+    async fn get_escrow_keypair(&self) -> Result<Option<EscrowKeypairRecord>, StorageError> {
+        Ok(self.escrow_keypair.read().await.clone())
+    }
+
+    async fn store_escrow_keypair(&self, record: &EscrowKeypairRecord) -> Result<(), StorageError> {
+        *self.escrow_keypair.write().await = Some(record.clone());
+        Ok(())
+    }
+
+    async fn is_operation_processed(&self, operation_id: &[u8]) -> Result<bool, StorageError> {
+        Ok(self.escrow_operations.read().await.contains(operation_id))
+    }
+
+    async fn record_operation(&self, operation_id: &[u8]) -> Result<(), StorageError> {
+        self.escrow_operations
+            .write()
+            .await
+            .insert(operation_id.to_vec());
+        Ok(())
+    }
+
+    async fn get_pending_rotation(&self) -> Result<Option<PendingRotationRecord>, StorageError> {
+        Ok(self.pending_rotation.read().await.clone())
+    }
+
+    async fn store_pending_rotation(
+        &self,
+        record: &PendingRotationRecord,
+    ) -> Result<(), StorageError> {
+        *self.pending_rotation.write().await = Some(record.clone());
+        Ok(())
+    }
+
+    async fn delete_pending_rotation(&self) -> Result<(), StorageError> {
+        *self.pending_rotation.write().await = None;
         Ok(())
     }
 }

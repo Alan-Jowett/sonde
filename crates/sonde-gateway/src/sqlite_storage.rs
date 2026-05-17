@@ -669,6 +669,94 @@ impl SqliteStorage {
                     })?;
             }
         }
+        // Migration: create escrow tables and add key_version column (GW-2000–GW-2007).
+        {
+            // Escrow keypair table (GW-2000)
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS escrow_keypair (
+                    id          INTEGER PRIMARY KEY CHECK (id = 1),
+                    secret_enc  BLOB NOT NULL,
+                    public_key  BLOB NOT NULL,
+                    epoch       INTEGER NOT NULL,
+                    created_at  INTEGER NOT NULL
+                )",
+            )
+            .map_err(|e| {
+                StorageError::Internal(format!(
+                    "migration failed: CREATE TABLE escrow_keypair: {e}"
+                ))
+            })?;
+
+            // Pending rotation table (GW-2007)
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS pending_rotation (
+                    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+                    new_master_key_enc  BLOB    NOT NULL,
+                    new_key_version     INTEGER NOT NULL,
+                    operation_id        BLOB    NOT NULL,
+                    privkey_rewrapped   BOOLEAN NOT NULL DEFAULT FALSE,
+                    started_at          INTEGER NOT NULL
+                )",
+            )
+            .map_err(|e| {
+                StorageError::Internal(format!(
+                    "migration failed: CREATE TABLE pending_rotation: {e}"
+                ))
+            })?;
+
+            // Escrow operations dedup table (GW-2006)
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS escrow_operations (
+                    operation_id BLOB PRIMARY KEY,
+                    processed_at INTEGER NOT NULL
+                )",
+            )
+            .map_err(|e| {
+                StorageError::Internal(format!(
+                    "migration failed: CREATE TABLE escrow_operations: {e}"
+                ))
+            })?;
+
+            // Add key_version column to nodes table (GW-2005)
+            let node_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(nodes)")
+                .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration check failed (table: nodes, column: key_version): {e}"
+                    ))
+                })?;
+            if !node_cols.iter().any(|n| n == "key_version") {
+                conn.execute_batch(
+                    "ALTER TABLE nodes ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0",
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: ALTER TABLE nodes ADD COLUMN key_version: {e}"
+                    ))
+                })?;
+            }
+
+            // Add key_version column to phone_psks table (GW-2005)
+            let phone_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(phone_psks)")
+                .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration check failed (table: phone_psks, column: key_version): {e}"
+                    ))
+                })?;
+            if !phone_cols.iter().any(|n| n == "key_version") {
+                conn.execute_batch(
+                    "ALTER TABLE phone_psks ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0",
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: ALTER TABLE phone_psks ADD COLUMN key_version: {e}"
+                    ))
+                })?;
+            }
+        }
         // Migrate any legacy plaintext 32-byte PSK blobs to AES-256-GCM encrypted
         // form. This must run before `validate_master_key` since validation only
         // checks encrypted blobs.
@@ -1782,6 +1870,171 @@ impl Storage for SqliteStorage {
                 .map_err(map_err)?;
             }
             tx.commit().map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    // ── PSK key escrow (GW-2000–GW-2007) ──────────────────────
+
+    async fn get_escrow_keypair(
+        &self,
+    ) -> Result<Option<crate::storage::EscrowKeypairRecord>, StorageError> {
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT secret_enc, public_key, epoch, created_at \
+                     FROM escrow_keypair WHERE id = 1",
+                )
+                .map_err(map_err)?;
+            let result = stmt
+                .query_row([], |row| {
+                    let secret_enc: Vec<u8> = row.get(0)?;
+                    let public_key_blob: Vec<u8> = row.get(1)?;
+                    let epoch: i64 = row.get(2)?;
+                    let created_at: i64 = row.get(3)?;
+                    Ok((secret_enc, public_key_blob, epoch, created_at))
+                })
+                .optional()
+                .map_err(map_err)?;
+            match result {
+                Some((secret_enc, public_key_blob, epoch, created_at)) => {
+                    if public_key_blob.len() != 32 {
+                        return Err(StorageError::Internal(format!(
+                            "escrow public key has wrong length: {}",
+                            public_key_blob.len()
+                        )));
+                    }
+                    let mut public_key = [0u8; 32];
+                    public_key.copy_from_slice(&public_key_blob);
+                    Ok(Some(crate::storage::EscrowKeypairRecord {
+                        secret_enc,
+                        public_key,
+                        epoch: epoch as u64,
+                        created_at: created_at as u64,
+                    }))
+                }
+                None => Ok(None),
+            }
+        })
+        .await
+    }
+
+    async fn store_escrow_keypair(
+        &self,
+        record: &crate::storage::EscrowKeypairRecord,
+    ) -> Result<(), StorageError> {
+        let secret_enc = record.secret_enc.clone();
+        let public_key = record.public_key.to_vec();
+        let epoch = record.epoch as i64;
+        let created_at = record.created_at as i64;
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO escrow_keypair \
+                 (id, secret_enc, public_key, epoch, created_at) \
+                 VALUES (1, ?1, ?2, ?3, ?4)",
+                params![secret_enc, public_key, epoch, created_at],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn is_operation_processed(&self, operation_id: &[u8]) -> Result<bool, StorageError> {
+        let op_id = operation_id.to_vec();
+        self.with_conn(move |conn| {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM escrow_operations WHERE operation_id = ?1",
+                    params![op_id],
+                    |row| row.get(0),
+                )
+                .map_err(map_err)?;
+            Ok(exists)
+        })
+        .await
+    }
+
+    async fn record_operation(&self, operation_id: &[u8]) -> Result<(), StorageError> {
+        let op_id = operation_id.to_vec();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis() as i64;
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO escrow_operations (operation_id, processed_at) \
+                 VALUES (?1, ?2)",
+                params![op_id, now],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn get_pending_rotation(
+        &self,
+    ) -> Result<Option<crate::storage::PendingRotationRecord>, StorageError> {
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT new_master_key_enc, new_key_version, operation_id, \
+                            privkey_rewrapped, started_at \
+                     FROM pending_rotation WHERE id = 1",
+                )
+                .map_err(map_err)?;
+            let result = stmt
+                .query_row([], |row| {
+                    Ok(crate::storage::PendingRotationRecord {
+                        new_master_key_enc: row.get(0)?,
+                        new_key_version: row.get::<_, i64>(1)? as u64,
+                        operation_id: row.get(2)?,
+                        privkey_rewrapped: row.get(3)?,
+                        started_at: row.get::<_, i64>(4)? as u64,
+                    })
+                })
+                .optional()
+                .map_err(map_err)?;
+            Ok(result)
+        })
+        .await
+    }
+
+    async fn store_pending_rotation(
+        &self,
+        record: &crate::storage::PendingRotationRecord,
+    ) -> Result<(), StorageError> {
+        let new_master_key_enc = record.new_master_key_enc.clone();
+        let new_key_version = record.new_key_version as i64;
+        let operation_id = record.operation_id.clone();
+        let privkey_rewrapped = record.privkey_rewrapped;
+        let started_at = record.started_at as i64;
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO pending_rotation \
+                 (id, new_master_key_enc, new_key_version, operation_id, \
+                  privkey_rewrapped, started_at) \
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+                params![
+                    new_master_key_enc,
+                    new_key_version,
+                    operation_id,
+                    privkey_rewrapped,
+                    started_at
+                ],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete_pending_rotation(&self) -> Result<(), StorageError> {
+        self.with_conn(move |conn| {
+            conn.execute("DELETE FROM pending_rotation", [])
+                .map_err(map_err)?;
             Ok(())
         })
         .await

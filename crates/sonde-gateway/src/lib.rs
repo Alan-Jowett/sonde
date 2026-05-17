@@ -11,6 +11,7 @@ pub mod decoder_platform;
 pub mod display_banner;
 pub mod display_control;
 pub mod engine;
+pub mod escrow;
 pub mod gateway_identity;
 pub mod handler;
 pub mod key_provider;

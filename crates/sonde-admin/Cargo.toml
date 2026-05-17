@@ -22,7 +22,7 @@ tonic-prost = "0.14"
 tower = "0.5"
 rpassword = "7.5.2"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-sonde-protocol = { path = "../sonde-protocol" }
+sonde-protocol = { path = "../sonde-protocol", features = ["fingerprint"] }
 
 [build-dependencies]
 tonic-prost-build = "0.14"

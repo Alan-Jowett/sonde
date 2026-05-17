@@ -376,7 +376,7 @@ blob_url="${blob_endpoint}/spa-deploy/${_spa_blob_name}?${sas_token}"
 subscription_id_for_deploy="$(az account show --query id --output tsv)"
 arm_endpoint="$(az cloud show --query endpoints.resourceManager --output tsv)"
 arm_endpoint="${arm_endpoint%/}"
-zipdeploy_url="${arm_endpoint}/subscriptions/${subscription_id_for_deploy}/resourceGroups/${resource_group_name}/providers/Microsoft.Web/staticSites/${static_web_app_name}/zipdeploy?api-version=2024-04-01"
+zipdeploy_url="${arm_endpoint}/subscriptions/${subscription_id_for_deploy}/resourceGroups/${resource_group_name}/providers/Microsoft.Web/staticSites/${static_web_app_name}/builds/default/zipdeploy?api-version=2024-04-01"
 az rest --method POST \
     --url "$zipdeploy_url" \
     --body "{\"properties\":{\"appZipUrl\":\"${blob_url}\",\"provider\":\"sonde-bootstrap\"}}" \

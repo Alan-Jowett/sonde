@@ -467,7 +467,7 @@ jobs:
           ARM_ENDPOINT="$(az cloud show --query endpoints.resourceManager --output tsv)"
           ARM_ENDPOINT="${ARM_ENDPOINT%/}"
           az rest --method POST \
-            --url "${ARM_ENDPOINT}/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${SONDE_AZURE_CI_RESOURCE_GROUP}/providers/Microsoft.Web/staticSites/${SWA_NAME}/zipdeploy?api-version=2024-04-01" \
+            --url "${ARM_ENDPOINT}/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${SONDE_AZURE_CI_RESOURCE_GROUP}/providers/Microsoft.Web/staticSites/${SWA_NAME}/builds/default/zipdeploy?api-version=2024-04-01" \
             --body "{\"properties\":{\"appZipUrl\":\"${BLOB_URL}\",\"provider\":\"sonde-ci\"}}" \
             --output none
 

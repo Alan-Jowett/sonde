@@ -417,9 +417,10 @@ jobs:
 
           # Copy SPA content from the bootstrap image and add config.json.
           SPA_STAGE="$(mktemp -d /tmp/sonde-spa-stage-XXXXXX)"
-          docker run --rm --entrypoint sh \
-            sonde-azure-bootstrap:ci \
-            -c 'tar -cf - -C /opt/sonde/deploy/web-ui .' | tar -xf - -C "$SPA_STAGE"
+          SPA_COPY_CTR="sonde-spa-copy-$$"
+          docker create --name "$SPA_COPY_CTR" --entrypoint sh sonde-azure-bootstrap:ci -c true >/dev/null
+          docker cp "$SPA_COPY_CTR:/opt/sonde/deploy/web-ui/." "$SPA_STAGE/"
+          docker rm "$SPA_COPY_CTR" >/dev/null
           cp /tmp/sonde-spa-config.json "$SPA_STAGE/config.json"
 
           # Zip the staged SPA content using the host python3.

@@ -100,7 +100,7 @@ See [`.env.example`](.env.example) for the full list with documentation.
 
 | Variable | Description |
 |----------|-------------|
-| `SONDE_IMAGE_TAG` | Container image tag (default: `latest`) |
+| `SONDE_IMAGE_TAG` | Container image tag (default: `nightly`) |
 | `SONDE_ESPNOW_CHANNEL` | ESP-NOW radio channel 1–14 (default: `1`) |
 | `SONDE_AZURE_SUBSCRIPTION_ID` | Azure subscription override |
 | `SONDE_AZURE_BOOTSTRAP_IMAGE` | Bootstrap container image override |

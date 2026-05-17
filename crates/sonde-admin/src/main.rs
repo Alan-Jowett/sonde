@@ -12,6 +12,17 @@ use sonde_admin::grpc_client::AdminClient;
 use sonde_admin::pb;
 use sonde_protocol::normalize_display_filename;
 
+/// SHA-256 provider for BIP-39 fingerprint computation.
+struct AdminSha256;
+impl sonde_protocol::Sha256Provider for AdminSha256 {
+    fn hash(&self, data: &[u8]) -> [u8; 32] {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(data);
+        hasher.finalize().into()
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "sonde-admin", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("SONDE_GIT_COMMIT"), ")"), about = "Sonde gateway administration CLI")]
 struct Cli {
@@ -107,6 +118,11 @@ enum Commands {
     Handler {
         #[command(subcommand)]
         action: HandlerAction,
+    },
+    /// PSK key escrow management (GW-2000 series).
+    Key {
+        #[command(subcommand)]
+        action: KeyAction,
     },
 }
 
@@ -271,6 +287,18 @@ enum HandlerAction {
     },
     /// List all configured handlers.
     List,
+}
+
+#[derive(Subcommand)]
+enum KeyAction {
+    /// Display the gateway's recovery public key fingerprint (ADMIN-0901).
+    Fingerprint {
+        /// Hex-encoded public key (32 bytes). If not provided, fetches from gateway.
+        #[arg(long)]
+        public_key: Option<String>,
+    },
+    /// Show escrow status (ADMIN-0902).
+    Status,
 }
 
 #[tokio::main]
@@ -891,6 +919,51 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                             wd
                         );
                     }
+                }
+            }
+        },
+        Commands::Key { action } => match action {
+            KeyAction::Fingerprint { public_key } => {
+                let pubkey_bytes: [u8; 32] = if let Some(hex_str) = public_key {
+                    let bytes = hex::decode(hex_str).map_err(|e| {
+                        format!("invalid hex public key: {e}")
+                    })?;
+                    if bytes.len() != 32 {
+                        return Err(format!(
+                            "public key must be exactly 32 bytes, got {}",
+                            bytes.len()
+                        ).into());
+                    }
+                    bytes.try_into().unwrap()
+                } else {
+                    // TODO: Fetch from gateway via gRPC escrow status API
+                    return Err("--public-key is required (gateway fetch not yet implemented)".into());
+                };
+
+                let sha = AdminSha256;
+                let words = sonde_protocol::compute_fingerprint(&pubkey_bytes, &sha);
+                if json {
+                    print_json(&serde_json::json!({
+                        "fingerprint": words,
+                        "public_key": hex::encode(pubkey_bytes),
+                    }))?;
+                } else {
+                    println!("Key fingerprint:");
+                    println!("  {} {}", words[0], words[1]);
+                    println!("  {} {}", words[2], words[3]);
+                    println!("  {} {}", words[4], words[5]);
+                }
+            }
+            KeyAction::Status => {
+                // TODO: Fetch escrow status via gRPC or Azure
+                if json {
+                    print_json(&serde_json::json!({
+                        "escrow_state": "unknown",
+                        "note": "escrow status query not yet implemented",
+                    }))?;
+                } else {
+                    println!("Escrow status query not yet implemented.");
+                    println!("Use gateway logs or Azure Table Storage to check escrow state.");
                 }
             }
         },

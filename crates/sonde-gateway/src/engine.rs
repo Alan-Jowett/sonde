@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 
 use crate::connector::{ConnectorEventHub, ConnectorPayloadOrigin};
 use crate::crypto::RustCryptoSha256;
+use crate::escrow::{EscrowState, RecoveryQueue};
 use crate::gateway_identity::GatewayIdentity;
 use crate::handler::HandlerRouter;
 use crate::phone_trust::PhonePskStatus;
@@ -234,6 +235,10 @@ pub struct Gateway {
     deferred_replies: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     /// Live event publication for connector processes.
     connector_event_hub: Arc<ConnectorEventHub>,
+    /// Escrow lifecycle state (GW-2004).
+    escrow_state: Arc<RwLock<EscrowState>>,
+    /// Recovery queue for unknown-node PSK recovery (GW-2009, GW-2010).
+    recovery_queue: Arc<tokio::sync::Mutex<RecoveryQueue>>,
 }
 
 impl Gateway {
@@ -252,6 +257,8 @@ impl Gateway {
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
+            escrow_state: Arc::new(RwLock::new(EscrowState::Disabled)),
+            recovery_queue: Arc::new(tokio::sync::Mutex::new(RecoveryQueue::new())),
         }
     }
 
@@ -281,6 +288,8 @@ impl Gateway {
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
+            escrow_state: Arc::new(RwLock::new(EscrowState::Disabled)),
+            recovery_queue: Arc::new(tokio::sync::Mutex::new(RecoveryQueue::new())),
         }
     }
 
@@ -303,6 +312,8 @@ impl Gateway {
             rssi_bad_threshold: -75,
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
+            escrow_state: Arc::new(RwLock::new(EscrowState::Disabled)),
+            recovery_queue: Arc::new(tokio::sync::Mutex::new(RecoveryQueue::new())),
         }
     }
 
@@ -345,6 +356,21 @@ impl Gateway {
         Arc::clone(&self.connector_event_hub)
     }
 
+    /// Set the escrow lifecycle state (GW-2004).
+    pub async fn set_escrow_state(&self, state: EscrowState) {
+        *self.escrow_state.write().await = state;
+    }
+
+    /// Get the current escrow lifecycle state.
+    pub async fn escrow_state(&self) -> EscrowState {
+        self.escrow_state.read().await.clone()
+    }
+
+    /// Access the recovery queue for escrow response handling.
+    pub fn recovery_queue(&self) -> &tokio::sync::Mutex<RecoveryQueue> {
+        &self.recovery_queue
+    }
+
     /// Process a raw frame using AES-256-GCM authenticated encryption.
     ///
     /// Decodes the
@@ -384,10 +410,32 @@ impl Gateway {
         let key_hint = decoded.header.key_hint;
         let candidates = self.storage.get_nodes_by_key_hint(key_hint).await.ok()?;
         if candidates.is_empty() {
-            warn!(
-                key_hint,
-                "discarding AEAD frame from unknown node (no key_hint match)"
-            );
+            // GW-2009: When escrow is ready, buffer the frame and emit a
+            // recovery request instead of silently discarding.
+            let escrow_state = self.escrow_state.read().await.clone();
+            if escrow_state == EscrowState::Ready {
+                let mut rq = self.recovery_queue.lock().await;
+                if rq.can_request(key_hint) {
+                    let peer_addr: [u8; 6] = peer.as_slice().try_into().unwrap_or([0u8; 6]);
+                    let request_id = rq.enqueue(key_hint, raw.to_vec(), peer_addr);
+                    self.connector_event_hub
+                        .emit_key_escrow_request(key_hint, request_id.to_vec());
+                    debug!(
+                        key_hint,
+                        "emitted KEY_ESCROW_REQUEST for unknown node (escrow recovery)"
+                    );
+                } else {
+                    debug!(
+                        key_hint,
+                        "rate-limited or queue full — discarding unknown frame"
+                    );
+                }
+            } else {
+                warn!(
+                    key_hint,
+                    "discarding AEAD frame from unknown node (no key_hint match)"
+                );
+            }
             return None;
         }
 

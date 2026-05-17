@@ -337,7 +337,7 @@ echo "Zipped SPA content to temporary file" >&2
 #    Use key-based auth: the deploying user has Contributor/Owner (they just
 #    created the resources via Bicep), so they can access storage account keys
 #    directly. This avoids RBAC propagation delays with login-based auth.
-_spa_blob_name="spa-deploy-$(date +%s)-$$-${RANDOM}.zip"
+_spa_blob_name="spa-deploy-$(date +%s)-$$-$(od -An -N4 -tx1 /dev/urandom | tr -d ' ').zip"
 az storage container create \
     --account-name "$storage_account_name" \
     --name "spa-deploy" \

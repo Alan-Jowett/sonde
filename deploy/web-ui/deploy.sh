@@ -7,7 +7,6 @@
 # Prerequisites:
 #   - az CLI logged in
 #   - jq available (for JSON merging)
-#   - npm/npx available (for SWA CLI)
 #
 # Usage:
 #   ./deploy/web-ui/deploy.sh <COMPANION_CLIENT_ID> [RESOURCE_GROUP]
@@ -247,13 +246,90 @@ fi
 
 echo ""
 echo "=== Deploying SPA content ==="
-DEPLOYMENT_TOKEN="$(az staticwebapp secrets list --name "$SWA_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --query 'properties.apiKey' -o tsv)"
 
-npx --yes @azure/static-web-apps-cli deploy "$SCRIPT_DIR" \
-  --deployment-token "$DEPLOYMENT_TOKEN" \
-  --env production
+# Zip the SPA content using Python (always available with az CLI).
+SPA_ZIP="$(mktemp "${TMPDIR:-/tmp}/sonde-spa-XXXXXX.zip")"
+_SPA_BLOB_NAME="spa-deploy-$(date +%s)-$$.zip"
+cleanup_spa_blob() {
+    rm -f "$SPA_ZIP"
+    if [ -n "${_SPA_BLOB_UPLOADED:-}" ]; then
+        az storage blob delete \
+            --account-name "$STORAGE_ACCOUNT" \
+            --container-name "spa-deploy" \
+            --name "$_SPA_BLOB_NAME" \
+            --output none 2>/dev/null || true
+    fi
+}
+trap cleanup_spa_blob EXIT
+
+python3 - "$SCRIPT_DIR" "$SPA_ZIP" <<'PYEOF'
+import os, sys, zipfile
+src_dir, dst_zip = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(dst_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+    for root, _dirs, files in os.walk(src_dir):
+        for f in sorted(files):
+            full = os.path.join(root, f)
+            arcname = os.path.relpath(full, src_dir)
+            zf.write(full, arcname)
+PYEOF
+
+# Upload the zip to a temporary blob in the storage account.
+# Use key-based auth: the deployer has Contributor/Owner from az login,
+# so they can access storage account keys directly.
+az storage container create \
+    --account-name "$STORAGE_ACCOUNT" \
+    --name "spa-deploy" \
+    --public-access off \
+    --output none 2>/dev/null || true
+az storage blob upload \
+    --account-name "$STORAGE_ACCOUNT" \
+    --container-name "spa-deploy" \
+    --name "$_SPA_BLOB_NAME" \
+    --file "$SPA_ZIP" \
+    --overwrite \
+    --output none
+_SPA_BLOB_UPLOADED=1
+
+# Generate a short-lived read-only SAS URL for the blob.
+# Resolve the blob endpoint from the storage account to support sovereign clouds.
+SAS_EXPIRY="$(python3 -c "from datetime import datetime,timedelta,timezone;print((datetime.now(timezone.utc)+timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
+BLOB_ENDPOINT="$(az storage account show \
+    --name "$STORAGE_ACCOUNT" \
+    --resource-group "$RESOURCE_GROUP" \
+    --query 'primaryEndpoints.blob' \
+    --output tsv)"
+BLOB_ENDPOINT="${BLOB_ENDPOINT%/}"
+SAS_TOKEN="$(az storage blob generate-sas \
+    --account-name "$STORAGE_ACCOUNT" \
+    --container-name "spa-deploy" \
+    --name "$_SPA_BLOB_NAME" \
+    --permissions r \
+    --expiry "$SAS_EXPIRY" \
+    --output tsv)"
+BLOB_URL="${BLOB_ENDPOINT}/spa-deploy/${_SPA_BLOB_NAME}?${SAS_TOKEN}"
+
+# Deploy via ARM zipdeploy REST API.
+SUBSCRIPTION_ID="$(az account show --query id --output tsv)"
+ZIPDEPLOY_URL="https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Web/staticSites/${SWA_NAME}/zipdeploy?api-version=2024-04-01"
+az rest --method POST \
+    --url "$ZIPDEPLOY_URL" \
+    --body "{\"properties\":{\"appZipUrl\":\"${BLOB_URL}\",\"provider\":\"sonde-deploy\"}}" \
+    --output none
+
+# Wait for deployment to complete.
+echo "  Waiting for deployment..."
+SPA_DEADLINE="$(( $(date +%s) + 120 ))"
+while :; do
+    SPA_HTTP="$(curl -s -o /dev/null -w '%{http_code}' "https://$SWA_HOSTNAME" 2>/dev/null || echo 0)"
+    if [ "$SPA_HTTP" = "200" ]; then
+        break
+    fi
+    if [ "$(date +%s)" -ge "$SPA_DEADLINE" ]; then
+        echo "  WARNING: timed out verifying SPA deployment (HTTP $SPA_HTTP); continuing"
+        break
+    fi
+    sleep 5
+done
 
 echo ""
 echo "=== Deployment complete ==="

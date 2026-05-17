@@ -182,7 +182,7 @@ the Entra app, and adds the Azure Storage API permission.
 
 For standalone (non-bootstrap) deployment, use the deployment script:
 
-Prerequisites: `az` CLI (logged in), `jq`, and `npm`/`npx` (for the SWA CLI).
+Prerequisites: `az` CLI (logged in) and `jq`.
 
 ```bash
 ./deploy/web-ui/deploy.sh <COMPANION_CLIENT_ID> [RESOURCE_GROUP]
@@ -198,7 +198,7 @@ The script:
 6. Configures EasyAuth on the Function App via ARM REST API with the
    companion Entra app as the identity provider and `Return401` for
    unauthenticated requests
-7. Deploys the web-ui content to the Static Web App using the SWA CLI
+7. Deploys the web-ui content to the Static Web App using the ARM zipdeploy REST API
 
 > **Note:** Steps 3–4 mutate the Entra app registration associated with the Azure companion.
 

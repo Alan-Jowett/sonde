@@ -13,8 +13,7 @@
 
 FROM mcr.microsoft.com/azure-cli@sha256:925b5871029fe16b82650c8298201e5dd91ac8122c7af1d150b57edc8c9f316a
 
-RUN tdnf install -y jq icu nodejs24 nodejs24-npm && tdnf clean all \
-    && npm install -g @azure/static-web-apps-cli@2.0.9
+RUN tdnf install -y jq icu && tdnf clean all
 
 COPY deploy/azure-bootstrap/bootstrap.sh /opt/sonde/deploy/azure-bootstrap/bootstrap.sh
 COPY deploy/bicep/ /opt/sonde/deploy/bicep/

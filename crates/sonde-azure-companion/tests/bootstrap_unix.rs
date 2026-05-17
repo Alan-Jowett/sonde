@@ -419,16 +419,25 @@ if [ "$#" -ge 4 ] && [ "$1" = "deployment" ] && [ "$2" = "sub" ] && [ "$3" = "sh
   printf 'rg-sonde\tfunc-sonde\tdeploypkg\thttps://example.blob.core.windows.net/deploypkg\tsonde-web-test\tsonde-web-test.azurestaticapps.net\tclient-456\tstsondetest\ttenant-123\n'
   exit 0
 fi
-if [ "$#" -ge 3 ] && [ "$1" = "staticwebapp" ] && [ "$2" = "secrets" ] && [ "$3" = "list" ]; then
-  printf 'fake-deployment-token\n'
+if [ "$#" -ge 3 ] && [ "$1" = "storage" ] && [ "$2" = "container" ] && [ "$3" = "create" ]; then
   exit 0
 fi
-if [ "$#" -ge 3 ] && [ "$1" = "staticwebapp" ] && [ "$2" = "deploy" ]; then
-  # Simulate az staticwebapp deploy not being available
-  exit 1
+if [ "$#" -ge 3 ] && [ "$1" = "storage" ] && [ "$2" = "blob" ] && [ "$3" = "upload" ]; then
+  exit 0
 fi
-if [ "$#" -ge 3 ] && [ "$1" = "staticwebapp" ] && [ "$2" = "show" ]; then
-  printf 'westus2\n'
+if [ "$#" -ge 3 ] && [ "$1" = "storage" ] && [ "$2" = "blob" ] && [ "$3" = "generate-sas" ]; then
+  printf 'sv=2023-01-01&sig=fakesas\n'
+  exit 0
+fi
+if [ "$#" -ge 3 ] && [ "$1" = "storage" ] && [ "$2" = "blob" ] && [ "$3" = "delete" ]; then
+  exit 0
+fi
+if [ "$#" -ge 3 ] && [ "$1" = "storage" ] && [ "$2" = "account" ] && [ "$3" = "show" ]; then
+  printf 'https://stsondetest.blob.core.windows.net/\n'
+  exit 0
+fi
+if [ "$#" -ge 2 ] && [ "$1" = "account" ] && [ "$2" = "show" ]; then
+  printf 'fake-sub-id\n'
   exit 0
 fi
 if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "app" ] && [ "$3" = "show" ]; then
@@ -480,8 +489,22 @@ exit 64
             az_log.display()
         ),
     );
-    write_executable(&bin_dir.join("python3"), "#!/bin/sh\nexit 91\n");
+    // python3 stub that handles:
+    // 1. zipfile creation (reads a heredoc script from stdin)
+    // 2. datetime SAS expiry generation
+    // The real system python3 is used since bootstrap.sh now depends on it
+    // for zip creation (replacing the SWA CLI).
+    // We let the system python3 handle these calls since they only use stdlib.
+    write_executable(
+        &bin_dir.join("python3"),
+        "#!/bin/sh\nexec /usr/bin/python3 \"$@\"\n",
+    );
     write_executable(&bin_dir.join("awk"), "#!/bin/sh\nexit 92\n");
+    // curl stub: return HTTP 200 for SPA verification polling.
+    write_executable(
+        &bin_dir.join("curl"),
+        "#!/bin/sh\nprintf '200'\nexit 0\n",
+    );
     // Hermetic jq stub that handles the invocations used by bootstrap.sh:
     // 1. jq -e --arg uri <URI> 'index($uri) != null'  → membership test (exit 1 = not found)
     // 2. jq -c --arg uri <URI> '(. // []) + [$uri]'   → merge URIs (output JSON array)
@@ -526,14 +549,6 @@ case "$expr" in
     printf '["%s"]\n' "$uri_val"; exit 0 ;;
 esac
 "#,
-    );
-    let swa_log = temp.path().join("swa.log");
-    write_executable(
-        &bin_dir.join("swa"),
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{}\"\nexit 0\n",
-            swa_log.display()
-        ),
     );
 
     // Create a temporary web-ui directory with the expected SPA files.
@@ -604,21 +619,15 @@ esac
     assert_eq!(az_calls.matches("deployment sub show").count(), 1);
     assert!(az_calls.contains("functionapp deployment source config-zip"));
     assert!(az_calls.contains("functionapp function list"));
-    assert!(az_calls.contains("staticwebapp secrets list"));
+    assert!(az_calls.contains("storage container create"));
+    assert!(az_calls.contains("storage blob upload"));
+    assert!(az_calls.contains("storage blob generate-sas"));
+    assert!(
+        az_calls.contains("rest --method POST"),
+        "ARM zipdeploy request not found in az calls: {az_calls}"
+    );
     assert!(az_calls.contains("ad app show"));
     assert!(az_calls.contains("ad app update") || az_calls.contains("ad app permission"));
-
-    // Verify swa deploy was invoked with the web-ui directory and deployment token
-    let swa_calls = fs::read_to_string(&swa_log)
-        .expect("swa log file not found — swa was never invoked by bootstrap");
-    assert!(
-        swa_calls.contains("deploy"),
-        "swa deploy was not invoked: {swa_calls}"
-    );
-    assert!(
-        swa_calls.contains("--deployment-token"),
-        "swa deploy missing --deployment-token: {swa_calls}"
-    );
 }
 
 #[test]

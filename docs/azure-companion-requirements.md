@@ -830,7 +830,8 @@ The bootstrap script MUST:
 2. Generate `config.json` with the MSAL client ID, tenant ID, storage account
    name, and function app name.
 3. Deploy the SPA content (including the generated `config.json`) to the Static
-   Web App using the Azure deployment API and the SWA deployment token.
+   Web App using the ARM zipdeploy REST API (`az rest`) and the provisioned
+   storage account as a temporary staging area.
 4. Register the SWA hostname (`https://<hostname>`) as a SPA redirect URI on
    the Entra app registration, merging with any existing redirect URIs.
 5. Add the Azure Storage `user_impersonation` API permission to the Entra app
@@ -839,9 +840,12 @@ The bootstrap script MUST:
    registration (required for EasyAuth token validation on the Function App).
    If the scope already exists, this step is a no-op.
 
-The bootstrap image bundles Node.js and a pinned version of the SWA CLI
-(`@azure/static-web-apps-cli`, installed globally at image build time) to
-deploy SPA content to the Static Web App.
+The bootstrap image deploys SPA content to the Static Web App using the ARM
+REST API (`Microsoft.Web/staticSites/{name}/zipdeploy`) via `az rest`. The
+content is zipped using Python (bundled with `az` CLI), uploaded as a temporary
+blob to the provisioned storage account, and referenced by SAS URL in the
+zipdeploy request. This approach requires no Node.js, npm, or
+architecture-specific binaries, enabling native arm64 execution.
 
 **Acceptance criteria:**
 

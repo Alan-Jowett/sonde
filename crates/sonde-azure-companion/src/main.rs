@@ -2149,13 +2149,8 @@ async fn run_bootstrap_deployment_with_docker_and_image(
     bootstrap_image: &str,
 ) -> Result<(ServicePrincipalStateFile, StorageQueuesConfigFile), CompanionError> {
     eprintln!("Pulling bootstrap image...");
-    // The bootstrap image (azure-cli + SWA CLI) is x86_64-only: the
-    // StaticSitesClient binary that the SWA CLI downloads at runtime has
-    // no ARM build. Force linux/amd64 so Docker uses QEMU emulation on
-    // non-x86 hosts (e.g. Armbian on aarch64).
     let pull_opts = CreateImageOptionsBuilder::default()
         .from_image(bootstrap_image)
-        .platform("linux/amd64")
         .build();
     let mut pull_stream = docker.create_image(Some(pull_opts), None, None);
     while let Some(result) = pull_stream.next().await {
@@ -2173,7 +2168,6 @@ async fn run_bootstrap_deployment_with_docker_and_image(
             Some(
                 CreateContainerOptionsBuilder::default()
                     .name(&container_name)
-                    .platform("linux/amd64")
                     .build(),
             ),
             ContainerCreateBody {

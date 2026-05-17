@@ -302,9 +302,12 @@ When bootstrap is required, the Azure companion performs this sequence:
        the Bicep deployment outputs.
     b. Generates `config.json` with MSAL client ID, authority URL (derived from
        `companionTenantId`), storage account name, and function app name.
-    c. Obtains the SWA deployment token via `az staticwebapp secrets list`.
-    d. Deploys the bundled SPA content (including generated `config.json`) to
-       the Static Web App using the pre-installed SWA CLI (`swa deploy`).
+    c. Zips the bundled SPA content (including generated `config.json`) using
+       Python (bundled with the Azure CLI).
+    d. Uploads the zip as a temporary blob to the provisioned storage account,
+       generates a short-lived read-only SAS URL, and deploys to the Static
+       Web App via `az rest POST .../zipdeploy`. Cleans up the temporary blob
+       after deployment.
     e. Registers `https://<staticWebAppHostname>` as a SPA redirect URI on the
        Entra app registration, merging with any existing redirect URIs.
     f. Adds Azure Storage `user_impersonation` API permission to the Entra app.
@@ -606,10 +609,10 @@ COPY deploy/web-ui/index.html deploy/web-ui/app.js deploy/web-ui/style.css deplo
 
 It also includes the bootstrap script that runs `az login --use-device-code`
 and Azure deployment inside the bootstrap image. The `jq` utility is installed
-for JSON manipulation during SPA deployment (Entra redirect URI merging), and
-Node.js/npm is installed and a pinned version of the SWA CLI
-(`@azure/static-web-apps-cli`) is pre-installed globally for SPA content
-deployment.
+for JSON manipulation during SPA deployment (Entra redirect URI merging).
+SPA content is deployed via the ARM zipdeploy REST API using `az rest` — no
+Node.js, npm, or SWA CLI is required. The bootstrap image uses only the
+Azure CLI, Python (bundled with `az`), and `jq`.
 
 This bundles the complete Azure provisioning surface and the Web UI SPA
 content into the dedicated bootstrap image. The runtime companion image no

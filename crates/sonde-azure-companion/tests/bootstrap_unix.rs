@@ -478,7 +478,18 @@ if [ "$#" -ge 4 ] && [ "$1" = "functionapp" ] && [ "$2" = "function" ] && [ "$3"
   exit 0
 fi
 if [ "$#" -ge 2 ] && [ "$1" = "cloud" ] && [ "$2" = "show" ]; then
-  printf 'https://login.microsoftonline.us\n'
+  query=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --query) query="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [ "$query" = "endpoints.resourceManager" ]; then
+    printf 'https://management.azure.com/\n'
+  else
+    printf 'https://login.microsoftonline.us\n'
+  fi
   exit 0
 fi
 if [ "$#" -ge 2 ] && [ "$1" = "rest" ]; then

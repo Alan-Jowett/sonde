@@ -337,7 +337,7 @@ echo "Zipped SPA content to temporary file" >&2
 #    Use key-based auth: the deploying user has Contributor/Owner (they just
 #    created the resources via Bicep), so they can access storage account keys
 #    directly. This avoids RBAC propagation delays with login-based auth.
-_spa_blob_name="spa-deploy-$(date +%s)-$$.zip"
+_spa_blob_name="spa-deploy-$(date +%s)-$$-${RANDOM}.zip"
 az storage container create \
     --account-name "$storage_account_name" \
     --name "spa-deploy" \
@@ -372,8 +372,11 @@ sas_token="$(az storage blob generate-sas \
 blob_url="${blob_endpoint}/spa-deploy/${_spa_blob_name}?${sas_token}"
 
 # 4. Deploy via ARM zipdeploy REST API.
+#    Resolve the ARM endpoint from the active cloud for sovereign cloud support.
 subscription_id_for_deploy="$(az account show --query id --output tsv)"
-zipdeploy_url="https://management.azure.com/subscriptions/${subscription_id_for_deploy}/resourceGroups/${resource_group_name}/providers/Microsoft.Web/staticSites/${static_web_app_name}/zipdeploy?api-version=2024-04-01"
+arm_endpoint="$(az cloud show --query endpoints.resourceManager --output tsv)"
+arm_endpoint="${arm_endpoint%/}"
+zipdeploy_url="${arm_endpoint}/subscriptions/${subscription_id_for_deploy}/resourceGroups/${resource_group_name}/providers/Microsoft.Web/staticSites/${static_web_app_name}/zipdeploy?api-version=2024-04-01"
 az rest --method POST \
     --url "$zipdeploy_url" \
     --body "{\"properties\":{\"appZipUrl\":\"${blob_url}\",\"provider\":\"sonde-bootstrap\"}}" \

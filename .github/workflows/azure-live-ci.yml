@@ -388,7 +388,7 @@ jobs:
           # Deploy SPA content using the ARM zipdeploy REST API.
           # This replaces the SWA CLI which required amd64-only native binaries.
           SPA_ZIP="$(mktemp /tmp/sonde-spa-XXXXXX.zip)"
-          _SPA_BLOB_NAME="spa-deploy-ci-$(date +%s)-$$.zip"
+          _SPA_BLOB_NAME="spa-deploy-ci-$(date +%s)-$$-${RANDOM}.zip"
           cleanup_spa_blob() {
               rm -f "$SPA_ZIP"
               if [ -n "${_SPA_BLOB_UPLOADED:-}" ]; then
@@ -464,8 +464,10 @@ jobs:
             --output tsv)"
           BLOB_URL="${BLOB_ENDPOINT}/spa-deploy/${_SPA_BLOB_NAME}?${SAS_TOKEN}"
           SUBSCRIPTION_ID="$(az account show --query id --output tsv)"
+          ARM_ENDPOINT="$(az cloud show --query endpoints.resourceManager --output tsv)"
+          ARM_ENDPOINT="${ARM_ENDPOINT%/}"
           az rest --method POST \
-            --url "https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${SONDE_AZURE_CI_RESOURCE_GROUP}/providers/Microsoft.Web/staticSites/${SWA_NAME}/zipdeploy?api-version=2024-04-01" \
+            --url "${ARM_ENDPOINT}/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${SONDE_AZURE_CI_RESOURCE_GROUP}/providers/Microsoft.Web/staticSites/${SWA_NAME}/zipdeploy?api-version=2024-04-01" \
             --body "{\"properties\":{\"appZipUrl\":\"${BLOB_URL}\",\"provider\":\"sonde-ci\"}}" \
             --output none
 

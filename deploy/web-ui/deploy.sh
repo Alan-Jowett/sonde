@@ -299,7 +299,7 @@ echo "=== Deploying SPA content ==="
 
 # Zip the SPA content using Python (always available with az CLI).
 SPA_ZIP="$(mktemp "${TMPDIR:-/tmp}/sonde-spa-XXXXXX.zip")"
-_SPA_BLOB_NAME="spa-deploy-$(date +%s)-$$.zip"
+_SPA_BLOB_NAME="spa-deploy-$(date +%s)-$$-${RANDOM}.zip"
 cleanup_spa_blob() {
     rm -f "$SPA_ZIP"
     if [ -n "${_SPA_BLOB_UPLOADED:-}" ]; then
@@ -359,8 +359,11 @@ SAS_TOKEN="$(az storage blob generate-sas \
 BLOB_URL="${BLOB_ENDPOINT}/spa-deploy/${_SPA_BLOB_NAME}?${SAS_TOKEN}"
 
 # Deploy via ARM zipdeploy REST API.
+# Resolve the ARM endpoint from the active cloud for sovereign cloud support.
 SUBSCRIPTION_ID="$(az account show --query id --output tsv)"
-ZIPDEPLOY_URL="https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Web/staticSites/${SWA_NAME}/zipdeploy?api-version=2024-04-01"
+ARM_ENDPOINT="$(az cloud show --query endpoints.resourceManager --output tsv)"
+ARM_ENDPOINT="${ARM_ENDPOINT%/}"
+ZIPDEPLOY_URL="${ARM_ENDPOINT}/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Web/staticSites/${SWA_NAME}/zipdeploy?api-version=2024-04-01"
 az rest --method POST \
     --url "$ZIPDEPLOY_URL" \
     --body "{\"properties\":{\"appZipUrl\":\"${BLOB_URL}\",\"provider\":\"sonde-deploy\"}}" \
@@ -375,8 +378,8 @@ while :; do
         break
     fi
     if [ "$(date +%s)" -ge "$SPA_DEADLINE" ]; then
-        echo "  WARNING: timed out verifying SPA deployment; continuing"
-        break
+        echo "  ERROR: timed out verifying SPA deployment after 120s"
+        exit 1
     fi
     sleep 5
 done

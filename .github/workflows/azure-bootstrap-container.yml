@@ -141,7 +141,18 @@ jobs:
                 exit 1
                 ;;
               cloud)
-                if [ "${2:-}" = "show" ]; then printf 'https://login.microsoftonline.com\n'; exit 0; fi
+                if [ "${2:-}" = "show" ]; then
+                  query=""
+                  while [ "$#" -gt 0 ]; do
+                    case "$1" in --query) query="$2"; shift 2 ;; *) shift ;; esac
+                  done
+                  if [ "$query" = "endpoints.resourceManager" ]; then
+                    printf 'https://management.azure.com/\n'
+                  else
+                    printf 'https://login.microsoftonline.com\n'
+                  fi
+                  exit 0
+                fi
                 exit 1
                 ;;
               deployment)

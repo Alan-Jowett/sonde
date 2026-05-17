@@ -206,6 +206,25 @@ if [ -z "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ] && [ -n "${SONDE_AZURE_CUSTOM_DO
     echo "SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP is set but SONDE_AZURE_CUSTOM_DOMAIN_NAME is empty; both are required for custom domain support" >&2
     exit 1
 fi
+# dns-record.bicep only supports apex (naked) domains — the A ALIAS record
+# is hardcoded to '@'.  When an explicit DNS zone name is provided it must
+# match the custom domain name; subdomain bindings are not supported.
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME:-}" ] && \
+   [ "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME}" != "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
+    echo "SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME ($SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME) differs from SONDE_AZURE_CUSTOM_DOMAIN_NAME (${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}); only apex domains are supported" >&2
+    exit 1
+fi
+# Reject values containing whitespace — these are Azure resource identifiers
+# and domain names which structurally cannot have spaces.  Catching this early
+# prevents confusing word-splitting failures in the az CLI invocation below.
+for _cdv in \
+    "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" \
+    "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP:-}" \
+    "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME:-}"; do
+    case "$_cdv" in
+        *[[:space:]]*) echo "custom domain parameter contains whitespace: '$_cdv'" >&2; exit 1 ;;
+    esac
+done
 custom_domain_params=""
 if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
     custom_domain_params="customDomainName=$SONDE_AZURE_CUSTOM_DOMAIN_NAME"

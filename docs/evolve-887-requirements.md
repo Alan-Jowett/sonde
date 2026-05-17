@@ -17,7 +17,7 @@
 |--------|-----------|---------|---------|
 | **New** | Gateway | GW-2000–GW-2013 | Asymmetric keypair, escrow lifecycle, key rotation, recovery, bootstrap |
 | **New** | Azure Handler | AZH-0600–AZH-0605 | Escrow blob storage, recovery serving, salt/pubkey tables |
-| **New** | Admin CLI | ADMIN-0900–ADMIN-0903 | Passphrase entry, KDF, fingerprint verification, key rotation |
+| **New** | Admin CLI | ADMIN-0900–ADMIN-0902 | Passphrase entry, KDF, fingerprint verification, key rotation |
 | **New** | Connector API | — | New message types for escrow operations |
 | **Modify** | Gateway | GW-0601a | Note: master key may now be passphrase-derived (admin-side) |
 | **Modify** | Gateway | GW-1002 | Unknown nodes may now trigger recovery instead of silent discard |
@@ -242,7 +242,7 @@ The `MASTER_KEY_INSTALL` message format:
 1. Gateway successfully receives and processes a `MASTER_KEY_INSTALL` message.
 2. All local PSKs are re-encrypted with the new master key.
 3. The operation is atomic — a crash during re-encryption is recoverable
-   (see GW-2008).
+   (see GW-2007).
 4. Messages with wrong `target_key_epoch` are rejected.
 5. Duplicate `operation_id` values are rejected (idempotency).
 6. Expired messages are rejected.

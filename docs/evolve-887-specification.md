@@ -5,7 +5,7 @@
 > **Issue:** #887
 > **Status:** Draft — Phase 2 specification changes
 > **Scope:** Design and validation changes propagated from the requirements
-> patch (GW-2000–GW-2011, AZH-0600–AZH-0605, ADMIN-0900–ADMIN-0902).
+> patch (GW-2000–GW-2013, AZH-0600–AZH-0605, ADMIN-0900–ADMIN-0902).
 > **Traceability:** Every section traces to one or more requirement IDs.
 
 ---
@@ -122,10 +122,15 @@ A new CBOR key `12` (`encrypted_psk_escrow`) is added to node-scoped
 ACTUAL_STATE payloads. The value is a bstr containing the CBOR-encoded
 `EscrowBlob`.
 
+A new CBOR key `13` (`escrow_key_hint`) is added to node- and phone-scoped
+ACTUAL_STATE payloads. The value is a uint containing the `key_hint` (u16)
+from the escrow blob metadata. This allows the Azure handler to index
+escrow blobs by `key_hint` without inspecting the encrypted blob.
+
 For phone PSKs, the gateway emits ACTUAL_STATE messages with
 `entity_kind = "phone"` and `entity_id = phone_id`. The phone ACTUAL_STATE
-payload contains only `encrypted_psk_escrow` (key 12) and `timestamp_ms`
-(key 9).
+payload contains only `encrypted_psk_escrow` (key 12), `escrow_key_hint`
+(key 13), and `timestamp_ms` (key 9).
 
 Escrow blobs are emitted:
 - On node/phone registration (initial escrow).
@@ -208,6 +213,15 @@ On receiving a `MASTER_KEY_INSTALL` (msg_type `0x13`), the gateway:
 
 3. **Prepare**: Write `pending_rotation` record to database:
    ```sql
+   CREATE TABLE IF NOT EXISTS pending_rotation (
+       id              INTEGER PRIMARY KEY CHECK (id = 1),
+       new_master_key_enc BLOB    NOT NULL,
+       new_key_version    INTEGER NOT NULL,
+       operation_id       BLOB    NOT NULL,
+       privkey_rewrapped  BOOLEAN NOT NULL DEFAULT FALSE,
+       started_at         INTEGER NOT NULL
+   );
+
    INSERT OR REPLACE INTO pending_rotation (id, new_master_key_enc, new_key_version, operation_id, started_at)
    VALUES (1, ?, ?, ?, ?);
    ```
@@ -301,7 +315,7 @@ The BIP-39 wordlist fingerprint is computed as:
 fn compute_fingerprint(public_key: &[u8; 32]) -> [&'static str; 6] {
     let hash = sha256(public_key);
     let mut words = [""; 6];
-    // Extract 66 bits (6 × 11-bit indices) from hash bytes 0..9
+    // Extract 66 bits (6 × 11-bit indices) from hash bytes 0..8
     let bits = u128::from_be_bytes([
         hash[0], hash[1], hash[2], hash[3],
         hash[4], hash[5], hash[6], hash[7],
@@ -503,6 +517,7 @@ migration resumes.
 |--------|------|-------------|
 | EncryptedPskEscrow | binary/null | Opaque escrow blob from gateway |
 | EscrowKeyVersion | int64/null | Key version of the escrow blob |
+| KeyHint | int64/null | `key_hint` (u16) from escrow blob metadata, indexed for recovery queries |
 
 **ActualPhoneState table** (new):
 
@@ -512,6 +527,7 @@ migration resumes.
 | RowKey | string | Phone ID |
 | EncryptedPskEscrow | binary | Opaque escrow blob |
 | EscrowKeyVersion | int64 | Key version |
+| KeyHint | int64 | `key_hint` (u16) from escrow blob metadata, indexed for recovery queries |
 | TimestampMs | int64 | Last update timestamp |
 
 #### 8.2  Message handling
@@ -523,7 +539,9 @@ migration resumes.
 **`ACTUAL_STATE` with `encrypted_psk_escrow` (upstream):**
 - For `entity_kind = "node"`: store blob in `ActualNodeState` row.
 - For `entity_kind = "phone"`: store blob in `ActualPhoneState` row.
-- The handler MUST NOT decrypt or inspect blob contents.
+- The handler MUST NOT decrypt the blob ciphertext, but MAY read the
+  unencrypted `key_hint` field from the top-level ACTUAL_STATE message
+  (CBOR key 13) for indexing purposes.
 
 **`KEY_ESCROW_REQUEST` (upstream, msg_type `0x11`):**
 - Query `ActualNodeState` and `ActualPhoneState` for rows matching
@@ -550,10 +568,9 @@ On receiving a gateway ACTUAL_STATE with `escrow_salt`:
 
 To efficiently serve `KEY_ESCROW_REQUEST`, the handler stores `key_hint`
 as an indexed column in both `ActualNodeState` and `ActualPhoneState`.
-The column is populated from the `key_hint` field within the escrow blob
-metadata (CBOR key 5 of the EscrowBlob). Since the handler must not
-decrypt the blob, the `key_hint` is also sent as a top-level field in
-the ACTUAL_STATE message alongside `encrypted_psk_escrow`.
+The column is populated from the `key_hint` field sent as a top-level
+ACTUAL_STATE field (CBOR key 13) alongside `encrypted_psk_escrow`
+(CBOR key 12). The handler never inspects blob ciphertext.
 
 ---
 

@@ -41,6 +41,11 @@ Azure companion architecture.
 | `desiredStateTableName` | `desiredstate` | Azure handler desired-state table |
 | `functionAppName` | derived | Optional Function App override |
 | `functionPlanName` | derived | Optional Function hosting plan override |
+| `staticWebAppName` | derived | Optional Static Web App name override |
+| `staticWebAppLocation` | `centralus` | Azure region for the Static Web App |
+| `customDomainName` | empty | Custom domain FQDN (e.g., `sondeplatform.com`). Empty = no custom domain |
+| `customDomainDnsResourceGroup` | empty | Resource group containing the Azure DNS zone for the custom domain |
+| `customDomainDnsZoneName` | `customDomainName` | DNS zone name. Defaults to `customDomainName` when empty (correct for apex domains) |
 
 When resource names are derived automatically, the deployment normalizes
 `project_name` to satisfy Azure naming rules for the target resource types.

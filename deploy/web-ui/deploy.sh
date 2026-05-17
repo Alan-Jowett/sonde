@@ -112,7 +112,8 @@ else
   az rest --method PATCH \
     --url "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
     --headers "Content-Type=application/json" \
-    --body "$PATCH_BODY"
+    --body "$PATCH_BODY" \
+    --output none
   echo "  Added redirect URI: $REDIRECT_URI"
 fi
 
@@ -172,7 +173,8 @@ else
   az rest --method PATCH \
     --url "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
     --headers "Content-Type=application/json" \
-    --body "$PATCH_BODY"
+    --body "$PATCH_BODY" \
+    --output none
   echo "  Exposed api://$CLIENT_ID/user_impersonation scope"
 fi
 
@@ -228,6 +230,54 @@ else
     --allowed-origins "$SWA_ORIGIN" --output none
   echo "  Added CORS origin: $SWA_ORIGIN"
 fi
+
+# If the SWA has a custom domain, also register it as a CORS origin and
+# add its redirect URI to the Entra app registration.
+# The custom domain binding itself is done in bootstrap.sh via
+# `az staticwebapp hostname set` after Bicep provisions the DNS record.
+CUSTOM_DOMAINS="$(az staticwebapp hostname list --name "$SWA_NAME" \
+  --resource-group "$RESOURCE_GROUP" --query '[].domainName' -o json 2>/dev/null || echo '[]')"
+for DOMAIN in $(echo "$CUSTOM_DOMAINS" | jq -r '.[]? // empty'); do
+  # Skip the default azurestaticapps.net hostname — already handled above
+  case "$DOMAIN" in *.azurestaticapps.net) continue ;; esac
+
+  CUSTOM_ORIGIN="https://$DOMAIN"
+
+  # CORS origin
+  CORS_NOW="$(az functionapp cors show --name "$FUNCTION_APP" \
+    --resource-group "$RESOURCE_GROUP" --query 'allowedOrigins' -o json 2>/dev/null || echo '[]')"
+  HAS_CUSTOM_CORS=0
+  echo "$CORS_NOW" | jq -e --arg o "$CUSTOM_ORIGIN" 'index($o) != null' >/dev/null 2>&1 && HAS_CUSTOM_CORS=1
+  if [ "$HAS_CUSTOM_CORS" -eq 1 ]; then
+    echo "  CORS origin $CUSTOM_ORIGIN already registered"
+  else
+    az functionapp cors add --name "$FUNCTION_APP" \
+      --resource-group "$RESOURCE_GROUP" \
+      --allowed-origins "$CUSTOM_ORIGIN" --output none
+    echo "  Added CORS origin: $CUSTOM_ORIGIN"
+  fi
+
+  # SPA redirect URI — re-fetch current URIs to avoid stale state
+  URIS_NOW="$(az ad app show --id "$APP_OBJECT_ID" \
+    --query 'spa.redirectUris' -o json 2>/dev/null || echo '[]')"
+  if [ -z "$URIS_NOW" ] || [ "$URIS_NOW" = "null" ]; then
+    URIS_NOW="[]"
+  fi
+  CUSTOM_URI_EXISTS=0
+  echo "$URIS_NOW" | jq -e --arg uri "$CUSTOM_ORIGIN" 'index($uri) != null' >/dev/null 2>&1 && CUSTOM_URI_EXISTS=1
+  if [ "$CUSTOM_URI_EXISTS" -eq 1 ]; then
+    echo "  Redirect URI $CUSTOM_ORIGIN already registered"
+  else
+    MERGED_URIS="$(echo "$URIS_NOW" | jq -c --arg uri "$CUSTOM_ORIGIN" '. + [$uri]')"
+    PATCH_BODY="$(jq -n -c --argjson uris "$MERGED_URIS" '{"spa":{"redirectUris":$uris}}')"
+    az rest --method PATCH \
+      --url "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+      --headers "Content-Type=application/json" \
+      --body "$PATCH_BODY" \
+      --output none
+    echo "  Added redirect URI: $CUSTOM_ORIGIN"
+  fi
+done
 
 echo ""
 echo "=== Assigning Storage Table Data Contributor to deploying user ==="
@@ -334,6 +384,10 @@ done
 echo ""
 echo "=== Deployment complete ==="
 echo "  URL: https://$SWA_HOSTNAME"
+for DOMAIN in $(echo "$CUSTOM_DOMAINS" | jq -r '.[]? // empty'); do
+  case "$DOMAIN" in *.azurestaticapps.net) continue ;; esac
+  echo "  Custom domain: https://$DOMAIN"
+done
 echo ""
 echo "  To use the SPA, users need 'Storage Table Data Contributor' role"
 echo "  on the storage account. Grant with:"

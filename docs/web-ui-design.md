@@ -159,6 +159,10 @@ local `ProgramLibrary`.
 - MSAL.js 2.x with authorization code flow + PKCE.
 - Token caching in browser session storage.
 - Silent token renewal; redirect to login on expiry.
+- `redirectUri` explicitly set to `window.location.origin` so the registered
+  redirect URIs (`https://<swa-hostname>` and, when configured,
+  `https://<customDomain>`) match regardless of which hostname the user
+  accesses.
 - Two token scopes, acquired separately:
   - `https://storage.azure.com/.default` — for Azure Table REST API calls
     (dashboard, desired state, program list, sensor data).
@@ -199,8 +203,13 @@ The script:
    companion Entra app as the identity provider and `Return401` for
    unauthenticated requests
 7. Deploys the web-ui content to the Static Web App using the ARM zipdeploy REST API
+8. If the SWA has custom domains, registers `https://<customDomain>` as an
+   additional SPA redirect URI on the Entra app registration (additive merge
+   with existing URIs)
+9. Adds `https://<customDomain>` as an additional CORS allowed origin on the
+   Function App (additive — does not replace the default hostname origin)
 
-> **Note:** Steps 3–4 mutate the Entra app registration associated with the Azure companion.
+> **Note:** Steps 3–4 and 8–9 mutate the Entra app registration associated with the Azure companion.
 
 After deployment, grant users the `Storage Table Data Contributor` role on the storage account.
 
@@ -287,6 +296,52 @@ The SPA derives the Function App API scope as
 an additional `config.json` field. This works because the companion Entra
 app registration is shared between the SPA and the Function App EasyAuth
 configuration.
+
+---
+
+### 9.5 Custom Domain (WEB-0608)
+
+An optional custom domain can be bound to the Static Web App so operators
+access the SPA via a branded URL (e.g., `https://sondeplatform.com`) instead of
+the Azure-generated `*.azurestaticapps.net` hostname.  The default hostname
+remains functional — both URLs serve the same SPA content.
+
+**Bicep parameters** (all optional — omit to skip custom domain setup):
+
+| Parameter | Default | Purpose |
+|---|---|---|
+| `customDomainName` | `''` | FQDN for the custom domain (e.g., `sondeplatform.com`). Empty = no custom domain. |
+| `customDomainDnsResourceGroup` | `''` | Resource group containing the Azure DNS zone for the custom domain. |
+| `customDomainDnsZoneName` | `''` | DNS zone name. Defaults to `customDomainName` when empty (correct for apex domains). |
+
+When `customDomainName` and `customDomainDnsResourceGroup` are both non-empty,
+the deployment:
+
+1. **DNS ALIAS record** (`dns-record.bicep`): Deployed to the DNS resource group
+   (cross-resource-group scope from `main.bicep`).  Creates an ALIAS A record
+   (`targetResource.id` pointing to the SWA resource) for apex domain
+   resolution.  Domain ownership validation is handled separately by the
+   deploy script.
+
+2. **Custom domain binding** (`deploy.sh`): The deploy script discovers
+   custom domains via `az staticwebapp hostname list`.  Azure validates
+   domain ownership via the DNS ALIAS record and automatically provisions
+   a managed SSL certificate.
+
+3. **CORS expansion** (`stack.bicep`): The Function App's `corsAllowedOrigins`
+   array includes both `https://<defaultHostname>` and
+   `https://<customDomainName>` so browser requests from either origin succeed.
+
+4. **Additional outputs** (`main.bicep`): `customDomainUrl` is emitted when
+   a custom domain is configured (e.g., `https://sondeplatform.com`).  The
+   `companionBootstrapValues` output object includes `customDomainUrl` so
+   the bootstrap flow can register the custom domain redirect URI.
+
+> **Note:** The DNS zone must already exist in the specified resource group.
+> The Bicep template creates records within it but does not create the zone
+> itself.  On first deployment, DNS propagation to Azure SWA's validators
+> may take a few minutes; if the custom domain binding fails, re-run the
+> deployment after DNS has propagated.
 
 ---
 

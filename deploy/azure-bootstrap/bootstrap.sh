@@ -196,13 +196,55 @@ fi
 
 echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2
 deployment_name="sonde-bootstrap-$(date +%Y%m%d%H%M%S)-$$"
+# Validate custom domain parameter consistency — supplying one without the
+# other silently disables the custom domain feature, which is hard to diagnose.
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ] && [ -z "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP:-}" ]; then
+    echo "SONDE_AZURE_CUSTOM_DOMAIN_NAME is set but SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP is empty; both are required for custom domain support" >&2
+    exit 1
+fi
+if [ -z "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ] && [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP:-}" ]; then
+    echo "SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP is set but SONDE_AZURE_CUSTOM_DOMAIN_NAME is empty; both are required for custom domain support" >&2
+    exit 1
+fi
+# dns-record.bicep only supports apex (naked) domains — the A ALIAS record
+# is hardcoded to '@'.  When an explicit DNS zone name is provided it must
+# match the custom domain name; subdomain bindings are not supported.
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME:-}" ] && \
+   [ "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME}" != "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
+    echo "SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME ($SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME) differs from SONDE_AZURE_CUSTOM_DOMAIN_NAME (${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}); only apex domains are supported" >&2
+    exit 1
+fi
+# Reject values containing whitespace — these are Azure resource identifiers
+# and domain names which structurally cannot have spaces.  Catching this early
+# prevents confusing word-splitting failures in the az CLI invocation below.
+for _cdv in \
+    "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" \
+    "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP:-}" \
+    "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME:-}"; do
+    case "$_cdv" in
+        *[[:space:]]*) echo "custom domain parameter contains whitespace: '$_cdv'" >&2; exit 1 ;;
+    esac
+done
+custom_domain_params=""
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
+    custom_domain_params="customDomainName=$SONDE_AZURE_CUSTOM_DOMAIN_NAME"
+fi
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP:-}" ]; then
+    custom_domain_params="$custom_domain_params customDomainDnsResourceGroup=$SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP"
+fi
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME:-}" ]; then
+    custom_domain_params="$custom_domain_params customDomainDnsZoneName=$SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME"
+fi
+# shellcheck disable=SC2086 — intentional word-splitting on custom_domain_params;
+# all values are Azure resource identifiers which cannot contain whitespace.
 deployment_outputs="$(az deployment sub create \
     --name "$deployment_name" \
     --location "$SONDE_AZURE_LOCATION" \
     --template-file /opt/sonde/deploy/bicep/main.bicep \
-    --parameters companionCertificateBase64="$COMPANION_CERT_BASE64" \
-    --parameters location="$SONDE_AZURE_LOCATION" \
-    --parameters project_name="$SONDE_AZURE_PROJECT_NAME" \
+    --parameters "companionCertificateBase64=$COMPANION_CERT_BASE64" \
+                 "location=$SONDE_AZURE_LOCATION" \
+                 "project_name=$SONDE_AZURE_PROJECT_NAME" \
+                 $custom_domain_params \
     --query 'properties.outputs' \
     --output json)"
 
@@ -359,6 +401,20 @@ done
 # 6. Cleanup happens via the EXIT trap (cleanup_spa_blob).
 echo "SPA content deployed to https://$static_web_app_hostname" >&2
 
+# ── Custom domain binding ───────────────────────────────────────────────────
+# Bicep creates the DNS ALIAS record, but the SWA custom domain binding
+# (ownership validation + managed SSL certificate) must be done via the CLI.
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
+    echo "Binding custom domain $SONDE_AZURE_CUSTOM_DOMAIN_NAME to Static Web App $static_web_app_name" >&2
+    # `hostname set` is idempotent — safe to re-run on subsequent deployments.
+    az staticwebapp hostname set \
+        --name "$static_web_app_name" \
+        --resource-group "$resource_group_name" \
+        --hostname "$SONDE_AZURE_CUSTOM_DOMAIN_NAME" \
+        --output none 1>&2
+    echo "Custom domain bound; managed SSL certificate provisioning initiated" >&2
+fi
+
 # ── Entra app configuration ─────────────────────────────────────────────────
 echo "Configuring Entra app registration for Web UI" >&2
 
@@ -394,8 +450,36 @@ else
     az rest --method PATCH \
         --url "https://graph.microsoft.com/v1.0/applications/$app_object_id" \
         --headers "Content-Type=application/json" \
-        --body "$patch_body"
+        --body "$patch_body" \
+        --output none
     echo "Added SPA redirect URI: $redirect_uri" >&2
+fi
+
+# If a custom domain was configured, also register it as a SPA redirect URI
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
+    custom_redirect_uri="https://$SONDE_AZURE_CUSTOM_DOMAIN_NAME"
+    custom_uris="$(az ad app show --id "$app_object_id" \
+        --query 'spa.redirectUris' --output json 2>/dev/null || echo '[]')"
+    if [ -z "$custom_uris" ] || [ "$custom_uris" = "null" ]; then
+        custom_uris="[]"
+    fi
+    custom_uri_exists=0
+    echo "$custom_uris" | jq -e --arg uri "$custom_redirect_uri" 'index($uri) != null' >/dev/null 2>&1 && custom_uri_exists=1
+    if [ "$custom_uri_exists" -eq 1 ]; then
+        echo "Custom domain redirect URI already registered" >&2
+    else
+        custom_merged="$(echo "$custom_uris" | jq -c --arg uri "$custom_redirect_uri" '. + [$uri]')" || {
+            echo "failed to merge custom domain redirect URI" >&2
+            exit 1
+        }
+        custom_patch="$(jq -n -c --argjson uris "$custom_merged" '{"spa":{"redirectUris":$uris}}')"
+        az rest --method PATCH \
+            --url "https://graph.microsoft.com/v1.0/applications/$app_object_id" \
+            --headers "Content-Type=application/json" \
+            --body "$custom_patch" \
+            --output none
+        echo "Added custom domain redirect URI: $custom_redirect_uri" >&2
+    fi
 fi
 
 # Add Azure Storage user_impersonation API permission (idempotent)
@@ -458,7 +542,8 @@ else
     az rest --method PATCH \
         --url "https://graph.microsoft.com/v1.0/applications/$app_object_id" \
         --headers "Content-Type=application/json" \
-        --body "$patch_body"
+        --body "$patch_body" \
+        --output none
     echo "Exposed api://$companion_client_id/user_impersonation scope" >&2
 fi
 

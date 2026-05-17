@@ -42,6 +42,7 @@ impl TestEnv {
         let phone_record = PhonePskRecord {
             phone_id: 0,
             phone_key_hint,
+            key_version: 0,
             psk: Zeroizing::new(TEST_PHONE_PSK),
             label: "test-phone".into(),
             issued_at: std::time::SystemTime::now(),
@@ -231,6 +232,7 @@ async fn diag_request_revoked_psk_discarded() {
     let record = PhonePskRecord {
         phone_id: 0,
         phone_key_hint: hint,
+        key_version: 0,
         psk: Zeroizing::new(TEST_PHONE_PSK),
         label: "test".into(),
         issued_at: std::time::SystemTime::now(),

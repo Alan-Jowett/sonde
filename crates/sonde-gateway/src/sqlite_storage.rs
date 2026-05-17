@@ -896,6 +896,7 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
     let sensors_json: Option<String> = row.get(11)?;
     let registered_by_phone_id: Option<u32> = row.get(12)?;
     let firmware_version: Option<String> = row.get(13)?;
+    let key_version: u64 = row.get::<_, i64>(14)? as u64;
     let schedule_interval_s = row.get(6)?;
     Ok(NodeRecord {
         node_id,
@@ -924,6 +925,7 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
             .unwrap_or_default(),
         registered_by_phone_id,
         battery_history: Vec::new(),
+        key_version,
     })
 }
 
@@ -939,7 +941,7 @@ impl Storage for SqliteStorage {
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
                      firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
-                     sensors_json, registered_by_phone_id, firmware_version FROM nodes",
+                     sensors_json, registered_by_phone_id, firmware_version, key_version FROM nodes",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -963,7 +965,7 @@ impl Storage for SqliteStorage {
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
                      firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
-                     sensors_json, registered_by_phone_id, firmware_version \
+                     sensors_json, registered_by_phone_id, firmware_version, key_version \
                      FROM nodes WHERE node_id = ?1",
                     params![node_id],
                     |row| row_to_node(row, &mk),
@@ -983,7 +985,7 @@ impl Storage for SqliteStorage {
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
                      firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
-                     sensors_json, registered_by_phone_id, firmware_version \
+                     sensors_json, registered_by_phone_id, firmware_version, key_version \
                      FROM nodes WHERE key_hint = ?1",
                 )
                 .map_err(map_err)?;
@@ -1469,7 +1471,7 @@ impl Storage for SqliteStorage {
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT phone_id, phone_key_hint, psk, label, issued_at_epoch_s, status \
+                    "SELECT phone_id, phone_key_hint, psk, label, issued_at_epoch_s, status, key_version \
                      FROM phone_psks",
                 )
                 .map_err(map_err)?;
@@ -1482,12 +1484,13 @@ impl Storage for SqliteStorage {
                         row.get::<_, String>(3)?,
                         row.get::<_, i64>(4)?,
                         row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
                     ))
                 })
                 .map_err(map_err)?;
             let mut records = Vec::new();
             for row in rows {
-                let (phone_id, key_hint, psk_blob, label, issued_at, status_str) =
+                let (phone_id, key_hint, psk_blob, label, issued_at, status_str, key_version_raw) =
                     row.map_err(map_err)?;
                 let psk = Zeroizing::new(decrypt_phone_psk(&mk, phone_id, &psk_blob)?);
                 let status = PhonePskStatus::from_str_value(&status_str).ok_or_else(|| {
@@ -1504,6 +1507,7 @@ impl Storage for SqliteStorage {
                     label,
                     issued_at: epoch_s_to_system_time(issued_at),
                     status,
+                    key_version: key_version_raw as u64,
                 });
             }
             Ok(records)
@@ -1519,7 +1523,7 @@ impl Storage for SqliteStorage {
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT phone_id, phone_key_hint, psk, label, issued_at_epoch_s, status \
+                    "SELECT phone_id, phone_key_hint, psk, label, issued_at_epoch_s, status, key_version \
                      FROM phone_psks WHERE phone_key_hint = ?1",
                 )
                 .map_err(map_err)?;
@@ -1532,12 +1536,13 @@ impl Storage for SqliteStorage {
                         row.get::<_, String>(3)?,
                         row.get::<_, i64>(4)?,
                         row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
                     ))
                 })
                 .map_err(map_err)?;
             let mut records = Vec::new();
             for row in rows {
-                let (phone_id, kh, psk_blob, label, issued_at, status_str) =
+                let (phone_id, kh, psk_blob, label, issued_at, status_str, key_version_raw) =
                     row.map_err(map_err)?;
                 let psk = Zeroizing::new(decrypt_phone_psk(&mk, phone_id, &psk_blob)?);
                 let status = PhonePskStatus::from_str_value(&status_str).ok_or_else(|| {
@@ -1554,6 +1559,7 @@ impl Storage for SqliteStorage {
                     label,
                     issued_at: epoch_s_to_system_time(issued_at),
                     status,
+                    key_version: key_version_raw as u64,
                 });
             }
             Ok(records)
@@ -2056,6 +2062,7 @@ mod tests {
         NodeRecord {
             node_id: id.to_string(),
             key_hint,
+            key_version: 0,
             psk: [0xAB; 32],
             assigned_program_hash: None,
             current_program_hash: None,
@@ -2661,6 +2668,7 @@ mod tests {
         PhonePskRecord {
             phone_id: 0, // auto-assigned
             phone_key_hint: hint,
+            key_version: 0,
             psk: Zeroizing::new([0xBB; 32]),
             label: label.to_string(),
             issued_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1700000000),

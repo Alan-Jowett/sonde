@@ -439,6 +439,7 @@ async fn handle_register_phone(
         label: label.clone(),
         issued_at: SystemTime::now(),
         status: PhonePskStatus::Active,
+        key_version: 0,
     };
 
     if let Err(e) = storage.store_phone_psk(&record).await {

@@ -937,6 +937,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         sensors,
         registered_by_phone_id,
         battery_history: Vec::new(),
+        key_version: 0,
     })
 }
 
@@ -1278,6 +1279,7 @@ fn phone_psk_from_cbor(v: ciborium::value::Value) -> Result<PhonePskRecord, Bund
         label,
         issued_at,
         status,
+        key_version: 0,
     })
 }
 
@@ -1625,6 +1627,7 @@ mod tests {
         let phone = PhonePskRecord {
             phone_id: 0,
             phone_key_hint: 0x1234,
+            key_version: 0,
             psk: Zeroizing::new([0xDD; 32]),
             label: "Test Phone".to_string(),
             issued_at: UNIX_EPOCH + Duration::from_secs(1700000000),
@@ -1633,6 +1636,7 @@ mod tests {
         let phone_revoked = PhonePskRecord {
             phone_id: 0,
             phone_key_hint: 0x5678,
+            key_version: 0,
             psk: Zeroizing::new([0xEE; 32]),
             label: "Revoked Phone".to_string(),
             issued_at: UNIX_EPOCH + Duration::from_secs(1700001000),

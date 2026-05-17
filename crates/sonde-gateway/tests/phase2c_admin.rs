@@ -1132,6 +1132,7 @@ async fn t0810_import_state_restores_identity_phones_and_handlers() {
     let phone_psk = PhonePskRecord {
         phone_id: 0, // auto-assigned by storage
         phone_key_hint: 0x1234,
+        key_version: 0,
         psk: Zeroizing::new([0x42u8; 32]),
         label: "test-phone".into(),
         issued_at: fixed_issued_at,

@@ -270,13 +270,13 @@ pub fn decode_escrow_blob(cbor: &[u8]) -> Result<EscrowBlob, DecodeError> {
             ESCROW_BLOB_KEY_VERSION_FIELD => {
                 if let Value::Integer(i) = v {
                     let val: i128 = i.into();
-                    escrow_version = Some(val as u8);
+                    escrow_version = u8::try_from(val).ok();
                 }
             }
             ESCROW_BLOB_KEY_KEY_VERSION => {
                 if let Value::Integer(i) = v {
                     let val: i128 = i.into();
-                    key_version = Some(val as u64);
+                    key_version = u64::try_from(val).ok();
                 }
             }
             ESCROW_BLOB_KEY_SUBJECT_KIND => {
@@ -292,7 +292,7 @@ pub fn decode_escrow_blob(cbor: &[u8]) -> Result<EscrowBlob, DecodeError> {
             ESCROW_BLOB_KEY_KEY_HINT => {
                 if let Value::Integer(i) = v {
                     let val: i128 = i.into();
-                    key_hint = Some(val as u16);
+                    key_hint = u16::try_from(val).ok();
                 }
             }
             ESCROW_BLOB_KEY_NONCE => {
@@ -595,5 +595,68 @@ mod tests {
         assert_eq!(SubjectKind::from_str("node"), Some(SubjectKind::Node));
         assert_eq!(SubjectKind::from_str("phone"), Some(SubjectKind::Phone));
         assert_eq!(SubjectKind::from_str("other"), None);
+    }
+
+    // Out-of-range integers are rejected during decoding
+    #[test]
+    fn test_escrow_blob_decode_rejects_out_of_range_version() {
+        // Manually build CBOR with escrow_version = 257 (> u8::MAX)
+        let pairs: Vec<(Value, Value)> = alloc::vec![
+            (Value::Integer(1u64.into()), Value::Integer(257u64.into())),
+            (Value::Integer(2u64.into()), Value::Integer(1u64.into())),
+            (Value::Integer(3u64.into()), Value::Text(String::from("node"))),
+            (Value::Integer(4u64.into()), Value::Text(String::from("n1"))),
+            (Value::Integer(5u64.into()), Value::Integer(0x1234u64.into())),
+            (Value::Integer(6u64.into()), Value::Bytes(vec![0u8; 12])),
+            (Value::Integer(7u64.into()), Value::Bytes(vec![0u8; 32])),
+            (Value::Integer(8u64.into()), Value::Bytes(vec![0u8; 16])),
+        ];
+        let value = Value::Map(pairs);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&value, &mut buf).unwrap();
+        let result = decode_escrow_blob(&buf);
+        assert!(result.is_err(), "escrow_version=257 should be rejected");
+    }
+
+    #[test]
+    fn test_escrow_blob_decode_rejects_out_of_range_key_hint() {
+        // Manually build CBOR with key_hint = 65536 (> u16::MAX)
+        let pairs: Vec<(Value, Value)> = alloc::vec![
+            (Value::Integer(1u64.into()), Value::Integer(1u64.into())),
+            (Value::Integer(2u64.into()), Value::Integer(1u64.into())),
+            (Value::Integer(3u64.into()), Value::Text(String::from("node"))),
+            (Value::Integer(4u64.into()), Value::Text(String::from("n1"))),
+            (Value::Integer(5u64.into()), Value::Integer(65536u64.into())),
+            (Value::Integer(6u64.into()), Value::Bytes(vec![0u8; 12])),
+            (Value::Integer(7u64.into()), Value::Bytes(vec![0u8; 32])),
+            (Value::Integer(8u64.into()), Value::Bytes(vec![0u8; 16])),
+        ];
+        let value = Value::Map(pairs);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&value, &mut buf).unwrap();
+        let result = decode_escrow_blob(&buf);
+        assert!(result.is_err(), "key_hint=65536 should be rejected");
+    }
+
+    #[test]
+    fn test_escrow_blob_decode_rejects_negative_integers() {
+        // Manually build CBOR with negative key_version (use i64 -1)
+        use ciborium::value::Integer;
+        let neg_one = Integer::from(-1i64);
+        let pairs: Vec<(Value, Value)> = alloc::vec![
+            (Value::Integer(1u64.into()), Value::Integer(1u64.into())),
+            (Value::Integer(2u64.into()), Value::Integer(neg_one)),
+            (Value::Integer(3u64.into()), Value::Text(String::from("node"))),
+            (Value::Integer(4u64.into()), Value::Text(String::from("n1"))),
+            (Value::Integer(5u64.into()), Value::Integer(0x1234u64.into())),
+            (Value::Integer(6u64.into()), Value::Bytes(vec![0u8; 12])),
+            (Value::Integer(7u64.into()), Value::Bytes(vec![0u8; 32])),
+            (Value::Integer(8u64.into()), Value::Bytes(vec![0u8; 16])),
+        ];
+        let value = Value::Map(pairs);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&value, &mut buf).unwrap();
+        let result = decode_escrow_blob(&buf);
+        assert!(result.is_err(), "negative key_version should be rejected");
     }
 }

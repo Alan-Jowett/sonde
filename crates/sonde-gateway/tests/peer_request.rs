@@ -56,6 +56,7 @@ impl TestEnv {
         let phone_record = PhonePskRecord {
             phone_id: 0, // will be assigned
             phone_key_hint,
+            key_version: 0,
             psk: Zeroizing::new(TEST_PHONE_PSK),
             label: "test-phone".into(),
             issued_at: std::time::SystemTime::now(),
@@ -864,6 +865,7 @@ async fn t_1212_phone_hmac_multiple_candidates() {
     let phone_b_record = PhonePskRecord {
         phone_id: 0,
         phone_key_hint: phone_a_key_hint, // force same key_hint
+        key_version: 0,
         psk: Zeroizing::new(phone_b_psk),
         label: "phone-b-same-hint".into(),
         issued_at: std::time::SystemTime::now(),

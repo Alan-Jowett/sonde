@@ -58,6 +58,8 @@ pub struct NodeRecord {
     /// compatibility with legacy battery-persistence code paths. New gateway
     /// code does not populate or append to this list.
     pub battery_history: Vec<BatteryReading>,
+    /// Master key version used to encrypt this node's PSK (GW-2005).
+    pub key_version: u64,
 }
 
 impl NodeRecord {
@@ -79,6 +81,7 @@ impl NodeRecord {
             sensors: Vec::new(),
             registered_by_phone_id: None,
             battery_history: Vec::new(),
+            key_version: 0,
         }
     }
 

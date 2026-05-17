@@ -489,15 +489,26 @@ exit 64
             az_log.display()
         ),
     );
-    // python3 stub that handles:
-    // 1. zipfile creation (reads a heredoc script from stdin)
-    // 2. datetime SAS expiry generation
-    // The real system python3 is used since bootstrap.sh now depends on it
-    // for zip creation (replacing the SWA CLI).
-    // We let the system python3 handle these calls since they only use stdlib.
+    // python3 stub that delegates to the real system python3.
+    // Resolve the path dynamically to avoid hardcoding /usr/bin/python3
+    // (which may differ on macOS, NixOS, etc.).
+    let system_python3 = String::from_utf8(
+        std::process::Command::new("which")
+            .arg("python3")
+            .output()
+            .expect("failed to locate python3")
+            .stdout,
+    )
+    .expect("non-UTF-8 python3 path")
+    .trim()
+    .to_string();
+    assert!(
+        !system_python3.is_empty(),
+        "python3 not found on PATH — required for bootstrap.sh tests"
+    );
     write_executable(
         &bin_dir.join("python3"),
-        "#!/bin/sh\nexec /usr/bin/python3 \"$@\"\n",
+        &format!("#!/bin/sh\nexec \"{system_python3}\" \"$@\"\n"),
     );
     write_executable(&bin_dir.join("awk"), "#!/bin/sh\nexit 92\n");
     // curl stub: return config.json content containing the expected client ID

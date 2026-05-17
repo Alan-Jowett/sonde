@@ -393,8 +393,8 @@ while :; do
         break
     fi
     if [ "$(date +%s)" -ge "$spa_verify_deadline" ]; then
-        echo "WARNING: timed out verifying SPA deployment; continuing" >&2
-        break
+        echo "SPA deployment verification timed out after 120s" >&2
+        exit 1
     fi
     sleep 5
 done

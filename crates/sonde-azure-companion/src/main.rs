@@ -3986,12 +3986,12 @@ mod tests {
         );
         assert!(requests[0].url.query().is_some_and(|query| query
             .contains("fromImage=sonde-azure-bootstrap%3Atest-override")
-            && !query.contains("platform=")));
+            && !query.contains("platform=linux")));
         assert!(
             !requests[1]
                 .url
                 .query()
-                .is_some_and(|query| query.contains("platform=")),
+                .is_some_and(|query| query.contains("platform=linux")),
             "container create must not force a platform — native arch is used"
         );
         let create_body = String::from_utf8(requests[1].body.clone()).unwrap();

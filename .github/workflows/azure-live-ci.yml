@@ -399,7 +399,7 @@ jobs:
           }
           trap cleanup_spa_blob EXIT
 
-          # Generate config.json and zip SPA content
+          # Generate config.json for the SPA
           cat > /tmp/sonde-spa-config.json <<CFGEOF
           {
             "msalClientId": "$CLIENT_ID",
@@ -409,25 +409,28 @@ jobs:
           }
           CFGEOF
 
-          # Use the bootstrap image to validate it has the required tools (az, python3)
-          # and to zip the bundled SPA content with the generated config.json.
-          docker run --rm \
-            --entrypoint sh \
-            -v /tmp/sonde-spa-config.json:/tmp/config.json:ro \
+          # Verify the bootstrap image has the required tools (az, python3, no swa).
+          docker run --rm --entrypoint sh sonde-azure-bootstrap:ci -c \
+            'az version >/dev/null && python3 --version >/dev/null && ! command -v swa >/dev/null'
+
+          # Copy SPA content from the bootstrap image and add config.json.
+          SPA_STAGE="$(mktemp -d /tmp/sonde-spa-stage-XXXXXX)"
+          docker run --rm --entrypoint sh \
             sonde-azure-bootstrap:ci \
-            -c "
-              cp /tmp/config.json /opt/sonde/deploy/web-ui/config.json
-              python3 -c \"
-import os, sys, zipfile
-src_dir = '/opt/sonde/deploy/web-ui'
-with zipfile.ZipFile('/dev/stdout', 'w', zipfile.ZIP_DEFLATED) as zf:
-    for root, _dirs, files in os.walk(src_dir):
-        for f in sorted(files):
-            full = os.path.join(root, f)
-            arcname = os.path.relpath(full, src_dir)
-            zf.write(full, arcname)
-\" > /dev/stdout
-            " > "$SPA_ZIP"
+            -c 'tar -cf - -C /opt/sonde/deploy/web-ui .' | tar -xf - -C "$SPA_STAGE"
+          cp /tmp/sonde-spa-config.json "$SPA_STAGE/config.json"
+
+          # Zip the staged SPA content using the host python3.
+          python3 -c "
+          import os, sys, zipfile
+          src, dst = sys.argv[1], sys.argv[2]
+          with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
+              for root, _dirs, files in os.walk(src):
+                  for f in sorted(files):
+                      full = os.path.join(root, f)
+                      zf.write(full, os.path.relpath(full, src))
+          " "$SPA_STAGE" "$SPA_ZIP"
+          rm -rf "$SPA_STAGE"
 
           az storage container create \
             --account-name "$STORAGE_ACCOUNT" \

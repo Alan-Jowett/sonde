@@ -16,7 +16,7 @@ services:
   # ── sonde-gateway ──────────────────────────────────────────────────
   # The gateway manages sensor nodes over ESP-NOW radio via the USB modem.
   gateway:
-    image: ghcr.io/alan-jowett/sonde-gateway:${SONDE_IMAGE_TAG:-latest}
+    image: ghcr.io/alan-jowett/sonde-gateway:${SONDE_IMAGE_TAG:-nightly}
     container_name: sonde-gateway
     user: "0:0"
     command:
@@ -59,7 +59,7 @@ services:
   # deploys Bicep templates, and writes state files consumed by the
   # companion service.
   bootstrap:
-    image: ghcr.io/alan-jowett/sonde-azure-companion:${SONDE_IMAGE_TAG:-latest}
+    image: ghcr.io/alan-jowett/sonde-azure-companion:${SONDE_IMAGE_TAG:-nightly}
     container_name: sonde-bootstrap
     user: "0:0"
     entrypoint: ["sonde-azure-companion"]
@@ -75,7 +75,7 @@ services:
       - "${SONDE_AZURE_PROJECT_NAME:-sonde}"
     environment:
       - SONDE_AZURE_SUBSCRIPTION_ID
-      - SONDE_AZURE_BOOTSTRAP_IMAGE=${SONDE_AZURE_BOOTSTRAP_IMAGE:-ghcr.io/alan-jowett/sonde-azure-bootstrap:${SONDE_IMAGE_TAG:-latest}}
+      - SONDE_AZURE_BOOTSTRAP_IMAGE=${SONDE_AZURE_BOOTSTRAP_IMAGE:-ghcr.io/alan-jowett/sonde-azure-bootstrap:${SONDE_IMAGE_TAG:-nightly}}
     volumes:
       - sonde-runtime:/var/run/sonde:ro
       - sonde-companion-state:/var/lib/sonde-azure-companion
@@ -89,7 +89,7 @@ services:
   # Long-running Azure connector.  Bridges the gateway to Azure Storage
   # Queues for cloud-based program distribution and telemetry.
   companion:
-    image: ghcr.io/alan-jowett/sonde-azure-companion:${SONDE_IMAGE_TAG:-latest}
+    image: ghcr.io/alan-jowett/sonde-azure-companion:${SONDE_IMAGE_TAG:-nightly}
     container_name: sonde-companion
     user: "0:0"
     entrypoint: ["sonde-azure-companion"]

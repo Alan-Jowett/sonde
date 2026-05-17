@@ -242,16 +242,23 @@ On receiving a `MASTER_KEY_INSTALL` (msg_type `0x13`), the gateway:
    - Update record with new ciphertext and new `key_version`.
    - Commit each record individually.
 
-5. **Commit**: Update master key in KeyProvider storage. Remove
+5. **Rewrap private key**: Re-encrypt `escrow_keypair.secret_enc` under the
+   new master key. Set `privkey_rewrapped = TRUE` in the `pending_rotation`
+   record. This is committed as a single update so crash recovery knows
+   whether rewrapping completed.
+
+6. **Commit**: Update master key in KeyProvider storage. Remove
    `pending_rotation` record. Set `escrow_key_version` in `gateway_config`.
    Update escrow state to `ready`.
 
-6. **Emit**: Re-emit ACTUAL_STATE with new escrow blobs for all subjects.
+7. **Emit**: Re-emit ACTUAL_STATE with new escrow blobs for all subjects.
 
-7. **Cleanup**: Zero old master key from memory.
+8. **Cleanup**: Zero old master key from memory.
 
 **Crash recovery (GW-2007):** On startup, if `pending_rotation` exists:
 - Decrypt the pending new master key using the current (old) master key.
+- If `privkey_rewrapped = FALSE`, re-encrypt the recovery private key
+  under the new master key and set `privkey_rewrapped = TRUE`.
 - Resume migration from step 4, processing only records where
   `key_version < new_key_version`.
 - The two-key window ensures both old and new PSKs can be decrypted
@@ -432,6 +439,7 @@ New field in node-scoped ACTUAL_STATE:
 |-------|----------|------|-------------|
 | `encrypted_psk_escrow` | 12 | bstr/null | CBOR-encoded EscrowBlob |
 | `escrow_key_hint` | 13 | uint/null | `key_hint` (u16) from escrow blob metadata, for Azure indexing without inspecting the encrypted blob |
+| `escrow_key_version` | 14 | uint/null | Master key version used to encrypt this escrow blob, for Azure indexing without inspecting the encrypted blob |
 
 New `entity_kind = "phone"` for phone PSK escrow.
 
@@ -443,6 +451,20 @@ New fields in gateway-scoped ACTUAL_STATE `status_details`:
 | `escrow_key_version` | 2 | uint/null | Current key version |
 | `escrow_salt` | 3 | bstr/null | KDF salt (16 bytes) |
 | `escrow_kdf_params` | 4 | map/null | `{1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}` |
+
+**DESIRED_STATE extension (§3.3):**
+
+New fields in gateway-scoped DESIRED_STATE for salt adoption (see §8.3):
+
+| Field | CBOR key (in `desired_state`) | Type | Description |
+|-------|-------------------------------|------|-------------|
+| `escrow_salt` | 1 | bstr/null | KDF salt (16 bytes) from Azure, or null if none stored |
+| `escrow_kdf_params` | 2 | map/null | `{1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}` |
+
+The gateway inspects these fields on each DESIRED_STATE receipt. If the
+gateway has no local salt and the DESIRED_STATE provides one, it adopts
+the values. If both exist and differ, the gateway logs a warning and
+keeps its local salt (local is authoritative).
 
 ### 2.4  Startup sequence extension (gateway-design.md §15)
 
@@ -492,11 +514,10 @@ Key-management messages on the connector are secured as follows:
 | `KEY_ESCROW_PUBKEY` | Informational. Admin verifies via out-of-band fingerprint on modem. |
 
 **Rotation step fix:** Step 5 of §20.7 re-encrypts the recovery private
-key (`escrow_keypair.secret_enc`) under the new master key. The
-`pending_rotation` record tracks whether private-key rewrapping has
-completed (`privkey_rewrapped BOOLEAN DEFAULT FALSE`). On crash recovery,
-if `privkey_rewrapped = FALSE`, the private key is re-encrypted before
-migration resumes.
+key (`escrow_keypair.secret_enc`) under the new master key and sets
+`privkey_rewrapped = TRUE` in the `pending_rotation` record. On crash
+recovery, if `privkey_rewrapped = FALSE`, the private key is re-encrypted
+before PSK migration resumes.
 
 ---
 
@@ -529,8 +550,8 @@ latest escrow blob.
 | Column | Type | Description |
 |--------|------|-------------|
 | `encrypted_psk_escrow` | binary/null | Opaque escrow blob from gateway |
-| `escrow_key_version` | int64/null | Key version of the escrow blob |
-| `key_hint` | int64/null | `key_hint` (u16) from escrow blob metadata, indexed for recovery queries |
+| `escrow_key_version` | int64/null | Key version from ACTUAL_STATE CBOR key 14 |
+| `key_hint` | int64/null | `key_hint` (u16) from ACTUAL_STATE CBOR key 13, indexed for recovery queries |
 
 **`ActualPhoneState` table** (new, append-only with same key structure as
 `ActualNodeState`):
@@ -543,8 +564,8 @@ Each row uses:
 |--------|------|-------------|
 | `phone_id` | string | Original phone identifier |
 | `encrypted_psk_escrow` | binary | Opaque escrow blob |
-| `escrow_key_version` | int64 | Key version |
-| `key_hint` | int64 | `key_hint` (u16) from escrow blob metadata, indexed for recovery queries |
+| `escrow_key_version` | int64 | Key version from ACTUAL_STATE CBOR key 14 |
+| `key_hint` | int64 | `key_hint` (u16) from ACTUAL_STATE CBOR key 13, indexed for recovery queries |
 | `timestamp_ms` | int64 | Last update timestamp |
 
 #### 8.2  Message handling
@@ -557,7 +578,9 @@ Each row uses:
 - For `entity_kind = "node"`: store blob in `ActualNodeState` row.
 - For `entity_kind = "phone"`: store blob in `ActualPhoneState` row.
 - The handler MUST NOT decrypt the blob ciphertext, but MAY read the
-  unencrypted `key_hint` field from the top-level ACTUAL_STATE message
+  unencrypted `key_hint` and `escrow_key_version` fields from the
+  top-level ACTUAL_STATE message (CBOR keys 13 and 14) for indexing
+  purposes.
   (CBOR key 13) for indexing purposes.
 
 **`KEY_ESCROW_REQUEST` (upstream, msg_type `0x11`):**
@@ -579,27 +602,17 @@ On receiving a gateway ACTUAL_STATE with `escrow_salt`:
 - If no `GatewayEscrow` row with RowKey `"salt"` exists, create it.
 - If a row exists, ignore the incoming salt (first-writer-wins).
 - On subsequent gateway-scoped DESIRED_STATE emissions (e.g., after
-  reconnect), include the stored salt so the gateway can adopt it.
+  reconnect), include the stored salt so the gateway can adopt it
+  (see §2.3 DESIRED_STATE extension for CBOR schema).
 
-**Gateway-scoped DESIRED_STATE fields for salt adoption:**
-
-| Field | CBOR key (in `desired_state`) | Type | Description |
-|-------|-------------------------------|------|-------------|
-| `escrow_salt` | 1 | bstr/null | KDF salt (16 bytes) from Azure, or null if none stored |
-| `escrow_kdf_params` | 2 | map/null | `{1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}` |
-
-The gateway inspects these fields on each DESIRED_STATE receipt. If the
-gateway has no local salt and the DESIRED_STATE provides one, it adopts
-the values. If both exist and differ, the gateway logs a warning and
-keeps its local salt (local is authoritative).
-
-#### 8.4  Key hint index
+#### 8.4  Key hint and key version indexing
 
 To efficiently serve `KEY_ESCROW_REQUEST`, the handler stores `key_hint`
-as an indexed column in both `ActualNodeState` and `ActualPhoneState`.
-The column is populated from the `key_hint` field sent as a top-level
-ACTUAL_STATE field (CBOR key 13) alongside `encrypted_psk_escrow`
-(CBOR key 12). The handler never inspects blob ciphertext.
+and `escrow_key_version` as indexed columns in both `ActualNodeState` and
+`ActualPhoneState`. Both columns are populated from top-level ACTUAL_STATE
+fields (CBOR keys 13 and 14 respectively) alongside
+`encrypted_psk_escrow` (CBOR key 12). The handler never inspects blob
+ciphertext.
 
 ---
 
@@ -1035,9 +1048,9 @@ Admin ──► Argon2id(passphrase, salt) ──► master_key
 1. Send ACTUAL_STATE with `encrypted_psk_escrow` for a node.
 2. Verify blob stored in ActualNodeState table.
 3. Send ACTUAL_STATE for a phone — verify stored in ActualPhoneState table.
-4. Send updated blob (new key_version) — verify previous blob overwritten.
+4. Send updated blob (new key_version) — verify new row appended and `Top(1)` returns the latest blob.
 
-**Pass criteria:** Blobs stored and updated correctly.
+**Pass criteria:** Blobs stored as append-only rows; `Top(1)` returns latest escrow data.
 
 ---
 

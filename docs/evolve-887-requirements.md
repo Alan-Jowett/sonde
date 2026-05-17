@@ -541,8 +541,8 @@ in ACTUAL_STATE for indexing purposes (see AZH-0601).
 1. Escrow blobs from `ACTUAL_STATE` are persisted in Azure Table Storage.
 2. Blobs are stored verbatim (no transformation or decryption).
 3. Node and phone escrow blobs are stored in separate logical rows.
-4. Blob updates (re-encryption after key rotation) overwrite the previous
-   blob for the same subject.
+4. Blob updates (re-encryption after key rotation) are appended as new
+   rows; `Top(1)` per partition returns the latest blob for a subject.
 
 ---
 

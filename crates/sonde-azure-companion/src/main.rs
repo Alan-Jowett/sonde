@@ -3984,12 +3984,9 @@ mod tests {
                 "DELETE /containers/test-container".to_string(),
             ]
         );
-        assert!(requests[0]
-            .url
-            .query()
-            .is_some_and(|query| query
-                .contains("fromImage=sonde-azure-bootstrap%3Atest-override")
-                && !query.contains("platform=")));
+        assert!(requests[0].url.query().is_some_and(|query| query
+            .contains("fromImage=sonde-azure-bootstrap%3Atest-override")
+            && !query.contains("platform=")));
         assert!(
             !requests[1]
                 .url

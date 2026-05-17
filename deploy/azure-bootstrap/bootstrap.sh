@@ -380,19 +380,20 @@ az rest --method POST \
     --output none 1>&2
 echo "ARM zipdeploy request submitted" >&2
 
-# 5. Wait for async deployment to complete before cleaning up the blob.
-#    The zipdeploy API may return 202 Accepted with an async operation URL.
-#    Poll the SWA to verify content is served (simpler and more reliable than
-#    parsing the azure-asyncoperation header from az rest).
+# 5. Wait for deployment to complete by polling for our generated config.json.
+#    Polling for HTTP 200 alone is insufficient — a freshly-provisioned SWA
+#    serves a default placeholder page that returns 200 before zipdeploy content
+#    is published. Instead, fetch /config.json and verify it contains the
+#    expected msalClientId value from this deployment.
 spa_verify_deadline="$(( $(date +%s) + 120 ))"
 while :; do
-    spa_http_code="$(curl -s -o /dev/null -w '%{http_code}' "https://$static_web_app_hostname" 2>/dev/null || echo 0)"
-    if [ "$spa_http_code" = "200" ]; then
+    fetched_config="$(curl -sf "https://$static_web_app_hostname/config.json" 2>/dev/null || true)"
+    if echo "$fetched_config" | grep -q "$companion_client_id" 2>/dev/null; then
         echo "SPA content verified at https://$static_web_app_hostname" >&2
         break
     fi
     if [ "$(date +%s)" -ge "$spa_verify_deadline" ]; then
-        echo "WARNING: timed out verifying SPA deployment (HTTP $spa_http_code); continuing" >&2
+        echo "WARNING: timed out verifying SPA deployment; continuing" >&2
         break
     fi
     sleep 5

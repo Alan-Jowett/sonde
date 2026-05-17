@@ -500,8 +500,12 @@ exit 64
         "#!/bin/sh\nexec /usr/bin/python3 \"$@\"\n",
     );
     write_executable(&bin_dir.join("awk"), "#!/bin/sh\nexit 92\n");
-    // curl stub: return HTTP 200 for SPA verification polling.
-    write_executable(&bin_dir.join("curl"), "#!/bin/sh\nprintf '200'\nexit 0\n");
+    // curl stub: return config.json content containing the expected client ID
+    // for SPA deployment verification polling.
+    write_executable(
+        &bin_dir.join("curl"),
+        "#!/bin/sh\nprintf '{\"msalClientId\":\"client-456\"}'\nexit 0\n",
+    );
     // Hermetic jq stub that handles the invocations used by bootstrap.sh:
     // 1. jq -e --arg uri <URI> 'index($uri) != null'  → membership test (exit 1 = not found)
     // 2. jq -c --arg uri <URI> '(. // []) + [$uri]'   → merge URIs (output JSON array)

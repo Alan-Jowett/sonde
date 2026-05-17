@@ -366,16 +366,16 @@ az rest --method POST \
     --body "{\"properties\":{\"appZipUrl\":\"${BLOB_URL}\",\"provider\":\"sonde-deploy\"}}" \
     --output none
 
-# Wait for deployment to complete.
+# Wait for deployment to complete by polling for config.json content.
 echo "  Waiting for deployment..."
 SPA_DEADLINE="$(( $(date +%s) + 120 ))"
 while :; do
-    SPA_HTTP="$(curl -s -o /dev/null -w '%{http_code}' "https://$SWA_HOSTNAME" 2>/dev/null || echo 0)"
-    if [ "$SPA_HTTP" = "200" ]; then
+    FETCHED_CONFIG="$(curl -sf "https://$SWA_HOSTNAME/config.json" 2>/dev/null || true)"
+    if echo "$FETCHED_CONFIG" | grep -q "$CLIENT_ID" 2>/dev/null; then
         break
     fi
     if [ "$(date +%s)" -ge "$SPA_DEADLINE" ]; then
-        echo "  WARNING: timed out verifying SPA deployment (HTTP $SPA_HTTP); continuing"
+        echo "  WARNING: timed out verifying SPA deployment; continuing"
         break
     fi
     sleep 5

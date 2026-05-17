@@ -391,11 +391,13 @@ jobs:
           _SPA_BLOB_NAME="spa-deploy-ci-$(date +%s)-$$.zip"
           cleanup_spa_blob() {
               rm -f "$SPA_ZIP"
-              az storage blob delete \
-                  --account-name "$STORAGE_ACCOUNT" \
-                  --container-name "spa-deploy" \
-                  --name "$_SPA_BLOB_NAME" \
-                  --output none 2>/dev/null || true
+              if [ -n "${_SPA_BLOB_UPLOADED:-}" ]; then
+                  az storage blob delete \
+                      --account-name "$STORAGE_ACCOUNT" \
+                      --container-name "spa-deploy" \
+                      --name "$_SPA_BLOB_NAME" \
+                      --output none 2>/dev/null || true
+              fi
           }
           trap cleanup_spa_blob EXIT
 
@@ -444,6 +446,7 @@ jobs:
             --file "$SPA_ZIP" \
             --overwrite \
             --output none
+          _SPA_BLOB_UPLOADED=1
           SAS_EXPIRY="$(python3 -c "from datetime import datetime,timedelta,timezone;print((datetime.now(timezone.utc)+timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
           BLOB_ENDPOINT="$(az storage account show \
             --name "$STORAGE_ACCOUNT" \

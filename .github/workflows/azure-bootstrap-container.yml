@@ -262,7 +262,7 @@ jobs:
 
             cat > /tmp/fakebin/curl <<'"'"'SH'"'"'
             #!/bin/sh
-            printf "200"
+            printf '{"msalClientId":"22222222-2222-2222-2222-222222222222"}'
             exit 0
             SH
             chmod +x /tmp/fakebin/curl

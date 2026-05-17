@@ -232,8 +232,8 @@ fi
 
 # If the SWA has a custom domain, also register it as a CORS origin and
 # add its redirect URI to the Entra app registration.
-# The custom domain binding itself is done via `az staticwebapp hostname set`
-# which handles domain ownership validation automatically.
+# The custom domain binding itself is done in bootstrap.sh via
+# `az staticwebapp hostname set` after Bicep provisions the DNS record.
 CUSTOM_DOMAINS="$(az staticwebapp hostname list --name "$SWA_NAME" \
   --resource-group "$RESOURCE_GROUP" --query '[].domainName' -o json 2>/dev/null || echo '[]')"
 for DOMAIN in $(echo "$CUSTOM_DOMAINS" | jq -r '.[]? // empty'); do

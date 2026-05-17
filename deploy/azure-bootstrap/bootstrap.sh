@@ -196,21 +196,26 @@ fi
 
 echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2
 deployment_name="sonde-bootstrap-$(date +%Y%m%d%H%M%S)-$$"
-bicep_params="companionCertificateBase64=$COMPANION_CERT_BASE64 location=$SONDE_AZURE_LOCATION project_name=$SONDE_AZURE_PROJECT_NAME"
+custom_domain_params=""
 if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
-    bicep_params="$bicep_params customDomainName=$SONDE_AZURE_CUSTOM_DOMAIN_NAME"
+    custom_domain_params="customDomainName=$SONDE_AZURE_CUSTOM_DOMAIN_NAME"
 fi
 if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP:-}" ]; then
-    bicep_params="$bicep_params customDomainDnsResourceGroup=$SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP"
+    custom_domain_params="$custom_domain_params customDomainDnsResourceGroup=$SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP"
 fi
 if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME:-}" ]; then
-    bicep_params="$bicep_params customDomainDnsZoneName=$SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME"
+    custom_domain_params="$custom_domain_params customDomainDnsZoneName=$SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME"
 fi
+# shellcheck disable=SC2086 — intentional word-splitting on custom_domain_params;
+# all values are Azure resource identifiers which cannot contain whitespace.
 deployment_outputs="$(az deployment sub create \
     --name "$deployment_name" \
     --location "$SONDE_AZURE_LOCATION" \
     --template-file /opt/sonde/deploy/bicep/main.bicep \
-    --parameters $bicep_params \
+    --parameters "companionCertificateBase64=$COMPANION_CERT_BASE64" \
+                 "location=$SONDE_AZURE_LOCATION" \
+                 "project_name=$SONDE_AZURE_PROJECT_NAME" \
+                 $custom_domain_params \
     --query 'properties.outputs' \
     --output json)"
 
@@ -284,6 +289,20 @@ swa deploy "$web_ui_dir" \
     --deployment-token "$swa_deployment_token" \
     --env production 1>&2
 echo "SPA content deployed to https://$static_web_app_hostname" >&2
+
+# ── Custom domain binding ───────────────────────────────────────────────────
+# Bicep creates the DNS ALIAS record, but the SWA custom domain binding
+# (ownership validation + managed SSL certificate) must be done via the CLI.
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
+    echo "Binding custom domain $SONDE_AZURE_CUSTOM_DOMAIN_NAME to Static Web App $static_web_app_name" >&2
+    # `hostname set` is idempotent — safe to re-run on subsequent deployments.
+    az staticwebapp hostname set \
+        --name "$static_web_app_name" \
+        --resource-group "$resource_group_name" \
+        --hostname "$SONDE_AZURE_CUSTOM_DOMAIN_NAME" \
+        --output none 1>&2
+    echo "Custom domain bound; managed SSL certificate provisioning initiated" >&2
+fi
 
 # ── Entra app configuration ─────────────────────────────────────────────────
 echo "Configuring Entra app registration for Web UI" >&2

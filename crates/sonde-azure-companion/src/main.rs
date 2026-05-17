@@ -3984,15 +3984,18 @@ mod tests {
                 "DELETE /containers/test-container".to_string(),
             ]
         );
-        assert!(requests[0].url.query().is_some_and(|query| query
-            .contains("fromImage=sonde-azure-bootstrap%3Atest-override")
-            && query.contains("platform=linux%2Famd64")));
+        assert!(requests[0]
+            .url
+            .query()
+            .is_some_and(|query| query
+                .contains("fromImage=sonde-azure-bootstrap%3Atest-override")
+                && !query.contains("platform=")));
         assert!(
-            requests[1]
+            !requests[1]
                 .url
                 .query()
-                .is_some_and(|query| query.contains("platform=linux%2Famd64")),
-            "container create must specify platform=linux/amd64"
+                .is_some_and(|query| query.contains("platform=")),
+            "container create must not force a platform — native arch is used"
         );
         let create_body = String::from_utf8(requests[1].body.clone()).unwrap();
         assert!(create_body.contains("COMPANION_CERT_BASE64=dummy-cert-base64"));

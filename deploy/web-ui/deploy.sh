@@ -113,7 +113,8 @@ else
   az rest --method PATCH \
     --url "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
     --headers "Content-Type=application/json" \
-    --body "$PATCH_BODY"
+    --body "$PATCH_BODY" \
+    --output none
   echo "  Added redirect URI: $REDIRECT_URI"
 fi
 
@@ -173,7 +174,8 @@ else
   az rest --method PATCH \
     --url "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
     --headers "Content-Type=application/json" \
-    --body "$PATCH_BODY"
+    --body "$PATCH_BODY" \
+    --output none
   echo "  Exposed api://$CLIENT_ID/user_impersonation scope"
 fi
 
@@ -272,7 +274,8 @@ for DOMAIN in $(echo "$CUSTOM_DOMAINS" | jq -r '.[]? // empty'); do
     az rest --method PATCH \
       --url "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
       --headers "Content-Type=application/json" \
-      --body "$PATCH_BODY"
+      --body "$PATCH_BODY" \
+      --output none
     echo "  Added redirect URI: $CUSTOM_ORIGIN"
   fi
 done

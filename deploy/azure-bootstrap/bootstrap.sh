@@ -196,6 +196,16 @@ fi
 
 echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2
 deployment_name="sonde-bootstrap-$(date +%Y%m%d%H%M%S)-$$"
+# Validate custom domain parameter consistency — supplying one without the
+# other silently disables the custom domain feature, which is hard to diagnose.
+if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ] && [ -z "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP:-}" ]; then
+    echo "SONDE_AZURE_CUSTOM_DOMAIN_NAME is set but SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP is empty; both are required for custom domain support" >&2
+    exit 1
+fi
+if [ -z "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ] && [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP:-}" ]; then
+    echo "SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP is set but SONDE_AZURE_CUSTOM_DOMAIN_NAME is empty; both are required for custom domain support" >&2
+    exit 1
+fi
 custom_domain_params=""
 if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
     custom_domain_params="customDomainName=$SONDE_AZURE_CUSTOM_DOMAIN_NAME"
@@ -339,7 +349,8 @@ else
     az rest --method PATCH \
         --url "https://graph.microsoft.com/v1.0/applications/$app_object_id" \
         --headers "Content-Type=application/json" \
-        --body "$patch_body"
+        --body "$patch_body" \
+        --output none
     echo "Added SPA redirect URI: $redirect_uri" >&2
 fi
 
@@ -364,7 +375,8 @@ if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_NAME:-}" ]; then
         az rest --method PATCH \
             --url "https://graph.microsoft.com/v1.0/applications/$app_object_id" \
             --headers "Content-Type=application/json" \
-            --body "$custom_patch"
+            --body "$custom_patch" \
+            --output none
         echo "Added custom domain redirect URI: $custom_redirect_uri" >&2
     fi
 fi
@@ -429,7 +441,8 @@ else
     az rest --method PATCH \
         --url "https://graph.microsoft.com/v1.0/applications/$app_object_id" \
         --headers "Content-Type=application/json" \
-        --body "$patch_body"
+        --body "$patch_body" \
+        --output none
     echo "Exposed api://$companion_client_id/user_impersonation scope" >&2
 fi
 

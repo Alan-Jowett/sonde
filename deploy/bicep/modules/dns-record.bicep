@@ -9,7 +9,7 @@ param dnsZoneName string
 @description('Resource ID of the Static Web App to alias.')
 param staticWebAppResourceId string
 
-resource dnsZone 'Microsoft.Network/dnsZones@2023-07-01-preview' existing = {
+resource dnsZone 'Microsoft.Network/dnsZones@2018-05-01' existing = {
   name: dnsZoneName
 }
 
@@ -17,7 +17,7 @@ resource dnsZone 'Microsoft.Network/dnsZones@2023-07-01-preview' existing = {
 // dynamic IP addresses.  Azure DNS ALIAS records use targetResource
 // instead of a static IP address.  Domain ownership validation is
 // handled by the deploy script via `az staticwebapp hostname set`.
-resource aliasRecord 'Microsoft.Network/dnsZones/A@2023-07-01-preview' = {
+resource aliasRecord 'Microsoft.Network/dnsZones/A@2018-05-01' = {
   parent: dnsZone
   name: '@'
   properties: {

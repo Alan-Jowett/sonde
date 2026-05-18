@@ -21,6 +21,9 @@ param programsTableName string
 @description('Sensor data table name.')
 param sensorDataTableName string
 
+@description('Gateway escrow metadata table name.')
+param escrowTableName string
+
 var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
 
@@ -51,6 +54,11 @@ resource existingProgramsTable 'Microsoft.Storage/storageAccounts/tableServices/
 resource existingSensorDataTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
   parent: existingTableService
   name: sensorDataTableName
+}
+
+resource existingEscrowTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
+  parent: existingTableService
+  name: escrowTableName
 }
 
 resource functionQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -96,6 +104,16 @@ resource functionProgramsTableContributor 'Microsoft.Authorization/roleAssignmen
 resource functionSensorDataTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid('function-sensor-data-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingSensorDataTable.id)
   scope: existingSensorDataTable
+  properties: {
+    principalId: functionPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageTableDataContributorRoleId
+  }
+}
+
+resource functionEscrowTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid('function-escrow-table-contributor', functionPrincipalId, storageTableDataContributorRoleId, existingEscrowTable.id)
+  scope: existingEscrowTable
   properties: {
     principalId: functionPrincipalId
     principalType: 'ServicePrincipal'

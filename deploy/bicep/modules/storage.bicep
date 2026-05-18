@@ -21,6 +21,9 @@ param programsTableName string
 @description('Table name for sensor data rows.')
 param sensorDataTableName string
 
+@description('Table name for gateway escrow metadata (pubkey, salt, state).')
+param escrowTableName string
+
 @description('Blob container name used by the Azure handler Function App deployment slot.')
 param deploymentContainerName string
 
@@ -127,6 +130,14 @@ resource sensorDataTable 'Microsoft.Storage/storageAccounts/tableServices/tables
   }
 }
 
+resource escrowTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+  parent: tableService
+  name: escrowTableName
+  properties: {
+    signedIdentifiers: []
+  }
+}
+
 output storageAccountName string = storageAccount.name
 output storageAccountResourceId string = storageAccount.id
 output blobEndpoint string = storageAccount.properties.primaryEndpoints.blob
@@ -140,6 +151,8 @@ output programsTableName string = programsTable.name
 output programsTableResourceId string = programsTable.id
 output sensorDataTableName string = sensorDataTable.name
 output sensorDataTableResourceId string = sensorDataTable.id
+output escrowTableName string = escrowTable.name
+output escrowTableResourceId string = escrowTable.id
 output queueServiceUri string = storageAccount.properties.primaryEndpoints.queue
 output tableServiceUri string = storageAccount.properties.primaryEndpoints.table
 output upstreamQueueName string = upstreamQueue.name

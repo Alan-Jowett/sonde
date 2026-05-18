@@ -988,9 +988,9 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
             }
         },
         Commands::Key { .. } => {
-                // Handled by run_without_gateway(); this branch is unreachable.
-                unreachable!("Key commands are dispatched before gateway connection");
-            }
+            // Handled by run_without_gateway(); this branch is unreachable.
+            unreachable!("Key commands are dispatched before gateway connection");
+        }
     }
 
     Ok(())

@@ -3269,7 +3269,10 @@ mod tests {
         let store = SqliteStorage::open(&path, master_key).unwrap();
         let node = store.get_node("node-1").await.unwrap().unwrap();
         assert_eq!(node.key_hint, 0x1234);
-        assert_eq!(node.key_version, 0, "migrated node should default to key_version 0");
+        assert_eq!(
+            node.key_version, 0,
+            "migrated node should default to key_version 0"
+        );
         assert_eq!(node.psk, [0xABu8; 32]);
     }
 
@@ -3287,7 +3290,13 @@ mod tests {
             conn.execute(
                 "INSERT INTO phone_psks (phone_key_hint, psk, label, issued_at_epoch_s, status) \
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![0x5678u32, encrypted_psk, "Test Phone", 1_700_000_000i64, "active"],
+                params![
+                    0x5678u32,
+                    encrypted_psk,
+                    "Test Phone",
+                    1_700_000_000i64,
+                    "active"
+                ],
             )
             .unwrap();
             // Update the psk with the correct phone_id-encrypted value.

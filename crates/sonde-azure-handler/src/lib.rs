@@ -1666,7 +1666,10 @@ fn optional_text_array_field(
             Ok(result)
         }
         Some(Value::Null) | None => Ok(Vec::new()),
-        _ => Ok(Vec::new()),
+        Some(other) => Err(HandlerError::Decode(format!(
+            "fingerprint_words must be an array, got {:?}",
+            other
+        ))),
     }
 }
 

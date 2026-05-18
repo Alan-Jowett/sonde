@@ -2073,10 +2073,23 @@ impl Storage for SqliteStorage {
                                 .into(),
                         )
                     })?;
+                    let operation_id_blob: Vec<u8> = row.get(2)?;
+                    let operation_id: [u8; 16] =
+                        operation_id_blob.as_slice().try_into().map_err(|_| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                2,
+                                rusqlite::types::Type::Blob,
+                                format!(
+                                    "operation_id has wrong length: expected 16, got {}",
+                                    operation_id_blob.len()
+                                )
+                                .into(),
+                            )
+                        })?;
                     Ok(crate::storage::PendingRotationRecord {
                         new_master_key_enc: row.get(0)?,
                         new_key_version,
-                        operation_id: row.get(2)?,
+                        operation_id,
                         privkey_rewrapped: row.get(3)?,
                         started_at,
                     })
@@ -2099,7 +2112,7 @@ impl Storage for SqliteStorage {
                 record.new_key_version
             ))
         })?;
-        let operation_id = record.operation_id.clone();
+        let operation_id = record.operation_id.to_vec();
         let privkey_rewrapped = record.privkey_rewrapped;
         let started_at = i64::try_from(record.started_at).map_err(|_| {
             StorageError::Internal(format!(
@@ -2343,7 +2356,7 @@ mod tests {
             .store_pending_rotation(&crate::storage::PendingRotationRecord {
                 new_master_key_enc: vec![0xAAu8; 48],
                 new_key_version: i64::MAX as u64 + 1,
-                operation_id: vec![0x55u8; 16],
+                operation_id: [0x55u8; 16],
                 privkey_rewrapped: false,
                 started_at: 1,
             })

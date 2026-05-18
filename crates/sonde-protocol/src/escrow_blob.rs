@@ -158,7 +158,7 @@ pub fn seal_escrow_blob(
     let mut tag = [0u8; 16];
     tag.copy_from_slice(&ciphertext_and_tag[32..]);
 
-    Ok(EscrowBlob {
+    let blob = EscrowBlob {
         escrow_version,
         key_version,
         subject_kind: subject_kind.clone(),
@@ -167,7 +167,12 @@ pub fn seal_escrow_blob(
         nonce: *nonce,
         ciphertext,
         tag,
-    })
+    };
+
+    // Verify the sealed blob is encodable within the 150-byte wire limit.
+    encode_escrow_blob(&blob)?;
+
+    Ok(blob)
 }
 
 /// Decrypt an escrow blob to recover the raw PSK.
@@ -214,6 +219,12 @@ pub fn open_escrow_blob(
 ///
 /// Uses integer keys 1–8 as defined in GW-2002.
 pub fn encode_escrow_blob(blob: &EscrowBlob) -> Result<Vec<u8>, EncodeError> {
+    if blob.subject_id.len() > 64 {
+        return Err(EncodeError::InvalidParameter(alloc::format!(
+            "subject_id exceeds 64 bytes: {}",
+            blob.subject_id.len()
+        )));
+    }
     let pairs: Vec<(Value, Value)> = alloc::vec![
         (
             Value::Integer(ESCROW_BLOB_KEY_VERSION_FIELD.into()),
@@ -323,9 +334,13 @@ pub fn decode_escrow_blob(cbor: &[u8]) -> Result<EscrowBlob, DecodeError> {
             }
             ESCROW_BLOB_KEY_SUBJECT_ID => {
                 if let Value::Text(s) = v {
-                    if s.len() <= 64 {
-                        subject_id = Some(s);
+                    if s.len() > 64 {
+                        return Err(DecodeError::CborError(alloc::format!(
+                            "subject_id exceeds 64 bytes: {}",
+                            s.len()
+                        )));
                     }
+                    subject_id = Some(s);
                 }
             }
             ESCROW_BLOB_KEY_KEY_HINT => {
@@ -818,7 +833,7 @@ mod tests {
 
         let err = decode_escrow_blob(&buf).unwrap_err();
         assert!(
-            matches!(err, DecodeError::CborError(message) if message.contains("missing subject_id"))
+            matches!(err, DecodeError::CborError(message) if message.contains("subject_id exceeds 64 bytes"))
         );
     }
 

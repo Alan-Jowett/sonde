@@ -85,7 +85,7 @@ pub struct PendingRotationRecord {
     /// Target key version for this rotation.
     pub new_key_version: u64,
     /// Unique operation ID for idempotency.
-    pub operation_id: Vec<u8>,
+    pub operation_id: [u8; 16],
     /// Whether the recovery private key has been rewrapped under the new key.
     pub privkey_rewrapped: bool,
     /// Rotation start timestamp (Unix milliseconds).

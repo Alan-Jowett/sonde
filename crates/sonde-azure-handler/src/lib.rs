@@ -60,6 +60,9 @@ pub struct RuntimeConfig {
     pub desired_state_table: String,
     pub programs_table: String,
     pub sensor_data_table: String,
+    /// Azure Table for gateway escrow metadata (pubkey, salt, state).
+    /// Defaults to `"gatewayescrow"` if not set.
+    pub escrow_table: String,
 }
 
 impl RuntimeConfig {
@@ -75,6 +78,8 @@ impl RuntimeConfig {
             desired_state_table: required_env("SONDE_AZURE_HANDLER_DESIRED_STATE_TABLE")?,
             programs_table: required_env("SONDE_AZURE_HANDLER_PROGRAMS_TABLE")?,
             sensor_data_table: required_env("SONDE_AZURE_HANDLER_SENSOR_DATA_TABLE")?,
+            escrow_table: std::env::var("SONDE_AZURE_HANDLER_ESCROW_TABLE")
+                .unwrap_or_else(|_| "gatewayescrow".to_string()),
         })
     }
 }
@@ -89,6 +94,8 @@ fn required_env(name: &str) -> Result<String, HandlerError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActualStateRow {
     pub row_key: String,
+    /// Entity kind: `"node"` or `"phone"`.
+    pub entity_kind: String,
     pub node_id: String,
     pub observed_current_program_hash: Option<Vec<u8>>,
     pub observed_assigned_program_hash: Option<Vec<u8>>,
@@ -117,6 +124,7 @@ impl ActualStateRow {
         }
         Ok(Self {
             row_key: next_history_row_key(message.timestamp_ms)?,
+            entity_kind: message.entity_kind.clone(),
             node_id: message.entity_id.clone(),
             observed_current_program_hash: message.current_program_hash.clone(),
             observed_assigned_program_hash: message.assigned_program_hash.clone(),
@@ -183,6 +191,30 @@ pub struct ActualStateMessage {
     pub escrow_key_hint: Option<u16>,
     /// Master key version from escrow blob metadata (CBOR key 14, GW-2003).
     pub escrow_key_version: Option<u64>,
+    /// Gateway-scoped status_details (CBOR key 10, AZH-0605).
+    pub status_details: Option<GatewayStatusDetails>,
+}
+
+/// Parsed gateway-scoped status_details from ACTUAL_STATE (CBOR key 10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayStatusDetails {
+    /// Escrow lifecycle state (disabled, bootstrapping, ready, etc.).
+    pub escrow_state: Option<String>,
+    /// Current master key version.
+    pub escrow_key_version: Option<u64>,
+    /// KDF salt bytes.
+    pub escrow_salt: Option<Vec<u8>>,
+    /// KDF parameters (Argon2id).
+    pub escrow_kdf_params: Option<KdfParams>,
+}
+
+/// KDF parameters for Argon2id (mirroring the gateway-side definition).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KdfParams {
+    pub m_cost: u32,
+    pub t_cost: u32,
+    pub p_cost: u32,
+    pub kdf_version: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,6 +304,17 @@ pub trait HandlerStore: Send + Sync {
             "load_escrow_blobs_by_key_hint not implemented for this store backend".into(),
         ))
     }
+
+    /// Store the gateway's escrow lifecycle state (AZH-0605).
+    async fn store_gateway_escrow_state(
+        &self,
+        details: &GatewayStatusDetails,
+    ) -> Result<(), HandlerError> {
+        let _ = details;
+        Err(HandlerError::Store(
+            "store_gateway_escrow_state not implemented for this store backend".into(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -304,20 +347,18 @@ where
                 match actual_state.entity_kind.as_str() {
                     "node" => self.handle_actual_state(actual_state).await?,
                     "phone" => {
-                        // Phone escrow ACTUAL_STATE (AZH-0600): store escrow blob only.
-                        // TODO(AZH-0600): move phone escrow rows into a dedicated table or
-                        // partition instead of sharing the generic ACTUAL_STATE storage.
+                        // Phone escrow ACTUAL_STATE (AZH-0600): store escrow blob
+                        // with phone-scoped partition key ("p:" prefix).
                         if actual_state.encrypted_psk_escrow.is_some() {
                             let row = ActualStateRow::from_message(&actual_state)?;
                             self.store.append_actual_state(&row).await?;
                         }
                     }
                     "gateway" => {
-                        // TODO(#887): persist gateway-scoped escrow state, salt, and KDF
-                        // parameters for admin observability (AZH-0605).
-                        warn!(
-                            "gateway-scoped ACTUAL_STATE received but escrow state persistence not yet implemented"
-                        );
+                        // Gateway-scoped ACTUAL_STATE (AZH-0605): persist escrow state.
+                        if let Some(ref details) = actual_state.status_details {
+                            self.store.store_gateway_escrow_state(details).await?;
+                        }
                     }
                     other => {
                         warn!(
@@ -764,6 +805,7 @@ pub struct AzureTablesStore {
     desired_state_table: azure_data_tables::clients::TableClient,
     programs_table: azure_data_tables::clients::TableClient,
     sensor_data_table: azure_data_tables::clients::TableClient,
+    escrow_table: azure_data_tables::clients::TableClient,
 }
 
 impl AzureTablesStore {
@@ -780,6 +822,7 @@ impl AzureTablesStore {
             desired_state_table: service.table_client(config.desired_state_table.clone()),
             programs_table: service.table_client(config.programs_table.clone()),
             sensor_data_table: service.table_client(config.sensor_data_table.clone()),
+            escrow_table: service.table_client(config.escrow_table.clone()),
         })
     }
 }
@@ -926,6 +969,158 @@ impl HandlerStore for AzureTablesStore {
             .map_err(|e| HandlerError::Store(format!("prepare sensor-data insert failed: {e}")))?
             .await
             .map_err(|e| HandlerError::Store(format!("append sensor-data row failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn store_gateway_escrow_pubkey(
+        &self,
+        public_key: &[u8],
+        key_epoch: u64,
+        created_at: u64,
+    ) -> Result<(), HandlerError> {
+        let key_epoch_i64 = i64::try_from(key_epoch)
+            .map_err(|_| HandlerError::Store(format!("key_epoch {key_epoch} exceeds i64::MAX")))?;
+        let created_at_i64 = i64::try_from(created_at).map_err(|_| {
+            HandlerError::Store(format!("created_at {created_at} exceeds i64::MAX"))
+        })?;
+
+        // Monotonic guard: only update if incoming epoch >= stored.
+        let existing = self
+            .escrow_table
+            .partition_key_client(ESCROW_PARTITION_KEY)
+            .entity_client("pubkey")
+            .get::<GatewayEscrowPubkeyEntity>()
+            .await;
+
+        match existing {
+            Ok(response) => {
+                if response.entity.key_epoch > key_epoch_i64 {
+                    // Stale message — stored epoch is higher, ignore.
+                    return Ok(());
+                }
+            }
+            Err(e) if is_legacy_not_found(&e) => {
+                // No existing pubkey — proceed with upsert.
+            }
+            Err(e) => {
+                return Err(HandlerError::Store(format!(
+                    "query existing escrow pubkey failed: {e}"
+                )));
+            }
+        }
+
+        let entity = GatewayEscrowPubkeyEntity {
+            partition_key: ESCROW_PARTITION_KEY.to_string(),
+            row_key: "pubkey".to_string(),
+            public_key: base64::prelude::BASE64_STANDARD.encode(public_key),
+            key_epoch: key_epoch_i64,
+            created_at: created_at_i64,
+        };
+        self.escrow_table
+            .partition_key_client(ESCROW_PARTITION_KEY)
+            .entity_client("pubkey")
+            .insert_or_replace(entity)
+            .map_err(|e| HandlerError::Store(format!("prepare escrow pubkey upsert failed: {e}")))?
+            .await
+            .map_err(|e| HandlerError::Store(format!("upsert escrow pubkey failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn load_escrow_blobs_by_key_hint(
+        &self,
+        key_hint: u16,
+        max_candidates: usize,
+    ) -> Result<Vec<Vec<u8>>, HandlerError> {
+        // Query actual_state table for rows with matching escrow_key_hint.
+        // Azure Tables stores key_hint as u32, so filter on that.
+        let filter = format!("escrow_key_hint eq {}", key_hint as u32);
+        // Fetch more than needed to deduplicate by partition (latest per subject).
+        let fetch_limit = (max_candidates + 1) * 3;
+        let mut stream = self
+            .actual_state_table
+            .query()
+            .filter(filter)
+            .top(fetch_limit as u32)
+            .into_stream::<ActualStateEntity>();
+
+        // Collect results, dedup by partition_key (keep first = latest per reverse-tick row_key).
+        let mut seen_partitions = std::collections::HashSet::new();
+        let mut blobs = Vec::new();
+        while let Some(result) = stream.next().await {
+            let response = result.map_err(|e| {
+                HandlerError::Store(format!("query escrow blobs by key_hint failed: {e}"))
+            })?;
+            for entity in response.entities {
+                if seen_partitions.contains(&entity.partition_key) {
+                    continue;
+                }
+                if let Some(b64_blob) = &entity.encrypted_psk_escrow {
+                    let blob = base64::prelude::BASE64_STANDARD
+                        .decode(b64_blob)
+                        .map_err(|e| {
+                            HandlerError::Store(format!(
+                                "invalid base64 in encrypted_psk_escrow: {e}"
+                            ))
+                        })?;
+                    seen_partitions.insert(entity.partition_key.clone());
+                    blobs.push(blob);
+                }
+            }
+        }
+
+        if blobs.len() > max_candidates {
+            warn!(
+                key_hint,
+                total = blobs.len(),
+                max_candidates,
+                "escrow recovery candidates exceed max, truncating"
+            );
+            blobs.truncate(max_candidates);
+        }
+        Ok(blobs)
+    }
+
+    async fn store_gateway_escrow_state(
+        &self,
+        details: &GatewayStatusDetails,
+    ) -> Result<(), HandlerError> {
+        let escrow_key_version = details
+            .escrow_key_version
+            .map(|v| {
+                i64::try_from(v).map_err(|_| {
+                    HandlerError::Store(format!("escrow_key_version {v} exceeds i64::MAX"))
+                })
+            })
+            .transpose()?;
+
+        let kdf_params_json = details.escrow_kdf_params.as_ref().map(|kdf| {
+            serde_json::json!({
+                "m_cost": kdf.m_cost,
+                "t_cost": kdf.t_cost,
+                "p_cost": kdf.p_cost,
+                "version": kdf.kdf_version,
+            })
+            .to_string()
+        });
+
+        let entity = GatewayEscrowStateEntity {
+            partition_key: ESCROW_PARTITION_KEY.to_string(),
+            row_key: "state".to_string(),
+            escrow_state: details.escrow_state.clone(),
+            escrow_key_version,
+            escrow_salt: details
+                .escrow_salt
+                .as_ref()
+                .map(|s| base64::prelude::BASE64_STANDARD.encode(s)),
+            kdf_params_json,
+        };
+        self.escrow_table
+            .partition_key_client(ESCROW_PARTITION_KEY)
+            .entity_client("state")
+            .insert_or_replace(entity)
+            .map_err(|e| HandlerError::Store(format!("prepare escrow state upsert failed: {e}")))?
+            .await
+            .map_err(|e| HandlerError::Store(format!("upsert escrow state failed: {e}")))?;
         Ok(())
     }
 }
@@ -1099,8 +1294,14 @@ impl TryFrom<ActualStateEntity> for ActualStateRow {
     type Error = HandlerError;
 
     fn try_from(value: ActualStateEntity) -> Result<Self, Self::Error> {
+        let entity_kind = if value.partition_key.starts_with("p:") {
+            "phone".to_string()
+        } else {
+            "node".to_string()
+        };
         Ok(Self {
             row_key: value.row_key,
+            entity_kind,
             node_id: value.node_id,
             observed_current_program_hash: decode_optional_program_hash(
                 value.observed_current_program_hash,
@@ -1138,8 +1339,12 @@ impl TryFrom<ActualStateRow> for ActualStateEntity {
     type Error = HandlerError;
 
     fn try_from(value: ActualStateRow) -> Result<Self, Self::Error> {
+        let partition_key = match value.entity_kind.as_str() {
+            "phone" => encode_phone_partition_key(&value.node_id),
+            _ => encode_node_partition_key(&value.node_id),
+        };
         Ok(Self {
-            partition_key: encode_node_partition_key(&value.node_id),
+            partition_key,
             row_key: value.row_key,
             node_id: value.node_id,
             observed_current_program_hash: encode_optional_hex(value.observed_current_program_hash),
@@ -1273,6 +1478,7 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
             encrypted_psk_escrow: optional_bytes_field(&map, 12, "encrypted_psk_escrow")?,
             escrow_key_hint: optional_u16_field(&map, 13, "escrow_key_hint")?,
             escrow_key_version: optional_u64_field(&map, 14, "escrow_key_version")?,
+            status_details: decode_optional_status_details(&map, 10)?,
         })),
         MSG_TYPE_APP_DATA => Ok(ConnectorMessage::AppData(AppDataMessage {
             node_id: required_text(&map, 2, "node_id")?,
@@ -1448,6 +1654,50 @@ impl TryFrom<SensorDataRow> for SensorDataEntity {
 fn encode_node_partition_key(node_id: &str) -> String {
     let digest = Sha256::digest(node_id.as_bytes());
     format!("n:{}", hex::encode(digest))
+}
+
+fn encode_phone_partition_key(phone_id: &str) -> String {
+    let digest = Sha256::digest(phone_id.as_bytes());
+    format!("p:{}", hex::encode(digest))
+}
+
+/// Azure Table entity for gateway escrow public key (AZH-0602).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct GatewayEscrowPubkeyEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    /// Base64-encoded X25519 public key (32 bytes).
+    public_key: String,
+    /// Monotonic key epoch.
+    key_epoch: i64,
+    /// Creation timestamp (Unix milliseconds).
+    created_at: i64,
+}
+
+/// Gateway escrow metadata partition key (fixed).
+const ESCROW_PARTITION_KEY: &str = "gateway";
+
+/// Azure Table entity for gateway escrow state (AZH-0605).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct GatewayEscrowStateEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    /// Escrow lifecycle state (disabled, bootstrapping, ready, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    escrow_state: Option<String>,
+    /// Current master key version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    escrow_key_version: Option<i64>,
+    /// Base64-encoded KDF salt bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    escrow_salt: Option<String>,
+    /// JSON-encoded KDF parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kdf_params_json: Option<String>,
 }
 
 // Equal-timestamp ordering is only guaranteed within one handler process
@@ -1680,6 +1930,101 @@ fn opt_bytes_value(value: Option<&[u8]>) -> Value {
     }
 }
 
+fn decode_optional_status_details(
+    map: &[(Value, Value)],
+    key: u64,
+) -> Result<Option<GatewayStatusDetails>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Map(sd_pairs)) => {
+            let mut escrow_state = None;
+            let mut escrow_key_version = None;
+            let mut escrow_salt = None;
+            let mut escrow_kdf_params = None;
+
+            for (k, v) in sd_pairs {
+                let sd_key = match k {
+                    Value::Integer(i) => {
+                        let val: i128 = (*i).into();
+                        u64::try_from(val).ok()
+                    }
+                    _ => None,
+                };
+                match sd_key {
+                    Some(1) => {
+                        if let Value::Text(s) = v {
+                            escrow_state = Some(s.clone());
+                        }
+                    }
+                    Some(2) => {
+                        if let Value::Integer(i) = v {
+                            let val: i128 = (*i).into();
+                            escrow_key_version = u64::try_from(val).ok();
+                        }
+                    }
+                    Some(3) => {
+                        if let Value::Bytes(b) = v {
+                            escrow_salt = Some(b.clone());
+                        }
+                    }
+                    Some(4) => {
+                        if let Value::Map(kdf_pairs) = v {
+                            let mut m_cost = 0u32;
+                            let mut t_cost = 0u32;
+                            let mut p_cost = 0u32;
+                            let mut kdf_version = 0u32;
+                            for (kk, kv) in kdf_pairs {
+                                let kdf_key = match kk {
+                                    Value::Integer(i) => {
+                                        let val: i128 = (*i).into();
+                                        u64::try_from(val).ok()
+                                    }
+                                    _ => None,
+                                };
+                                if let Value::Integer(iv) = kv {
+                                    let val: i128 = (*iv).into();
+                                    let val32 = u32::try_from(val).unwrap_or(0);
+                                    match kdf_key {
+                                        Some(1) => m_cost = val32,
+                                        Some(2) => t_cost = val32,
+                                        Some(3) => p_cost = val32,
+                                        Some(4) => kdf_version = val32,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            escrow_kdf_params = Some(KdfParams {
+                                m_cost,
+                                t_cost,
+                                p_cost,
+                                kdf_version,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Only return Some if at least one field was populated.
+            if escrow_state.is_some()
+                || escrow_key_version.is_some()
+                || escrow_salt.is_some()
+                || escrow_kdf_params.is_some()
+            {
+                Ok(Some(GatewayStatusDetails {
+                    escrow_state,
+                    escrow_key_version,
+                    escrow_salt,
+                    escrow_kdf_params,
+                }))
+            } else {
+                Ok(None)
+            }
+        }
+        Some(Value::Null) | None => Ok(None),
+        _ => Ok(None),
+    }
+}
+
 fn opt_u32_value(value: Option<u32>) -> Value {
     match value {
         Some(v) => Value::Integer(u64::from(v).into()),
@@ -1771,6 +2116,7 @@ mod tests {
         sensor_data_rows: Mutex<Vec<SensorDataRow>>,
         escrow_blobs_by_hint: Mutex<HashMap<u16, Vec<Vec<u8>>>>,
         stored_gateway_pubkeys: Mutex<Vec<(Vec<u8>, u64, u64)>>,
+        stored_escrow_state: Mutex<Option<GatewayStatusDetails>>,
     }
 
     impl MemoryStore {
@@ -1918,6 +2264,14 @@ mod tests {
                 .cloned()
                 .unwrap_or_default();
             Ok(blobs.into_iter().take(max_candidates).collect())
+        }
+
+        async fn store_gateway_escrow_state(
+            &self,
+            details: &GatewayStatusDetails,
+        ) -> Result<(), HandlerError> {
+            *self.stored_escrow_state.lock().await = Some(details.clone());
+            Ok(())
         }
     }
 
@@ -2366,6 +2720,7 @@ mod tests {
         store
             .append_actual_state(&ActualStateRow {
                 row_key: next_history_row_key(5000).unwrap(),
+                entity_kind: "node".to_string(),
                 node_id: "node-1".to_string(),
                 observed_current_program_hash: Some(vec![0xAA; 32]),
                 observed_assigned_program_hash: Some(vec![0xAA; 32]),
@@ -2476,6 +2831,7 @@ mod tests {
         let store = Arc::new(SameTimestampDifferentLatestStore {
             latest_actual: ActualStateRow {
                 row_key: next_history_row_key(1234).unwrap(),
+                entity_kind: "node".to_string(),
                 node_id: "node-1".to_string(),
                 observed_current_program_hash: Some(vec![0xBB; 32]),
                 observed_assigned_program_hash: Some(vec![0xBB; 32]),
@@ -2721,6 +3077,7 @@ mod tests {
     fn actual_state_entity_round_trips_table_safe_partition_key() {
         let row = ActualStateRow {
             row_key: next_history_row_key(1234).unwrap(),
+            entity_kind: "node".to_string(),
             node_id: "node/with?#unsafe\\chars".to_string(),
             observed_current_program_hash: Some(vec![0x22; 32]),
             observed_assigned_program_hash: Some(vec![0x33; 32]),
@@ -3862,5 +4219,100 @@ mod tests {
         handler.handle_payload(&payload).await.unwrap();
         assert!(store.actual_rows.lock().await.is_empty());
         assert!(publisher.sends.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gateway_actual_state_persists_escrow_status_details() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        // Build status_details map: key 10 in the ACTUAL_STATE
+        let status_details = Value::Map(vec![
+            map_entry(1, Value::Text("ready".to_string())),
+            map_entry(2, Value::Integer(3u64.into())),
+            map_entry(3, Value::Bytes(vec![0xAA; 16])),
+            map_entry(
+                4,
+                Value::Map(vec![
+                    map_entry(1, Value::Integer(65536u64.into())),
+                    map_entry(2, Value::Integer(3u64.into())),
+                    map_entry(3, Value::Integer(1u64.into())),
+                    map_entry(4, Value::Integer(1u64.into())),
+                ]),
+            ),
+        ]);
+
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("gateway".to_string())),
+            map_entry(3, Value::Text("gateway-1".to_string())),
+            map_entry(9, Value::Integer(1234u64.into())),
+            map_entry(10, status_details),
+        ]);
+        let mut payload = Vec::new();
+        ciborium::into_writer(&value, &mut payload).unwrap();
+
+        handler.handle_payload(&payload).await.unwrap();
+        let state = store.stored_escrow_state.lock().await;
+        let details = state.as_ref().unwrap();
+        assert_eq!(details.escrow_state, Some("ready".to_string()));
+        assert_eq!(details.escrow_key_version, Some(3));
+        assert_eq!(details.escrow_salt, Some(vec![0xAA; 16]));
+        let kdf = details.escrow_kdf_params.as_ref().unwrap();
+        assert_eq!(kdf.m_cost, 65536);
+        assert_eq!(kdf.t_cost, 3);
+        assert_eq!(kdf.p_cost, 1);
+        assert_eq!(kdf.kdf_version, 1);
+    }
+
+    #[test]
+    fn phone_actual_state_uses_phone_partition_key() {
+        let row = ActualStateRow {
+            row_key: next_history_row_key(1234).unwrap(),
+            entity_kind: "phone".to_string(),
+            node_id: "phone-42".to_string(),
+            observed_current_program_hash: None,
+            observed_assigned_program_hash: None,
+            observed_schedule_interval_s: None,
+            battery_mv: None,
+            firmware_abi_version: None,
+            firmware_version: None,
+            timestamp_ms: 1234,
+            encrypted_psk_escrow: Some(vec![0xBB; 48]),
+            escrow_key_hint: Some(0x1234),
+            escrow_key_version: Some(1),
+        };
+        let entity = ActualStateEntity::try_from(row).unwrap();
+        assert!(
+            entity.partition_key.starts_with("p:"),
+            "phone entity should use 'p:' partition prefix, got: {}",
+            entity.partition_key
+        );
+    }
+
+    #[test]
+    fn node_actual_state_uses_node_partition_key() {
+        let row = ActualStateRow {
+            row_key: next_history_row_key(1234).unwrap(),
+            entity_kind: "node".to_string(),
+            node_id: "node-1".to_string(),
+            observed_current_program_hash: None,
+            observed_assigned_program_hash: None,
+            observed_schedule_interval_s: None,
+            battery_mv: None,
+            firmware_abi_version: None,
+            firmware_version: None,
+            timestamp_ms: 1234,
+            encrypted_psk_escrow: None,
+            escrow_key_hint: None,
+            escrow_key_version: None,
+        };
+        let entity = ActualStateEntity::try_from(row).unwrap();
+        assert!(
+            entity.partition_key.starts_with("n:"),
+            "node entity should use 'n:' partition prefix, got: {}",
+            entity.partition_key
+        );
     }
 }

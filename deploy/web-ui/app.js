@@ -267,16 +267,23 @@ async function initMsal() {
       clientId: CONFIG.msalClientId,
       authority: CONFIG.msalAuthority,
       redirectUri: window.location.origin + basePath,
+      navigateToLoginRequestUrl: false,
     },
     cache: {
       cacheLocation: 'sessionStorage',
     },
   });
 
-  try {
-    await APP.msalApp.handleRedirectPromise();
-  } catch (error) {
-    showViewMessage('error', parseErrorPayload(error, 'Authentication initialization failed.'));
+  // Only process MSAL redirect response if the hash looks like an auth response.
+  // The SPA uses hash-based routing (#dashboard, #sensor-data, etc.) which MSAL
+  // would otherwise attempt to parse, causing hash_does_not_contain_known_properties.
+  const hash = window.location.hash;
+  if (hash && (hash.includes('code=') || hash.includes('error=') || hash.includes('access_token='))) {
+    try {
+      await APP.msalApp.handleRedirectPromise();
+    } catch (error) {
+      showViewMessage('error', parseErrorPayload(error, 'Authentication initialization failed.'));
+    }
   }
 
   const account = APP.msalApp.getActiveAccount?.() || APP.msalApp.getAllAccounts()[0] || null;

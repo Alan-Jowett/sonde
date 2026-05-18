@@ -107,6 +107,14 @@ pub struct ActualStateRow {
 
 impl ActualStateRow {
     fn from_message(message: &ActualStateMessage) -> Result<Self, HandlerError> {
+        if message.encrypted_psk_escrow.is_some()
+            && (message.escrow_key_hint.is_none() || message.escrow_key_version.is_none())
+        {
+            return Err(HandlerError::Decode(
+                "ACTUAL_STATE with encrypted_psk_escrow must include escrow_key_hint and escrow_key_version"
+                    .into(),
+            ));
+        }
         Ok(Self {
             row_key: next_history_row_key(message.timestamp_ms)?,
             node_id: message.entity_id.clone(),
@@ -434,10 +442,11 @@ where
         &self,
         msg: KeyEscrowRequestMessage,
     ) -> Result<(), HandlerError> {
-        let candidates = self
+        let mut candidates = self
             .store
             .load_escrow_blobs_by_key_hint(msg.key_hint, 16)
             .await?;
+        candidates.truncate(16);
 
         let response = encode_key_escrow_response(&msg.request_id, msg.key_hint, &candidates)?;
         self.publisher

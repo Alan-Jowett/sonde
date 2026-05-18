@@ -82,6 +82,7 @@ const NODE_KEY_REGISTERED_BY: i64 = 12;
 const NODE_KEY_BATTERY_HISTORY: i64 = 13;
 const NODE_KEY_FW_VERSION: i64 = 14;
 const NODE_KEY_DESIRED_SCHEDULE: i64 = 15;
+const NODE_KEY_KEY_VERSION: i64 = 16;
 
 // ── CBOR key IDs (program map) ──────────────────────────────────────────────
 
@@ -105,6 +106,7 @@ const PHONE_KEY_PSK: i64 = 2;
 const PHONE_KEY_LABEL: i64 = 3;
 const PHONE_KEY_ISSUED_AT: i64 = 4;
 const PHONE_KEY_STATUS: i64 = 5;
+const PHONE_KEY_KEY_VERSION: i64 = 6;
 
 // ── CBOR key IDs (handler routing map) ──────────────────────────────────────
 
@@ -437,6 +439,10 @@ fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
                 None => Value::Null,
             },
         ),
+        (
+            Value::Integer(NODE_KEY_KEY_VERSION.into()),
+            Value::Integer(n.key_version.into()),
+        ),
     ])
 }
 
@@ -531,6 +537,10 @@ fn phone_psk_to_cbor(p: &PhonePskRecord) -> ciborium::value::Value {
         (
             Value::Integer(PHONE_KEY_STATUS.into()),
             Value::Text(p.status.to_string()),
+        ),
+        (
+            Value::Integer(PHONE_KEY_KEY_VERSION.into()),
+            Value::Integer(p.key_version.into()),
         ),
     ])
 }
@@ -750,6 +760,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
     let mut sensors: Vec<SensorDescriptor> = Vec::new();
     let mut registered_by_phone_id: Option<u32> = None;
     let mut firmware_version: Option<String> = None;
+    let mut key_version: u64 = 0;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -888,6 +899,13 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                         ))
                     }
                 },
+                Some(NODE_KEY_KEY_VERSION) => {
+                    key_version = match v {
+                        Value::Integer(i) => u64::try_from(i)
+                            .map_err(|_| BundleError::Decode("key_version out of range".into()))?,
+                        _ => return Err(BundleError::Decode("key_version must be integer".into())),
+                    };
+                }
                 _ => {} // ignore unknown fields for forward compatibility
             }
         }
@@ -937,10 +955,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         sensors,
         registered_by_phone_id,
         battery_history: Vec::new(),
-        // TODO: key_version should be serialized in a future bundle format version.
-        // For now, all imported nodes are assigned key_version 0 to maintain backward
-        // compatibility with existing bundle files that don't include this field.
-        key_version: 0,
+        key_version,
     })
 }
 
@@ -1190,6 +1205,7 @@ fn phone_psk_from_cbor(v: ciborium::value::Value) -> Result<PhonePskRecord, Bund
     let mut label_opt: Option<String> = None;
     let mut issued_at_opt: Option<i64> = None;
     let mut status_opt: Option<PhonePskStatus> = None;
+    let mut key_version: u64 = 0;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -1254,6 +1270,18 @@ fn phone_psk_from_cbor(v: ciborium::value::Value) -> Result<PhonePskRecord, Bund
                         _ => return Err(BundleError::Decode("status must be text".into())),
                     });
                 }
+                Some(PHONE_KEY_KEY_VERSION) => {
+                    key_version = match v {
+                        Value::Integer(i) => u64::try_from(i).map_err(|_| {
+                            BundleError::Decode("phone key_version out of range".into())
+                        })?,
+                        _ => {
+                            return Err(BundleError::Decode(
+                                "phone key_version must be integer".into(),
+                            ))
+                        }
+                    };
+                }
                 _ => {}
             }
         }
@@ -1282,10 +1310,7 @@ fn phone_psk_from_cbor(v: ciborium::value::Value) -> Result<PhonePskRecord, Bund
         label,
         issued_at,
         status,
-        // TODO: key_version should be serialized in a future bundle format version.
-        // For now, all imported phone PSKs are assigned key_version 0 to maintain backward
-        // compatibility with existing bundle files that don't include this field.
-        key_version: 0,
+        key_version,
     })
 }
 
@@ -1453,7 +1478,9 @@ mod tests {
         node1.desired_schedule_interval_s = None;
         node1.schedule_interval_s = 120;
         node1.last_battery_mv = Some(3700);
-        let node2 = make_node("node-b", 0x5678);
+        node1.key_version = 7;
+        let mut node2 = make_node("node-b", 0x5678);
+        node2.key_version = 9;
 
         let prog1 = make_program(0xAA, VerificationProfile::Resident);
         let prog2 = make_program(0xBB, VerificationProfile::Ephemeral);
@@ -1473,10 +1500,12 @@ mod tests {
         assert_eq!(na.desired_schedule_interval_s, None);
         assert_eq!(na.schedule_interval_s, 120);
         assert_eq!(na.last_battery_mv, None);
+        assert_eq!(na.key_version, 7);
 
         let nb = out_nodes.iter().find(|n| n.node_id == "node-b").unwrap();
         assert_eq!(nb.key_hint, 0x5678);
         assert_eq!(nb.desired_schedule_interval_s, Some(60));
+        assert_eq!(nb.key_version, 9);
 
         let pr = out_programs
             .iter()
@@ -1633,7 +1662,7 @@ mod tests {
         let phone = PhonePskRecord {
             phone_id: 0,
             phone_key_hint: 0x1234,
-            key_version: 0,
+            key_version: 3,
             psk: Zeroizing::new([0xDD; 32]),
             label: "Test Phone".to_string(),
             issued_at: UNIX_EPOCH + Duration::from_secs(1700000000),
@@ -1642,7 +1671,7 @@ mod tests {
         let phone_revoked = PhonePskRecord {
             phone_id: 0,
             phone_key_hint: 0x5678,
-            key_version: 0,
+            key_version: 4,
             psk: Zeroizing::new([0xEE; 32]),
             label: "Revoked Phone".to_string(),
             issued_at: UNIX_EPOCH + Duration::from_secs(1700001000),
@@ -1677,9 +1706,62 @@ mod tests {
         assert_eq!(*loaded_phones[0].psk, [0xDD; 32]);
         assert_eq!(loaded_phones[0].label, "Test Phone");
         assert_eq!(loaded_phones[0].status, PhonePskStatus::Active);
+        assert_eq!(loaded_phones[0].key_version, 3);
         assert_eq!(loaded_phones[1].phone_key_hint, 0x5678);
         assert_eq!(loaded_phones[1].status, PhonePskStatus::Revoked);
+        assert_eq!(loaded_phones[1].key_version, 4);
         assert!(loaded_handlers.is_empty());
+    }
+
+    #[test]
+    fn missing_key_version_fields_default_to_zero() {
+        use ciborium::value::Value;
+
+        let node = node_from_cbor(Value::Map(vec![
+            (
+                Value::Integer(NODE_KEY_ID.into()),
+                Value::Text("node-1".into()),
+            ),
+            (
+                Value::Integer(NODE_KEY_HINT.into()),
+                Value::Integer(0x1234u64.into()),
+            ),
+            (
+                Value::Integer(NODE_KEY_PSK.into()),
+                Value::Bytes(vec![0x42; 32]),
+            ),
+            (
+                Value::Integer(NODE_KEY_SCHEDULE.into()),
+                Value::Integer(60u64.into()),
+            ),
+        ]))
+        .unwrap();
+        assert_eq!(node.key_version, 0);
+
+        let phone = phone_psk_from_cbor(Value::Map(vec![
+            (
+                Value::Integer(PHONE_KEY_HINT.into()),
+                Value::Integer(0x1234u64.into()),
+            ),
+            (
+                Value::Integer(PHONE_KEY_PSK.into()),
+                Value::Bytes(vec![0x42; 32]),
+            ),
+            (
+                Value::Integer(PHONE_KEY_LABEL.into()),
+                Value::Text("Test Phone".into()),
+            ),
+            (
+                Value::Integer(PHONE_KEY_ISSUED_AT.into()),
+                Value::Integer(1_700_000_000i64.into()),
+            ),
+            (
+                Value::Integer(PHONE_KEY_STATUS.into()),
+                Value::Text("active".into()),
+            ),
+        ]))
+        .unwrap();
+        assert_eq!(phone.key_version, 0);
     }
 
     #[test]

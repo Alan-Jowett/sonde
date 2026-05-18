@@ -646,6 +646,24 @@ mod tests {
     }
 
     #[test]
+    fn test_recovery_queue_expired_entry() {
+        let mut queue = RecoveryQueue::new();
+        let request_id = [0x42u8; 16];
+        queue.entries.insert(
+            request_id,
+            RecoveryEntry {
+                key_hint: 0x1234,
+                raw_frame: vec![1, 2, 3],
+                peer_address: [0; 6],
+                created_at: Instant::now() - Duration::from_secs(31),
+            },
+        );
+
+        assert!(queue.take(&request_id).is_none());
+        assert!(queue.entries.is_empty());
+    }
+
+    #[test]
     fn test_encrypt_decrypt_secret_key_round_trip() {
         let master_key = [0x42u8; 32];
         let secret = [0xABu8; 32];

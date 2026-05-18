@@ -105,13 +105,13 @@ enum ConnectorOutboundMessage {
     },
     /// Recovery public key publication (GW-2001).
     KeyEscrowPubkey {
-        public_key: Vec<u8>,
+        public_key: [u8; 32],
         key_epoch: u64,
         created_at: u64,
-        fingerprint_words: Vec<String>,
+        fingerprint_words: [String; 6],
     },
     /// Request escrowed PSK(s) for an unknown key_hint (GW-2009).
-    KeyEscrowRequest { key_hint: u16, request_id: Vec<u8> },
+    KeyEscrowRequest { key_hint: u16, request_id: [u8; 16] },
 }
 
 /// Gateway-scoped ACTUAL_STATE status_details for escrow.
@@ -279,7 +279,7 @@ impl ConnectorOutboundMessage {
                     1,
                     Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY.into()),
                 ),
-                map_entry(2, Value::Bytes(public_key.clone())),
+                map_entry(2, Value::Bytes(public_key.to_vec())),
                 map_entry(3, Value::Integer((*key_epoch).into())),
                 map_entry(4, Value::Integer((*created_at).into())),
                 map_entry(
@@ -296,7 +296,7 @@ impl ConnectorOutboundMessage {
                     Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST.into()),
                 ),
                 map_entry(2, Value::Integer((*key_hint as u64).into())),
-                map_entry(3, Value::Bytes(request_id.clone())),
+                map_entry(3, Value::Bytes(request_id.to_vec())),
             ]),
         };
 
@@ -379,6 +379,20 @@ impl ConnectorEventHub {
         escrow_key_hint: Option<u16>,
         escrow_key_version: Option<u64>,
     ) {
+        let escrow_fields = match encrypted_psk_escrow {
+            Some(blob) => {
+                if let (Some(key_hint), Some(key_version)) = (escrow_key_hint, escrow_key_version) {
+                    (Some(blob), Some(key_hint), Some(key_version))
+                } else {
+                    error!(
+                        node_id = %node_id,
+                        "dropping inconsistent escrow fields from node ACTUAL_STATE"
+                    );
+                    (None, None, None)
+                }
+            }
+            None => (None, None, None),
+        };
         let _ = self.tx.send(ConnectorOutboundMessage::ActualState {
             entity_kind: "node",
             entity_id: node_id,
@@ -389,9 +403,9 @@ impl ConnectorEventHub {
             firmware_abi_version: Some(firmware_abi_version),
             firmware_version: Some(firmware_version),
             timestamp_ms,
-            encrypted_psk_escrow,
-            escrow_key_hint,
-            escrow_key_version,
+            encrypted_psk_escrow: escrow_fields.0,
+            escrow_key_hint: escrow_fields.1,
+            escrow_key_version: escrow_fields.2,
             status_details: None,
         });
     }
@@ -418,21 +432,21 @@ impl ConnectorEventHub {
     /// Emit KEY_ESCROW_PUBKEY (GW-2001).
     pub fn emit_key_escrow_pubkey(
         &self,
-        public_key: Vec<u8>,
+        public_key: &[u8; 32],
         key_epoch: u64,
         created_at: u64,
-        fingerprint_words: Vec<String>,
+        fingerprint_words: &[&str; 6],
     ) {
         let _ = self.tx.send(ConnectorOutboundMessage::KeyEscrowPubkey {
-            public_key,
+            public_key: *public_key,
             key_epoch,
             created_at,
-            fingerprint_words,
+            fingerprint_words: fingerprint_words.map(str::to_string),
         });
     }
 
     /// Emit KEY_ESCROW_REQUEST (GW-2009).
-    pub fn emit_key_escrow_request(&self, key_hint: u16, request_id: Vec<u8>) {
+    pub fn emit_key_escrow_request(&self, key_hint: u16, request_id: [u8; 16]) {
         let _ = self.tx.send(ConnectorOutboundMessage::KeyEscrowRequest {
             key_hint,
             request_id,
@@ -1086,6 +1100,33 @@ mod tests {
             optional_u32_field(&decoded, 11, "schedule_interval_s").unwrap(),
             Some(60)
         );
+    }
+
+    #[test]
+    fn actual_state_encoding_drops_inconsistent_escrow_fields() {
+        let hub = ConnectorEventHub::new(1);
+        let mut rx = hub.subscribe();
+        hub.emit_actual_state_for_node_with_escrow(
+            "node-1".to_string(),
+            vec![0x11; 32],
+            Some(vec![0x22; 32]),
+            60,
+            3300,
+            1,
+            "1.2.3".to_string(),
+            1234,
+            Some(vec![0xAA; 8]),
+            None,
+            Some(7),
+        );
+
+        let message = rx.try_recv().unwrap();
+        let encoded = message.encode().unwrap();
+        let decoded = decode_map(&encoded).unwrap();
+
+        assert!(matches!(map_get(&decoded, 12), Some(Value::Null)));
+        assert!(matches!(map_get(&decoded, 13), Some(Value::Null)));
+        assert!(matches!(map_get(&decoded, 14), Some(Value::Null)));
     }
 
     fn encode_inbound_message(msg_type: u64) -> Vec<u8> {

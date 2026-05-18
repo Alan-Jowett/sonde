@@ -254,11 +254,10 @@ pub trait Storage: Send + Sync {
     /// Persist an escrow keypair (insert or replace).
     async fn store_escrow_keypair(&self, record: &EscrowKeypairRecord) -> Result<(), StorageError>;
 
-    /// Check whether a key-management operation has already been processed.
-    async fn is_operation_processed(&self, operation_id: &[u8]) -> Result<bool, StorageError>;
-
-    /// Record a key-management operation as processed.
-    async fn record_operation(&self, operation_id: &[u8]) -> Result<(), StorageError>;
+    /// Atomically check and record a key-management operation.
+    /// Returns `true` if this is the first time the operation was seen (newly recorded),
+    /// `false` if it was already processed (duplicate).
+    async fn try_record_operation(&self, operation_id: &[u8; 16]) -> Result<bool, StorageError>;
 
     /// Retrieve a pending key rotation record, if any.
     async fn get_pending_rotation(&self) -> Result<Option<PendingRotationRecord>, StorageError>;
@@ -601,16 +600,12 @@ impl Storage for InMemoryStorage {
         Ok(())
     }
 
-    async fn is_operation_processed(&self, operation_id: &[u8]) -> Result<bool, StorageError> {
-        Ok(self.escrow_operations.read().await.contains(operation_id))
-    }
-
-    async fn record_operation(&self, operation_id: &[u8]) -> Result<(), StorageError> {
-        self.escrow_operations
+    async fn try_record_operation(&self, operation_id: &[u8; 16]) -> Result<bool, StorageError> {
+        Ok(self
+            .escrow_operations
             .write()
             .await
-            .insert(operation_id.to_vec());
-        Ok(())
+            .insert(operation_id.to_vec()))
     }
 
     async fn get_pending_rotation(&self) -> Result<Option<PendingRotationRecord>, StorageError> {

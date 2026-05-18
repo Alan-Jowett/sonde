@@ -420,7 +420,7 @@ impl Gateway {
                     match rq.enqueue(key_hint, raw.to_vec(), peer_addr) {
                         Ok(request_id) => {
                             self.connector_event_hub
-                                .emit_key_escrow_request(key_hint, request_id.to_vec());
+                                .emit_key_escrow_request(key_hint, request_id);
                             debug!(
                                 key_hint,
                                 "emitted KEY_ESCROW_REQUEST for unknown node (escrow recovery)"

@@ -128,9 +128,9 @@ pub fn seal_escrow_blob(
     psk: &[u8; 32],
     aead: &(impl AeadProvider + ?Sized),
 ) -> Result<EscrowBlob, EncodeError> {
-    if subject_id.len() > 128 {
+    if subject_id.len() > 64 {
         return Err(EncodeError::InvalidParameter(alloc::format!(
-            "subject_id exceeds 128 bytes: {}",
+            "subject_id exceeds 64 bytes: {}",
             subject_id.len()
         )));
     }
@@ -257,8 +257,15 @@ pub fn encode_escrow_blob(blob: &EscrowBlob) -> Result<Vec<u8>, EncodeError> {
 
 /// Decode an escrow blob from CBOR bytes.
 pub fn decode_escrow_blob(cbor: &[u8]) -> Result<EscrowBlob, DecodeError> {
-    let value: Value =
-        ciborium::from_reader(cbor).map_err(|e| DecodeError::CborError(alloc::format!("{e}")))?;
+    let mut reader = cbor;
+    let value: Value = ciborium::from_reader(&mut reader)
+        .map_err(|e| DecodeError::CborError(alloc::format!("{e}")))?;
+    if !reader.is_empty() {
+        return Err(DecodeError::CborError(alloc::format!(
+            "{} trailing bytes after escrow blob CBOR",
+            reader.len()
+        )));
+    }
     let pairs = match value {
         Value::Map(pairs) => pairs,
         _ => return Err(DecodeError::CborError(String::from("expected CBOR map"))),
@@ -304,7 +311,9 @@ pub fn decode_escrow_blob(cbor: &[u8]) -> Result<EscrowBlob, DecodeError> {
             }
             ESCROW_BLOB_KEY_SUBJECT_ID => {
                 if let Value::Text(s) = v {
-                    subject_id = Some(s);
+                    if s.len() <= 64 {
+                        subject_id = Some(s);
+                    }
                 }
             }
             ESCROW_BLOB_KEY_KEY_HINT => {
@@ -344,7 +353,7 @@ pub fn decode_escrow_blob(cbor: &[u8]) -> Result<EscrowBlob, DecodeError> {
         }
     }
 
-    Ok(EscrowBlob {
+    let blob = EscrowBlob {
         escrow_version: escrow_version
             .ok_or_else(|| DecodeError::CborError(String::from("missing escrow_version")))?,
         key_version: key_version
@@ -361,7 +370,15 @@ pub fn decode_escrow_blob(cbor: &[u8]) -> Result<EscrowBlob, DecodeError> {
         ciphertext: ciphertext
             .ok_or_else(|| DecodeError::CborError(String::from("missing or invalid ciphertext")))?,
         tag: tag.ok_or_else(|| DecodeError::CborError(String::from("missing or invalid tag")))?,
-    })
+    };
+    if blob.escrow_version != ESCROW_BLOB_VERSION {
+        return Err(DecodeError::CborError(alloc::format!(
+            "unsupported escrow_version: {} (expected {})",
+            blob.escrow_version,
+            ESCROW_BLOB_VERSION
+        )));
+    }
+    Ok(blob)
 }
 
 #[cfg(test)]
@@ -689,12 +706,12 @@ mod tests {
     }
 
     #[test]
-    fn test_escrow_blob_rejects_subject_id_longer_than_128_bytes() {
+    fn test_escrow_blob_rejects_subject_id_longer_than_64_bytes() {
         let master_key = [0x42u8; 32];
         let nonce = [7u8; 12];
         let psk = [0xABu8; 32];
         let aead = TestAead;
-        let subject_id = "a".repeat(129);
+        let subject_id = "a".repeat(65);
 
         let err = seal_escrow_blob(
             &master_key,
@@ -710,7 +727,91 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            matches!(err, EncodeError::InvalidParameter(message) if message.contains("subject_id exceeds 128 bytes: 129"))
+            matches!(err, EncodeError::InvalidParameter(message) if message.contains("subject_id exceeds 64 bytes: 65"))
+        );
+    }
+
+    #[test]
+    fn test_escrow_blob_decode_rejects_oversized_subject_id() {
+        let pairs: Vec<(Value, Value)> = alloc::vec![
+            (Value::Integer(1u64.into()), Value::Integer(1u64.into())),
+            (Value::Integer(2u64.into()), Value::Integer(1u64.into())),
+            (
+                Value::Integer(3u64.into()),
+                Value::Text(String::from("node"))
+            ),
+            (Value::Integer(4u64.into()), Value::Text("a".repeat(65))),
+            (
+                Value::Integer(5u64.into()),
+                Value::Integer(0x1234u64.into())
+            ),
+            (Value::Integer(6u64.into()), Value::Bytes(vec![0u8; 12])),
+            (Value::Integer(7u64.into()), Value::Bytes(vec![0u8; 32])),
+            (Value::Integer(8u64.into()), Value::Bytes(vec![0u8; 16])),
+        ];
+        let value = Value::Map(pairs);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&value, &mut buf).unwrap();
+
+        let err = decode_escrow_blob(&buf).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::CborError(message) if message.contains("missing subject_id"))
+        );
+    }
+
+    #[test]
+    fn test_escrow_blob_decode_rejects_unsupported_version() {
+        let pairs: Vec<(Value, Value)> = alloc::vec![
+            (Value::Integer(1u64.into()), Value::Integer(2u64.into())),
+            (Value::Integer(2u64.into()), Value::Integer(1u64.into())),
+            (
+                Value::Integer(3u64.into()),
+                Value::Text(String::from("node"))
+            ),
+            (Value::Integer(4u64.into()), Value::Text(String::from("n1"))),
+            (
+                Value::Integer(5u64.into()),
+                Value::Integer(0x1234u64.into())
+            ),
+            (Value::Integer(6u64.into()), Value::Bytes(vec![0u8; 12])),
+            (Value::Integer(7u64.into()), Value::Bytes(vec![0u8; 32])),
+            (Value::Integer(8u64.into()), Value::Bytes(vec![0u8; 16])),
+        ];
+        let value = Value::Map(pairs);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&value, &mut buf).unwrap();
+
+        let err = decode_escrow_blob(&buf).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::CborError(message) if message.contains("unsupported escrow_version: 2 (expected 1)"))
+        );
+    }
+
+    #[test]
+    fn test_escrow_blob_decode_rejects_trailing_bytes() {
+        let master_key = [0x42u8; 32];
+        let nonce = [3u8; 12];
+        let psk = [0xCDu8; 32];
+        let aead = TestAead;
+        let blob = seal_escrow_blob(
+            &master_key,
+            &nonce,
+            ESCROW_BLOB_VERSION,
+            1,
+            &SubjectKind::Phone,
+            "phone-xyz",
+            0x5678,
+            &psk,
+            &aead,
+        )
+        .unwrap();
+
+        let mut buf = encode_escrow_blob(&blob).unwrap();
+        buf.extend_from_slice(&[0xAA, 0xBB]);
+
+        let err = decode_escrow_blob(&buf).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::CborError(message) if message.contains("2 trailing bytes after escrow blob CBOR"))
         );
     }
 

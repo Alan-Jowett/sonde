@@ -1014,6 +1014,12 @@ impl Storage for SqliteStorage {
         self.with_conn(move |conn| {
             let encrypted_psk = encrypt_psk(&mk, &record.node_id, &record.psk)?;
             let sensors_json = sensors_to_json(&record.sensors);
+            let key_version_i64 = i64::try_from(record.key_version).map_err(|_| {
+                StorageError::Internal(format!(
+                    "key_version {} exceeds i64::MAX",
+                    record.key_version
+                ))
+            })?;
             let tx = conn.unchecked_transaction().map_err(map_err)?;
             tx.execute(
                 "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
@@ -1050,7 +1056,7 @@ impl Storage for SqliteStorage {
                     sensors_json,
                     record.registered_by_phone_id,
                     record.firmware_version,
-                    record.key_version as i64,
+                    key_version_i64,
                 ],
             )
             .map_err(map_err)?;
@@ -1105,6 +1111,12 @@ impl Storage for SqliteStorage {
         self.with_conn(move |conn| {
             let encrypted_psk = encrypt_psk(&mk, &record.node_id, &record.psk)?;
             let sensors_json = sensors_to_json(&record.sensors);
+            let key_version_i64 = i64::try_from(record.key_version).map_err(|_| {
+                StorageError::Internal(format!(
+                    "key_version {} exceeds i64::MAX",
+                    record.key_version
+                ))
+            })?;
             let rows = conn
                 .execute(
                     "INSERT OR IGNORE INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
@@ -1127,7 +1139,7 @@ impl Storage for SqliteStorage {
                         sensors_json,
                         record.registered_by_phone_id,
                         record.firmware_version,
-                        record.key_version as i64,
+                        key_version_i64,
                     ],
                 )
                 .map_err(map_err)?;
@@ -1359,8 +1371,13 @@ impl Storage for SqliteStorage {
                 }
 
                 for record in &nodes {
-                    let encrypted_psk =
-                        encrypt_psk(&mk, &record.node_id, &record.psk)?;
+                    let encrypted_psk = encrypt_psk(&mk, &record.node_id, &record.psk)?;
+                    let key_version_i64 = i64::try_from(record.key_version).map_err(|_| {
+                        StorageError::Internal(format!(
+                            "key_version {} exceeds i64::MAX",
+                            record.key_version
+                        ))
+                    })?;
                     conn.execute(
                         "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                          current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
@@ -1378,7 +1395,7 @@ impl Storage for SqliteStorage {
                             Option::<u32>::None,
                             Option::<i64>::None,
                             record.firmware_version,
-                            record.key_version as i64,
+                            key_version_i64,
                         ],
                     )
                     .map_err(map_err)?;
@@ -1600,6 +1617,12 @@ impl Storage for SqliteStorage {
         let record = record.clone();
         self.with_conn(move |conn| {
             let issued_at = system_time_to_epoch_s(&record.issued_at);
+            let key_version_i64 = i64::try_from(record.key_version).map_err(|_| {
+                StorageError::Internal(format!(
+                    "key_version {} exceeds i64::MAX",
+                    record.key_version
+                ))
+            })?;
 
             // Wrap INSERT + UPDATE in a transaction so a crash between them
             // cannot leave a row with an invalid placeholder PSK.
@@ -1616,7 +1639,7 @@ impl Storage for SqliteStorage {
                         &record.label,
                         issued_at,
                         record.status.to_string(),
-                        record.key_version as i64,
+                        key_version_i64,
                     ],
                 )
                 .map_err(map_err)?;
@@ -1705,6 +1728,12 @@ impl Storage for SqliteStorage {
 
                 for record in &records {
                     let issued_at = system_time_to_epoch_s(&record.issued_at);
+                    let key_version_i64 = i64::try_from(record.key_version).map_err(|_| {
+                        StorageError::Internal(format!(
+                            "key_version {} exceeds i64::MAX",
+                            record.key_version
+                        ))
+                    })?;
 
                     // Insert with a placeholder PSK to get the auto-increment id.
                     conn.execute(
@@ -1716,7 +1745,7 @@ impl Storage for SqliteStorage {
                             &record.label,
                             issued_at,
                             record.status.to_string(),
-                            record.key_version as i64,
+                            key_version_i64,
                         ],
                     )
                     .map_err(map_err)?;
@@ -1992,35 +2021,21 @@ impl Storage for SqliteStorage {
         .await
     }
 
-    async fn is_operation_processed(&self, operation_id: &[u8]) -> Result<bool, StorageError> {
-        let op_id = operation_id.to_vec();
-        self.with_conn(move |conn| {
-            let exists: bool = conn
-                .query_row(
-                    "SELECT COUNT(*) > 0 FROM escrow_operations WHERE operation_id = ?1",
-                    params![op_id],
-                    |row| row.get(0),
-                )
-                .map_err(map_err)?;
-            Ok(exists)
-        })
-        .await
-    }
-
-    async fn record_operation(&self, operation_id: &[u8]) -> Result<(), StorageError> {
+    async fn try_record_operation(&self, operation_id: &[u8; 16]) -> Result<bool, StorageError> {
         let op_id = operation_id.to_vec();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_millis() as i64;
         self.with_conn(move |conn| {
-            conn.execute(
-                "INSERT OR IGNORE INTO escrow_operations (operation_id, processed_at) \
-                 VALUES (?1, ?2)",
-                params![op_id, now],
-            )
-            .map_err(map_err)?;
-            Ok(())
+            let changes = conn
+                .execute(
+                    "INSERT OR IGNORE INTO escrow_operations (operation_id, processed_at) \
+                     VALUES (?1, ?2)",
+                    params![op_id, now],
+                )
+                .map_err(map_err)?;
+            Ok(changes > 0)
         })
         .await
     }

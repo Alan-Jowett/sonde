@@ -50,6 +50,8 @@ pub fn compute_fingerprint(
 
 #[cfg(test)]
 mod tests {
+    use sha2::Digest;
+
     use super::*;
 
     struct StubSha256;
@@ -97,6 +99,25 @@ mod tests {
         assert_ne!(
             fp1, fp2,
             "different keys should produce different fingerprints"
+        );
+    }
+
+    struct RealSha256;
+    impl Sha256Provider for RealSha256 {
+        fn hash(&self, data: &[u8]) -> [u8; 32] {
+            sha2::Sha256::digest(data).into()
+        }
+    }
+
+    // T-2011: Known-answer test with real SHA-256
+    #[test]
+    fn test_fingerprint_known_answer() {
+        let sha = RealSha256;
+        let fp = compute_fingerprint(&[0x42u8; 32], &sha);
+
+        assert_eq!(
+            fp,
+            ["drastic", "wall", "decrease", "egg", "reason", "insect"]
         );
     }
 

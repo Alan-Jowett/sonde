@@ -121,9 +121,16 @@ int decode(struct decoder_context *ctx)
         ((__u32)data[5] << 24)
     );
 
+    /* Convert to millidegrees Fahrenheit: mF = mC * 9 / 5 + 32000 */
+    __s32 temp_mf = temp_mc * 9 / 5 + 32000;
+
     /* Emit the temperature reading in millidegrees Celsius. */
     char name_temp[] = "temp_mc";
     emit_reading(name_temp, 7, (__s64)temp_mc);
+
+    /* Emit the temperature reading in millidegrees Fahrenheit. */
+    char name_tempf[] = "temp_mf";
+    emit_reading(name_tempf, 7, (__s64)temp_mf);
 
     return 0;
 }

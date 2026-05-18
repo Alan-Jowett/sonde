@@ -601,6 +601,10 @@ impl ConnectorService {
                 if let Some(ref tx) = self.escrow_inbound_tx {
                     tx.send(EscrowInboundMessage::KeyEscrowResponse(bytes.to_vec()))
                         .map_err(|_| "escrow channel closed".to_string())?;
+                } else {
+                    tracing::warn!(
+                        "received KEY_ESCROW_RESPONSE but escrow channel is not configured"
+                    );
                 }
                 Ok(())
             }
@@ -609,6 +613,10 @@ impl ConnectorService {
                 if let Some(ref tx) = self.escrow_inbound_tx {
                     tx.send(EscrowInboundMessage::MasterKeyInstall(bytes.to_vec()))
                         .map_err(|_| "escrow channel closed".to_string())?;
+                } else {
+                    tracing::warn!(
+                        "received MASTER_KEY_INSTALL but escrow channel is not configured"
+                    );
                 }
                 Ok(())
             }

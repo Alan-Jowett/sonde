@@ -1092,8 +1092,18 @@ impl TryFrom<ActualStateEntity> for ActualStateRow {
             timestamp_ms: value.timestamp_ms,
             encrypted_psk_escrow: value
                 .encrypted_psk_escrow
-                .and_then(|b64| base64::prelude::BASE64_STANDARD.decode(&b64).ok()),
-            escrow_key_hint: value.escrow_key_hint.map(|h| h as u16),
+                .map(|b64| {
+                    base64::prelude::BASE64_STANDARD.decode(&b64).map_err(|e| {
+                        HandlerError::Decode(format!("invalid base64 in encrypted_psk_escrow: {e}"))
+                    })
+                })
+                .transpose()?,
+            escrow_key_hint: match value.escrow_key_hint {
+                Some(h) => Some(u16::try_from(h).map_err(|_| {
+                    HandlerError::Decode(format!("escrow_key_hint {} out of u16 range", h))
+                })?),
+                None => None,
+            },
             escrow_key_version: value.escrow_key_version,
         })
     }
@@ -1247,19 +1257,39 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
             readings: decode_optional_readings(&map, 16)?,
         })),
         sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY => {
+            let public_key = required_bytes(&map, 2, "public_key")?;
+            if public_key.len() != 32 {
+                return Err(HandlerError::Decode(format!(
+                    "public_key has invalid length: expected 32 bytes, got {}",
+                    public_key.len()
+                )));
+            }
             Ok(ConnectorMessage::KeyEscrowPubkey(KeyEscrowPubkeyMessage {
-                public_key: required_bytes(&map, 2, "public_key")?,
+                public_key,
                 key_epoch: required_u64(&map, 3, "key_epoch")?,
                 created_at: required_u64(&map, 4, "created_at")?,
                 fingerprint_words: optional_text_array_field(&map, 5)?,
             }))
         }
-        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST => Ok(
-            ConnectorMessage::KeyEscrowRequest(KeyEscrowRequestMessage {
-                key_hint: required_u64(&map, 2, "key_hint")? as u16,
-                request_id: required_bytes(&map, 3, "request_id")?,
-            }),
-        ),
+        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST => {
+            let key_hint_raw = required_u64(&map, 2, "key_hint")?;
+            let key_hint = u16::try_from(key_hint_raw).map_err(|_| {
+                HandlerError::Decode(format!("key_hint {} exceeds u16::MAX", key_hint_raw))
+            })?;
+            let request_id = required_bytes(&map, 3, "request_id")?;
+            if request_id.len() != 16 {
+                return Err(HandlerError::Decode(format!(
+                    "request_id has invalid length: expected 16 bytes, got {}",
+                    request_id.len()
+                )));
+            }
+            Ok(ConnectorMessage::KeyEscrowRequest(
+                KeyEscrowRequestMessage {
+                    key_hint,
+                    request_id,
+                },
+            ))
+        }
         other => Ok(ConnectorMessage::Unsupported(other)),
     }
 }

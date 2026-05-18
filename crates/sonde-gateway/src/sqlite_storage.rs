@@ -1012,8 +1012,8 @@ impl Storage for SqliteStorage {
                 "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                  current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
                  firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
-                 sensors_json, registered_by_phone_id, firmware_version) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
+                 sensors_json, registered_by_phone_id, firmware_version, key_version) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
                  ON CONFLICT(node_id) DO UPDATE SET \
                  key_hint = excluded.key_hint, \
                  psk = excluded.psk, \
@@ -1026,7 +1026,8 @@ impl Storage for SqliteStorage {
                  rf_channel = excluded.rf_channel, \
                  sensors_json = excluded.sensors_json, \
                  registered_by_phone_id = excluded.registered_by_phone_id, \
-                 firmware_version = excluded.firmware_version",
+                 firmware_version = excluded.firmware_version, \
+                 key_version = excluded.key_version",
                 params![
                     record.node_id,
                     record.key_hint as u32,
@@ -1042,6 +1043,7 @@ impl Storage for SqliteStorage {
                     sensors_json,
                     record.registered_by_phone_id,
                     record.firmware_version,
+                    record.key_version as i64,
                 ],
             )
             .map_err(map_err)?;
@@ -1101,8 +1103,8 @@ impl Storage for SqliteStorage {
                     "INSERT OR IGNORE INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
                      firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
-                     sensors_json, registered_by_phone_id, firmware_version) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                     sensors_json, registered_by_phone_id, firmware_version, key_version) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                     params![
                         record.node_id,
                         record.key_hint as u32,
@@ -1118,6 +1120,7 @@ impl Storage for SqliteStorage {
                         sensors_json,
                         record.registered_by_phone_id,
                         record.firmware_version,
+                        record.key_version as i64,
                     ],
                 )
                 .map_err(map_err)?;
@@ -1354,8 +1357,8 @@ impl Storage for SqliteStorage {
                     conn.execute(
                         "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                          current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
-                         firmware_abi_version, last_battery_mv, last_seen_epoch_s, firmware_version) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                         firmware_abi_version, last_battery_mv, last_seen_epoch_s, firmware_version, key_version) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                         params![
                             &record.node_id,
                             record.key_hint,
@@ -1368,6 +1371,7 @@ impl Storage for SqliteStorage {
                             Option::<u32>::None,
                             Option::<i64>::None,
                             record.firmware_version,
+                            record.key_version as i64,
                         ],
                     )
                     .map_err(map_err)?;
@@ -1590,13 +1594,14 @@ impl Storage for SqliteStorage {
                 // Insert with a placeholder PSK to get the auto-increment id.
                 conn.execute(
                     "INSERT INTO phone_psks \
-                     (phone_key_hint, psk, label, issued_at_epoch_s, status) \
-                     VALUES (?1, X'00', ?2, ?3, ?4)",
+                     (phone_key_hint, psk, label, issued_at_epoch_s, status, key_version) \
+                     VALUES (?1, X'00', ?2, ?3, ?4, ?5)",
                     params![
                         record.phone_key_hint as u32,
                         &record.label,
                         issued_at,
                         record.status.to_string(),
+                        record.key_version as i64,
                     ],
                 )
                 .map_err(map_err)?;
@@ -1689,13 +1694,14 @@ impl Storage for SqliteStorage {
                     // Insert with a placeholder PSK to get the auto-increment id.
                     conn.execute(
                         "INSERT INTO phone_psks \
-                         (phone_key_hint, psk, label, issued_at_epoch_s, status) \
-                         VALUES (?1, X'00', ?2, ?3, ?4)",
+                         (phone_key_hint, psk, label, issued_at_epoch_s, status, key_version) \
+                         VALUES (?1, X'00', ?2, ?3, ?4, ?5)",
                         params![
                             record.phone_key_hint as u32,
                             &record.label,
                             issued_at,
                             record.status.to_string(),
+                            record.key_version as i64,
                         ],
                     )
                     .map_err(map_err)?;

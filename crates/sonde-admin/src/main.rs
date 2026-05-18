@@ -292,8 +292,9 @@ enum HandlerAction {
 #[derive(Subcommand)]
 enum KeyAction {
     /// Display the gateway's recovery public key fingerprint (ADMIN-0901).
+    /// Currently requires --public-key; gateway fetch will be added later.
     Fingerprint {
-        /// Hex-encoded public key (32 bytes). If not provided, fetches from gateway.
+        /// Hex-encoded public key (32 bytes). Required until gateway fetch is implemented.
         #[arg(long)]
         public_key: Option<String>,
     },

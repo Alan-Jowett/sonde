@@ -31,9 +31,6 @@ const RECOVERY_ENTRY_TTL: Duration = Duration::from_secs(30);
 /// Default rate limit: 1 request per key_hint per 60 seconds.
 const RATE_LIMIT_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Maximum outstanding recovery requests (global rate limit).
-const MAX_OUTSTANDING_REQUESTS: usize = 32;
-
 /// Maximum candidates in a recovery response.
 pub const MAX_RECOVERY_CANDIDATES: usize = 16;
 
@@ -105,12 +102,14 @@ impl RecoveryQueue {
     /// Returns `false` if:
     /// - Rate-limited (last request for this key_hint < 60s ago)
     /// - Queue is full (>= RECOVERY_QUEUE_CAPACITY entries)
-    /// - Global outstanding request limit reached
     pub fn can_request(&self, key_hint: u16) -> bool {
-        if self.entries.len() >= RECOVERY_QUEUE_CAPACITY {
-            return false;
-        }
-        if self.entries.len() >= MAX_OUTSTANDING_REQUESTS {
+        // Evict expired entries so stale entries don't block new requests.
+        let active_count = self
+            .entries
+            .values()
+            .filter(|e| e.created_at.elapsed() <= RECOVERY_ENTRY_TTL)
+            .count();
+        if active_count >= RECOVERY_QUEUE_CAPACITY {
             return false;
         }
         if let Some(&last) = self.hint_rate.get(&key_hint) {
@@ -123,18 +122,18 @@ impl RecoveryQueue {
 
     /// Buffer a frame for recovery and generate a request_id.
     ///
-    /// Returns the request_id to use in the KEY_ESCROW_REQUEST.
+    /// Returns `Ok(request_id)` or `Err` if the OS RNG fails.
     pub fn enqueue(
         &mut self,
         key_hint: u16,
         raw_frame: Vec<u8>,
         peer_address: [u8; 6],
-    ) -> [u8; 16] {
+    ) -> Result<[u8; 16], getrandom::Error> {
         // Evict expired entries
         self.evict_expired();
 
         let mut request_id = [0u8; 16];
-        getrandom::fill(&mut request_id).expect("rng failed");
+        getrandom::fill(&mut request_id)?;
 
         self.entries.insert(
             request_id,
@@ -146,7 +145,7 @@ impl RecoveryQueue {
             },
         );
         self.hint_rate.insert(key_hint, Instant::now());
-        request_id
+        Ok(request_id)
     }
 
     /// Look up and remove a buffered entry by request_id.
@@ -261,6 +260,28 @@ pub async fn load_or_generate_keypair(
     if let Some(record) = storage.get_escrow_keypair().await? {
         match decrypt_secret_key(master_key, &record.secret_enc) {
             Ok(secret) => {
+                // Validate that the stored public key matches the decrypted private key.
+                let derived_secret = StaticSecret::from(*secret);
+                let derived_public = PublicKey::from(&derived_secret);
+                if *derived_public.as_bytes() != record.public_key {
+                    warn!(
+                        epoch = record.epoch,
+                        "stored public key does not match decrypted private key, regenerating"
+                    );
+                    let (secret, public, epoch) = generate_keypair(record.epoch + 1);
+                    let secret_enc = encrypt_secret_key(master_key, &secret)?;
+                    let now_ms = now_ms();
+                    storage
+                        .store_escrow_keypair(&EscrowKeypairRecord {
+                            secret_enc,
+                            public_key: public,
+                            epoch,
+                            created_at: now_ms,
+                        })
+                        .await?;
+                    info!(epoch, "regenerated escrow keypair (public key mismatch)");
+                    return Ok((secret, public, epoch));
+                }
                 debug!(epoch = record.epoch, "loaded existing escrow keypair");
                 return Ok((secret, record.public_key, record.epoch));
             }
@@ -517,7 +538,7 @@ mod tests {
         assert!(queue.can_request(0x1234));
 
         // Enqueue a frame
-        let rid = queue.enqueue(0x1234, vec![1, 2, 3], [0; 6]);
+        let rid = queue.enqueue(0x1234, vec![1, 2, 3], [0; 6]).unwrap();
         assert_eq!(queue.len(), 1);
 
         // Cannot request same key_hint again (rate limited)
@@ -540,12 +561,12 @@ mod tests {
     fn test_recovery_queue_capacity_limit() {
         let mut queue = RecoveryQueue::new();
 
-        // Fill to global outstanding limit
-        for i in 0..MAX_OUTSTANDING_REQUESTS {
-            let _ = queue.enqueue(i as u16, vec![0], [0; 6]);
+        // Fill to capacity limit
+        for i in 0..RECOVERY_QUEUE_CAPACITY {
+            let _ = queue.enqueue(i as u16, vec![0], [0; 6]).unwrap();
         }
 
-        // Next request should be rejected (global limit)
+        // Next request should be rejected (capacity limit)
         assert!(!queue.can_request(0xFFFF));
     }
 

@@ -937,6 +937,9 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         sensors,
         registered_by_phone_id,
         battery_history: Vec::new(),
+        // TODO: key_version should be serialized in a future bundle format version.
+        // For now, all imported nodes are assigned key_version 0 to maintain backward
+        // compatibility with existing bundle files that don't include this field.
         key_version: 0,
     })
 }
@@ -1279,6 +1282,9 @@ fn phone_psk_from_cbor(v: ciborium::value::Value) -> Result<PhonePskRecord, Bund
         label,
         issued_at,
         status,
+        // TODO: key_version should be serialized in a future bundle format version.
+        // For now, all imported phone PSKs are assigned key_version 0 to maintain backward
+        // compatibility with existing bundle files that don't include this field.
         key_version: 0,
     })
 }

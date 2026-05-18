@@ -186,8 +186,9 @@ pub fn open_escrow_blob(
     ciphertext_and_tag.extend_from_slice(&blob.tag);
 
     match aead.open(master_key, &blob.nonce, &aad, &ciphertext_and_tag) {
-        Some(plaintext) => {
+        Some(mut plaintext) => {
             if plaintext.len() != 32 {
+                plaintext.fill(0);
                 return Err(DecodeError::CborError(alloc::format!(
                     "unexpected PSK length: {} (expected 32)",
                     plaintext.len()
@@ -195,6 +196,7 @@ pub fn open_escrow_blob(
             }
             let mut psk = [0u8; 32];
             psk.copy_from_slice(&plaintext);
+            plaintext.fill(0);
             Ok(Some(psk))
         }
         None => Ok(None),

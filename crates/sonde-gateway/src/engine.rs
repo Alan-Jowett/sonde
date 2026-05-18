@@ -417,13 +417,19 @@ impl Gateway {
                 let mut rq = self.recovery_queue.lock().await;
                 if rq.can_request(key_hint) {
                     let peer_addr: [u8; 6] = peer.as_slice().try_into().unwrap_or([0u8; 6]);
-                    let request_id = rq.enqueue(key_hint, raw.to_vec(), peer_addr);
-                    self.connector_event_hub
-                        .emit_key_escrow_request(key_hint, request_id.to_vec());
-                    debug!(
-                        key_hint,
-                        "emitted KEY_ESCROW_REQUEST for unknown node (escrow recovery)"
-                    );
+                    match rq.enqueue(key_hint, raw.to_vec(), peer_addr) {
+                        Ok(request_id) => {
+                            self.connector_event_hub
+                                .emit_key_escrow_request(key_hint, request_id.to_vec());
+                            debug!(
+                                key_hint,
+                                "emitted KEY_ESCROW_REQUEST for unknown node (escrow recovery)"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(key_hint, error = %e, "RNG failure in recovery enqueue, dropping frame");
+                        }
+                    }
                 } else {
                     debug!(
                         key_hint,

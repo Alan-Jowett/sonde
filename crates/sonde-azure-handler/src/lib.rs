@@ -316,9 +316,7 @@ where
                     .store_gateway_escrow_pubkey(&msg.public_key, msg.key_epoch, msg.created_at)
                     .await
             }
-            ConnectorMessage::KeyEscrowRequest(msg) => {
-                self.handle_key_escrow_request(msg).await
-            }
+            ConnectorMessage::KeyEscrowRequest(msg) => self.handle_key_escrow_request(msg).await,
             ConnectorMessage::Unsupported(msg_type) => {
                 warn!(msg_type, "ignoring unsupported connector message");
                 Ok(())
@@ -1256,12 +1254,12 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
                 fingerprint_words: optional_text_array_field(&map, 5)?,
             }))
         }
-        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST => {
-            Ok(ConnectorMessage::KeyEscrowRequest(KeyEscrowRequestMessage {
+        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST => Ok(
+            ConnectorMessage::KeyEscrowRequest(KeyEscrowRequestMessage {
                 key_hint: required_u64(&map, 2, "key_hint")? as u16,
                 request_id: required_bytes(&map, 3, "request_id")?,
-            }))
-        }
+            }),
+        ),
         other => Ok(ConnectorMessage::Unsupported(other)),
     }
 }

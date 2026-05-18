@@ -111,10 +111,7 @@ enum ConnectorOutboundMessage {
         fingerprint_words: Vec<String>,
     },
     /// Request escrowed PSK(s) for an unknown key_hint (GW-2009).
-    KeyEscrowRequest {
-        key_hint: u16,
-        request_id: Vec<u8>,
-    },
+    KeyEscrowRequest { key_hint: u16, request_id: Vec<u8> },
 }
 
 /// Gateway-scoped ACTUAL_STATE status_details for escrow.
@@ -280,22 +277,14 @@ impl ConnectorOutboundMessage {
             } => Value::Map(vec![
                 map_entry(
                     1,
-                    Value::Integer(
-                        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY.into(),
-                    ),
+                    Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY.into()),
                 ),
                 map_entry(2, Value::Bytes(public_key.clone())),
                 map_entry(3, Value::Integer((*key_epoch).into())),
                 map_entry(4, Value::Integer((*created_at).into())),
                 map_entry(
                     5,
-                    Value::Array(
-                        fingerprint_words
-                            .iter()
-                            .cloned()
-                            .map(Value::Text)
-                            .collect(),
-                    ),
+                    Value::Array(fingerprint_words.iter().cloned().map(Value::Text).collect()),
                 ),
             ]),
             Self::KeyEscrowRequest {
@@ -304,9 +293,7 @@ impl ConnectorOutboundMessage {
             } => Value::Map(vec![
                 map_entry(
                     1,
-                    Value::Integer(
-                        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST.into(),
-                    ),
+                    Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST.into()),
                 ),
                 map_entry(2, Value::Integer((*key_hint as u64).into())),
                 map_entry(3, Value::Bytes(request_id.clone())),

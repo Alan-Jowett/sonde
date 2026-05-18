@@ -197,10 +197,7 @@ impl Default for RecoveryQueue {
 /// Encrypt a 32-byte secret key using AES-256-GCM with a random nonce.
 ///
 /// Returns `nonce(12) || ciphertext+tag(48)`.
-fn encrypt_secret_key(
-    master_key: &[u8; 32],
-    secret: &[u8; 32],
-) -> Result<Vec<u8>, StorageError> {
+fn encrypt_secret_key(master_key: &[u8; 32], secret: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
     let key = Key::<Aes256Gcm>::from_slice(master_key);
     let cipher = Aes256Gcm::new(key);
 
@@ -235,15 +232,11 @@ fn decrypt_secret_key(
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(&blob[..12]);
 
-    let plaintext = Zeroizing::new(
-        cipher
-            .decrypt(nonce, &blob[12..])
-            .map_err(|_| {
-                StorageError::Internal(
-                    "secret key decryption failed — wrong master key or data corruption".into(),
-                )
-            })?,
-    );
+    let plaintext = Zeroizing::new(cipher.decrypt(nonce, &blob[12..]).map_err(|_| {
+        StorageError::Internal(
+            "secret key decryption failed — wrong master key or data corruption".into(),
+        )
+    })?);
 
     let mut secret = Zeroizing::new([0u8; 32]);
     if plaintext.len() != 32 {
@@ -345,10 +338,7 @@ pub async fn load_key_version(storage: &dyn Storage) -> Result<u64, StorageError
 }
 
 /// Persist the current key version.
-pub async fn store_key_version(
-    storage: &dyn Storage,
-    version: u64,
-) -> Result<(), StorageError> {
+pub async fn store_key_version(storage: &dyn Storage, version: u64) -> Result<(), StorageError> {
     storage
         .set_config("escrow_key_version", &version.to_string())
         .await
@@ -458,22 +448,25 @@ mod tests {
         let master_key = [0x42u8; 32];
 
         // First call generates a new keypair
-        let (secret1, public1, epoch1) =
-            load_or_generate_keypair(&storage, &master_key).await.unwrap();
+        let (secret1, public1, epoch1) = load_or_generate_keypair(&storage, &master_key)
+            .await
+            .unwrap();
         assert_eq!(epoch1, 1);
         assert_ne!(public1, [0u8; 32]);
 
         // Second call with same master key returns the same keypair
-        let (secret2, public2, epoch2) =
-            load_or_generate_keypair(&storage, &master_key).await.unwrap();
+        let (secret2, public2, epoch2) = load_or_generate_keypair(&storage, &master_key)
+            .await
+            .unwrap();
         assert_eq!(epoch2, 1);
         assert_eq!(public2, public1);
         assert_eq!(*secret2, *secret1);
 
         // Call with different master key generates a new keypair with incremented epoch
         let different_key = [0x99u8; 32];
-        let (_secret3, public3, epoch3) =
-            load_or_generate_keypair(&storage, &different_key).await.unwrap();
+        let (_secret3, public3, epoch3) = load_or_generate_keypair(&storage, &different_key)
+            .await
+            .unwrap();
         assert_eq!(epoch3, 2);
         assert_ne!(public3, public1);
     }
@@ -487,7 +480,9 @@ mod tests {
         assert_eq!(state, EscrowState::Disabled);
 
         // Store and reload
-        store_escrow_state(&storage, &EscrowState::Ready).await.unwrap();
+        store_escrow_state(&storage, &EscrowState::Ready)
+            .await
+            .unwrap();
         let state = load_escrow_state(&storage).await.unwrap();
         assert_eq!(state, EscrowState::Ready);
 

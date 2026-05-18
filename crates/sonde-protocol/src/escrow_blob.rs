@@ -128,7 +128,13 @@ pub fn seal_escrow_blob(
     psk: &[u8; 32],
     aead: &(impl AeadProvider + ?Sized),
 ) -> Result<EscrowBlob, EncodeError> {
-    let aad = build_escrow_aad(escrow_version, key_version, subject_kind, subject_id, key_hint)?;
+    let aad = build_escrow_aad(
+        escrow_version,
+        key_version,
+        subject_kind,
+        subject_id,
+        key_hint,
+    )?;
 
     let ciphertext_and_tag = aead.seal(master_key, nonce, &aad, psk);
 
@@ -331,17 +337,17 @@ pub fn decode_escrow_blob(cbor: &[u8]) -> Result<EscrowBlob, DecodeError> {
             .ok_or_else(|| DecodeError::CborError(String::from("missing escrow_version")))?,
         key_version: key_version
             .ok_or_else(|| DecodeError::CborError(String::from("missing key_version")))?,
-        subject_kind: subject_kind
-            .ok_or_else(|| DecodeError::CborError(String::from("missing or invalid subject_kind")))?,
+        subject_kind: subject_kind.ok_or_else(|| {
+            DecodeError::CborError(String::from("missing or invalid subject_kind"))
+        })?,
         subject_id: subject_id
             .ok_or_else(|| DecodeError::CborError(String::from("missing subject_id")))?,
         key_hint: key_hint
             .ok_or_else(|| DecodeError::CborError(String::from("missing key_hint")))?,
         nonce: nonce
             .ok_or_else(|| DecodeError::CborError(String::from("missing or invalid nonce")))?,
-        ciphertext: ciphertext.ok_or_else(|| {
-            DecodeError::CborError(String::from("missing or invalid ciphertext"))
-        })?,
+        ciphertext: ciphertext
+            .ok_or_else(|| DecodeError::CborError(String::from("missing or invalid ciphertext")))?,
         tag: tag.ok_or_else(|| DecodeError::CborError(String::from("missing or invalid tag")))?,
     })
 }
@@ -360,7 +366,8 @@ mod tests {
         let mut tag = [0u8; AEAD_TAG_SIZE];
         // Use wrapping_mul to break XOR cancellation from uniform keys
         for (i, &b) in key.iter().enumerate() {
-            tag[i % AEAD_TAG_SIZE] = tag[i % AEAD_TAG_SIZE].wrapping_add(b.wrapping_mul((i as u8).wrapping_add(1)));
+            tag[i % AEAD_TAG_SIZE] =
+                tag[i % AEAD_TAG_SIZE].wrapping_add(b.wrapping_mul((i as u8).wrapping_add(1)));
         }
         for (i, &b) in aad.iter().enumerate() {
             tag[i % AEAD_TAG_SIZE] ^= b.wrapping_add(i as u8);
@@ -372,13 +379,7 @@ mod tests {
     }
 
     impl AeadProvider for TestAead {
-        fn seal(
-            &self,
-            key: &[u8; 32],
-            nonce: &[u8; 12],
-            aad: &[u8],
-            plaintext: &[u8],
-        ) -> Vec<u8> {
+        fn seal(&self, key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
             let mut ct = plaintext.to_vec();
             for b in &mut ct {
                 *b ^= nonce[0];
@@ -604,9 +605,15 @@ mod tests {
         let pairs: Vec<(Value, Value)> = alloc::vec![
             (Value::Integer(1u64.into()), Value::Integer(257u64.into())),
             (Value::Integer(2u64.into()), Value::Integer(1u64.into())),
-            (Value::Integer(3u64.into()), Value::Text(String::from("node"))),
+            (
+                Value::Integer(3u64.into()),
+                Value::Text(String::from("node"))
+            ),
             (Value::Integer(4u64.into()), Value::Text(String::from("n1"))),
-            (Value::Integer(5u64.into()), Value::Integer(0x1234u64.into())),
+            (
+                Value::Integer(5u64.into()),
+                Value::Integer(0x1234u64.into())
+            ),
             (Value::Integer(6u64.into()), Value::Bytes(vec![0u8; 12])),
             (Value::Integer(7u64.into()), Value::Bytes(vec![0u8; 32])),
             (Value::Integer(8u64.into()), Value::Bytes(vec![0u8; 16])),
@@ -624,7 +631,10 @@ mod tests {
         let pairs: Vec<(Value, Value)> = alloc::vec![
             (Value::Integer(1u64.into()), Value::Integer(1u64.into())),
             (Value::Integer(2u64.into()), Value::Integer(1u64.into())),
-            (Value::Integer(3u64.into()), Value::Text(String::from("node"))),
+            (
+                Value::Integer(3u64.into()),
+                Value::Text(String::from("node"))
+            ),
             (Value::Integer(4u64.into()), Value::Text(String::from("n1"))),
             (Value::Integer(5u64.into()), Value::Integer(65536u64.into())),
             (Value::Integer(6u64.into()), Value::Bytes(vec![0u8; 12])),
@@ -646,9 +656,15 @@ mod tests {
         let pairs: Vec<(Value, Value)> = alloc::vec![
             (Value::Integer(1u64.into()), Value::Integer(1u64.into())),
             (Value::Integer(2u64.into()), Value::Integer(neg_one)),
-            (Value::Integer(3u64.into()), Value::Text(String::from("node"))),
+            (
+                Value::Integer(3u64.into()),
+                Value::Text(String::from("node"))
+            ),
             (Value::Integer(4u64.into()), Value::Text(String::from("n1"))),
-            (Value::Integer(5u64.into()), Value::Integer(0x1234u64.into())),
+            (
+                Value::Integer(5u64.into()),
+                Value::Integer(0x1234u64.into())
+            ),
             (Value::Integer(6u64.into()), Value::Bytes(vec![0u8; 12])),
             (Value::Integer(7u64.into()), Value::Bytes(vec![0u8; 32])),
             (Value::Integer(8u64.into()), Value::Bytes(vec![0u8; 16])),

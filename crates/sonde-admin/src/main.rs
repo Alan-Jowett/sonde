@@ -925,19 +925,21 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
         Commands::Key { action } => match action {
             KeyAction::Fingerprint { public_key } => {
                 let pubkey_bytes: [u8; 32] = if let Some(hex_str) = public_key {
-                    let bytes = hex::decode(hex_str).map_err(|e| {
-                        format!("invalid hex public key: {e}")
-                    })?;
+                    let bytes =
+                        hex::decode(hex_str).map_err(|e| format!("invalid hex public key: {e}"))?;
                     if bytes.len() != 32 {
                         return Err(format!(
                             "public key must be exactly 32 bytes, got {}",
                             bytes.len()
-                        ).into());
+                        )
+                        .into());
                     }
                     bytes.try_into().unwrap()
                 } else {
                     // TODO: Fetch from gateway via gRPC escrow status API
-                    return Err("--public-key is required (gateway fetch not yet implemented)".into());
+                    return Err(
+                        "--public-key is required (gateway fetch not yet implemented)".into(),
+                    );
                 };
 
                 let sha = AdminSha256;

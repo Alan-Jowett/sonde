@@ -93,7 +93,10 @@ mod tests {
         let fp1 = compute_fingerprint(&[0x42u8; 32], &sha);
         let fp2 = compute_fingerprint(&[0x43u8; 32], &sha);
 
-        assert_ne!(fp1, fp2, "different keys should produce different fingerprints");
+        assert_ne!(
+            fp1, fp2,
+            "different keys should produce different fingerprints"
+        );
     }
 
     // T-2011: All words are from the BIP-39 wordlist

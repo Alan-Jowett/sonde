@@ -1606,8 +1606,6 @@ async function renderActiveTab() {
     APP.sensorChart.destroy();
     APP.sensorChart = null;
   }
-  const requestedTab = location.hash.replace(/^#/, '') || 'dashboard';
-  setActiveTab(requestedTab);
 
   switch (APP.activeTab) {
     case 'desired-state':
@@ -1630,17 +1628,10 @@ function attachTabHandlers() {
   for (const button of document.querySelectorAll('.tab-button')) {
     button.addEventListener('click', () => {
       const nextTab = button.dataset.tab || 'dashboard';
-      if (location.hash.replace(/^#/, '') === nextTab) {
-        renderActiveTab().catch((error) => renderError('Navigation failed', error));
-        return;
-      }
-      location.hash = nextTab;
+      setActiveTab(nextTab);
+      renderActiveTab().catch((error) => renderError('Navigation failed', error));
     });
   }
-
-  window.addEventListener('hashchange', () => {
-    renderActiveTab().catch((error) => renderError('Navigation failed', error));
-  });
 }
 
 async function init() {
@@ -1653,9 +1644,7 @@ async function init() {
   }
   updateEnvironmentIndicator();
   await initMsal();
-  if (!location.hash) {
-    location.hash = 'dashboard';
-  }
+  setActiveTab('dashboard');
   await renderActiveTab();
 }
 
@@ -1882,11 +1871,9 @@ function showEnvironmentForm(existingEnv) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  // When MSAL loginPopup() opens a popup window, the popup loads this SPA.
-  // MSAL's parent window monitors the popup's URL hash for auth response params.
-  // If our init() runs in the popup and sets location.hash = 'dashboard', it
-  // overwrites the auth hash before MSAL can read it, causing
-  // hash_does_not_contain_known_properties.  Detect the popup context and bail.
+  // MSAL loginPopup() opens a popup that loads this SPA.  The popup only needs
+  // MSAL to process the auth response — skip full app init to avoid unnecessary
+  // API calls and rendering.
   if (window.opener && window.opener !== window) {
     return;
   }

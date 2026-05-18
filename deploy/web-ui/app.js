@@ -262,17 +262,6 @@ async function initMsal() {
   // Normalize pathname to directory (strip filename like index.html) so the
   // redirect URI matches the registered value (e.g. /sonde/ not /sonde/index.html).
   const basePath = window.location.pathname.replace(/\/[^/]*\.[^/]*$/, '/');
-
-  // The SPA uses hash-based routing (#dashboard, #sensor-data, etc.) but
-  // MSAL reads window.location.hash during construction and handleRedirectPromise().
-  // Temporarily clear the routing hash so MSAL doesn't try to parse it as an
-  // auth response.  Auth hashes (containing code=, error=, etc.) are left in place.
-  const currentHash = window.location.hash;
-  const isAuthHash = currentHash && (currentHash.includes('code=') || currentHash.includes('error=') || currentHash.includes('access_token='));
-  if (currentHash && !isAuthHash) {
-    history.replaceState(null, '', window.location.pathname + window.location.search);
-  }
-
   APP.msalApp = new msal.PublicClientApplication({
     auth: {
       clientId: CONFIG.msalClientId,
@@ -289,11 +278,6 @@ async function initMsal() {
     await APP.msalApp.handleRedirectPromise();
   } catch (error) {
     showViewMessage('error', parseErrorPayload(error, 'Authentication initialization failed.'));
-  }
-
-  // Restore the routing hash after MSAL has finished processing.
-  if (currentHash && !isAuthHash) {
-    history.replaceState(null, '', window.location.pathname + window.location.search + currentHash);
   }
 
   const account = APP.msalApp.getActiveAccount?.() || APP.msalApp.getAllAccounts()[0] || null;
@@ -1898,5 +1882,13 @@ function showEnvironmentForm(existingEnv) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // When MSAL loginPopup() opens a popup window, the popup loads this SPA.
+  // MSAL's parent window monitors the popup's URL hash for auth response params.
+  // If our init() runs in the popup and sets location.hash = 'dashboard', it
+  // overwrites the auth hash before MSAL can read it, causing
+  // hash_does_not_contain_known_properties.  Detect the popup context and bail.
+  if (window.opener && window.opener !== window) {
+    return;
+  }
   init().catch((error) => renderError('Application failed to start', error));
 });

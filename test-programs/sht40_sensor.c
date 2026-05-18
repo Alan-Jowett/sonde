@@ -210,8 +210,14 @@ int decode(struct decoder_context *ctx)
         ((__u32)data[21] << 24)
     );
 
+    /* Convert to millidegrees Fahrenheit: mF = mC * 9 / 5 + 32000 */
+    __s32 temp_mf = temp_mc * 9 / 5 + 32000;
+
     char name_temp[] = "temp_mc";
     emit_reading(name_temp, 7, (__s64)temp_mc);
+
+    char name_tempf[] = "temp_mf";
+    emit_reading(name_tempf, 7, (__s64)temp_mf);
 
     char name_rh[] = "rh_mpermille";
     emit_reading(name_rh, 12, (__s64)rh_mpermille);

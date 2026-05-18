@@ -704,7 +704,7 @@
 **Procedure:**
 1. Start a test gateway exposing the admin socket and instrument the admin `ShowModemDisplayMessage` RPC to capture all display updates.
 2. Run the bootstrap subcommand with device-flow and Bicep deployment stubbed. Configure the bootstrap container stub to emit the stderr markers `__SONDE_AZURE_DEPLOYMENT_START__`, `__SONDE_AZURE_DEPLOYING_HANDLER__`, and `__SONDE_AZURE_CONFIGURING_ENTRA__` at appropriate points.
-3. Assert: at least six distinct modem display updates are received during bootstrap (cert, auth, device code, deploying Azure, deploying handler, configuring Entra, writing config, complete).
+3. Assert: at least eight distinct modem display updates are received during bootstrap (cert, auth, device code, deploying Azure, deploying handler, configuring Entra, writing config, complete).
 4. Assert: "Deploying handler..." is displayed after "Deploying Azure...".
 5. Assert: "Configuring Entra..." is displayed after "Deploying handler...".
 6. Assert: each sub-phase also emits a corresponding stderr log message.

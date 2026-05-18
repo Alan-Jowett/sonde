@@ -126,7 +126,8 @@ message ScanModemChannelsResponse { repeated ChannelSurveyEntry entries = 1; }
 message ShowModemDisplayMessageRequest {
     repeated string lines = 1;
     // When true, the message stays on the display indefinitely until replaced
-    // by another ShowModemDisplayMessage call or a BLE pairing session.
+    // by another ShowModemDisplayMessage call, a BLE pairing session, a
+    // button-driven status-page navigation, or gateway restart.
     // When false (default), the gateway restores the version banner after 60 s.
     bool persistent = 2;
 }

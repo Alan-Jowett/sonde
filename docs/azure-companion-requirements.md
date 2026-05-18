@@ -265,6 +265,8 @@ AZC-0205.
 5. The earlier `bootstrap-auth` subcommand name is no longer accepted.
 6. Invoking `sonde-azure-companion bootstrap` from the Windows native binary performs the same end-to-end provisioning lifecycle as the Linux bootstrap path, subject to the same Docker and Azure prerequisites.
 7. By default, the unified bootstrap path launches the version-tagged `sonde-azure-bootstrap` image that matches the companion release version.
+8. If valid bootstrap-complete state already exists in the state directory and the `--force` flag is not passed, the `bootstrap` subcommand exits successfully without performing any provisioning work. This allows `docker compose up -d` to skip redundant bootstrap on restart.
+9. If valid bootstrap-complete state already exists and `--force` is passed, the `bootstrap` subcommand proceeds with the full provisioning lifecycle as if no state existed.
 
 ---
 
@@ -749,22 +751,22 @@ container.
 **Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771) AC-2, AZP-0300
 
 **Description:**
-Re-running the unified `bootstrap` subcommand on an already-provisioned system
-MUST be safe. Bootstrap MUST re-generate the certificate, re-run the Bicep
-deployment, and re-write the runtime artifacts. The Bicep deployment is
-inherently idempotent; certificate regeneration updates the Entra application
-credential. Bootstrap MUST use a staging approach so that a failed re-bootstrap
-does not corrupt the existing working state.
+Re-running the unified `bootstrap` subcommand with `--force` on an
+already-provisioned system MUST be safe. Forced bootstrap MUST re-generate the
+certificate, re-run the Bicep deployment, and re-write the runtime artifacts.
+The Bicep deployment is inherently idempotent; certificate regeneration updates
+the Entra application credential. Bootstrap MUST use a staging approach so that
+a failed re-bootstrap does not corrupt the existing working state.
 
 **Acceptance criteria:**
 
-1. Re-running bootstrap on a system with existing provisioning artifacts succeeds without errors.
-2. Re-bootstrap regenerates the certificate and private key.
-3. Re-bootstrap re-runs the Bicep deployment with the new certificate.
-4. Re-bootstrap updates `service-principal.json` with any changed values.
-5. The runtime can start successfully after re-bootstrap.
-6. If re-bootstrap fails at any phase after authentication, the previous working state remains intact.
-7. No staging artifacts remain in the state volume after a failed re-bootstrap.
+1. Re-running bootstrap with `--force` on a system with existing provisioning artifacts succeeds without errors.
+2. Forced re-bootstrap regenerates the certificate and private key.
+3. Forced re-bootstrap re-runs the Bicep deployment with the new certificate.
+4. Forced re-bootstrap updates `service-principal.json` with any changed values.
+5. The runtime can start successfully after forced re-bootstrap.
+6. If forced re-bootstrap fails at any phase after authentication, the previous working state remains intact.
+7. No staging artifacts remain in the state volume after a failed forced re-bootstrap.
 
 ---
 
@@ -853,3 +855,33 @@ deploy SPA content to the Static Web App.
 6. Re-running bootstrap updates the SPA content and Entra configuration idempotently.
 7. If SPA deployment fails, bootstrap exits non-zero and does not report success.
 8. The Entra app registration exposes `api://<clientId>/user_impersonation` as an API scope after bootstrap.
+
+---
+
+### AZC-0411  Bootstrap `--force` flag
+
+**Priority:** Must
+**Source:** [issue #953](https://github.com/Alan-Jowett/sonde/issues/953)
+
+**Description:**
+The `bootstrap` subcommand MUST accept a `--force` flag (also settable via the
+`SONDE_AZURE_BOOTSTRAP_FORCE` environment variable). When valid
+bootstrap-complete state already exists in the state directory:
+
+- Without `--force`, the subcommand prints a diagnostic message to stderr and
+  exits successfully without performing any provisioning work.
+- With `--force`, the subcommand performs the full provisioning lifecycle
+  unconditionally, as described in AZC-0201.
+
+This ensures that `docker compose up -d` after a previous successful bootstrap
+does not force the operator through interactive Azure device-code
+authentication unnecessarily, while still allowing explicit re-provisioning
+when needed (e.g., credential rotation).
+
+**Acceptance criteria:**
+
+1. `BootstrapArgs` includes a `--force` boolean flag with a default of `false`.
+2. The `--force` flag is also settable via the `SONDE_AZURE_BOOTSTRAP_FORCE` environment variable.
+3. When valid state exists and `--force` is not set, bootstrap prints a message to stderr indicating that state already exists and exits with status 0.
+4. When valid state exists and `--force` is set, bootstrap performs the full provisioning lifecycle.
+5. When no valid state exists, bootstrap performs the full provisioning lifecycle regardless of the `--force` flag.

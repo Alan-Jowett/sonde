@@ -187,6 +187,10 @@ struct BootstrapArgs {
     /// DNS zone name for the custom domain (defaults to custom_domain_name for apex domains).
     #[arg(long, env = "SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME")]
     custom_domain_dns_zone_name: Option<String>,
+
+    /// Force re-provisioning even when valid bootstrap state already exists.
+    #[arg(long, env = "SONDE_AZURE_BOOTSTRAP_FORCE")]
+    force: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2284,6 +2288,16 @@ async fn bootstrap(
 ) -> Result<(), CompanionError> {
     std::fs::create_dir_all(state_dir)?;
 
+    if !args.force {
+        if let Some(generation) = active_state_generation_name(state_dir)? {
+            eprintln!(
+                "Bootstrap state already present (generation `{generation}`); \
+                 skipping. Use --force to re-deploy."
+            );
+            return Ok(());
+        }
+    }
+
     let staging_dir = prepare_staging_dir(state_dir)?;
 
     if let Err(err) = display_progress(admin_socket, "Generating cert...").await {
@@ -2803,18 +2817,19 @@ mod tests {
     #[cfg(unix)]
     use super::validate_certificate_matches_private_key;
     use super::{
-        check_runtime_ready, cleanup_staging, commit_staging, default_bootstrap_image,
-        downstream_body_to_connector_payload, extract_device_code, extract_xml_element,
-        generate_certificate, load_runtime_config, load_runtime_credential_state, load_signing_key,
-        parse_bicep_outputs, parse_queue_message_xml, prepare_staging_dir, pump_downstream_once,
-        pump_upstream_once, read_framed, resolve_bootstrap_image, resolve_effective_state_dir,
-        resolve_login_endpoint, resolve_state_relative_path,
-        run_bootstrap_deployment_with_docker_and_image, trim_buffer_to_max_len, urlencoding_encode,
-        validate_display_lines, write_framed, ClientAssertionCredential, CompanionError,
-        DownstreamConsumer, RuntimeConfig, RuntimeCredentialState, ServicePrincipalStateFile,
-        StorageQueuesConfigFile, UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME,
-        CONNECTOR_MAX_FRAME_LENGTH, DEFAULT_LOGIN_ENDPOINT, KEY_PEM_FILENAME,
-        SERVICE_PRINCIPAL_STATE_FILENAME, STATE_GENERATION_PREFIX, STORAGE_QUEUES_CONFIG_FILENAME,
+        active_state_generation_name, check_runtime_ready, cleanup_staging, commit_staging,
+        default_bootstrap_image, downstream_body_to_connector_payload, extract_device_code,
+        extract_xml_element, generate_certificate, load_runtime_config,
+        load_runtime_credential_state, load_signing_key, parse_bicep_outputs,
+        parse_queue_message_xml, prepare_staging_dir, pump_downstream_once, pump_upstream_once,
+        read_framed, resolve_bootstrap_image, resolve_effective_state_dir, resolve_login_endpoint,
+        resolve_state_relative_path, run_bootstrap_deployment_with_docker_and_image,
+        trim_buffer_to_max_len, urlencoding_encode, validate_display_lines, write_framed,
+        ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
+        RuntimeCredentialState, ServicePrincipalStateFile, StorageQueuesConfigFile,
+        UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH,
+        DEFAULT_LOGIN_ENDPOINT, KEY_PEM_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME,
+        STAGING_DIR_NAME, STATE_GENERATION_PREFIX, STORAGE_QUEUES_CONFIG_FILENAME,
     };
     #[cfg(windows)]
     use super::{
@@ -3957,6 +3972,7 @@ mod tests {
             custom_domain_name: None,
             custom_domain_dns_resource_group: None,
             custom_domain_dns_zone_name: None,
+            force: false,
         };
 
         let err = run_bootstrap_deployment_with_docker_and_image(
@@ -4424,12 +4440,122 @@ mod tests {
             custom_domain_name: None,
             custom_domain_dns_resource_group: None,
             custom_domain_dns_zone_name: None,
+            force: false,
         };
 
         let err = super::bootstrap("/tmp/sonde-missing-admin.sock", temp.path(), args)
             .await
             .unwrap_err();
         assert!(!temp.path().join(".staging").exists());
+        assert!(matches!(err, CompanionError::TonicTransport(_)));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_skips_when_valid_state_exists() {
+        let temp = TempDir::new().unwrap();
+
+        // Create valid bootstrap-complete state via staging + commit.
+        let staging_dir = prepare_staging_dir(temp.path()).unwrap();
+        std::fs::write(staging_dir.join(CERT_PEM_FILENAME), b"cert").unwrap();
+        std::fs::write(staging_dir.join(KEY_PEM_FILENAME), b"key").unwrap();
+        std::fs::write(
+            staging_dir.join(SERVICE_PRINCIPAL_STATE_FILENAME),
+            serde_json::to_vec(&ServicePrincipalStateFile {
+                tenant_id: "t".to_string(),
+                client_id: "c".to_string(),
+                login_endpoint: None,
+                certificate_path: CERT_PEM_FILENAME.to_string(),
+                private_key_path: KEY_PEM_FILENAME.to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            staging_dir.join(STORAGE_QUEUES_CONFIG_FILENAME),
+            serde_json::to_vec(&StorageQueuesConfigFile {
+                queue_endpoint: "https://q.example.net".to_string(),
+                upstream_queue: "up".to_string(),
+                downstream_queue: "down".to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        commit_staging(&staging_dir, temp.path()).unwrap();
+
+        let generation_before = active_state_generation_name(temp.path()).unwrap().unwrap();
+
+        let args = super::BootstrapArgs {
+            azure_location: "westus2".to_string(),
+            azure_project_name: "sonde".to_string(),
+            azure_subscription_id: None,
+            bootstrap_image: None,
+            custom_domain_name: None,
+            custom_domain_dns_resource_group: None,
+            custom_domain_dns_zone_name: None,
+            force: false,
+        };
+
+        // Should succeed without contacting any external service.
+        super::bootstrap("/tmp/sonde-missing-admin.sock", temp.path(), args)
+            .await
+            .unwrap();
+
+        // State must be unchanged — no new generation created, no staging dir.
+        let generation_after = active_state_generation_name(temp.path()).unwrap().unwrap();
+        assert_eq!(generation_before, generation_after);
+        assert!(!temp.path().join(STAGING_DIR_NAME).exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bootstrap_force_overrides_early_exit() {
+        let temp = TempDir::new().unwrap();
+
+        // Create valid bootstrap-complete state.
+        let staging_dir = prepare_staging_dir(temp.path()).unwrap();
+        std::fs::write(staging_dir.join(CERT_PEM_FILENAME), b"cert").unwrap();
+        std::fs::write(staging_dir.join(KEY_PEM_FILENAME), b"key").unwrap();
+        std::fs::write(
+            staging_dir.join(SERVICE_PRINCIPAL_STATE_FILENAME),
+            serde_json::to_vec(&ServicePrincipalStateFile {
+                tenant_id: "t".to_string(),
+                client_id: "c".to_string(),
+                login_endpoint: None,
+                certificate_path: CERT_PEM_FILENAME.to_string(),
+                private_key_path: KEY_PEM_FILENAME.to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            staging_dir.join(STORAGE_QUEUES_CONFIG_FILENAME),
+            serde_json::to_vec(&StorageQueuesConfigFile {
+                queue_endpoint: "https://q.example.net".to_string(),
+                upstream_queue: "up".to_string(),
+                downstream_queue: "down".to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        commit_staging(&staging_dir, temp.path()).unwrap();
+
+        let args = super::BootstrapArgs {
+            azure_location: "westus2".to_string(),
+            azure_project_name: "sonde".to_string(),
+            azure_subscription_id: None,
+            bootstrap_image: None,
+            custom_domain_name: None,
+            custom_domain_dns_resource_group: None,
+            custom_domain_dns_zone_name: None,
+            force: true,
+        };
+
+        // With --force, bootstrap should NOT skip — it will attempt to proceed
+        // and fail because there's no admin socket, proving the early-exit was
+        // bypassed.
+        let err = super::bootstrap("/tmp/sonde-missing-admin.sock", temp.path(), args)
+            .await
+            .unwrap_err();
         assert!(matches!(err, CompanionError::TonicTransport(_)));
     }
 

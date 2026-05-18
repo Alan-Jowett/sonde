@@ -232,7 +232,7 @@ transport and the runtime bridge semantics already defined in section 5.
 ## 4  Bootstrap flow
 
 > **Requirements:** AZC-0200, AZC-0201, AZC-0202, AZC-0203, AZC-0204, AZC-0205, AZC-0300,
-> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0407, AZC-0408, AZC-0409
+> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0407, AZC-0408, AZC-0409, AZC-0411
 
 ### 4.1  Bootstrap trigger
 
@@ -254,6 +254,14 @@ service auto-start path is fail-closed before bootstrap-complete state exists.
 When bootstrap is required, the Azure companion performs this sequence:
 
 1. Invoke `sonde-azure-companion bootstrap`.
+   - **Early-exit guard (AZC-0411):** Before any provisioning work, check
+     whether valid bootstrap-complete state already exists by calling
+     `active_state_generation_name(state_dir)`. If it returns `Some(…)` and
+     the `--force` flag is not set, print a diagnostic message to stderr
+     (e.g., "Bootstrap state already present; skipping. Use --force to
+     re-deploy.") and return success immediately. This allows
+     `docker compose up -d` to skip redundant bootstrap on restart.
+     If `--force` is set, proceed with the full sequence below.
 2. Display "Generating cert…" on the modem display via the admin API.
 3. Generate a self-signed ECDSA P-256 X.509 certificate and private key using
    Rust crypto libraries. The certificate has a 2-year default validity period.
@@ -340,7 +348,7 @@ non-zero status. It does not continue to a console-only fallback.
 ## 5  Rust binary interface
 
 > **Requirements:** AZC-0100, AZC-0102, AZC-0103, AZC-0104, AZC-0105, AZC-0201, AZC-0202, AZC-0205, AZC-0300, AZC-0301, AZC-0302, AZC-0304, AZC-0305,
-> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0410
+> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0410, AZC-0411
 
 The `sonde-azure-companion` binary exposes three cross-platform runtime modes
 plus Windows service-management entrypoints:
@@ -353,7 +361,10 @@ plus Windows service-management entrypoints:
    artifact creation (`service-principal.json`, `storage-queues.json`,
    certificate PEM, private-key PEM). The Rust code monitors the bootstrap
    container's output to extract the device code and display it on the modem
-   via the gateway admin API.
+   via the gateway admin API. If valid bootstrap-complete state already exists
+   and `--force` is not passed, the subcommand exits successfully without
+   performing any provisioning work (AZC-0411). Accepts `--force` (env:
+   `SONDE_AZURE_BOOTSTRAP_FORCE`) to override this early-exit behavior.
 3. **`display-message`** — helper mode used by bootstrap logic to call the
    gateway admin `ShowModemDisplayMessage` RPC with 1 to 4 lines of text.
 4. **`install`** *(Windows)* — registers or updates the native Windows service

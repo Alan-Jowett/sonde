@@ -274,16 +274,18 @@ async function initMsal() {
     },
   });
 
-  // Only process MSAL redirect response if the hash looks like an auth response.
-  // The SPA uses hash-based routing (#dashboard, #sensor-data, etc.) which MSAL
-  // would otherwise attempt to parse, causing hash_does_not_contain_known_properties.
+  // The SPA uses hash-based routing (#dashboard, #sensor-data, etc.).
+  // MSAL also uses the URL hash for redirect auth responses.  Determine
+  // whether the current hash is an auth response or an app route, and
+  // pass the appropriate value to handleRedirectPromise().
   const hash = window.location.hash;
-  if (hash && (hash.includes('code=') || hash.includes('error=') || hash.includes('access_token='))) {
-    try {
-      await APP.msalApp.handleRedirectPromise();
-    } catch (error) {
-      showViewMessage('error', parseErrorPayload(error, 'Authentication initialization failed.'));
-    }
+  const isAuthHash = hash && (hash.includes('code=') || hash.includes('error=') || hash.includes('access_token='));
+  try {
+    // Pass the hash explicitly: the real hash for auth responses, or
+    // empty string for app routing hashes so MSAL doesn't try to parse them.
+    await APP.msalApp.handleRedirectPromise(isAuthHash ? hash : '');
+  } catch (error) {
+    showViewMessage('error', parseErrorPayload(error, 'Authentication initialization failed.'));
   }
 
   const account = APP.msalApp.getActiveAccount?.() || APP.msalApp.getAllAccounts()[0] || null;

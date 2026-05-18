@@ -2368,6 +2368,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_try_record_operation_idempotency() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+        let op_id = [0x42u8; 16];
+
+        // First call succeeds (new operation)
+        let first = store.try_record_operation(&op_id).await.unwrap();
+        assert!(first, "first recording should succeed");
+
+        // Duplicate returns false
+        let second = store.try_record_operation(&op_id).await.unwrap();
+        assert!(!second, "duplicate recording should return false");
+
+        // Different operation_id succeeds
+        let other = [0x99u8; 16];
+        let third = store.try_record_operation(&other).await.unwrap();
+        assert!(third, "different operation_id should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_pending_rotation_round_trip_and_delete() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        // Initially empty
+        assert!(store.get_pending_rotation().await.unwrap().is_none());
+
+        // Store a record
+        let record = crate::storage::PendingRotationRecord {
+            new_master_key_enc: vec![0xAAu8; 48],
+            new_key_version: 3,
+            operation_id: [0x55u8; 16],
+            privkey_rewrapped: false,
+            started_at: 1_700_000_000,
+        };
+        store.store_pending_rotation(&record).await.unwrap();
+
+        // Load and verify round-trip
+        let loaded = store.get_pending_rotation().await.unwrap().unwrap();
+        assert_eq!(loaded.new_master_key_enc, record.new_master_key_enc);
+        assert_eq!(loaded.new_key_version, 3);
+        assert_eq!(loaded.operation_id, [0x55u8; 16]);
+        assert!(!loaded.privkey_rewrapped);
+        assert_eq!(loaded.started_at, 1_700_000_000);
+
+        // Delete clears it
+        store.delete_pending_rotation().await.unwrap();
+        assert!(store.get_pending_rotation().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn test_program_source_filename_migrates_legacy_paths_on_open() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("program-source-filename-migration.db");

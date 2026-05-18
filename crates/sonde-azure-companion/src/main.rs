@@ -2085,6 +2085,8 @@ async fn stream_container_output(
     let mut stderr_buffer = String::new();
     let mut device_code_displayed = false;
     let mut deployment_displayed = false;
+    let mut handler_displayed = false;
+    let mut entra_displayed = false;
 
     while let Some(result) = logs.next().await {
         match result {
@@ -2096,14 +2098,25 @@ async fn stream_container_output(
                 let text = String::from_utf8_lossy(&message);
                 eprint!("{text}");
                 stderr_buffer.push_str(&text);
-                const MAX_STDERR_BUFFER_LEN: usize = 4096;
-                trim_buffer_to_max_len(&mut stderr_buffer, MAX_STDERR_BUFFER_LEN);
 
+                // Detect markers before trimming so large chunks cannot
+                // push a marker out of the buffer before it is scanned.
                 if !deployment_displayed
                     && stderr_buffer.contains("__SONDE_AZURE_DEPLOYMENT_START__")
                 {
                     display_progress(admin_socket, "Deploying Azure...").await?;
                     deployment_displayed = true;
+                }
+
+                if !handler_displayed && stderr_buffer.contains("__SONDE_AZURE_DEPLOYING_HANDLER__")
+                {
+                    display_progress(admin_socket, "Deploying handler...").await?;
+                    handler_displayed = true;
+                }
+
+                if !entra_displayed && stderr_buffer.contains("__SONDE_AZURE_CONFIGURING_ENTRA__") {
+                    display_progress(admin_socket, "Configuring Entra...").await?;
+                    entra_displayed = true;
                 }
 
                 if !device_code_displayed {
@@ -2112,6 +2125,7 @@ async fn stream_container_output(
                         if let Err(e) = display_message(
                             admin_socket,
                             vec!["Azure login".to_string(), device_code],
+                            true,
                         )
                         .await
                         {
@@ -2122,6 +2136,9 @@ async fn stream_container_output(
                         device_code_displayed = true;
                     }
                 }
+
+                const MAX_STDERR_BUFFER_LEN: usize = 4096;
+                trim_buffer_to_max_len(&mut stderr_buffer, MAX_STDERR_BUFFER_LEN);
             }
             Ok(LogOutput::Console { message }) => {
                 let text = String::from_utf8_lossy(&message);
@@ -2254,17 +2271,21 @@ async fn run_bootstrap_deployment_with_docker_and_image(
     bootstrap_result
 }
 
-async fn display_message(admin_socket: &str, lines: Vec<String>) -> Result<(), CompanionError> {
+async fn display_message(
+    admin_socket: &str,
+    lines: Vec<String>,
+    persistent: bool,
+) -> Result<(), CompanionError> {
     validate_display_lines(&lines)?;
     let mut client = connect_admin(admin_socket).await?;
     client
-        .show_modem_display_message(ShowModemDisplayMessageRequest { lines })
+        .show_modem_display_message(ShowModemDisplayMessageRequest { lines, persistent })
         .await?;
     Ok(())
 }
 
 async fn display_progress(admin_socket: &str, msg: &str) -> Result<(), CompanionError> {
-    display_message(admin_socket, vec![msg.to_string()]).await
+    display_message(admin_socket, vec![msg.to_string()], false).await
 }
 
 async fn report_bootstrap_failure(
@@ -2773,7 +2794,9 @@ async fn run_cli() -> Result<(), CompanionError> {
     match cli.command.clone().unwrap_or(Command::Run) {
         Command::Run => run(&cli.connector_socket, &cli.state_dir).await?,
         Command::Bootstrap(args) => bootstrap(&cli.admin_socket, &cli.state_dir, args).await?,
-        Command::DisplayMessage { lines } => display_message(&cli.admin_socket, lines).await?,
+        Command::DisplayMessage { lines } => {
+            display_message(&cli.admin_socket, lines, false).await?
+        }
         Command::CheckRuntimeReady => {
             check_runtime_ready(&cli.state_dir)?;
         }

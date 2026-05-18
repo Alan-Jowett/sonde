@@ -1041,7 +1041,7 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 | Modem status | `GetModemStatus` | Returns modem status: radio channel, TX/RX/fail counters, uptime. |
 | Set modem channel | `SetModemChannel` | Sets the ESP-NOW radio channel (1–14). Persists the new channel in the database (GW-0808). |
 | Scan channels | `ScanModemChannels` | Scans all WiFi channels for AP activity, returns AP counts and RSSI per channel. |
-| Show transient modem display text | `ShowModemDisplayMessage` | Renders 1–4 gateway-supplied text lines on the modem display for 60 s, then restores the normal gateway banner (GW-0809). |
+| Show transient modem display text | `ShowModemDisplayMessage` | Renders 1–4 gateway-supplied text lines on the modem display. When `persistent` is false (default), restores the normal gateway banner after 60 s; when true, the message remains until replaced (GW-0809). |
 | Open BLE pairing | `OpenBlePairing` | Opens an admin-initiated phone registration window and sends `BLE_ENABLE` to the modem. Server-streaming RPC returning pairing events (passkey, phone connected/disconnected/registered, window closed). |
 | Close BLE pairing | `CloseBlePairing` | Closes the active BLE pairing session and sends `BLE_DISABLE` to the modem. |
 | Confirm BLE pairing | `ConfirmBlePairing` | Accepts or rejects a Numeric Comparison passkey during an admin-initiated BLE pairing session. |
@@ -1394,26 +1394,34 @@ If another `BUTTON_SHORT` arrives before the timeout fires, the gateway advances
 The admin API exposes a gateway-owned transient display override for operator
 prompts such as headless device-login codes. This remains an operator/admin
 workflow; the control-plane connector model in §13A does not introduce a second
-display-control path. The shared helper accepts 1 to 4 text lines and rejects
-the request with `FAILED_PRECONDITION` if a BLE pairing session currently owns
-the display, so pairing passkeys and terminal status screens remain visible.
+display-control path. The shared helper accepts 1 to 4 text lines and an
+optional `persistent` flag, and rejects the request with `FAILED_PRECONDITION`
+if a BLE pairing session currently owns the display, so pairing passkeys and
+terminal status screens remain visible.
 
 On success, the gateway renders the supplied lines with the same centered
 128×64 text renderer used for the startup banner and button-pairing status
 screens, then sends the resulting framebuffer through the existing reliable
 display-transfer path. The RPC returns after that initial display update
-completes; the caller does not remain connected for the 60-second dwell time.
+completes; the caller does not remain connected for any dwell time.
 
-The transient-display path reuses the same display-ownership machinery as
-button-driven status pages: it cancels any active `Nodes` scroll task, resets
-the status-page cycle to the normal starting position, increments
-`display_generation`, and spawns a 60-second restore task tied to the captured
-generation. When that task fires, it restores the default
+When `persistent` is false (the default), the transient-display path reuses the
+same display-ownership machinery as button-driven status pages: it cancels any
+active `Nodes` scroll task, resets the status-page cycle to the normal starting
+position, increments `display_generation`, and spawns a 60-second restore task
+tied to the captured generation. When that task fires, it restores the default
 `Sonde Gateway v<semver>` banner only if its generation is still current and no
 BLE pairing session owns the display. A newer transient-display request, a
 button-driven status-page update, or a pairing display transition invalidates
 the older generation, causing the stale restore task to exit without
 overwriting the newer screen.
+
+When `persistent` is true, the gateway still cancels any active scroll task,
+resets the status-page cycle, and increments `display_generation`, but it does
+**not** spawn the 60-second restore task. The message remains on the display
+until a subsequent `ShowModemDisplayMessage` call (persistent or not), a
+button-driven status-page update, or a BLE pairing session claims the display
+through the normal generation mechanism.
 
 ### 17.5  `PEER_REQUEST` processing
 

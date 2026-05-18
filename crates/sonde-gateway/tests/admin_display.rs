@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Admin transient display tests (T-0815f through T-0815j).
+//! Admin transient display tests (T-0815f through T-0815l).
 
 mod common;
 
@@ -117,6 +117,8 @@ async fn t0815f_transient_modem_display_via_admin_api() {
             admin
                 .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
                     lines: vec!["Device login".to_string()],
+
+                    persistent: false,
                 }))
                 .await
         }
@@ -136,6 +138,8 @@ async fn t0815f_transient_modem_display_via_admin_api() {
                         "Code".to_string(),
                         "ABCD-EFGH".to_string(),
                     ],
+
+                    persistent: false,
                 }))
                 .await
         }
@@ -170,6 +174,8 @@ async fn t0815g_new_transient_display_request_replaces_older_one() {
             admin
                 .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
                     lines: vec!["First".to_string()],
+
+                    persistent: false,
                 }))
                 .await
         }
@@ -186,6 +192,8 @@ async fn t0815g_new_transient_display_request_replaces_older_one() {
             admin
                 .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
                     lines: vec!["Second".to_string()],
+
+                    persistent: false,
                 }))
                 .await
         }
@@ -218,6 +226,8 @@ async fn t0815h_transient_display_rejected_during_ble_pairing() {
     let err = admin
         .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
             lines: vec!["Blocked".to_string()],
+
+            persistent: false,
         }))
         .await
         .expect_err("display request must fail during active BLE pairing");
@@ -239,6 +249,8 @@ async fn t0815i_transient_display_rejects_invalid_line_count() {
     let err = admin
         .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
             lines: vec![],
+
+            persistent: false,
         }))
         .await
         .expect_err("empty line set must be rejected");
@@ -253,6 +265,8 @@ async fn t0815i_transient_display_rejects_invalid_line_count() {
                 "4".to_string(),
                 "5".to_string(),
             ],
+
+            persistent: false,
         }))
         .await
         .expect_err("more than four lines must be rejected");
@@ -278,6 +292,8 @@ async fn t0815j_transient_display_without_modem_transport_is_unavailable() {
     let err = admin
         .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
             lines: vec!["Unavailable".to_string()],
+
+            persistent: false,
         }))
         .await
         .expect_err("missing modem transport must produce UNAVAILABLE");
@@ -297,6 +313,8 @@ async fn admin_display_failure_restores_gateway_banner() {
             admin
                 .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
                     lines: vec!["Device login".to_string()],
+
+                    persistent: false,
                 }))
                 .await
         }
@@ -325,4 +343,120 @@ async fn admin_display_failure_restores_gateway_banner() {
         .unwrap()
         .expect_err("mismatched ACK must fail the admin display request");
     assert_eq!(err.code(), Code::Internal);
+}
+
+/// T-0815k: A persistent display message stays on screen indefinitely (no 60 s
+/// restore timer) and is replaced when a subsequent non-persistent call arrives.
+#[tokio::test]
+async fn t0815k_persistent_transient_display_message() {
+    tokio::time::pause();
+
+    let (admin, mut server, _controller, _storage) = build_admin_with_modem(6).await;
+    let admin = Arc::new(admin);
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 2048];
+
+    // Send a persistent message.
+    let persistent_req = tokio::spawn({
+        let admin = Arc::clone(&admin);
+        async move {
+            admin
+                .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
+                    lines: vec!["Azure login".to_string(), "ABCD-EFGH".to_string()],
+                    persistent: true,
+                }))
+                .await
+        }
+    });
+    let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+    assert_eq!(
+        framebuffer,
+        render_display_message(&["Azure login", "ABCD-EFGH"])
+    );
+    persistent_req.await.unwrap().unwrap();
+
+    // Wait well past the normal 60 s timeout — no banner restore should occur.
+    assert_no_stream_data_while_time_paused(
+        &mut server,
+        &mut buf,
+        Duration::from_secs(120),
+        "persistent message must not be restored after any timeout",
+    )
+    .await;
+
+    // Send a non-persistent replacement message.
+    let replace_req = tokio::spawn({
+        let admin = Arc::clone(&admin);
+        async move {
+            admin
+                .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
+                    lines: vec!["Deploying Azure...".to_string()],
+                    persistent: false,
+                }))
+                .await
+        }
+    });
+    let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+    assert_eq!(framebuffer, render_display_message(&["Deploying Azure..."]));
+    replace_req.await.unwrap().unwrap();
+
+    // The non-persistent replacement should restore the banner after 60 s.
+    tokio::time::advance(Duration::from_secs(60) + Duration::from_millis(100)).await;
+    let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+    assert_eq!(
+        framebuffer,
+        render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
+    );
+}
+
+/// T-0815l: A non-persistent message replaces a persistent one and starts the
+/// normal 60-second restore timer.
+#[tokio::test]
+async fn t0815l_non_persistent_replaces_persistent() {
+    tokio::time::pause();
+
+    let (admin, mut server, _controller, _storage) = build_admin_with_modem(6).await;
+    let admin = Arc::new(admin);
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 2048];
+
+    // Send a persistent message.
+    let persistent_req = tokio::spawn({
+        let admin = Arc::clone(&admin);
+        async move {
+            admin
+                .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
+                    lines: vec!["Persistent".to_string()],
+                    persistent: true,
+                }))
+                .await
+        }
+    });
+    let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+    assert_eq!(framebuffer, render_display_message(&["Persistent"]));
+    persistent_req.await.unwrap().unwrap();
+
+    // Send a non-persistent replacement.
+    let replace_req = tokio::spawn({
+        let admin = Arc::clone(&admin);
+        async move {
+            admin
+                .show_modem_display_message(Request::new(ShowModemDisplayMessageRequest {
+                    lines: vec!["Temporary".to_string()],
+                    persistent: false,
+                }))
+                .await
+        }
+    });
+    let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+    assert_eq!(framebuffer, render_display_message(&["Temporary"]));
+    replace_req.await.unwrap().unwrap();
+
+    // 60 s restore timer must fire for the non-persistent replacement.
+    tokio::time::advance(Duration::from_secs(60) + Duration::from_millis(100)).await;
+    let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+    assert_eq!(
+        framebuffer,
+        render_gateway_version_banner(env!("CARGO_PKG_VERSION"))
+    );
 }

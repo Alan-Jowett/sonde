@@ -1332,8 +1332,8 @@ impl GatewayAdmin for AdminService {
             .display_state
             .as_ref()
             .ok_or_else(|| Status::unavailable("no modem transport configured"))?;
-        let lines = request.into_inner().lines;
-        show_modem_display_message(display_state, &lines).await?;
+        let inner = request.into_inner();
+        show_modem_display_message(display_state, &inner.lines, inner.persistent).await?;
 
         Ok(Response::new(Empty {}))
     }

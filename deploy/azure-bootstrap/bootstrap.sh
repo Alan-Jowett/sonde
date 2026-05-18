@@ -213,6 +213,7 @@ if [ ! -r "$function_package_path" ]; then
     exit 1
 fi
 
+echo "__SONDE_AZURE_DEPLOYING_HANDLER__" >&2
 echo "Deploying bundled Azure handler package to Function App $function_app_name" >&2
 echo "Using deployment target $deployment_container_name ($deployment_container_url)" >&2
 # Explicitly clear linuxFxVersion so the Azure CLI does not warn about
@@ -244,6 +245,7 @@ wait_for_function_activation "$resource_group_name" "$function_app_name" "$activ
 # SPA redirect URIs and CORS origins are configured in Bicep (companion-identity
 # and function-placeholder modules).  Bootstrap only needs to set API permissions
 # and the user_impersonation scope.
+echo "__SONDE_AZURE_CONFIGURING_ENTRA__" >&2
 echo "Configuring Entra app registration for Web UI" >&2
 
 # Resolve the Entra app object ID from the companion client ID

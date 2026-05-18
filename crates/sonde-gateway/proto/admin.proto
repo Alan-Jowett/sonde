@@ -123,7 +123,13 @@ message ChannelSurveyEntry {
     int32 strongest_rssi = 3;
 }
 message ScanModemChannelsResponse { repeated ChannelSurveyEntry entries = 1; }
-message ShowModemDisplayMessageRequest { repeated string lines = 1; }
+message ShowModemDisplayMessageRequest {
+    repeated string lines = 1;
+    // When true, the message stays on the display indefinitely until replaced
+    // by another ShowModemDisplayMessage call or a BLE pairing session.
+    // When false (default), the gateway restores the version banner after 60 s.
+    bool persistent = 2;
+}
 
 // BLE phone pairing messages (GW-1222).
 message OpenBlePairingRequest {

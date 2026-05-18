@@ -262,6 +262,17 @@ async function initMsal() {
   // Normalize pathname to directory (strip filename like index.html) so the
   // redirect URI matches the registered value (e.g. /sonde/ not /sonde/index.html).
   const basePath = window.location.pathname.replace(/\/[^/]*\.[^/]*$/, '/');
+
+  // The SPA uses hash-based routing (#dashboard, #sensor-data, etc.) but
+  // MSAL reads window.location.hash during construction and handleRedirectPromise().
+  // Temporarily clear the routing hash so MSAL doesn't try to parse it as an
+  // auth response.  Auth hashes (containing code=, error=, etc.) are left in place.
+  const currentHash = window.location.hash;
+  const isAuthHash = currentHash && (currentHash.includes('code=') || currentHash.includes('error=') || currentHash.includes('access_token='));
+  if (currentHash && !isAuthHash) {
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+
   APP.msalApp = new msal.PublicClientApplication({
     auth: {
       clientId: CONFIG.msalClientId,
@@ -274,18 +285,15 @@ async function initMsal() {
     },
   });
 
-  // The SPA uses hash-based routing (#dashboard, #sensor-data, etc.).
-  // MSAL also uses the URL hash for redirect auth responses.  Determine
-  // whether the current hash is an auth response or an app route, and
-  // pass the appropriate value to handleRedirectPromise().
-  const hash = window.location.hash;
-  const isAuthHash = hash && (hash.includes('code=') || hash.includes('error=') || hash.includes('access_token='));
   try {
-    // Pass the hash explicitly: the real hash for auth responses, or
-    // empty string for app routing hashes so MSAL doesn't try to parse them.
-    await APP.msalApp.handleRedirectPromise(isAuthHash ? hash : '');
+    await APP.msalApp.handleRedirectPromise();
   } catch (error) {
     showViewMessage('error', parseErrorPayload(error, 'Authentication initialization failed.'));
+  }
+
+  // Restore the routing hash after MSAL has finished processing.
+  if (currentHash && !isAuthHash) {
+    history.replaceState(null, '', window.location.pathname + window.location.search + currentHash);
   }
 
   const account = APP.msalApp.getActiveAccount?.() || APP.msalApp.getAllAccounts()[0] || null;

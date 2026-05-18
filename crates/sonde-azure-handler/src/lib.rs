@@ -1468,8 +1468,13 @@ impl TryFrom<ActualStateRow> for ActualStateEntity {
 
     fn try_from(value: ActualStateRow) -> Result<Self, Self::Error> {
         let partition_key = match value.entity_kind.as_str() {
+            "node" => encode_node_partition_key(&value.node_id),
             "phone" => encode_phone_partition_key(&value.node_id),
-            _ => encode_node_partition_key(&value.node_id),
+            other => {
+                return Err(HandlerError::Decode(format!(
+                    "unsupported entity_kind for partition key: {other}"
+                )));
+            }
         };
         Ok(Self {
             partition_key,
@@ -2100,12 +2105,24 @@ fn decode_optional_status_details(
                     Some(1) => {
                         if let Value::Text(s) = v {
                             escrow_state = Some(s.clone());
+                        } else {
+                            return Err(HandlerError::Decode(
+                                "status_details escrow_state must be text".into(),
+                            ));
                         }
                     }
                     Some(2) => {
                         if let Value::Integer(i) = v {
                             let val: i128 = (*i).into();
-                            escrow_key_version = u64::try_from(val).ok();
+                            escrow_key_version = Some(u64::try_from(val).map_err(|_| {
+                                HandlerError::Decode(format!(
+                                    "status_details escrow_key_version {val} out of u64 range"
+                                ))
+                            })?);
+                        } else {
+                            return Err(HandlerError::Decode(
+                                "status_details escrow_key_version must be an integer".into(),
+                            ));
                         }
                     }
                     Some(3) => {

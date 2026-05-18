@@ -41,7 +41,8 @@ Azure companion architecture.
 | `desiredStateTableName` | `desiredstate` | Azure handler desired-state table |
 | `functionAppName` | derived | Optional Function App override |
 | `functionPlanName` | derived | Optional Function hosting plan override |
-| `githubPagesOrigin` | `https://alan-jowett.github.io/sonde` | GitHub Pages origin URL for CORS and Entra redirect URI |
+| `githubPagesOrigin` | `https://alan-jowett.github.io` | GitHub Pages origin (no path) for Function App CORS |
+| `githubPagesPath` | `/sonde/` | Path appended to origin for Entra SPA redirect URI |
 | `customDomainOrigin` | `https://sondeplatform.com` | Custom domain origin for CORS and Entra redirect URI. Empty = GitHub Pages only |
 
 When resource names are derived automatically, the deployment normalizes

@@ -107,7 +107,7 @@ module companionIdentity './modules/companion-identity.bicep' = {
     certificateDisplayName: companionCertificateDisplayName
     spaRedirectUris: empty(customDomainOrigin)
       ? ['${githubPagesOrigin}${githubPagesPath}']
-      : ['${githubPagesOrigin}${githubPagesPath}', customDomainOrigin]
+      : ['${githubPagesOrigin}${githubPagesPath}', '${customDomainOrigin}/']
   }
 }
 

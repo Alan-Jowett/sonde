@@ -186,8 +186,9 @@ echo "__SONDE_AZURE_DEPLOYMENT_START__" >&2
 deployment_name="sonde-bootstrap-$(date +%Y%m%d%H%M%S)-$$"
 # Optional custom domain origin for the Web UI (e.g. https://sondeplatform.com).
 # Passed to Bicep as `customDomainOrigin` for CORS and Entra redirect URI config.
+# Set to empty string to disable (GitHub Pages only, no custom domain).
 optional_params=""
-if [ -n "${SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN:-}" ]; then
+if [ "${SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN+set}" = "set" ]; then
     case "${SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN}" in
         *[[:space:]]*) echo "SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN contains whitespace" >&2; exit 1 ;;
     esac

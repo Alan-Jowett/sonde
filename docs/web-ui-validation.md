@@ -45,7 +45,7 @@
 | T-WEB-0505 | WEB-0505 | `ProgramIngest` rejects Storage-scoped token (wrong audience) | Integration | Planned |
 | T-WEB-0506 | WEB-0506 | `ProgramIngest` rejects expired bearer token | Integration | Planned |
 | T-WEB-0507 | WEB-0507 | `ProgramIngest` accepts valid `api://<clientId>/user_impersonation` token | Integration | Planned |
-| T-WEB-0508 | WEB-0508 | MSAL `redirectUri` set to `window.location.origin` so auth works on both GitHub Pages and custom domain hostnames | Manual | Planned |
+| T-WEB-0508 | WEB-0508 | MSAL `redirectUri` set to `window.location.origin + window.location.pathname` so auth works on both GitHub Pages project sites and custom domain hostnames | Manual | Planned |
 | T-WEB-0602 | WEB-0602 | Bicep provisions `programs` table | Infrastructure | Planned |
 | T-WEB-0603 | WEB-0603 | `ProgramIngest` HTTP trigger deployed alongside `UpstreamConnector` | Infrastructure | Planned |
 | T-WEB-0604 | WEB-0604 | CORS configured for GitHub Pages and `sondeplatform.com` origins | Infrastructure | Planned |

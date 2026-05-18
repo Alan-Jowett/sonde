@@ -11,7 +11,7 @@
 
 ## 1. Overview
 
-Static SPA hosted on GitHub Pages (deployed from the `gh-pages` branch of the sonde repository). Vanilla HTML/JS/CSS with zero build step. Communicates directly with Azure Storage Tables via REST API using MSAL.js bearer tokens. Program ingestion is delegated to an HTTP-triggered Azure Function that runs Prevail verification server-side. Environment configuration (Azure backend connection details) is managed at runtime via `localStorage` — no deploy-time configuration file is needed.
+Static SPA hosted on GitHub Pages (deployed via GitHub Actions using `actions/deploy-pages`). Vanilla HTML/JS/CSS with zero build step. Communicates directly with Azure Storage Tables via REST API using MSAL.js bearer tokens. Program ingestion is delegated to an HTTP-triggered Azure Function that runs Prevail verification server-side. Environment configuration (Azure backend connection details) is managed at runtime via `localStorage` — no deploy-time configuration file is needed.
 
 ---
 
@@ -158,10 +158,11 @@ local `ProgramLibrary`.
 - MSAL.js 2.x with authorization code flow + PKCE.
 - Token caching in browser session storage.
 - Silent token renewal; redirect to login on expiry.
-- `redirectUri` explicitly set to `window.location.origin` so the registered
-  redirect URIs (`https://alan-jowett.github.io/sonde/` and
-  `https://sondeplatform.com`) match regardless of which hostname the user
-  accesses.
+- `redirectUri` explicitly set to `window.location.origin + window.location.pathname`
+  so the registered redirect URIs (`https://alan-jowett.github.io/sonde/` and
+  `https://sondeplatform.com/`) match regardless of which hostname or base path
+  the user accesses. This is necessary for GitHub Pages project sites where the
+  origin alone (`https://alan-jowett.github.io`) does not match the registered URI.
 - Configuration is loaded from the active environment in `localStorage`
   (see §11). `msalAuthority` is derived as
   `https://login.microsoftonline.com/<tenantId>`.
@@ -186,8 +187,9 @@ workflow (`.github/workflows/web-ui.yml`) publishes the contents of
 `deploy/web-ui/**`.
 
 The well-known URL is `https://alan-jowett.github.io/sonde/`.  A custom domain
-(`sondeplatform.com`) can be configured via GitHub Pages settings and a `CNAME`
-file in the deployment artifact.
+(`sondeplatform.com`) can be configured via the repository's GitHub Pages
+settings (Settings → Pages → Custom domain). GitHub manages the DNS verification
+and TLS certificate automatically.
 
 No deploy-time configuration is needed — environment configuration is managed at
 runtime via `localStorage` (see §11 Environment Manager).
@@ -283,15 +285,15 @@ configuration.
 The Bicep deployment configures:
 
 1. **CORS origins** on the Function App (`function-placeholder.bicep`):
-   `https://alan-jowett.github.io/sonde` and `https://sondeplatform.com`
-   (via `corsAllowedOrigins` parameter).
+   `https://alan-jowett.github.io` and `https://sondeplatform.com`
+   (via `corsAllowedOrigins` parameter — origins only, no path component).
 
 2. **SPA redirect URIs** on the Entra app (`companion-identity.bicep`):
-   `https://alan-jowett.github.io/sonde/` and `https://sondeplatform.com`
-   (via `spaRedirectUris` parameter).
+   `https://alan-jowett.github.io/sonde/` and `https://sondeplatform.com/`
+   (via `spaRedirectUris` parameter — full URL with trailing slash).
 
-Both are parameterized via `githubPagesOrigin` and `customDomainOrigin`
-parameters in `main.bicep`, with Sonde-specific defaults.
+Both are parameterized via `githubPagesOrigin`, `githubPagesPath`, and
+`customDomainOrigin` parameters in `main.bicep`, with Sonde-specific defaults.
 
 ---
 

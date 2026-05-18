@@ -1682,7 +1682,7 @@ function showEnvironmentManager() {
         </tr>`).join('')}
         </tbody></table></div>`;
 
-  const overlayHtml = `<div class="env-manager-overlay" id="env-manager-overlay">
+  const overlayHtml = `<div class="env-manager-overlay" id="env-manager-overlay" role="dialog" aria-modal="true" aria-label="Environment Manager">
     <div class="env-manager-panel panel">
       <h2>Environments</h2>
       ${envListHtml}
@@ -1746,7 +1746,7 @@ function showEnvironmentForm(existingEnv) {
   const isEdit = existingEnv != null;
   const title = isEdit ? 'Edit Environment' : 'Add Environment';
 
-  const formHtml = `<div class="env-manager-overlay" id="env-form-overlay">
+  const formHtml = `<div class="env-manager-overlay" id="env-form-overlay" role="dialog" aria-modal="true" aria-label="${title}">
     <div class="env-manager-panel panel">
       <h2>${title}</h2>
       <div class="stack">
@@ -1785,6 +1785,24 @@ function showEnvironmentForm(existingEnv) {
         errorEl.textContent = 'All fields are required.';
         errorEl.style.display = '';
       }
+      return;
+    }
+
+    const guidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!guidPattern.test(clientId)) {
+      if (errorEl) { errorEl.textContent = 'Client ID must be a valid GUID.'; errorEl.style.display = ''; }
+      return;
+    }
+    if (!guidPattern.test(tenantId)) {
+      if (errorEl) { errorEl.textContent = 'Tenant ID must be a valid GUID.'; errorEl.style.display = ''; }
+      return;
+    }
+    if (!/^[a-z0-9]{3,24}$/.test(storageAccount)) {
+      if (errorEl) { errorEl.textContent = 'Storage Account must be 3–24 lowercase alphanumeric characters.'; errorEl.style.display = ''; }
+      return;
+    }
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$/.test(functionAppName) && !/^[a-zA-Z0-9]{1,2}$/.test(functionAppName)) {
+      if (errorEl) { errorEl.textContent = 'Function App Name must be alphanumeric with optional hyphens (2–60 chars).'; errorEl.style.display = ''; }
       return;
     }
 

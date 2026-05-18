@@ -896,7 +896,14 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
     let sensors_json: Option<String> = row.get(11)?;
     let registered_by_phone_id: Option<u32> = row.get(12)?;
     let firmware_version: Option<String> = row.get(13)?;
-    let key_version: u64 = row.get::<_, i64>(14)? as u64;
+    let key_version_raw: i64 = row.get(14)?;
+    let key_version = u64::try_from(key_version_raw).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            14,
+            rusqlite::types::Type::Integer,
+            format!("negative key_version: {key_version_raw}").into(),
+        )
+    })?;
     let schedule_interval_s = row.get(6)?;
     Ok(NodeRecord {
         node_id,
@@ -1511,7 +1518,11 @@ impl Storage for SqliteStorage {
                     label,
                     issued_at: epoch_s_to_system_time(issued_at),
                     status,
-                    key_version: key_version_raw as u64,
+                    key_version: u64::try_from(key_version_raw).map_err(|_| {
+                        StorageError::Internal(format!(
+                            "negative phone key_version {key_version_raw} for phone_id {phone_id}"
+                        ))
+                    })?,
                 });
             }
             Ok(records)
@@ -1563,7 +1574,11 @@ impl Storage for SqliteStorage {
                     label,
                     issued_at: epoch_s_to_system_time(issued_at),
                     status,
-                    key_version: key_version_raw as u64,
+                    key_version: u64::try_from(key_version_raw).map_err(|_| {
+                        StorageError::Internal(format!(
+                            "negative phone key_version {key_version_raw} for phone_id {phone_id}"
+                        ))
+                    })?,
                 });
             }
             Ok(records)
@@ -2801,6 +2816,69 @@ mod tests {
             assert_eq!(blob.len(), ENCRYPTED_PSK_LEN);
             assert_ne!(&blob[12..44], psk_bytes.as_slice());
         }
+    }
+
+    #[tokio::test]
+    async fn test_negative_node_key_version_is_rejected() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.upsert_node(&make_node("n1", 42)).await.unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute("UPDATE nodes SET key_version = -1 WHERE node_id = 'n1'", [])
+                    .map_err(map_err)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let err = store.get_node("n1").await.unwrap_err();
+        assert!(err.to_string().contains("negative key_version: -1"));
+    }
+
+    #[tokio::test]
+    async fn test_negative_phone_key_version_is_rejected_in_list() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+        let phone_id = store
+            .store_phone_psk(&make_phone_psk(42, "Corrupt list"))
+            .await
+            .unwrap();
+        store
+            .with_conn(move |conn| {
+                conn.execute(
+                    "UPDATE phone_psks SET key_version = -1 WHERE phone_id = ?1",
+                    params![phone_id],
+                )
+                .map_err(map_err)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let err = store.list_phone_psks().await.unwrap_err();
+        assert!(err.to_string().contains("negative phone key_version -1"));
+    }
+
+    #[tokio::test]
+    async fn test_negative_phone_key_version_is_rejected_by_key_hint_lookup() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+        let phone_id = store
+            .store_phone_psk(&make_phone_psk(77, "Corrupt lookup"))
+            .await
+            .unwrap();
+        store
+            .with_conn(move |conn| {
+                conn.execute(
+                    "UPDATE phone_psks SET key_version = -1 WHERE phone_id = ?1",
+                    params![phone_id],
+                )
+                .map_err(map_err)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let err = store.get_phone_psks_by_key_hint(77).await.unwrap_err();
+        assert!(err.to_string().contains("negative phone key_version -1"));
     }
 
     #[tokio::test]

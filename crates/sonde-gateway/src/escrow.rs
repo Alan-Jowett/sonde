@@ -34,6 +34,9 @@ const RATE_LIMIT_INTERVAL: Duration = Duration::from_secs(60);
 /// Maximum candidates in a recovery response.
 pub const MAX_RECOVERY_CANDIDATES: usize = 16;
 
+/// Escrow keypair tuple: private key, public key, and monotonic epoch.
+pub type EscrowKeypair = (Zeroizing<[u8; 32]>, [u8; 32], u64);
+
 /// Escrow lifecycle state (GW-2004).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EscrowState {
@@ -122,18 +125,30 @@ impl RecoveryQueue {
 
     /// Buffer a frame for recovery and generate a request_id.
     ///
-    /// Returns `Ok(request_id)` or `Err` if the OS RNG fails.
+    /// Returns `Ok(request_id)` or `Err` if the queue is full, the request is
+    /// rate-limited, or the OS RNG fails.
     pub fn enqueue(
         &mut self,
         key_hint: u16,
         raw_frame: Vec<u8>,
         peer_address: [u8; 6],
-    ) -> Result<[u8; 16], getrandom::Error> {
-        // Evict expired entries
+    ) -> Result<[u8; 16], String> {
         self.evict_expired();
+        if self.entries.len() >= RECOVERY_QUEUE_CAPACITY {
+            return Err(format!(
+                "recovery queue full (capacity {RECOVERY_QUEUE_CAPACITY})"
+            ));
+        }
+        if let Some(&last) = self.hint_rate.get(&key_hint) {
+            if last.elapsed() < RATE_LIMIT_INTERVAL {
+                return Err(format!(
+                    "recovery request rate-limited for key_hint {key_hint}"
+                ));
+            }
+        }
 
         let mut request_id = [0u8; 16];
-        getrandom::fill(&mut request_id)?;
+        getrandom::fill(&mut request_id).map_err(|e| format!("request_id rng failed: {e}"))?;
 
         self.entries.insert(
             request_id,
@@ -256,7 +271,7 @@ fn decrypt_secret_key(
 pub async fn load_or_generate_keypair(
     storage: &dyn Storage,
     master_key: &[u8; 32],
-) -> Result<(Zeroizing<[u8; 32]>, [u8; 32], u64), StorageError> {
+) -> Result<EscrowKeypair, StorageError> {
     if let Some(record) = storage.get_escrow_keypair().await? {
         match decrypt_secret_key(master_key, &record.secret_enc) {
             Ok(secret) => {
@@ -268,7 +283,7 @@ pub async fn load_or_generate_keypair(
                         epoch = record.epoch,
                         "stored public key does not match decrypted private key, regenerating"
                     );
-                    let (secret, public, epoch) = generate_keypair(record.epoch + 1);
+                    let (secret, public, epoch) = generate_keypair(record.epoch + 1)?;
                     let secret_enc = encrypt_secret_key(master_key, &secret)?;
                     let now_ms = now_ms();
                     storage
@@ -291,7 +306,7 @@ pub async fn load_or_generate_keypair(
                     "failed to decrypt escrow private key, generating new keypair: {e}"
                 );
                 // Generate new keypair with incremented epoch
-                let (secret, public, epoch) = generate_keypair(record.epoch + 1);
+                let (secret, public, epoch) = generate_keypair(record.epoch + 1)?;
                 let secret_enc = encrypt_secret_key(master_key, &secret)?;
                 let now_ms = now_ms();
                 storage
@@ -309,7 +324,7 @@ pub async fn load_or_generate_keypair(
     }
 
     // No keypair exists — generate one
-    let (secret, public, epoch) = generate_keypair(1);
+    let (secret, public, epoch) = generate_keypair(1)?;
     let secret_enc = encrypt_secret_key(master_key, &secret)?;
     let now_ms = now_ms();
     storage
@@ -324,12 +339,13 @@ pub async fn load_or_generate_keypair(
     Ok((secret, public, epoch))
 }
 
-fn generate_keypair(epoch: u64) -> (Zeroizing<[u8; 32]>, [u8; 32], u64) {
+fn generate_keypair(epoch: u64) -> Result<EscrowKeypair, StorageError> {
     let mut secret_bytes = Zeroizing::new([0u8; 32]);
-    getrandom::fill(secret_bytes.as_mut_slice()).expect("rng failed");
+    getrandom::fill(secret_bytes.as_mut_slice())
+        .map_err(|e| StorageError::Internal(format!("escrow keypair rng failed: {e}")))?;
     let secret = StaticSecret::from(*secret_bytes);
     let public = PublicKey::from(&secret);
-    (secret_bytes, *public.as_bytes(), epoch)
+    Ok((secret_bytes, *public.as_bytes(), epoch))
 }
 
 // ── Escrow state persistence ────────────────────────────────────────────
@@ -353,7 +369,9 @@ pub async fn store_escrow_state(
 /// Load the current key version from storage.
 pub async fn load_key_version(storage: &dyn Storage) -> Result<u64, StorageError> {
     match storage.get_config("escrow_key_version").await? {
-        Some(s) => Ok(s.parse::<u64>().unwrap_or(0)),
+        Some(s) => s
+            .parse::<u64>()
+            .map_err(|e| StorageError::Internal(format!("corrupt escrow_key_version: {e}"))),
         None => Ok(0),
     }
 }
@@ -368,7 +386,9 @@ pub async fn store_key_version(storage: &dyn Storage, version: u64) -> Result<()
 /// Load the last processed rotation counter.
 pub async fn load_rotation_counter(storage: &dyn Storage) -> Result<u64, StorageError> {
     match storage.get_config("escrow_rotation_counter").await? {
-        Some(s) => Ok(s.parse::<u64>().unwrap_or(0)),
+        Some(s) => s
+            .parse::<u64>()
+            .map_err(|e| StorageError::Internal(format!("corrupt escrow_rotation_counter: {e}"))),
         None => Ok(0),
     }
 }
@@ -401,6 +421,9 @@ pub fn decrypt_master_key_install(
     let secret = StaticSecret::from(*gateway_secret);
     let peer_public = PublicKey::from(*sender_public_key);
     let shared_secret = secret.diffie_hellman(&peer_public);
+    if shared_secret.as_bytes().iter().all(|&b| b == 0) {
+        return Err("X25519 produced all-zero shared secret (low-order public key)".into());
+    }
 
     // HKDF-SHA-256 key derivation
     // salt = "sonde-escrow-v1"
@@ -530,6 +553,30 @@ mod tests {
         assert_eq!(load_key_version(&storage).await.unwrap(), 42);
     }
 
+    #[tokio::test]
+    async fn test_corrupt_key_version_returns_error() {
+        let storage = InMemoryStorage::new();
+        storage
+            .set_config("escrow_key_version", "not-a-u64")
+            .await
+            .unwrap();
+
+        let err = load_key_version(&storage).await.unwrap_err();
+        assert!(err.to_string().contains("corrupt escrow_key_version"));
+    }
+
+    #[tokio::test]
+    async fn test_corrupt_rotation_counter_returns_error() {
+        let storage = InMemoryStorage::new();
+        storage
+            .set_config("escrow_rotation_counter", "not-a-u64")
+            .await
+            .unwrap();
+
+        let err = load_rotation_counter(&storage).await.unwrap_err();
+        assert!(err.to_string().contains("corrupt escrow_rotation_counter"));
+    }
+
     #[test]
     fn test_recovery_queue_basic() {
         let mut queue = RecoveryQueue::new();
@@ -568,6 +615,17 @@ mod tests {
 
         // Next request should be rejected (capacity limit)
         assert!(!queue.can_request(0xFFFF));
+        let err = queue.enqueue(0xFFFF, vec![0], [0; 6]).unwrap_err();
+        assert!(err.contains("recovery queue full"));
+    }
+
+    #[test]
+    fn test_recovery_queue_enqueue_rejects_rate_limited_key_hint() {
+        let mut queue = RecoveryQueue::new();
+
+        queue.enqueue(0x1234, vec![1], [0; 6]).unwrap();
+        let err = queue.enqueue(0x1234, vec![2], [0; 6]).unwrap_err();
+        assert!(err.contains("rate-limited"));
     }
 
     #[test]
@@ -711,5 +769,24 @@ mod tests {
             &ct_tag[32..].try_into().unwrap(),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_master_key_install_rejects_low_order_public_key() {
+        let gateway_secret = [0x42u8; 32];
+        let sender_public_key = [0u8; 32];
+        let result = decrypt_master_key_install(
+            &gateway_secret,
+            &sender_public_key,
+            1,
+            &[0x11u8; 16],
+            &[0x22u8; 32],
+            &[0x33u8; 12],
+            &[0x44u8; 16],
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "X25519 produced all-zero shared secret (low-order public key)"
+        );
     }
 }

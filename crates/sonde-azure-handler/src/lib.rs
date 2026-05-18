@@ -245,6 +245,7 @@ pub trait HandlerStore: Send + Sync {
         created_at: u64,
     ) -> Result<(), HandlerError> {
         let _ = (public_key, key_epoch, created_at);
+        warn!("store_gateway_escrow_pubkey not implemented for this store backend");
         Ok(())
     }
 
@@ -256,6 +257,7 @@ pub trait HandlerStore: Send + Sync {
         max_candidates: usize,
     ) -> Result<Vec<Vec<u8>>, HandlerError> {
         let _ = (key_hint, max_candidates);
+        warn!("load_escrow_blobs_by_key_hint not implemented for this store backend");
         Ok(Vec::new())
     }
 }
@@ -290,14 +292,18 @@ where
                 match actual_state.entity_kind.as_str() {
                     "node" => self.handle_actual_state(actual_state).await?,
                     "phone" => {
-                        // Phone escrow ACTUAL_STATE (AZH-0600): store escrow blob only
+                        // Phone escrow ACTUAL_STATE (AZH-0600): store escrow blob only.
+                        // TODO(AZH-0600): move phone escrow rows into a dedicated table or
+                        // partition instead of sharing the generic ACTUAL_STATE storage.
                         if actual_state.encrypted_psk_escrow.is_some() {
                             let row = ActualStateRow::from_message(&actual_state)?;
                             self.store.append_actual_state(&row).await?;
                         }
                     }
                     "gateway" => {
-                        // Gateway-scoped ACTUAL_STATE (AZH-0605): escrow state observability
+                        // Gateway-scoped ACTUAL_STATE (AZH-0605): escrow state observability.
+                        // TODO(AZH-0605): persist and expose gateway escrow observability so
+                        // operators can inspect escrow lifecycle state outside logs.
                         // Stored as informational; no reconciliation triggered.
                     }
                     other => {

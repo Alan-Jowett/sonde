@@ -305,16 +305,25 @@ enum KeyAction {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    let json = matches!(cli.format, OutputFormat::Json);
 
-    let mut client = match AdminClient::connect(&cli.socket).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Failed to connect to gateway at {}: {e}", cli.socket);
-            process::exit(1);
-        }
+    let result = if let Commands::Key {
+        action: KeyAction::Fingerprint {
+            public_key: Some(public_key),
+        },
+    } = &cli.command
+    {
+        print_key_fingerprint(Some(public_key.as_str()), json)
+    } else {
+        let mut client = match AdminClient::connect(&cli.socket).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Failed to connect to gateway at {}: {e}", cli.socket);
+                process::exit(1);
+            }
+        };
+        run(&mut client, &cli).await
     };
-
-    let result = run(&mut client, &cli).await;
     if let Err(e) = result {
         if let Some(status) = e.downcast_ref::<tonic::Status>() {
             let msg = status.message();
@@ -351,6 +360,39 @@ async fn main() {
         }
         process::exit(1);
     }
+}
+
+/// Render a BIP-39-style fingerprint for a recovery public key.
+fn print_key_fingerprint(
+    public_key: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let hex_str = public_key.ok_or_else(|| {
+        "--public-key is required (gateway fetch not yet implemented)".to_string()
+    })?;
+    let bytes = hex::decode(hex_str).map_err(|e| format!("invalid hex public key: {e}"))?;
+    if bytes.len() != 32 {
+        return Err(format!("public key must be exactly 32 bytes, got {}", bytes.len()).into());
+    }
+    let pubkey_bytes: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "public key must be exactly 32 bytes")?;
+
+    let sha = AdminSha256;
+    let words = sonde_protocol::compute_fingerprint(&pubkey_bytes, &sha);
+    if json {
+        print_json(&serde_json::json!({
+            "fingerprint": words,
+            "public_key": hex::encode(pubkey_bytes),
+        }))?;
+    } else {
+        println!("Key fingerprint:");
+        println!("  {} {}", words[0], words[1]);
+        println!("  {} {}", words[2], words[3]);
+        println!("  {} {}", words[4], words[5]);
+    }
+    Ok(())
 }
 
 /// Resolve the passphrase from the CLI arg (which also reads `SONDE_PASSPHRASE`
@@ -925,37 +967,7 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
         },
         Commands::Key { action } => match action {
             KeyAction::Fingerprint { public_key } => {
-                let pubkey_bytes: [u8; 32] = if let Some(hex_str) = public_key {
-                    let bytes =
-                        hex::decode(hex_str).map_err(|e| format!("invalid hex public key: {e}"))?;
-                    if bytes.len() != 32 {
-                        return Err(format!(
-                            "public key must be exactly 32 bytes, got {}",
-                            bytes.len()
-                        )
-                        .into());
-                    }
-                    bytes.try_into().unwrap()
-                } else {
-                    // TODO: Fetch from gateway via gRPC escrow status API
-                    return Err(
-                        "--public-key is required (gateway fetch not yet implemented)".into(),
-                    );
-                };
-
-                let sha = AdminSha256;
-                let words = sonde_protocol::compute_fingerprint(&pubkey_bytes, &sha);
-                if json {
-                    print_json(&serde_json::json!({
-                        "fingerprint": words,
-                        "public_key": hex::encode(pubkey_bytes),
-                    }))?;
-                } else {
-                    println!("Key fingerprint:");
-                    println!("  {} {}", words[0], words[1]);
-                    println!("  {} {}", words[2], words[3]);
-                    println!("  {} {}", words[4], words[5]);
-                }
+                print_key_fingerprint(public_key.as_deref(), json)?;
             }
             KeyAction::Status => {
                 // TODO: Fetch escrow status via gRPC or Azure

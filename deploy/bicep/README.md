@@ -41,11 +41,9 @@ Azure companion architecture.
 | `desiredStateTableName` | `desiredstate` | Azure handler desired-state table |
 | `functionAppName` | derived | Optional Function App override |
 | `functionPlanName` | derived | Optional Function hosting plan override |
-| `staticWebAppName` | derived | Optional Static Web App name override |
-| `staticWebAppLocation` | `centralus` | Azure region for the Static Web App |
-| `customDomainName` | empty | Custom domain FQDN (e.g., `sondeplatform.com`). Empty = no custom domain |
-| `customDomainDnsResourceGroup` | empty | Resource group containing the Azure DNS zone for the custom domain |
-| `customDomainDnsZoneName` | `customDomainName` | DNS zone name. Defaults to `customDomainName` when empty (correct for apex domains) |
+| `githubPagesOrigin` | `https://alan-jowett.github.io` | GitHub Pages origin (no path) for Function App CORS |
+| `githubPagesPath` | `/sonde/` | Path appended to origin for Entra SPA redirect URI |
+| `customDomainOrigin` | `https://sondeplatform.com` | Custom domain origin for CORS and Entra redirect URI. Empty = GitHub Pages only |
 
 When resource names are derived automatically, the deployment normalizes
 `project_name` to satisfy Azure naming rules for the target resource types.
@@ -131,12 +129,14 @@ state:
 - downstream queue name
 - Function App name
 - deployment container name / URL
-- Static Web App name and hostname
 
 The unified `sonde-azure-companion bootstrap` command consumes all of these
-outputs automatically, including deploying the Web UI SPA content to the Static
-Web App and configuring the Entra app registration with the SWA redirect URI
-and Storage API permissions.
+outputs automatically, including configuring the Entra app registration with
+the Storage API permissions and `user_impersonation` scope.
+
+The Web UI SPA is deployed separately via GitHub Pages (see
+`.github/workflows/web-ui.yml`). SPA redirect URIs and CORS origins are
+configured declaratively in Bicep.
 
 You still need to place the matching PEM certificate and private key into the
 Azure companion state directory and write `service-principal.json` that points

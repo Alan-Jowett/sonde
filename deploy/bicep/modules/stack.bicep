@@ -39,20 +39,14 @@ param functionPlanName string
 @description('Object ID of the Azure companion runtime service principal.')
 param companionServicePrincipalObjectId string
 
-@description('Static Web App name for the management UI.')
-param staticWebAppName string
-
-@description('Azure region for the Static Web App.')
-param staticWebAppLocation string
-
 @description('Entra app (client) ID for Function App EasyAuth token validation.')
 param functionAuthClientId string
 
 @description('Entra tenant ID for Function App EasyAuth OpenID issuer URL.')
 param functionAuthTenantId string
 
-@description('Custom domain FQDN to bind to the Static Web App. Empty = no custom domain.')
-param customDomainName string = ''
+@description('CORS allowed origins for the Function App (e.g. GitHub Pages URL, custom domain). At least one origin is required.')
+param corsAllowedOrigins array
 
 var monitoringWorkspaceName = take('${functionAppName}-logs', 63)
 var monitoringAppInsightsName = take('${functionAppName}-insights', 260)
@@ -87,15 +81,6 @@ module monitoring './monitoring.bicep' = {
   }
 }
 
-module staticWebApp './static-web-app.bicep' = {
-  name: 'staticWebApp'
-  params: {
-    location: staticWebAppLocation
-    staticWebAppName: staticWebAppName
-    tags: tags
-  }
-}
-
 module functionPlaceholder './function-placeholder.bicep' = {
   name: 'functionPlaceholder'
   params: {
@@ -111,9 +96,7 @@ module functionPlaceholder './function-placeholder.bicep' = {
     programsTableName: storage.outputs.programsTableName
     sensorDataTableName: storage.outputs.sensorDataTableName
     appInsightsConnectionString: monitoring.outputs.connectionString
-    corsAllowedOrigins: empty(customDomainName)
-      ? ['https://${staticWebApp.outputs.defaultHostname}']
-      : ['https://${staticWebApp.outputs.defaultHostname}', 'https://${customDomainName}']
+    corsAllowedOrigins: corsAllowedOrigins
     functionAuthClientId: functionAuthClientId
     functionAuthTenantId: functionAuthTenantId
     tags: tags
@@ -162,6 +145,3 @@ output programsTableName string = storage.outputs.programsTableName
 output sensorDataTableName string = storage.outputs.sensorDataTableName
 output functionAppName string = functionPlaceholder.outputs.functionAppName
 output functionPrincipalId string = functionPlaceholder.outputs.principalId
-output staticWebAppName string = staticWebApp.outputs.name
-output staticWebAppHostname string = staticWebApp.outputs.defaultHostname
-output staticWebAppResourceId string = staticWebApp.outputs.resourceId

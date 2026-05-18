@@ -415,20 +415,8 @@ if [ "$#" -ge 4 ] && [ "$1" = "deployment" ] && [ "$2" = "sub" ] && [ "$3" = "sh
         ;;
     esac
   done
-  [ "$query" = "[[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value, properties.outputs.staticWebAppName.value, properties.outputs.staticWebAppHostname.value, properties.outputs.companionClientId.value, properties.outputs.storageAccountName.value, properties.outputs.companionTenantId.value]]" ] || exit 67
-  printf 'rg-sonde\tfunc-sonde\tdeploypkg\thttps://example.blob.core.windows.net/deploypkg\tsonde-web-test\tsonde-web-test.azurestaticapps.net\tclient-456\tstsondetest\ttenant-123\n'
-  exit 0
-fi
-if [ "$#" -ge 3 ] && [ "$1" = "staticwebapp" ] && [ "$2" = "secrets" ] && [ "$3" = "list" ]; then
-  printf 'fake-deployment-token\n'
-  exit 0
-fi
-if [ "$#" -ge 3 ] && [ "$1" = "staticwebapp" ] && [ "$2" = "deploy" ]; then
-  # Simulate az staticwebapp deploy not being available
-  exit 1
-fi
-if [ "$#" -ge 3 ] && [ "$1" = "staticwebapp" ] && [ "$2" = "show" ]; then
-  printf 'westus2\n'
+  [ "$query" = "[[properties.outputs.resourceGroupName.value, properties.outputs.functionAppName.value, properties.outputs.deploymentContainerName.value, properties.outputs.deploymentContainerUrl.value, properties.outputs.companionClientId.value, properties.outputs.storageAccountName.value, properties.outputs.companionTenantId.value]]" ] || exit 67
+  printf 'rg-sonde\tfunc-sonde\tdeploypkg\thttps://example.blob.core.windows.net/deploypkg\tclient-456\tstsondetest\ttenant-123\n'
   exit 0
 fi
 if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "app" ] && [ "$3" = "show" ]; then
@@ -527,26 +515,8 @@ case "$expr" in
 esac
 "#,
     );
-    let swa_log = temp.path().join("swa.log");
-    write_executable(
-        &bin_dir.join("swa"),
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{}\"\nexit 0\n",
-            swa_log.display()
-        ),
-    );
-
-    // Create a temporary web-ui directory with the expected SPA files.
-    let web_ui_dir = temp.path().join("web-ui");
-    fs::create_dir_all(&web_ui_dir).unwrap();
-    for name in &[
-        "index.html",
-        "app.js",
-        "style.css",
-        "staticwebapp.config.json",
-    ] {
-        fs::write(web_ui_dir.join(name), "<!-- stub -->").unwrap();
-    }
+    // Create stub tools (swa and web-ui are no longer needed — SPA is deployed
+    // via GitHub Pages, not bootstrap).
 
     let mut cmd = Command::new("sh");
     cmd.arg(azure_bootstrap_script_path());
@@ -564,7 +534,6 @@ esac
     cmd.env("SONDE_AZURE_FUNCTION_PACKAGE_PATH", &function_package_path);
     cmd.env("SONDE_AZURE_FUNCTION_ACTIVATION_TIMEOUT_SECS", "10");
     cmd.env("SONDE_AZURE_FUNCTION_DEPLOY_TIMEOUT_SECS", "10");
-    cmd.env("SONDE_AZURE_WEB_UI_DIR", web_ui_dir.to_str().unwrap());
 
     let output = cmd.output().unwrap();
     assert!(
@@ -580,45 +549,21 @@ esac
     assert!(stderr.contains("__SONDE_AZURE_DEPLOYMENT_START__"));
     assert!(stderr.contains("Deploying bundled Azure handler package to Function App func-sonde"));
     assert!(stderr.contains("Azure Function App reports 1 loaded function(s)"));
-    assert!(stderr.contains("Deploying Web UI to Static Web App sonde-web-test"));
-    assert!(stderr.contains("Generated config.json for SPA"));
     assert!(stderr.contains("Configuring Entra app registration for Web UI"));
     assert!(
         stderr.contains("Exposed api://client-456/user_impersonation scope")
             || stderr.contains("API scope user_impersonation already exposed"),
         "bootstrap did not report API scope exposure: {stderr}"
     );
-    assert!(stderr.contains("Web UI deployment complete"));
-
-    // Verify config.json was generated with correct values
-    let config_json = fs::read_to_string(web_ui_dir.join("config.json")).unwrap();
-    assert!(config_json.contains(r#""msalClientId": "client-456""#));
-    assert!(
-        config_json.contains(r#""msalAuthority": "https://login.microsoftonline.us/tenant-123""#)
-    );
-    assert!(config_json.contains(r#""storageAccount": "stsondetest""#));
-    assert!(config_json.contains(r#""functionAppName": "func-sonde""#));
+    assert!(stderr.contains("Entra app configuration complete"));
 
     let az_calls = fs::read_to_string(az_log).unwrap();
     assert!(az_calls.contains("deployment sub create"));
     assert_eq!(az_calls.matches("deployment sub show").count(), 1);
     assert!(az_calls.contains("functionapp deployment source config-zip"));
     assert!(az_calls.contains("functionapp function list"));
-    assert!(az_calls.contains("staticwebapp secrets list"));
     assert!(az_calls.contains("ad app show"));
     assert!(az_calls.contains("ad app update") || az_calls.contains("ad app permission"));
-
-    // Verify swa deploy was invoked with the web-ui directory and deployment token
-    let swa_calls = fs::read_to_string(&swa_log)
-        .expect("swa log file not found — swa was never invoked by bootstrap");
-    assert!(
-        swa_calls.contains("deploy"),
-        "swa deploy was not invoked: {swa_calls}"
-    );
-    assert!(
-        swa_calls.contains("--deployment-token"),
-        "swa deploy missing --deployment-token: {swa_calls}"
-    );
 }
 
 #[test]

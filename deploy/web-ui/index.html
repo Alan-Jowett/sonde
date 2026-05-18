@@ -15,7 +15,11 @@
   <div class="app-shell">
     <header class="topbar">
       <div class="brand">Sonde</div>
-      <div id="auth-controls" class="auth-controls"></div>
+      <div class="topbar-right">
+        <span id="env-indicator" class="env-indicator" title="No environment selected"></span>
+        <button type="button" class="env-gear-btn" id="env-gear-btn" title="Manage environments" aria-label="Manage environments">⚙</button>
+        <div id="auth-controls" class="auth-controls"></div>
+      </div>
     </header>
 
     <nav class="tabs" aria-label="Primary">

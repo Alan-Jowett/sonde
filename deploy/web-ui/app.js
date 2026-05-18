@@ -14,23 +14,64 @@ const CONFIG = {
   refreshIntervalMs: 30000,
 };
 
-async function loadConfig() {
-  // Try loading from config.json first (deployed config)
-  try {
-    const resp = await fetch('config.json');
-    if (resp.ok) {
-      const cfg = await resp.json();
-      Object.assign(CONFIG, cfg);
-      return;
-    }
-  } catch { /* fall through to URL params */ }
+const ENV_STORAGE_KEY = 'sonde_environments';
+const ENV_ACTIVE_KEY = 'sonde_active_environment';
 
-  // Fall back to URL query parameters (development)
-  const params = new URLSearchParams(location.search);
-  for (const key of ['msalClientId', 'msalAuthority', 'storageAccount', 'functionAppName']) {
-    const val = params.get(key) || params.get(key.replace(/[A-Z]/g, (c) => c.toLowerCase()));
-    if (val) CONFIG[key] = val;
+function loadEnvironments() {
+  try {
+    const raw = localStorage.getItem(ENV_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
+}
+
+function saveEnvironments(envs) {
+  try {
+    localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(envs));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getActiveEnvironmentName() {
+  try {
+    return localStorage.getItem(ENV_ACTIVE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function setActiveEnvironmentName(name) {
+  try {
+    localStorage.setItem(ENV_ACTIVE_KEY, name);
+  } catch {
+    // Storage disabled or quota exceeded.
+  }
+}
+
+function applyEnvironment(env) {
+  if (!env) return;
+  CONFIG.msalClientId = env.clientId || '';
+  CONFIG.msalAuthority = env.tenantId
+    ? `https://login.microsoftonline.com/${env.tenantId}`
+    : '';
+  CONFIG.storageAccount = env.storageAccount || '';
+  CONFIG.functionAppName = env.functionAppName || '';
+}
+
+function loadActiveEnvironment() {
+  const envs = loadEnvironments();
+  const activeName = getActiveEnvironmentName();
+  const env = envs.find((e) => e.name === activeName) || envs[0] || null;
+  if (env) {
+    setActiveEnvironmentName(env.name);
+    applyEnvironment(env);
+  }
+  return env;
 }
 
 const STORAGE_SCOPES = ['https://storage.azure.com/.default'];
@@ -181,7 +222,7 @@ function sortByDateDesc(entities, field) {
 
 function requireConfig(key, label) {
   if (!CONFIG[key]) {
-    throw new Error(`${label} is not configured. Set it in config.json or pass it as a URL parameter.`);
+    throw new Error(`${label} is not configured. Open the environment manager to set it.`);
   }
 }
 
@@ -218,11 +259,14 @@ async function initMsal() {
     return;
   }
 
+  // Normalize pathname to directory (strip filename like index.html) so the
+  // redirect URI matches the registered value (e.g. /sonde/ not /sonde/index.html).
+  const basePath = window.location.pathname.replace(/\/[^/]*\.[^/]*$/, '/');
   APP.msalApp = new msal.PublicClientApplication({
     auth: {
       clientId: CONFIG.msalClientId,
       authority: CONFIG.msalAuthority,
-      redirectUri: window.location.origin,
+      redirectUri: window.location.origin + basePath,
     },
     cache: {
       cacheLocation: 'sessionStorage',
@@ -1600,12 +1644,240 @@ function attachTabHandlers() {
 
 async function init() {
   attachTabHandlers();
-  await loadConfig();
+  document.getElementById('env-gear-btn')?.addEventListener('click', () => showEnvironmentManager());
+  const env = loadActiveEnvironment();
+  if (!env) {
+    showEnvironmentManager();
+    return;
+  }
+  updateEnvironmentIndicator();
   await initMsal();
   if (!location.hash) {
     location.hash = 'dashboard';
   }
   await renderActiveTab();
+}
+
+function clearMsalSessionStorage() {
+  // Only remove MSAL-related keys to avoid clearing unrelated session data
+  // on shared origins (e.g. GitHub Pages project sites).
+  try {
+    const keysToRemove = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i);
+      if (key && (key.startsWith('msal.') || key.includes('.login.') || key.includes('.acquireToken.'))) {
+        keysToRemove.push(key);
+      }
+    }
+    for (const key of keysToRemove) {
+      sessionStorage.removeItem(key);
+    }
+  } catch {
+    // sessionStorage may be unavailable.
+  }
+}
+
+async function switchEnvironment(name) {
+  clearRefresh();
+  setActiveEnvironmentName(name);
+  const envs = loadEnvironments();
+  const env = envs.find((e) => e.name === name);
+  applyEnvironment(env);
+  APP.msalApp = null;
+  APP.account = null;
+  clearMsalSessionStorage();
+  updateEnvironmentIndicator();
+  await initMsal();
+  await renderActiveTab();
+}
+
+function updateEnvironmentIndicator() {
+  const el = document.getElementById('env-indicator');
+  if (!el) return;
+  const name = getActiveEnvironmentName();
+  el.textContent = name || '';
+  el.title = name ? `Active environment: ${name}` : 'No environment selected';
+}
+
+function showEnvironmentManager() {
+  const envs = loadEnvironments();
+  const activeName = getActiveEnvironmentName();
+
+  const envListHtml = envs.length === 0
+    ? '<p class="muted">No environments configured. Add one to get started.</p>'
+    : `<div class="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Storage Account</th><th>Function App</th><th></th></tr></thead>
+        <tbody>${envs.map((env) => `<tr>
+          <td><strong>${escapeHtml(env.name)}</strong>${env.name === activeName ? ' <span class="badge success">active</span>' : ''}</td>
+          <td><code>${escapeHtml(env.storageAccount || '')}</code></td>
+          <td><code>${escapeHtml(env.functionAppName || '')}</code></td>
+          <td style="white-space:nowrap">
+            ${env.name !== activeName ? `<button type="button" class="secondary env-use-btn" data-env="${escapeHtml(env.name)}">Use</button> ` : ''}
+            <button type="button" class="secondary env-edit-btn" data-env="${escapeHtml(env.name)}">Edit</button>
+            <button type="button" class="secondary env-delete-btn" data-env="${escapeHtml(env.name)}" style="color:var(--danger)">Delete</button>
+          </td>
+        </tr>`).join('')}
+        </tbody></table></div>`;
+
+  const overlayHtml = `<div class="env-manager-overlay" id="env-manager-overlay" role="dialog" aria-modal="true" aria-label="Environment Manager">
+    <div class="env-manager-panel panel">
+      <h2>Environments</h2>
+      ${envListHtml}
+      <div style="margin-top:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
+        <button type="button" class="primary" id="env-add-btn">Add Environment</button>
+        ${envs.length > 0 ? '<button type="button" class="secondary" id="env-close-btn">Close</button>' : ''}
+      </div>
+    </div>
+  </div>`;
+
+  let overlay = document.getElementById('env-manager-overlay');
+  if (overlay) overlay.remove();
+  document.body.insertAdjacentHTML('beforeend', overlayHtml);
+
+  document.getElementById('env-add-btn')?.addEventListener('click', () => showEnvironmentForm(null));
+  document.getElementById('env-close-btn')?.addEventListener('click', () => {
+    document.getElementById('env-manager-overlay')?.remove();
+  });
+
+  for (const btn of document.querySelectorAll('.env-use-btn')) {
+    btn.addEventListener('click', () => {
+      document.getElementById('env-manager-overlay')?.remove();
+      switchEnvironment(btn.dataset.env).catch((error) => renderError('Switch failed', error));
+    });
+  }
+  for (const btn of document.querySelectorAll('.env-edit-btn')) {
+    btn.addEventListener('click', () => {
+      const env = loadEnvironments().find((e) => e.name === btn.dataset.env);
+      if (env) showEnvironmentForm(env);
+    });
+  }
+  for (const btn of document.querySelectorAll('.env-delete-btn')) {
+    btn.addEventListener('click', () => {
+      const name = btn.dataset.env;
+      const envsList = loadEnvironments().filter((e) => e.name !== name);
+      if (!saveEnvironments(envsList)) {
+        showViewMessage('error', 'Failed to save changes. Browser storage may be disabled or full.');
+      }
+      if (getActiveEnvironmentName() === name) {
+        if (envsList.length > 0) {
+          switchEnvironment(envsList[0].name).catch((error) => renderError('Switch failed', error));
+        } else {
+          clearRefresh();
+          setActiveEnvironmentName('');
+          CONFIG.msalClientId = '';
+          CONFIG.msalAuthority = '';
+          CONFIG.storageAccount = '';
+          CONFIG.functionAppName = '';
+          APP.msalApp = null;
+          APP.account = null;
+          clearMsalSessionStorage();
+          updateEnvironmentIndicator();
+          updateAuthUi();
+          contentEl.innerHTML = '';
+        }
+      }
+      showEnvironmentManager();
+    });
+  }
+}
+
+function showEnvironmentForm(existingEnv) {
+  const isEdit = existingEnv != null;
+  const title = isEdit ? 'Edit Environment' : 'Add Environment';
+
+  const formHtml = `<div class="env-manager-overlay" id="env-form-overlay" role="dialog" aria-modal="true" aria-label="${title}">
+    <div class="env-manager-panel panel">
+      <h2>${title}</h2>
+      <div class="stack">
+        <label>Name <input type="text" id="env-field-name" value="${escapeHtml(existingEnv?.name || '')}" ${isEdit ? 'readonly' : ''} placeholder="e.g. production"></label>
+        <label>Entra Client ID <input type="text" id="env-field-clientId" value="${escapeHtml(existingEnv?.clientId || '')}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label>
+        <label>Entra Tenant ID <input type="text" id="env-field-tenantId" value="${escapeHtml(existingEnv?.tenantId || '')}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label>
+        <label>Storage Account <input type="text" id="env-field-storageAccount" value="${escapeHtml(existingEnv?.storageAccount || '')}" placeholder="mystorageaccount"></label>
+        <label>Function App Name <input type="text" id="env-field-functionAppName" value="${escapeHtml(existingEnv?.functionAppName || '')}" placeholder="sonde-decoder-xxxx"></label>
+      </div>
+      <div style="margin-top:1rem;display:flex;gap:0.5rem">
+        <button type="button" class="primary" id="env-save-btn">Save</button>
+        <button type="button" class="secondary" id="env-cancel-btn">Cancel</button>
+      </div>
+      <div id="env-form-error" class="alert error" style="display:none;margin-top:0.75rem"></div>
+    </div>
+  </div>`;
+
+  let formOverlay = document.getElementById('env-form-overlay');
+  if (formOverlay) formOverlay.remove();
+  document.body.insertAdjacentHTML('beforeend', formHtml);
+
+  document.getElementById('env-cancel-btn')?.addEventListener('click', () => {
+    document.getElementById('env-form-overlay')?.remove();
+  });
+
+  document.getElementById('env-save-btn')?.addEventListener('click', () => {
+    const name = document.getElementById('env-field-name')?.value.trim();
+    const clientId = document.getElementById('env-field-clientId')?.value.trim();
+    const tenantId = document.getElementById('env-field-tenantId')?.value.trim();
+    const storageAccount = document.getElementById('env-field-storageAccount')?.value.trim();
+    const functionAppName = document.getElementById('env-field-functionAppName')?.value.trim();
+    const errorEl = document.getElementById('env-form-error');
+
+    if (!name || !clientId || !tenantId || !storageAccount || !functionAppName) {
+      if (errorEl) {
+        errorEl.textContent = 'All fields are required.';
+        errorEl.style.display = '';
+      }
+      return;
+    }
+
+    const guidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!guidPattern.test(clientId)) {
+      if (errorEl) { errorEl.textContent = 'Client ID must be a valid GUID.'; errorEl.style.display = ''; }
+      return;
+    }
+    if (!guidPattern.test(tenantId)) {
+      if (errorEl) { errorEl.textContent = 'Tenant ID must be a valid GUID.'; errorEl.style.display = ''; }
+      return;
+    }
+    if (!/^[a-z0-9]{3,24}$/.test(storageAccount)) {
+      if (errorEl) { errorEl.textContent = 'Storage Account must be 3–24 lowercase alphanumeric characters.'; errorEl.style.display = ''; }
+      return;
+    }
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$/.test(functionAppName)) {
+      if (errorEl) { errorEl.textContent = 'Function App Name must be 2–60 alphanumeric characters with optional hyphens.'; errorEl.style.display = ''; }
+      return;
+    }
+
+    const envs = loadEnvironments();
+    if (!isEdit && envs.some((e) => e.name === name)) {
+      if (errorEl) {
+        errorEl.textContent = `An environment named "${name}" already exists.`;
+        errorEl.style.display = '';
+      }
+      return;
+    }
+
+    const envData = { name, clientId, tenantId, storageAccount, functionAppName };
+    if (isEdit) {
+      const idx = envs.findIndex((e) => e.name === name);
+      if (idx >= 0) envs[idx] = envData;
+    } else {
+      envs.push(envData);
+    }
+    if (!saveEnvironments(envs)) {
+      if (errorEl) { errorEl.textContent = 'Failed to save environment. Browser storage may be disabled or full.'; errorEl.style.display = ''; }
+      return;
+    }
+
+    const isFirstEnv = !isEdit && envs.length === 1;
+    const isActiveEnv = getActiveEnvironmentName() === name;
+
+    document.getElementById('env-form-overlay')?.remove();
+
+    if (isFirstEnv || isActiveEnv) {
+      document.getElementById('env-manager-overlay')?.remove();
+      switchEnvironment(name).catch((error) => renderError('Switch failed', error));
+    } else {
+      showEnvironmentManager();
+    }
+  });
 }
 
 document.addEventListener('DOMContentLoaded', () => {

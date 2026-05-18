@@ -166,6 +166,45 @@ code { font-family: Consolas, "Courier New", monospace; }
   align-items: center;
   gap: 0.15rem;
 }
+.topbar-right {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.env-indicator {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--header-text);
+  opacity: 0.85;
+}
+.env-gear-btn {
+  background: none;
+  border: none;
+  color: var(--header-text);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  opacity: 0.7;
+  line-height: 1;
+}
+.env-gear-btn:hover { opacity: 1; }
+.env-manager-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+.env-manager-panel {
+  width: 100%;
+  max-width: 600px;
+  margin: 1rem;
+  max-height: 90vh;
+  overflow-y: auto;
+}
 .series-edit-overlay {
   position: fixed;
   inset: 0;

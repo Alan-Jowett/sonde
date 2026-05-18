@@ -987,23 +987,10 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
             }
         },
-        Commands::Key { action } => match action {
-            KeyAction::Fingerprint { public_key } => {
-                print_key_fingerprint(public_key.as_deref(), json)?;
+        Commands::Key { .. } => {
+                // Handled by run_without_gateway(); this branch is unreachable.
+                unreachable!("Key commands are dispatched before gateway connection");
             }
-            KeyAction::Status => {
-                // TODO: Fetch escrow status via gRPC or Azure
-                if json {
-                    print_json(&serde_json::json!({
-                        "escrow_state": "unknown",
-                        "note": "escrow status query not yet implemented",
-                    }))?;
-                } else {
-                    println!("Escrow status query not yet implemented.");
-                    println!("Use gateway logs or Azure Table Storage to check escrow state.");
-                }
-            }
-        },
     }
 
     Ok(())

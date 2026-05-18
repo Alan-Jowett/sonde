@@ -3232,4 +3232,89 @@ mod tests {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
         assert_eq!(store.get_config("nonexistent").await.unwrap(), None);
     }
+
+    #[tokio::test]
+    async fn test_key_version_migration_for_nodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key-version-migration-nodes.db");
+        let master_key = test_key();
+
+        // Create a DB with the old schema (no key_version column).
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            let encrypted_psk = encrypt_psk(&master_key, "node-1", &[0xABu8; 32]).unwrap();
+            conn.execute(
+                "INSERT INTO nodes (node_id, key_hint, psk, schedule_interval_s) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params!["node-1", 0x1234u32, encrypted_psk, 60],
+            )
+            .unwrap();
+
+            // Confirm key_version column does not exist.
+            let cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(nodes)")
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(
+                !cols.iter().any(|c| c == "key_version"),
+                "old schema must not have key_version"
+            );
+        }
+
+        // Reopen via SqliteStorage::open(), which runs the migration.
+        let store = SqliteStorage::open(&path, master_key).unwrap();
+        let node = store.get_node("node-1").await.unwrap().unwrap();
+        assert_eq!(node.key_hint, 0x1234);
+        assert_eq!(node.key_version, 0, "migrated node should default to key_version 0");
+        assert_eq!(node.psk, [0xABu8; 32]);
+    }
+
+    #[tokio::test]
+    async fn test_key_version_migration_for_phone_psks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key-version-migration-phones.db");
+        let master_key = test_key();
+
+        // Create a DB with the old schema (no key_version column on phone_psks).
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            let encrypted_psk = encrypt_phone_psk(&master_key, 1, &[0xCDu8; 32]).unwrap();
+            conn.execute(
+                "INSERT INTO phone_psks (phone_key_hint, psk, label, issued_at_epoch_s, status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![0x5678u32, encrypted_psk, "Test Phone", 1_700_000_000i64, "active"],
+            )
+            .unwrap();
+            // Update the psk with the correct phone_id-encrypted value.
+            // phone_id is the auto-increment id, which is 1 for the first insert.
+
+            let cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(phone_psks)")
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(
+                !cols.iter().any(|c| c == "key_version"),
+                "old schema must not have key_version on phone_psks"
+            );
+        }
+
+        // Reopen via SqliteStorage::open(), which runs the migration.
+        let store = SqliteStorage::open(&path, master_key).unwrap();
+        let phones = store.list_phone_psks().await.unwrap();
+        assert_eq!(phones.len(), 1);
+        assert_eq!(phones[0].phone_key_hint, 0x5678);
+        assert_eq!(
+            phones[0].key_version, 0,
+            "migrated phone PSK should default to key_version 0"
+        );
+        assert_eq!(*phones[0].psk, [0xCDu8; 32]);
+    }
 }

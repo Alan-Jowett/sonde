@@ -315,6 +315,23 @@ pub trait HandlerStore: Send + Sync {
             "store_gateway_escrow_state not implemented for this store backend".into(),
         ))
     }
+
+    /// Store the KDF salt with first-writer-wins semantics (AZH-0603).
+    ///
+    /// If no salt has been stored yet, persists the given salt and returns
+    /// `Ok(true)`. If a salt already exists, leaves it untouched and returns
+    /// `Ok(false)`.
+    async fn store_escrow_salt_if_absent(
+        &self,
+        salt: &[u8],
+        kdf_params: Option<&KdfParams>,
+        created_at: u64,
+    ) -> Result<bool, HandlerError> {
+        let _ = (salt, kdf_params, created_at);
+        Err(HandlerError::Store(
+            "store_escrow_salt_if_absent not implemented for this store backend".into(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -358,6 +375,23 @@ where
                         // Gateway-scoped ACTUAL_STATE (AZH-0605): persist escrow state.
                         if let Some(ref details) = actual_state.status_details {
                             self.store.store_gateway_escrow_state(details).await?;
+
+                            // AZH-0603: first-writer-wins salt storage.
+                            if let Some(ref salt) = details.escrow_salt {
+                                let stored = self
+                                    .store
+                                    .store_escrow_salt_if_absent(
+                                        salt,
+                                        details.escrow_kdf_params.as_ref(),
+                                        actual_state.timestamp_ms,
+                                    )
+                                    .await?;
+                                if !stored {
+                                    tracing::debug!(
+                                        "escrow salt already exists, ignoring incoming salt (first-writer-wins)"
+                                    );
+                                }
+                            }
                         }
                     }
                     other => {
@@ -837,6 +871,16 @@ fn is_legacy_not_found(e: &LegacyAzureError) -> bool {
     )
 }
 
+fn is_legacy_conflict(e: &LegacyAzureError) -> bool {
+    matches!(
+        e.kind(),
+        LegacyAzureErrorKind::HttpResponse {
+            status: LegacyStatusCode::Conflict,
+            ..
+        }
+    )
+}
+
 #[async_trait]
 impl HandlerStore for AzureTablesStore {
     async fn append_actual_state(&self, row: &ActualStateRow) -> Result<(), HandlerError> {
@@ -1122,6 +1166,47 @@ impl HandlerStore for AzureTablesStore {
             .await
             .map_err(|e| HandlerError::Store(format!("upsert escrow state failed: {e}")))?;
         Ok(())
+    }
+
+    async fn store_escrow_salt_if_absent(
+        &self,
+        salt: &[u8],
+        kdf_params: Option<&KdfParams>,
+        created_at: u64,
+    ) -> Result<bool, HandlerError> {
+        let created_at_i64 = i64::try_from(created_at).map_err(|_| {
+            HandlerError::Store(format!("salt created_at {created_at} exceeds i64::MAX"))
+        })?;
+        let kdf_params_json = kdf_params.map(|kdf| {
+            serde_json::json!({
+                "m_cost": kdf.m_cost,
+                "t_cost": kdf.t_cost,
+                "p_cost": kdf.p_cost,
+                "version": kdf.kdf_version,
+            })
+            .to_string()
+        });
+        let entity = GatewayEscrowSaltEntity {
+            partition_key: ESCROW_PARTITION_KEY.to_string(),
+            row_key: "salt".to_string(),
+            salt: base64::prelude::BASE64_STANDARD.encode(salt),
+            kdf_params_json,
+            created_at: created_at_i64,
+        };
+        // First-writer-wins: use insert (not upsert). 409 Conflict means
+        // a salt row already exists, which is the expected steady-state.
+        match self
+            .escrow_table
+            .insert::<_, GatewayEscrowSaltEntity>(&entity)
+            .map_err(|e| HandlerError::Store(format!("prepare escrow salt insert failed: {e}")))?
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(e) if is_legacy_conflict(&e) => Ok(false),
+            Err(e) => Err(HandlerError::Store(format!(
+                "insert escrow salt failed: {e}"
+            ))),
+        }
     }
 }
 
@@ -1700,6 +1785,22 @@ struct GatewayEscrowStateEntity {
     kdf_params_json: Option<String>,
 }
 
+/// Azure Table entity for KDF salt (AZH-0603).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct GatewayEscrowSaltEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    /// Base64-encoded KDF salt bytes.
+    salt: String,
+    /// JSON-encoded KDF parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kdf_params_json: Option<String>,
+    /// Creation timestamp (Unix milliseconds).
+    created_at: i64,
+}
+
 // Equal-timestamp ordering is only guaranteed within one handler process
 // lifetime; reconciliation correctness must not depend on cross-process suffix
 // ordering.
@@ -2117,6 +2218,7 @@ mod tests {
         escrow_blobs_by_hint: Mutex<HashMap<u16, Vec<Vec<u8>>>>,
         stored_gateway_pubkeys: Mutex<Vec<(Vec<u8>, u64, u64)>>,
         stored_escrow_state: Mutex<Option<GatewayStatusDetails>>,
+        stored_salt: Mutex<Option<Vec<u8>>>,
     }
 
     impl MemoryStore {
@@ -2272,6 +2374,21 @@ mod tests {
         ) -> Result<(), HandlerError> {
             *self.stored_escrow_state.lock().await = Some(details.clone());
             Ok(())
+        }
+
+        async fn store_escrow_salt_if_absent(
+            &self,
+            salt: &[u8],
+            _kdf_params: Option<&KdfParams>,
+            _created_at: u64,
+        ) -> Result<bool, HandlerError> {
+            let mut stored = self.stored_salt.lock().await;
+            if stored.is_some() {
+                Ok(false)
+            } else {
+                *stored = Some(salt.to_vec());
+                Ok(true)
+            }
         }
     }
 
@@ -4313,6 +4430,67 @@ mod tests {
             entity.partition_key.starts_with("n:"),
             "node entity should use 'n:' partition prefix, got: {}",
             entity.partition_key
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_actual_state_stores_salt_first_writer_wins() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        let status_details = Value::Map(vec![
+            map_entry(1, Value::Text("bootstrapping".to_string())),
+            map_entry(3, Value::Bytes(vec![0xBB; 16])),
+            map_entry(
+                4,
+                Value::Map(vec![
+                    map_entry(1, Value::Integer(65536u64.into())),
+                    map_entry(2, Value::Integer(3u64.into())),
+                    map_entry(3, Value::Integer(1u64.into())),
+                    map_entry(4, Value::Integer(1u64.into())),
+                ]),
+            ),
+        ]);
+
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("gateway".to_string())),
+            map_entry(3, Value::Text("gateway-1".to_string())),
+            map_entry(9, Value::Integer(1000u64.into())),
+            map_entry(10, status_details),
+        ]);
+        let mut payload = Vec::new();
+        ciborium::into_writer(&value, &mut payload).unwrap();
+
+        // First write should succeed.
+        handler.handle_payload(&payload).await.unwrap();
+        assert_eq!(
+            store.stored_salt.lock().await.as_deref(),
+            Some([0xBBu8; 16].as_slice())
+        );
+
+        // Second write with different salt should be ignored (first-writer-wins).
+        let status_details2 = Value::Map(vec![
+            map_entry(1, Value::Text("ready".to_string())),
+            map_entry(3, Value::Bytes(vec![0xCC; 16])),
+        ]);
+        let value2 = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("gateway".to_string())),
+            map_entry(3, Value::Text("gateway-1".to_string())),
+            map_entry(9, Value::Integer(2000u64.into())),
+            map_entry(10, status_details2),
+        ]);
+        let mut payload2 = Vec::new();
+        ciborium::into_writer(&value2, &mut payload2).unwrap();
+
+        handler.handle_payload(&payload2).await.unwrap();
+        // Salt should still be the original.
+        assert_eq!(
+            store.stored_salt.lock().await.as_deref(),
+            Some([0xBBu8; 16].as_slice()),
+            "salt should not be overwritten (first-writer-wins)"
         );
     }
 }

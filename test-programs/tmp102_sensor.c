@@ -121,8 +121,12 @@ int decode(struct decoder_context *ctx)
         ((__u32)data[5] << 24)
     );
 
-    /* Convert to millidegrees Fahrenheit: mF = mC * 9 / 5 + 32000 */
-    __s32 temp_mf = temp_mc * 9 / 5 + 32000;
+    /* Convert to millidegrees Fahrenheit: mF = mC * 9 / 5 + 32000
+     * BPF doesn't support signed division, so handle sign separately. */
+    __u32 abs_mc_val = (temp_mc < 0) ? (__u32)(-temp_mc) : (__u32)temp_mc;
+    __u32 abs_mf = abs_mc_val * 9u / 5u;
+    __s32 signed_mf = (temp_mc < 0) ? -(__s32)abs_mf : (__s32)abs_mf;
+    __s32 temp_mf = signed_mf + 32000;
 
     /* Emit the temperature reading in millidegrees Celsius. */
     char name_temp[] = "temp_mc";

@@ -31,8 +31,9 @@ function loadEnvironments() {
 function saveEnvironments(envs) {
   try {
     localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(envs));
+    return true;
   } catch {
-    // Storage disabled or quota exceeded — environment will not persist.
+    return false;
   }
 }
 
@@ -1657,6 +1658,25 @@ async function init() {
   await renderActiveTab();
 }
 
+function clearMsalSessionStorage() {
+  // Only remove MSAL-related keys to avoid clearing unrelated session data
+  // on shared origins (e.g. GitHub Pages project sites).
+  try {
+    const keysToRemove = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i);
+      if (key && (key.startsWith('msal.') || key.includes('.login.') || key.includes('.acquireToken.'))) {
+        keysToRemove.push(key);
+      }
+    }
+    for (const key of keysToRemove) {
+      sessionStorage.removeItem(key);
+    }
+  } catch {
+    // sessionStorage may be unavailable.
+  }
+}
+
 async function switchEnvironment(name) {
   clearRefresh();
   setActiveEnvironmentName(name);
@@ -1665,7 +1685,7 @@ async function switchEnvironment(name) {
   applyEnvironment(env);
   APP.msalApp = null;
   APP.account = null;
-  sessionStorage.clear();
+  clearMsalSessionStorage();
   updateEnvironmentIndicator();
   await initMsal();
   await renderActiveTab();
@@ -1735,7 +1755,9 @@ function showEnvironmentManager() {
     btn.addEventListener('click', () => {
       const name = btn.dataset.env;
       const envsList = loadEnvironments().filter((e) => e.name !== name);
-      saveEnvironments(envsList);
+      if (!saveEnvironments(envsList)) {
+        showViewMessage('error', 'Failed to save changes. Browser storage may be disabled or full.');
+      }
       if (getActiveEnvironmentName() === name) {
         if (envsList.length > 0) {
           switchEnvironment(envsList[0].name).catch((error) => renderError('Switch failed', error));
@@ -1748,7 +1770,7 @@ function showEnvironmentManager() {
           CONFIG.functionAppName = '';
           APP.msalApp = null;
           APP.account = null;
-          sessionStorage.clear();
+          clearMsalSessionStorage();
           updateEnvironmentIndicator();
           updateAuthUi();
           contentEl.innerHTML = '';
@@ -1839,7 +1861,10 @@ function showEnvironmentForm(existingEnv) {
     } else {
       envs.push(envData);
     }
-    saveEnvironments(envs);
+    if (!saveEnvironments(envs)) {
+      if (errorEl) { errorEl.textContent = 'Failed to save environment. Browser storage may be disabled or full.'; errorEl.style.display = ''; }
+      return;
+    }
 
     const isFirstEnv = !isEdit && envs.length === 1;
     const isActiveEnv = getActiveEnvironmentName() === name;

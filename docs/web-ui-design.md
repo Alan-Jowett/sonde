@@ -11,7 +11,7 @@
 
 ## 1. Overview
 
-Static SPA hosted on Azure Static Web Apps (free tier). Vanilla HTML/JS/CSS with zero build step. Communicates directly with Azure Storage Tables via REST API using MSAL.js bearer tokens. Program ingestion is delegated to an HTTP-triggered Azure Function that runs Prevail verification server-side.
+Static SPA hosted on GitHub Pages (deployed from the `gh-pages` branch of the sonde repository). Vanilla HTML/JS/CSS with zero build step. Communicates directly with Azure Storage Tables via REST API using MSAL.js bearer tokens. Program ingestion is delegated to an HTTP-triggered Azure Function that runs Prevail verification server-side. Environment configuration (Azure backend connection details) is managed at runtime via `localStorage` — no deploy-time configuration file is needed.
 
 ---
 
@@ -37,9 +37,8 @@ Azure Storage Tables + ProgramIngest Azure Function
 ```
 deploy/web-ui/
   index.html                  — single-page app shell
-  app.js                      — application logic (MSAL, table queries, UI rendering)
+  app.js                      — application logic (MSAL, table queries, UI rendering, environment manager)
   style.css                   — minimal styling
-  staticwebapp.config.json    — Azure Static Web Apps routing config
 ```
 
 ---
@@ -160,9 +159,12 @@ local `ProgramLibrary`.
 - Token caching in browser session storage.
 - Silent token renewal; redirect to login on expiry.
 - `redirectUri` explicitly set to `window.location.origin` so the registered
-  redirect URIs (`https://<swa-hostname>` and, when configured,
-  `https://<customDomain>`) match regardless of which hostname the user
+  redirect URIs (`https://alan-jowett.github.io/sonde/` and
+  `https://sondeplatform.com`) match regardless of which hostname the user
   accesses.
+- Configuration is loaded from the active environment in `localStorage`
+  (see §11). `msalAuthority` is derived as
+  `https://login.microsoftonline.com/<tenantId>`.
 - Two token scopes, acquired separately:
   - `https://storage.azure.com/.default` — for Azure Table REST API calls
     (dashboard, desired state, program list, sensor data).
@@ -176,42 +178,19 @@ local `ProgramLibrary`.
 
 ## 9. Infrastructure (WEB-0600)
 
-### 9.1 Static Web App
+### 9.1 GitHub Pages Deployment (WEB-0900)
 
-Azure Static Web App (free tier) provisioned via `static-web-app.bicep`.
-SPA content is deployed automatically during `sonde-azure-companion bootstrap`
-(see AZC-0410). The bootstrap flow generates `config.json`, deploys the SPA
-content to the Static Web App, registers the SWA hostname as a redirect URI on
-the Entra app, and adds the Azure Storage API permission.
+The SPA is deployed to GitHub Pages from the sonde repository. A GitHub Actions
+workflow (`.github/workflows/web-ui.yml`) publishes the contents of
+`deploy/web-ui/` to GitHub Pages on pushes to `main` that modify
+`deploy/web-ui/**`.
 
-For standalone (non-bootstrap) deployment, use the deployment script:
+The well-known URL is `https://alan-jowett.github.io/sonde/`.  A custom domain
+(`sondeplatform.com`) can be configured via GitHub Pages settings and a `CNAME`
+file in the deployment artifact.
 
-Prerequisites: `az` CLI (logged in), `jq`, and `npm`/`npx` (for the SWA CLI).
-
-```bash
-./deploy/web-ui/deploy.sh <COMPANION_CLIENT_ID> [RESOURCE_GROUP]
-```
-
-The script:
-1. Discovers the SWA, function app, and storage account from the resource group
-2. Generates `config.json` with MSAL client ID, tenant ID, storage account, and function app name
-3. Registers the SWA hostname as a SPA redirect URI on the Entra app registration
-4. Adds Azure Storage API permission (`user_impersonation`) to the Entra app registration
-5. Exposes `api://<clientId>/user_impersonation` API scope on the Entra app
-   registration (required for EasyAuth token validation on the Function App)
-6. Configures EasyAuth on the Function App via ARM REST API with the
-   companion Entra app as the identity provider and `Return401` for
-   unauthenticated requests
-7. Deploys the web-ui content to the Static Web App using the SWA CLI
-8. If the SWA has custom domains, registers `https://<customDomain>` as an
-   additional SPA redirect URI on the Entra app registration (additive merge
-   with existing URIs)
-9. Adds `https://<customDomain>` as an additional CORS allowed origin on the
-   Function App (additive — does not replace the default hostname origin)
-
-> **Note:** Steps 3–4 and 8–9 mutate the Entra app registration associated with the Azure companion.
-
-After deployment, grant users the `Storage Table Data Contributor` role on the storage account.
+No deploy-time configuration is needed — environment configuration is managed at
+runtime via `localStorage` (see §11 Environment Manager).
 
 ### 9.2 Modified Bicep Modules
 
@@ -273,12 +252,12 @@ routes.
 **Entra app registration prerequisites:**
 
 The Entra app registration (companion client ID) must expose an API scope
-(`api://<clientId>/user_impersonation`). This is configured by:
-- The `deploy/web-ui/deploy.sh` script (standalone deployment), or
-- The bootstrap script inside the `sonde-azure-bootstrap` container (AZC-0410).
+(`api://<clientId>/user_impersonation`). This is configured by the bootstrap
+script inside the `sonde-azure-bootstrap` container. SPA redirect URIs are
+registered declaratively in Bicep (`companion-identity.bicep`).
 
-Both paths ensure the scope exists and that the SPA redirect URI is registered
-before the SPA attempts to acquire tokens for the Function App audience.
+The scope and redirect URIs must exist before the SPA attempts to acquire
+tokens for the Function App audience.
 
 **CORS and preflight:**
 
@@ -299,49 +278,20 @@ configuration.
 
 ---
 
-### 9.5 Custom Domain (WEB-0608)
+### 9.5 CORS and Redirect URI Configuration
 
-An optional custom domain can be bound to the Static Web App so operators
-access the SPA via a branded URL (e.g., `https://sondeplatform.com`) instead of
-the Azure-generated `*.azurestaticapps.net` hostname.  The default hostname
-remains functional — both URLs serve the same SPA content.
+The Bicep deployment configures:
 
-**Bicep parameters** (all optional — omit to skip custom domain setup):
+1. **CORS origins** on the Function App (`function-placeholder.bicep`):
+   `https://alan-jowett.github.io/sonde` and `https://sondeplatform.com`
+   (via `corsAllowedOrigins` parameter).
 
-| Parameter | Default | Purpose |
-|---|---|---|
-| `customDomainName` | `''` | FQDN for the custom domain (e.g., `sondeplatform.com`). Empty = no custom domain. |
-| `customDomainDnsResourceGroup` | `''` | Resource group containing the Azure DNS zone for the custom domain. |
-| `customDomainDnsZoneName` | `''` | DNS zone name. Defaults to `customDomainName` when empty (correct for apex domains). |
+2. **SPA redirect URIs** on the Entra app (`companion-identity.bicep`):
+   `https://alan-jowett.github.io/sonde/` and `https://sondeplatform.com`
+   (via `spaRedirectUris` parameter).
 
-When `customDomainName` and `customDomainDnsResourceGroup` are both non-empty,
-the deployment:
-
-1. **DNS ALIAS record** (`dns-record.bicep`): Deployed to the DNS resource group
-   (cross-resource-group scope from `main.bicep`).  Creates an ALIAS A record
-   (`targetResource.id` pointing to the SWA resource) for apex domain
-   resolution.  Domain ownership validation is handled separately by the
-   deploy script.
-
-2. **Custom domain binding** (`deploy.sh`): The deploy script discovers
-   custom domains via `az staticwebapp hostname list`.  Azure validates
-   domain ownership via the DNS ALIAS record and automatically provisions
-   a managed SSL certificate.
-
-3. **CORS expansion** (`stack.bicep`): The Function App's `corsAllowedOrigins`
-   array includes both `https://<defaultHostname>` and
-   `https://<customDomainName>` so browser requests from either origin succeed.
-
-4. **Additional outputs** (`main.bicep`): `customDomainUrl` is emitted when
-   a custom domain is configured (e.g., `https://sondeplatform.com`).  The
-   `companionBootstrapValues` output object includes `customDomainUrl` so
-   the bootstrap flow can register the custom domain redirect URI.
-
-> **Note:** The DNS zone must already exist in the specified resource group.
-> The Bicep template creates records within it but does not create the zone
-> itself.  On first deployment, DNS propagation to Azure SWA's validators
-> may take a few minutes; if the custom domain binding fails, re-run the
-> deployment after DNS has propagated.
+Both are parameterized via `githubPagesOrigin` and `customDomainOrigin`
+parameters in `main.bicep`, with Sonde-specific defaults.
 
 ---
 
@@ -435,3 +385,75 @@ Overrides are stored in `localStorage` under the key
 Overrides survive page reloads and browser restarts. They are scoped to
 the browser origin (per localStorage rules) and are not shared across
 devices.
+
+---
+
+## 11. Environment Manager (WEB-0800)
+
+> **Requirements:** WEB-0800, WEB-0801, WEB-0802, WEB-0803, WEB-0804, WEB-0805, WEB-0806
+
+### 11.1 Overview
+
+The environment manager replaces the deploy-time `config.json` with a runtime
+configuration system. Users define named environments (e.g., "production",
+"staging", "dev") with the Azure backend connection details needed by the SPA.
+A single SPA instance can connect to any environment without redeployment.
+
+### 11.2 Data Model
+
+Each environment is a JSON object stored in `localStorage`:
+
+```json
+{
+  "name": "production",
+  "clientId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "storageAccount": "mystorageaccount",
+  "functionAppName": "sonde-decoder-xxxx"
+}
+```
+
+**Storage keys:**
+
+| Key | Value |
+|-----|-------|
+| `sonde_environments` | JSON array of environment objects |
+| `sonde_active_environment` | Name of the currently active environment |
+
+### 11.3 Authority Derivation
+
+`msalAuthority` is derived from the tenant ID as:
+`https://login.microsoftonline.com/<tenantId>`
+
+This targets Azure public cloud. Sovereign cloud support is out of scope.
+
+### 11.4 UI Design
+
+**First load (no environments):** A full-screen modal prompts the user to add
+their first environment. The main app UI (tabs, dashboard) is inaccessible until
+at least one environment is configured. The modal cannot be closed without adding
+an environment.
+
+**Environment list modal:** A full-screen modal displaying all configured
+environments in a table (Name, Storage Account, Function App), with action
+buttons: Use (switch to this environment), Edit, Delete. The active environment
+is marked with a badge. An "Add Environment" button opens the add/edit form.
+
+**Add/edit form:** A stacked form with fields for Name (read-only on edit),
+Client ID, Tenant ID, Storage Account, Function App Name. All fields are
+required. Duplicate names are rejected on add.
+
+**Header indicator:** The active environment name is displayed in the top bar
+next to a ⚙ gear button that opens the environment manager modal.
+
+### 11.5 Environment Switching (WEB-0806)
+
+When the user switches to a different environment:
+
+1. The auto-refresh timer is cleared
+2. `CONFIG` fields are updated from the selected environment
+3. The MSAL `PublicClientApplication` instance is discarded
+4. The active MSAL account is cleared
+5. `sessionStorage` is cleared (removes cached tokens)
+6. A new MSAL instance is initialized with the new environment's credentials
+7. The active tab is re-rendered

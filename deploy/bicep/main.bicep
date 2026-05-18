@@ -48,20 +48,14 @@ param functionAppName string = ''
 @description('Optional override for the Azure handler Function hosting plan name.')
 param functionPlanName string = ''
 
-@description('Optional override for the Static Web App name.')
-param staticWebAppName string = ''
+@description('GitHub Pages origin URL for the Web UI (used for Function App CORS and Entra SPA redirect URI). Defaults to the well-known GitHub Pages URL for the sonde repository.')
+param githubPagesOrigin string = 'https://alan-jowett.github.io'
 
-@description('Azure region for the Static Web App. Defaults to centralus because Microsoft.Web/staticSites is not available in all regions.')
-param staticWebAppLocation string = 'centralus'
+@description('Custom domain origin for the Web UI (e.g. https://sondeplatform.com). Empty = GitHub Pages origin only.')
+param customDomainOrigin string = 'https://sondeplatform.com'
 
-@description('Custom domain FQDN to bind to the Static Web App (e.g., sondeplatform.com). Empty = no custom domain.')
-param customDomainName string = ''
-
-@description('Resource group containing the Azure DNS zone for the custom domain. Required when customDomainName is set.')
-param customDomainDnsResourceGroup string = ''
-
-@description('Azure DNS zone name for the custom domain. Defaults to customDomainName when empty (correct for apex domains).')
-param customDomainDnsZoneName string = ''
+@description('GitHub Pages path for the SPA (appended to githubPagesOrigin for Entra redirect URI). Must include leading and trailing slashes.')
+param githubPagesPath string = '/sonde/'
 
 var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
 var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
@@ -86,13 +80,9 @@ var effectiveFunctionAppName = empty(functionAppName)
 var effectiveFunctionPlanName = empty(functionPlanName)
   ? take('${take(effectiveProjectSlug, 24)}-func-plan', 40)
   : functionPlanName
-var effectiveStaticWebAppName = empty(staticWebAppName)
-  ? take('${take(effectiveProjectSlug, 24)}-web-${take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'swa'), 8)}', 40)
-  : staticWebAppName
-var effectiveCustomDomainDnsZoneName = empty(customDomainDnsZoneName)
-  ? customDomainName
-  : customDomainDnsZoneName
-var isCustomDomainEnabled = !empty(customDomainName) && !empty(customDomainDnsResourceGroup)
+var corsOrigins = empty(customDomainOrigin)
+  ? [githubPagesOrigin]
+  : [githubPagesOrigin, customDomainOrigin]
 var tags = {
   project: project_name
 }
@@ -115,6 +105,9 @@ module companionIdentity './modules/companion-identity.bicep' = {
     identitySuffix: take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'companion-identity'), 8)
     certificateBase64: companionCertificateBase64
     certificateDisplayName: companionCertificateDisplayName
+    spaRedirectUris: empty(customDomainOrigin)
+      ? ['${githubPagesOrigin}${githubPagesPath}']
+      : ['${githubPagesOrigin}${githubPagesPath}', customDomainOrigin]
   }
 }
 
@@ -136,22 +129,7 @@ module stack './modules/stack.bicep' = {
     companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId
     functionAuthClientId: companionIdentity.outputs.clientId
     functionAuthTenantId: companionIdentity.outputs.tenantId
-    staticWebAppName: effectiveStaticWebAppName
-    staticWebAppLocation: staticWebAppLocation
-    customDomainName: isCustomDomainEnabled ? customDomainName : ''
-  }
-}
-
-// DNS records for custom domain — deployed to the external resource group
-// containing the Azure DNS zone.  Only created when custom domain is enabled.
-// Domain ownership validation and binding are handled by deploy.sh via
-// `az staticwebapp hostname set` after DNS propagation.
-module dnsRecord './modules/dns-record.bicep' = if (isCustomDomainEnabled) {
-  name: 'dnsRecord'
-  scope: resourceGroup(customDomainDnsResourceGroup)
-  params: {
-    dnsZoneName: effectiveCustomDomainDnsZoneName
-    staticWebAppResourceId: stack.outputs.staticWebAppResourceId
+    corsAllowedOrigins: corsOrigins
   }
 }
 
@@ -169,9 +147,6 @@ output programsTableName string = stack.outputs.programsTableName
 output sensorDataTableName string = stack.outputs.sensorDataTableName
 output functionAppName string = stack.outputs.functionAppName
 output functionPrincipalId string = stack.outputs.functionPrincipalId
-output staticWebAppName string = stack.outputs.staticWebAppName
-output staticWebAppHostname string = stack.outputs.staticWebAppHostname
-output customDomainUrl string = isCustomDomainEnabled ? 'https://${customDomainName}' : ''
 output companionClientId string = companionIdentity.outputs.clientId
 output companionTenantId string = companionIdentity.outputs.tenantId
 output companionServicePrincipalObjectId string = companionIdentity.outputs.servicePrincipalObjectId
@@ -187,7 +162,5 @@ output companionBootstrapValues object = {
   deploymentContainerUrl: stack.outputs.deploymentContainerUrl
   actualStateTable: stack.outputs.actualStateTableName
   desiredStateTable: stack.outputs.desiredStateTableName
-  staticWebAppHostname: stack.outputs.staticWebAppHostname
-  customDomainUrl: isCustomDomainEnabled ? 'https://${customDomainName}' : ''
   note: 'The deployment registers the supplied certificate public material on the Entra app. The matching PEM certificate and private key remain caller-managed local artifacts for sonde-azure-companion bootstrap.'
 }

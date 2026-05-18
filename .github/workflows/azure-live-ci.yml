@@ -337,7 +337,7 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy SPA via bootstrap image
+      - name: Verify bootstrap image builds without SWA dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -347,84 +347,7 @@ jobs:
             -f .github/docker/Dockerfile.azure-bootstrap \
             -t sonde-azure-bootstrap:ci \
             .
-
-          SWA_NAME="$(python3 -c "
-          import json
-          d = json.load(open('.azure-live-state/deployment.json'))
-          print(d['properties']['outputs']['staticWebAppName']['value'])
-          ")"
-          SWA_HOSTNAME="$(python3 -c "
-          import json
-          d = json.load(open('.azure-live-state/deployment.json'))
-          print(d['properties']['outputs']['staticWebAppHostname']['value'])
-          ")"
-          CLIENT_ID="$(python3 -c "
-          import json
-          d = json.load(open('.azure-live-state/deployment.json'))
-          print(d['properties']['outputs']['companionClientId']['value'])
-          ")"
-          TENANT_ID="$(python3 -c "
-          import json
-          d = json.load(open('.azure-live-state/deployment.json'))
-          print(d['properties']['outputs']['companionTenantId']['value'])
-          ")"
-          STORAGE_ACCOUNT="$(python3 -c "
-          import json
-          d = json.load(open('.azure-live-state/deployment.json'))
-          print(d['properties']['outputs']['storageAccountName']['value'])
-          ")"
-          FUNCTION_APP="$(python3 -c "
-          import json
-          d = json.load(open('.azure-live-state/deployment.json'))
-          print(d['properties']['outputs']['functionAppName']['value'])
-          ")"
-
-          echo "Deploying SPA to $SWA_NAME ($SWA_HOSTNAME) via bootstrap image..."
-          DEPLOYMENT_TOKEN="$(az staticwebapp secrets list \
-            --name "$SWA_NAME" \
-            --resource-group "$SONDE_AZURE_CI_RESOURCE_GROUP" \
-            --query 'properties.apiKey' -o tsv)"
-
-          # Resolve login endpoint from the active cloud for sovereign cloud compatibility
-          LOGIN_ENDPOINT="$(az cloud show --query endpoints.activeDirectory -o tsv)"
-          LOGIN_ENDPOINT="${LOGIN_ENDPOINT%/}"
-
-          # Run swa deploy inside the bootstrap image to validate that the
-          # image has all required native dependencies (libicu, etc.).
-          # Override the ENTRYPOINT (bootstrap.sh, which uses interactive
-          # device-code login) so we run swa deploy directly with the
-          # deployment token obtained from the host.
-          docker run --rm \
-            --entrypoint sh \
-            sonde-azure-bootstrap:ci \
-            -c "
-              cat > /opt/sonde/deploy/web-ui/config.json <<'CFGEOF'
-          {
-            \"msalClientId\": \"$CLIENT_ID\",
-            \"msalAuthority\": \"$LOGIN_ENDPOINT/$TENANT_ID\",
-            \"storageAccount\": \"$STORAGE_ACCOUNT\",
-            \"functionAppName\": \"$FUNCTION_APP\"
-          }
-          CFGEOF
-              swa deploy /opt/sonde/deploy/web-ui \
-                --deployment-token '$DEPLOYMENT_TOKEN' \
-                --env production
-            "
-
-          echo "Verifying SPA is reachable..."
-          for attempt in $(seq 1 12); do
-            http_code="$(curl -s -o /dev/null -w '%{http_code}' "https://$SWA_HOSTNAME" || echo 0)"
-            if [ "$http_code" = "200" ]; then
-              echo "SPA reachable at https://$SWA_HOSTNAME (HTTP $http_code)"
-              break
-            fi
-            echo "  attempt $attempt: HTTP $http_code, waiting..."
-            sleep 10
-          done
-          if [ "$http_code" != "200" ]; then
-            echo "::error::SPA not reachable after 120s (HTTP $http_code)"
-            exit 1
-          fi
+          echo "Bootstrap image built successfully (no SWA CLI or web-ui files needed)"
 
       - name: Refresh Azure login before handler health check
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0

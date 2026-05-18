@@ -17,6 +17,12 @@ param certificateBase64 string
 @description('Display name for the registered companion certificate credential.')
 param certificateDisplayName string = 'sonde-azure-companion'
 
+@description('SPA redirect URIs for MSAL authentication (e.g. GitHub Pages URL, custom domain).')
+param spaRedirectUris array = [
+  'https://alan-jowett.github.io/sonde/'
+  'https://sondeplatform.com/'
+]
+
 var projectSlug = toLower(replace(replace(replace(replace(replace(projectName, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
 var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
 var appDisplayName = '${projectName}-azure-companion'
@@ -26,6 +32,9 @@ resource companionApp 'Microsoft.Graph/applications@v1.0' = {
   uniqueName: appUniqueName
   displayName: appDisplayName
   signInAudience: 'AzureADMyOrg'
+  spa: {
+    redirectUris: spaRedirectUris
+  }
   keyCredentials: [
     {
       displayName: certificateDisplayName

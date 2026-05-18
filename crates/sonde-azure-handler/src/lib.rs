@@ -79,7 +79,9 @@ impl RuntimeConfig {
             programs_table: required_env("SONDE_AZURE_HANDLER_PROGRAMS_TABLE")?,
             sensor_data_table: required_env("SONDE_AZURE_HANDLER_SENSOR_DATA_TABLE")?,
             escrow_table: std::env::var("SONDE_AZURE_HANDLER_ESCROW_TABLE")
-                .unwrap_or_else(|_| "gatewayescrow".to_string()),
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "gatewayescrow".to_string()),
         })
     }
 }
@@ -1194,10 +1196,10 @@ impl HandlerStore for AzureTablesStore {
             row_key: "state".to_string(),
             escrow_state: details.escrow_state.clone(),
             escrow_key_version,
-            escrow_salt: details
-                .escrow_salt
-                .as_ref()
-                .map(|s| base64::prelude::BASE64_STANDARD.encode(s)),
+            // Salt is stored exclusively in the dedicated "salt" row
+            // (first-writer-wins via store_escrow_salt_if_absent).
+            // Omit from the mutable state row to avoid inconsistency.
+            escrow_salt: None,
             kdf_params_json,
             timestamp_ms: timestamp_ms_i64,
         };
@@ -2134,6 +2136,10 @@ fn decode_optional_status_details(
                                 )));
                             }
                             escrow_salt = Some(b.clone());
+                        } else if !matches!(v, Value::Null) {
+                            return Err(HandlerError::Decode(
+                                "status_details escrow_salt must be bytes".into(),
+                            ));
                         }
                     }
                     Some(4) => {
@@ -2181,6 +2187,10 @@ fn decode_optional_status_details(
                                     ));
                                 }
                             }
+                        } else if !matches!(v, Value::Null) {
+                            return Err(HandlerError::Decode(
+                                "status_details escrow_kdf_params must be a map".into(),
+                            ));
                         }
                     }
                     _ => {}

@@ -483,12 +483,12 @@
 
 ### T-AZC-0407  Re-bootstrap on already-provisioned system succeeds
 
-**Validates:** AZC-0407
+**Validates:** AZC-0407, AZC-0411
 
 **Procedure:**
 1. Run bootstrap to completion with stubbed services, creating all runtime artifacts.
 2. Record the certificate fingerprint and `service-principal.json` content.
-3. Re-run bootstrap with the same stubbed services.
+3. Re-run bootstrap with `--force` and the same stubbed services.
 4. Assert: bootstrap completes successfully.
 5. Assert: the certificate PEM file has been regenerated (different fingerprint).
 6. Assert: `service-principal.json` has been rewritten.
@@ -642,3 +642,42 @@
 9. Assert: if SPA deployment fails, bootstrap exits non-zero.
 10. Re-run bootstrap with the same stubbed outputs.
 11. Assert: the SPA deployment and Entra configuration succeed idempotently (including the API scope exposure in step 8).
+
+---
+
+### T-AZC-0419  Bootstrap skips deployment when valid state exists
+
+**Validates:** AZC-0411, AZC-0201 AC-8
+
+**Procedure:**
+1. Prepare a state directory with valid bootstrap-complete state (`.current-state` marker pointing to a valid generation directory).
+2. Run `sonde-azure-companion bootstrap` without `--force`.
+3. Assert: bootstrap exits with status 0.
+4. Assert: bootstrap prints a message to stderr indicating state already exists and that `--force` can be used to re-deploy.
+5. Assert: no certificate generation, Docker API calls, or Bicep deployment occur.
+6. Assert: the existing state files are not modified.
+
+---
+
+### T-AZC-0420  Bootstrap `--force` overrides early-exit
+
+**Validates:** AZC-0411
+
+**Procedure:**
+1. Prepare a state directory with valid bootstrap-complete state.
+2. Run `sonde-azure-companion bootstrap --force` with stubbed services.
+3. Assert: bootstrap performs the full provisioning lifecycle (certificate generation, Docker API calls, Bicep deployment).
+4. Assert: bootstrap completes successfully.
+5. Assert: the state directory contains a new generation with fresh artifacts.
+
+---
+
+### T-AZC-0421  Bootstrap `--force` via environment variable
+
+**Validates:** AZC-0411 AC-2
+
+**Procedure:**
+1. Prepare a state directory with valid bootstrap-complete state.
+2. Set `SONDE_AZURE_BOOTSTRAP_FORCE=true` and run `sonde-azure-companion bootstrap` (without the CLI `--force` flag) with stubbed services.
+3. Assert: bootstrap performs the full provisioning lifecycle.
+4. Assert: bootstrap completes successfully.

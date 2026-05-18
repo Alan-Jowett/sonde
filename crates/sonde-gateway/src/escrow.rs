@@ -353,7 +353,12 @@ fn generate_keypair(epoch: u64) -> Result<EscrowKeypair, StorageError> {
 /// Load the current escrow state from storage.
 pub async fn load_escrow_state(storage: &dyn Storage) -> Result<EscrowState, StorageError> {
     match storage.get_config("escrow_state").await? {
-        Some(s) => Ok(EscrowState::from_str(&s).unwrap_or(EscrowState::Disabled)),
+        Some(s) => match EscrowState::from_str(&s) {
+            Some(state) => Ok(state),
+            None => Err(StorageError::Internal(format!(
+                "unrecognized escrow_state: {s}"
+            ))),
+        },
         None => Ok(EscrowState::Disabled),
     }
 }
@@ -542,6 +547,18 @@ mod tests {
             let loaded = load_escrow_state(&storage).await.unwrap();
             assert_eq!(&loaded, s);
         }
+    }
+
+    #[tokio::test]
+    async fn test_invalid_escrow_state_returns_error() {
+        let storage = InMemoryStorage::new();
+        storage
+            .set_config("escrow_state", "definitely-invalid")
+            .await
+            .unwrap();
+
+        let err = load_escrow_state(&storage).await.unwrap_err();
+        assert!(err.to_string().contains("unrecognized escrow_state"));
     }
 
     #[tokio::test]

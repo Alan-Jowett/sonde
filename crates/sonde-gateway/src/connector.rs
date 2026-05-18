@@ -602,8 +602,9 @@ impl ConnectorService {
                     tx.send(EscrowInboundMessage::KeyEscrowResponse(bytes.to_vec()))
                         .map_err(|_| "escrow channel closed".to_string())?;
                 } else {
-                    tracing::warn!(
-                        "received KEY_ESCROW_RESPONSE but escrow channel is not configured"
+                    return Err(
+                        "escrow inbound channel not configured; message cannot be processed"
+                            .to_string(),
                     );
                 }
                 Ok(())
@@ -614,8 +615,9 @@ impl ConnectorService {
                     tx.send(EscrowInboundMessage::MasterKeyInstall(bytes.to_vec()))
                         .map_err(|_| "escrow channel closed".to_string())?;
                 } else {
-                    tracing::warn!(
-                        "received MASTER_KEY_INSTALL but escrow channel is not configured"
+                    return Err(
+                        "escrow inbound channel not configured; message cannot be processed"
+                            .to_string(),
                     );
                 }
                 Ok(())
@@ -1084,5 +1086,39 @@ mod tests {
             optional_u32_field(&decoded, 11, "schedule_interval_s").unwrap(),
             Some(60)
         );
+    }
+
+    fn encode_inbound_message(msg_type: u64) -> Vec<u8> {
+        let value = ciborium::Value::Map(vec![(
+            ciborium::Value::Integer(1u64.into()),
+            ciborium::Value::Integer(msg_type.into()),
+        )]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        bytes
+    }
+
+    #[tokio::test]
+    async fn escrow_messages_require_inbound_channel() {
+        let service = ConnectorService::new(
+            std::sync::Arc::new(crate::storage::InMemoryStorage::new()),
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            std::sync::Arc::new(ConnectorEventHub::new(1)),
+            DEFAULT_CONNECTOR_MAX_MESSAGE_SIZE,
+        );
+
+        for msg_type in [
+            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE,
+            sonde_protocol::CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL,
+        ] {
+            let err = service
+                .handle_inbound_message(&encode_inbound_message(msg_type))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err,
+                "escrow inbound channel not configured; message cannot be processed"
+            );
+        }
     }
 }

@@ -10,8 +10,9 @@
 //! 3. Split into six 11-bit unsigned integers.
 //! 4. Map each to a word from the BIP-39 English wordlist (2048 entries).
 //!
-//! The 66-bit fingerprint provides a ~2^66 collision resistance target
-//! for anti-MITM verification.
+//! The 66-bit fingerprint provides a ~2^66 preimage resistance target
+//! for anti-MITM impersonation. Birthday-bound collision resistance is
+//! approximately 2^33.
 //!
 //! This module is feature-gated behind `fingerprint` to avoid pulling the
 //! 2048-word BIP-39 list into constrained firmware builds.

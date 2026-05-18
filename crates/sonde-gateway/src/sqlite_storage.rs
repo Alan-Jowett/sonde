@@ -1918,8 +1918,22 @@ impl Storage for SqliteStorage {
                 .query_row([], |row| {
                     let secret_enc: Vec<u8> = row.get(0)?;
                     let public_key_blob: Vec<u8> = row.get(1)?;
-                    let epoch: i64 = row.get(2)?;
-                    let created_at: i64 = row.get(3)?;
+                    let epoch_raw: i64 = row.get(2)?;
+                    let created_at_raw: i64 = row.get(3)?;
+                    let epoch = u64::try_from(epoch_raw).map_err(|_| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            2,
+                            rusqlite::types::Type::Integer,
+                            format!("negative escrow keypair epoch: {epoch_raw}").into(),
+                        )
+                    })?;
+                    let created_at = u64::try_from(created_at_raw).map_err(|_| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Integer,
+                            format!("negative escrow keypair created_at: {created_at_raw}").into(),
+                        )
+                    })?;
                     Ok((secret_enc, public_key_blob, epoch, created_at))
                 })
                 .optional()
@@ -1937,8 +1951,8 @@ impl Storage for SqliteStorage {
                     Ok(Some(crate::storage::EscrowKeypairRecord {
                         secret_enc,
                         public_key,
-                        epoch: epoch as u64,
-                        created_at: created_at as u64,
+                        epoch,
+                        created_at,
                     }))
                 }
                 None => Ok(None),
@@ -1953,8 +1967,18 @@ impl Storage for SqliteStorage {
     ) -> Result<(), StorageError> {
         let secret_enc = record.secret_enc.clone();
         let public_key = record.public_key.to_vec();
-        let epoch = record.epoch as i64;
-        let created_at = record.created_at as i64;
+        let epoch = i64::try_from(record.epoch).map_err(|_| {
+            StorageError::Internal(format!(
+                "escrow keypair epoch {} exceeds i64::MAX",
+                record.epoch
+            ))
+        })?;
+        let created_at = i64::try_from(record.created_at).map_err(|_| {
+            StorageError::Internal(format!(
+                "escrow keypair created_at {} exceeds i64::MAX",
+                record.created_at
+            ))
+        })?;
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO escrow_keypair \
@@ -2014,12 +2038,32 @@ impl Storage for SqliteStorage {
                 .map_err(map_err)?;
             let result = stmt
                 .query_row([], |row| {
+                    let new_key_version_raw = row.get::<_, i64>(1)?;
+                    let new_key_version = u64::try_from(new_key_version_raw).map_err(|_| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Integer,
+                            format!(
+                                "negative pending rotation new_key_version: {new_key_version_raw}"
+                            )
+                            .into(),
+                        )
+                    })?;
+                    let started_at_raw = row.get::<_, i64>(4)?;
+                    let started_at = u64::try_from(started_at_raw).map_err(|_| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            4,
+                            rusqlite::types::Type::Integer,
+                            format!("negative pending rotation started_at: {started_at_raw}")
+                                .into(),
+                        )
+                    })?;
                     Ok(crate::storage::PendingRotationRecord {
                         new_master_key_enc: row.get(0)?,
-                        new_key_version: row.get::<_, i64>(1)? as u64,
+                        new_key_version,
                         operation_id: row.get(2)?,
                         privkey_rewrapped: row.get(3)?,
-                        started_at: row.get::<_, i64>(4)? as u64,
+                        started_at,
                     })
                 })
                 .optional()
@@ -2034,10 +2078,20 @@ impl Storage for SqliteStorage {
         record: &crate::storage::PendingRotationRecord,
     ) -> Result<(), StorageError> {
         let new_master_key_enc = record.new_master_key_enc.clone();
-        let new_key_version = record.new_key_version as i64;
+        let new_key_version = i64::try_from(record.new_key_version).map_err(|_| {
+            StorageError::Internal(format!(
+                "pending rotation new_key_version {} exceeds i64::MAX",
+                record.new_key_version
+            ))
+        })?;
         let operation_id = record.operation_id.clone();
         let privkey_rewrapped = record.privkey_rewrapped;
-        let started_at = record.started_at as i64;
+        let started_at = i64::try_from(record.started_at).map_err(|_| {
+            StorageError::Internal(format!(
+                "pending rotation started_at {} exceeds i64::MAX",
+                record.started_at
+            ))
+        })?;
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO pending_rotation \
@@ -2205,6 +2259,84 @@ mod tests {
             with_fn[0].source_filename.as_deref(),
             Some("tmp102_sensor.o")
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_escrow_keypair_rejects_negative_values() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT OR REPLACE INTO escrow_keypair (id, secret_enc, public_key, epoch, created_at) \
+                     VALUES (1, ?1, ?2, ?3, ?4)",
+                    params![vec![0xAAu8; 48], vec![0x42u8; 32], -1i64, 1i64],
+                )
+                .unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let err = store.get_escrow_keypair().await.unwrap_err();
+        assert!(err.to_string().contains("negative escrow keypair epoch"));
+    }
+
+    #[tokio::test]
+    async fn test_store_escrow_keypair_rejects_values_above_i64_max() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+        let err = store
+            .store_escrow_keypair(&crate::storage::EscrowKeypairRecord {
+                secret_enc: vec![0xAAu8; 48],
+                public_key: [0x42u8; 32],
+                epoch: i64::MAX as u64 + 1,
+                created_at: 1,
+            })
+            .await
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("escrow keypair epoch 9223372036854775808 exceeds i64::MAX"));
+    }
+
+    #[tokio::test]
+    async fn test_get_pending_rotation_rejects_negative_values() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT OR REPLACE INTO pending_rotation \
+                     (id, new_master_key_enc, new_key_version, operation_id, privkey_rewrapped, started_at) \
+                     VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+                    params![vec![0xAAu8; 48], -1i64, vec![0x55u8; 16], false, 1i64],
+                )
+                .unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let err = store.get_pending_rotation().await.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("negative pending rotation new_key_version"));
+    }
+
+    #[tokio::test]
+    async fn test_store_pending_rotation_rejects_values_above_i64_max() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+        let err = store
+            .store_pending_rotation(&crate::storage::PendingRotationRecord {
+                new_master_key_enc: vec![0xAAu8; 48],
+                new_key_version: i64::MAX as u64 + 1,
+                operation_id: vec![0x55u8; 16],
+                privkey_rewrapped: false,
+                started_at: 1,
+            })
+            .await
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("pending rotation new_key_version 9223372036854775808 exceeds i64::MAX"));
     }
 
     #[tokio::test]

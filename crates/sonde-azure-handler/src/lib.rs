@@ -245,8 +245,9 @@ pub trait HandlerStore: Send + Sync {
         created_at: u64,
     ) -> Result<(), HandlerError> {
         let _ = (public_key, key_epoch, created_at);
-        warn!("store_gateway_escrow_pubkey not implemented for this store backend");
-        Ok(())
+        Err(HandlerError::Store(
+            "store_gateway_escrow_pubkey not implemented for this store backend".into(),
+        ))
     }
 
     /// Load escrowed PSK blobs matching a key_hint (AZH-0601).
@@ -257,8 +258,9 @@ pub trait HandlerStore: Send + Sync {
         max_candidates: usize,
     ) -> Result<Vec<Vec<u8>>, HandlerError> {
         let _ = (key_hint, max_candidates);
-        warn!("load_escrow_blobs_by_key_hint not implemented for this store backend");
-        Ok(Vec::new())
+        Err(HandlerError::Store(
+            "load_escrow_blobs_by_key_hint not implemented for this store backend".into(),
+        ))
     }
 }
 
@@ -301,10 +303,11 @@ where
                         }
                     }
                     "gateway" => {
-                        // Gateway-scoped ACTUAL_STATE (AZH-0605): escrow state observability.
-                        // TODO(AZH-0605): persist and expose gateway escrow observability so
-                        // operators can inspect escrow lifecycle state outside logs.
-                        // Stored as informational; no reconciliation triggered.
+                        // TODO(#887): persist gateway-scoped escrow state, salt, and KDF
+                        // parameters for admin observability (AZH-0605).
+                        warn!(
+                            "gateway-scoped ACTUAL_STATE received but escrow state persistence not yet implemented"
+                        );
                     }
                     other => {
                         warn!(
@@ -3607,5 +3610,78 @@ mod tests {
             err.to_string().contains("signed integer"),
             "expected integer-value error, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn default_escrow_store_methods_return_errors() {
+        struct DefaultEscrowStore;
+
+        #[async_trait]
+        impl HandlerStore for DefaultEscrowStore {
+            async fn append_actual_state(&self, _: &ActualStateRow) -> Result<(), HandlerError> {
+                Ok(())
+            }
+            async fn load_latest_actual_state(
+                &self,
+                _: &str,
+            ) -> Result<Option<ActualStateRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn load_latest_desired_state(
+                &self,
+                _: &str,
+            ) -> Result<Option<DesiredStateRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn load_program_image(
+                &self,
+                _: &[u8],
+            ) -> Result<Option<ProgramImageRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn store_program_image(&self, _: &ProgramImageRow) -> Result<(), HandlerError> {
+                Ok(())
+            }
+            async fn append_sensor_data(&self, _: &SensorDataRow) -> Result<(), HandlerError> {
+                Ok(())
+            }
+        }
+
+        let store = DefaultEscrowStore;
+        let err = store
+            .store_gateway_escrow_pubkey(&[0x42u8; 32], 1, 2)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, HandlerError::Store(message) if message.contains("store_gateway_escrow_pubkey not implemented"))
+        );
+
+        let err = store
+            .load_escrow_blobs_by_key_hint(0x1234, 4)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, HandlerError::Store(message) if message.contains("load_escrow_blobs_by_key_hint not implemented"))
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_actual_state_is_informational_only() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("gateway".to_string())),
+            map_entry(3, Value::Text("gateway-1".to_string())),
+            map_entry(9, Value::Integer(1234u64.into())),
+        ]);
+        let mut payload = Vec::new();
+        ciborium::into_writer(&value, &mut payload).unwrap();
+
+        handler.handle_payload(&payload).await.unwrap();
+        assert!(store.actual_rows.lock().await.is_empty());
+        assert!(publisher.sends.lock().await.is_empty());
     }
 }

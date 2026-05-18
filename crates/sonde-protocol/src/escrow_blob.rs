@@ -128,6 +128,13 @@ pub fn seal_escrow_blob(
     psk: &[u8; 32],
     aead: &(impl AeadProvider + ?Sized),
 ) -> Result<EscrowBlob, EncodeError> {
+    if subject_id.len() > 128 {
+        return Err(EncodeError::InvalidParameter(alloc::format!(
+            "subject_id exceeds 128 bytes: {}",
+            subject_id.len()
+        )));
+    }
+
     let aad = build_escrow_aad(
         escrow_version,
         key_version,
@@ -270,7 +277,10 @@ pub fn decode_escrow_blob(cbor: &[u8]) -> Result<EscrowBlob, DecodeError> {
         let key = match k {
             Value::Integer(i) => {
                 let val: i128 = i.into();
-                val as u64
+                match u64::try_from(val) {
+                    Ok(k) => k,
+                    Err(_) => continue,
+                }
             }
             _ => continue,
         };
@@ -676,5 +686,66 @@ mod tests {
         ciborium::into_writer(&value, &mut buf).unwrap();
         let result = decode_escrow_blob(&buf);
         assert!(result.is_err(), "negative key_version should be rejected");
+    }
+
+    #[test]
+    fn test_escrow_blob_rejects_subject_id_longer_than_128_bytes() {
+        let master_key = [0x42u8; 32];
+        let nonce = [7u8; 12];
+        let psk = [0xABu8; 32];
+        let aead = TestAead;
+        let subject_id = "a".repeat(129);
+
+        let err = seal_escrow_blob(
+            &master_key,
+            &nonce,
+            ESCROW_BLOB_VERSION,
+            1,
+            &SubjectKind::Node,
+            &subject_id,
+            0x1234,
+            &psk,
+            &aead,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, EncodeError::InvalidParameter(message) if message.contains("subject_id exceeds 128 bytes: 129"))
+        );
+    }
+
+    #[test]
+    fn test_escrow_blob_decode_skips_negative_map_keys() {
+        let master_key = [0x42u8; 32];
+        let nonce = [3u8; 12];
+        let psk = [0xCDu8; 32];
+        let aead = TestAead;
+        let blob = seal_escrow_blob(
+            &master_key,
+            &nonce,
+            ESCROW_BLOB_VERSION,
+            1,
+            &SubjectKind::Phone,
+            "phone-xyz",
+            0x5678,
+            &psk,
+            &aead,
+        )
+        .unwrap();
+
+        let mut value: Value =
+            ciborium::from_reader(encode_escrow_blob(&blob).unwrap().as_slice()).unwrap();
+        match &mut value {
+            Value::Map(pairs) => pairs.push((
+                Value::Integer(ciborium::value::Integer::from(-1i64)),
+                Value::Text(String::from("ignored")),
+            )),
+            other => panic!("expected map, got {other:?}"),
+        }
+        let mut buf = Vec::new();
+        ciborium::into_writer(&value, &mut buf).unwrap();
+
+        let decoded = decode_escrow_blob(&buf).unwrap();
+        assert_eq!(decoded, blob);
     }
 }

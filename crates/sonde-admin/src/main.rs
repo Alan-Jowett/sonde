@@ -305,15 +305,9 @@ enum KeyAction {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let json = matches!(cli.format, OutputFormat::Json);
 
-    let result = if let Commands::Key {
-        action: KeyAction::Fingerprint {
-            public_key: Some(public_key),
-        },
-    } = &cli.command
-    {
-        print_key_fingerprint(Some(public_key.as_str()), json)
+    let result = if command_runs_without_gateway(&cli.command) {
+        run_without_gateway(&cli)
     } else {
         let mut client = match AdminClient::connect(&cli.socket).await {
             Ok(c) => c,
@@ -359,6 +353,34 @@ async fn main() {
             eprintln!("Error: {e}");
         }
         process::exit(1);
+    }
+}
+
+fn command_runs_without_gateway(command: &Commands) -> bool {
+    matches!(command, Commands::Key { .. })
+}
+
+fn run_without_gateway(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let json = matches!(cli.format, OutputFormat::Json);
+    match &cli.command {
+        Commands::Key { action } => match action {
+            KeyAction::Fingerprint { public_key } => {
+                print_key_fingerprint(public_key.as_deref(), json)
+            }
+            KeyAction::Status => {
+                if json {
+                    print_json(&serde_json::json!({
+                        "escrow_state": "unknown",
+                        "note": "escrow status query not yet implemented",
+                    }))?;
+                } else {
+                    println!("Escrow status query not yet implemented.");
+                    println!("Use gateway logs or Azure Table Storage to check escrow state.");
+                }
+                Ok(())
+            }
+        },
+        _ => Err("command requires gateway connection".into()),
     }
 }
 
@@ -1100,5 +1122,36 @@ mod tests {
         );
 
         assert!(program_names.is_empty());
+    }
+
+    #[test]
+    fn key_commands_run_without_gateway() {
+        assert!(command_runs_without_gateway(&Commands::Key {
+            action: KeyAction::Fingerprint { public_key: None },
+        }));
+        assert!(command_runs_without_gateway(&Commands::Key {
+            action: KeyAction::Status,
+        }));
+        assert!(!command_runs_without_gateway(&Commands::Status {
+            node_id: "node-1".to_string(),
+        }));
+    }
+
+    #[test]
+    fn fingerprint_without_public_key_fails_before_gateway_connect() {
+        let cli = Cli {
+            socket: default_socket().to_string(),
+            format: OutputFormat::Text,
+            yes: false,
+            verbose: false,
+            command: Commands::Key {
+                action: KeyAction::Fingerprint { public_key: None },
+            },
+        };
+
+        let err = run_without_gateway(&cli).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("--public-key is required (gateway fetch not yet implemented)"));
     }
 }

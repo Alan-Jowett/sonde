@@ -290,7 +290,8 @@ When bootstrap is required, the Azure companion performs this sequence:
     format is controlled by the shipped bootstrap artifact for that release.
 11. When the device code is detected, call the gateway admin
     `ShowModemDisplayMessage` RPC with a short prompt plus the exact device
-    code.
+    code and `persistent = true` so the code remains visible until the next
+    phase replaces it.
 12. Wait for the container to finish. On success, `az deployment sub create`
     produces JSON deployment outputs on stdout.
 13. Display "Deploying Azure…" on the modem display (transitions from auth to
@@ -642,13 +643,25 @@ bootstrap does not need Docker socket access.
 
 The bootstrap displays these messages on the modem via the admin API:
 
-| Phase | Modem display | stderr log |
-|-------|--------------|------------|
-| Certificate generation | "Generating cert..." | "Generating ECDSA P-256 self-signed certificate" |
-| Bootstrap image start | "Authenticating..." | "Starting sonde-azure-bootstrap for device-code auth" |
-| Device code received | "Azure login" + device code | "Device auth: open {uri} and enter code {code}" |
-| Bicep deployment | "Deploying Azure..." | "Running Bicep deployment" |
-| Config writing | "Writing config..." | "Writing runtime artifacts to state volume" |
-| SPA deployment | "Deploying Web UI..." | "Deploying Web UI to Static Web App" |
-| Bootstrap complete | "Bootstrap complete" | "Bootstrap completed successfully" |
-| Bootstrap failure | "Bootstrap failed" | Error details |
+| Phase | Modem display | stderr log | `persistent` |
+|-------|--------------|------------|--------------|
+| Certificate generation | "Generating cert..." | "Generating ECDSA P-256 self-signed certificate" | false |
+| Bootstrap image start | "Authenticating..." | "Starting sonde-azure-bootstrap for device-code auth" | false |
+| Device code received | "Azure login" + device code | "Device auth: open {uri} and enter code {code}" | **true** |
+| Bicep deployment | "Deploying Azure..." | "Running Bicep deployment" | false |
+| Handler deployment | "Deploying handler..." | "Deploying bundled Azure handler package" | false |
+| Entra configuration | "Configuring Entra..." | "Configuring Entra app registration for Web UI" | false |
+| Config writing | "Writing config..." | "Writing runtime artifacts to state volume" | false |
+| Bootstrap complete | "Bootstrap complete" | "Bootstrap completed successfully" | false |
+| Bootstrap failure | "Bootstrap failed" | Error details | false |
+
+The device-code display uses `persistent = true` so the code remains visible
+on the OLED until authentication completes and the next phase replaces it,
+avoiding the 60-second timeout that would otherwise clear the screen before
+the operator finishes the device-code login flow.
+
+Sub-phase transitions after Bicep deployment are signaled by the bootstrap
+container via structured stderr markers (`__SONDE_AZURE_DEPLOYING_HANDLER__`
+and `__SONDE_AZURE_CONFIGURING_ENTRA__`). The companion watches for these
+markers alongside the existing `__SONDE_AZURE_DEPLOYMENT_START__` marker and
+updates the modem display accordingly.

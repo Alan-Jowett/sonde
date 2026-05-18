@@ -460,9 +460,9 @@
 
 **Procedure:**
 1. Start a test gateway exposing the admin socket and instrument the admin `ShowModemDisplayMessage` RPC.
-2. Run the bootstrap subcommand with device-flow and Bicep deployment stubbed.
-3. Assert: at least four distinct modem display updates are received during bootstrap.
-4. Assert: the updates include messages for authentication, certificate generation, deployment, and completion phases.
+2. Run the bootstrap subcommand with device-flow and Bicep deployment stubbed, and the bootstrap container stub configured to emit all three stderr markers (`__SONDE_AZURE_DEPLOYMENT_START__`, `__SONDE_AZURE_DEPLOYING_HANDLER__`, `__SONDE_AZURE_CONFIGURING_ENTRA__`).
+3. Assert: at least six distinct modem display updates are received during bootstrap.
+4. Assert: the updates include messages for authentication, certificate generation, deployment, handler deployment, Entra configuration, and completion phases.
 5. Assert: each phase also emits a corresponding stderr log message.
 6. Run the bootstrap subcommand with a forced failure in the Bicep deployment phase.
 7. Assert: the modem displays an error indication before bootstrap exits.
@@ -681,3 +681,30 @@
 2. Set `SONDE_AZURE_BOOTSTRAP_FORCE=true` and run `sonde-azure-companion bootstrap` (without the CLI `--force` flag) with stubbed services.
 3. Assert: bootstrap performs the full provisioning lifecycle.
 4. Assert: bootstrap completes successfully.
+
+---
+
+### T-AZC-0422  Device code display uses persistent flag
+
+**Validates:** AZC-0202, AZC-0405
+
+**Procedure:**
+1. Start a test gateway exposing the admin socket and instrument the admin `ShowModemDisplayMessage` RPC to capture both `lines` and `persistent` fields.
+2. Start the Azure companion bootstrap path with the device-flow endpoint stubbed to emit a known device code.
+3. Assert: the `ShowModemDisplayMessage` call for the device code sets `persistent = true`.
+4. Assert: subsequent progress display calls (e.g., "Deploying Azure...") set `persistent = false` (or omit it).
+5. Assert: the device code message is replaced by the next phase's display update, not by a 60-second timer.
+
+---
+
+### T-AZC-0423  Bootstrap sub-phase markers update modem display
+
+**Validates:** AZC-0405
+
+**Procedure:**
+1. Start a test gateway exposing the admin socket and instrument the admin `ShowModemDisplayMessage` RPC to capture all display updates.
+2. Run the bootstrap subcommand with device-flow and Bicep deployment stubbed. Configure the bootstrap container stub to emit the stderr markers `__SONDE_AZURE_DEPLOYMENT_START__`, `__SONDE_AZURE_DEPLOYING_HANDLER__`, and `__SONDE_AZURE_CONFIGURING_ENTRA__` at appropriate points.
+3. Assert: at least eight distinct modem display updates are received during bootstrap (cert, auth, device code, deploying Azure, deploying handler, configuring Entra, writing config, complete).
+4. Assert: "Deploying handler..." is displayed after "Deploying Azure...".
+5. Assert: "Configuring Entra..." is displayed after "Deploying handler...".
+6. Assert: each sub-phase also emits a corresponding stderr log message.

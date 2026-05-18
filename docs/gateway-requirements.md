@@ -975,13 +975,20 @@ The gateway MUST persist the current ESP-NOW radio channel in the database so th
 ### GW-0809  Admin API — transient modem display message
 
 **Priority:** Must  
-**Source:** Issue #771
+**Source:** Issue #771, Issue #943
 
 **Description:**  
 The admin API MUST support a gateway-owned transient display override for the
-modem-attached OLED. The operation accepts 1 to 4 text lines, renders them
-using the gateway's existing centered text renderer, displays the result for 60
-seconds, then restores the normal `Sonde Gateway v<semver>` banner.
+modem-attached OLED. The operation accepts 1 to 4 text lines and an optional
+`persistent` flag. When `persistent` is false (the default), the gateway renders
+the lines using the existing centered text renderer, displays the result for 60
+seconds, then restores the normal `Sonde Gateway v<semver>` banner. When
+`persistent` is true, the gateway displays the message indefinitely — no
+60-second restore timer is started. A persistent message remains visible until
+replaced by another `ShowModemDisplayMessage` call, a BLE pairing session, a
+button-driven status-page navigation, or gateway restart. The `persistent` flag
+suppresses only the automatic timeout, not operator-initiated display
+transitions.
 
 Bootstrap-oriented local clients that need temporary operator-visible display
 control, such as Azure device-auth bootstrap, MUST use this admin RPC rather
@@ -990,7 +997,8 @@ desired-state and upstream runtime traffic.
 
 The RPC MUST return after the initial display update succeeds; it MUST NOT wait
 for the 60-second timeout to expire. A later successful transient-display
-request replaces any earlier one and restarts the 60-second timer.
+request replaces any earlier one and, if the newer request is not persistent,
+restarts the 60-second timer.
 
 To avoid obscuring pairing prompts, the operation MUST fail with
 `FAILED_PRECONDITION` while a BLE pairing session owns the display. If no modem
@@ -998,12 +1006,15 @@ transport is configured, it MUST fail with `UNAVAILABLE`.
 
 **Acceptance criteria:**
 
-1. `ShowModemDisplayMessage` with 1 to 4 lines updates the modem display and returns before the 60-second timeout expires.
+1. `ShowModemDisplayMessage` with 1 to 4 lines and `persistent` false (or omitted) updates the modem display and returns before the 60-second timeout expires.
 2. `ShowModemDisplayMessage` with fewer than 1 line or more than 4 lines returns `INVALID_ARGUMENT`.
-3. If no newer display owner claims the screen, the normal `Sonde Gateway v<semver>` banner is restored after 60 seconds.
-4. A second successful `ShowModemDisplayMessage` received before the first timeout expires replaces the earlier text and restarts the 60-second timeout window.
+3. If no newer display owner claims the screen and `persistent` is false, the normal `Sonde Gateway v<semver>` banner is restored after 60 seconds.
+4. A second successful `ShowModemDisplayMessage` received before the first timeout expires replaces the earlier text and restarts the 60-second timeout window (when the second request is not persistent).
 5. While a BLE pairing session owns the display, `ShowModemDisplayMessage` returns `FAILED_PRECONDITION`.
 6. Without a configured modem transport, `ShowModemDisplayMessage` returns `UNAVAILABLE`.
+7. `ShowModemDisplayMessage` with `persistent` true displays the message and does not start a restore timer; the message remains until replaced by another `ShowModemDisplayMessage` call, a BLE pairing session, or a button-driven status-page navigation. The `persistent` flag suppresses only the automatic 60-second timeout, not operator-initiated display transitions.
+8. A non-persistent `ShowModemDisplayMessage` call replaces an earlier persistent message and starts the normal 60-second restore timer.
+9. After a gateway restart, no persistent message state is preserved; the gateway displays its normal startup banner.
 
 ---
 

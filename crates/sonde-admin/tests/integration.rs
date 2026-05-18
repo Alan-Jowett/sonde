@@ -510,7 +510,7 @@ async fn grpc_revoke_nonexistent_phone() {
 async fn grpc_show_modem_display_message_no_modem() {
     let mut client = start_server_and_connect("show_modem_display_message_no_modem").await;
     let result = client
-        .show_modem_display_message(vec!["Device login".to_string()])
+        .show_modem_display_message(vec!["Device login".to_string()], false)
         .await;
     let status = result.expect_err("missing modem transport should fail");
     assert_eq!(status.code(), tonic::Code::Unavailable);

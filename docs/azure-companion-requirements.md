@@ -273,13 +273,15 @@ AZC-0205.
 ### AZC-0202  Device code display via gateway admin API
 
 **Priority:** Must
-**Source:** Discovery review, GW-0809
+**Source:** Discovery review, GW-0809, [issue #943](https://github.com/Alan-Jowett/sonde/issues/943)
 
 **Description:**
 When the dedicated bootstrap image's `az login --use-device-code` step produces
 a device code in its output, the Rust bootstrap flow MUST extract the code and
 request a modem display update through the gateway admin API. The displayed
-message MUST include a short prompt and the exact device code. The Azure
+message MUST include a short prompt and the exact device code. The display
+request MUST set `persistent = true` so the device code remains visible until
+authentication completes and the next bootstrap phase replaces it. The Azure
 companion MUST NOT attempt raw modem control or bypass the gateway's display
 ownership rules. Because the bootstrap image tag is version-matched to the
 companion release, the output format is controlled by the shipped bootstrap
@@ -287,10 +289,11 @@ artifact for that release.
 
 **Acceptance criteria:**
 
-1. During bootstrap, the Azure companion calls the admin `ShowModemDisplayMessage` RPC with text that includes both a short prompt and the exact device code.
+1. During bootstrap, the Azure companion calls the admin `ShowModemDisplayMessage` RPC with text that includes both a short prompt and the exact device code, and with `persistent = true`.
 2. The displayed device code matches the value produced by Azure device-code login without modification.
 3. The Azure companion uses the gateway admin socket, not the connector socket, for this display request.
 4. The bootstrap flow does not invoke raw modem serial commands or direct framebuffer upload.
+5. The device code display persists until the next bootstrap phase updates the modem display.
 
 ---
 
@@ -707,21 +710,26 @@ supply them.
 ### AZC-0405  Bootstrap progress display
 
 **Priority:** Must
-**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), AZC-0202
+**Source:** [issue #771](https://github.com/Alan-Jowett/sonde/issues/771), AZC-0202, [issue #943](https://github.com/Alan-Jowett/sonde/issues/943)
 
 **Description:**
 The unified `bootstrap` subcommand MUST report progress for each major phase
 on both the modem display (via the gateway admin API) and stderr. The phases
-include authentication, certificate generation, Azure deployment, and
-completion.
+include authentication, certificate generation, Azure deployment, handler
+deployment, Entra configuration, and completion. The bootstrap container MUST
+emit structured stderr markers at sub-phase transitions so the companion can
+provide granular progress updates beyond the initial "Deploying Azure..." message.
 
 **Acceptance criteria:**
 
 1. Each major bootstrap phase updates the modem display with a short status message via the admin `ShowModemDisplayMessage` RPC.
 2. Each major bootstrap phase logs a status message to stderr.
-3. The authentication phase displays the device code as defined by AZC-0202.
+3. The authentication phase displays the device code as defined by AZC-0202, using `persistent = true`.
 4. Bootstrap completion displays a success message on the modem display.
 5. Bootstrap failure displays an error indication on the modem display before exiting.
+6. The bootstrap container emits `__SONDE_AZURE_DEPLOYING_HANDLER__` on stderr after Bicep deployment completes and before Function App deployment begins.
+7. The bootstrap container emits `__SONDE_AZURE_CONFIGURING_ENTRA__` on stderr before Entra app registration configuration begins.
+8. The Azure companion updates the modem display when each sub-phase marker is detected.
 
 ---
 

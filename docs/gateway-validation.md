@@ -1585,6 +1585,40 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0815k  Persistent transient display message
+
+**Validates:** GW-0809
+
+**Procedure:**
+1. Start the gateway with a mock or real modem transport that captures display frames.
+2. Call `ShowModemDisplayMessage` with a single-line message and `persistent = true`.
+3. Assert: the RPC returns successfully.
+4. Assert: the modem transport receives a display update corresponding to the requested text.
+5. Wait longer than 60 seconds (or advance paused test time).
+6. Assert: the gateway does **not** restore the default `Sonde Gateway v<semver>` banner — the persistent message remains.
+7. Call `ShowModemDisplayMessage` with a different message and `persistent = false`.
+8. Assert: the second message replaces the persistent one on the modem display.
+9. Wait for the 60-second restore timeout associated with the second (non-persistent) request.
+10. Assert: the gateway restores the default banner after the second message's timeout.
+
+---
+
+### T-0815l  Non-persistent message replaces persistent message
+
+**Validates:** GW-0809
+
+**Procedure:**
+1. Start the gateway with a mock or real modem transport that captures display frames.
+2. Call `ShowModemDisplayMessage` with `persistent = true` and a message.
+3. Assert: the message is displayed.
+4. Call `ShowModemDisplayMessage` with `persistent = false` (default) and a different message.
+5. Assert: the second message replaces the first.
+6. Assert: the 60-second restore timer is started for the second message.
+7. Wait for the 60-second restore timeout.
+8. Assert: the gateway restores the default banner.
+
+---
+
 ### T-0816  Admin CLI JSON output
 
 **Validates:** GW-0806

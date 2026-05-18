@@ -790,7 +790,9 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
             }
             ModemAction::Display { lines } => {
-                client.show_modem_display_message(lines.clone()).await?;
+                client
+                    .show_modem_display_message(lines.clone(), false)
+                    .await?;
                 if json {
                     print_json(&serde_json::json!({
                         "lines": lines,

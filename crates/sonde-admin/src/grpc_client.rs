@@ -275,9 +275,10 @@ impl AdminClient {
     pub async fn show_modem_display_message(
         &mut self,
         lines: Vec<String>,
+        persistent: bool,
     ) -> Result<(), tonic::Status> {
         self.inner
-            .show_modem_display_message(ShowModemDisplayMessageRequest { lines })
+            .show_modem_display_message(ShowModemDisplayMessageRequest { lines, persistent })
             .await?;
         Ok(())
     }

@@ -107,6 +107,7 @@ async fn restore_display_failure(state: &ActiveDisplayState, generation: u64) {
 pub async fn show_modem_display_message(
     state: &ActiveDisplayState,
     lines: &[String],
+    persistent: bool,
 ) -> Result<(), Status> {
     if state.controller.session_origin().await.is_some() {
         return Err(Status::failed_precondition(
@@ -132,6 +133,8 @@ pub async fn show_modem_display_message(
         )));
     }
 
-    schedule_display_restore(state, generation);
+    if !persistent {
+        schedule_display_restore(state, generation);
+    }
     Ok(())
 }

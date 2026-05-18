@@ -1622,8 +1622,6 @@ async function renderActiveTab() {
     APP.sensorChart.destroy();
     APP.sensorChart = null;
   }
-  const requestedTab = location.hash.replace(/^#/, '') || 'dashboard';
-  setActiveTab(requestedTab);
 
   switch (APP.activeTab) {
     case 'desired-state':
@@ -1646,17 +1644,10 @@ function attachTabHandlers() {
   for (const button of document.querySelectorAll('.tab-button')) {
     button.addEventListener('click', () => {
       const nextTab = button.dataset.tab || 'dashboard';
-      if (location.hash.replace(/^#/, '') === nextTab) {
-        renderActiveTab().catch((error) => renderError('Navigation failed', error));
-        return;
-      }
-      location.hash = nextTab;
+      setActiveTab(nextTab);
+      renderActiveTab().catch((error) => renderError('Navigation failed', error));
     });
   }
-
-  window.addEventListener('hashchange', () => {
-    renderActiveTab().catch((error) => renderError('Navigation failed', error));
-  });
 }
 
 async function init() {
@@ -1669,9 +1660,7 @@ async function init() {
   }
   updateEnvironmentIndicator();
   await initMsal();
-  if (!location.hash) {
-    location.hash = 'dashboard';
-  }
+  setActiveTab('dashboard');
   await renderActiveTab();
 }
 
@@ -1898,5 +1887,11 @@ function showEnvironmentForm(existingEnv) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // MSAL loginPopup() opens a popup that loads this SPA.  The popup only needs
+  // MSAL to process the auth response — skip full app init to avoid unnecessary
+  // API calls and rendering.
+  if (window.opener && window.opener !== window) {
+    return;
+  }
   init().catch((error) => renderError('Application failed to start', error));
 });

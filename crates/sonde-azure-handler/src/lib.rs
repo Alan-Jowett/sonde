@@ -306,11 +306,15 @@ pub trait HandlerStore: Send + Sync {
     }
 
     /// Store the gateway's escrow lifecycle state (AZH-0605).
+    ///
+    /// `timestamp_ms` is the ACTUAL_STATE message timestamp; implementations
+    /// should only update if the incoming timestamp is >= the stored one.
     async fn store_gateway_escrow_state(
         &self,
         details: &GatewayStatusDetails,
+        timestamp_ms: u64,
     ) -> Result<(), HandlerError> {
-        let _ = details;
+        let _ = (details, timestamp_ms);
         Err(HandlerError::Store(
             "store_gateway_escrow_state not implemented for this store backend".into(),
         ))
@@ -366,6 +370,11 @@ where
                     "phone" => {
                         // Phone escrow ACTUAL_STATE (AZH-0600): store escrow blob
                         // with phone-scoped partition key ("p:" prefix).
+                        if actual_state.entity_id.is_empty() {
+                            return Err(HandlerError::Decode(
+                                "phone ACTUAL_STATE has empty entity_id".into(),
+                            ));
+                        }
                         if actual_state.encrypted_psk_escrow.is_some() {
                             let row = ActualStateRow::from_message(&actual_state)?;
                             self.store.append_actual_state(&row).await?;
@@ -374,7 +383,9 @@ where
                     "gateway" => {
                         // Gateway-scoped ACTUAL_STATE (AZH-0605): persist escrow state.
                         if let Some(ref details) = actual_state.status_details {
-                            self.store.store_gateway_escrow_state(details).await?;
+                            self.store
+                                .store_gateway_escrow_state(details, actual_state.timestamp_ms)
+                                .await?;
 
                             // AZH-0603: first-writer-wins salt storage.
                             if let Some(ref salt) = details.escrow_salt {
@@ -1029,6 +1040,11 @@ impl HandlerStore for AzureTablesStore {
         })?;
 
         // Monotonic guard: only update if incoming epoch >= stored.
+        // Note: this is a non-atomic read-check-write. Concurrent racing
+        // messages can bypass the guard, but KEY_ESCROW_PUBKEY is only
+        // emitted once per gateway startup with a monotonically increasing
+        // epoch, so concurrent different-epoch messages are not possible
+        // in normal operation.
         let existing = self
             .escrow_table
             .partition_key_client(ESCROW_PARTITION_KEY)
@@ -1127,7 +1143,33 @@ impl HandlerStore for AzureTablesStore {
     async fn store_gateway_escrow_state(
         &self,
         details: &GatewayStatusDetails,
+        timestamp_ms: u64,
     ) -> Result<(), HandlerError> {
+        let timestamp_ms_i64 = i64::try_from(timestamp_ms).map_err(|_| {
+            HandlerError::Store(format!("timestamp_ms {timestamp_ms} exceeds i64::MAX"))
+        })?;
+
+        // Out-of-order guard: only update if incoming timestamp >= stored.
+        let existing = self
+            .escrow_table
+            .partition_key_client(ESCROW_PARTITION_KEY)
+            .entity_client("state")
+            .get::<GatewayEscrowStateEntity>()
+            .await;
+        match existing {
+            Ok(response) => {
+                if response.entity.timestamp_ms > timestamp_ms_i64 {
+                    return Ok(());
+                }
+            }
+            Err(e) if is_legacy_not_found(&e) => {}
+            Err(e) => {
+                return Err(HandlerError::Store(format!(
+                    "query existing escrow state failed: {e}"
+                )));
+            }
+        }
+
         let escrow_key_version = details
             .escrow_key_version
             .map(|v| {
@@ -1157,6 +1199,7 @@ impl HandlerStore for AzureTablesStore {
                 .as_ref()
                 .map(|s| base64::prelude::BASE64_STANDARD.encode(s)),
             kdf_params_json,
+            timestamp_ms: timestamp_ms_i64,
         };
         self.escrow_table
             .partition_key_client(ESCROW_PARTITION_KEY)
@@ -1783,6 +1826,9 @@ struct GatewayEscrowStateEntity {
     /// JSON-encoded KDF parameters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kdf_params_json: Option<String>,
+    /// ACTUAL_STATE message timestamp (Unix milliseconds) for out-of-order guard.
+    #[serde(default)]
+    timestamp_ms: i64,
 }
 
 /// Azure Table entity for KDF salt (AZH-0603).
@@ -2064,15 +2110,21 @@ fn decode_optional_status_details(
                     }
                     Some(3) => {
                         if let Value::Bytes(b) = v {
+                            if b.len() != 16 {
+                                return Err(HandlerError::Decode(format!(
+                                    "escrow_salt must be 16 bytes, got {}",
+                                    b.len()
+                                )));
+                            }
                             escrow_salt = Some(b.clone());
                         }
                     }
                     Some(4) => {
                         if let Value::Map(kdf_pairs) = v {
-                            let mut m_cost = 0u32;
-                            let mut t_cost = 0u32;
-                            let mut p_cost = 0u32;
-                            let mut kdf_version = 0u32;
+                            let mut m_cost: Option<u32> = None;
+                            let mut t_cost: Option<u32> = None;
+                            let mut p_cost: Option<u32> = None;
+                            let mut kdf_version: Option<u32> = None;
                             for (kk, kv) in kdf_pairs {
                                 let kdf_key = match kk {
                                     Value::Integer(i) => {
@@ -2083,22 +2135,35 @@ fn decode_optional_status_details(
                                 };
                                 if let Value::Integer(iv) = kv {
                                     let val: i128 = (*iv).into();
-                                    let val32 = u32::try_from(val).unwrap_or(0);
+                                    let val32 = u32::try_from(val).map_err(|_| {
+                                        HandlerError::Decode(format!(
+                                            "KDF parameter value {val} out of u32 range"
+                                        ))
+                                    })?;
                                     match kdf_key {
-                                        Some(1) => m_cost = val32,
-                                        Some(2) => t_cost = val32,
-                                        Some(3) => p_cost = val32,
-                                        Some(4) => kdf_version = val32,
+                                        Some(1) => m_cost = Some(val32),
+                                        Some(2) => t_cost = Some(val32),
+                                        Some(3) => p_cost = Some(val32),
+                                        Some(4) => kdf_version = Some(val32),
                                         _ => {}
                                     }
                                 }
                             }
-                            escrow_kdf_params = Some(KdfParams {
-                                m_cost,
-                                t_cost,
-                                p_cost,
-                                kdf_version,
-                            });
+                            match (m_cost, t_cost, p_cost, kdf_version) {
+                                (Some(m), Some(t), Some(p), Some(v)) => {
+                                    escrow_kdf_params = Some(KdfParams {
+                                        m_cost: m,
+                                        t_cost: t,
+                                        p_cost: p,
+                                        kdf_version: v,
+                                    });
+                                }
+                                _ => {
+                                    return Err(HandlerError::Decode(
+                                        "escrow_kdf_params map is missing required subkeys (m_cost, t_cost, p_cost, version)".into(),
+                                    ));
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -2122,7 +2187,10 @@ fn decode_optional_status_details(
             }
         }
         Some(Value::Null) | None => Ok(None),
-        _ => Ok(None),
+        Some(other) => Err(HandlerError::Decode(format!(
+            "status_details (key 10) must be a map, got {:?}",
+            other
+        ))),
     }
 }
 
@@ -2371,6 +2439,7 @@ mod tests {
         async fn store_gateway_escrow_state(
             &self,
             details: &GatewayStatusDetails,
+            _timestamp_ms: u64,
         ) -> Result<(), HandlerError> {
             *self.stored_escrow_state.lock().await = Some(details.clone());
             Ok(())

@@ -417,7 +417,7 @@ pub fn decrypt_master_key_install(
     gateway_secret: &[u8; 32],
     sender_public_key: &[u8; 32],
     target_key_epoch: u64,
-    operation_id: &[u8],
+    operation_id: &[u8; 16],
     encrypted_master_key: &[u8],
     nonce: &[u8; 12],
     tag: &[u8; 16],

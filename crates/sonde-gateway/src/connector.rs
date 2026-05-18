@@ -1012,6 +1012,16 @@ fn required_text(map: &[(Value, Value)], key: u64, field: &str) -> Result<String
         })
 }
 
+#[cfg(test)]
+fn required_bytes(map: &[(Value, Value)], key: u64, field: &str) -> Result<Vec<u8>, String> {
+    map_get(map, key)
+        .ok_or_else(|| format!("missing `{field}`"))
+        .and_then(|value| match value {
+            Value::Bytes(bytes) => Ok(bytes.clone()),
+            _ => Err(format!("`{field}` must be bstr")),
+        })
+}
+
 fn required_map(
     map: &[(Value, Value)],
     key: u64,
@@ -1103,6 +1113,60 @@ mod tests {
     }
 
     #[test]
+    fn key_escrow_pubkey_encoding() {
+        let message = ConnectorOutboundMessage::KeyEscrowPubkey {
+            public_key: [0x42u8; 32],
+            key_epoch: 3,
+            created_at: 1_234_567_890,
+            fingerprint_words: [
+                "abandon".to_string(),
+                "ability".to_string(),
+                "able".to_string(),
+                "about".to_string(),
+                "above".to_string(),
+                "absent".to_string(),
+            ],
+        };
+        let encoded = message.encode().unwrap();
+        let decoded = decode_map(&encoded).unwrap();
+        assert_eq!(
+            required_u64(&decoded, 1, "msg_type").unwrap(),
+            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY
+        );
+        let pk = required_bytes(&decoded, 2, "public_key").unwrap();
+        assert_eq!(pk, vec![0x42u8; 32]);
+        assert_eq!(required_u64(&decoded, 3, "key_epoch").unwrap(), 3);
+        assert_eq!(
+            required_u64(&decoded, 4, "created_at").unwrap(),
+            1_234_567_890
+        );
+        let words = match map_get(&decoded, 5) {
+            Some(Value::Array(words)) => words,
+            other => panic!("expected fingerprint_words array, got {other:?}"),
+        };
+        assert_eq!(words.len(), 6);
+        assert_eq!(words[0].as_text(), Some("abandon"));
+        assert_eq!(words[5].as_text(), Some("absent"));
+    }
+
+    #[test]
+    fn key_escrow_request_encoding() {
+        let message = ConnectorOutboundMessage::KeyEscrowRequest {
+            key_hint: 0x1234,
+            request_id: [0xAB; 16],
+        };
+        let encoded = message.encode().unwrap();
+        let decoded = decode_map(&encoded).unwrap();
+        assert_eq!(
+            required_u64(&decoded, 1, "msg_type").unwrap(),
+            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST
+        );
+        assert_eq!(required_u64(&decoded, 2, "key_hint").unwrap(), 0x1234);
+        let rid = required_bytes(&decoded, 3, "request_id").unwrap();
+        assert_eq!(rid, vec![0xAB; 16]);
+    }
+
+    #[test]
     fn actual_state_encoding_drops_inconsistent_escrow_fields() {
         let hub = ConnectorEventHub::new(1);
         let mut rx = hub.subscribe();
@@ -1161,5 +1225,42 @@ mod tests {
                 "escrow inbound channel not configured; message cannot be processed"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn gateway_emits_key_escrow_request_for_unknown_node_when_escrow_ready() {
+        let storage = std::sync::Arc::new(crate::storage::InMemoryStorage::new());
+        let gateway = crate::engine::Gateway::new(storage, std::time::Duration::from_secs(30));
+        gateway
+            .set_escrow_state(crate::escrow::EscrowState::Ready)
+            .await;
+        let hub = gateway.connector_event_hub();
+        let mut rx = hub.subscribe();
+
+        let header = sonde_protocol::FrameHeader {
+            key_hint: 0x1234,
+            msg_type: sonde_protocol::MSG_APP_DATA,
+            nonce: 7,
+        };
+        let raw = sonde_protocol::encode_frame(
+            &header,
+            b"recovery-test",
+            &[0x42u8; 32],
+            &crate::aead::GatewayAead,
+            &crate::crypto::RustCryptoSha256,
+        )
+        .unwrap();
+
+        assert!(gateway.process_frame(&raw, vec![0xAA; 6]).await.is_none());
+
+        let message = rx.try_recv().unwrap();
+        let encoded = message.encode().unwrap();
+        let decoded = decode_map(&encoded).unwrap();
+        assert_eq!(
+            required_u64(&decoded, 1, "msg_type").unwrap(),
+            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST
+        );
+        assert_eq!(required_u64(&decoded, 2, "key_hint").unwrap(), 0x1234);
+        assert_eq!(required_bytes(&decoded, 3, "request_id").unwrap().len(), 16);
     }
 }

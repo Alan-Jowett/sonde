@@ -204,6 +204,8 @@ pub enum ConnectorMessage {
     KeyEscrowPubkey(KeyEscrowPubkeyMessage),
     /// KEY_ESCROW_REQUEST (msg_type 0x11, GW-2009).
     KeyEscrowRequest(KeyEscrowRequestMessage),
+    /// MASTER_KEY_INSTALL (msg_type 0x13, AZH-0604) — opaque relay.
+    MasterKeyInstall(Vec<u8>),
     Unsupported(u64),
 }
 
@@ -334,6 +336,11 @@ where
                     .await
             }
             ConnectorMessage::KeyEscrowRequest(msg) => self.handle_key_escrow_request(msg).await,
+            ConnectorMessage::MasterKeyInstall(raw_bytes) => {
+                self.publisher
+                    .publish(&self.downstream_queue, raw_bytes)
+                    .await
+            }
             ConnectorMessage::Unsupported(msg_type) => {
                 warn!(msg_type, "ignoring unsupported connector message");
                 Ok(())
@@ -1308,6 +1315,9 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
                 },
             ))
         }
+        sonde_protocol::CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL => {
+            Ok(ConnectorMessage::MasterKeyInstall(bytes.to_vec()))
+        }
         other => Ok(ConnectorMessage::Unsupported(other)),
     }
 }
@@ -1644,8 +1654,13 @@ fn optional_text_array_field(
         Some(Value::Array(arr)) => {
             let mut result = Vec::with_capacity(arr.len());
             for v in arr {
-                if let Value::Text(s) = v {
-                    result.push(s.clone());
+                match v {
+                    Value::Text(s) => result.push(s.clone()),
+                    _ => {
+                        return Err(HandlerError::Decode(
+                            "fingerprint_words array contains non-text entry".into(),
+                        ));
+                    }
                 }
             }
             Ok(result)
@@ -1751,6 +1766,8 @@ mod tests {
         program_images: Mutex<HashMap<String, ProgramImageRow>>,
         stored_program_rows: Mutex<Vec<ProgramImageRow>>,
         sensor_data_rows: Mutex<Vec<SensorDataRow>>,
+        escrow_blobs_by_hint: Mutex<HashMap<u16, Vec<Vec<u8>>>>,
+        stored_gateway_pubkeys: Mutex<Vec<(Vec<u8>, u64, u64)>>,
     }
 
     impl MemoryStore {
@@ -1796,6 +1813,13 @@ mod tests {
                 .lock()
                 .await
                 .insert(hex::encode(program_hash), row);
+        }
+
+        async fn set_escrow_blobs(&self, key_hint: u16, blobs: Vec<Vec<u8>>) {
+            self.escrow_blobs_by_hint
+                .lock()
+                .await
+                .insert(key_hint, blobs);
         }
     }
 
@@ -1862,6 +1886,35 @@ mod tests {
         async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError> {
             self.sensor_data_rows.lock().await.push(row.clone());
             Ok(())
+        }
+
+        async fn store_gateway_escrow_pubkey(
+            &self,
+            public_key: &[u8],
+            key_epoch: u64,
+            created_at: u64,
+        ) -> Result<(), HandlerError> {
+            self.stored_gateway_pubkeys.lock().await.push((
+                public_key.to_vec(),
+                key_epoch,
+                created_at,
+            ));
+            Ok(())
+        }
+
+        async fn load_escrow_blobs_by_key_hint(
+            &self,
+            key_hint: u16,
+            max_candidates: usize,
+        ) -> Result<Vec<Vec<u8>>, HandlerError> {
+            let blobs = self
+                .escrow_blobs_by_hint
+                .lock()
+                .await
+                .get(&key_hint)
+                .cloned()
+                .unwrap_or_default();
+            Ok(blobs.into_iter().take(max_candidates).collect())
         }
     }
 
@@ -2144,6 +2197,34 @@ mod tests {
         let value = Value::Map(vec![
             map_entry(1, Value::Integer(0x99u64.into())),
             map_entry(2, Value::Text("ignored".to_string())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        bytes
+    }
+
+    fn sample_key_escrow_request(key_hint: u16, request_id: [u8; 16]) -> Vec<u8> {
+        let value = Value::Map(vec![
+            map_entry(
+                1,
+                Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST.into()),
+            ),
+            map_entry(2, Value::Integer((key_hint as u64).into())),
+            map_entry(3, Value::Bytes(request_id.to_vec())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        bytes
+    }
+
+    fn sample_master_key_install() -> Vec<u8> {
+        let value = Value::Map(vec![
+            map_entry(
+                1,
+                Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL.into()),
+            ),
+            map_entry(2, Value::Bytes(vec![0xAA; 32])),
+            map_entry(3, Value::Bytes(vec![0xBB; 16])),
         ]);
         let mut bytes = Vec::new();
         ciborium::into_writer(&value, &mut bytes).unwrap();
@@ -2458,6 +2539,64 @@ mod tests {
         ));
         assert_eq!(store.appended_rows.lock().await.len(), 1);
         assert!(publisher.sends.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn key_escrow_request_publishes_response_candidates() {
+        let store = Arc::new(MemoryStore::default());
+        store
+            .set_escrow_blobs(0x1234, vec![vec![0xA1; 12], vec![0xB2; 24]])
+            .await;
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+        let request_id = [0xAB; 16];
+
+        handler
+            .handle_payload(&sample_key_escrow_request(0x1234, request_id))
+            .await
+            .unwrap();
+
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].0, "downstream");
+        let response = decode_map(&sends[0].1).unwrap();
+        assert_eq!(
+            required_u64(&response, 1, "msg_type").unwrap(),
+            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE
+        );
+        assert_eq!(
+            required_bytes(&response, 2, "request_id").unwrap(),
+            request_id.to_vec()
+        );
+        assert_eq!(required_u64(&response, 4, "key_hint").unwrap(), 0x1234);
+        let candidates = match map_get(&response, 3) {
+            Some(Value::Array(values)) => values,
+            other => panic!("expected candidates array, got {other:?}"),
+        };
+        assert_eq!(candidates.len(), 2);
+        match &candidates[0] {
+            Value::Bytes(bytes) => assert_eq!(bytes, &vec![0xA1; 12]),
+            other => panic!("expected first candidate bytes, got {other:?}"),
+        }
+        match &candidates[1] {
+            Value::Bytes(bytes) => assert_eq!(bytes, &vec![0xB2; 24]),
+            other => panic!("expected second candidate bytes, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn master_key_install_is_relayed_verbatim() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+        let payload = sample_master_key_install();
+
+        handler.handle_payload(&payload).await.unwrap();
+
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].0, "downstream");
+        assert_eq!(sends[0].1, payload);
     }
 
     #[tokio::test]
@@ -3555,6 +3694,34 @@ mod tests {
     }
 
     // ── decode_optional_readings error path tests ──────────────────────
+
+    #[test]
+    fn decode_key_escrow_pubkey_rejects_non_text_fingerprint_words() {
+        let value = Value::Map(vec![
+            map_entry(
+                1,
+                Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY.into()),
+            ),
+            map_entry(2, Value::Bytes(vec![0x42u8; 32])),
+            map_entry(3, Value::Integer(1u64.into())),
+            map_entry(4, Value::Integer(2u64.into())),
+            map_entry(
+                5,
+                Value::Array(vec![
+                    Value::Text("abandon".to_string()),
+                    Value::Integer(7u64.into()),
+                ]),
+            ),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        let err = decode_connector_message(&bytes).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("fingerprint_words array contains non-text entry"),
+            "expected fingerprint_words error, got: {err}"
+        );
+    }
 
     #[test]
     fn decode_readings_rejects_non_map_value() {

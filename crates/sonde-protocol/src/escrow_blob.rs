@@ -252,11 +252,23 @@ pub fn encode_escrow_blob(blob: &EscrowBlob) -> Result<Vec<u8>, EncodeError> {
     let mut buf = Vec::new();
     ciborium::into_writer(&value, &mut buf)
         .map_err(|e| EncodeError::CborError(alloc::format!("{e}")))?;
+    if buf.len() > 150 {
+        return Err(EncodeError::InvalidParameter(alloc::format!(
+            "encoded escrow blob size {} exceeds 150-byte limit",
+            buf.len()
+        )));
+    }
     Ok(buf)
 }
 
 /// Decode an escrow blob from CBOR bytes.
 pub fn decode_escrow_blob(cbor: &[u8]) -> Result<EscrowBlob, DecodeError> {
+    if cbor.len() > 150 {
+        return Err(DecodeError::CborError(alloc::format!(
+            "escrow blob size {} exceeds 150-byte limit",
+            cbor.len()
+        )));
+    }
     let mut reader = cbor;
     let value: Value = ciborium::from_reader(&mut reader)
         .map_err(|e| DecodeError::CborError(alloc::format!("{e}")))?;
@@ -615,6 +627,57 @@ mod tests {
         // Verify decryption still works after CBOR round-trip
         let recovered = open_escrow_blob(&decoded, &master_key, &aead).unwrap();
         assert_eq!(recovered, Some(psk));
+    }
+
+    #[test]
+    fn test_encode_escrow_blob_rejects_oversized_encoding() {
+        let blob = EscrowBlob {
+            escrow_version: ESCROW_BLOB_VERSION,
+            key_version: u64::MAX,
+            subject_kind: SubjectKind::Phone,
+            subject_id: "n".repeat(64),
+            key_hint: u16::MAX,
+            nonce: [0x11; 12],
+            ciphertext: [0x22; 32],
+            tag: [0x33; 16],
+        };
+
+        let err = encode_escrow_blob(&blob).unwrap_err();
+        assert!(
+            matches!(err, EncodeError::InvalidParameter(message) if message.contains("exceeds 150-byte limit"))
+        );
+    }
+
+    #[test]
+    fn test_decode_escrow_blob_rejects_oversized_input() {
+        let value = Value::Map(alloc::vec![
+            (Value::Integer(1u64.into()), Value::Integer(1u64.into())),
+            (Value::Integer(2u64.into()), Value::Integer(u64::MAX.into())),
+            (
+                Value::Integer(3u64.into()),
+                Value::Text(String::from("phone"))
+            ),
+            (Value::Integer(4u64.into()), Value::Text("n".repeat(64))),
+            (
+                Value::Integer(5u64.into()),
+                Value::Integer((u16::MAX as u64).into())
+            ),
+            (Value::Integer(6u64.into()), Value::Bytes(vec![0x11; 12])),
+            (Value::Integer(7u64.into()), Value::Bytes(vec![0x22; 32])),
+            (Value::Integer(8u64.into()), Value::Bytes(vec![0x33; 16])),
+        ]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&value, &mut buf).unwrap();
+        assert!(
+            buf.len() > 150,
+            "expected oversized blob, got {} bytes",
+            buf.len()
+        );
+
+        let err = decode_escrow_blob(&buf).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::CborError(message) if message.contains("exceeds 150-byte limit"))
+        );
     }
 
     // SubjectKind string round-trip

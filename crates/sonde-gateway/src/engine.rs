@@ -416,7 +416,17 @@ impl Gateway {
             if escrow_state == EscrowState::Ready {
                 let mut rq = self.recovery_queue.lock().await;
                 if rq.can_request(key_hint) {
-                    let peer_addr: [u8; 6] = peer.as_slice().try_into().unwrap_or([0u8; 6]);
+                    let peer_addr: [u8; 6] = match peer.as_slice().try_into() {
+                        Ok(addr) => addr,
+                        Err(_) => {
+                            warn!(
+                                key_hint,
+                                peer_len = peer.len(),
+                                "malformed peer address in recovery path, dropping frame"
+                            );
+                            return None;
+                        }
+                    };
                     match rq.enqueue(key_hint, raw.to_vec(), peer_addr) {
                         Ok(request_id) => {
                             self.connector_event_hub

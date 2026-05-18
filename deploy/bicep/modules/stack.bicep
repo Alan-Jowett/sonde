@@ -30,6 +30,9 @@ param programsTableName string
 @description('Sensor data table name.')
 param sensorDataTableName string
 
+@description('Gateway escrow metadata table name.')
+param escrowTableName string
+
 @description('Azure handler Function App name.')
 param functionAppName string
 
@@ -64,6 +67,7 @@ module storage './storage.bicep' = {
     desiredStateTableName: desiredStateTableName
     programsTableName: programsTableName
     sensorDataTableName: sensorDataTableName
+    escrowTableName: escrowTableName
     upstreamQueueName: upstreamQueueName
     downstreamQueueName: downstreamQueueName
     deploymentContainerName: deploymentStorageContainerName
@@ -95,6 +99,7 @@ module functionPlaceholder './function-placeholder.bicep' = {
     desiredStateTableName: storage.outputs.desiredStateTableName
     programsTableName: storage.outputs.programsTableName
     sensorDataTableName: storage.outputs.sensorDataTableName
+    escrowTableName: storage.outputs.escrowTableName
     appInsightsConnectionString: monitoring.outputs.connectionString
     corsAllowedOrigins: corsAllowedOrigins
     functionAuthClientId: functionAuthClientId
@@ -129,6 +134,7 @@ module functionRbac './function-rbac.bicep' = {
     desiredStateTableName: storage.outputs.desiredStateTableName
     programsTableName: storage.outputs.programsTableName
     sensorDataTableName: storage.outputs.sensorDataTableName
+    escrowTableName: storage.outputs.escrowTableName
   }
 }
 

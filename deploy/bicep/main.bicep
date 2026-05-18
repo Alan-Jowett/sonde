@@ -42,6 +42,9 @@ param programsTableName string = ''
 @description('Table name for sensor data rows.')
 param sensorDataTableName string = ''
 
+@description('Table name for gateway escrow metadata.')
+param escrowTableName string = ''
+
 @description('Optional override for the Azure handler Function App name.')
 param functionAppName string = ''
 
@@ -71,6 +74,7 @@ var effectiveDesiredStateTableName = empty(desiredStateTableName)
   : desiredStateTableName
 var effectiveProgramsTableName = empty(programsTableName) ? 'programs' : programsTableName
 var effectiveSensorDataTableName = empty(sensorDataTableName) ? 'sensordata' : sensorDataTableName
+var effectiveEscrowTableName = empty(escrowTableName) ? 'gatewayescrow' : escrowTableName
 // Keep the historical `-decoder-` stem as the derived default to avoid replacing
 // existing Function App resources during in-place redeploys. New deployments can
 // still override `functionAppName` if they want a handler-specific resource name.
@@ -126,6 +130,7 @@ module stack './modules/stack.bicep' = {
     desiredStateTableName: effectiveDesiredStateTableName
     programsTableName: effectiveProgramsTableName
     sensorDataTableName: effectiveSensorDataTableName
+    escrowTableName: effectiveEscrowTableName
     functionAppName: effectiveFunctionAppName
     functionPlanName: effectiveFunctionPlanName
     companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId

@@ -36,6 +36,9 @@ param programsTableName string
 @description('Sensor data table name.')
 param sensorDataTableName string
 
+@description('Gateway escrow metadata table name.')
+param escrowTableName string
+
 @description('Tags applied to provisioned resources.')
 param tags object
 
@@ -121,6 +124,10 @@ var baseAppSettings = [
         {
           name: 'SONDE_AZURE_HANDLER_SENSOR_DATA_TABLE'
           value: sensorDataTableName
+        }
+        {
+          name: 'SONDE_AZURE_HANDLER_ESCROW_TABLE'
+          value: escrowTableName
         }
       ]
 

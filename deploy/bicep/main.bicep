@@ -83,6 +83,8 @@ var effectiveFunctionPlanName = empty(functionPlanName)
 var corsOrigins = empty(customDomainOrigin)
   ? [githubPagesOrigin]
   : [githubPagesOrigin, customDomainOrigin]
+// Strip trailing slash from custom domain origin before appending '/' for redirect URI
+var normalizedCustomDomainOrigin = endsWith(customDomainOrigin, '/') ? take(customDomainOrigin, length(customDomainOrigin) - 1) : customDomainOrigin
 var tags = {
   project: project_name
 }
@@ -107,7 +109,7 @@ module companionIdentity './modules/companion-identity.bicep' = {
     certificateDisplayName: companionCertificateDisplayName
     spaRedirectUris: empty(customDomainOrigin)
       ? ['${githubPagesOrigin}${githubPagesPath}']
-      : ['${githubPagesOrigin}${githubPagesPath}', '${customDomainOrigin}/']
+      : ['${githubPagesOrigin}${githubPagesPath}', '${normalizedCustomDomainOrigin}/']
   }
 }
 

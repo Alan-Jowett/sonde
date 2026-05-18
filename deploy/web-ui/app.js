@@ -20,22 +20,36 @@ const ENV_ACTIVE_KEY = 'sonde_active_environment';
 function loadEnvironments() {
   try {
     const raw = localStorage.getItem(ENV_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
 }
 
 function saveEnvironments(envs) {
-  localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(envs));
+  try {
+    localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(envs));
+  } catch {
+    // Storage disabled or quota exceeded — environment will not persist.
+  }
 }
 
 function getActiveEnvironmentName() {
-  return localStorage.getItem(ENV_ACTIVE_KEY) || '';
+  try {
+    return localStorage.getItem(ENV_ACTIVE_KEY) || '';
+  } catch {
+    return '';
+  }
 }
 
 function setActiveEnvironmentName(name) {
-  localStorage.setItem(ENV_ACTIVE_KEY, name);
+  try {
+    localStorage.setItem(ENV_ACTIVE_KEY, name);
+  } catch {
+    // Storage disabled or quota exceeded.
+  }
 }
 
 function applyEnvironment(env) {
@@ -244,11 +258,14 @@ async function initMsal() {
     return;
   }
 
+  // Normalize pathname to directory (strip filename like index.html) so the
+  // redirect URI matches the registered value (e.g. /sonde/ not /sonde/index.html).
+  const basePath = window.location.pathname.replace(/\/[^/]*\.[^/]*$/, '/');
   APP.msalApp = new msal.PublicClientApplication({
     auth: {
       clientId: CONFIG.msalClientId,
       authority: CONFIG.msalAuthority,
-      redirectUri: window.location.origin + window.location.pathname,
+      redirectUri: window.location.origin + basePath,
     },
     cache: {
       cacheLocation: 'sessionStorage',
@@ -1801,8 +1818,8 @@ function showEnvironmentForm(existingEnv) {
       if (errorEl) { errorEl.textContent = 'Storage Account must be 3–24 lowercase alphanumeric characters.'; errorEl.style.display = ''; }
       return;
     }
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$/.test(functionAppName) && !/^[a-zA-Z0-9]{1,2}$/.test(functionAppName)) {
-      if (errorEl) { errorEl.textContent = 'Function App Name must be alphanumeric with optional hyphens (2–60 chars).'; errorEl.style.display = ''; }
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$/.test(functionAppName)) {
+      if (errorEl) { errorEl.textContent = 'Function App Name must be 2–60 alphanumeric characters with optional hyphens.'; errorEl.style.display = ''; }
       return;
     }
 

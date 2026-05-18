@@ -107,6 +107,34 @@ pub const SIGNAL_QUALITY_GOOD: u8 = 0;
 pub const SIGNAL_QUALITY_MARGINAL: u8 = 1;
 pub const SIGNAL_QUALITY_BAD: u8 = 2;
 
+// Connector message types (gateway ↔ control plane)
+pub const CONNECTOR_MSG_TYPE_DESIRED_STATE: u64 = 0x01;
+pub const CONNECTOR_MSG_TYPE_ACTUAL_STATE: u64 = 0x02;
+pub const CONNECTOR_MSG_TYPE_APP_DATA: u64 = 0x03;
+pub const CONNECTOR_MSG_TYPE_CONNECTOR_HEALTH: u64 = 0x04;
+pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY: u64 = 0x10;
+pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST: u64 = 0x11;
+pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE: u64 = 0x12;
+pub const CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL: u64 = 0x13;
+
+// CBOR integer keys for ACTUAL_STATE escrow fields
+pub const ACTUAL_STATE_KEY_ENCRYPTED_PSK_ESCROW: u64 = 12;
+pub const ACTUAL_STATE_KEY_ESCROW_KEY_HINT: u64 = 13;
+pub const ACTUAL_STATE_KEY_ESCROW_KEY_VERSION: u64 = 14;
+
+// CBOR integer keys for escrow blob format (GW-2002, separate keyspace)
+pub const ESCROW_BLOB_KEY_VERSION_FIELD: u64 = 1;
+pub const ESCROW_BLOB_KEY_KEY_VERSION: u64 = 2;
+pub const ESCROW_BLOB_KEY_SUBJECT_KIND: u64 = 3;
+pub const ESCROW_BLOB_KEY_SUBJECT_ID: u64 = 4;
+pub const ESCROW_BLOB_KEY_KEY_HINT: u64 = 5;
+pub const ESCROW_BLOB_KEY_NONCE: u64 = 6;
+pub const ESCROW_BLOB_KEY_CIPHERTEXT: u64 = 7;
+pub const ESCROW_BLOB_KEY_TAG: u64 = 8;
+
+// Current escrow blob schema version
+pub const ESCROW_BLOB_VERSION: u8 = 1;
+
 // BLE envelope message types (Node Command characteristic)
 pub const BLE_NODE_PROVISION: u8 = 0x01;
 pub const BLE_RUN_TEST_COMMAND: u8 = 0x02;

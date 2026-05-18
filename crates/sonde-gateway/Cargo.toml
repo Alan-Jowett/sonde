@@ -5,11 +5,12 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-sonde-protocol = { path = "../sonde-protocol" }
+sonde-protocol = { path = "../sonde-protocol", features = ["fingerprint"] }
 sonde-bpf = { path = "../sonde-bpf" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 sha2 = "0.10"
+hkdf = "0.12"
 async-trait = "0.1"
 getrandom = "0.4"
 ciborium = "0.2"

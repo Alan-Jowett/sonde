@@ -256,6 +256,7 @@ async fn aead_peer_request_happy_path() {
     let phone_record = PhonePskRecord {
         phone_id: 0, // assigned by store
         phone_key_hint,
+        key_version: 0,
         psk: Zeroizing::new(phone_psk),
         label: "test-phone".into(),
         issued_at: SystemTime::now(),

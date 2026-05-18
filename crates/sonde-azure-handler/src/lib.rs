@@ -97,10 +97,24 @@ pub struct ActualStateRow {
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
     pub timestamp_ms: u64,
+    /// Encrypted PSK escrow blob (AZH-0600).
+    pub encrypted_psk_escrow: Option<Vec<u8>>,
+    /// Key hint for escrow recovery lookup (AZH-0601).
+    pub escrow_key_hint: Option<u16>,
+    /// Master key version for escrow blob versioning.
+    pub escrow_key_version: Option<u64>,
 }
 
 impl ActualStateRow {
     fn from_message(message: &ActualStateMessage) -> Result<Self, HandlerError> {
+        if message.encrypted_psk_escrow.is_some()
+            && (message.escrow_key_hint.is_none() || message.escrow_key_version.is_none())
+        {
+            return Err(HandlerError::Decode(
+                "ACTUAL_STATE with encrypted_psk_escrow must include escrow_key_hint and escrow_key_version"
+                    .into(),
+            ));
+        }
         Ok(Self {
             row_key: next_history_row_key(message.timestamp_ms)?,
             node_id: message.entity_id.clone(),
@@ -111,6 +125,9 @@ impl ActualStateRow {
             firmware_abi_version: message.firmware_abi_version,
             firmware_version: message.firmware_version.clone(),
             timestamp_ms: message.timestamp_ms,
+            encrypted_psk_escrow: message.encrypted_psk_escrow.clone(),
+            escrow_key_hint: message.escrow_key_hint,
+            escrow_key_version: message.escrow_key_version,
         })
     }
 }
@@ -160,6 +177,12 @@ pub struct ActualStateMessage {
     pub firmware_version: Option<String>,
     pub timestamp_ms: u64,
     pub schedule_interval_s: Option<u32>,
+    /// Encrypted PSK escrow blob (CBOR key 12, GW-2003).
+    pub encrypted_psk_escrow: Option<Vec<u8>>,
+    /// Key hint from escrow blob metadata (CBOR key 13, GW-2003).
+    pub escrow_key_hint: Option<u16>,
+    /// Master key version from escrow blob metadata (CBOR key 14, GW-2003).
+    pub escrow_key_version: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +200,29 @@ pub struct AppDataMessage {
 pub enum ConnectorMessage {
     ActualState(ActualStateMessage),
     AppData(AppDataMessage),
+    /// KEY_ESCROW_PUBKEY (msg_type 0x10, GW-2001).
+    KeyEscrowPubkey(KeyEscrowPubkeyMessage),
+    /// KEY_ESCROW_REQUEST (msg_type 0x11, GW-2009).
+    KeyEscrowRequest(KeyEscrowRequestMessage),
+    /// MASTER_KEY_INSTALL (msg_type 0x13, AZH-0604) — opaque relay.
+    MasterKeyInstall(Vec<u8>),
     Unsupported(u64),
+}
+
+/// Gateway recovery public key publication (AZH-0602).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyEscrowPubkeyMessage {
+    pub public_key: Vec<u8>,
+    pub key_epoch: u64,
+    pub created_at: u64,
+    pub fingerprint_words: Vec<String>,
+}
+
+/// Request for escrowed PSK(s) matching a key_hint (AZH-0601).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyEscrowRequestMessage {
+    pub key_hint: u16,
+    pub request_id: Vec<u8>,
 }
 
 #[async_trait]
@@ -198,6 +243,35 @@ pub trait HandlerStore: Send + Sync {
     async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError>;
     /// Append a row to the `SensorData` table for a `GW-0813` message (AZH-0500).
     async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError>;
+
+    // ── PSK key escrow (AZH-0600–AZH-0605) ────────────────────
+
+    /// Store or update the gateway's recovery public key (AZH-0602).
+    /// Only updates if `key_epoch` >= stored epoch (monotonic guard).
+    async fn store_gateway_escrow_pubkey(
+        &self,
+        public_key: &[u8],
+        key_epoch: u64,
+        created_at: u64,
+    ) -> Result<(), HandlerError> {
+        let _ = (public_key, key_epoch, created_at);
+        Err(HandlerError::Store(
+            "store_gateway_escrow_pubkey not implemented for this store backend".into(),
+        ))
+    }
+
+    /// Load escrowed PSK blobs matching a key_hint (AZH-0601).
+    /// Returns at most `max_candidates` blobs.
+    async fn load_escrow_blobs_by_key_hint(
+        &self,
+        key_hint: u16,
+        max_candidates: usize,
+    ) -> Result<Vec<Vec<u8>>, HandlerError> {
+        let _ = (key_hint, max_candidates);
+        Err(HandlerError::Store(
+            "load_escrow_blobs_by_key_hint not implemented for this store backend".into(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -227,18 +301,46 @@ where
     pub async fn handle_payload(&self, payload: &[u8]) -> Result<(), HandlerError> {
         match decode_connector_message(payload)? {
             ConnectorMessage::ActualState(actual_state) => {
-                if actual_state.entity_kind == "node" {
-                    self.handle_actual_state(actual_state).await?;
-                } else {
-                    warn!(
-                        entity_kind = %actual_state.entity_kind,
-                        entity_id = %actual_state.entity_id,
-                        "ignoring non-node ACTUAL_STATE message"
-                    );
+                match actual_state.entity_kind.as_str() {
+                    "node" => self.handle_actual_state(actual_state).await?,
+                    "phone" => {
+                        // Phone escrow ACTUAL_STATE (AZH-0600): store escrow blob only.
+                        // TODO(AZH-0600): move phone escrow rows into a dedicated table or
+                        // partition instead of sharing the generic ACTUAL_STATE storage.
+                        if actual_state.encrypted_psk_escrow.is_some() {
+                            let row = ActualStateRow::from_message(&actual_state)?;
+                            self.store.append_actual_state(&row).await?;
+                        }
+                    }
+                    "gateway" => {
+                        // TODO(#887): persist gateway-scoped escrow state, salt, and KDF
+                        // parameters for admin observability (AZH-0605).
+                        warn!(
+                            "gateway-scoped ACTUAL_STATE received but escrow state persistence not yet implemented"
+                        );
+                    }
+                    other => {
+                        warn!(
+                            entity_kind = %other,
+                            entity_id = %actual_state.entity_id,
+                            "ignoring ACTUAL_STATE for unknown entity_kind"
+                        );
+                    }
                 }
                 Ok(())
             }
             ConnectorMessage::AppData(app_data) => self.handle_app_data(app_data).await,
+            ConnectorMessage::KeyEscrowPubkey(msg) => {
+                self.store
+                    .store_gateway_escrow_pubkey(&msg.public_key, msg.key_epoch, msg.created_at)
+                    .await
+            }
+            ConnectorMessage::KeyEscrowRequest(msg) => self.handle_key_escrow_request(msg).await,
+            ConnectorMessage::MasterKeyInstall(raw_bytes) => {
+                self.publisher
+                    .publish(&self.downstream_queue, raw_bytes)
+                    .await
+            }
             ConnectorMessage::Unsupported(msg_type) => {
                 warn!(msg_type, "ignoring unsupported connector message");
                 Ok(())
@@ -338,6 +440,24 @@ where
         let desired = encode_desired_state(&desired_row, program_row.as_ref())?;
         self.publisher
             .publish(&self.downstream_queue, desired)
+            .await
+    }
+
+    /// Handle KEY_ESCROW_REQUEST: look up escrow blobs by key_hint and
+    /// respond with KEY_ESCROW_RESPONSE (AZH-0601).
+    async fn handle_key_escrow_request(
+        &self,
+        msg: KeyEscrowRequestMessage,
+    ) -> Result<(), HandlerError> {
+        let mut candidates = self
+            .store
+            .load_escrow_blobs_by_key_hint(msg.key_hint, 16)
+            .await?;
+        candidates.truncate(16);
+
+        let response = encode_key_escrow_response(&msg.request_id, msg.key_hint, &candidates)?;
+        self.publisher
+            .publish(&self.downstream_queue, response)
             .await
     }
 
@@ -894,6 +1014,15 @@ struct ActualStateEntity {
     firmware_version: Option<String>,
     #[serde(deserialize_with = "deserialize_u64_flexible")]
     timestamp_ms: u64,
+    /// Base64-encoded encrypted PSK escrow blob (AZH-0600).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    encrypted_psk_escrow: Option<String>,
+    /// Key hint for escrow recovery lookup (AZH-0601).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    escrow_key_hint: Option<u32>,
+    /// Master key version for escrow blob versioning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    escrow_key_version: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -986,6 +1115,21 @@ impl TryFrom<ActualStateEntity> for ActualStateRow {
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
             timestamp_ms: value.timestamp_ms,
+            encrypted_psk_escrow: value
+                .encrypted_psk_escrow
+                .map(|b64| {
+                    base64::prelude::BASE64_STANDARD.decode(&b64).map_err(|e| {
+                        HandlerError::Decode(format!("invalid base64 in encrypted_psk_escrow: {e}"))
+                    })
+                })
+                .transpose()?,
+            escrow_key_hint: match value.escrow_key_hint {
+                Some(h) => Some(u16::try_from(h).map_err(|_| {
+                    HandlerError::Decode(format!("escrow_key_hint {} out of u16 range", h))
+                })?),
+                None => None,
+            },
+            escrow_key_version: value.escrow_key_version,
         })
     }
 }
@@ -1007,6 +1151,11 @@ impl TryFrom<ActualStateRow> for ActualStateEntity {
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
             timestamp_ms: value.timestamp_ms,
+            encrypted_psk_escrow: value
+                .encrypted_psk_escrow
+                .map(|b| base64::prelude::BASE64_STANDARD.encode(&b)),
+            escrow_key_hint: value.escrow_key_hint.map(|h| h as u32),
+            escrow_key_version: value.escrow_key_version,
         })
     }
 }
@@ -1121,6 +1270,9 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
             firmware_version: optional_text_field(&map, 8, "firmware_version")?,
             timestamp_ms: required_u64(&map, 9, "timestamp_ms")?,
             schedule_interval_s: optional_u32_field(&map, 11, "schedule_interval_s")?,
+            encrypted_psk_escrow: optional_bytes_field(&map, 12, "encrypted_psk_escrow")?,
+            escrow_key_hint: optional_u16_field(&map, 13, "escrow_key_hint")?,
+            escrow_key_version: optional_u64_field(&map, 14, "escrow_key_version")?,
         })),
         MSG_TYPE_APP_DATA => Ok(ConnectorMessage::AppData(AppDataMessage {
             node_id: required_text(&map, 2, "node_id")?,
@@ -1129,6 +1281,43 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
             timestamp_ms: required_u64(&map, 5, "timestamp_ms")?,
             readings: decode_optional_readings(&map, 16)?,
         })),
+        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY => {
+            let public_key = required_bytes(&map, 2, "public_key")?;
+            if public_key.len() != 32 {
+                return Err(HandlerError::Decode(format!(
+                    "public_key has invalid length: expected 32 bytes, got {}",
+                    public_key.len()
+                )));
+            }
+            Ok(ConnectorMessage::KeyEscrowPubkey(KeyEscrowPubkeyMessage {
+                public_key,
+                key_epoch: required_u64(&map, 3, "key_epoch")?,
+                created_at: required_u64(&map, 4, "created_at")?,
+                fingerprint_words: optional_text_array_field(&map, 5)?,
+            }))
+        }
+        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST => {
+            let key_hint_raw = required_u64(&map, 2, "key_hint")?;
+            let key_hint = u16::try_from(key_hint_raw).map_err(|_| {
+                HandlerError::Decode(format!("key_hint {} exceeds u16::MAX", key_hint_raw))
+            })?;
+            let request_id = required_bytes(&map, 3, "request_id")?;
+            if request_id.len() != 16 {
+                return Err(HandlerError::Decode(format!(
+                    "request_id has invalid length: expected 16 bytes, got {}",
+                    request_id.len()
+                )));
+            }
+            Ok(ConnectorMessage::KeyEscrowRequest(
+                KeyEscrowRequestMessage {
+                    key_hint,
+                    request_id,
+                },
+            ))
+        }
+        sonde_protocol::CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL => {
+            Ok(ConnectorMessage::MasterKeyInstall(bytes.to_vec()))
+        }
         other => Ok(ConnectorMessage::Unsupported(other)),
     }
 }
@@ -1172,6 +1361,28 @@ pub(crate) fn encode_desired_state(
 
 fn encode_optional_hex(value: Option<Vec<u8>>) -> Option<String> {
     value.map(hex::encode)
+}
+
+/// Encode a KEY_ESCROW_RESPONSE message (msg_type 0x12, AZH-0601).
+fn encode_key_escrow_response(
+    request_id: &[u8],
+    key_hint: u16,
+    candidates: &[Vec<u8>],
+) -> Result<Vec<u8>, HandlerError> {
+    let candidate_values: Vec<Value> = candidates.iter().map(|c| Value::Bytes(c.clone())).collect();
+    let value = Value::Map(vec![
+        map_entry(
+            1,
+            Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE.into()),
+        ),
+        map_entry(2, Value::Bytes(request_id.to_vec())),
+        map_entry(3, Value::Array(candidate_values)),
+        map_entry(4, Value::Integer((key_hint as u64).into())),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&value, &mut bytes)
+        .map_err(|e| HandlerError::Decode(format!("encode KEY_ESCROW_RESPONSE failed: {e}")))?;
+    Ok(bytes)
 }
 
 /// JavaScript's `Number.MAX_SAFE_INTEGER` (2^53 - 1).
@@ -1404,6 +1615,64 @@ fn optional_text_field(
     }
 }
 
+fn optional_u16_field(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Option<u16>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(value) => value
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .and_then(|v| u16::try_from(v).ok())
+            .map(Some)
+            .ok_or_else(|| HandlerError::Decode(format!("`{field}` must be uint or null"))),
+    }
+}
+
+fn optional_u64_field(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Option<u64>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(value) => value
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .map(Some)
+            .ok_or_else(|| HandlerError::Decode(format!("`{field}` must be uint or null"))),
+    }
+}
+
+fn optional_text_array_field(
+    map: &[(Value, Value)],
+    key: u64,
+) -> Result<Vec<String>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Array(arr)) => {
+            let mut result = Vec::with_capacity(arr.len());
+            for v in arr {
+                match v {
+                    Value::Text(s) => result.push(s.clone()),
+                    _ => {
+                        return Err(HandlerError::Decode(
+                            "fingerprint_words array contains non-text entry".into(),
+                        ));
+                    }
+                }
+            }
+            Ok(result)
+        }
+        Some(Value::Null) | None => Ok(Vec::new()),
+        Some(other) => Err(HandlerError::Decode(format!(
+            "fingerprint_words must be an array, got {:?}",
+            other
+        ))),
+    }
+}
+
 fn opt_bytes_value(value: Option<&[u8]>) -> Value {
     match value {
         Some(bytes) => Value::Bytes(bytes.to_vec()),
@@ -1500,6 +1769,8 @@ mod tests {
         program_images: Mutex<HashMap<String, ProgramImageRow>>,
         stored_program_rows: Mutex<Vec<ProgramImageRow>>,
         sensor_data_rows: Mutex<Vec<SensorDataRow>>,
+        escrow_blobs_by_hint: Mutex<HashMap<u16, Vec<Vec<u8>>>>,
+        stored_gateway_pubkeys: Mutex<Vec<(Vec<u8>, u64, u64)>>,
     }
 
     impl MemoryStore {
@@ -1545,6 +1816,13 @@ mod tests {
                 .lock()
                 .await
                 .insert(hex::encode(program_hash), row);
+        }
+
+        async fn set_escrow_blobs(&self, key_hint: u16, blobs: Vec<Vec<u8>>) {
+            self.escrow_blobs_by_hint
+                .lock()
+                .await
+                .insert(key_hint, blobs);
         }
     }
 
@@ -1611,6 +1889,35 @@ mod tests {
         async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError> {
             self.sensor_data_rows.lock().await.push(row.clone());
             Ok(())
+        }
+
+        async fn store_gateway_escrow_pubkey(
+            &self,
+            public_key: &[u8],
+            key_epoch: u64,
+            created_at: u64,
+        ) -> Result<(), HandlerError> {
+            self.stored_gateway_pubkeys.lock().await.push((
+                public_key.to_vec(),
+                key_epoch,
+                created_at,
+            ));
+            Ok(())
+        }
+
+        async fn load_escrow_blobs_by_key_hint(
+            &self,
+            key_hint: u16,
+            max_candidates: usize,
+        ) -> Result<Vec<Vec<u8>>, HandlerError> {
+            let blobs = self
+                .escrow_blobs_by_hint
+                .lock()
+                .await
+                .get(&key_hint)
+                .cloned()
+                .unwrap_or_default();
+            Ok(blobs.into_iter().take(max_candidates).collect())
         }
     }
 
@@ -1899,6 +2206,34 @@ mod tests {
         bytes
     }
 
+    fn sample_key_escrow_request(key_hint: u16, request_id: [u8; 16]) -> Vec<u8> {
+        let value = Value::Map(vec![
+            map_entry(
+                1,
+                Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST.into()),
+            ),
+            map_entry(2, Value::Integer((key_hint as u64).into())),
+            map_entry(3, Value::Bytes(request_id.to_vec())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        bytes
+    }
+
+    fn sample_master_key_install() -> Vec<u8> {
+        let value = Value::Map(vec![
+            map_entry(
+                1,
+                Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL.into()),
+            ),
+            map_entry(2, Value::Bytes(vec![0xAA; 32])),
+            map_entry(3, Value::Bytes(vec![0xBB; 16])),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        bytes
+    }
+
     #[tokio::test]
     async fn first_actual_state_appends_row_without_publish_when_desired_is_absent() {
         let store = Arc::new(MemoryStore::default());
@@ -2039,6 +2374,9 @@ mod tests {
                 firmware_abi_version: Some(2),
                 firmware_version: Some("2.0.0".to_string()),
                 timestamp_ms: 5000,
+                encrypted_psk_escrow: None,
+                escrow_key_hint: None,
+                escrow_key_version: None,
             })
             .await
             .unwrap();
@@ -2146,6 +2484,9 @@ mod tests {
                 firmware_abi_version: Some(1),
                 firmware_version: Some("1.2.3".to_string()),
                 timestamp_ms: 1234,
+                encrypted_psk_escrow: None,
+                escrow_key_hint: None,
+                escrow_key_version: None,
             },
             desired: desired_row("node-1", Some(vec![0xCC; 32]), Some(60), 100),
             appended_rows: Mutex::new(Vec::new()),
@@ -2201,6 +2542,64 @@ mod tests {
         ));
         assert_eq!(store.appended_rows.lock().await.len(), 1);
         assert!(publisher.sends.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn key_escrow_request_publishes_response_candidates() {
+        let store = Arc::new(MemoryStore::default());
+        store
+            .set_escrow_blobs(0x1234, vec![vec![0xA1; 12], vec![0xB2; 24]])
+            .await;
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+        let request_id = [0xAB; 16];
+
+        handler
+            .handle_payload(&sample_key_escrow_request(0x1234, request_id))
+            .await
+            .unwrap();
+
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].0, "downstream");
+        let response = decode_map(&sends[0].1).unwrap();
+        assert_eq!(
+            required_u64(&response, 1, "msg_type").unwrap(),
+            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE
+        );
+        assert_eq!(
+            required_bytes(&response, 2, "request_id").unwrap(),
+            request_id.to_vec()
+        );
+        assert_eq!(required_u64(&response, 4, "key_hint").unwrap(), 0x1234);
+        let candidates = match map_get(&response, 3) {
+            Some(Value::Array(values)) => values,
+            other => panic!("expected candidates array, got {other:?}"),
+        };
+        assert_eq!(candidates.len(), 2);
+        match &candidates[0] {
+            Value::Bytes(bytes) => assert_eq!(bytes, &vec![0xA1; 12]),
+            other => panic!("expected first candidate bytes, got {other:?}"),
+        }
+        match &candidates[1] {
+            Value::Bytes(bytes) => assert_eq!(bytes, &vec![0xB2; 24]),
+            other => panic!("expected second candidate bytes, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn master_key_install_is_relayed_verbatim() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+        let payload = sample_master_key_install();
+
+        handler.handle_payload(&payload).await.unwrap();
+
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].0, "downstream");
+        assert_eq!(sends[0].1, payload);
     }
 
     #[tokio::test]
@@ -2330,6 +2729,9 @@ mod tests {
             firmware_abi_version: Some(1),
             firmware_version: Some("1.2.3".to_string()),
             timestamp_ms: 1234,
+            encrypted_psk_escrow: None,
+            escrow_key_hint: None,
+            escrow_key_version: None,
         };
 
         let entity = ActualStateEntity::try_from(row.clone()).unwrap();
@@ -3297,6 +3699,34 @@ mod tests {
     // ── decode_optional_readings error path tests ──────────────────────
 
     #[test]
+    fn decode_key_escrow_pubkey_rejects_non_text_fingerprint_words() {
+        let value = Value::Map(vec![
+            map_entry(
+                1,
+                Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY.into()),
+            ),
+            map_entry(2, Value::Bytes(vec![0x42u8; 32])),
+            map_entry(3, Value::Integer(1u64.into())),
+            map_entry(4, Value::Integer(2u64.into())),
+            map_entry(
+                5,
+                Value::Array(vec![
+                    Value::Text("abandon".to_string()),
+                    Value::Integer(7u64.into()),
+                ]),
+            ),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        let err = decode_connector_message(&bytes).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("fingerprint_words array contains non-text entry"),
+            "expected fingerprint_words error, got: {err}"
+        );
+    }
+
+    #[test]
     fn decode_readings_rejects_non_map_value() {
         let value = Value::Map(vec![
             map_entry(1, Value::Integer(MSG_TYPE_APP_DATA.into())),
@@ -3359,5 +3789,78 @@ mod tests {
             err.to_string().contains("signed integer"),
             "expected integer-value error, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn default_escrow_store_methods_return_errors() {
+        struct DefaultEscrowStore;
+
+        #[async_trait]
+        impl HandlerStore for DefaultEscrowStore {
+            async fn append_actual_state(&self, _: &ActualStateRow) -> Result<(), HandlerError> {
+                Ok(())
+            }
+            async fn load_latest_actual_state(
+                &self,
+                _: &str,
+            ) -> Result<Option<ActualStateRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn load_latest_desired_state(
+                &self,
+                _: &str,
+            ) -> Result<Option<DesiredStateRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn load_program_image(
+                &self,
+                _: &[u8],
+            ) -> Result<Option<ProgramImageRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn store_program_image(&self, _: &ProgramImageRow) -> Result<(), HandlerError> {
+                Ok(())
+            }
+            async fn append_sensor_data(&self, _: &SensorDataRow) -> Result<(), HandlerError> {
+                Ok(())
+            }
+        }
+
+        let store = DefaultEscrowStore;
+        let err = store
+            .store_gateway_escrow_pubkey(&[0x42u8; 32], 1, 2)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, HandlerError::Store(message) if message.contains("store_gateway_escrow_pubkey not implemented"))
+        );
+
+        let err = store
+            .load_escrow_blobs_by_key_hint(0x1234, 4)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, HandlerError::Store(message) if message.contains("load_escrow_blobs_by_key_hint not implemented"))
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_actual_state_is_informational_only() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("gateway".to_string())),
+            map_entry(3, Value::Text("gateway-1".to_string())),
+            map_entry(9, Value::Integer(1234u64.into())),
+        ]);
+        let mut payload = Vec::new();
+        ciborium::into_writer(&value, &mut payload).unwrap();
+
+        handler.handle_payload(&payload).await.unwrap();
+        assert!(store.actual_rows.lock().await.is_empty());
+        assert!(publisher.sends.lock().await.is_empty());
     }
 }

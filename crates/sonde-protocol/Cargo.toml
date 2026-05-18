@@ -6,6 +6,7 @@ description = "Shared protocol crate for the Sonde platform"
 
 [features]
 std = []
+fingerprint = []
 
 [dependencies]
 ciborium = { version = "0.2", default-features = false }

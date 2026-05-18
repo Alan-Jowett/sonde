@@ -57,6 +57,8 @@ pub struct PhonePskRecord {
     pub issued_at: SystemTime,
     /// Current status (active or revoked).
     pub status: PhonePskStatus,
+    /// Master key version used to encrypt this PSK (GW-2005).
+    pub key_version: u64,
 }
 
 /// Maximum label length in bytes (UTF-8).

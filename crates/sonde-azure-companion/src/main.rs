@@ -3984,11 +3984,11 @@ mod tests {
                 "DELETE /containers/test-container".to_string(),
             ]
         );
-        assert!(requests[0]
-            .url
-            .query()
-            .is_some_and(|query| query
-                .contains("fromImage=sonde-azure-bootstrap%3Atest-override")));
+        assert!(
+            requests[0].url.query().is_some_and(
+                |query| query.contains("fromImage=sonde-azure-bootstrap%3Atest-override")
+            )
+        );
         // No platform override — Docker pulls the native architecture.
         let create_body = String::from_utf8(requests[1].body.clone()).unwrap();
         assert!(create_body.contains("COMPANION_CERT_BASE64=dummy-cert-base64"));

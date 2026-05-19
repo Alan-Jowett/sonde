@@ -722,13 +722,13 @@ is delegated to EasyAuth, not Azure Functions runtime keys.
 **Confidence:** High
 
 **Description:**
-The SPA MUST provide a Sensor Data tab that loads data from the `SensorData`
+The SPA MUST provide a Sensor Data tab that loads data from the `sensordata`
 Azure Table.
 
 **Acceptance criteria:**
 
 1. A "Sensor Data" tab appears in the tab bar.
-2. The tab queries `SensorData` table using per-node partition queries.
+2. The tab queries `sensordata` table using per-node partition queries.
 3. The tab displays a loading indicator while fetching.
 
 ---
@@ -844,7 +844,7 @@ The environment form MUST validate all fields before saving.
 **Acceptance criteria:**
 
 1. All five fields are required; empty fields show an error.
-2. Client ID and Tenant ID must be valid GUIDs (lowercase hex with hyphens).
+2. Client ID and Tenant ID must be valid GUIDs (hex with hyphens, case-insensitive).
 3. Storage Account must be 3–24 lowercase alphanumeric characters.
 4. Function App Name must be 2–60 alphanumeric characters with optional hyphens.
 5. Duplicate environment names are rejected on add.
@@ -1051,7 +1051,7 @@ time-series charting for the Sensor Data tab.
 ### DEP-003  Azure Storage Tables REST API
 
 Azure Tables REST API (version `2019-02-02`) for reading/writing `actualstate`,
-`desiredstate`, `programs`, and `SensorData` tables.
+`desiredstate`, `programs`, and `sensordata` tables.
 
 ### DEP-004  ProgramIngest Azure Function
 

@@ -11,7 +11,7 @@
 ## 1  Executive Summary
 
 The Web UI spec trifecta is internally consistent after remediation. The
-extraction produced 42 formal requirements (WEB-0101 through WEB-CC-04),
+extraction produced 53 formal requirements (WEB-0101 through WEB-CC-04),
 all at High confidence, traced to code and design documentation. Three
 blocking inconsistencies were found and fixed during the audit; 8
 non-blocking gaps were addressed by adding 13 new test cases. The spec

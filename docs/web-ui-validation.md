@@ -183,10 +183,10 @@ and verifies one or more acceptance criteria.
 
 | Test ID | Requirement | Description | Method | Status |
 |---|---|---|---|---|
-| T-WEB-0701 | WEB-0700 | Sensor Data tab appears in tab bar and loads data from `SensorData` table | Manual/E2E | Planned |
+| T-WEB-0701 | WEB-0700 | Sensor Data tab appears in tab bar and loads data from `sensordata` table | Manual/E2E | Planned |
 | T-WEB-0702 | WEB-0701 | Time-series graph renders lines per (node, program, reading) | Manual/E2E | Planned |
 | T-WEB-0703 | WEB-0701 | Time range selector filters data correctly | Manual/E2E | Planned |
-| T-WEB-0704 | WEB-0702 | Table view shows all SensorData columns | Manual/E2E | Planned |
+| T-WEB-0704 | WEB-0702 | Table view shows all sensor data columns | Manual/E2E | Planned |
 | T-WEB-0705 | WEB-0702 | SPA handles empty `decoded_readings` gracefully (shows "—") | Manual/E2E | Planned |
 | T-WEB-0706 | WEB-0701 | SPA displays string-encoded int64 values (above `Number.MAX_SAFE_INTEGER`) correctly and renders in-range values as numbers | Manual | Planned |
 | T-WEB-0707 | WEB-0703 | Series edit dialog opens when ✏️ button is clicked and pre-fills saved overrides | Manual | Planned |
@@ -205,7 +205,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-0803 | WEB-0806 | Switching environment re-initializes MSAL, clears session, and refreshes active tab | Manual | Planned |
 | T-WEB-0804 | WEB-0805 | Active environment name displayed in header bar | Manual | Planned |
 | T-WEB-0805 | WEB-0804 | Edit and delete operations on environments work correctly | Manual | Planned |
-| T-WEB-0806 | WEB-0801 | Environment fields validated (all required, duplicate name rejected) | Manual | Planned |
+| T-WEB-0806 | WEB-0802 | Environment fields validated (all required, duplicate name rejected) | Manual | Planned |
 
 ### 5.9  Deployment
 

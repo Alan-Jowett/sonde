@@ -23,7 +23,7 @@ Browser (SPA)
 ├── Desired State (read/write desiredstate table)
 ├── Program Upload (POST ELF to ProgramIngest function)
 ├── Program List (read programs table)
-└── Sensor Data (read SensorData table, time-series graph)
+└── Sensor Data (read sensordata table, time-series graph)
      │
      │ MSAL.js Bearer Token
      ▼
@@ -162,7 +162,7 @@ local `ProgramLibrary`.
   directory path (stripping any filename component like `index.html`) so the
   registered redirect URIs (`https://alan-jowett.github.io/sonde/` and
   `https://sondeplatform.com/`) match regardless of which hostname or base path
-  the user accesses.This is necessary for GitHub Pages project sites where the
+  the user accesses. This is necessary for GitHub Pages project sites where the
   origin alone (`https://alan-jowett.github.io`) does not match the registered URI.
 - Configuration is loaded from the active environment in `localStorage`
   (see §11). `msalAuthority` is derived as

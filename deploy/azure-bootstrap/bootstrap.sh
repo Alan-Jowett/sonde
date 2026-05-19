@@ -199,17 +199,32 @@ fi
 # See: https://github.com/microsoftgraph/msgraph-bicep-types/issues/193
 
 APP_DISPLAY_NAME="${SONDE_AZURE_PROJECT_NAME:-sonde}-azure-companion"
-APP_ID=$(az ad app list \
-    --filter "displayName eq '$APP_DISPLAY_NAME'" \
-    --query '[0].appId' -o tsv 2>/dev/null || true)
-if [ -z "$APP_ID" ] || [ "$APP_ID" = "None" ]; then
-    APP_ID=$(az ad app create \
-        --display-name "$APP_DISPLAY_NAME" \
-        --sign-in-audience AzureADMyOrg \
-        --query appId -o tsv)
-    echo "Created Entra app registration $APP_ID" >&2
-else
-    echo "Found existing Entra app registration $APP_ID" >&2
+APP_ID=""
+for _retry in $(seq 1 6); do
+    APP_ID=$(az ad app list \
+        --filter "displayName eq '$APP_DISPLAY_NAME'" \
+        --query '[0].appId' -o tsv 2>/dev/null || true)
+    if [ -n "$APP_ID" ] && [ "$APP_ID" != "None" ]; then
+        echo "Found existing Entra app registration $APP_ID" >&2
+        break
+    fi
+    APP_ID=""
+    # Create via Graph API directly — az ad app create has a broken
+    # find-and-patch path that races with Entra replication.
+    APP_ID=$(az rest --method POST \
+        --url "https://graph.microsoft.com/v1.0/applications" \
+        --headers "Content-Type=application/json" \
+        --body "$(jq -n -c \
+            --arg name "$APP_DISPLAY_NAME" \
+            '{displayName: $name, signInAudience: "AzureADMyOrg"}')" \
+        --query appId -o tsv 2>/dev/null) && { echo "Created Entra app registration $APP_ID" >&2; break; }
+    APP_ID=""
+    echo "Waiting for Entra app (attempt $_retry/6)..." >&2
+    sleep 10
+done
+if [ -z "$APP_ID" ]; then
+    echo "Failed to create or find Entra app '$APP_DISPLAY_NAME'" >&2
+    exit 1
 fi
 
 # Register certificate credential and configure SPA redirect URIs.

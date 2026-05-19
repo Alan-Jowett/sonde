@@ -83,19 +83,10 @@ jobs:
       - name: Build Azure handler function package
         run: sh deploy/azure-bootstrap/build-function-package.sh
 
-      - name: Preflight-delete Entra app and disposable resource group
+      - name: Preflight-delete disposable resource group
         shell: bash
         run: |
           set -euo pipefail
-          # Clean up any leftover Entra app from a prior run
-          APP_DISPLAY_NAME="${SONDE_AZURE_CI_PROJECT_NAME}-azure-companion"
-          APP_ID=$(az ad app list \
-            --filter "displayName eq '$APP_DISPLAY_NAME'" \
-            --query '[0].appId' -o tsv 2>/dev/null || true)
-          if [ -n "$APP_ID" ] && [ "$APP_ID" != "None" ]; then
-            az ad app delete --id "$APP_ID"
-            echo "Deleted leftover Entra app $APP_ID ($APP_DISPLAY_NAME)"
-          fi
           if [[ "$SONDE_AZURE_CI_RESOURCE_GROUP" != "${SONDE_AZURE_CI_RESOURCE_GROUP_PREFIX}"* ]]; then
             echo "::error::resource group $SONDE_AZURE_CI_RESOURCE_GROUP must start with CI prefix $SONDE_AZURE_CI_RESOURCE_GROUP_PREFIX"
             exit 1
@@ -141,16 +132,37 @@ jobs:
           # The Microsoft Graph Bicep extension does not reliably return
           # server-generated read-only properties (appId) on first creation.
           # See: https://github.com/microsoftgraph/msgraph-bicep-types/issues/193
+          #
+          # The Entra app persists across CI runs (not deleted in teardown)
+          # to avoid replication-delay issues with create-after-delete.
           APP_DISPLAY_NAME="${SONDE_AZURE_CI_PROJECT_NAME}-azure-companion"
-          APP_ID=$(az ad app list \
-            --filter "displayName eq '$APP_DISPLAY_NAME'" \
-            --query '[0].appId' -o tsv 2>/dev/null || true)
-          if [ -z "$APP_ID" ] || [ "$APP_ID" = "None" ]; then
-            APP_ID=$(az ad app create \
-              --display-name "$APP_DISPLAY_NAME" \
-              --sign-in-audience AzureADMyOrg \
-              --query appId -o tsv)
+          APP_ID=""
+          for i in $(seq 1 6); do
+            APP_ID=$(az ad app list \
+              --filter "displayName eq '$APP_DISPLAY_NAME'" \
+              --query '[0].appId' -o tsv 2>/dev/null || true)
+            if [ -n "$APP_ID" ] && [ "$APP_ID" != "None" ]; then
+              break
+            fi
+            APP_ID=""
+            # Create via Graph API directly — az ad app create has a broken
+            # find-and-patch path that races with Entra replication.
+            APP_ID=$(az rest --method POST \
+              --url "https://graph.microsoft.com/v1.0/applications" \
+              --headers "Content-Type=application/json" \
+              --body "$(jq -n -c \
+                --arg name "$APP_DISPLAY_NAME" \
+                '{displayName: $name, signInAudience: "AzureADMyOrg"}')" \
+              --query appId -o tsv 2>/dev/null) && break
+            APP_ID=""
+            echo "Waiting for Entra app (attempt $i/6)..."
+            sleep 10
+          done
+          if [ -z "$APP_ID" ]; then
+            echo "::error::Failed to create or find Entra app '$APP_DISPLAY_NAME'"
+            exit 1
           fi
+          echo "Entra app client ID: $APP_ID"
 
           # Register certificate credential and configure SPA redirect URIs.
           # After app creation, Entra ID may take a few seconds to replicate
@@ -643,22 +655,6 @@ jobs:
             .azure-live-state/cert.pem
           retention-days: 7
           if-no-files-found: error
-
-      - name: Teardown Entra app registration
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP_DISPLAY_NAME="${SONDE_AZURE_CI_PROJECT_NAME}-azure-companion"
-          APP_ID=$(az ad app list \
-            --filter "displayName eq '$APP_DISPLAY_NAME'" \
-            --query '[0].appId' -o tsv 2>/dev/null || true)
-          if [ -n "$APP_ID" ] && [ "$APP_ID" != "None" ]; then
-            az ad app delete --id "$APP_ID"
-            echo "Deleted Entra app $APP_ID ($APP_DISPLAY_NAME)"
-          else
-            echo "No Entra app found with display name $APP_DISPLAY_NAME"
-          fi
 
       - name: Teardown disposable resource group
         if: always()

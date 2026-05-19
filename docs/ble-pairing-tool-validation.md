@@ -283,7 +283,7 @@ TestNode {
 3. Assert: Gateway step is active on pages 1–3.
 4. Navigate to page 4.
 5. Assert: Gateway step is marked done; Node step is active.
-6. Navigate to page 6.
+6. Navigate to page 7.
 7. Assert: Gateway and Node steps are marked done; Done step is active.
 8. Assert: stepper steps are not clickable.
 
@@ -1312,7 +1312,7 @@ TestNode {
 
 **Procedure:**
 1. Call `provision_node(...)` with board layout `Some(BoardLayout { i2c0_sda: Some(6), i2c0_scl: Some(7), one_wire_data: Some(3), battery_adc: Some(22), sensor_enable: Some(4) })`.
-2. Assert: the call returns an error indicating that `battery_adc` is out of range (0–21).
+2. Assert: the call returns an error indicating that `battery_adc` is not an ADC-capable GPIO (must be 0–4).
 3. Assert: no NODE_PROVISION message is written to the BLE transport.
 
 ---
@@ -1505,7 +1505,7 @@ TestNode {
 2. Assert: Gateway step has `step--active` class; Node and Done are dimmed.
 3. Navigate to page 4 (Node Scan).
 4. Assert: Gateway step has `step--done` class; Node step has `step--active` class; Done is dimmed.
-5. Navigate to page 6 (Done).
+5. Navigate to page 7 (Done).
 6. Assert: Gateway and Node steps have `step--done` class; Done step has `step--active` class.
 
 ---

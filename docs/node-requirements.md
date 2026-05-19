@@ -684,7 +684,7 @@ When exactly one message is in the async queue and it fits within the WAKE paylo
 **Source:** protocol.md §5.1
 
 **Description:**  
-When the async queue contains messages that cannot be piggybacked on WAKE and the gateway responds with a NOP command, the node MUST send each queued message as a separate APP_DATA frame before BPF execution, using the standard sequence number mechanism. Messages MUST NOT be split or concatenated. On non-NOP cycles (UpdateProgram, RunEphemeral, UpdateSchedule, Reboot), the overflow drain is skipped — queued blobs remain in the queue for the next cycle to avoid contending for radio time with command-specific traffic.
+When the async queue contains messages that cannot be piggybacked on WAKE and the gateway responds with a NOP command, the node MUST send each queued message as a separate APP_DATA frame before BPF execution, using the standard sequence number mechanism. Messages MUST NOT be split or concatenated. On non-NOP cycles (UpdateSchedule), the overflow drain is skipped — queued blobs remain in the queue for the next NOP cycle to avoid contending for radio time with command-specific traffic. On program-change commands (UpdateProgram, RunEphemeral), the queue is cleared entirely per ND-0609 because old program blobs are semantically invalid. On Reboot, the queue is lost because RTC SRAM is cleared on power-on reset (ND-0609).
 
 **Acceptance criteria:**
 
@@ -692,7 +692,9 @@ When the async queue contains messages that cannot be piggybacked on WAKE and th
 2. Sequence numbers increment correctly.
 3. No message splitting or concatenation.
 4. Overflow drain occurs only on NOP cycles, before BPF execution.
-5. Non-NOP commands do not drain the queue (blobs are retried on the next NOP cycle).
+5. UpdateSchedule does not drain the queue (blobs are retried on the next NOP cycle).
+6. UpdateProgram and RunEphemeral clear the queue (ND-0609 AC3); blobs are discarded, not retried.
+7. Reboot causes the queue to be lost (ND-0609 AC4).
 
 ---
 

@@ -41,7 +41,7 @@ The firmware is **uniform across all nodes** — application behavior is defined
 
 ## 3  Module architecture
 
-The node firmware is divided into twelve functional modules arranged in two tiers. The upper tier handles the data path: Transport (ESP-NOW radio), Protocol Codec (frame encode/decode), Wake Cycle Engine (session state machine), and BPF Runtime (program execution). The lower tier provides platform services: HAL (I2C/SPI/GPIO/ADC buses), Key Store (PSK in dedicated flash partition), Program Store (A/B flash partitions), Map Storage (RTC SRAM), Auth (AEAD encryption/decryption and key-hint derivation), Node AEAD (`AeadProvider` implementation), and BLE Pairing (LESC Just Works provisioning and PEER_REQUEST registration). A horizontal Sleep Manager spans the bottom of the firmware, managing deep sleep, wake intervals, and RTC memory. Data flows left-to-right in the upper tier; the Wake Cycle Engine coordinates all lower-tier modules.
+The node firmware is divided into twelve functional modules arranged in two tiers. The upper tier handles the data path: Transport (ESP-NOW radio), Protocol Codec (frame encode/decode), Wake Cycle Engine (session state machine), and BPF Runtime (program execution). The lower tier provides platform services: HAL (I2C/SPI/GPIO/ADC buses), Key Store (PSK and credentials in NVS), Program Store (A/B flash partitions), Map Storage (RTC SRAM), Auth (AEAD encryption/decryption and key-hint derivation), Node AEAD (`AeadProvider` implementation), and BLE Pairing (LESC Just Works provisioning and PEER_REQUEST registration). A horizontal Sleep Manager spans the bottom of the firmware, managing deep sleep, wake intervals, and RTC memory. Data flows left-to-right in the upper tier; the Wake Cycle Engine coordinates all lower-tier modules.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -70,7 +70,7 @@ The node firmware is divided into twelve functional modules arranged in two tier
 | **Transport** | ESP-NOW send/receive, frame size enforcement | ND-0100, ND-0103 |
 | **Protocol Codec** | Frame serialization/deserialization, CBOR encoding | ND-0101, ND-0102 |
 | **Wake Cycle Engine** | State machine: WAKE → COMMAND → transfer/execute → sleep | ND-0200–0203, ND-0608a, ND-0700–0702 |
-| **Key Store** | PSK storage in dedicated flash partition, pairing, factory reset | ND-0400, ND-0402 |
+| **Key Store** | PSK and credential storage in NVS, pairing, factory reset | ND-0400, ND-0402, ND-0403, ND-0403a |
 | **Program Store** | A/B flash partitions, program image decoding, LDDW resolution | ND-0500–0503, ND-0501a |
 | **BPF Runtime** | `sonde-bpf` interpreter, helper dispatch, execution constraints | ND-0504–0506, ND-0600–0606 |
 | **Map Storage** | Sleep-persistent maps in RTC slow SRAM | ND-0603, ND-0606 |
@@ -88,7 +88,7 @@ The wake cycle engine is the central state machine. It runs once per wake and th
 
 ### 4.1  State machine
 
-The state machine has five main states plus three alternate boot paths. Starting from BOOT, the node checks RTC-retained pre-provisioning test state, then reads credentials from the `key` flash partition (§6.1) and the `reg_complete` flag from NVS (§6.1a) to determine the boot path (ND-0900): (1) staged pre-provisioning test command present → enter pre-provisioning test mode (§15.8); (2) no PSK in key partition or pairing button held ≥ 500 ms → enter BLE pairing mode (§15); (3) PSK present but `reg_complete` not set → enter PEER_REQUEST registration (§15.7); (4) PSK present and `reg_complete` set → enter WAKE SEND. WAKE SEND transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
+The state machine has five main states plus three alternate boot paths. Starting from BOOT, the node checks RTC-retained pre-provisioning test state, then reads credentials from NVS (§6.1) and the `reg_complete` flag (§6.1a) to determine the boot path (ND-0900): (1) staged pre-provisioning test command present → enter pre-provisioning test mode (§15.8); (2) no PSK in NVS or pairing button held ≥ 500 ms → enter BLE pairing mode (§15); (3) PSK present but `reg_complete` not set → enter PEER_REQUEST registration (§15.7); (4) PSK present and `reg_complete` set → enter WAKE SEND. WAKE SEND transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
 
 ```
 ┌─────────┐
@@ -208,38 +208,51 @@ Uses `sonde_protocol::decode_frame()` and `sonde_protocol::open_frame()`:
 
 ## 6  Key store
 
-### 6.1  Flash partition layout
+### 6.1  NVS credential layout
 
-| Partition | Contents | Size |
+All node credentials are stored in NVS (namespace `sonde`) per ND-0400 and ND-0916. The Key Store trait (§3.1) abstracts the NVS API so that test harnesses can substitute an in-memory implementation.
+
+| NVS key | Type | Contents |
 |---|---|---|
-| `key` | 256-bit PSK + key_hint (2 bytes) + magic (4 bytes) | 4 KB sector |
-| `program_a` | Resident program image (CBOR) | 4 KB |
-| `program_b` | Resident program image (CBOR, A/B swap) | 4 KB |
-| `schedule` | Base wake interval (u32) + active partition flag | 4 KB sector |
+| `magic` | blob | 4-byte provisioning sentinel |
+| `key_hint` | blob | 2-byte key hint (big-endian) |
+| `psk` | blob | 256-bit PSK |
+| `channel` | u32 | RF channel |
+| `interval` | u32 | Base wake interval (seconds) |
+| `active_p` | u32 | Active program partition flag (0 = A, 1 = B) |
 
-The magic bytes in the key partition indicate whether a PSK is provisioned. An erased (all 0xFF) partition means unpaired.
+The magic bytes indicate whether a PSK is provisioned. An absent or all-0xFF magic means unpaired.
 
-### 6.2  Factory reset
-
-Factory reset (ND-0402, ND-0917) erases:
-1. `key` partition (PSK + key_hint + magic → all 0xFF).
-2. NVS pairing keys (`peer_payload`, `reg_complete` → erased).
-3. RTC slow SRAM (map data → zeroed).
-4. Both program partitions (`program_a`, `program_b` → erased).
-5. Schedule partition → reset to default interval.
-
-After reset, the magic bytes are missing → firmware detects unpaired state → enters BLE pairing mode on next boot.
+Program images are stored in dedicated flash partitions (§7) because they are large (up to 4 KB each) and written infrequently. The `schedule` partition stores the active-partition flag as a redundant backup; the NVS `active_p` key is authoritative.
 
 ### 6.1a  NVS layout for BLE pairing (ND-0916)
 
-BLE pairing artifacts are stored in NVS. ND-0916 defines the complete NVS layout including both pre-existing keys (`magic`, `key_hint`, `psk`, `channel`, `interval`, `active_p`, `prog_a`, `prog_b`) and pairing-specific keys:
+BLE pairing artifacts are stored in NVS alongside the core credentials:
 
 | NVS key | Type | Contents |
 |---|---|---|
 | `peer_payload` | blob | Encrypted payload for PEER_REQUEST (erased after first WAKE/COMMAND) |
 | `reg_complete` | u32 | Registration complete flag (1 = registered with gateway) |
 
-> **Note:** The `key` partition layout in §6.1 is the original design-level storage for PSK/key_hint/magic. The requirements (ND-0916) describe all credential fields as NVS keys. Implementations may use either raw flash partitions or NVS for the core credentials — the Key Store trait (§3.1) abstracts this choice. The BLE-specific keys (`peer_payload`, `reg_complete`) always use NVS. Factory reset erases both (§6.2).
+### 6.1b  Secure boot and flash encryption (ND-0403 / ND-0403a)
+
+Secure boot and flash encryption are ESP-IDF platform features that protect the firmware and credential store at rest. They are configured via `sdkconfig.defaults` options (`CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED`) and provisioned during initial flashing. The node firmware itself does not implement these mechanisms — it relies on the ESP-IDF bootloader and flash encryption hardware. When enabled:
+
+- **Secure boot (ND-0403):** Only firmware images signed with the OEM key can execute. The bootloader rejects unsigned or tampered images at boot.
+- **Flash encryption (ND-0403a):** The NVS partition (including the PSK) is encrypted at rest using the hardware flash encryption key. The firmware reads credentials transparently — ESP-IDF decrypts on the fly.
+
+These features are optional (`SHOULD` priority). The firmware operates correctly without them; enabling them is an operator deployment decision.
+
+### 6.2  Factory reset
+
+Factory reset (ND-0402, ND-0917) erases:
+1. NVS credential keys (`magic`, `key_hint`, `psk`, `channel`, `interval`, `active_p` → erased).
+2. NVS pairing keys (`peer_payload`, `reg_complete` → erased).
+3. RTC slow SRAM (map data → zeroed).
+4. Both program partitions (`program_a`, `program_b` → erased).
+5. Schedule partition → reset to default interval.
+
+After reset, the magic bytes are missing → firmware detects unpaired state → enters BLE pairing mode on next boot.
 
 ---
 
@@ -272,8 +285,11 @@ pub struct MapDef {
     pub key_size: u32,
     pub value_size: u32,
     pub max_entries: u32,
+    pub initial_data: Option<Vec<u8>>,   // CBOR key 5 — optional initial data for entry 0
 }
 ```
+
+When `initial_data` is present and its length equals `value_size`, the firmware writes it to map entry 0 after allocation (ND-0607). Maps without `initial_data` (absent or empty key 5) remain zero-filled. If the `initial_data` length does not match `value_size`, the data is ignored and the map remains zero-filled; a `debug!()` diagnostic may be emitted.
 
 ### 7.3  LDDW relocation resolution
 
@@ -287,6 +303,8 @@ This must happen **before** BPF execution.
 ### 7.4  Ephemeral programs
 
 Ephemeral programs are stored in RAM (heap allocation), not flash. They are decoded and executed immediately, then the allocation is freed. The resident program is unaffected.
+
+Ephemeral program images that declare map definitions MUST be rejected at decode time (ND-0503 AC4). Ephemeral programs are read-only and single-execution — map allocation in RTC SRAM is not performed for them. If the decoded CBOR image contains a non-empty `maps` array, the firmware discards the image and does not execute it.
 
 ---
 
@@ -405,9 +423,14 @@ Each call increments the sequence number, ensuring independent replay protection
 1. Copy the blob into the async queue (backed by RTC slow SRAM on ESP32; survives deep sleep).
 2. Return 0 on success, or a non-zero error code if the queue is full.
 
-The queued messages are drained at the start of the next wake cycle (§4.2 step 3 and step 7). If exactly one message is queued and fits within the WAKE payload budget, it is piggybacked on the WAKE frame as `blob` (CBOR key 10), saving a round-trip. If multiple messages are queued or the single message exceeds the budget, all queued messages are sent as individual APP_DATA frames before BPF execution, but only on NOP cycles — non-NOP commands (UpdateProgram, RunEphemeral, Reboot) skip the overflow drain to avoid contending for radio time with command-specific traffic.
+The queued messages are drained at the start of the next wake cycle (§4.2 step 3 and step 7). If exactly one message is queued and fits within the WAKE payload budget, it is piggybacked on the WAKE frame as `blob` (CBOR key 10), saving a round-trip. If multiple messages are queued or the single message exceeds the budget, all queued messages are sent as individual APP_DATA frames before BPF execution, but only on NOP cycles. The overflow drain behavior varies by command type (ND-0611):
 
-The async queue is backed by sleep-retained RAM (RTC slow SRAM on ESP32, heap-allocated in tests) and passed to `run_wake_cycle()` as `&mut AsyncQueue`. It survives deep sleep so that blobs queued in cycle N are available for piggybacking in cycle N+1's WAKE. It is lost on reboot (RTC SRAM is cleared on power-on reset). The queue is cleared when UPDATE_PROGRAM or RUN_EPHEMERAL is received, since a new program load invalidates blobs produced by the old program. The queue capacity is a compile-time constant (10 messages, ~2.2 KB of RTC SRAM).
+- **NOP:** Drain all queued messages as APP_DATA frames before BPF execution.
+- **UPDATE_SCHEDULE:** Skip overflow drain; queued blobs remain in the queue for the next NOP cycle.
+- **UPDATE_PROGRAM / RUN_EPHEMERAL:** Skip overflow drain **and** clear the queue (ND-0609 AC3). Old program blobs are semantically invalid after a program change.
+- **REBOOT:** Queue is lost — RTC SRAM is cleared on power-on reset (ND-0609 AC4).
+
+The async queue is backed by sleep-retained RAM (RTC slow SRAM on ESP32, heap-allocated in tests) and passed to `run_wake_cycle()` as `&mut AsyncQueue`. It survives deep sleep so that blobs queued in cycle N are available for piggybacking in cycle N+1's WAKE. The queue capacity is a compile-time constant (10 messages, ~2.2 KB of RTC SRAM).
 
 #### RTC layout
 
@@ -605,11 +628,11 @@ All inbound protocol errors result in **silent discard** — the node does not s
 1. ESP-IDF initialization (clocks, peripherals, wifi/ESP-NOW).
 2. Task watchdog timer is configured and the main task is registered (ND-0919): `CONFIG_ESP_TASK_WDT_EN=y`, 20 s timeout, panic-on-expiry. The main task calls `esp_task_wdt_add()` at startup and `esp_task_wdt_delete()` after the wake cycle completes. If the wake cycle hangs, the watchdog triggers a hardware reset. For long-running modes (BLE pairing), the polling loop calls `esp_task_wdt_reset()` on each iteration to prevent spurious resets while still detecting hangs within a single 20 s polling window.
 3. Sample pairing button GPIO for 500 ms (ND-0901).
-4. Read key partition: check magic bytes and load credentials if present. Read NVS `reg_complete` flag (§6.1a).
+4. Read NVS credentials (§6.1): check magic bytes and load PSK/key_hint/channel if present. Read `reg_complete` flag (§6.1a).
 5. Determine boot path (ND-0900):
-   a. No valid PSK in key partition OR pairing button held ≥ 500 ms → enter BLE pairing mode (§15). Does not return.
-   b. PSK present in key partition, `reg_complete` NOT set in NVS → enter PEER_REQUEST registration (§15.7). Does not return (sleeps after listen window).
-   c. PSK present in key partition, `reg_complete` set in NVS → continue to step 6 (normal WAKE cycle).
+   a. No valid PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode (§15). Does not return.
+   b. PSK present in NVS, `reg_complete` NOT set → enter PEER_REQUEST registration (§15.7). Does not return (sleeps after listen window).
+   c. PSK present in NVS, `reg_complete` set → continue to step 6 (normal WAKE cycle).
 6. Read schedule partition: load base interval and active program partition flag.
 7. Read active program partition: decode CBOR image header, extract program hash.
    - No program → set `program_hash` to zero-length.
@@ -676,7 +699,7 @@ The main loop polls for pending GATT writes and disconnection events at 100 ms i
 
 ### 15.6  Platform-independent handler
 
-The GATT write payload is parsed and handled by a platform-independent pairing-command handler in the `ble_pairing` module. `NODE_PROVISION` handling remains responsible for parsing the five provisioning fields (`node_key_hint`, `node_psk`, `rf_channel`, `payload_len`, `encrypted_payload`), validating `payload_len` before reading `encrypted_payload`, and persisting credentials: PSK and key hint to the `key` flash partition (§6.1), and `channel`, `peer_payload`, `reg_complete` to NVS (§6.1a, ND-0916). If any NVS write fails, the handler MUST respond with `NODE_ACK(0x02)` (storage error) and ensure no partial credentials remain in NVS — any keys written before the failure are erased so the node does not boot into an inconsistent state (ND-0908). `RUN_TEST_COMMAND` handling validates and stages one pending pre-provisioning test command in RTC-retained state and returns `RUN_TEST_ACK`. `READ_TEST_RESULT` handling returns the latest retained result as `TEST_RESULT` without clearing it. This keeps provisioning and pre-provisioning test logic testable on the host. The ESP-specific `esp_ble_pairing` module handles only NimBLE initialization, GATT plumbing, and the event loop.
+The GATT write payload is parsed and handled by a platform-independent pairing-command handler in the `ble_pairing` module. `NODE_PROVISION` handling remains responsible for parsing the five provisioning fields (`node_key_hint`, `node_psk`, `rf_channel`, `payload_len`, `encrypted_payload`), validating `payload_len` before reading `encrypted_payload`, and persisting credentials: PSK, key hint, and magic to NVS (§6.1), and `channel`, `peer_payload`, `reg_complete` to NVS (§6.1a, ND-0916). If any NVS write fails, the handler MUST respond with `NODE_ACK(0x02)` (storage error) and ensure no partial credentials remain in NVS — any keys written before the failure are erased so the node does not boot into an inconsistent state (ND-0908). `RUN_TEST_COMMAND` handling validates and stages one pending pre-provisioning test command in RTC-retained state and returns `RUN_TEST_ACK`. `READ_TEST_RESULT` handling returns the latest retained result as `TEST_RESULT` without clearing it. This keeps provisioning and pre-provisioning test logic testable on the host. The ESP-specific `esp_ble_pairing` module handles only NimBLE initialization, GATT plumbing, and the event loop.
 
 ### 15.7  Post-provisioning registration (PEER_REQUEST / PEER_ACK)
 

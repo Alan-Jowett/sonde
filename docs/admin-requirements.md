@@ -344,14 +344,15 @@ as metadata.
 
 **Description:**
 `sonde-admin program list` MUST list all stored programs. Text output shows
-hash, source filename (if available), size, and verification profile. An empty
-library displays "No programs stored."
+hash, source filename (if available), size, verification profile, and decoder
+presence indicator. An empty library displays "No programs stored."
 
 **Acceptance criteria:**
 
 1. Lists programs with metadata.
-2. JSON mode returns an array of program objects including `hash`, `size`, `profile`, and `source_filename`.
+2. JSON mode returns an array of program objects including `hash`, `size`, `profile`, `source_filename`, and `has_decoder`.
 3. Empty library prints "No programs stored." in text mode.
+4. Programs with a decoder image show `has_decoder: true`; programs without show `has_decoder: false`.
 
 ---
 

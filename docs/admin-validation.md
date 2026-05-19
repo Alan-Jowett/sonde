@@ -332,6 +332,20 @@ to avoid collisions when tests run in parallel.
 
 ---
 
+### T-0300a  List program `has_decoder` indicator
+
+**Validates:** ADMIN-0301 (AC-4)
+**Category:** New automated (`t0802e_has_decoder_round_trip`, debug-only)
+
+**Procedure:**
+1. Ingest a program without a decoder image.
+2. Store a program with a decoder image via storage.
+3. Call `list_programs()`.
+4. Assert: program without decoder has `has_decoder = false`.
+5. Assert: program with decoder has `has_decoder = true`.
+
+---
+
 ### T-0301  Assign program to node
 
 **Validates:** ADMIN-0302

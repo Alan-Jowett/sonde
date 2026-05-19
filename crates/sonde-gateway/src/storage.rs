@@ -62,6 +62,7 @@ pub struct ProgramSummaryRecord {
     pub verification_profile: crate::program::VerificationProfile,
     pub abi_version: Option<u32>,
     pub source_filename: Option<String>,
+    pub has_decoder: bool,
 }
 
 /// Escrow keypair record for PSK key escrow (GW-2000).
@@ -153,6 +154,7 @@ pub trait Storage: Send + Sync {
                 verification_profile: program.verification_profile,
                 abi_version: program.abi_version,
                 source_filename: program.source_filename,
+                has_decoder: program.decoder_image.is_some(),
             })
             .collect())
     }
@@ -460,6 +462,7 @@ impl Storage for InMemoryStorage {
                 verification_profile: program.verification_profile.clone(),
                 abi_version: program.abi_version,
                 source_filename: program.source_filename.clone(),
+                has_decoder: program.decoder_image.is_some(),
             })
             .collect())
     }

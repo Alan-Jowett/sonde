@@ -466,6 +466,66 @@ async fn t0802d_ingest_abi_version_round_trip() {
     );
 }
 
+/// T-0802e: `has_decoder` flag in ListPrograms — programs with and without decoder images.
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
+#[tokio::test]
+async fn t0802e_has_decoder_round_trip() {
+    let h = TestHarness::new();
+
+    // Ingest a program without a decoder image.
+    let cbor_no_dec = make_cbor_image(&[0x11, 0x22]);
+    let resp_no_dec = h
+        .admin
+        .ingest_program(Request::new(IngestProgramRequest {
+            image_data: cbor_no_dec,
+            verification_profile: VerificationProfile::Resident.into(),
+            abi_version: None,
+            source_filename: None,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Directly store a program record WITH a decoder image via storage.
+    let decoder_cbor = make_cbor_image(&[0xDE, 0xC0]);
+    let node_cbor = make_cbor_image(&[0x33, 0x44]);
+    let lib = ProgramLibrary::new();
+    let mut record = lib
+        .ingest_unverified(node_cbor, sonde_gateway::VerificationProfile::Resident)
+        .unwrap();
+    record.decoder_image = Some(decoder_cbor);
+    let hash_with_dec = record.hash.clone();
+    h.storage.store_program(&record).await.unwrap();
+
+    // ListPrograms should show has_decoder correctly for both.
+    let list = h
+        .admin
+        .list_programs(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let prog_no_dec = list
+        .programs
+        .iter()
+        .find(|p| p.hash == resp_no_dec.program_hash)
+        .expect("program without decoder not found");
+    assert!(
+        !prog_no_dec.has_decoder,
+        "program without decoder_image must have has_decoder = false"
+    );
+
+    let prog_with_dec = list
+        .programs
+        .iter()
+        .find(|p| p.hash == hash_with_dec)
+        .expect("program with decoder not found");
+    assert!(
+        prog_with_dec.has_decoder,
+        "program with decoder_image must have has_decoder = true"
+    );
+}
+
 /// T-0414: source_filename round-trip through IngestProgram → ListPrograms.
 #[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]

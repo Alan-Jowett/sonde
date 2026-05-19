@@ -774,6 +774,7 @@ impl GatewayAdmin for AdminService {
                 verification_profile: profile_to_proto(&p.verification_profile),
                 abi_version: p.abi_version,
                 source_filename: p.source_filename.clone(),
+                has_decoder: p.has_decoder,
             })
             .collect();
         Ok(Response::new(ListProgramsResponse { programs }))

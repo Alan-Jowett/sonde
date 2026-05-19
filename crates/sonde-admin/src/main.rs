@@ -578,6 +578,7 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                                     "size": p.size,
                                     "profile": profile_name(p.verification_profile),
                                     "source_filename": p.source_filename.as_deref(),
+                                    "has_decoder": p.has_decoder,
                                 })
                             })
                             .collect::<Vec<_>>(),
@@ -587,20 +588,23 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                         println!("No programs stored.");
                     }
                     for p in &programs {
+                        let decoder_tag = if p.has_decoder { ", decoder" } else { "" };
                         if let Some(f) = &p.source_filename {
                             println!(
-                                "  {} {} ({} bytes, {})",
+                                "  {} {} ({} bytes, {}{})",
                                 hex::encode(&p.hash),
                                 f,
                                 p.size,
-                                profile_name(p.verification_profile)
+                                profile_name(p.verification_profile),
+                                decoder_tag
                             );
                         } else {
                             println!(
-                                "  {} ({} bytes, {})",
+                                "  {} ({} bytes, {}{})",
                                 hex::encode(&p.hash),
                                 p.size,
-                                profile_name(p.verification_profile)
+                                profile_name(p.verification_profile),
+                                decoder_tag
                             );
                         }
                     }

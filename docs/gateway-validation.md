@@ -2714,6 +2714,23 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1301a  Modem transport state logging
+
+**Validates:** GW-1301
+
+**Procedure:**
+1. Configure a `UsbEspNowTransport` with `#[traced_test]`.
+2. Open the serial port to a mock modem.
+3. Assert: an `INFO`-level log entry is emitted containing the state `connected`.
+4. Complete the modem startup handshake.
+5. Assert: an `INFO`-level log entry is emitted containing the state `ready`.
+6. Drop or disconnect the mock modem.
+7. Assert: an `INFO`-level log entry is emitted containing the state `disconnecting`.
+8. Allow the transport to enter its reconnect loop.
+9. Assert: an `INFO`-level log entry is emitted containing the state `reconnecting` and the backoff delay.
+
+---
+
 ### T-1302  PEER_REQUEST logging
 
 **Validates:** GW-1300
@@ -2753,6 +2770,24 @@ A configurable stub handler process (or in-process mock) that:
 > **Note:** This test validates the build metadata format at compile time
 > rather than invoking the binary's `--version` CLI.  Integration testing
 > of the CLI output is performed manually during release validation.
+
+---
+
+### T-1304a  Build-type–aware log-level policy
+
+**Validates:** GW-1304
+
+**Procedure:**
+1. Build the gateway in debug mode.
+2. Assert: the compile-time maximum tracing level is TRACE (i.e., `tracing` is configured with `max_level_trace`, no `release_max_level_*` feature).
+3. Start the gateway in debug mode without `RUST_LOG` set.
+4. Assert: the default `EnvFilter` is `sonde_gateway=info`.
+5. Build the gateway in release mode.
+6. Assert: the compile-time maximum tracing level is still TRACE.
+7. Start the gateway in release mode without `RUST_LOG` set.
+8. Assert: the default `EnvFilter` is `sonde_gateway=warn`.
+9. Set `RUST_LOG=sonde_gateway=debug` and restart.
+10. Assert: the `EnvFilter` reflects the override in both build types.
 
 ---
 
@@ -2919,6 +2954,22 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1400a  Bounded shutdown within 5 seconds
+
+**Validates:** GW-1400
+
+**Procedure:**
+1. Start the gateway connected to a mock modem.
+2. Place the mock serial port in a faulted state (e.g., simulate OS error 22 on reads/writes).
+3. Send a shutdown signal (SIGTERM / Ctrl-C or `SERVICE_CONTROL_STOP`).
+4. Wait for the "gateway stopped" log entry.
+5. Assert: the process terminates within 5 seconds after the "gateway stopped" log.
+6. Assert: a warning-level log entry is emitted before the force-exit (e.g., "force-exiting after shutdown timeout").
+7. Repeat steps 1–5 without the faulted serial port.
+8. Assert: the gateway shuts down gracefully (no force-exit warning).
+
+---
+
 ### T-1400  Handler storage CRUD
 
 **Validates:** GW-1401
@@ -2971,6 +3022,23 @@ A configurable stub handler process (or in-process mock) that:
 4. Restart the gateway with the same database file.
 5. Call `ListHandlers`.
 6. Assert: the handler added in step 2 is present with identical configuration.
+
+---
+
+### T-1403a  CLI handler management commands
+
+**Validates:** GW-1403
+
+**Procedure:**
+1. Start a gateway with the admin API enabled.
+2. Run `sonde-admin handler list` and assert: output contains zero handlers (empty table or empty JSON array with `--format json`).
+3. Run `sonde-admin handler add "*" echo --reply-timeout 5000 --working-dir /tmp` and assert: command succeeds.
+4. Run `sonde-admin handler list` and assert: output contains one handler with `program_hash = "*"`, `command = "echo"`, `reply_timeout_ms = 5000`, and `working_dir = "/tmp"`.
+5. Run `sonde-admin handler list --format json` and assert: output is valid JSON containing the same handler fields.
+6. Run `sonde-admin handler add "abcd" * 64 echo2` (valid 64-char hex hash) and assert: command succeeds.
+7. Run `sonde-admin handler list` and assert: output contains two handlers.
+8. Run `sonde-admin handler remove "*"` and assert: command succeeds.
+9. Run `sonde-admin handler list` and assert: output contains one handler (the hex-hash handler).
 
 ---
 

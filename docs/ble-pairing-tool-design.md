@@ -193,18 +193,17 @@ The Phase 2 state machine implements the node provisioning flow from [ble-pairin
 │                         │──── ACK(0x02) ─────► Error("storage error")
 └────┬────────────────────┘                      disconnect
      │ ACK(0x00)
-     │ zero node_psk, ephemeral keys, shared secret, AES key
+     │ disconnect
      ▼
 ┌─────────────────┐
-│  Disconnect     │
 │  Success        │ return node_id, node_key_hint, rf_channel
-└─────────────────┘
+└─────────────────┘  (node_psk zeroed on drop via Zeroizing)
 ```
 
 **Key design decisions:**
 
 - All validation and payload construction happen *before* the BLE write.  The tool rejects invalid inputs (empty `node_id`, `rf_channel` out of range, payload > 202 bytes) without touching BLE (PT-0403, PT-0406).
-- `node_psk` is never persisted to disk.  It exists only in memory during provisioning and is zeroed via `Zeroizing` after the `NODE_PROVISION` write succeeds (PT-0408, PT-0804).
+- `node_psk` is never persisted to disk.  It exists only in memory during provisioning and is wrapped in `Zeroizing`, so it is zeroed on drop when `provision_node()` returns — in both success and error paths (PT-0408, PT-0804).
 - The pairing request payload is encrypted with `phone_psk` (AES-256-GCM, AAD = `"sonde-pairing-v2"`) and wrapped in a complete ESP-NOW `PEER_REQUEST` frame (PT-0402).
 
 ### 4.4  Pre-provisioning test state machine
@@ -427,13 +426,15 @@ The transport guarantees cleanup on all paths:
 
 ### 5.6  LESC enforcement
 
-After connecting, both `pair_with_gateway()` (Phase 1) and `provision_node()` (Phase 2) call `enforce_lesc()` to verify that the BLE pairing method meets security requirements (PT-0904, PT-0106).  Both phases connect to the **modem** (which supports LESC Numeric Comparison), not directly to the node.  The function queries `BleTransport::pairing_method()`:
+After connecting, `pair_with_gateway()` (Phase 1) calls `enforce_lesc()` to verify that the BLE pairing method meets security requirements (PT-0904, PT-0106).  Phase 1 connects to the **modem**, which supports LESC Numeric Comparison.  The function queries `BleTransport::pairing_method()`:
 
 - **`NumericComparison`** — accepted (LESC Numeric Comparison confirmed).
 - **`None` (not observable)** — accepted (the OS enforced pairing; the transport cannot distinguish the method).
 - **`JustWorks`** or **`Unknown`** — rejected.  The transport is immediately disconnected and `PairingError::InsecurePairingMethod` is returned.
 
 This check runs before any protocol messages are exchanged, ensuring that an insecure BLE link is never used to transmit key material.
+
+`provision_node()` (Phase 2) does **not** call `enforce_lesc()`.  Phase 2 connects directly to the **node**, which uses LESC Just Works (ND-0904) because nodes are headless devices with no display or input for Numeric Comparison.  LESC Just Works still provides link-layer encryption but does not protect against active MITM — this residual risk is accepted for headless nodes per the protocol spec (ble-pairing-protocol.md §8.2).
 
 ### 5.7  Mock BLE transport
 
@@ -510,7 +511,7 @@ All intermediate cryptographic material is explicitly zeroed after use:
 
 | Material | Lifetime | Zeroed when |
 |---|---|---|
-| Node PSK (Phase 2) | Generated → `NODE_PROVISION` written | After `NODE_ACK(0x00)` received |
+| Node PSK (Phase 2) | Generated → `provision_node()` return | On drop (`Zeroizing` wrapper) when `provision_node()` returns |
 | Phone PSK (Phase 1) | Received over BLE LESC → persisted | After caller persistence completes |
 
 All values above are wrapped in `Zeroizing<[u8; N]>` to ensure zeroing on drop even in error paths.

@@ -14,7 +14,7 @@
 The BLE pairing tool is a cross-platform application that provisions Sonde nodes over Bluetooth Low Energy.  It implements two protocol phases:
 
 1. **Phase 1 — Gateway pairing** (one-time): the tool connects to a gateway's BLE service, authenticates via BLE LESC, registers as a pairing agent, and receives a phone PSK over the secure BLE link.
-2. **Phase 2 — Node provisioning** (per node): the tool generates a node PSK, constructs an encrypted pairing payload, and writes it to the modem's Node Provisioning BLE GATT service.  The modem bridges the payload to the target node over ESP-NOW.
+2. **Phase 2 — Node provisioning** (per node): the tool generates a node PSK, constructs an encrypted pairing payload, and writes it to a node's BLE service.  The node stores the payload and relays it to the gateway over ESP-NOW on next boot.
 
 The tool is a Rust-first application following a Tauri-style architecture: all protocol logic, cryptography, and persistence live in a shared Rust crate (`sonde-pair`), with a thin UI shell invoking Rust commands.  The core crate has no platform dependencies and is testable with mocked BLE transport and storage (PT-0101, PT-0102, PT-0104).
 

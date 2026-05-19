@@ -345,11 +345,11 @@ Before starting node provisioning, the tool MUST verify that it holds a valid ph
 **Source:** ble-pairing-protocol.md §3.4
 
 **Description:**  
-On operator selection of a node device, the tool MUST connect to the **modem's** Node Provisioning BLE GATT service (the modem bridges BLE to nodes over ESP-NOW), negotiate ATT MTU ≥ 247, and accept BLE LESC pairing. If MTU < 247, the tool MUST disconnect and report an error.
+On operator selection of a node device, the tool MUST connect, negotiate ATT MTU ≥ 247, and accept BLE LESC pairing. If MTU < 247, the tool MUST disconnect and report an error.
 
 **Acceptance criteria:**
 
-1. The tool connects to the modem's Node Provisioning BLE GATT service.
+1. The tool connects to the selected node.
 2. MTU ≥ 247 is negotiated.
 3. If MTU < 247, the tool disconnects and reports "MTU too low".
 

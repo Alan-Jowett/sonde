@@ -682,15 +682,11 @@ The GATT write payload is parsed and handled by a platform-independent pairing-c
 
 When the node boots with a PSK stored but the `reg_complete` flag not set (boot path 3, ND-0900), it enters the PEER_REQUEST registration sub-protocol. This completes the pairing handshake by registering the node with the gateway via the modem.
 
-**Frame construction (ND-0909):**
+**Frame forwarding (ND-0909):**
 
 1. Initialise ESP-NOW on the RF channel stored during provisioning (NVS key `channel`).
-2. Load the encrypted payload from NVS (key `peer_payload`).
-3. Build a PEER_REQUEST frame:
-   - `msg_type` = 0x05.
-   - `nonce` = fresh 8-byte random value from the hardware RNG.
-   - CBOR payload: `{1: encrypted_payload}`.
-   - AES-256-GCM encrypted with `node_psk` (loaded from the key store — see §6.1, §6.1a).
+2. Load the pre-built PEER_REQUEST frame from NVS (key `peer_payload`).
+3. Transmit the stored blob verbatim over ESP-NOW.  The `peer_payload` is a complete ESP-NOW frame (header + AES-256-GCM ciphertext + tag) built by the phone during BLE provisioning (ble-pairing-protocol.md §7.1).  The node does not perform any cryptographic operations on the frame.
 
 **Transmission and retransmission (ND-0910):**
 
@@ -719,7 +715,7 @@ After the first successful WAKE/COMMAND exchange (the gateway responds with a va
 
 **Self-healing on WAKE failure (ND-0915):**
 
-If WAKE fails (no response or AEAD decryption failure) after `reg_complete` is set, the node clears the `reg_complete` flag and reverts to sending PEER_REQUEST on the next boot. This allows the node to re-register if the gateway lost its registration state.
+If WAKE fails (no response or AEAD decryption failure) after `reg_complete` is set **and** the `peer_payload` NVS key is still present, the node clears the `reg_complete` flag and reverts to sending PEER_REQUEST on the next boot. This allows the node to re-register if the gateway lost its registration state. Once `peer_payload` has been erased (ND-0914), the node cannot self-heal and must continue normal WAKE retries or be re-provisioned via BLE.
 
 ### 15.8  Pre-provisioning test mode
 

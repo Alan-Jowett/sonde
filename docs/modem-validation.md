@@ -310,11 +310,11 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Procedure:**
 1. Flash a test firmware build that stalls the main loop after a trigger command (e.g., stops calling `feed_watchdog()` on a specific `GET_STATUS` sequence).
 2. Send the trigger command.
-3. Wait up to 15 seconds.
+3. Wait up to 40 seconds.
 4. Assert: the modem reboots (watchdog hardware reset) and sends `MODEM_READY` on the serial port.
 5. Assert: modem is fully operational after the watchdog-triggered reboot.
 
-> **Note:** This test requires a special test firmware build and real hardware. It cannot be validated via PTY mock. The 10-second watchdog timeout plus reboot time should complete within 15 seconds.
+> **Note:** This test requires a special test firmware build and real hardware. It cannot be validated via PTY mock. The 35-second watchdog timeout plus reboot time should complete within 40 seconds.
 
 ---
 

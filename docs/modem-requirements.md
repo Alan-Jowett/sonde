@@ -310,11 +310,11 @@ If the USB-CDC connection is lost, the modem firmware MUST continue running, dis
 **Priority:** Should
 
 **Description:**
-The modem firmware SHOULD implement a watchdog timer (10 second timeout) and trigger a hardware reset if the main loop stalls.
+The modem firmware SHOULD implement a watchdog timer (35 second timeout) and trigger a hardware reset if the main loop stalls.
 
 **Acceptance criteria:**
 
-1. A deliberate infinite loop in test firmware triggers a watchdog reset within 10 seconds.
+1. A deliberate infinite loop in test firmware triggers a watchdog reset within 35 seconds.
 
 ---
 

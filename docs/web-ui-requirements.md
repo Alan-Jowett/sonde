@@ -39,7 +39,7 @@ program ingestion.
 
 ### Out of scope
 
-- Azure handler function internals (covered by [azure-handler-requirements.md](azure-handler-requirements.md))
+- Azure handler function internals beyond ProgramIngest's externally observable contracts (covered by [azure-handler-requirements.md](azure-handler-requirements.md))
 - Gateway, node, or modem firmware behavior
 - BPF program compilation or Prevail verifier internals
 - Azure Table schema design (owned by the handler)
@@ -724,6 +724,11 @@ is delegated to EasyAuth, not Azure Functions runtime keys.
 **Description:**
 The SPA MUST provide a Sensor Data tab that loads data from the `sensordata`
 Azure Table.
+
+> **Note:** This document uses `sensordata` (lowercase) to match the SPA
+> default config and Bicep provisioning. Azure Table names are
+> case-insensitive; other docs (e.g., `azure-handler-requirements.md`) may
+> use `SensorData` for readability.
 
 **Acceptance criteria:**
 

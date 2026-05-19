@@ -30,7 +30,7 @@ and verifies one or more acceptance criteria.
 
 ### Out of scope
 
-- Azure handler function internals (covered by azure-handler-validation.md)
+- Azure handler function internals beyond ProgramIngest (covered by azure-handler-validation.md)
 - Gateway, node, or modem behavior
 - BPF compilation / Prevail verifier internals
 
@@ -92,7 +92,7 @@ and verifies one or more acceptance criteria.
 | WEB-0701 | T-WEB-0702, T-WEB-0703, T-WEB-0706, T-WEB-0713, T-WEB-0714, T-WEB-0715 |
 | WEB-0702 | T-WEB-0704, T-WEB-0705 |
 | WEB-0703 | T-WEB-0707, T-WEB-0708, T-WEB-0709, T-WEB-0710, T-WEB-0711, T-WEB-0712 |
-| WEB-0800 | — (covered by WEB-0801 through WEB-0806 tests) |
+| WEB-0800 | T-WEB-0801, T-WEB-0802, T-WEB-0803, T-WEB-0804, T-WEB-0805, T-WEB-0806 |
 | WEB-0801 | T-WEB-0802 |
 | WEB-0802 | T-WEB-0806, T-WEB-0807, T-WEB-0808, T-WEB-0809 |
 | WEB-0803 | T-WEB-0801 |

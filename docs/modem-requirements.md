@@ -533,12 +533,12 @@ When a BLE client connects and completes LESC pairing, the modem MUST send a `BL
 **Source:** modem-protocol.md §4.12
 
 **Description:**
-When the BLE client disconnects, the modem MUST send a `BLE_DISCONNECTED` (0xA2) serial message containing the peer BLE address and HCI disconnect reason code.
+When the BLE client disconnects, the modem MUST send a `BLE_DISCONNECTED` (0xA2) serial message containing the peer BLE address and a best-effort HCI disconnect reason code. The NimBLE Rust bindings do not expose the raw HCI reason code; the firmware maps `Ok(())` to `0x16` (local termination) and any error to `0x13` (remote user termination) as a reasonable default.
 
 **Acceptance criteria:**
 
 1. `BLE_DISCONNECTED` is sent on every BLE disconnect.
-2. The message includes the peer address and reason code.
+2. The message includes the peer address and a best-effort reason code (`0x16` for clean disconnect, `0x13` otherwise).
 
 ---
 
@@ -730,13 +730,13 @@ The modem MUST apply build-type–aware log-level policies identical to the node
 **Source:** Issue #532
 
 **Description:**
-When the modem encountersan error at an operator-visible boundary (BLE GATT operations, ESP-NOW transmission, USB-CDC I/O), the error log MUST include sufficient context for an operator to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "BLE GATT write", "NODE_ACK indication", "ESP-NOW send"), (2) the non-sensitive metadata for the input or parameters that triggered it (e.g., peer MAC address, characteristic UUID or handle, frame type and length), (3) the specific error from the underlying subsystem (e.g., NimBLE return code, ESP-NOW status), and (4) actionable guidance where possible (e.g., "check BLE connection state", "verify peer is in range"). Diagnostics MUST NOT log raw BLE attribute or notification payload contents, nor full ESP-NOW application payload bytes, at any log level; only metadata necessary for troubleshooting may be recorded.
+When the modem encounters an error at an operator-visible boundary (BLE GATT operations, ESP-NOW transmission, USB-CDC I/O), the error log MUST include sufficient context for an operator to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "BLE GATT write", "NODE_ACK indication", "ESP-NOW send"), (2) the non-sensitive metadata for the input or parameters that triggered it (e.g., peer MAC address, characteristic UUID or handle, frame type and length), (3) the error from the underlying subsystem in its platform-native representation (e.g., NimBLE `Debug` output, ESP-NOW status code), and (4) actionable guidance where possible (e.g., "check BLE connection state", "verify peer is in range"). Diagnostics MUST NOT log raw BLE attribute or notification payload contents, nor full ESP-NOW application payload bytes, at any log level; only metadata necessary for troubleshooting may be recorded.
 
 **Acceptance criteria:**
 
 1. Every error log entry at an operator-visible boundary includes the failed operation name, the triggering input/parameters expressed as metadata (peer MAC, UUID/handle, frame type/length, etc.), and the underlying subsystem error.
 2. Where a corrective action is known, the error includes actionable guidance text.
-3. BLE indication failures (e.g., NODE_ACK) include the NimBLE return code, the current connection state, and the characteristic handle rather than a generic "invalid arguments" message.
+3. BLE indication failures (e.g., NODE_ACK) include the platform-native error representation (e.g., NimBLE `Debug` output or return code where available) and relevant context (connection handle, queue state) rather than a generic "invalid arguments" message.
 4. ESP-NOW send failures include the target peer MAC address and the ESP-NOW status code, but do not include raw application payload bytes.
 
 ---

@@ -315,7 +315,9 @@ If any OLED I²C transaction fails during initialization or page flush:
 
 ## 10  Reset behavior
 
-On `RESET` command or USB reconnection:
+### 10.1  RESET command
+
+On `RESET` command:
 
 1. `esp_now_deinit()`.
 2. Clear peer table.
@@ -326,7 +328,16 @@ On `RESET` command or USB reconnection:
 7. If BLE is enabled, perform the same internal disable logic as handling `BLE_DISABLE`: stop advertising and disconnect any active BLE client.
 8. Send `MODEM_READY`.
 
-`MODEM_READY` MUST be sent within 2 seconds of USB enumeration (or re-enumeration after reconnection) per MD-0104. This deadline applies to both initial boot and `RESET`-triggered reinitialisation.
+### 10.2  USB reconnection
+
+USB reconnection is a lightweight recovery — only the serial codec is affected:
+
+1. Reset the serial codec's inbound parser state (discard any partial frame from before the disconnect).
+2. Send `MODEM_READY`.
+
+Radio state (ESP-NOW peers, channel), BLE state, counters, and display state are all preserved across a USB reconnection. See §4.4 for how reconnection is detected.
+
+`MODEM_READY` MUST be sent within 2 seconds of USB enumeration (or re-enumeration after reconnection) per MD-0104. This deadline applies to both initial boot, `RESET`-triggered reinitialisation, and USB reconnection.
 
 ---
 

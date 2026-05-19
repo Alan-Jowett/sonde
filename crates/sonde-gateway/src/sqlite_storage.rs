@@ -1321,23 +1321,25 @@ impl Storage for SqliteStorage {
         self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT hash, size, verification_profile, abi_version, source_filename FROM programs",
+                    "SELECT hash, size, verification_profile, abi_version, source_filename, decoder_image IS NOT NULL FROM programs",
                 )
                 .map_err(map_err)?;
             let rows = stmt
                 .query_map([], |row| {
                     let profile_str: String = row.get(2)?;
-                    Ok((row.get(0)?, row.get(1)?, profile_str, row.get(3)?, row.get(4)?))
+                    let has_decoder: bool = row.get(5)?;
+                    Ok((row.get(0)?, row.get(1)?, profile_str, row.get(3)?, row.get(4)?, has_decoder))
                 })
                 .map_err(map_err)?;
             let mut programs = Vec::new();
             for row in rows {
-                let (hash, size, profile_str, abi_version, source_filename): (
+                let (hash, size, profile_str, abi_version, source_filename, has_decoder): (
                     Vec<u8>,
                     u32,
                     String,
                     Option<u32>,
                     Option<String>,
+                    bool,
                 ) = row.map_err(map_err)?;
                 programs.push(ProgramSummaryRecord {
                     hash,
@@ -1345,6 +1347,7 @@ impl Storage for SqliteStorage {
                     verification_profile: parse_profile(&profile_str)?,
                     abi_version,
                     source_filename: normalize_display_filename(&source_filename),
+                    has_decoder,
                 });
             }
             Ok(programs)

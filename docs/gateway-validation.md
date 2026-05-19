@@ -1293,6 +1293,21 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0803a  ListPrograms `has_decoder` indicator
+
+**Validates:** GW-0802 (AC-2), GW-1902
+
+**Procedure:**
+1. Ingest a program without a decoder section.
+2. Store a program record with a decoder image via storage.
+3. Call `ListPrograms`.
+
+**Expected:**
+1. The program without a decoder has `has_decoder = false`.
+2. The program with a decoder has `has_decoder = true`.
+
+---
+
 ### T-0804  Program ingestion failure via gRPC
 
 **Validates:** GW-0802

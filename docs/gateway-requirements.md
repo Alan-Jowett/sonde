@@ -857,7 +857,7 @@ The admin API MUST support: ingesting a BPF ELF file (triggering verification, C
 **Acceptance criteria:**
 
 1. `IngestProgram` accepts an ELF binary and verification profile, returns the program hash on success or a diagnostic on failure.
-2. `ListPrograms` returns all stored programs.
+2. `ListPrograms` returns all stored programs with metadata including whether a decoder image is present (`has_decoder`).
 3. `AssignProgram` sets a node's assigned program hash.
 4. `RemoveProgram` deletes a program from the library.
 5. `IngestProgram` is idempotent with respect to identical ELF content: re-ingesting a program with the same content hash returns the same program hash and does not require clients to handle a distinct "already exists" status code.

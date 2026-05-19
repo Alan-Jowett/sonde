@@ -223,7 +223,7 @@ hash fields returned by the node-oriented RPC response.
 | `node remove` | `RemoveNode` | Yes | `{removed}` | "Removed node: {id}" |
 | `node factory-reset` | `FactoryReset` | Yes | `{factory_reset}` | "Factory reset node: {id}" |
 | `program ingest` | `IngestProgram` | — | `{program_hash, program_size}` | "Ingested program: {hash} ({size} bytes)" |
-| `program list` | `ListPrograms` | — | `[{hash, size, profile, source_filename}]` | Per-program line |
+| `program list` | `ListPrograms` | — | `[{hash, size, profile, source_filename, has_decoder}]` | Per-program line |
 | `program assign` | `AssignProgram` | — | `{assigned: true}` | "Assigned program {hash} to node {id}" |
 | `program remove` | `RemoveProgram` | Yes | `{removed}` | "Removed program: {hash}" |
 | `schedule set` | `SetSchedule` | — | `{node_id, interval_s}` | "Set schedule for {id}: {s}s" |

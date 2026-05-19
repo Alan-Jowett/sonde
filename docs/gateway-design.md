@@ -448,6 +448,12 @@ an ELF with the same node program hash but a different decoder replaces the
 existing decoder image (upsert). Ingesting without a decoder for a hash that
 previously had one removes the decoder image.
 
+The `ListPrograms` response includes a `has_decoder` boolean for each program,
+derived from `decoder_image.is_some()`. This surfaces decoder presence in admin
+listings without transferring the full decoder image blob. The `ProgramInfo`
+proto message carries `bool has_decoder = 6`, and the CLI displays `, decoder`
+after the verification profile when `has_decoder` is true.
+
 ### 8.2  Program ingestion
 
 1. Accept pre-compiled BPF ELF (GW-0400).

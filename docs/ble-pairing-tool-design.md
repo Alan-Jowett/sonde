@@ -14,7 +14,7 @@
 The BLE pairing tool is a cross-platform application that provisions Sonde nodes over Bluetooth Low Energy.  It implements two protocol phases:
 
 1. **Phase 1 — Gateway pairing** (one-time): the tool connects to a gateway's BLE service, authenticates via BLE LESC, registers as a pairing agent, and receives a phone PSK over the secure BLE link.
-2. **Phase 2 — Node provisioning** (per node): the tool generates a node PSK, constructs an encrypted pairing payload, and writes it to a node's BLE service.  The node stores the payload and relays it to the gateway over ESP-NOW on next boot.
+2. **Phase 2 — Node provisioning** (per node): the tool generates a node PSK, constructs an encrypted pairing payload, and writes it to the modem's Node Provisioning BLE GATT service.  The modem bridges the payload to the target node over ESP-NOW.
 
 The tool is a Rust-first application following a Tauri-style architecture: all protocol logic, cryptography, and persistence live in a shared Rust crate (`sonde-pair`), with a thin UI shell invoking Rust commands.  The core crate has no platform dependencies and is testable with mocked BLE transport and storage (PT-0101, PT-0102, PT-0104).
 
@@ -204,7 +204,7 @@ The Phase 2 state machine implements the node provisioning flow from [ble-pairin
 **Key design decisions:**
 
 - All validation and payload construction happen *before* the BLE write.  The tool rejects invalid inputs (empty `node_id`, `rf_channel` out of range, payload > 202 bytes) without touching BLE (PT-0403, PT-0406).
-- `node_psk` is never persisted to disk.  It exists only in memory during provisioning and is zeroed via `Zeroizing` after the `NODE_PROVISION` write succeeds (PT-0408, PT-0804).
+- `node_psk` is never persisted to disk.  It exists only in memory during provisioning and is wrapped in `Zeroizing`, so it is zeroed on drop when `provision_node()` returns — in both success and error paths (PT-0408, PT-0804).
 - The pairing request payload is encrypted with `phone_psk` (AES-256-GCM, AAD = `"sonde-pairing-v2"`) and wrapped in a complete ESP-NOW `PEER_REQUEST` frame (PT-0402).
 
 ### 4.4  Pre-provisioning test state machine
@@ -510,7 +510,7 @@ All intermediate cryptographic material is explicitly zeroed after use:
 
 | Material | Lifetime | Zeroed when |
 |---|---|---|
-| Node PSK (Phase 2) | Generated → `NODE_PROVISION` written | After `NODE_ACK(0x00)` received |
+| Node PSK (Phase 2) | Generated → `provision_node()` return | On drop (`Zeroizing` wrapper) when `provision_node()` returns |
 | Phone PSK (Phase 1) | Received over BLE LESC → persisted | After caller persistence completes |
 
 All values above are wrapped in `Zeroizing<[u8; N]>` to ensure zeroing on drop even in error paths.

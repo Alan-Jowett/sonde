@@ -345,11 +345,11 @@ Before starting node provisioning, the tool MUST verify that it holds a valid ph
 **Source:** ble-pairing-protocol.md §3.4
 
 **Description:**  
-On operator selection of a node device, the tool MUST connect, negotiate ATT MTU ≥ 247, and accept BLE LESC pairing. If MTU < 247, the tool MUST disconnect and report an error.
+On operator selection of a node device, the tool MUST connect to the **modem's** Node Provisioning BLE GATT service (the modem bridges BLE to nodes over ESP-NOW), negotiate ATT MTU ≥ 247, and accept BLE LESC pairing. If MTU < 247, the tool MUST disconnect and report an error.
 
 **Acceptance criteria:**
 
-1. The tool connects to the selected node.
+1. The tool connects to the modem's Node Provisioning BLE GATT service.
 2. MTU ≥ 247 is negotiated.
 3. If MTU < 247, the tool disconnects and reports "MTU too low".
 
@@ -443,11 +443,11 @@ The tool MUST assemble the `NODE_PROVISION` body as `node_key_hint[2] ‖ node_p
 **Source:** security.md §2.1
 
 **Description:**  
-After a successful `NODE_PROVISION` write, the tool MUST zero `node_psk` from memory via `zeroize::Zeroizing`. The tool has no further use for it. All AES-256-GCM key material (AES key, nonce) MUST also be zeroed.
+The tool MUST wrap `node_psk` in `zeroize::Zeroizing` so that it is zeroed on drop when `provision_node()` returns — in both success and error paths. The tool has no further use for it. All AES-256-GCM key material (AES key, nonce) MUST also be zeroed.
 
 **Acceptance criteria:**
 
-1. `node_psk` is zeroed after the `NODE_PROVISION` write succeeds.
+1. `node_psk` is wrapped in `Zeroizing` and zeroed when `provision_node()` returns.
 2. All intermediate cryptographic material is zeroed after use.
 3. No node PSK values are persisted to disk.
 
@@ -924,7 +924,7 @@ BLE connections, GATT subscriptions, and platform BLE resources MUST be released
 **Source:** ble-pairing-protocol.md §3.4, §5, §6
 
 **Description:**  
-All timeouts MUST be deterministic and explicitly configured to the following values: `GW_INFO_RESPONSE` 45 s, `PHONE_REGISTERED` 30 s, `NODE_ACK` 5 s, BLE scan default 30 s, BLE connection establishment 30 s.
+All timeouts MUST be deterministic and explicitly configured to the following values: `PHONE_REGISTERED` 30 s, `NODE_ACK` 5 s, BLE scan default 30 s, BLE connection establishment 30 s.
 
 **Acceptance criteria:**
 

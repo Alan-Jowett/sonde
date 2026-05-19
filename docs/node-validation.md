@@ -268,6 +268,20 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N210  Minimum 1-second sleep interval enforced
+
+**Validates:** ND-0203 (AC4)
+
+**Procedure:**
+1. Set base interval to 60 s. Install a BPF program that calls `set_next_wake(0)` (requesting immediate wake).
+2. Run wake cycle.
+3. Assert: node sleeps for 1 second (clamped minimum), not 0.
+4. Install a program that calls `set_next_wake(500)` (500 ms).
+5. Run wake cycle.
+6. Assert: node sleeps for 1 second (clamped), not 500 ms.
+
+---
+
 ## 5  Authentication and replay protection tests
 
 ### T-N300  AEAD on outbound frames
@@ -432,6 +446,28 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 3. Assert: each GET_CHUNK uses an incrementing sequence number.
 4. Mock gateway responds with correct CHUNK data for each.
 5. Assert: node sends PROGRAM_ACK with the correct hash.
+
+---
+
+### T-N500a  Resident program exceeding 4096 bytes rejected
+
+**Validates:** ND-0500 (AC4)
+
+**Procedure:**
+1. Mock gateway sends UPDATE_PROGRAM with a CBOR program image of 4097 bytes.
+2. Assert: node rejects the program (PROGRAM_ACK with failure status or no PROGRAM_ACK).
+3. Assert: the existing resident program remains active and unchanged.
+
+---
+
+### T-N500b  Ephemeral program exceeding 2048 bytes rejected
+
+**Validates:** ND-0500 (AC4)
+
+**Procedure:**
+1. Mock gateway sends RUN_EPHEMERAL with a CBOR program image of 2049 bytes.
+2. Assert: node rejects the program.
+3. Assert: the node continues normal operation (no crash).
 
 ---
 
@@ -796,6 +832,41 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N620a  Initial map data loaded correctly
+
+**Validates:** ND-0607 (AC1, AC2)
+
+**Procedure:**
+1. Build a program image with a map definition that includes `initial_data` (CBOR key 5) of length equal to `value_size`, containing `[0xAA, 0xBB, 0xCC, 0xDD]`.
+2. Load the program on the node.
+3. Assert: program image is accepted and decoded without error.
+4. Assert: after map allocation, entry 0 contains exactly `[0xAA, 0xBB, 0xCC, 0xDD]`.
+
+---
+
+### T-N620b  Maps without initial data are zero-filled
+
+**Validates:** ND-0607 (AC3)
+
+**Procedure:**
+1. Build a program image with a map definition that has no `initial_data` key (key 5 absent).
+2. Load the program on the node.
+3. Assert: after map allocation, entry 0 is entirely zero-filled.
+
+---
+
+### T-N620c  Initial data with wrong length ignored
+
+**Validates:** ND-0607 (AC4)
+
+**Procedure:**
+1. Build a program image with a map definition where `initial_data` length does not equal `value_size` (e.g., `value_size = 4` but `initial_data` is 3 bytes).
+2. Load the program on the node.
+3. Assert: the map is allocated successfully.
+4. Assert: entry 0 is zero-filled (initial data ignored).
+
+---
+
 ### T-N621  send_async queues data
 
 **Validates:** ND-0602 (AC4), ND-0609
@@ -833,6 +904,18 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N623a  Non-NOP command does not drain async queue
+
+**Validates:** ND-0611 (AC5)
+
+**Procedure:**
+1. Install a BPF program that calls `send_async()` twice (2 messages queued).
+2. On the next wake cycle, mock gateway responds with UPDATE_SCHEDULE (non-NOP command).
+3. Assert: no APP_DATA overflow drain occurs during this cycle.
+4. On the following wake cycle (NOP command), assert: the 2 queued messages are drained via APP_DATA.
+
+---
+
 ### T-N624  send_async oversized falls back to APP_DATA
 
 **Validates:** ND-0610
@@ -853,6 +936,17 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Install program that calls `send_async()` 11 times with small blobs.
 2. Assert: first 10 calls return 0.
 3. Assert: 11th call returns -1.
+
+---
+
+### T-N625a  send_async queue overflow preserves existing data
+
+**Validates:** ND-0613 (AC2)
+
+**Procedure:**
+1. Install program that calls `send_async()` 11 times with distinct small blobs.
+2. Assert: the 11th call returns -1.
+3. On the next wake cycle, assert: the first 10 queued messages are transmitted intact (no corruption or loss).
 
 ---
 
@@ -891,6 +985,18 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N621a  send_async queue lost on reboot
+
+**Validates:** ND-0609 (AC4)
+
+**Procedure:**
+1. Install a BPF program that calls `send_async()` with a message.
+2. Complete a wake cycle (message queued in sleep-retained RAM).
+3. Trigger a full reboot (not deep-sleep wake).
+4. Assert: the queue is empty after reboot — no messages piggybacked on the next WAKE.
+
+---
+
 ### T-N628  sonde_context downlink data populated
 
 **Validates:** ND-0612
@@ -910,6 +1016,18 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Install BPF program that reads `ctx->data_start` and `ctx->data_end`.
 2. On the next WAKE, send NOP COMMAND without `blob` field.
 3. Assert: BPF program's `ctx->data_start == 0` and `ctx->data_end == 0`.
+
+---
+
+### T-N629a  Downlink data is read-only from BPF perspective
+
+**Validates:** ND-0612 (AC3)
+
+**Procedure:**
+1. Install a BPF program that attempts to write through the `ctx->data_start` pointer when a blob is present.
+2. On the next WAKE, send NOP COMMAND with a `blob`.
+3. Assert: the write is rejected or silently ignored (data remains unmodified).
+4. Assert: the node does not crash.
 
 ---
 
@@ -1175,18 +1293,16 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N909  PEER_REQUEST frame construction
+### T-N909  PEER_REQUEST verbatim forwarding
 
 **Validates:** ND-0909
 
 **Procedure:**
-1. Provision node via BLE, reboot (PSK stored, `reg_complete` not set).
-2. Capture the transmitted PEER_REQUEST frame.
-3. Assert: `msg_type` = 0x05.
-4. Assert: nonce is exactly 8 bytes and is sourced from the RNG abstraction (verified via mock RNG in test). Assert it is not a fixed constant (e.g., not always zero).
-5. Assert: CBOR payload decodes to `{1: <value>}` where the value matches NVS key `peer_payload`.
-6. Assert: AES-256-GCM authenticated encryption verifies with the PSK from NVS key `psk`.
-7. Assert: ESP-NOW channel matches NVS key `channel`.
+1. Provision node via BLE with a known `encrypted_payload` (the complete pre-built PEER_REQUEST frame). Reboot (PSK stored, `reg_complete` not set).
+2. Capture the transmitted ESP-NOW frame.
+3. Assert: the transmitted frame is byte-identical to the `peer_payload` blob stored in NVS during provisioning.
+4. Assert: ESP-NOW channel matches NVS key `channel`.
+5. Assert: the node did not perform any cryptographic operations (no AES-256-GCM encryption — the frame was pre-built by the phone).
 
 ---
 
@@ -1199,6 +1315,18 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 2. Allow two wake cycles to elapse.
 3. Assert: PEER_REQUEST is transmitted on each wake cycle.
 4. Assert: interval between transmissions matches configured wake interval.
+
+---
+
+### T-N910a  Malformed peer_payload breaks retry loop
+
+**Validates:** ND-0910 (AC3)
+
+**Procedure:**
+1. Provision node, then corrupt the `peer_payload` NVS key (e.g., write a truncated or invalid blob).
+2. Reboot node (PSK stored, `reg_complete` not set — PEER_REQUEST path).
+3. Assert: the node detects the malformed payload and attempts to erase `peer_payload` from NVS.
+4. Assert: the node does NOT continue retransmitting the malformed payload on subsequent boots.
 
 ---
 
@@ -1274,6 +1402,20 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N917a  WAKE failure after peer_payload erasure does not clear reg_complete
+
+**Validates:** ND-0915 (AC3)
+
+**Procedure:**
+1. Complete BLE pairing and registration (`reg_complete` set).
+2. Complete a successful WAKE/COMMAND exchange so `peer_payload` is erased (ND-0914).
+3. Reboot node; node sends WAKE.
+4. Mock gateway does not respond (WAKE failure).
+5. Assert: `reg_complete` flag is NOT cleared (peer_payload is gone — no self-healing possible).
+6. Assert: on next boot the node sends WAKE (not PEER_REQUEST).
+
+---
+
 ## 11  Operational logging
 
 ### T-N1000  Boot reason log — power-on
@@ -1325,6 +1467,16 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Mock gateway responds with a valid COMMAND (Nop).
 2. Assert: an INFO log is emitted containing "COMMAND received" and `command_type=Nop`.
+
+---
+
+### T-N1004a  COMMAND UpdateSchedule log includes interval
+
+**Validates:** ND-1003 (AC2)
+
+**Procedure:**
+1. Mock gateway responds with a valid COMMAND (UpdateSchedule, `interval_s = 120`).
+2. Assert: an INFO log is emitted containing "COMMAND received", `command_type=UpdateSchedule`, and `interval_s=120`.
 
 ---
 
@@ -1451,6 +1603,28 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N1011a  Program install failure WARN log
+
+**Validates:** ND-1009 (AC4)
+
+**Procedure:**
+1. Mock gateway sends UPDATE_PROGRAM with a program whose hash does not match the CBOR image.
+2. Run wake cycle.
+3. Assert: a WARN log is emitted containing the failure description (e.g., "program hash mismatch" or "decode error").
+
+---
+
+### T-N1011b  Chunk transfer failure WARN log
+
+**Validates:** ND-1009 (AC5)
+
+**Procedure:**
+1. Mock gateway responds with UPDATE_PROGRAM but does not send CHUNK responses (all chunk requests time out).
+2. Run wake cycle.
+3. Assert: a WARN log is emitted containing the failure description (e.g., "chunk transfer failed" with timeout or size mismatch details).
+
+---
+
 ### T-N1012  BLE pairing mode entry log
 
 **Validates:** ND-1008
@@ -1470,6 +1644,18 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Complete or abort a BLE pairing session.
 2. Capture serial output.
 3. Assert: a log at INFO or WARN level is emitted containing "BLE pairing mode exited" or "BLE pairing mode failed".
+
+---
+
+### T-N1013a  BLE pairing exit log includes outcome
+
+**Validates:** ND-1008 (AC2, AC3)
+
+**Procedure:**
+1. Complete a BLE pairing session (phone disconnects after NODE_ACK).
+2. Assert: an INFO log is emitted indicating the outcome (e.g., "disconnect" or "success").
+3. Simulate a pairing failure (e.g., NVS write error during NODE_PROVISION).
+4. Assert: a WARN log is emitted indicating the failure outcome.
 
 ---
 
@@ -1526,6 +1712,35 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 4. Assert: the error log includes the underlying subsystem error (e.g., ESP-IDF error code).
 5. Assert: no secret key material (PSK bytes, passwords) appears in the log.
 
+### T-N1021a  Error diagnostic includes actionable guidance
+
+**Validates:** ND-1014 (AC2)
+
+**Procedure:**
+1. Trigger an error with a known corrective action (e.g., AEAD decryption failure from a PSK mismatch).
+2. Capture serial output.
+3. Assert: the error log includes actionable guidance text (e.g., "re-provision node" or "check WiFi credentials").
+
+### T-N1021b  WiFi scan failure includes ESP-IDF error and scan parameters
+
+**Validates:** ND-1014 (AC3)
+
+**Procedure:**
+1. Configure the node to perform a WiFi scan that fails (e.g., invalid channel configuration or radio hardware error).
+2. Capture serial output.
+3. Assert: the error log includes the ESP-IDF error code and the scan parameters (channels, dwell/timeout, active vs passive).
+4. Assert: WiFi SSIDs and BSSIDs are not logged unless strictly necessary.
+
+### T-N1021c  NVS error includes key and status code
+
+**Validates:** ND-1014 (AC4)
+
+**Procedure:**
+1. Trigger an NVS read/write failure (e.g., corrupted NVS partition or full NVS).
+2. Capture serial output.
+3. Assert: the error log includes the NVS key name and namespace.
+4. Assert: the error log includes the ESP-IDF NVS status code.
+
 ### T-N1022  Boot commit hash and ABI version at WARN level
 
 **Validates:** ND-1015
@@ -1559,6 +1774,33 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 3. Assert: `peer_payload` key exists and contains the expected blob.
 4. Assert: `reg_complete` key exists as a `u32` value.
 5. Assert: existing NVS keys (`magic`, `key_hint`, `psk`, `channel`, `interval`, `active_p`, `prog_a`, `prog_b`) are unaffected.
+
+---
+
+### T-N918a  Wake cycle completes without stack overflow
+
+**Validates:** ND-0918 (AC2)
+
+**Procedure:**
+1. Boot the node with `CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384` (per sdkconfig.defaults).
+2. Run a full wake cycle including WAKE, COMMAND, BPF execution, and deep-sleep entry.
+3. Assert: the wake cycle completes without a stack overflow panic.
+4. Assert: high-water-mark stack usage is logged or observable (remains below 16384).
+
+> **Note:** This test requires target hardware. Host-based tests use stack configurations that differ from ESP-IDF.
+
+---
+
+### T-N918b  BLE pairing mode initializes without stack overflow
+
+**Validates:** ND-0918 (AC3)
+
+**Procedure:**
+1. Boot the node into BLE pairing mode (no PSK stored).
+2. Assert: NimBLE host and GATT server initialization complete without a stack overflow panic.
+3. Assert: the node enters BLE advertising successfully.
+
+> **Note:** This test requires target hardware with the NimBLE stack.
 
 ---
 
@@ -1859,6 +2101,20 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N942a  Normal wake cycle completes without triggering watchdog
+
+**Validates:** ND-0919 (AC6)
+
+**Procedure:**
+1. Boot node with watchdog configured (20 s timeout per sdkconfig.defaults).
+2. Run a full wake cycle including maximum WAKE retries (4 attempts × 600 ms ≈ 2.4 s) and a chunked program transfer.
+3. Assert: the node completes the wake cycle without a watchdog panic/reset.
+4. Assert: deep sleep is entered normally.
+
+> **Note:** This test requires target hardware. The host-based mock does not simulate FreeRTOS watchdog behavior.
+
+---
+
 ### T-N0607a  Board layout read from flash and expanded at boot
 
 **Validates:** ND-0608 (AC 1, 2, 3)
@@ -2012,6 +2268,30 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N1101a  Empty payload DIAG_FRAME rejected
+
+**Validates:** ND-1100 (AC4)
+
+**Procedure:**
+1. Boot node into BLE pairing mode.
+2. Send `RUN_TEST_COMMAND` with `test_type=DIAG_FRAME`, valid `rf_channel=6`, and an empty payload (0 bytes).
+3. Assert: node responds with a non-success `RUN_TEST_ACK` status.
+4. Assert: no pending test command is staged.
+
+---
+
+### T-N1101b  Oversized payload DIAG_FRAME rejected
+
+**Validates:** ND-1100 (AC4)
+
+**Procedure:**
+1. Boot node into BLE pairing mode.
+2. Send `RUN_TEST_COMMAND` with `test_type=DIAG_FRAME`, valid `rf_channel=6`, and a payload of 251 bytes (exceeds 250-byte ESP-NOW limit).
+3. Assert: node responds with a non-success `RUN_TEST_ACK` status.
+4. Assert: no pending test command is staged.
+
+---
+
 ### T-N1102  Accepted test command triggers reboot into test mode
 
 **Validates:** ND-1101, ND-1102
@@ -2033,6 +2313,18 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 2. Allow the node to reboot into test mode and set up an ESP-NOW receiver on channel 6.
 3. Assert: the ESP-NOW receiver captures a broadcast frame matching the staged payload exactly.
 4. Assert: the destination MAC is `FF:FF:FF:FF:FF:FF`.
+
+---
+
+### T-N1102a  BLE not active during pre-provisioning test execution
+
+**Validates:** ND-1102 (AC4)
+
+**Procedure:**
+1. Boot node into BLE pairing mode and stage a valid `RUN_TEST_COMMAND`.
+2. Allow the node to reboot into test mode.
+3. During the test-mode ESP-NOW phase, attempt a BLE scan.
+4. Assert: the node is NOT advertising BLE services during test execution.
 
 ---
 
@@ -2104,6 +2396,17 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N1104a  No prior test result returns non-success status
+
+**Validates:** ND-1104 (AC4)
+
+**Procedure:**
+1. Boot the node into BLE pairing mode on a fresh (factory-reset) device with no prior test run.
+2. Send `READ_TEST_RESULT` without having staged any test command.
+3. Assert: the node returns `TEST_RESULT` with a non-success status indicating no result is present.
+
+---
+
 ### T-N1109  Test execution followed by provisioning
 
 **Validates:** ND-1100, ND-1106
@@ -2140,7 +2443,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0200 | T-N200, T-N201, T-N921 |
 | ND-0201 | T-N202, T-N202a, T-N202b, T-N203 |
 | ND-0202 | T-N204, T-N205, T-N206, T-N207, T-N922 |
-| ND-0203 | T-N205, T-N208, T-N209, T-N923 |
+| ND-0203 | T-N205, T-N208, T-N209, T-N210, T-N923 |
 | ND-0300 | T-N606a, T-N606b (AEAD path) |
 | ND-0301 | T-N301, T-N924 |
 | ND-0302 | T-N302, T-N303, T-N304, T-N925 |
@@ -2150,7 +2453,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0402 | T-N404 |
 | ND-0403 | *(verified by secure boot platform tests)* |
 | ND-0403a | *(verified by flash encryption platform tests)* |
-| ND-0500 | T-N500 |
+| ND-0500 | T-N500, T-N500a, T-N500b |
 | ND-0501 | T-N501, T-N502 |
 | ND-0501a | T-N503, T-N928 |
 | ND-0502 | T-N504 |
@@ -2181,45 +2484,47 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0907 | T-N905, T-N908 |
 | ND-0908 | T-N907 |
 | ND-0909 | T-N909 |
-| ND-0910 | T-N910 |
+| ND-0910 | T-N910, T-N910a |
 | ND-0911 | T-N911 |
 | ND-0912 | T-N912, T-N913, T-N941 |
 | ND-0913 | T-N915 |
 | ND-0914 | T-N916 |
-| ND-0915 | T-N917 |
+| ND-0915 | T-N917, T-N917a |
 | ND-0916 | T-N918 |
 | ND-0917 | T-N906 |
-| ND-0918 | *(verified by sdkconfig.defaults setting)* |
+| ND-0918 | T-N918a, T-N918b *(plus sdkconfig.defaults inspection)* |
+| ND-0919 | T-N942, T-N942a |
 | ND-0608 | T-N0607a, T-N0607b, T-N0607c, T-N0607d, T-N0607e, T-N0607f, T-N0607g |
 | ND-0608a | T-N202b, T-N0608a, T-N0608b, T-N0608c |
-| ND-0609 | T-N621, T-N626, T-N627, T-N632 |
+| ND-0607 | T-N620a, T-N620b, T-N620c |
+| ND-0609 | T-N621, T-N621a, T-N626, T-N627, T-N632 |
 | ND-0610 | T-N622, T-N623, T-N624 |
-| ND-0611 | T-N623 |
-| ND-0612 | T-N628, T-N629 |
-| ND-0613 | T-N625 |
+| ND-0611 | T-N623, T-N623a |
+| ND-0612 | T-N628, T-N629, T-N629a |
+| ND-0613 | T-N625, T-N625a |
 | ND-0614 | T-N630, T-N631 |
 | ND-1000 | T-N1000, T-N1001 |
 | ND-1001 | T-N1002 |
 | ND-1002 | T-N1003 |
-| ND-1003 | T-N1004 |
+| ND-1003 | T-N1004, T-N1004a |
 | ND-1004 | T-N1005 |
 | ND-1005 | T-N1006 |
 | ND-1006 | T-N1007, T-N1014 |
 | ND-1007 | T-N1008 |
-| ND-1008 | T-N1012, T-N1013 |
-| ND-1009 | T-N1009, T-N1010, T-N1011 |
+| ND-1008 | T-N1012, T-N1013, T-N1013a |
+| ND-1009 | T-N1009, T-N1010, T-N1011, T-N1011a, T-N1011b |
 | ND-1010 | T-N1015 |
 | ND-1011 | T-N1017, T-N1018 |
 | ND-1012 | T-N1019, T-N1020 |
 | ND-1013 | T-N1016 |
-| ND-1014 | T-N1021 |
+| ND-1014 | T-N1021, T-N1021a, T-N1021b, T-N1021c |
 | ND-1015 | T-N1022 |
 | ND-1016 | T-N1023 |
-| ND-1100 | T-N1100, T-N1101, T-N1109, T-N1110 |
+| ND-1100 | T-N1100, T-N1101, T-N1101a, T-N1101b, T-N1109, T-N1110 |
 | ND-1101 | T-N1100, T-N1102 |
-| ND-1102 | T-N1102, T-N1103, T-N1104 |
+| ND-1102 | T-N1102, T-N1102a, T-N1103, T-N1104 |
 | ND-1103 | T-N1105, T-N1106 |
-| ND-1104 | T-N1104, T-N1105, T-N1107, T-N1108 |
+| ND-1104 | T-N1104, T-N1104a, T-N1105, T-N1107, T-N1108 |
 | ND-1105 | T-N1104, T-N1105, T-N1106 |
 | ND-1106 | T-N1107, T-N1109 |
 | ND-1107 | T-N1110 |

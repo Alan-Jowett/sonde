@@ -930,3 +930,120 @@ async fn connector_emits_desynchronized_health_after_actual_subscriber_lag() {
     drop(client);
     handle.await.unwrap();
 }
+
+/// WAKE blob with a decoder-equipped program delivers enriched readings
+/// (CBOR key 16) to the connector APP_DATA message.
+///
+/// Validates that decoder enrichment runs on WAKE blob data, not just
+/// APP_DATA — the same program's decoder BPF produces readings regardless
+/// of how the payload arrives.
+#[tokio::test]
+async fn connector_wake_blob_delivers_decoder_enriched_readings() {
+    let harness = ConnectorHarness::new();
+    let node = TestNode::new("decoder-wake", 0x5050, [0x55; 32]);
+
+    register_node(&harness.storage, &node).await;
+
+    // Build a decoder BPF program that emits `emit_reading("T", 1, 42)`.
+    //
+    // BPF instructions:
+    //   st_mem_w  r10, -4, 0x54  (store 'T' on stack)
+    //   mov r1, r10
+    //   add r1, -4              (r1 = pointer to name)
+    //   mov r2, 1               (name_len = 1)
+    //   mov r3, 42              (value = 42)
+    //   call 18                 (emit_reading helper)
+    //   mov r0, 0
+    //   exit
+    let decoder_bytecode: Vec<u8> = [
+        // st_mem_w r10, -4, 0x54 ('T')
+        [0x62u8, 0x0A, 0xFC, 0xFF, 0x54, 0x00, 0x00, 0x00],
+        // mov r1, r10
+        [0xBF, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        // add r1, -4
+        [0x07, 0x01, 0x00, 0x00, 0xFC, 0xFF, 0xFF, 0xFF],
+        // mov r2, 1
+        [0xB7, 0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00],
+        // mov r3, 42
+        [0xB7, 0x03, 0x00, 0x00, 0x2A, 0x00, 0x00, 0x00],
+        // call 18 (emit_reading)
+        [0x85, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00],
+        // mov r0, 0
+        [0xB7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        // exit
+        [0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let decoder_cbor = make_cbor_image(&decoder_bytecode);
+
+    // Store a program with a decoder image.
+    let program_hash = vec![0x50; 32];
+    harness
+        .storage
+        .store_program(&ProgramRecord {
+            hash: program_hash.clone(),
+            image: make_cbor_image(MINIMAL_BPF),
+            size: MINIMAL_BPF.len() as u32,
+            verification_profile: VerificationProfile::Resident,
+            abi_version: None,
+            source_filename: None,
+            decoder_image: Some(decoder_cbor),
+        })
+        .await
+        .unwrap();
+
+    // Set the node's current program to our decoder-equipped program.
+    let mut stored = harness
+        .storage
+        .get_node(&node.node_id)
+        .await
+        .unwrap()
+        .unwrap();
+    stored.current_program_hash = Some(program_hash.clone());
+    harness.storage.upsert_node(&stored).await.unwrap();
+
+    let (mut client, handle) = spawn_connection(harness.service.clone()).await;
+
+    // Send a WAKE with a piggybacked blob.
+    let wake_blob = vec![0xDE, 0xAD];
+    let _ = do_wake(
+        &harness.gateway,
+        &node,
+        500,
+        &program_hash,
+        Some(wake_blob.clone()),
+    )
+    .await;
+
+    // First message: ACTUAL_STATE. Second: APP_DATA (from WAKE blob).
+    let actual_state = decode_map(&read_framed(&mut client).await);
+    assert_eq!(uint_field(&actual_state, 1), MSG_TYPE_ACTUAL_STATE);
+
+    let app_data = decode_map(&read_framed(&mut client).await);
+    assert_eq!(uint_field(&app_data, 1), MSG_TYPE_APP_DATA);
+    assert_eq!(
+        text_field(&app_data, 6),
+        ConnectorPayloadOrigin::WakeBlob.as_str(),
+        "payload origin must be WakeBlob"
+    );
+    assert_eq!(
+        bytes_field(&app_data, 4),
+        wake_blob,
+        "raw blob must be preserved"
+    );
+
+    // Assert CBOR key 16 contains decoder readings with "T" = 42.
+    let readings_value = map_get(&app_data, 16).as_map().cloned().unwrap();
+    let t_value = readings_value
+        .iter()
+        .find(|(k, _)| k.as_text() == Some("T"))
+        .and_then(|(_, v)| v.as_integer().and_then(|i| i64::try_from(i).ok()))
+        .expect("readings must contain key 'T'");
+    assert_eq!(t_value, 42, "decoder reading 'T' must equal 42");
+
+    drop(client);
+    handle.await.unwrap();
+}

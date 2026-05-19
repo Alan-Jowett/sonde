@@ -1176,7 +1176,22 @@ impl Storage for SqliteStorage {
                     params![program_hash, node_id],
                 )
                 .map_err(map_err)?;
-            Ok(rows > 0)
+            if rows > 0 {
+                return Ok(true);
+            }
+            let exists = conn
+                .query_row(
+                    "SELECT 1 FROM nodes WHERE node_id = ?1",
+                    params![node_id],
+                    |_row| Ok(()),
+                )
+                .optional()
+                .map_err(map_err)?;
+            if exists.is_some() {
+                Ok(false)
+            } else {
+                Err(StorageError::NotFound(format!("node `{node_id}`")))
+            }
         })
         .await
     }

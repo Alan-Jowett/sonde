@@ -1055,9 +1055,11 @@ impl Gateway {
                     .await
                 {
                     Ok(true) => {
+                        let ph_hex: String =
+                            program_hash.iter().map(|b| format!("{b:02x}")).collect();
                         info!(
                             node_id = %node.node_id,
-                            program_hash = %program_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                            program_hash = %ph_hex,
                             "WAKE reconciliation: node reports assigned program \
                              — updated `current_program_hash` (lost PROGRAM_ACK recovery)"
                         );
@@ -1065,7 +1067,8 @@ impl Gateway {
                     Ok(false) => {
                         debug!(
                             node_id = %node.node_id,
-                            "WAKE reconciliation: assigned_program_hash changed concurrently — skipped"
+                            "WAKE reconciliation skipped: condition no longer holds \
+                             (concurrent reassignment or already reconciled)"
                         );
                     }
                     Err(e) => {

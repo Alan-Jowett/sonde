@@ -121,8 +121,9 @@ pub trait Storage: Send + Sync {
     /// The conditional check on `assigned_program_hash` prevents a stale WAKE
     /// snapshot from overwriting a concurrent reassignment.
     ///
-    /// Returns `Ok(true)` if the update was applied, `Ok(false)` if the
-    /// assigned hash no longer matches (no change made), or an error.
+    /// Returns `Ok(true)` if the update was applied, `Ok(false)` if no update
+    /// was needed (assigned hash no longer matches, or `current_program_hash`
+    /// already equals `program_hash`), or an error.
     async fn reconcile_current_program_hash(
         &self,
         node_id: &str,

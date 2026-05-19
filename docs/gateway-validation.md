@@ -305,6 +305,9 @@ A configurable stub handler process (or in-process mock) that:
 2. Assert: gateway accepts it, stores a CBOR program image.
 3. Assert: the stored image contains bytecode and map definitions.
 4. Assert: LDDW relocations are resolved to `src=1, imm=<map_index>`.
+5. Assert: the gateway binary does not link against LLVM, clang, or any compiler toolchain (AC5 — runtime).
+6. Assert: the build dependency graph (e.g., `cargo tree -p sonde-gateway`) contains no LLVM or clang crates (AC5 — build time).
+7. Assert: chunk serving (GW-0300) reads from the pre-built CBOR image without re-encoding or re-verifying (AC6).
 
 ---
 
@@ -1458,6 +1461,21 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0815aa  CLI modem commands invoke RPCs
+
+**Validates:** GW-0807
+
+**Procedure:**
+1. Start the gateway with a mock modem transport and admin API enabled.
+2. Run `sonde-admin modem status`.
+3. Assert: output includes radio channel, TX/RX/fail counters, and uptime.
+4. Run `sonde-admin modem set-channel 6`.
+5. Assert: command succeeds and modem channel is updated.
+6. Run `sonde-admin modem scan`.
+7. Assert: output includes per-channel AP counts and RSSI values.
+
+---
+
 ### T-0815a  Channel persisted after SetModemChannel
 
 **Validates:** GW-0808
@@ -1490,7 +1508,7 @@ A configurable stub handler process (or in-process mock) that:
 1. Start gateway with `--channel 1`.
 2. Call `SetModemChannel(7)`.
 3. Trigger a `REGISTER_PHONE` BLE pairing flow.
-4. Assert: the encrypted response contains `rf_channel = 7`, not `1`.
+4. Assert: the response contains `rf_channel = 7`, not `1`.
 
 ---
 
@@ -1616,6 +1634,19 @@ A configurable stub handler process (or in-process mock) that:
 6. Assert: the 60-second restore timer is started for the second message.
 7. Wait for the 60-second restore timeout.
 8. Assert: the gateway restores the default banner.
+
+---
+
+### T-0815m  Persistent message state cleared on restart
+
+**Validates:** GW-0809
+
+**Procedure:**
+1. Start the gateway with a mock modem transport.
+2. Call `ShowModemDisplayMessage` with `persistent = true` and a custom message.
+3. Assert: the persistent message is displayed.
+4. Stop and restart the gateway with the same database.
+5. Assert: the modem displays the normal `Sonde Gateway v<semver>` startup banner, not the previously persistent message.
 
 ---
 
@@ -2420,12 +2451,12 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1217  Key hint mismatch rejected
+### T-1217  Key hint consistency check
 
 **Validates:** GW-1217
 
 **Procedure:**
-1. Construct a `PEER_REQUEST` where the frame header `key_hint` differs from the `node_key_hint` in the CBOR payload.
+1. Construct a `PEER_REQUEST` whose CBOR `node_key_hint` does **not** match `SHA-256(node_psk)[30..32]`.
 2. Submit the frame.
 3. Assert: the gateway silently discards the frame.
 
@@ -2592,6 +2623,20 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1222c  Admin Numeric Comparison reject path
+
+**Validates:** GW-1222
+
+**Procedure:**
+1. Start a BLE pairing session via admin API (`OpenBlePairing`).
+2. Connect phone via BLE. Modem sends `BLE_PAIRING_CONFIRM(passkey=123456)`.
+3. Assert: gateway forwards the passkey to the admin API client.
+4. Admin client rejects the passkey.
+5. Assert: gateway sends `BLE_PAIRING_CONFIRM_REPLY(accept=false)` to the modem.
+6. Assert: the BLE pairing session remains open (rejection does not close the window).
+
+---
+
 ### T-1222b  Button pairing success display progression
 
 **Validates:** GW-1222a
@@ -2622,10 +2667,10 @@ A configurable stub handler process (or in-process mock) that:
 1. Complete modem startup.
 2. Using a BLE test client, scan for the modem and connect to its GATT server.
 3. Discover services and assert: the Gateway Pairing Service UUID matches the value specified for GW-1204 in `ble-pairing-protocol.md`.
-4. Within the Gateway Pairing Service, discover characteristics and assert: the request/command and indication/response characteristic UUIDs match the values specified for GW-1204.
+4. Within the Gateway Pairing Service, discover characteristics and assert: the Gateway Command characteristic UUID matches the value specified for GW-1204 and supports both Write and Indicate operations.
 5. Open a BLE pairing session via the admin API.
-6. Mock modem: inject a `BLE_RECV` message containing a `REGISTER_PHONE` command on the request characteristic.
-7. Assert: gateway processes the command and sends a `BLE_INDICATE` message to the modem on the indication characteristic containing a valid `PHONE_REGISTERED` response.
+6. Mock modem: inject a `BLE_RECV` message containing a `REGISTER_PHONE` command on the Gateway Command characteristic.
+7. Assert: gateway processes the command and sends a `BLE_INDICATE` message to the modem on the same Gateway Command characteristic containing a valid `PHONE_REGISTERED` response.
 8. Decode the indication payload and verify it contains `phone_key_hint`.
 
 ---
@@ -2714,6 +2759,23 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1301a  Modem transport state logging
+
+**Validates:** GW-1301
+
+**Procedure:**
+1. Configure a `UsbEspNowTransport` with `#[traced_test]`.
+2. Open the serial port to a mock modem.
+3. Assert: an `INFO`-level log entry is emitted containing the state `connected`.
+4. Complete the modem startup handshake.
+5. Assert: an `INFO`-level log entry is emitted containing the state `ready`.
+6. Drop or disconnect the mock modem.
+7. Assert: an `INFO`-level log entry is emitted containing the state `disconnecting`.
+8. Allow the transport to enter its reconnect loop.
+9. Assert: an `INFO`-level log entry is emitted containing the state `reconnecting` and the backoff delay.
+
+---
+
 ### T-1302  PEER_REQUEST logging
 
 **Validates:** GW-1300
@@ -2749,10 +2811,30 @@ A configurable stub handler process (or in-process mock) that:
 2. Assert: `CARGO_PKG_VERSION` is a valid semver string (`major.minor.patch`, all numeric).
 3. Assert: `SONDE_GIT_COMMIT` is a 7-character hex string or `unknown`.
 4. Assert: the version string matches the pattern `<semver> (<7-char-hash-or-unknown>)`.
+5. Start the gateway with `#[traced_test]` or tracing capture.
+6. Assert: the startup log includes the version string with the embedded commit hash (AC3).
 
 > **Note:** This test validates the build metadata format at compile time
 > rather than invoking the binary's `--version` CLI.  Integration testing
 > of the CLI output is performed manually during release validation.
+
+---
+
+### T-1304a  Build-type–aware log-level policy
+
+**Validates:** GW-1304
+
+**Procedure:**
+1. Build the gateway in debug mode.
+2. Assert: the compile-time maximum tracing level is TRACE (i.e., `tracing` is configured with `max_level_trace`, no `release_max_level_*` feature).
+3. Start the gateway in debug mode without `RUST_LOG` set.
+4. Assert: the default `EnvFilter` is `sonde_gateway=info`.
+5. Build the gateway in release mode.
+6. Assert: the compile-time maximum tracing level is still TRACE.
+7. Start the gateway in release mode without `RUST_LOG` set.
+8. Assert: the default `EnvFilter` is `sonde_gateway=warn`.
+9. Set `RUST_LOG=sonde_gateway=debug` and restart.
+10. Assert: the `EnvFilter` reflects the override in both build types.
 
 ---
 
@@ -2764,6 +2846,9 @@ A configurable stub handler process (or in-process mock) that:
 1. Ingest a BPF ELF that triggers a Prevail forward-analysis failure (e.g. an invalid helper call or type violation).
 2. Assert: the gRPC error message contains at least one instruction-level diagnostic line from the verifier.
 3. Assert: the diagnostic includes verifier-specific context (e.g. type mismatch description, register state).
+4. Ingest a BPF ELF whose verifier diagnostics deterministically exceed the implementation-defined maximum length (e.g., a program with many distinct type violations across multiple instructions).
+5. Assert: the first error from `find_first_error()` is preserved in the gRPC error message.
+6. Assert: a truncation marker (e.g., `"[... diagnostics truncated]"`) is present (AC1).
 
 ---
 
@@ -2778,7 +2863,21 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1306a  File sink writes to `<db-path>.log`
+### T-1305c  CLI verbose and default diagnostic display
+
+**Validates:** GW-1305
+
+**Procedure:**
+1. Ingest an invalid BPF ELF via `sonde-admin program ingest` (without `--verbose`).
+2. Assert: the CLI displays the first verification error (instruction label and error description).
+3. Assert: the CLI displays a hint suggesting `--verbose` for full invariants (AC3).
+4. Ingest the same invalid BPF ELF via `sonde-admin program ingest --verbose`.
+5. Assert: the CLI displays the verifier invariant output (register/type state at reachable instructions), equivalent in content to Prevail's `-v` flag (AC2).
+6. If the invariant listing is truncated, assert: the truncation is explicitly indicated.
+
+---
+
+### T-1306a  File sink writes to `<basename>.log` (replace extension)
 
 **Validates:** GW-1306
 
@@ -2919,6 +3018,22 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1400a  Bounded shutdown within 5 seconds
+
+**Validates:** GW-1400
+
+**Procedure:**
+1. Start the gateway connected to a mock modem.
+2. Place the mock serial port in a faulted state (e.g., simulate OS error 22 on reads/writes).
+3. Send a shutdown signal (SIGTERM / Ctrl-C or `SERVICE_CONTROL_STOP`).
+4. Wait for the "gateway stopped" log entry.
+5. Assert: the process terminates within 5 seconds after the "gateway stopped" log.
+6. Assert: a warning-level log entry is emitted before the force-exit (e.g., "force-exiting after shutdown timeout").
+7. Repeat steps 1–5 without the faulted serial port.
+8. Assert: the gateway shuts down gracefully (no force-exit warning).
+
+---
+
 ### T-1400  Handler storage CRUD
 
 **Validates:** GW-1401
@@ -2971,6 +3086,23 @@ A configurable stub handler process (or in-process mock) that:
 4. Restart the gateway with the same database file.
 5. Call `ListHandlers`.
 6. Assert: the handler added in step 2 is present with identical configuration.
+
+---
+
+### T-1403a  CLI handler management commands
+
+**Validates:** GW-1403
+
+**Procedure:**
+1. Start a gateway with the admin API enabled.
+2. Run `sonde-admin handler list` and assert: output contains zero handlers (empty table or empty JSON array with `--format json`).
+3. Run `sonde-admin handler add "*" echo --reply-timeout-ms 5000 --working-dir /tmp` and assert: command succeeds.
+4. Run `sonde-admin handler list` and assert: output contains one handler with `program_hash = "*"`, `command = "echo"`, `reply_timeout_ms = 5000`, and `working_dir = "/tmp"`.
+5. Run `sonde-admin handler list --format json` and assert: output is valid JSON containing the same handler fields.
+6. Run `sonde-admin handler add abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd echo2` (valid 64-char hex hash) and assert: command succeeds.
+7. Run `sonde-admin handler list` and assert: output contains two handlers.
+8. Run `sonde-admin handler remove "*"` and assert: command succeeds.
+9. Run `sonde-admin handler list` and assert: output contains one handler (the hex-hash handler).
 
 ---
 
@@ -3167,6 +3299,24 @@ A configurable stub handler process (or in-process mock) that:
 8. Assert: the command exits with code 0 (idempotent update).
 9. Run `sc.exe qc sonde-gateway`.
 10. Assert: `BINARY_PATH_NAME` now includes `--port COM6`.
+
+---
+
+### T-1501a  MSI install dialog, auto-detect, ACL, uninstall, and upgrade
+
+**Validates:** GW-1501
+
+**Procedure:**
+1. Run the MSI installer on a Windows machine.
+2. Assert: the install wizard includes a "Modem Configuration" dialog page with a COM port selector (AC1).
+3. Connect an ESP32-S3 modem (VID `303A`, PID `1001`) before reaching the dialog.
+4. Assert: the COM port field is pre-populated with the detected port (AC2).
+5. Complete the install.
+6. Assert: the `%ProgramData%\sonde\` directory exists with appropriate ACLs restricting write access to administrators and the service account (AC5).
+7. Run the MSI uninstaller.
+8. Assert: the service is stopped and removed, but the database and key files remain on disk (AC6).
+9. Re-install the service via MSI, then run an MSI upgrade (newer version).
+10. Assert: the service is stopped before upgrade and restarted after, with the existing configuration preserved (AC7).
 
 ---
 
@@ -3591,6 +3741,23 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1704a  DIAG_REPLY encryption, CBOR fields, and reply MAC
+
+**Traces to:** GW-1704 (AC-1, AC-4, AC-5)
+
+**Preconditions:** Gateway running with a registered phone PSK (`phone_psk`). Mock modem transport capturing outbound frames.
+
+**Steps:**
+1. Construct and send a valid `DIAG_REQUEST` encrypted with `phone_psk` from a known sender MAC.
+2. Capture the outbound `DIAG_REPLY` frame from the mock modem transport.
+
+**Expected:**
+1. The `DIAG_REPLY` frame can be decrypted with the same `phone_psk` used for the request (AC1).
+2. The decrypted CBOR payload contains all three required fields: `diagnostic_type` (integer), `rssi_dbm` (integer), `signal_quality` (integer) (AC4).
+3. The reply is addressed to the sender MAC from the original `RECV_FRAME` (AC5).
+
+---
+
 ### T-1709  DIAG_REPLY nonce echoes request
 
 **Traces to:** GW-1704 (AC-2)
@@ -4003,6 +4170,50 @@ A configurable stub handler process (or in-process mock) that:
 
 **Expected:**
 1. Rejected with error indicating multiple decoder sections.
+
+---
+
+### T-1900e  Invalid decoder section rejects entire ELF
+
+**Traces to:** GW-1900 (AC-4)
+
+**Steps:**
+1. Build an ELF with a valid `SEC("sonde")` section and a `SEC("decoder")` section that fails Prevail verification (e.g., invalid helper call or type violation).
+2. Ingest via `IngestProgram`.
+
+**Expected:**
+1. The entire ELF is rejected, even though the `sonde` section is valid.
+2. The error message indicates the decoder section failed verification.
+
+---
+
+### T-1900f  Global data shared between sonde and decoder sections
+
+**Traces to:** GW-1900 (AC-5)
+
+**Steps:**
+1. Build an ELF with `SEC("sonde")` and `SEC("decoder")` sections that share global data (`.rodata` or `.data` sections with map definitions used by both).
+2. Ingest via `IngestProgram`.
+
+**Expected:**
+1. Both images are produced successfully.
+2. Each image receives the map definitions and initial data relevant to its section.
+3. Shared global data is correctly represented in both the node image and decoder image.
+
+---
+
+### T-1900g  Section name matching is exact
+
+**Traces to:** GW-1900 (AC-6)
+
+**Steps:**
+1. Build an ELF with `SEC("sonde")`, a valid `SEC("decoder")`, and an additional section named `decoder.text` (or `decoderx`, `my_decoder`, etc.).
+2. Ingest via `IngestProgram`.
+
+**Expected:**
+1. Only `SEC("decoder")` is recognized as the decoder section.
+2. Sections with similar but non-matching names (e.g., `decoder.text`) are ignored.
+3. The program is ingested successfully with one decoder image (from the exact `decoder` section).
 
 ---
 

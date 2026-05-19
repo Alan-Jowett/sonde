@@ -1048,12 +1048,17 @@ The gateway MUST expose a separate local control-plane connector API for a singl
 **Description:**  
 The connector API MUST accept control-plane desired-state messages addressed to exactly one entity per message. The addressable entities are the singleton gateway entity or a registered node. Gateway-scoped desired state is selected by `entity_kind = "gateway"`; the connector contract does not use a gateway instance identifier, and any accompanying `entity_id` is ignored for gateway-targeted messages. Each desired-state message MUST represent the complete desired state for its target entity, not a partial patch. Upon acceptance, the gateway MUST update its local desired-state view for that entity and reconcile the desired state against the latest actual state and pending command state that the gateway already maintains. The control plane does not directly queue node commands through the connector.
 
+When a node-scoped `DESIRED_STATE` message includes an inline ELF binary (`assigned_program_elf`, CBOR key 5), `assigned_program_hash` (CBOR key 1) MUST also be present; the gateway MUST reject the message if the hash is missing. The gateway ingests the program locally through the program library before updating node state. The verification profile (`assigned_program_verification_profile`, CBOR key 6) determines the size and verification constraints; the default is `Resident`. The gateway MUST verify that the ingested program's hash matches the declared `assigned_program_hash` exactly. If any ingestion step fails (invalid ELF, verification failure, size limit, hash mismatch, or missing hash), the gateway MUST reject the entire `DESIRED_STATE` message without updating the node's desired state or persisting the program.
+
 **Acceptance criteria:**
 
 1. A desired-state message targets exactly one gateway or one node.
 2. Applying a desired-state message replaces the previously stored desired state for that entity.
 3. Desired-state ingestion updates the same gateway-owned reconciliation state used to decide future node `COMMAND` contents.
 4. The connector does not expose imperative cloud-originated operations such as direct `QueueReboot`, `AssignProgram`, or display RPCs as part of the normal control-plane path.
+5. When a node-scoped `DESIRED_STATE` includes `assigned_program_elf` (key 5), the gateway ingests the ELF through local Prevail verification and stores the resulting program image.
+6. If the declared `assigned_program_hash` (key 1) does not match the hash of the ingested program, the entire `DESIRED_STATE` message is rejected.
+7. An invalid or oversized inline ELF causes the entire `DESIRED_STATE` message to be rejected without updating node state.
 
 ---
 
@@ -1885,11 +1890,11 @@ When the gateway rejects a program due to Prevail verification failure, the erro
 **Source:** Issue #525
 
 **Description:**  
-When the gateway runs as a Windows service (no interactive console), it MUST provide file-based logging and ETW-based monitoring so that operators can diagnose issues without attaching a debugger. The file log path MUST be derived deterministically from the database path (`<db-path>.log`), and the default file sink `EnvFilter` in release builds MUST be `sonde_gateway=warn` (i.e., WARN-level logs for the `sonde_gateway` target, matching the console-mode default from GW-1304). The gateway MUST register an ETW provider named `sonde-gateway` so that operators can capture real-time traces via standard ETW tooling (e.g., `logman`, `tracelog`, Windows Performance Recorder). The ETW sink MUST remain unfiltered (all compiled-in levels are forwarded; ETW-side sessions control what is captured). Operators MUST be able to change the file log level at runtime without restarting the service by setting the `RUST_LOG` environment variable and sending a service control signal (e.g., `SERVICE_CONTROL_PARAMCHANGE` on Windows). The runtime reload mechanism MUST apply the new filter within 5 seconds and MUST NOT require a service restart.
+When the gateway runs as a Windows service (no interactive console), it MUST provide file-based logging and ETW-based monitoring so that operators can diagnose issues without attaching a debugger. The file log path MUST be derived deterministically from the database path by replacing the extension with `.log` (e.g., `gateway.db` → `gateway.log`), and the default file sink `EnvFilter` in release builds MUST be `sonde_gateway=warn` (i.e., WARN-level logs for the `sonde_gateway` target, matching the console-mode default from GW-1304). The gateway MUST register an ETW provider named `sonde-gateway` so that operators can capture real-time traces via standard ETW tooling (e.g., `logman`, `tracelog`, Windows Performance Recorder). The ETW sink MUST remain unfiltered (all compiled-in levels are forwarded; ETW-side sessions control what is captured). Operators MUST be able to change the file log level at runtime without restarting the service by setting the `RUST_LOG` environment variable and sending a service control signal (e.g., `SERVICE_CONTROL_PARAMCHANGE` on Windows). The runtime reload mechanism MUST apply the new filter within 5 seconds and MUST NOT require a service restart.
 
 **Acceptance criteria:**
 
-1. In Windows service mode, the gateway writes log output to a file at `<db-path>.log` where `<db-path>` is the configured database file path (e.g., if the database is `C:\ProgramData\sonde\gateway.db`, the log file is `C:\ProgramData\sonde\gateway.db.log`).
+1. In Windows service mode, the gateway writes log output to a file at `<basename>.log` where the extension of the configured database file path is replaced (e.g., if the database is `C:\ProgramData\sonde\gateway.db`, the log file is `C:\ProgramData\sonde\gateway.log`).
 2. The default `EnvFilter` for the file sink in release builds is `sonde_gateway=warn`, consistent with the console-mode default (GW-1304 criterion 3).
 3. The gateway registers an ETW provider with the name `sonde-gateway`. The ETW sink is unfiltered; all events up to the compile-time maximum level (TRACE in both debug and release) are forwarded to any active ETW session.
 4. The file log level can be changed at runtime without restarting the service: setting `RUST_LOG` and delivering a platform-appropriate reload signal causes the gateway to re-read the environment variable and apply the new `EnvFilter` within 5 seconds.
@@ -2333,7 +2338,7 @@ The gateway SHOULD support configurable RSSI thresholds for the signal quality a
 
 **Acceptance criteria:**
 
-1. RSSI thresholds can be set via the gateway configuration file.
+1. RSSI thresholds can be set via CLI flags (`--rssi-good-threshold`, `--rssi-bad-threshold`).
 2. Default values are used when no configuration is provided.
 3. The gateway validates that `good_threshold` > `bad_threshold` at startup and logs an error if not.
 

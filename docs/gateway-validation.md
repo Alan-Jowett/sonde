@@ -2845,7 +2845,9 @@ A configurable stub handler process (or in-process mock) that:
 1. Ingest a BPF ELF that triggers a Prevail forward-analysis failure (e.g. an invalid helper call or type violation).
 2. Assert: the gRPC error message contains at least one instruction-level diagnostic line from the verifier.
 3. Assert: the diagnostic includes verifier-specific context (e.g. type mismatch description, register state).
-4. If the diagnostic output exceeds the implementation-defined maximum length, assert: the first error from `find_first_error()` is preserved and a truncation marker (e.g., `"[... diagnostics truncated]"`) is present (AC1).
+4. Ingest a BPF ELF whose verifier diagnostics deterministically exceed the implementation-defined maximum length (e.g., a program with many distinct type violations across multiple instructions).
+5. Assert: the first error from `find_first_error()` is preserved in the gRPC error message.
+6. Assert: a truncation marker (e.g., `"[... diagnostics truncated]"`) is present (AC1).
 
 ---
 
@@ -2874,7 +2876,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1306a  File sink writes to `<db-path>.log`
+### T-1306a  File sink writes to `<basename>.log` (replace extension)
 
 **Validates:** GW-1306
 
@@ -3096,7 +3098,7 @@ A configurable stub handler process (or in-process mock) that:
 3. Run `sonde-admin handler add "*" echo --reply-timeout 5000 --working-dir /tmp` and assert: command succeeds.
 4. Run `sonde-admin handler list` and assert: output contains one handler with `program_hash = "*"`, `command = "echo"`, `reply_timeout_ms = 5000`, and `working_dir = "/tmp"`.
 5. Run `sonde-admin handler list --format json` and assert: output is valid JSON containing the same handler fields.
-6. Run `sonde-admin handler add "abcd" * 64 echo2` (valid 64-char hex hash) and assert: command succeeds.
+6. Run `sonde-admin handler add abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd echo2` (valid 64-char hex hash) and assert: command succeeds.
 7. Run `sonde-admin handler list` and assert: output contains two handlers.
 8. Run `sonde-admin handler remove "*"` and assert: command succeeds.
 9. Run `sonde-admin handler list` and assert: output contains one handler (the hex-hash handler).

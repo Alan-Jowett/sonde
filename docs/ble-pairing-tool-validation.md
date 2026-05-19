@@ -17,7 +17,7 @@ This document defines test cases that validate the BLE pairing tool against the 
 
 **Test harness:** All CI tests use a **mock BLE transport** (in-process implementation of the `BleTransport` trait) and a **mock pairing store** (in-memory implementation of the `PairingStore` trait). No real BLE hardware is needed. Manual tests against physical hardware are specified separately.
 
-**Architecture requirements:** PT-0100 (supported platforms), PT-0101 (Rust-first implementation), PT-0102 (platform isolation), PT-0103 (crate placement), and PT-0104 (separation of concerns) are structural constraints validated by CI build targets and code review.  Named validation entries (T-PT-0100 through T-PT-0104) are defined in §2a below to provide explicit traceability.  PT-1004 (reusable core) is validated by T-PT-1004, which asserts the crate builds without platform features.
+**Architecture requirements:** PT-0100 (supported platforms), PT-0101 (Rust-first implementation), PT-0102 (platform isolation), PT-0103 (crate placement), and PT-0104 (separation of concerns) are structural constraints validated by CI build targets and code review.  Named validation entries (T-PT-0100 through T-PT-0104) are defined in §2.6 below to provide explicit traceability.  PT-1004 (reusable core) is validated by T-PT-1004, which asserts the crate builds without platform features.
 
 **Testing meta-requirement traceability:** The following mapping shows how requirements PT-1000–PT-1206 are satisfied by the test suites, structural coverage, and supporting CI/build checks described in this document:
 
@@ -46,61 +46,6 @@ This document defines test cases that validate the BLE pairing tool against the 
 | CSPRNG | T-PT-302, T-PT-702 |
 
 **Test ID convention:** Test IDs follow the numeric pattern `T-PT-NNN`. When a test case is added after initial numbering to cover a gap between two adjacent IDs, an alphabetic suffix is used (e.g., `T-PT-208a` for a test inserted between T-PT-208 and T-PT-209).
-
----
-
-## 2a  Architecture requirement validation
-
-These are **structural checks** (CI build targets, dependency graph review) — not runtime tests.
-
-### T-PT-0100  Supported platforms build successfully
-
-**Validates:** PT-0100
-
-**Procedure:**
-1. The Tauri CI workflows (`.github/workflows/tauri-desktop.yml` for Windows/Linux, `.github/workflows/tauri-android.yml` for Android) build `sonde-pair-ui`, which transitively compiles `sonde-pair` for each platform target.
-2. Assert: CI passes on both desktop (Windows) and Android targets without errors.
-
----
-
-### T-PT-0101  Rust-first implementation
-
-**Validates:** PT-0101
-
-**Procedure:**
-1. Inspect `crates/sonde-pair/src/` — all protocol logic, cryptography, and state machine code is Rust.
-2. Assert: no protocol logic exists in frontend JavaScript/TypeScript.
-
----
-
-### T-PT-0102  Platform isolation via BleTransport trait
-
-**Validates:** PT-0102
-
-**Procedure:**
-1. Inspect `crates/sonde-pair/Cargo.toml` — the core crate has no direct dependencies on `btleplug`, Android BLE API, or any platform-specific BLE library.
-2. Assert: all BLE operations are accessed through the `BleTransport` trait.
-
----
-
-### T-PT-0103  Crate placement in workspace
-
-**Validates:** PT-0103
-
-**Procedure:**
-1. Assert: `sonde-pair` is listed as a workspace member in the root `Cargo.toml`.
-2. Assert: `sonde-pair` depends on `sonde-protocol` via path dependency.
-
----
-
-### T-PT-0104  Four-layer separation of concerns
-
-**Validates:** PT-0104
-
-**Procedure:**
-1. Inspect `crates/sonde-pair/src/` module structure.
-2. Assert: protocol logic, transport abstraction, storage abstraction, and error types are in separate modules.
-3. Assert: no circular dependencies between layers.
 
 ---
 
@@ -174,6 +119,61 @@ TestNode {
 10. Call `wait_indication()`.
 11. Assert: the caller receives the malformed data (transport delivers raw bytes; the parsing layer detects the error).
 12. Assert: all of the above runs in CI without BLE hardware.
+
+---
+
+### 2.6  Architecture requirement validation
+
+These are **structural checks** (CI build targets, dependency graph review) — not runtime tests.
+
+#### T-PT-0100  Supported platforms build successfully
+
+**Validates:** PT-0100
+
+**Procedure:**
+1. The Tauri CI workflows (`.github/workflows/tauri-desktop.yml` for Windows/Linux, `.github/workflows/tauri-android.yml` for Android) build `sonde-pair-ui`, which transitively compiles `sonde-pair` for each platform target.
+2. Assert: CI passes on both desktop (Windows) and Android targets without errors.
+
+---
+
+#### T-PT-0101  Rust-first implementation
+
+**Validates:** PT-0101
+
+**Procedure:**
+1. Inspect `crates/sonde-pair/src/` — all protocol logic, cryptography, and state machine code is Rust.
+2. Assert: no protocol logic exists in frontend JavaScript/TypeScript.
+
+---
+
+#### T-PT-0102  Platform isolation via BleTransport trait
+
+**Validates:** PT-0102
+
+**Procedure:**
+1. Inspect `crates/sonde-pair/Cargo.toml` — the core crate has no unconditional dependencies on `btleplug`, `jni`, or any platform-specific BLE library. Platform transports are feature-gated behind optional Cargo features (e.g., `btleplug`, `android`).
+2. Assert: all BLE operations in core protocol logic are accessed through the `BleTransport` trait.
+
+---
+
+#### T-PT-0103  Crate placement in workspace
+
+**Validates:** PT-0103
+
+**Procedure:**
+1. Assert: `sonde-pair` is listed as a workspace member in the root `Cargo.toml`.
+2. Assert: `sonde-pair` depends on `sonde-protocol` via path dependency.
+
+---
+
+#### T-PT-0104  Four-layer separation of concerns
+
+**Validates:** PT-0104
+
+**Procedure:**
+1. Inspect `crates/sonde-pair/src/` module structure.
+2. Assert: protocol logic, transport abstraction, storage abstraction, and error types are in separate modules.
+3. Assert: no circular dependencies between layers.
 
 ---
 

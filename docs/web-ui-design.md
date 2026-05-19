@@ -256,7 +256,7 @@ routes.
 The Entra app registration (companion client ID) must expose an API scope
 (`api://<clientId>/user_impersonation`). This is configured by the bootstrap
 script inside the `sonde-azure-bootstrap` container. SPA redirect URIs are
-registered declaratively in Bicep (`companion-identity.bicep`).
+registered via CLI (`az rest PATCH`) during bootstrap.
 
 The scope and redirect URIs must exist before the SPA attempts to acquire
 tokens for the Function App audience.
@@ -288,12 +288,16 @@ The Bicep deployment configures:
    `https://alan-jowett.github.io` and `https://sondeplatform.com`
    (via `corsAllowedOrigins` parameter — origins only, no path component).
 
-2. **SPA redirect URIs** on the Entra app (`companion-identity.bicep`):
+2. **SPA redirect URIs** on the Entra app (configured via CLI/Graph API
+   during bootstrap):
    `https://alan-jowett.github.io/sonde/` and `https://sondeplatform.com/`
-   (via `spaRedirectUris` parameter — full URL with trailing slash).
+   (full URL with trailing slash).
 
-Both are parameterized via `githubPagesOrigin`, `githubPagesPath`, and
+Both CORS origins are parameterized via `githubPagesOrigin` and
 `customDomainOrigin` parameters in `main.bicep`, with Sonde-specific defaults.
+SPA redirect URIs are configured via CLI using `SONDE_AZURE_GITHUB_PAGES_ORIGIN`,
+`SONDE_AZURE_GITHUB_PAGES_PATH`, and `SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN`
+environment variables.
 
 ---
 

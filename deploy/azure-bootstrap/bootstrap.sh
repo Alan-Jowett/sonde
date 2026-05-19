@@ -192,13 +192,106 @@ if [ -n "${SONDE_AZURE_GITHUB_PAGES_ORIGIN:-}" ]; then
     esac
     optional_params="$optional_params githubPagesOrigin=$SONDE_AZURE_GITHUB_PAGES_ORIGIN"
 fi
+# ── Entra app registration + service principal (CLI) ─────────────────────────
+# The Microsoft Graph Bicep extension does not reliably return server-generated
+# read-only properties (appId) on first creation, so the Entra identity is
+# created via CLI and the resolved IDs are passed to Bicep as parameters.
+# See: https://github.com/microsoftgraph/msgraph-bicep-types/issues/193
+
+APP_DISPLAY_NAME="${SONDE_AZURE_PROJECT_NAME:-sonde}-azure-companion"
+APP_ID=""
+for _retry in $(seq 1 6); do
+    APP_ID=$(az ad app list \
+        --filter "displayName eq '$APP_DISPLAY_NAME'" \
+        --query '[0].appId' -o tsv 2>/dev/null || true)
+    if [ -n "$APP_ID" ] && [ "$APP_ID" != "None" ]; then
+        echo "Found existing Entra app registration $APP_ID" >&2
+        break
+    fi
+    APP_ID=""
+    # Create via Graph API directly — az ad app create has a broken
+    # find-and-patch path that races with Entra replication.
+    APP_ID=$(az rest --method POST \
+        --url "https://graph.microsoft.com/v1.0/applications" \
+        --headers "Content-Type=application/json" \
+        --body "$(jq -n -c \
+            --arg name "$APP_DISPLAY_NAME" \
+            '{displayName: $name, signInAudience: "AzureADMyOrg"}')" \
+        --query appId -o tsv 2>/dev/null) && { echo "Created Entra app registration $APP_ID" >&2; break; }
+    APP_ID=""
+    echo "Waiting for Entra app (attempt $_retry/6)..." >&2
+    sleep 10
+done
+if [ -z "$APP_ID" ]; then
+    echo "Failed to create or find Entra app '$APP_DISPLAY_NAME'" >&2
+    exit 1
+fi
+
+# Register certificate credential and configure SPA redirect URIs.
+# After app creation, Entra ID may take a few seconds to replicate
+# the new app to all read replicas, so retry the lookup.
+APP_OID=""
+for _retry in $(seq 1 12); do
+    APP_OID=$(az ad app show --id "$APP_ID" --query id -o tsv 2>/dev/null) && break
+    echo "Waiting for Entra app replication (attempt $_retry/12)..." >&2
+    sleep 10
+done
+if [ -z "$APP_OID" ]; then
+    echo "Failed to resolve Entra app object ID for $APP_ID after retries" >&2
+    exit 1
+fi
+
+# Build SPA redirect URIs from the same env vars that Bicep previously used.
+github_pages_origin="${SONDE_AZURE_GITHUB_PAGES_ORIGIN:-https://alan-jowett.github.io}"
+github_pages_path="${SONDE_AZURE_GITHUB_PAGES_PATH:-/sonde/}"
+# Normalize path to ensure leading and trailing slashes
+github_pages_path="/$(printf '%s' "$github_pages_path" | sed 's|^/||;s|/$||')/"
+# shellcheck disable=SC2016 — $cert/$uris are jq variable refs, not shell.
+redirect_uris="$(printf '%s' "${github_pages_origin}${github_pages_path}")"
+if [ "${SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN+set}" = "set" ] && [ -n "$SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN" ]; then
+    # Strip trailing slash then append exactly one
+    custom_origin="$(printf '%s' "$SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN" | sed 's|/$||')"
+    spa_body="$(jq -n -c \
+        --arg cert "$COMPANION_CERT_BASE64" \
+        --arg certName "sonde-azure-companion" \
+        --arg u1 "$redirect_uris" \
+        --arg u2 "${custom_origin}/" \
+        '{keyCredentials:[{displayName:$certName,usage:"Verify",type:"AsymmetricX509Cert",key:$cert}],spa:{redirectUris:[$u1,$u2]}}')"
+else
+    spa_body="$(jq -n -c \
+        --arg cert "$COMPANION_CERT_BASE64" \
+        --arg certName "sonde-azure-companion" \
+        --arg u1 "$redirect_uris" \
+        '{keyCredentials:[{displayName:$certName,usage:"Verify",type:"AsymmetricX509Cert",key:$cert}],spa:{redirectUris:[$u1]}}')"
+fi
+az rest --method PATCH \
+    --url "https://graph.microsoft.com/v1.0/applications/$APP_OID" \
+    --headers "Content-Type=application/json" \
+    --body "$spa_body" >/dev/null
+echo "Configured certificate credential and SPA redirect URIs" >&2
+
+# Create service principal (idempotent, with retry for replication)
+SP_OID=""
+for _retry in $(seq 1 12); do
+    SP_OID=$(az ad sp show --id "$APP_ID" --query id -o tsv 2>/dev/null) && break
+    SP_OID=$(az ad sp create --id "$APP_ID" --query id -o tsv 2>/dev/null) && break
+    echo "Waiting for service principal replication (attempt $_retry/12)..." >&2
+    sleep 10
+done
+if [ -z "$SP_OID" ]; then
+    echo "Failed to create/find service principal for $APP_ID after retries" >&2
+    exit 1
+fi
+echo "Service principal object ID: $SP_OID" >&2
+
 # shellcheck disable=SC2086 — intentional word-splitting on optional_params;
 # all values are URLs which cannot contain whitespace.
 deployment_outputs="$(az deployment sub create \
     --name "$deployment_name" \
     --location "$SONDE_AZURE_LOCATION" \
     --template-file /opt/sonde/deploy/bicep/main.bicep \
-    --parameters "companionCertificateBase64=$COMPANION_CERT_BASE64" \
+    --parameters "companionClientId=$APP_ID" \
+                 "companionServicePrincipalObjectId=$SP_OID" \
                  "location=$SONDE_AZURE_LOCATION" \
                  "project_name=$SONDE_AZURE_PROJECT_NAME" \
                  $optional_params \

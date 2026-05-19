@@ -32,8 +32,8 @@ Azure companion architecture.
 | `project_name` | `sonde` | Prefix for resource names and tags |
 | `resource_group_name` | empty | Optional override for the resource group name |
 | `resourceGroupOwnerTag` | empty | Optional `sonde-ci-owner` tag value applied to the deployment resource group |
-| `companionCertificateBase64` | none | Base64-encoded DER certificate public material registered on the Azure companion app |
-| `companionCertificateDisplayName` | `sonde-azure-companion` | Optional display name for the registered certificate credential |
+| `companionClientId` | none | Entra application (client) ID, created via CLI before deployment |
+| `companionServicePrincipalObjectId` | none | Entra service principal object ID, created via CLI before deployment |
 | `upstreamQueueName` | `connector-upstream` | Gateway-originated connector traffic queue |
 | `downstreamQueueName` | `desired-state` | Desired-state ingress queue |
 | `storageAccountName` | derived | Optional Storage Account override |
@@ -42,8 +42,7 @@ Azure companion architecture.
 | `functionAppName` | derived | Optional Function App override |
 | `functionPlanName` | derived | Optional Function hosting plan override |
 | `githubPagesOrigin` | `https://alan-jowett.github.io` | GitHub Pages origin (no path) for Function App CORS |
-| `githubPagesPath` | `/sonde/` | Path appended to origin for Entra SPA redirect URI |
-| `customDomainOrigin` | `https://sondeplatform.com` | Custom domain origin for CORS and Entra redirect URI. Empty = GitHub Pages only |
+| `customDomainOrigin` | `https://sondeplatform.com` | Custom domain origin for CORS. Empty = GitHub Pages only |
 
 When resource names are derived automatically, the deployment normalizes
 `project_name` to satisfy Azure naming rules for the target resource types.
@@ -52,38 +51,36 @@ The derived default Function App name intentionally keeps the historical `-decod
 stem so existing stacks update in place; set `functionAppName` explicitly on new
 deployments if you want a handler-specific resource name.
 
-## Companion certificate input
+## Entra app registration
 
-The deployment registers only the **public certificate** on the Entra app. The
-matching certificate PEM and private-key PEM remain caller-managed local
-artifacts for `sonde-azure-companion` bootstrap.
+The Entra application and service principal must be created **before** deploying
+the Bicep stack, because the Microsoft Graph Bicep extension does not reliably
+return server-generated read-only properties (`appId`) on first creation
+([microsoftgraph/msgraph-bicep-types#193](https://github.com/microsoftgraph/msgraph-bicep-types/issues/193)).
 
-One way to derive `companionCertificateBase64` from a PEM certificate is:
-
-```powershell
-openssl x509 -in companion-cert.pem -outform der | openssl base64 -A
-```
+Both the Azure Live CI workflow and `sonde-azure-companion bootstrap` handle
+this automatically via CLI before invoking the Bicep deployment.
 
 ## Plan / apply
 
-Plan the deployment:
+Plan the deployment (after creating the Entra app+SP):
 
 ```powershell
-$cert = openssl x509 -in companion-cert.pem -outform der | openssl base64 -A
 az deployment sub what-if `
   --location eastus `
   --template-file .\deploy\bicep\main.bicep `
-  --parameters companionCertificateBase64=$cert
+  --parameters companionClientId=$appId `
+  --parameters companionServicePrincipalObjectId=$spOid
 ```
 
 Create or update the stack:
 
 ```powershell
-$cert = openssl x509 -in companion-cert.pem -outform der | openssl base64 -A
 az deployment sub create `
   --location eastus `
   --template-file .\deploy\bicep\main.bicep `
-  --parameters companionCertificateBase64=$cert
+  --parameters companionClientId=$appId `
+  --parameters companionServicePrincipalObjectId=$spOid
 ```
 
 ## Custom handler package deployment
@@ -179,7 +176,7 @@ The workflow uses GitHub OIDC for Azure login. The configured identity needs:
 
 - permission to create, inspect, and delete the dedicated disposable CI resource group,
 - permission to deploy the Bicep stack in that subscription, and
-- Microsoft Graph permissions required by `modules/companion-identity.bicep` to create the Entra application and service principal used by `sonde-azure-companion`, and
+- Microsoft Graph `Application.ReadWrite.All` and `AppRoleAssignment.ReadWrite.All` permissions to create and configure the Entra application and service principal via CLI, and
 - Storage Queue data-plane roles that let the live-validation harness send to and receive from the deployed queues when it authenticates via `AzureCliCredential`.
 
 For the default queue topology, the GitHub OIDC identity therefore needs enough

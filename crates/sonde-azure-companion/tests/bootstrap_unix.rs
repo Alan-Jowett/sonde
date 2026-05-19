@@ -377,6 +377,22 @@ printf '%s\n' "$*" >> "{}"
 if [ "$#" -ge 3 ] && [ "$1" = "login" ] && [ "$2" = "--use-device-code" ] && [ "$3" = "--output" ]; then
   exit 0
 fi
+if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "app" ] && [ "$3" = "list" ]; then
+  printf 'client-456\n'
+  exit 0
+fi
+if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "app" ] && [ "$3" = "create" ]; then
+  printf 'client-456\n'
+  exit 0
+fi
+if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "sp" ] && [ "$3" = "show" ]; then
+  printf 'sp-oid-999\n'
+  exit 0
+fi
+if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "sp" ] && [ "$3" = "create" ]; then
+  printf 'sp-oid-999\n'
+  exit 0
+fi
 if [ "$#" -ge 4 ] && [ "$1" = "deployment" ] && [ "$2" = "sub" ] && [ "$3" = "create" ]; then
   query=""
   name=""

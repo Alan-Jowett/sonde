@@ -1272,6 +1272,8 @@ TestNode {
 5. Call `stop()`.
 6. Assert: captured logs contain a `debug` event with text "scan stopped".
 7. Assert: captured logs contain `debug` events for each discovered target device with `name`, `address`, `rssi`.
+8. Configure the scanner to evict stale devices (e.g., by advancing time past the eviction threshold and calling `refresh()`).
+9. Assert: captured logs contain a `debug` event indicating stale devices were evicted, including the eviction count (AC 4).
 
 ---
 
@@ -1308,10 +1310,12 @@ TestNode {
 
 **Procedure:**
 1. Run a Phase 1 happy path with mock transport, progress callback, and `#[traced_test]`.
-2. Assert: captured logs contain `info` events for "connecting to gateway" and "Phase 1 complete".
-3. Assert: the completion log includes `phone_key_hint` and `rf_channel` fields.
+2. Assert: captured logs contain `info` or `debug` events for each phase transition in the Phase 1 flow: Idle → Scanning → Connecting → Authenticating → Registering → Complete.
+3. Assert: the Phase 1 completion log includes `phone_key_hint` and `rf_channel` fields.
 4. Run a Phase 2 happy path.
-5. Assert: captured logs contain `info` events for "connecting to node" and "Phase 2 complete".
+5. Assert: captured logs contain `info` or `debug` events for each phase transition in the Phase 2 flow: Connecting → Provisioning → Complete.
+6. Run a Phase 1 flow that triggers an error (e.g., connection failure).
+7. Assert: captured logs contain an event for the Error phase transition.
 
 ---
 

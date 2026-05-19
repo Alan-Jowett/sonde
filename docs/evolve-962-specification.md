@@ -45,7 +45,9 @@ is removed. The existing `GatewayIdentity` serves both purposes:
   re-scoped under this specification as an escrow requirement.
 
 The `GatewayIdentity` seed is already encrypted at rest with the master key
-(AES-256-GCM, `gateway_id` as AAD). No additional storage is needed.
+(AES-256-GCM, AAD = `b"sonde-gateway-identity" || gateway_id` — 22-byte
+ASCII prefix concatenated with the raw 16-byte `gateway_id`). No additional
+storage is needed.
 
 **Removed artifacts:**
 - `escrow_keypair` table
@@ -113,9 +115,11 @@ kind is `"gateway"`, entity ID is `hex(gateway_id)` (16-byte random ID from
 
 **Note:** This supersedes `gateway-companion-api.md` §3.2 line 156 and
 §3.3 line 206, which mandate `entity_id = ""` for `entity_kind = "gateway"`.
-With this spec, gateway `entity_id` carries the hex-encoded `gateway_id`
-to distinguish multiple gateways sharing one cloud deployment. A companion
-patch to `gateway-companion-api.md` must update those sections accordingly.
+It also supersedes `gateway-requirements.md` GW-0811, which states that
+gateway-scoped state ignores `entity_id`. With this spec, gateway
+`entity_id` carries the hex-encoded `gateway_id` to distinguish multiple
+gateways sharing one cloud deployment. Companion patches to both documents
+must update these sections accordingly.
 
 Gateway ACTUAL_STATE is emitted:
 - On startup (after identity and master key are loaded).
@@ -213,14 +217,16 @@ Total envelope: 45 bytes + ciphertext length.
 
 **Encryption parameters:**
 - Shared secret: `X25519(gw_private_key, sender_ephemeral_public)`
-- Derived key: `HKDF-SHA-256(shared_secret, hkdf_salt="sonde-rotation-v1",
-  info=gateway_id || current_master_key_epoch_be64)` where
-  `current_master_key_epoch_be64` is the 8-byte big-endian encoding of
-  the gateway's current `master_key_epoch` from ACTUAL_STATE.
+- Derived key: `HKDF-SHA-256(shared_secret, hkdf_salt=b"sonde-rotation-v1",
+  info=gateway_id_raw || current_master_key_epoch_be64)` where
+  `hkdf_salt` is the 18-byte ASCII encoding of `"sonde-rotation-v1"`
+  (no NUL terminator), `gateway_id_raw` is the raw 16-byte `gateway_id`
+  (not hex-encoded), and `current_master_key_epoch_be64` is the 8-byte
+  big-endian encoding of the gateway's current `master_key_epoch`.
   Note: the HKDF `hkdf_salt` is a fixed protocol constant, distinct from
   the Argon2id KDF `salt` used for passphrase derivation.
 - Decryption: `AES-256-GCM-Open(derived_key, nonce, ciphertext_and_tag,
-  aad=gateway_id || current_master_key_epoch_be64)`
+  aad=gateway_id_raw || current_master_key_epoch_be64)`
 
 **Validation rules (gateway side):**
 1. `version` must be `0x01`. Reject unknown versions.
@@ -344,17 +350,28 @@ Node-scoped ACTUAL_STATE gains three fields:
 
 | Field | CBOR key | Type | Description |
 |-------|----------|------|-------------|
-| `encrypted_psk` | 12 | bstr/null | Raw encrypted PSK blob (nonce + ciphertext + tag, same format as DB) |
+| `encrypted_psk` | 12 | bstr (60 bytes)/null | Encrypted PSK blob (see format below) |
 | `escrow_key_hint` | 13 | uint/null | `key_hint` (u16) for Azure recovery lookup |
 | `master_key_id` | 14 | bstr (16 bytes)/null | Opaque master key ID that encrypted this PSK |
 
 Phone-scoped ACTUAL_STATE (`entity_kind = "phone"`, `entity_id = phone_id`)
 uses the same fields.
 
-The separate `EscrowBlob` CBOR format is removed. The encrypted PSK is
-the raw blob as stored in the database, paired with the `master_key_id`
-for cloud-side indexing. The `escrow_key_hint` field (CBOR key 13) is
-retained for recovery lookup.
+**`encrypted_psk` format** (60 bytes, identical to the DB storage format):
+
+```
+┌──────────────────────────────────────────────────┐
+│  nonce (12 bytes)                                │
+│  ciphertext (32 bytes) + GCM tag (16 bytes)      │
+└──────────────────────────────────────────────────┘
+```
+
+- Encryption: `AES-256-GCM(master_key, nonce, plaintext_psk,
+  aad=node_id_utf8)` where `node_id_utf8` is the UTF-8 encoding of the
+  node's `node_id` string (for phone PSKs, `aad=node_id_utf8` where
+  `node_id` is the string representation of `phone_id`).
+- The blob is opaque to the cloud — the handler stores and returns it
+  without inspection or decryption.
 
 Escrow fields are emitted:
 - On node/phone registration.
@@ -383,7 +400,20 @@ persisting across multiple ACTUAL_STATE emissions.
 
 When the gateway receives `recovered_psks` in DESIRED_STATE:
 
-1. For each recovered PSK record `{node_id, key_hint, encrypted_psk, master_key_id}`:
+**`recovered_psks` CBOR schema** (array of maps with integer keys):
+
+```
+recovered_psks = [recovered_psk_record, ...]
+
+recovered_psk_record = {
+    1: node_id      (tstr)           -- node identifier
+    2: key_hint     (uint)           -- key_hint (u16)
+    3: encrypted_psk (bstr, 60 bytes) -- encrypted PSK blob (§2.7 format)
+    4: master_key_id (bstr, 16 bytes) -- opaque master key ID
+}
+```
+
+1. For each recovered PSK record:
    a. Verify `master_key_id` matches the gateway's current master key ID.
       If not → skip (wrong key era, can't use this PSK).
    b. Insert into a **provisional recovery table** (not directly into `nodes`).

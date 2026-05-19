@@ -212,8 +212,19 @@ else
     echo "Found existing Entra app registration $APP_ID" >&2
 fi
 
-# Register certificate credential and configure SPA redirect URIs
-APP_OID=$(az ad app show --id "$APP_ID" --query id -o tsv)
+# Register certificate credential and configure SPA redirect URIs.
+# After app creation, Entra ID may take a few seconds to replicate
+# the new app to all read replicas, so retry the lookup.
+APP_OID=""
+for _retry in $(seq 1 12); do
+    APP_OID=$(az ad app show --id "$APP_ID" --query id -o tsv 2>/dev/null) && break
+    echo "Waiting for Entra app replication (attempt $_retry/12)..." >&2
+    sleep 10
+done
+if [ -z "$APP_OID" ]; then
+    echo "Failed to resolve Entra app object ID for $APP_ID after retries" >&2
+    exit 1
+fi
 
 # Build SPA redirect URIs from the same env vars that Bicep previously used.
 github_pages_origin="${SONDE_AZURE_GITHUB_PAGES_ORIGIN:-https://alan-jowett.github.io}"
@@ -242,9 +253,18 @@ az rest --method PATCH \
     --body "$spa_body" >/dev/null
 echo "Configured certificate credential and SPA redirect URIs" >&2
 
-# Create service principal (idempotent)
-SP_OID=$(az ad sp show --id "$APP_ID" --query id -o tsv 2>/dev/null || \
-    az ad sp create --id "$APP_ID" --query id -o tsv)
+# Create service principal (idempotent, with retry for replication)
+SP_OID=""
+for _retry in $(seq 1 12); do
+    SP_OID=$(az ad sp show --id "$APP_ID" --query id -o tsv 2>/dev/null) && break
+    SP_OID=$(az ad sp create --id "$APP_ID" --query id -o tsv 2>/dev/null) && break
+    echo "Waiting for service principal replication (attempt $_retry/12)..." >&2
+    sleep 10
+done
+if [ -z "$SP_OID" ]; then
+    echo "Failed to create/find service principal for $APP_ID after retries" >&2
+    exit 1
+fi
 echo "Service principal object ID: $SP_OID" >&2
 
 # shellcheck disable=SC2086 — intentional word-splitting on optional_params;

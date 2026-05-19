@@ -152,8 +152,18 @@ jobs:
               --query appId -o tsv)
           fi
 
-          # Register certificate credential and configure SPA redirect URIs
-          APP_OID=$(az ad app show --id "$APP_ID" --query id -o tsv)
+          # Register certificate credential and configure SPA redirect URIs.
+          # After app creation, Entra ID may take a few seconds to replicate
+          # the new app to all read replicas, so retry the lookup.
+          for i in $(seq 1 12); do
+            APP_OID=$(az ad app show --id "$APP_ID" --query id -o tsv 2>/dev/null) && break
+            echo "Waiting for Entra app replication (attempt $i/12)..."
+            sleep 10
+          done
+          if [ -z "$APP_OID" ]; then
+            echo "::error::Failed to resolve Entra app object ID for $APP_ID after retries"
+            exit 1
+          fi
           az rest --method PATCH \
             --url "https://graph.microsoft.com/v1.0/applications/$APP_OID" \
             --headers "Content-Type=application/json" \
@@ -165,9 +175,18 @@ jobs:
                 spa: {redirectUris: ["https://alan-jowett.github.io/sonde/", "https://sondeplatform.com/"]}
               }')"
 
-          # Create service principal (idempotent)
-          SP_OID=$(az ad sp show --id "$APP_ID" --query id -o tsv 2>/dev/null || \
-            az ad sp create --id "$APP_ID" --query id -o tsv)
+          # Create service principal (idempotent, with retry for replication)
+          SP_OID=""
+          for i in $(seq 1 12); do
+            SP_OID=$(az ad sp show --id "$APP_ID" --query id -o tsv 2>/dev/null) && break
+            SP_OID=$(az ad sp create --id "$APP_ID" --query id -o tsv 2>/dev/null) && break
+            echo "Waiting for service principal replication (attempt $i/12)..."
+            sleep 10
+          done
+          if [ -z "$SP_OID" ]; then
+            echo "::error::Failed to create/find service principal for $APP_ID after retries"
+            exit 1
+          fi
 
           az deployment sub create \
             --location "$SONDE_AZURE_CI_LOCATION" \

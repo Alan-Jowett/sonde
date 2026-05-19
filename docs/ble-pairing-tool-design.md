@@ -193,12 +193,11 @@ The Phase 2 state machine implements the node provisioning flow from [ble-pairin
 │                         │──── ACK(0x02) ─────► Error("storage error")
 └────┬────────────────────┘                      disconnect
      │ ACK(0x00)
-     │ zero node_psk, ephemeral keys, shared secret, AES key
+     │ disconnect
      ▼
 ┌─────────────────┐
-│  Disconnect     │
 │  Success        │ return node_id, node_key_hint, rf_channel
-└─────────────────┘
+└─────────────────┘  (node_psk zeroed on drop via Zeroizing)
 ```
 
 **Key design decisions:**

@@ -192,40 +192,74 @@ if [ -n "${SONDE_AZURE_GITHUB_PAGES_ORIGIN:-}" ]; then
     esac
     optional_params="$optional_params githubPagesOrigin=$SONDE_AZURE_GITHUB_PAGES_ORIGIN"
 fi
+# ── Entra app registration + service principal (CLI) ─────────────────────────
+# The Microsoft Graph Bicep extension does not reliably return server-generated
+# read-only properties (appId) on first creation, so the Entra identity is
+# created via CLI and the resolved IDs are passed to Bicep as parameters.
+# See: https://github.com/microsoftgraph/msgraph-bicep-types/issues/193
+
+APP_DISPLAY_NAME="${SONDE_AZURE_PROJECT_NAME:-sonde}-azure-companion"
+APP_ID=$(az ad app list \
+    --filter "displayName eq '$APP_DISPLAY_NAME'" \
+    --query '[0].appId' -o tsv 2>/dev/null || true)
+if [ -z "$APP_ID" ] || [ "$APP_ID" = "None" ]; then
+    APP_ID=$(az ad app create \
+        --display-name "$APP_DISPLAY_NAME" \
+        --sign-in-audience AzureADMyOrg \
+        --query appId -o tsv)
+    echo "Created Entra app registration $APP_ID" >&2
+else
+    echo "Found existing Entra app registration $APP_ID" >&2
+fi
+
+# Register certificate credential and configure SPA redirect URIs
+APP_OID=$(az ad app show --id "$APP_ID" --query id -o tsv)
+
+# Build SPA redirect URIs from the same env vars that Bicep previously used.
+github_pages_origin="${SONDE_AZURE_GITHUB_PAGES_ORIGIN:-https://alan-jowett.github.io}"
+github_pages_path="${SONDE_AZURE_GITHUB_PAGES_PATH:-/sonde/}"
+# shellcheck disable=SC2016 — $cert/$uris are jq variable refs, not shell.
+redirect_uris="$(printf '%s' "${github_pages_origin}${github_pages_path}")"
+if [ "${SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN+set}" = "set" ] && [ -n "$SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN" ]; then
+    # Strip trailing slash then append exactly one
+    custom_origin="$(printf '%s' "$SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN" | sed 's|/$||')"
+    spa_body="$(jq -n -c \
+        --arg cert "$COMPANION_CERT_BASE64" \
+        --arg certName "sonde-azure-companion" \
+        --arg u1 "$redirect_uris" \
+        --arg u2 "${custom_origin}/" \
+        '{keyCredentials:[{displayName:$certName,usage:"Verify",type:"AsymmetricX509Cert",key:$cert}],spa:{redirectUris:[$u1,$u2]}}')"
+else
+    spa_body="$(jq -n -c \
+        --arg cert "$COMPANION_CERT_BASE64" \
+        --arg certName "sonde-azure-companion" \
+        --arg u1 "$redirect_uris" \
+        '{keyCredentials:[{displayName:$certName,usage:"Verify",type:"AsymmetricX509Cert",key:$cert}],spa:{redirectUris:[$u1]}}')"
+fi
+az rest --method PATCH \
+    --url "https://graph.microsoft.com/v1.0/applications/$APP_OID" \
+    --headers "Content-Type=application/json" \
+    --body "$spa_body" >/dev/null
+echo "Configured certificate credential and SPA redirect URIs" >&2
+
+# Create service principal (idempotent)
+SP_OID=$(az ad sp show --id "$APP_ID" --query id -o tsv 2>/dev/null || \
+    az ad sp create --id "$APP_ID" --query id -o tsv)
+echo "Service principal object ID: $SP_OID" >&2
+
 # shellcheck disable=SC2086 — intentional word-splitting on optional_params;
 # all values are URLs which cannot contain whitespace.
-#
-# On clean deploys the Microsoft Graph Bicep extension may fail because Entra
-# ID replication has not yet propagated the newly created app registration to
-# all read replicas.  The first attempt creates the app (which persists even
-# on overall deployment failure); the retry finds it fully replicated.
-# See: https://github.com/microsoftgraph/msgraph-bicep-types/issues/193
-deploy_exit=0
 deployment_outputs="$(az deployment sub create \
     --name "$deployment_name" \
     --location "$SONDE_AZURE_LOCATION" \
     --template-file /opt/sonde/deploy/bicep/main.bicep \
-    --parameters "companionCertificateBase64=$COMPANION_CERT_BASE64" \
+    --parameters "companionClientId=$APP_ID" \
+                 "companionServicePrincipalObjectId=$SP_OID" \
                  "location=$SONDE_AZURE_LOCATION" \
                  "project_name=$SONDE_AZURE_PROJECT_NAME" \
                  $optional_params \
     --query 'properties.outputs' \
-    --output json)" || deploy_exit=$?
-if [ "$deploy_exit" -ne 0 ]; then
-    echo "Bicep deployment failed (exit $deploy_exit). Retrying in 60 s (Graph replication delay)." >&2
-    sleep 60
-    deployment_name="${deployment_name}-retry"
-    deployment_outputs="$(az deployment sub create \
-        --name "$deployment_name" \
-        --location "$SONDE_AZURE_LOCATION" \
-        --template-file /opt/sonde/deploy/bicep/main.bicep \
-        --parameters "companionCertificateBase64=$COMPANION_CERT_BASE64" \
-                     "location=$SONDE_AZURE_LOCATION" \
-                     "project_name=$SONDE_AZURE_PROJECT_NAME" \
-                     $optional_params \
-        --query 'properties.outputs' \
-        --output json)"
-fi
+    --output json)"
 
 read_required_deployment_outputs
 function_package_path="${SONDE_AZURE_FUNCTION_PACKAGE_PATH:-/opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip}"

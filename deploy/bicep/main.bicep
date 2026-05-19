@@ -12,11 +12,11 @@ param project_name string = 'sonde'
 @description('Optional override for the resource group name. Leave empty to derive one from project_name.')
 param resource_group_name string = ''
 
-@description('Base64-encoded DER certificate public data to register on the Azure companion app registration.')
-param companionCertificateBase64 string
+@description('Entra application (client) ID for the Azure companion. Created via CLI before deployment because the Microsoft Graph Bicep extension does not reliably return server-generated read-only properties on first creation (microsoftgraph/msgraph-bicep-types#193).')
+param companionClientId string
 
-@description('Display name for the registered companion certificate credential.')
-param companionCertificateDisplayName string = 'sonde-azure-companion'
+@description('Entra service principal object ID for the Azure companion.')
+param companionServicePrincipalObjectId string
 
 @description('Optional ownership tag value applied to the deployment resource group. Leave empty for non-CI deployments.')
 param resourceGroupOwnerTag string = ''
@@ -57,9 +57,6 @@ param githubPagesOrigin string = 'https://alan-jowett.github.io'
 @description('Custom domain origin for the Web UI (e.g. https://sondeplatform.com). Empty = GitHub Pages origin only.')
 param customDomainOrigin string = 'https://sondeplatform.com'
 
-@description('GitHub Pages path for the SPA (appended to githubPagesOrigin for Entra redirect URI). Must include leading and trailing slashes.')
-param githubPagesPath string = '/sonde/'
-
 var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))
 var effectiveProjectSlug = empty(projectSlug) ? 'sonde' : projectSlug
 var effectiveResourceGroupName = empty(resource_group_name) ? '${take(effectiveProjectSlug, 84)}-azure' : resource_group_name
@@ -87,8 +84,6 @@ var effectiveFunctionPlanName = empty(functionPlanName)
 var corsOrigins = empty(customDomainOrigin)
   ? [githubPagesOrigin]
   : [githubPagesOrigin, customDomainOrigin]
-// Strip trailing slash from custom domain origin before appending '/' for redirect URI
-var normalizedCustomDomainOrigin = endsWith(customDomainOrigin, '/') ? take(customDomainOrigin, length(customDomainOrigin) - 1) : customDomainOrigin
 var tags = {
   project: project_name
 }
@@ -102,19 +97,6 @@ resource stackResourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: effectiveResourceGroupName
   location: location
   tags: resourceGroupTags
-}
-
-module companionIdentity './modules/companion-identity.bicep' = {
-  name: 'companionIdentity'
-  params: {
-    projectName: project_name
-    identitySuffix: take(uniqueString(subscription().subscriptionId, effectiveResourceGroupName, 'companion-identity'), 8)
-    certificateBase64: companionCertificateBase64
-    certificateDisplayName: companionCertificateDisplayName
-    spaRedirectUris: empty(customDomainOrigin)
-      ? ['${githubPagesOrigin}${githubPagesPath}']
-      : ['${githubPagesOrigin}${githubPagesPath}', '${normalizedCustomDomainOrigin}/']
-  }
 }
 
 module stack './modules/stack.bicep' = {
@@ -133,9 +115,9 @@ module stack './modules/stack.bicep' = {
     escrowTableName: effectiveEscrowTableName
     functionAppName: effectiveFunctionAppName
     functionPlanName: effectiveFunctionPlanName
-    companionServicePrincipalObjectId: companionIdentity.outputs.servicePrincipalObjectId
-    functionAuthClientId: companionIdentity.outputs.clientId
-    functionAuthTenantId: companionIdentity.outputs.tenantId
+    companionServicePrincipalObjectId: companionServicePrincipalObjectId
+    functionAuthClientId: companionClientId
+    functionAuthTenantId: tenant().tenantId
     corsAllowedOrigins: corsOrigins
   }
 }
@@ -154,12 +136,12 @@ output programsTableName string = stack.outputs.programsTableName
 output sensorDataTableName string = stack.outputs.sensorDataTableName
 output functionAppName string = stack.outputs.functionAppName
 output functionPrincipalId string = stack.outputs.functionPrincipalId
-output companionClientId string = companionIdentity.outputs.clientId
-output companionTenantId string = companionIdentity.outputs.tenantId
-output companionServicePrincipalObjectId string = companionIdentity.outputs.servicePrincipalObjectId
+output companionClientId string = companionClientId
+output companionTenantId string = tenant().tenantId
+output companionServicePrincipalObjectId string = companionServicePrincipalObjectId
 output companionBootstrapValues object = {
-  tenantId: companionIdentity.outputs.tenantId
-  clientId: companionIdentity.outputs.clientId
+  tenantId: tenant().tenantId
+  clientId: companionClientId
   loginEndpoint: environment().authentication.loginEndpoint
   storageQueueEndpoint: stack.outputs.queueServiceUri
   upstreamQueue: stack.outputs.upstreamQueueName
@@ -169,5 +151,5 @@ output companionBootstrapValues object = {
   deploymentContainerUrl: stack.outputs.deploymentContainerUrl
   actualStateTable: stack.outputs.actualStateTableName
   desiredStateTable: stack.outputs.desiredStateTableName
-  note: 'The deployment registers the supplied certificate public material on the Entra app. The matching PEM certificate and private key remain caller-managed local artifacts for sonde-azure-companion bootstrap.'
+  note: 'The Entra app registration and service principal are created before this deployment via CLI. The matching PEM certificate and private key remain caller-managed local artifacts for sonde-azure-companion bootstrap.'
 }

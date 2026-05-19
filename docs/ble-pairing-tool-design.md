@@ -13,7 +13,7 @@
 
 The BLE pairing tool is a cross-platform application that provisions Sonde nodes over Bluetooth Low Energy.  It implements two protocol phases:
 
-1. **Phase 1 — Gateway pairing** (one-time): the tool connects to a gateway's BLE service, authenticates via BLE LESC, registers as a pairing agent, and receives a phone PSK over the secure BLE link.
+1. **Phase 1 — Gateway pairing** (one-time): the tool connects to a gateway's BLE service, authenticates via BLE LESC, generates a `phone_psk`, and sends it to the gateway via `REGISTER_PHONE` over the secure BLE link.
 2. **Phase 2 — Node provisioning** (per node): the tool generates a node PSK, constructs an encrypted pairing payload, and writes it to a node's BLE service.  The node stores the payload and relays it to the gateway over ESP-NOW on next boot.
 
 The tool is a Rust-first application following a Tauri-style architecture: all protocol logic, cryptography, and persistence live in a shared Rust crate (`sonde-pair`), with a thin UI shell invoking Rust commands.  The core crate has no platform dependencies and is testable with mocked BLE transport and storage (PT-0101, PT-0102, PT-0104).
@@ -85,13 +85,15 @@ aes-gcm = "0.10"
 getrandom = "0.3"
 zeroize = { version = "1", features = ["derive"] }
 ciborium = "0.2"
-tracing = "0.1"
+tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_info"] }
 thiserror = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 tracing-test = "0.2"
 ```
+
+> **Note (PT-1213):** The `sonde-pair-ui` application crate MUST also declare `tracing` with the same `features = ["max_level_trace", "release_max_level_info"]` to ensure compile-time log-level gating in both crates.
 
 ---
 
@@ -315,6 +317,16 @@ When the map is present, the five known keys are always emitted in ascending ord
 All platform-specific BLE operations are abstracted behind the `BleTransport` trait (PT-0102).  The core `sonde-pair` crate calls only this trait — no platform BLE APIs appear in protocol logic.
 
 ```rust
+/// Device type inferred from advertised BLE service UUIDs (PT-0201).
+pub enum DeviceType {
+    /// Advertises Gateway Pairing Service (0000FE60-…).
+    Gateway,
+    /// Advertises Node Provisioning Service (0000FE50-…).
+    Node,
+    /// Advertises a recognized Sonde UUID but does not match gateway or node.
+    Unknown,
+}
+
 /// A BLE device discovered during scanning.
 pub struct ScannedDevice {
     /// BLE advertising name (e.g., "sonde-ABCD").
@@ -325,7 +337,20 @@ pub struct ScannedDevice {
     pub rssi: i8,
     /// BLE service UUIDs advertised by this device.
     pub service_uuids: Vec<u128>,
+    /// Device type derived from `service_uuids` via UUID→type mapping.
+    pub device_type: DeviceType,
 }
+```
+
+**Service-UUID → device-type mapping (PT-0201):**  The `DeviceScanner` derives `DeviceType` from advertised service UUIDs when building `ScannedDevice` results.  The mapping is:
+
+| Advertised service UUID | `DeviceType` |
+|---|---|
+| `0000FE60-0000-1000-8000-00805F9B34FB` (Gateway Pairing Service) | `Gateway` |
+| `0000FE50-0000-1000-8000-00805F9B34FB` (Node Provisioning Service) | `Node` |
+| Any other Sonde UUID | `Unknown` |
+
+The UI uses `device_type` to visually distinguish gateways from nodes in the scan results list (e.g., different icon or label prefix).
 
 pub trait BleTransport {
     /// Start scanning for Sonde BLE services.
@@ -475,21 +500,21 @@ Used for Phase 2 (encrypt pairing payload) (PT-1102).  Phase 1 does not use AEAD
 
 ```rust
 /// Decrypt AES-256-GCM ciphertext.
-/// AAD = gateway_id.  Nonce is extracted from the first 12 bytes.
+/// AAD = "sonde-pairing-v2" (PT-1102).  Nonce is extracted from the first 12 bytes.
 pub fn aes_gcm_decrypt(
     key: &[u8; 32],
     nonce: &[u8; 12],
     ciphertext: &[u8],
-    aad: &[u8; 16],
+    aad: &[u8],
 ) -> Result<Vec<u8>, PairingError>
 
 /// Encrypt plaintext with AES-256-GCM.
-/// AAD = gateway_id.  Nonce is 12 random bytes from rng.
+/// AAD = "sonde-pairing-v2" (PT-1102).  Nonce is 12 random bytes from rng.
 /// Returns (nonce, ciphertext_with_tag).
 pub fn aes_gcm_encrypt(
     key: &[u8; 32],
     plaintext: &[u8],
-    aad: &[u8; 16],
+    aad: &[u8],
     rng: &dyn RngProvider,
 ) -> Result<([u8; 12], Vec<u8>), PairingError>
 ```
@@ -789,7 +814,7 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 - **Pre-connect scan:** When `pair_gateway` creates a fresh `BtleplugTransport`, the adapter has no cached peripherals.  The `connect()` method runs a short 3-second scan if the target is not found in the cache.
 - **Storage:** `%APPDATA%\sonde\pairing.json` with restricted file permissions (ACL: user-only read/write).
 - **Known issues:** Some Windows BLE drivers have limited Write Long support.  The transport should fall back to standard writes if the payload fits within (MTU − 3) bytes and only use Write Long for larger messages.
-- **GATT write retry (WinRT auth errors):** On Windows, a GATT write issued before WinRT has completed its internal authentication handshake fails with `HRESULT 0x80650005`.  `BtleplugTransport` retries the write up to 6 times with a 5-second delay between attempts, allowing the OS pairing dialog and LESC handshake to complete.  If all retries are exhausted, the write is reported as failed.
+- **GATT write retry (WinRT auth errors):** On Windows, a GATT write issued before WinRT has completed its internal authentication handshake fails with `HRESULT 0x80650005`.  This is a **platform-level** pre-authentication concern, not a protocol-level retry, and is therefore compatible with PT-1003 (no implicit protocol retries).  `BtleplugTransport` retries the write up to 6 times with a 5-second delay between attempts, allowing the OS pairing dialog and LESC handshake to complete.  If all retries are exhausted, the write is reported as failed.  These retries occur at the BLE transport layer before the first protocol byte is accepted — they are equivalent to waiting for the connection to become usable, similar to the "BLE-level connection retries by the platform stack" exception in PT-1003.
 
 ### 9.2  Android (Android BLE API)
 

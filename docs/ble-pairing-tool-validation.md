@@ -17,7 +17,7 @@ This document defines test cases that validate the BLE pairing tool against the 
 
 **Test harness:** All CI tests use a **mock BLE transport** (in-process implementation of the `BleTransport` trait) and a **mock pairing store** (in-memory implementation of the `PairingStore` trait). No real BLE hardware is needed. Manual tests against physical hardware are specified separately.
 
-**Architecture requirements:** PT-0100 (supported platforms), PT-0101 (Rust-first implementation), PT-0102 (platform isolation), PT-0103 (crate placement), and PT-0104 (separation of concerns) are structural constraints validated by CI build targets (Android `aarch64-linux-android`, Windows `x86_64-pc-windows-msvc`) and code review of `Cargo.toml` dependency graphs.  They do not have runtime test cases in this document.  PT-1004 (reusable core) is validated by T-PT-1004, which asserts the crate builds without platform features.
+**Architecture requirements:** PT-0100 (supported platforms), PT-0101 (Rust-first implementation), PT-0102 (platform isolation), PT-0103 (crate placement), and PT-0104 (separation of concerns) are structural constraints validated by CI build targets and code review.  Named validation entries (T-PT-ARCH-100 through T-PT-ARCH-104) are defined in §2a below to provide explicit traceability.  PT-1004 (reusable core) is validated by T-PT-1004, which asserts the crate builds without platform features.
 
 **Testing meta-requirement traceability:** The following mapping shows how requirements PT-1000–PT-1206 are satisfied by the test suites, structural coverage, and supporting CI/build checks described in this document:
 
@@ -35,7 +35,7 @@ This document defines test cases that validate the BLE pairing tool against the 
 | PT-1203 | Phase 2 happy path | T-PT-311 |
 | PT-1204 | Phase 2 error paths | T-PT-300, T-PT-310, T-PT-312, T-PT-313, T-PT-314 |
 | PT-1205 | Input validation | T-PT-303, T-PT-304, T-PT-305, T-PT-306 |
-| PT-1206 | Manual testing on physical hardware | Manual test procedures in §10 (T-PT-800–T-PT-807) |
+| PT-1206 | Manual testing on physical hardware | Manual test procedures in §10 (T-PT-808–T-PT-814) |
 
 **Cryptographic primitive coverage (PT-1100):** PT-1100 requires the cryptographic primitives to be implemented.  Rather than a single aggregate test, coverage is provided structurally by the test suite's dependency on each primitive:
 
@@ -46,6 +46,61 @@ This document defines test cases that validate the BLE pairing tool against the 
 | CSPRNG | T-PT-302, T-PT-702 |
 
 **Test ID convention:** Test IDs follow the numeric pattern `T-PT-NNN`. When a test case is added after initial numbering to cover a gap between two adjacent IDs, an alphabetic suffix is used (e.g., `T-PT-208a` for a test inserted between T-PT-208 and T-PT-209).
+
+---
+
+## 2a  Architecture requirement validation
+
+These are **structural checks** (CI build targets, dependency graph review) — not runtime tests.
+
+### T-PT-ARCH-100  Supported platforms build successfully
+
+**Validates:** PT-0100
+
+**Procedure:**
+1. CI builds `sonde-pair` for `x86_64-pc-windows-msvc` (Windows) and `aarch64-linux-android` (Android).
+2. Assert: both targets compile without errors.
+
+---
+
+### T-PT-ARCH-101  Rust-first implementation
+
+**Validates:** PT-0101
+
+**Procedure:**
+1. Inspect `crates/sonde-pair/src/` — all protocol logic, cryptography, and state machine code is Rust.
+2. Assert: no protocol logic exists in frontend JavaScript/TypeScript.
+
+---
+
+### T-PT-ARCH-102  Platform isolation via BleTransport trait
+
+**Validates:** PT-0102
+
+**Procedure:**
+1. Inspect `crates/sonde-pair/Cargo.toml` — the core crate has no direct dependencies on `btleplug`, Android BLE API, or any platform-specific BLE library.
+2. Assert: all BLE operations are accessed through the `BleTransport` trait.
+
+---
+
+### T-PT-ARCH-103  Crate placement in workspace
+
+**Validates:** PT-0103
+
+**Procedure:**
+1. Assert: `sonde-pair` is listed as a workspace member in the root `Cargo.toml`.
+2. Assert: `sonde-pair` depends on `sonde-protocol` via path dependency.
+
+---
+
+### T-PT-ARCH-104  Four-layer separation of concerns
+
+**Validates:** PT-0104
+
+**Procedure:**
+1. Inspect `crates/sonde-pair/src/` module structure.
+2. Assert: protocol logic, transport abstraction, storage abstraction, and error types are in separate modules.
+3. Assert: no circular dependencies between layers.
 
 ---
 
@@ -409,6 +464,19 @@ TestNode {
 
 ---
 
+### T-PT-114c  Packaging configuration documents canonical icon derivation
+
+**Validates:** PT-0109 (AC 3, AC 4)
+
+**Procedure:**
+1. Assert: the canonical source image `docs/sonde_logo.png` exists in the repository.
+2. Assert: `crates/sonde-pair-ui/src-tauri/icons/` contains platform-specific icon assets derived from the canonical source.
+3. Assert: the Tauri configuration (`tauri.conf.json` or equivalent) references the derived icons, not Tauri defaults.
+4. Assert: the Android build workflow copies `src-tauri/icons/android/` into `src-tauri/gen/android/app/src/main/res/` (per design §9.2).
+5. Assert: the build/package documentation (design doc §9.2 or README) documents the icon derivation pipeline (`cargo tauri icon` from `docs/sonde_logo.png`).
+
+---
+
 ## 4  Phase 1 — Gateway pairing tests
 
 ### T-PT-200  MTU negotiation ≥ 247
@@ -528,6 +596,10 @@ TestNode {
 1. Complete a successful Phase 1 flow.
 2. Assert: `phone_psk` is wrapped in `Zeroizing` during the registration flow.
 3. Assert: after Phase 1 completes and the PSK is persisted, the in-memory copy is dropped (verified structurally by type signatures using `Zeroizing<[u8; N]>`).
+4. Complete a successful Phase 2 flow (node provisioning with AES-256-GCM encryption).
+5. Assert: the AES-256-GCM key used for payload encryption is wrapped in `Zeroizing<[u8; 32]>`.
+6. Assert: the AES-256-GCM nonce is wrapped in `Zeroizing<[u8; 12]>`.
+7. Assert: after encryption completes, no unwrapped copies of AES key or nonce remain in scope (verified structurally by type signatures).
 
 ---
 
@@ -844,6 +916,22 @@ TestNode {
 
 ---
 
+### T-PT-321a  DIAG_FRAME command body contains required fields
+
+**Validates:** PT-0411
+
+**Procedure:**
+1. Pre-load the pairing tool with valid Phase 1 artifacts (`phone_psk`, `rf_channel`).
+2. Build a `DIAG_FRAME` pre-provisioning test command.
+3. Capture the encoded `RUN_TEST_COMMAND` payload written to the mock BLE transport.
+4. Decode the outer CBOR command body.
+5. Assert: the body contains a `test_type` field identifying the command as `DIAG_FRAME`.
+6. Assert: the body contains an `rf_channel` field matching the Phase 1 `rf_channel`.
+7. Extract the `payload` field from the command body.
+8. Assert: the payload is a complete ESP-NOW `DIAG_REQUEST` frame authenticated with `phone_psk` (correct `key_hint`, valid AES-256-GCM ciphertext+tag).
+
+---
+
 ### T-PT-322  Automatic diagnostic runs before provisioning
 
 **Validates:** PT-0416
@@ -853,6 +941,18 @@ TestNode {
 2. Enter valid node-provisioning inputs and press the provision action once.
 3. Assert: the tool starts the automatic `DIAG_FRAME` pre-provisioning test before any `NODE_PROVISION` write.
 4. Assert: the same sequencing is present in both desktop and Android pairing-tool backends.
+
+---
+
+### T-PT-322a  Automatic diagnostic fails when Phase 1 artifacts unavailable
+
+**Validates:** PT-0416
+
+**Procedure:**
+1. Start with an **empty** pairing store (no Phase 1 artifacts — no `phone_psk`, `rf_channel`, or `phone_key_hint`).
+2. Attempt to initiate node provisioning.
+3. Assert: the tool fails with the existing Phase 1 prerequisite error (e.g., "no gateway pairing found" or "complete Phase 1 first") **before** attempting any `DIAG_FRAME` or `NODE_PROVISION` write.
+4. Assert: no BLE connection to the node is attempted.
 
 ---
 
@@ -956,6 +1056,11 @@ TestNode {
 3. Assert: tool warns that a gateway pairing is already stored.
 4. Simulate operator choosing to proceed.
 5. Assert: Phase 1 continues normally.
+6. Reset state and pre-load pairing store with a `phone_psk` again.
+7. Initiate Phase 1.
+8. Simulate operator choosing to cancel.
+9. Assert: Phase 1 does not proceed — no BLE connection attempt is made.
+10. Assert: the existing `phone_psk` remains unchanged in the pairing store.
 
 ---
 
@@ -1216,6 +1321,104 @@ TestNode {
 
 ---
 
+### T-PT-808  Manual: Phase 1 end-to-end on physical Windows hardware
+
+**Validates:** PT-1206
+
+**Procedure (manual — physical hardware required):**
+1. On a Windows machine with a real BLE adapter, connect to a physical gateway running the Gateway Pairing Service.
+2. Open the gateway registration window (via `sonde-admin` or gateway console).
+3. Run the pairing tool and initiate Phase 1 gateway pairing.
+4. Assert: the OS Numeric Comparison dialog appears with a 6-digit passkey.
+5. Confirm the passkey on both sides.
+6. Assert: Phase 1 completes — `phone_psk`, `phone_key_hint`, `rf_channel`, and `phone_label` are persisted.
+7. Record results in the release test log.
+
+---
+
+### T-PT-809  Manual: Phase 2 end-to-end on physical Windows hardware
+
+**Validates:** PT-1206
+
+**Procedure (manual — physical hardware required):**
+1. On the same Windows machine (with Phase 1 artifacts from T-PT-808), connect to a physical Sonde node advertising the Node Provisioning Service.
+2. Initiate Phase 2 node provisioning with valid parameters.
+3. Assert: the automatic `DIAG_FRAME` pre-provisioning test completes (success or failure with explicit operator decision).
+4. Assert: `NODE_PROVISION` is written and `NODE_ACK(status=0x00)` is received.
+5. Assert: the node reboots and transmits `PEER_REQUEST` to the gateway over ESP-NOW.
+6. Record results in the release test log.
+
+---
+
+### T-PT-810  Manual: Phase 1 end-to-end on physical Android hardware
+
+**Validates:** PT-1206
+
+**Procedure (manual — physical hardware required):**
+1. On a physical Android device (API 31+), install the Sonde Pairing Tool APK.
+2. Grant BLE permissions when prompted.
+3. Connect to a physical gateway running the Gateway Pairing Service.
+4. Open the gateway registration window.
+5. Initiate Phase 1 gateway pairing.
+6. Assert: the Android Numeric Comparison dialog appears.
+7. Confirm the passkey on both sides.
+8. Assert: Phase 1 completes and artifacts are persisted to `EncryptedSharedPreferences`.
+9. Record results in the release test log.
+
+---
+
+### T-PT-811  Manual: Phase 2 end-to-end on physical Android hardware
+
+**Validates:** PT-1206
+
+**Procedure (manual — physical hardware required):**
+1. On the same Android device (with Phase 1 artifacts from T-PT-810), connect to a physical Sonde node.
+2. Initiate Phase 2 node provisioning.
+3. Assert: automatic `DIAG_FRAME` test runs, operator confirms.
+4. Assert: `NODE_PROVISION` succeeds with `NODE_ACK(status=0x00)`.
+5. Record results in the release test log.
+
+---
+
+### T-PT-812  Manual: BLE disconnect mid-pairing with clean recovery
+
+**Validates:** PT-1206
+
+**Procedure (manual — physical hardware required):**
+1. On either Windows or Android, initiate Phase 1 with a physical gateway.
+2. During the LESC handshake or after `REGISTER_PHONE` is written, power off the gateway (or move out of BLE range) to force a disconnect.
+3. Assert: the tool reports the disconnection cleanly without crashing.
+4. Assert: the operator can start a new scan and retry without restarting the application.
+5. Record results in the release test log.
+
+---
+
+### T-PT-813  Manual: Node already paired (`NODE_ACK(0x01)`)
+
+**Validates:** PT-1206
+
+**Procedure (manual — physical hardware required):**
+1. On either Windows or Android, provision a node successfully via Phase 2.
+2. Attempt to provision the same node again.
+3. Assert: the node responds with `NODE_ACK(status=0x01)` (already paired).
+4. Assert: the tool reports the already-paired status to the operator.
+5. Record results in the release test log.
+
+---
+
+### T-PT-814  Manual: Gateway registration window closed (`ERROR(0x02)`)
+
+**Validates:** PT-1206
+
+**Procedure (manual — physical hardware required):**
+1. On either Windows or Android, connect to a physical gateway **without** opening the registration window.
+2. Attempt Phase 1 gateway pairing.
+3. Assert: the gateway responds with `ERROR(0x02)`.
+4. Assert: the tool displays "registration window not open" or equivalent.
+5. Record results in the release test log.
+
+---
+
 ## 11  Cryptographic tests
 
 > **T-PT-900, T-PT-901 — RETIRED (issue #495).** HKDF key derivation tests removed; the simplified pairing flow uses `phone_psk` directly as the AES-256-GCM key.
@@ -1227,11 +1430,13 @@ TestNode {
 **Validates:** PT-1102
 
 **Procedure:**
-1. Encrypt a test payload using AES-256-GCM with `phone_psk = [0x42u8; 32]` and a 12-byte nonce.
-2. Decrypt using the same `phone_psk` and nonce.
+1. Encrypt a test payload using AES-256-GCM with `phone_psk = [0x42u8; 32]`, AAD = `"sonde-pairing-v2"`, and a 12-byte nonce.
+2. Decrypt using the same `phone_psk`, AAD, and nonce.
 3. Assert: decryption succeeds and plaintext matches.
 4. Attempt decryption with a different key `[0x43u8; 32]`.
 5. Assert: decryption fails (GCM authentication tag mismatch).
+6. Attempt decryption with the correct key but wrong AAD (`"wrong-aad-value"`).
+7. Assert: decryption fails (GCM authentication tag mismatch).
 
 ---
 
@@ -1587,6 +1792,24 @@ TestNode {
 
 ---
 
+### T-PT-1216h  Custom board-layout selection reveals editable fields in UI
+
+**Validates:** PT-1216 (AC 4)
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Open the provisioning UI page.
+2. Assert: the board selector dropdown is visible with named presets and a "Custom" option.
+3. Select a named preset (e.g., "Sonde Sensor Node rev_a").
+4. Assert: no editable pin-assignment fields are visible — the preset values are applied automatically.
+5. Select "Custom" from the board selector dropdown.
+6. Assert: editable fields for `i2c0_sda`, `i2c0_scl`, `one_wire_data`, `battery_adc`, and `sensor_enable` are revealed.
+7. Assert: optional fields (`one_wire_data`, `battery_adc`, `sensor_enable`) can be left blank to encode `null` / unassigned.
+8. Fill in valid custom values and trigger provisioning.
+9. Assert: the custom `BoardLayout` is passed to `provision_node()`.
+
+---
+
 ### T-PT-1216f  Espressif preset remains available
 
 **Validates:** PT-1216 (AC 1, 3)
@@ -1867,6 +2090,11 @@ TestNode {
 
 | Test ID | Requirement | Title |
 |---|---|---|
+| T-PT-ARCH-100 | PT-0100 | Supported platforms build successfully |
+| T-PT-ARCH-101 | PT-0101 | Rust-first implementation |
+| T-PT-ARCH-102 | PT-0102 | Platform isolation via BleTransport trait |
+| T-PT-ARCH-103 | PT-0103 | Crate placement in workspace |
+| T-PT-ARCH-104 | PT-0104 | Four-layer separation of concerns |
 | T-PT-100 | PT-0200 | BLE scan discovers gateway service UUID |
 | T-PT-101 | PT-0200 | BLE scan discovers node service UUID |
 | T-PT-102 | PT-0200 | Non-Sonde devices filtered from results |
@@ -1888,6 +2116,7 @@ TestNode {
 | T-PT-114 | PT-0108 | JNI classloader caching on background threads |
 | T-PT-114a | PT-0109 | Desktop packaged app shows Sonde-branded icon |
 | T-PT-114b | PT-0109 | Android packaged app shows Sonde-branded launcher icon |
+| T-PT-114c | PT-0109 | Packaging configuration documents canonical icon derivation |
 | T-PT-200 | PT-0300 | MTU negotiation ≥ 247 |
 | T-PT-201 | PT-0300 | MTU < 247 → disconnect + error |
 | T-PT-202 | ~~PT-0301~~ | ~~Gateway authentication happy path~~ — RETIRED |
@@ -1929,7 +2158,9 @@ TestNode {
 | T-PT-319a | PT-0413 | Timeout test result displayed without decryption |
 | T-PT-320 | PT-0414 | Repeated sampling requires separate runs |
 | T-PT-321 | PT-0415 | Generic pre-provisioning test command uses explicit discriminator |
+| T-PT-321a | PT-0411 | DIAG_FRAME command body contains required fields |
 | T-PT-322 | PT-0416 | Automatic diagnostic runs before provisioning |
+| T-PT-322a | PT-0416 | Automatic diagnostic fails when Phase 1 artifacts unavailable |
 | T-PT-323 | PT-0417 | Successful automatic diagnostic requires explicit continue |
 | T-PT-324 | PT-0417 | Failed automatic diagnostic requires explicit continue-anyway |
 | T-PT-400 | PT-0500 | Error classification |
@@ -1958,6 +2189,13 @@ TestNode {
 | T-PT-805 | PT-0904 | Just Works fallback rejected |
 | T-PT-806 | PT-0107 | Android lifecycle pause/resume during pairing |
 | T-PT-807 | PT-0108 | JNI classloader caching on background thread |
+| T-PT-808 | PT-1206 | Manual: Phase 1 end-to-end on physical Windows hardware |
+| T-PT-809 | PT-1206 | Manual: Phase 2 end-to-end on physical Windows hardware |
+| T-PT-810 | PT-1206 | Manual: Phase 1 end-to-end on physical Android hardware |
+| T-PT-811 | PT-1206 | Manual: Phase 2 end-to-end on physical Android hardware |
+| T-PT-812 | PT-1206 | Manual: BLE disconnect mid-pairing with clean recovery |
+| T-PT-813 | PT-1206 | Manual: Node already paired (NODE_ACK 0x01) |
+| T-PT-814 | PT-1206 | Manual: Gateway registration window closed (ERROR 0x02) |
 | T-PT-900 | ~~PT-1101~~ | ~~HKDF parameters correct for Phase 1~~ — RETIRED |
 | T-PT-901 | ~~PT-1101~~ | ~~HKDF parameters correct for Phase 2~~ — RETIRED |
 | T-PT-902 | PT-1102 | AES-256-GCM with phone_psk round-trip |
@@ -1990,6 +2228,7 @@ TestNode {
 | T-PT-1216e | PT-1216, PT-0409 | Provision with partial I2C layout rejected |
 | T-PT-1216f | PT-1216 | Espressif preset remains available |
 | T-PT-1216g | PT-1216 | Tauri provision_node command accepts structured board layout |
+| T-PT-1216h | PT-1216 | Custom board-layout selection reveals editable fields in UI |
 | T-PT-1217a | PT-1217 | Seven pages rendered and only one visible at a time |
 | T-PT-1217b | PT-1217 | Forward navigation through all pages |
 | T-PT-1217c | PT-1217 | Existing functionality works through wizard flow |

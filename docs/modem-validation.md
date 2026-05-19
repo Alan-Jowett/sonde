@@ -91,7 +91,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0103  Serial framing — oversized len
 
-**Validates:** MD-0102
+**Validates:** MD-0101, MD-0102
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
@@ -133,7 +133,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0201  Frame transmission — USB to radio
 
-**Validates:** MD-0202
+**Validates:** MD-0200, MD-0202
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
@@ -429,7 +429,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0603  BLE write → USB-CDC relay
 
-**Validates:** MD-0401
+**Validates:** MD-0400, MD-0401
 
 **Procedure:**
 1. Connect via BLE. Write a test envelope (TYPE=0x01, LEN, BODY) to the Gateway Command characteristic.
@@ -440,7 +440,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0604  USB-CDC → BLE indication relay
 
-**Validates:** MD-0401
+**Validates:** MD-0400, MD-0401
 
 **Procedure:**
 1. Connect via BLE, subscribe to indications on Gateway Command characteristic.
@@ -451,7 +451,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0605  Indication fragmentation
 
-**Validates:** MD-0403
+**Validates:** MD-0403, MD-0408
 
 **Procedure:**
 1. Connect via BLE with MTU = 247. Send a message from the gateway that is > (247 − 3) = 244 bytes.
@@ -661,9 +661,12 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Validates:** MD-0411
 
 **Procedure:**
-1. Connect a phone via BLE.
-2. Disconnect the phone.
-3. Assert: gateway receives `BLE_DISCONNECTED` (0xA2) with peer address and reason code.
+1. Connect a phone via BLE and complete pairing.
+2. Disconnect the phone cleanly (phone initiates graceful disconnect).
+3. Assert: gateway receives `BLE_DISCONNECTED` (0xA2) with peer address and reason code `0x16` (clean disconnect).
+4. Connect a second phone via BLE and complete pairing.
+5. Induce an error disconnect (e.g., phone moves out of range, or modem forcibly terminates the connection).
+6. Assert: gateway receives `BLE_DISCONNECTED` (0xA2) with peer address and reason code `0x13` (error disconnect).
 
 ---
 
@@ -690,7 +693,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0619  BLE_DISABLE stops advertising and disconnects
 
-**Validates:** MD-0413
+**Validates:** MD-0407, MD-0413
 
 **Procedure:**
 1. Send `BLE_ENABLE`. Connect a phone via BLE.
@@ -988,7 +991,8 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 1. Send a `SEND_FRAME` command to the modem via USB-CDC that is expected to succeed.
 2. Assert: the diagnostic UART contains an INFO-level log line with the destination peer MAC, payload length, and send result (success).
 3. Induce an ESP-NOW send failure (for example, by targeting a non-responsive or invalid peer) using a `SEND_FRAME` command.
-4. Assert: the diagnostic UART contains a WARN-level log line with the destination peer MAC, payload length, and send result (failure).
+4. Assert: the diagnostic UART contains an INFO-level log line with the destination peer MAC, payload length, and send result (failure).
+5. Assert: the failure is additionally logged at WARN level (per design §14.3).
 
 ---
 
@@ -1113,7 +1117,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Procedure:**
 1. Trigger an ESP-NOW send failure (e.g., send to an unreachable peer MAC).
 2. Capture UART diagnostic output.
-3. Assert: the error log includes the target peer MAC address, payload length, and success flag.
+3. Assert: the error log includes the target peer MAC address, payload length, and ESP-NOW status code.
 4. Assert: raw payload bytes are not logged.
 
 ---
@@ -1126,8 +1130,21 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 **Procedure:**
 1. Boot the modem with no button pressed.
-2. Read GPIO2 value.
-3. Assert: GPIO2 reads HIGH.
+2. Assert: GPIO2 is configured as an input (criterion 1).
+3. Read GPIO2 value.
+4. Assert: GPIO2 reads HIGH (criterion 2).
+
+---
+
+### T-0800a  Button GPIO reads LOW when pressed
+
+**Validates:** MD-0600
+
+**Procedure:**
+1. Boot the modem.
+2. Press and hold the button on GPIO2.
+3. Read GPIO2 value.
+4. Assert: GPIO2 reads LOW (criterion 3).
 
 ---
 
@@ -1411,10 +1428,10 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0100 | USB-CDC device enumeration | MD-0100 |
 | T-0101 | MODEM_READY on boot | MD-0104 |
 | T-0102 | Serial framing — valid frame and max length | MD-0101, MD-0102 |
-| T-0103 | Serial framing — oversized len | MD-0102 |
+| T-0103 | Serial framing — oversized len | MD-0101, MD-0102 |
 | T-0104 | Unknown message type | MD-0103 |
 | T-0200 | Frame forwarding — radio to USB | MD-0200, MD-0201, MD-0205 |
-| T-0201 | Frame transmission — USB to radio | MD-0202 |
+| T-0201 | Frame transmission — USB to radio | MD-0200, MD-0202 |
 | T-0202 | Automatic peer registration | MD-0203 |
 | T-0203 | Peer table LRU eviction | MD-0204 |
 | T-0204 | Frame ordering preserved (radio → USB) | MD-0205 |
@@ -1434,9 +1451,9 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0601 | BLE GATT characteristic setup | MD-0400 |
 | T-0602 | MTU negotiation ≥ 247 | MD-0402 |
 | T-0602a | MTU negotiation below minimum rejected | MD-0402 |
-| T-0603 | BLE write → USB-CDC relay | MD-0401 |
-| T-0604 | USB-CDC → BLE indication relay | MD-0401 |
-| T-0605 | Indication fragmentation | MD-0403 |
+| T-0603 | BLE write → USB-CDC relay | MD-0400, MD-0401 |
+| T-0604 | USB-CDC → BLE indication relay | MD-0400, MD-0401 |
+| T-0605 | Indication fragmentation | MD-0403, MD-0408 |
 | T-0605a | Indication queue bound rejects oversized payloads | MD-0403 |
 | T-0606 | Opaque relay (no content inspection) | MD-0401 |
 | T-0607 | BLE LESC Numeric Comparison — link establishment | MD-0404 |
@@ -1456,7 +1473,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0616 | BLE relay round-trip | MD-0408, MD-0409 |
 | T-0617 | *(Subsumed by T-0600)* | MD-0412 |
 | T-0618 | *(Subsumed by T-0600)* | MD-0413 |
-| T-0619 | BLE_DISABLE stops advertising and disconnects | MD-0413 |
+| T-0619 | BLE_DISABLE stops advertising and disconnects | MD-0407, MD-0413 |
 | T-0620 | Numeric Comparison pin relay | MD-0414 |
 | T-0621 | Numeric Comparison rejected | MD-0414 |
 | T-0622 | Numeric Comparison timeout | MD-0414 |
@@ -1489,6 +1506,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0710 | Error diagnostic — BLE indication failure | MD-0506 |
 | T-0711 | Error diagnostic — ESP-NOW send failure | MD-0506 |
 | T-0800 | Button GPIO reads HIGH when idle | MD-0600 |
+| T-0800a | Button GPIO reads LOW when pressed | MD-0600 |
 | T-0801 | Short press emits BUTTON_SHORT | MD-0601, MD-0602, MD-0603 |
 | T-0802 | Long press emits BUTTON_LONG | MD-0601, MD-0602, MD-0603 |
 | T-0803 | Boundary — 999 ms SHORT, 1000 ms LONG | MD-0602 |

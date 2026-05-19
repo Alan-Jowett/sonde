@@ -462,7 +462,7 @@ When the modem encounters an error at an operator-visible boundary, the error lo
 | Boundary | Diagnostic fields |
 |---|---|
 | BLE indication failure | NimBLE error (debug string) |
-| ESP-NOW send failure | target peer MAC address, payload length, success flag |
+| ESP-NOW send failure | target peer MAC address, payload length, ESP-NOW status code |
 | USB-CDC I/O error | operation name, ESP-IDF error |
 
 ### 14.4  Configuration
@@ -520,7 +520,7 @@ The modem uses BLE LESC Numeric Comparison as the default pairing method (MD-040
 
 Just Works remains available as a fallback when the phone does not support Numeric Comparison (MD-0404).
 
-> **Tentative accept model (D9-5):** NimBLE's `on_confirm_pin` callback is synchronous — it requires an immediate yes/no return and cannot block waiting for the gateway's asynchronous `BLE_PAIRING_CONFIRM_REPLY`. The modem returns `true` to let the BLE stack proceed with LESC key exchange immediately, then relays the passkey to the gateway for operator verification. This means the encrypted link is established *before* operator approval. Multiple mitigations bound the security impact: (1) `BleEvent::Connected` is deferred until the operator accepts, (2) GATT writes are gated on the `authenticated` flag (see § 15.2.1 below), (3) NVS bond persistence is disabled (`CONFIG_BT_NIMBLE_NVS_PERSIST=n`), and (4) the client is disconnected immediately on rejection.
+> **Tentative accept model (D9-5, MD-0416):** NimBLE's `on_confirm_pin` callback is synchronous — it requires an immediate yes/no return and cannot block waiting for the gateway's asynchronous `BLE_PAIRING_CONFIRM_REPLY`. The modem returns `true` to let the BLE stack proceed with LESC key exchange immediately, then relays the passkey to the gateway for operator verification. This means the encrypted link is established *before* operator approval. Multiple mitigations bound the security impact: (1) `BleEvent::Connected` is deferred until the operator accepts, (2) GATT writes are gated on the `authenticated` flag (see § 15.2.1 below), (3) NVS bond persistence is disabled (`CONFIG_BT_NIMBLE_NVS_PERSIST=n`), and (4) the client is disconnected immediately on rejection.
 
 #### 15.2.1  Write gating on `authenticated` flag (D9-4)
 

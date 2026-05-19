@@ -559,6 +559,9 @@ Returns bytes from the stored CBOR program image for the requested chunk. Last c
 
 All gateway instances in a failover group serve identical bytes for the same hash (GW-1004).
 
+**Cross-wake transfer resumption (GW-0301):**
+Within a single wake cycle, the gateway tracks active-transfer parameters in a `ChunkedTransfer` session (program hash, chunk size, chunk count). Each `GET_CHUNK { chunk_index }` request is served by looking up the corresponding byte range in the stored program image using these session parameters — the gateway does not track per-chunk delivery progress. Across wake cycles, no transfer state is persisted: when a node re-wakes, a new session is created based on the current assignment state. A node that restarts from `chunk_index = 0` (e.g., after power loss) simply initiates a fresh `ChunkedTransfer` session and receives chunks from the beginning without error. Transfer completion across multiple wake cycles is inherently supported because the node drives its own `chunk_index` progression.
+
 ---
 
 ## 9  Handler router

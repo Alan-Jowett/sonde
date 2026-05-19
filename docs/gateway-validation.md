@@ -128,10 +128,14 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Send a valid WAKE.
-2. Capture the COMMAND response.
-3. Assert: response header `nonce` matches the WAKE nonce.
-4. Assert: CBOR payload contains `command_type`, `starting_seq`, and `timestamp_ms`.
-5. Assert: `timestamp_ms` is a reasonable UTC value (within 5 seconds of test clock).
+2. Capture all COMMAND responses until the wake cycle ends (i.e., until the next WAKE is sent or the session is torn down).
+3. Assert: exactly one COMMAND is received for this WAKE (no duplicates).
+4. Assert: response header `nonce` matches the WAKE nonce.
+5. Assert: CBOR payload contains `command_type`, `starting_seq`, and `timestamp_ms`.
+6. Assert: `timestamp_ms` is a reasonable UTC value (within 5 seconds of test clock).
+7. Send at least 4 additional WAKEs, each with a distinct nonce, collecting all `starting_seq` values.
+8. Assert: no two `starting_seq` values are identical (fresh value each time).
+9. Assert: the consecutive deltas between `starting_seq` values are not all equal (rules out simple incrementing counters).
 
 ---
 
@@ -144,6 +148,7 @@ A configurable stub handler process (or in-process mock) that:
 2. Trigger a chunked transfer.
 3. Capture all outbound CHUNK frames.
 4. Assert: every outbound frame ≤ 250 bytes.
+5. Assert: the ciphertext region of every outbound frame (frame length minus 11-byte header minus 16-byte GCM tag) ≤ 223 bytes.
 
 ---
 
@@ -194,6 +199,8 @@ A configurable stub handler process (or in-process mock) that:
 2. Send WAKE from that node.
 3. Assert: COMMAND response has `command_type = 0x03` (UPDATE_SCHEDULE).
 4. Assert: payload includes `interval_s = 120`.
+5. Query the node's status via the admin API.
+6. Assert: the recorded schedule interval for the node is 120 seconds.
 
 ---
 
@@ -475,9 +482,11 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-0500, GW-0505
 
 **Procedure:**
-1. Complete a WAKE handshake. Send APP_DATA with blob `[0x01, 0x02, 0x03]`.
-2. Assert: handler receives a DATA message with correct `msg_type`, `request_id`, `node_id`, `program_hash`, `data`, and `timestamp`.
-3. Assert: `data` matches the original blob.
+1. Register a node with a known admin-assigned `node_id` (e.g., `"sensor-alpha"`) that is distinct from the node's PSK, key hint, or any internal identifier.
+2. Complete a WAKE handshake. Send APP_DATA with blob `[0x01, 0x02, 0x03]`.
+3. Assert: handler receives a DATA message with correct `msg_type`, `request_id`, `node_id`, `program_hash`, `data`, and `timestamp`.
+4. Assert: `data` matches the original blob.
+5. Assert: `node_id` in the DATA message equals the admin-assigned identifier (`"sensor-alpha"`), not the PSK, key hint, or any cryptographic material.
 
 ---
 
@@ -1743,6 +1752,8 @@ A configurable stub handler process (or in-process mock) that:
 6. Assert: the connector API is bound to a local-only transport (Unix domain socket or Windows named pipe) distinct from the admin API endpoint.
 7. Assert: no TCP listener is opened for the connector API.
 8. Open a second connector client while the fresh connector session from step 4 remains active and assert the second connection is rejected or closed without disrupting the active connector session.
+9. While the connector session from step 4 remains active, perform an operator flow via the `GatewayAdmin` gRPC API (e.g., register a node, list nodes, or open a pairing window).
+10. Assert: the operator flow succeeds normally, confirming `GatewayAdmin` remains fully functional while a connector session is active.
 
 ---
 
@@ -1806,6 +1817,8 @@ A configurable stub handler process (or in-process mock) that:
 4. Assert: the connector client receives exactly one upstream actual-state/status message for that `WAKE`.
 5. Assert: the message contains the expected `node_id`, current and assigned program hashes, `schedule_interval_s`, `battery_mv`, `firmware_abi_version`, `firmware_version`, and a recent timestamp.
 6. Assert: the message is emitted only after the gateway has updated the node's latest-known status.
+7. While the connector session remains continuously connected, trigger a gateway-scoped status change that materially affects reconciliation (e.g., remove or change the node's assigned program or schedule interval via the admin API).
+8. Assert: the connector client receives an upstream status update reflecting the gateway-scoped change.
 
 ---
 
@@ -2287,11 +2300,15 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1200  Ed25519 keypair generation on first startup
 
+**Validates:** GW-1200 (retired)
+
 > **RETIRED (issue #495).** The gateway no longer generates an Ed25519 identity keypair. Phone registration uses a direct PSK exchange; no asymmetric cryptography is required.
 
 ---
 
 ### T-1201  Gateway ID generation and persistence
+
+**Validates:** GW-1201 (retired)
 
 > **RETIRED (issue #495).** The gateway no longer generates or persists a `gateway_id`. Identity is established through phone PSKs issued during BLE pairing.
 
@@ -2299,17 +2316,23 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1202  Ed25519 to X25519 conversion and low-order rejection
 
+**Validates:** GW-1202 (retired)
+
 > **RETIRED (issue #495).** X25519 / ECDH key agreement is no longer used. The phone generates the PSK directly and transmits it over the authenticated BLE channel.
 
 ---
 
 ### T-1203  REQUEST_GW_INFO happy path
 
+**Validates:** GW-1206 (retired)
+
 > **RETIRED (issue #495).** The `REQUEST_GW_INFO` / `GW_INFO_RESPONSE` exchange has been removed. The simplified BLE pairing flow uses `REGISTER_PHONE` / `PHONE_REGISTERED` only.
 
 ---
 
 ### T-1204  GW_INFO_RESPONSE signature fails with wrong challenge
+
+**Validates:** GW-1206 (retired)
 
 > **RETIRED (issue #495).** `GW_INFO_RESPONSE` and Ed25519 signatures have been removed from the BLE pairing flow.
 
@@ -2670,7 +2693,25 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1223  Ed25519 seed replication
 
+**Validates:** GW-1203 (retired)
+
 > **RETIRED (issue #495).** Ed25519 identity and `gateway_id` have been removed. State replication is covered by T-1002 (export/import round-trip) and T-1005b.
+
+---
+
+### T-1223a  Phone HMAC verification
+
+**Validates:** GW-1213 (retired)
+
+> **RETIRED (issue #495).** AEAD decryption (AES-256-GCM) provides authentication. A separate phone HMAC verification step is no longer needed. Phone authentication is covered by T-1210 (PEER_REQUEST decryption happy path) and T-1213 (Phone AEAD with revoked PSK).
+
+---
+
+### T-1223b  PEER_REQUEST frame HMAC verification
+
+**Validates:** GW-1214 (retired)
+
+> **RETIRED (issue #495).** Frame-level HMAC-SHA256 is replaced by AES-256-GCM authenticated encryption. Frame AEAD verification is covered by T-1214 (PEER_REQUEST frame AEAD verification).
 
 ---
 

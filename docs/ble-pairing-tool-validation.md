@@ -775,6 +775,8 @@ TestNode {
 3. Start a `DIAG_FRAME` pre-provisioning test run.
 4. Assert: the tool writes `RUN_TEST_COMMAND`, then reconnects and writes `READ_TEST_RESULT`.
 5. Assert: the read times out and the tool surfaces an operator-visible error indicating the test result could not be retrieved.
+6. Repeat with the mock node configured to return a `TEST_RESULT` with a non-success status (e.g., status indicating no retained result available).
+7. Assert: the tool surfaces an operator-visible error for the missing result.
 
 ---
 
@@ -1411,7 +1413,7 @@ TestNode {
 
 ### T-PT-1213a  Compile-time tracing level gating
 
-**Validates:** PT-1213 (AC 1, 2, 5)  
+**Validates:** PT-1213 (AC 1, 2, 5, 6)  
 **Type:** CI / build verification
 
 **Procedure:**
@@ -1424,6 +1426,7 @@ TestNode {
 7. Check `sonde-pair-ui` in debug mode (`cargo check -p sonde-pair-ui`).
 8. Check `sonde-pair-ui` in release mode (`cargo check -p sonde-pair-ui --release`).
 9. Assert: both checks succeed, confirming the tracing feature flags compile correctly for the UI crate.
+10. Assert: because release compile-time maximum is INFO (step 6), the `debug!` call-sites required by PT-1207–PT-1212 are compiled out in release builds and the tool functions correctly without those diagnostic events (AC 6).
 
 ---
 
@@ -1865,10 +1868,12 @@ TestNode {
 | T-PT-102 | PT-0200 | Non-Sonde devices filtered from results |
 | T-PT-103 | PT-0201 | Device presentation (name, type, RSSI) |
 | T-PT-104 | PT-0202 | Scan timeout and stale device eviction |
+| T-PT-104a | PT-0202 | UI start/stop scanning control |
 | T-PT-105 | PT-0105 | BLE permission dialog shown on Android |
 | T-PT-106 | PT-0105 | BLE permission denial produces actionable error |
 | T-PT-107 | PT-0105 | BLE permissions on Android 6–11 (location) |
 | T-PT-108 | PT-0106, PT-0904 | LESC Numeric Comparison pairing used |
+| T-PT-108a | PT-0106 | User rejects Numeric Comparison dialog |
 | T-PT-109 | PT-0106, PT-0904 | Just Works fallback rejected |
 | T-PT-109a | PT-0904 | OS-enforced pairing (`None`) accepted by `enforce_lesc` |
 | T-PT-109b | PT-0904 | Unknown pairing method rejected by `enforce_lesc` |
@@ -1889,6 +1894,7 @@ TestNode {
 | T-PT-207 | ~~PT-0302~~ | ~~TOFU — operator can clear pinned identity~~ — RETIRED |
 | T-PT-208 | PT-0303 | Phone registration happy path |
 | T-PT-208a | PT-0303 | Phone label validation |
+| T-PT-208b | PT-0303 | No additional encryption on PHONE_REGISTERED |
 | T-PT-209 | PT-0303 | ERROR(0x02) — registration window closed |
 | T-PT-210 | PT-0303 | ERROR(0x03) — already paired |
 | T-PT-211 | PT-0303 | PHONE_REGISTERED timeout (30 s) |
@@ -1912,8 +1918,11 @@ TestNode {
 | T-PT-315 | PT-0408 | Node PSK zeroing after success |
 | T-PT-316 | PT-0410 | Pre-provisioning test requires Phase 1 artifacts |
 | T-PT-317 | PT-0411, PT-0412 | RUN_TEST_COMMAND happy path and explicit result readback |
+| T-PT-317a | PT-0412 | Repeated reads of retained test result |
+| T-PT-317b | PT-0412 | Missing result or read timeout surfaces error |
 | T-PT-318 | PT-0411 | RUN_TEST_COMMAND acknowledgement failure surfaces error |
 | T-PT-319 | PT-0413 | Successful diagnostic result combines gateway and node metadata |
+| T-PT-319a | PT-0413 | Timeout test result displayed without decryption |
 | T-PT-320 | PT-0414 | Repeated sampling requires separate runs |
 | T-PT-321 | PT-0415 | Generic pre-provisioning test command uses explicit discriminator |
 | T-PT-322 | PT-0416 | Automatic diagnostic runs before provisioning |
@@ -1956,11 +1965,14 @@ TestNode {
 | T-PT-1210 | PT-1210 | Phase transition events logged |
 | T-PT-1211 | PT-1211 | LESC pairing method logged |
 | T-PT-1212 | PT-1212 | Error context in log output |
+| T-PT-1213a | PT-1213 | Compile-time tracing level gating |
+| T-PT-1213b | PT-1213 | Runtime EnvFilter defaults differ between debug and release |
 | T-PT-1215a | PT-1215 | Connection error includes device address |
 | T-PT-1215b | PT-1215 | MTU error includes device address |
 | T-PT-1215c | PT-1215 | Connection dropped includes stale pairing hint |
 | T-PT-1215d | PT-1215 | Indication timeout includes device address |
 | T-PT-1215e | PT-1215 | `format_device_address` produces canonical format |
+| T-PT-1215f | PT-1215 | Serial port error includes port name, OS error code, and conflict hint |
 | T-PT-1214a | PT-1214 | Board layout included in NODE_PROVISION when provided |
 | T-PT-1214b | PT-1214 | No board layout in NODE_PROVISION — backward compatible |
 | T-PT-1214c | PT-0409 | Board layout with out-of-range GPIO rejected |

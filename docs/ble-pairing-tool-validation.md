@@ -29,7 +29,7 @@ This document defines test cases that validate the BLE pairing tool against the 
 | PT-1003 | No implicit retries | T-PT-803 |
 | PT-1004 | Reusable core | T-PT-1004 |
 | PT-1100 | Required cryptographic primitives | Structural coverage (see table below) |
-| PT-1200 | Mocked BLE transport for CI | Test harness infrastructure (§2); all CI tests use `MockBleTransport` |
+| PT-1200 | Mocked BLE transport for CI | T-PT-1200; test harness infrastructure (§2); all CI tests use `MockBleTransport` |
 | PT-1201 | Phase 1 happy path | T-PT-208 |
 | PT-1202 | Phase 1 error paths | T-PT-209, T-PT-210, T-PT-211 |
 | PT-1203 | Phase 2 happy path | T-PT-311 |
@@ -102,6 +102,26 @@ TestNode {
 
 ---
 
+### T-PT-1200  MockBleTransport implements BleTransport with error injection
+
+**Validates:** PT-1200
+
+**Procedure:**
+1. Construct a `MockBleTransport` instance with default configuration.
+2. Assert: `MockBleTransport` implements the `BleTransport` trait (compiles and can be used in place of any `BleTransport` parameter).
+3. Configure `MockBleTransport` to inject a connection failure on `connect()`.
+4. Call `connect()`.
+5. Assert: the call returns an error (e.g., `ConnectionFailed`).
+6. Configure `MockBleTransport` to inject a timeout on `wait_indication()`.
+7. Call `wait_indication()`.
+8. Assert: the call returns a timeout error.
+9. Configure `MockBleTransport` to return a malformed indication payload (invalid message type or truncated body).
+10. Call `wait_indication()`.
+11. Assert: the caller receives the malformed data (transport delivers raw bytes; the parsing layer detects the error).
+12. Assert: all of the above runs in CI without BLE hardware.
+
+---
+
 ## 3  Device discovery tests
 
 ### T-PT-100  BLE scan discovers gateway service UUID
@@ -164,6 +184,22 @@ TestNode {
 
 ---
 
+### T-PT-104a  Operator can start and stop scanning via UI
+
+**Validates:** PT-0202 (AC 1)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Launch the pairing tool and navigate to the Gateway Scan page.
+2. Press the "Start Scan" button.
+3. Assert: BLE scan starts and discovered devices begin appearing in the device list.
+4. Press the "Stop Scan" button before the timeout expires.
+5. Assert: scanning stops immediately and no new devices are added to the list.
+6. Press "Start Scan" again.
+7. Assert: a new scan session starts and devices appear normally.
+
+---
+
 ### T-PT-105  BLE permission dialog shown on Android
 
 **Validates:** PT-0105  
@@ -222,6 +258,21 @@ TestNode {
    - Assert: the pairing method negotiated is Numeric Comparison (a 6-digit comparison dialog is shown, not an implicit "Just Works" pairing).
 4. Accept the Numeric Comparison dialog on both sides (host and peripheral, as applicable).
 5. Assert: pairing completes successfully (bond is created at the OS level) and subsequent GATT operations from the pairing tool proceed without additional pairing prompts.
+
+---
+
+### T-PT-108a  User rejects Numeric Comparison dialog
+
+**Validates:** PT-0106 (AC 4)  
+**Type:** Manual / platform test (runs against real BLE hardware)
+
+**Procedure:**
+1. Connect the pairing tool to a modem configured for LESC with `DisplayYesNo` I/O capability.
+2. Initiate Phase 1 gateway pairing from the pairing tool UI.
+3. When the Numeric Comparison dialog appears, **reject** (press "Cancel" / "No") on the phone side.
+4. Assert: the BLE connection is terminated.
+5. Assert: the tool displays an actionable error indicating that pairing was rejected or cancelled.
+6. Assert: no PSK-bearing GATT operations occurred (no `REGISTER_PHONE` write).
 
 ---
 
@@ -397,7 +448,7 @@ TestNode {
 3. Assert: tool generates a 32-byte `phone_psk` via the injectable RNG provider.
 4. Assert: tool writes `REGISTER_PHONE` containing the phone-generated `phone_psk` and operator label.
 5. Assert: tool receives `PHONE_REGISTERED` with status `0x00`.
-6. Assert: `phone_psk`, `phone_key_hint`, and `rf_channel` are persisted.
+6. Assert: `phone_psk`, `phone_key_hint`, `rf_channel`, and `phone_label` are persisted.
 
 ---
 
@@ -412,6 +463,18 @@ TestNode {
 4. Assert: the tool rejects the label before BLE transmission with an error.
 5. Attempt REGISTER_PHONE with an empty label (0 bytes).
 6. Assert: the empty label is accepted.
+
+---
+
+### T-PT-208b  No additional encryption on PHONE_REGISTERED
+
+**Validates:** PT-0303 (AC 7)
+
+**Procedure:**
+1. Configure mock transport with a `TestGateway` that returns a valid `PHONE_REGISTERED (0x82)` message with status `0x00`, `phone_key_hint`, and `rf_channel`.
+2. Initiate Phase 1 with a mock transport that records all operations.
+3. Assert: the tool does not call `aes_gcm_decrypt` or any decryption function during the Phase 1 flow.
+4. Assert: the `PHONE_REGISTERED` response is parsed directly as plaintext (4 bytes: status + rf_channel + phone_key_hint).
 
 ---
 
@@ -688,6 +751,35 @@ TestNode {
 
 ---
 
+### T-PT-317a  Repeated reads of retained test result
+
+**Validates:** PT-0412 (AC 3)
+
+**Procedure:**
+1. Pre-load the pairing store with valid Phase 1 artifacts.
+2. Configure the mock node to return `RUN_TEST_ACK(status=0x00)` on the first connection and a successful `TEST_RESULT` on all subsequent reconnections (retained result).
+3. Complete a `DIAG_FRAME` test run (command → reconnect → readback).
+4. Reconnect and send `READ_TEST_RESULT` again without running a new test.
+5. Assert: the mock node returns the same `TEST_RESULT` as in step 3.
+6. Assert: the tool successfully parses the repeated result.
+
+---
+
+### T-PT-317b  Missing result or read timeout surfaces error
+
+**Validates:** PT-0412 (AC 4)
+
+**Procedure:**
+1. Pre-load the pairing store with valid Phase 1 artifacts.
+2. Configure the mock node to return `RUN_TEST_ACK(status=0x00)` on the first connection but to time out (no `TEST_RESULT`) on the readback reconnection.
+3. Start a `DIAG_FRAME` pre-provisioning test run.
+4. Assert: the tool writes `RUN_TEST_COMMAND`, then reconnects and writes `READ_TEST_RESULT`.
+5. Assert: the read times out and the tool surfaces an operator-visible error indicating the test result could not be retrieved.
+6. Repeat with the mock node configured to return a `TEST_RESULT` with a non-success status (e.g., status indicating no retained result available).
+7. Assert: the tool surfaces an operator-visible error for the missing result.
+
+---
+
 ### T-PT-318  RUN_TEST_COMMAND acknowledgement failure surfaces error
 
 **Validates:** PT-0411
@@ -711,6 +803,19 @@ TestNode {
 3. Run the pre-provisioning test flow.
 4. Assert: the tool decrypts the raw `DIAG_REPLY`.
 5. Assert: the reported result includes the gateway-observed RSSI/signal-quality values from the decrypted payload and the node-observed reply RSSI/timing metadata from `TEST_RESULT`.
+
+---
+
+### T-PT-319a  Timeout test result displayed without decryption
+
+**Validates:** PT-0413 (AC 4)
+
+**Procedure:**
+1. Pre-load the pairing store with a known `phone_psk`.
+2. Configure the mock node to return a `TEST_RESULT` with a timeout status (no `DIAG_REPLY` frame — the node did not receive a gateway response within the test window).
+3. Run the pre-provisioning test flow.
+4. Assert: the tool does not attempt to decrypt a missing reply frame.
+5. Assert: the tool displays the timeout result to the operator, including the node-reported timing metadata (e.g., `elapsed_ms`, `attempt_count`) without gateway-observed fields.
 
 ---
 
@@ -1167,6 +1272,8 @@ TestNode {
 5. Call `stop()`.
 6. Assert: captured logs contain a `debug` event with text "scan stopped".
 7. Assert: captured logs contain `debug` events for each discovered target device with `name`, `address`, `rssi`.
+8. Configure the scanner to evict stale devices (e.g., by advancing time past the eviction threshold and calling `refresh()`).
+9. Assert: captured logs contain a `debug` event indicating stale devices were evicted, including the eviction count (AC 4).
 
 ---
 
@@ -1203,10 +1310,12 @@ TestNode {
 
 **Procedure:**
 1. Run a Phase 1 happy path with mock transport, progress callback, and `#[traced_test]`.
-2. Assert: captured logs contain `info` events for "connecting to gateway" and "Phase 1 complete".
-3. Assert: the completion log includes `phone_key_hint` and `rf_channel` fields.
+2. Assert: captured logs contain `info` or `debug` events for each phase transition in the Phase 1 flow: Idle → Scanning → Connecting → Authenticating → Registering → Complete.
+3. Assert: the Phase 1 completion log includes `phone_key_hint` and `rf_channel` fields.
 4. Run a Phase 2 happy path.
-5. Assert: captured logs contain `info` events for "connecting to node" and "Phase 2 complete".
+5. Assert: captured logs contain `info` or `debug` events for each phase transition in the Phase 2 flow: Connecting → Provisioning → Complete.
+6. Run a Phase 1 flow that triggers an error (e.g., connection failure).
+7. Assert: captured logs contain an event for the Error phase transition.
 
 ---
 
@@ -1218,6 +1327,7 @@ TestNode {
 1. Run a Phase 1 happy path with a mock transport that reports `PairingMethod::NumericComparison`.
 2. Capture tracing output with `#[traced_test]`.
 3. Assert: captured logs contain a `debug` event with `pairing_method` field.
+4. Assert: the `pairing_method` log event appears **before** any LESC enforcement decision log event (e.g., before `enforce_lesc` accept/reject), confirming the method is logged before the enforcement decision (PT-1211 AC 2).
 
 ---
 
@@ -1290,6 +1400,52 @@ TestNode {
 **Procedure:**
 1. Call `format_device_address(&[0x00, 0x0A, 0xFF, 0x10, 0x0B, 0xAC])`.
 2. Assert: result is `"00:0A:FF:10:0B:AC"`.
+
+---
+
+### T-PT-1215f  Serial port error includes port name, OS error code, and conflict hint
+
+**Validates:** PT-1215 (AC 4)
+
+**Procedure:**
+1. Simulate a serial port open failure (e.g., port in use by another application) with port name `"COM3"` and an OS error code (e.g., `ERROR_ACCESS_DENIED` / `EBUSY`).
+2. Assert: the error display string contains the port name `"COM3"`.
+3. Assert: the error display string contains the OS error code or a human-readable translation of it.
+4. Assert: the error display string contains actionable guidance (e.g., `"check COM port is not in use by another application"` or similar hint about possible conflicts).
+
+---
+
+### T-PT-1213a  Compile-time tracing level gating
+
+**Validates:** PT-1213 (AC 1, 2, 5, 6)  
+**Type:** CI / build verification
+
+**Procedure:**
+1. Inspect `Cargo.toml` for both `sonde-pair` and `sonde-pair-ui`.
+2. Assert: the `tracing` dependency includes `features = ["max_level_trace", "release_max_level_info"]` (or equivalent).
+3. Build `sonde-pair` in debug mode (`cargo build -p sonde-pair`).
+4. Assert: `trace!` and `debug!` call-sites are compiled in (compile-time maximum level is TRACE).
+5. Build `sonde-pair` in release mode (`cargo build -p sonde-pair --release`).
+6. Assert: `trace!` and `debug!` call-sites are no-ops (compile-time maximum level is INFO).
+7. Check `sonde-pair-ui` in debug mode (`cargo check -p sonde-pair-ui`).
+8. Check `sonde-pair-ui` in release mode (`cargo check -p sonde-pair-ui --release`).
+9. Assert: both checks succeed, confirming the tracing feature flags compile correctly for the UI crate.
+10. Assert: because release compile-time maximum is INFO (step 6), the `debug!` call-sites required by PT-1207–PT-1212 are compiled out in release builds and the tool functions correctly without those diagnostic events (AC 6).
+
+---
+
+### T-PT-1213b  Runtime EnvFilter defaults differ between debug and release
+
+**Validates:** PT-1213 (AC 3, 4)  
+**Type:** CI / unit test
+
+**Procedure:**
+1. In a debug build, initialise the Tauri entry point's tracing subscriber with no `RUST_LOG` environment variable set.
+2. Assert: the default `EnvFilter` is `sonde_pair=info,sonde_pair_ui=info`.
+3. In a release build, initialise the Tauri entry point's tracing subscriber with no `RUST_LOG` environment variable set.
+4. Assert: the default `EnvFilter` is `sonde_pair=warn,sonde_pair_ui=warn`.
+5. Set `RUST_LOG=sonde_pair=debug` in either build type.
+6. Assert: the `RUST_LOG` override takes effect (within compile-time limits — in release, `debug!` call-sites remain no-ops even if the filter permits them).
 
 ---
 
@@ -1716,10 +1872,12 @@ TestNode {
 | T-PT-102 | PT-0200 | Non-Sonde devices filtered from results |
 | T-PT-103 | PT-0201 | Device presentation (name, type, RSSI) |
 | T-PT-104 | PT-0202 | Scan timeout and stale device eviction |
+| T-PT-104a | PT-0202 | UI start/stop scanning control |
 | T-PT-105 | PT-0105 | BLE permission dialog shown on Android |
 | T-PT-106 | PT-0105 | BLE permission denial produces actionable error |
 | T-PT-107 | PT-0105 | BLE permissions on Android 6–11 (location) |
 | T-PT-108 | PT-0106, PT-0904 | LESC Numeric Comparison pairing used |
+| T-PT-108a | PT-0106 | User rejects Numeric Comparison dialog |
 | T-PT-109 | PT-0106, PT-0904 | Just Works fallback rejected |
 | T-PT-109a | PT-0904 | OS-enforced pairing (`None`) accepted by `enforce_lesc` |
 | T-PT-109b | PT-0904 | Unknown pairing method rejected by `enforce_lesc` |
@@ -1740,6 +1898,7 @@ TestNode {
 | T-PT-207 | ~~PT-0302~~ | ~~TOFU — operator can clear pinned identity~~ — RETIRED |
 | T-PT-208 | PT-0303 | Phone registration happy path |
 | T-PT-208a | PT-0303 | Phone label validation |
+| T-PT-208b | PT-0303 | No additional encryption on PHONE_REGISTERED |
 | T-PT-209 | PT-0303 | ERROR(0x02) — registration window closed |
 | T-PT-210 | PT-0303 | ERROR(0x03) — already paired |
 | T-PT-211 | PT-0303 | PHONE_REGISTERED timeout (30 s) |
@@ -1763,8 +1922,11 @@ TestNode {
 | T-PT-315 | PT-0408 | Node PSK zeroing after success |
 | T-PT-316 | PT-0410 | Pre-provisioning test requires Phase 1 artifacts |
 | T-PT-317 | PT-0411, PT-0412 | RUN_TEST_COMMAND happy path and explicit result readback |
+| T-PT-317a | PT-0412 | Repeated reads of retained test result |
+| T-PT-317b | PT-0412 | Missing result or read timeout surfaces error |
 | T-PT-318 | PT-0411 | RUN_TEST_COMMAND acknowledgement failure surfaces error |
 | T-PT-319 | PT-0413 | Successful diagnostic result combines gateway and node metadata |
+| T-PT-319a | PT-0413 | Timeout test result displayed without decryption |
 | T-PT-320 | PT-0414 | Repeated sampling requires separate runs |
 | T-PT-321 | PT-0415 | Generic pre-provisioning test command uses explicit discriminator |
 | T-PT-322 | PT-0416 | Automatic diagnostic runs before provisioning |
@@ -1807,11 +1969,14 @@ TestNode {
 | T-PT-1210 | PT-1210 | Phase transition events logged |
 | T-PT-1211 | PT-1211 | LESC pairing method logged |
 | T-PT-1212 | PT-1212 | Error context in log output |
+| T-PT-1213a | PT-1213 | Compile-time tracing level gating |
+| T-PT-1213b | PT-1213 | Runtime EnvFilter defaults differ between debug and release |
 | T-PT-1215a | PT-1215 | Connection error includes device address |
 | T-PT-1215b | PT-1215 | MTU error includes device address |
 | T-PT-1215c | PT-1215 | Connection dropped includes stale pairing hint |
 | T-PT-1215d | PT-1215 | Indication timeout includes device address |
 | T-PT-1215e | PT-1215 | `format_device_address` produces canonical format |
+| T-PT-1215f | PT-1215 | Serial port error includes port name, OS error code, and conflict hint |
 | T-PT-1214a | PT-1214 | Board layout included in NODE_PROVISION when provided |
 | T-PT-1214b | PT-1214 | No board layout in NODE_PROVISION — backward compatible |
 | T-PT-1214c | PT-0409 | Board layout with out-of-range GPIO rejected |

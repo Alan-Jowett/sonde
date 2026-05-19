@@ -1894,7 +1894,7 @@ When the gateway runs as a Windows service (no interactive console), it MUST pro
 
 **Acceptance criteria:**
 
-1. In Windows service mode, the gateway writes log output to a file at `<db-path>.log` where `<db-path>` is the configured database file path (e.g., if the database is `C:\ProgramData\sonde\gateway.db`, the log file is `C:\ProgramData\sonde\gateway.db.log`).
+1. In Windows service mode, the gateway writes log output to a file at `<basename>.log` where the extension of the configured database file path is replaced (e.g., if the database is `C:\ProgramData\sonde\gateway.db`, the log file is `C:\ProgramData\sonde\gateway.log`).
 2. The default `EnvFilter` for the file sink in release builds is `sonde_gateway=warn`, consistent with the console-mode default (GW-1304 criterion 3).
 3. The gateway registers an ETW provider with the name `sonde-gateway`. The ETW sink is unfiltered; all events up to the compile-time maximum level (TRACE in both debug and release) are forwarded to any active ETW session.
 4. The file log level can be changed at runtime without restarting the service: setting `RUST_LOG` and delivering a platform-appropriate reload signal causes the gateway to re-read the environment variable and apply the new `EnvFilter` within 5 seconds.
@@ -2338,7 +2338,7 @@ The gateway SHOULD support configurable RSSI thresholds for the signal quality a
 
 **Acceptance criteria:**
 
-1. RSSI thresholds can be set via the gateway configuration file.
+1. RSSI thresholds can be set via CLI flags (`--rssi-good-threshold`, `--rssi-bad-threshold`).
 2. Default values are used when no configuration is provided.
 3. The gateway validates that `good_threshold` > `bad_threshold` at startup and logs an error if not.
 

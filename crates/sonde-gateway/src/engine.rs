@@ -1115,6 +1115,60 @@ impl Gateway {
         // Spawned as a background task so it does not block COMMAND delivery.
         if let Some(wake_data) = wake_blob {
             if !wake_data.is_empty() && !program_hash.is_empty() {
+                // ── Decoder enrichment for WAKE blobs (GW-1903 parity) ──────
+                //
+                // Run the same decoder enrichment as the APP_DATA path so that
+                // both the connector and handler receive decoded readings
+                // regardless of whether the data arrived via WAKE blob or
+                // APP_DATA.
+                let readings = {
+                    let decoder_image = match self.storage.get_program(&program_hash).await {
+                        Ok(Some(record)) => record.decoder_image,
+                        Ok(None) => None,
+                        Err(e) => {
+                            warn!(error = %e, "failed to look up program record for WAKE blob decoder — forwarding unenriched");
+                            None
+                        }
+                    };
+                    if let Some(ref decoder_cbor) = decoder_image {
+                        let decoder_cbor = decoder_cbor.clone();
+                        let blob_clone = wake_data.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            // SAFETY: decoder_cbor was produced by Prevail-verified
+                            // `extract_decoder` during ELF ingestion and stored in
+                            // ProgramRecord. It has not been modified since verification.
+                            unsafe { crate::decoder::execute_decoder(&decoder_cbor, &blob_clone) }
+                        })
+                        .await
+                        {
+                            Ok(Ok(r)) if !r.is_empty() => {
+                                info!(
+                                    node_id = %node.node_id,
+                                    reading_count = r.len(),
+                                    readings = ?r,
+                                    "decoder enriched WAKE blob"
+                                );
+                                Some(r)
+                            }
+                            Ok(Ok(_)) => None,
+                            Ok(Err(e)) => {
+                                warn!(error = %e, "WAKE blob decoder execution failed — forwarding unenriched");
+                                None
+                            }
+                            Err(e) => {
+                                if e.is_panic() {
+                                    warn!(error = %e, "WAKE blob decoder task panicked — forwarding unenriched");
+                                } else {
+                                    warn!(error = %e, "WAKE blob decoder task cancelled — forwarding unenriched");
+                                }
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                };
+
                 let handler_result = {
                     let router = self.handler_router.read().await;
                     (
@@ -1132,7 +1186,7 @@ impl Gateway {
                             wake_data.clone(),
                             timestamp_ms,
                             ConnectorPayloadOrigin::WakeBlob,
-                            None,
+                            readings.clone(),
                         );
                         let deferred_replies = Arc::clone(&self.deferred_replies);
                         let nonce = header.nonce;
@@ -1147,7 +1201,7 @@ impl Gateway {
                                 program_hash: program_hash.clone(),
                                 data: wake_data,
                                 timestamp,
-                                readings: None,
+                                readings,
                             };
                             info!(
                                 node_id = %node_id,
@@ -1184,7 +1238,7 @@ impl Gateway {
                             wake_data.clone(),
                             timestamp_ms,
                             ConnectorPayloadOrigin::WakeBlob,
-                            None,
+                            readings,
                         );
                         let connector_subscribers = self.connector_event_hub.subscriber_count();
                         let ph_hex: String =

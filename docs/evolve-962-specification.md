@@ -5,7 +5,10 @@
 > **Issue:** #962
 > **Status:** Draft — Phase 2 specification changes
 > **Supersedes:** Escrow sections of evolve-887-specification.md (§§20.1–20.12,
-> §§2.2–2.4, §§3.1, §§4.1, §§5.1, §§6.1, §§7 T-2000–T-2009, §§8)
+> §§2.2–2.4, §§3.1, §§4.1, §§5.1, §§6.1, §§7 T-2000–T-2009, §§8).
+> Also supersedes: `gateway-companion-api.md` §3.2 line 156 and §3.3
+> line 206 (empty `entity_id` for gateway); `gateway-requirements.md`
+> GW-0811 (`entity_id` ignored for gateway-scoped state).
 > **Scope:** Simplify escrow architecture — eliminate imperative connector
 > messages, unify gateway identity, add rotation-code authentication, treat
 > gateway as first-class ACTUAL_STATE/DESIRED_STATE entity.
@@ -137,7 +140,7 @@ Gateway ACTUAL_STATE is emitted:
 | `master_key_epoch` | 17 | uint | Monotonic master key epoch |
 | `x25519_public_key` | 18 | bstr (32 bytes) | X25519 public key (derived from GatewayIdentity) |
 | `fingerprint_words` | 19 | array of tstr | 6-word BIP-39 fingerprint |
-| `missing_key_hints` | 20 | array of uint | Unknown key_hints (one-shot, cleared after reporting) |
+| `missing_key_hints` | 20 | array of uint (0–65535) | Unknown key_hints (u16, one-shot, cleared after reporting) |
 | `salt` | 21 | bstr (16 bytes)/null | KDF salt, if set |
 | `kdf_params` | 22 | map/null | `{1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}` |
 | `gateway_version` | 23 | tstr | Gateway binary semver |
@@ -182,10 +185,10 @@ The cloud drives gateway configuration changes via DESIRED_STATE with
 - **Rotation payload:** If present and valid, gateway performs key rotation
   (see §2.6).
 - **Recovered PSKs:** If present, gateway processes each record (see §2.8).
-- **Salt/KDF params:** Gateway stores if it has no local salt. If both
-  exist and differ, the gateway keeps its local salt (gateway is locally
-  authoritative for salt it already committed to). Salt only changes as
-  part of a rotation payload delivery.
+- **Salt/KDF params:** Gateway adopts from DESIRED_STATE if it has no
+  local salt. Once the gateway has committed a local salt, it is
+  immutable except via rotation payload delivery (§2.6). If both exist
+  and differ, the gateway keeps its local salt.
 
 ### 2.6  Master key rotation via DESIRED_STATE (replaces §20.7)
 
@@ -247,10 +250,10 @@ When the gateway receives a valid rotation payload, it:
 1. **Decrypt:** Use `GatewayIdentity.to_x25519()` to derive X25519 private key.
    Decrypt the payload using X25519 + HKDF-SHA-256 + AES-256-GCM:
    - Shared secret: `X25519(gw_private, sender_ephemeral_public)`
-   - Derived key: `HKDF-SHA-256(shared_secret, hkdf_salt="sonde-rotation-v1",
-     info=gateway_id || current_master_key_epoch_be64)`
+   - Derived key: `HKDF-SHA-256(shared_secret, hkdf_salt=b"sonde-rotation-v1",
+     info=gateway_id_raw || current_master_key_epoch_be64)`
    - Decrypt: `AES-256-GCM-Open(key, nonce, ciphertext,
-     aad=gateway_id || current_master_key_epoch_be64)`
+     aad=gateway_id_raw || current_master_key_epoch_be64)`
 
 2. **Verify rotation code:** The decrypted payload contains
    `{new_master_key, rotation_code, new_master_key_id, salt, kdf_params}`.
@@ -314,7 +317,9 @@ When the gateway receives a valid rotation payload, it:
    - Copy `encrypted_seed_new` → `encrypted_seed` (promote the new-key
      version) and set `encrypted_seed_new = NULL`.
    - Store new `master_key_id` and `master_key_epoch` in `gateway_config`.
-   - Store salt and KDF params from the rotation payload.
+   - Store salt and KDF params from the rotation payload if non-null.
+     A `null` value means "leave unchanged" — the gateway preserves its
+     existing salt/KDF params.
    - Generate a new rotation code.
    - Delete `pending_rotation`.
 
@@ -351,7 +356,7 @@ Node-scoped ACTUAL_STATE gains three fields:
 | Field | CBOR key | Type | Description |
 |-------|----------|------|-------------|
 | `encrypted_psk` | 12 | bstr (60 bytes)/null | Encrypted PSK blob (see format below) |
-| `escrow_key_hint` | 13 | uint/null | `key_hint` (u16) for Azure recovery lookup |
+| `escrow_key_hint` | 13 | uint (0–65535)/null | `key_hint` (u16) for Azure recovery lookup |
 | `master_key_id` | 14 | bstr (16 bytes)/null | Opaque master key ID that encrypted this PSK |
 
 Phone-scoped ACTUAL_STATE (`entity_kind = "phone"`, `entity_id = phone_id`)
@@ -407,7 +412,7 @@ recovered_psks = [recovered_psk_record, ...]
 
 recovered_psk_record = {
     1: node_id      (tstr)           -- node identifier
-    2: key_hint     (uint)           -- key_hint (u16)
+    2: key_hint     (uint, 0..=65535) -- key_hint (u16)
     3: encrypted_psk (bstr, 60 bytes) -- encrypted PSK blob (§2.7 format)
     4: master_key_id (bstr, 16 bytes) -- opaque master key ID
 }

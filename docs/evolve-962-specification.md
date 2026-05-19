@@ -199,7 +199,7 @@ Total envelope: 45 bytes + ciphertext length.
 | `rotation_code` | 2 | tstr | 6-character rotation code from modem display |
 | `new_master_key_id` | 3 | bstr (16 bytes) | Random opaque ID for the new key |
 | `salt` | 4 | bstr (16 bytes)/null | KDF salt (included on first rotation) |
-| `kdf_params` | 5 | map/null | `{1: m_cost, 2: t_cost, 3: p_cost, 4: version}` |
+| `kdf_params` | 5 | map/null | `{1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}` |
 
 **Encryption parameters:**
 - Shared secret: `X25519(gw_private_key, sender_ephemeral_public)`
@@ -228,9 +228,9 @@ When the gateway receives a valid rotation payload, it:
    Decrypt the payload using X25519 + HKDF-SHA-256 + AES-256-GCM:
    - Shared secret: `X25519(gw_private, sender_ephemeral_public)`
    - Derived key: `HKDF-SHA-256(shared_secret, salt="sonde-rotation-v1",
-     info=gateway_id || master_key_epoch)`
+     info=gateway_id || current_master_key_epoch_be64)`
    - Decrypt: `AES-256-GCM-Open(key, nonce, ciphertext,
-     aad=gateway_id || master_key_epoch)`
+     aad=gateway_id || current_master_key_epoch_be64)`
 
 2. **Verify rotation code:** The decrypted payload contains
    `{new_master_key, rotation_code, new_master_key_id, salt, kdf_params}`.
@@ -465,8 +465,10 @@ existing `ActualState` table with `entity_kind = "gateway"`.
 | `master_key_epoch` | int64/null | gateway | Monotonic master key epoch |
 | `salt` | binary/null | gateway | KDF salt |
 | `kdf_params_json` | string/null | gateway | JSON-encoded KDF params |
-| `gateway_version` | string/null | gateway | Semver + commit |
-| `modem_firmware_version` | string/null | gateway | Semver + commit |
+| `gateway_version` | string/null | gateway | Gateway binary semver |
+| `gateway_commit` | string/null | gateway | Gateway binary git commit |
+| `modem_firmware_version` | string/null | gateway | Modem firmware semver |
+| `modem_firmware_commit` | string/null | gateway | Modem firmware git commit |
 | `missing_key_hints` | string/null | gateway | JSON array of missing key_hints |
 
 ### 4.2  Message handling (replaces §8.2)
@@ -523,7 +525,9 @@ Flow:
 5. Prompt for passphrase (masked, minimum 20 characters or 6 words).
 6. Fetch salt from gateway ACTUAL_STATE (or prompt to generate new salt
    for first rotation).
-7. Derive master key: `Argon2id(passphrase, salt, m=65536, t=3, p=1)`.
+7. Derive master key using KDF params from gateway ACTUAL_STATE (or
+   defaults `m=65536, t=3, p=1` for first rotation when no params exist):
+   `Argon2id(passphrase, salt, kdf_params)`.
 8. Generate random 16-byte `new_master_key_id`.
 9. Build `RotationPayloadV1` (§2.6.1): generate ephemeral X25519 keypair,
    derive encryption key, encrypt `{new_master_key, rotation_code,

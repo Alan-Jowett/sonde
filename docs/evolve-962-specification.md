@@ -110,6 +110,12 @@ The gateway becomes a first-class entity in the ACTUAL_STATE model. Entity
 kind is `"gateway"`, entity ID is `hex(gateway_id)` (16-byte random ID from
 `GatewayIdentity`).
 
+**Note:** This supersedes the existing `gateway-companion-api.md` rule that
+gateway-scoped `entity_id` must be empty string. With this spec, gateway
+`entity_id` carries the gateway's hex-encoded `gateway_id` to distinguish
+multiple gateways sharing one cloud deployment. The companion API document
+will be updated to reflect this change.
+
 Gateway ACTUAL_STATE is emitted:
 - On startup (after identity and master key are loaded).
 - On connector reconnection (full state replay).
@@ -255,6 +261,10 @@ When the gateway receives a valid rotation payload, it:
    ```
    The new master key is encrypted with the OLD master key for crash safety.
    Phase values: `migrating_psks` → `rewrapping_identity` → `committing`.
+   `new_epoch` is derived as `current_master_key_epoch + 1`. The gateway
+   rejects the rotation if `new_epoch` does not equal the epoch bound into
+   the rotation payload AAD plus one (i.e., the payload was created for
+   the gateway's current epoch).
 
 5. **Migrate PSKs** (phase `migrating_psks`): For each record where
    `master_key_epoch < new_epoch`:
@@ -265,15 +275,30 @@ When the gateway receives a valid rotation payload, it:
    After all records migrated, update phase to `rewrapping_identity`.
 
 6. **Rewrap identity seed** (phase `rewrapping_identity`): Re-encrypt
-   `gateway_identity.encrypted_seed` under the new master key. Update
-   phase to `committing`.
+   `gateway_identity.encrypted_seed` under the new master key. Store the
+   new encrypted seed in a **separate column** `encrypted_seed_new` (added
+   via migration). The original `encrypted_seed` column (encrypted with
+   the old key) is preserved until commit. Update phase to `committing`.
 
-7. **Commit** (phase `committing`): In a single transaction:
-   - Update master key in `SqliteStorage` (swap the in-memory key).
+   ```sql
+   -- Migration: add column for dual-key identity storage during rotation
+   ALTER TABLE gateway_identity ADD COLUMN encrypted_seed_new BLOB;
+   ```
+
+7. **Commit** (phase `committing`): In a single DB transaction:
+   - Copy `encrypted_seed_new` → `encrypted_seed` (promote the new-key
+     version) and set `encrypted_seed_new = NULL`.
    - Store new `master_key_id` and `master_key_epoch` in `gateway_config`.
    - Store salt and KDF params from the rotation payload.
    - Generate a new rotation code.
    - Delete `pending_rotation`.
+
+   After the DB transaction commits successfully, activate the new master
+   key in memory (`SqliteStorage` swaps its in-memory key reference).
+   The in-memory swap is NOT part of the DB transaction — it occurs only
+   after commit succeeds. If the process crashes after DB commit but before
+   in-memory swap, the next startup will load the new key from the
+   committed `gateway_config`.
 
 8. **Emit:** Report updated gateway ACTUAL_STATE with new `master_key_id`,
    `master_key_epoch`, and `rotation_in_progress = false`. Re-emit
@@ -286,17 +311,20 @@ When the gateway receives a valid rotation payload, it:
   - `migrating_psks`: Resume PSK migration (step 5), then continue.
   - `rewrapping_identity`: Resume identity rewrap (step 6), then continue.
   - `committing`: Complete the final commit (step 7).
-- **Key invariant:** The gateway identity is always loadable with the
-  current (old) master key during phases `migrating_psks` and
-  `rewrapping_identity`. Only after step 6 (identity rewrapped) AND
-  step 7 (master key committed atomically) does the identity use the
+- **Key invariant:** During all pre-commit phases, the original
+  `encrypted_seed` column remains encrypted with the old (current) master
+  key. The `encrypted_seed_new` column holds the new-key version but is
+  only promoted to `encrypted_seed` in the atomic commit transaction
+  (step 7). Therefore `GatewayIdentity` is always loadable with the
+  current master key at startup, regardless of which phase the crash
+  occurred in.
   new key. If crash occurs between step 6 and step 7, the identity
   was rewrapped but the old key is still active — recovery must
   re-decrypt with old key and re-rewrap.
 
 ### 2.7  Node/phone ACTUAL_STATE escrow fields (replaces §20.3, §20.4)
 
-Node-scoped ACTUAL_STATE gains two fields:
+Node-scoped ACTUAL_STATE gains three fields:
 
 | Field | CBOR key | Type | Description |
 |-------|----------|------|-------------|
@@ -375,13 +403,17 @@ When the gateway receives `recovered_psks` in DESIRED_STATE:
 
 Insert after step 2 (Initialize storage backend):
 
-> 2a. Load `GatewayIdentity`. Derive X25519 public key via `to_x25519()`.
-> 2b. Load `master_key_id` and `master_key_epoch` from `gateway_config`.
+> 2a. Check if `pending_rotation` exists. If so, resume rotation
+>     (§2.6.2 crash recovery) before loading identity — this ensures
+>     any interrupted rotation completes with the old master key.
+> 2b. Load `GatewayIdentity`. Derive X25519 public key via `to_x25519()`.
+>     (Identity is always decryptable with the current master key — see
+>     §2.6.2 key invariant.)
+> 2c. Load `master_key_id` and `master_key_epoch` from `gateway_config`.
 >     If absent (first start), generate random 16-byte `master_key_id`,
 >     set `master_key_epoch = 1`, backfill all existing PSK records,
 >     and persist.
-> 2c. Load `rotation_code` from `gateway_config`. If absent, generate one.
-> 2d. If `pending_rotation` exists, resume rotation (§2.6 crash recovery).
+> 2d. Load `rotation_code` from `gateway_config`. If absent, generate one.
 
 Insert after step 9 (Start connector API server):
 

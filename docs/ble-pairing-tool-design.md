@@ -317,16 +317,6 @@ When the map is present, the five known keys are always emitted in ascending ord
 All platform-specific BLE operations are abstracted behind the `BleTransport` trait (PT-0102).  The core `sonde-pair` crate calls only this trait — no platform BLE APIs appear in protocol logic.
 
 ```rust
-/// Device type inferred from advertised BLE service UUIDs (PT-0201).
-pub enum DeviceType {
-    /// Advertises Gateway Pairing Service (0000FE60-…).
-    Gateway,
-    /// Advertises Node Provisioning Service (0000FE50-…).
-    Node,
-    /// Advertises a recognized Sonde UUID but does not match gateway or node.
-    Unknown,
-}
-
 /// A BLE device discovered during scanning.
 pub struct ScannedDevice {
     /// BLE advertising name (e.g., "sonde-ABCD").
@@ -337,21 +327,32 @@ pub struct ScannedDevice {
     pub rssi: i8,
     /// BLE service UUIDs advertised by this device.
     pub service_uuids: Vec<u128>,
-    /// Device type derived from `service_uuids` via UUID→type mapping.
-    pub device_type: DeviceType,
 }
+
+/// Classification of a discovered BLE device by its advertised service UUID (PT-0201).
+pub enum ServiceType {
+    /// Advertises Gateway Pairing Service (0000FE60-…).
+    Gateway,
+    /// Advertises Node Provisioning Service (0000FE50-…).
+    Node,
+}
+
+/// Returns the `ServiceType` for a device based on its advertised service UUIDs.
+/// Returns `None` if the device does not advertise a recognised service.
+pub fn service_type(device: &ScannedDevice) -> Option<ServiceType>;
 ```
 
-**Service-UUID → device-type mapping (PT-0201):**  The `DeviceScanner` derives `DeviceType` from advertised service UUIDs when building `ScannedDevice` results.  The mapping is:
+**Service-UUID → type classification (PT-0201):**  The `discovery::service_type()` function classifies a `ScannedDevice` by inspecting its `service_uuids`.  The classification is external to `ScannedDevice` — it is applied by the `DeviceScanner` when presenting results to the UI.  The mapping is:
 
-| Advertised service UUID | `DeviceType` |
+| Advertised service UUID | `ServiceType` |
 |---|---|
 | `0000FE60-0000-1000-8000-00805F9B34FB` (Gateway Pairing Service) | `Gateway` |
 | `0000FE50-0000-1000-8000-00805F9B34FB` (Node Provisioning Service) | `Node` |
-| Any other Sonde UUID | `Unknown` |
+| Neither of the above | `None` (not a Sonde device) |
 
-The UI uses `device_type` to visually distinguish gateways from nodes in the scan results list (e.g., different icon or label prefix).
+The UI uses the `ServiceType` to visually distinguish gateways from nodes in the scan results list (e.g., different icon or label prefix).
 
+```rust
 pub trait BleTransport {
     /// Start scanning for Sonde BLE services.
     /// `service_uuids` filters to the requested service UUIDs
@@ -500,7 +501,7 @@ Used for Phase 2 (encrypt pairing payload) (PT-1102).  Phase 1 does not use AEAD
 
 ```rust
 /// Decrypt AES-256-GCM ciphertext.
-/// AAD = "sonde-pairing-v2" (PT-1102).  Nonce is extracted from the first 12 bytes.
+/// AAD = "sonde-pairing-v2" (PT-1102).  Caller supplies a pre-extracted nonce.
 pub fn aes_gcm_decrypt(
     key: &[u8; 32],
     nonce: &[u8; 12],

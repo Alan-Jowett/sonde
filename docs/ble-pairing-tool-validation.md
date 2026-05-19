@@ -17,7 +17,7 @@ This document defines test cases that validate the BLE pairing tool against the 
 
 **Test harness:** All CI tests use a **mock BLE transport** (in-process implementation of the `BleTransport` trait) and a **mock pairing store** (in-memory implementation of the `PairingStore` trait). No real BLE hardware is needed. Manual tests against physical hardware are specified separately.
 
-**Architecture requirements:** PT-0100 (supported platforms), PT-0101 (Rust-first implementation), PT-0102 (platform isolation), PT-0103 (crate placement), and PT-0104 (separation of concerns) are structural constraints validated by CI build targets and code review.  Named validation entries (T-PT-ARCH-100 through T-PT-ARCH-104) are defined in §2a below to provide explicit traceability.  PT-1004 (reusable core) is validated by T-PT-1004, which asserts the crate builds without platform features.
+**Architecture requirements:** PT-0100 (supported platforms), PT-0101 (Rust-first implementation), PT-0102 (platform isolation), PT-0103 (crate placement), and PT-0104 (separation of concerns) are structural constraints validated by CI build targets and code review.  Named validation entries (T-PT-0100 through T-PT-0104) are defined in §2a below to provide explicit traceability.  PT-1004 (reusable core) is validated by T-PT-1004, which asserts the crate builds without platform features.
 
 **Testing meta-requirement traceability:** The following mapping shows how requirements PT-1000–PT-1206 are satisfied by the test suites, structural coverage, and supporting CI/build checks described in this document:
 
@@ -53,17 +53,17 @@ This document defines test cases that validate the BLE pairing tool against the 
 
 These are **structural checks** (CI build targets, dependency graph review) — not runtime tests.
 
-### T-PT-ARCH-100  Supported platforms build successfully
+### T-PT-0100  Supported platforms build successfully
 
 **Validates:** PT-0100
 
 **Procedure:**
-1. CI builds `sonde-pair` for `x86_64-pc-windows-msvc` (Windows) and `aarch64-linux-android` (Android).
-2. Assert: both targets compile without errors.
+1. The Tauri CI workflows (`.github/workflows/tauri-desktop.yml` for Windows/Linux, `.github/workflows/tauri-android.yml` for Android) build `sonde-pair-ui`, which transitively compiles `sonde-pair` for each platform target.
+2. Assert: CI passes on both desktop (Windows) and Android targets without errors.
 
 ---
 
-### T-PT-ARCH-101  Rust-first implementation
+### T-PT-0101  Rust-first implementation
 
 **Validates:** PT-0101
 
@@ -73,7 +73,7 @@ These are **structural checks** (CI build targets, dependency graph review) — 
 
 ---
 
-### T-PT-ARCH-102  Platform isolation via BleTransport trait
+### T-PT-0102  Platform isolation via BleTransport trait
 
 **Validates:** PT-0102
 
@@ -83,7 +83,7 @@ These are **structural checks** (CI build targets, dependency graph review) — 
 
 ---
 
-### T-PT-ARCH-103  Crate placement in workspace
+### T-PT-0103  Crate placement in workspace
 
 **Validates:** PT-0103
 
@@ -93,7 +93,7 @@ These are **structural checks** (CI build targets, dependency graph review) — 
 
 ---
 
-### T-PT-ARCH-104  Four-layer separation of concerns
+### T-PT-0104  Four-layer separation of concerns
 
 **Validates:** PT-0104
 
@@ -2090,11 +2090,11 @@ TestNode {
 
 | Test ID | Requirement | Title |
 |---|---|---|
-| T-PT-ARCH-100 | PT-0100 | Supported platforms build successfully |
-| T-PT-ARCH-101 | PT-0101 | Rust-first implementation |
-| T-PT-ARCH-102 | PT-0102 | Platform isolation via BleTransport trait |
-| T-PT-ARCH-103 | PT-0103 | Crate placement in workspace |
-| T-PT-ARCH-104 | PT-0104 | Four-layer separation of concerns |
+| T-PT-0100 | PT-0100 | Supported platforms build successfully |
+| T-PT-0101 | PT-0101 | Rust-first implementation |
+| T-PT-0102 | PT-0102 | Platform isolation via BleTransport trait |
+| T-PT-0103 | PT-0103 | Crate placement in workspace |
+| T-PT-0104 | PT-0104 | Four-layer separation of concerns |
 | T-PT-100 | PT-0200 | BLE scan discovers gateway service UUID |
 | T-PT-101 | PT-0200 | BLE scan discovers node service UUID |
 | T-PT-102 | PT-0200 | Non-Sonde devices filtered from results |

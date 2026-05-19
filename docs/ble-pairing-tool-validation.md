@@ -283,7 +283,7 @@ TestNode {
 3. Assert: Gateway step is active on pages 1–3.
 4. Navigate to page 4.
 5. Assert: Gateway step is marked done; Node step is active.
-6. Navigate to page 6.
+6. Navigate to page 7.
 7. Assert: Gateway and Node steps are marked done; Done step is active.
 8. Assert: stepper steps are not clickable.
 
@@ -1505,7 +1505,7 @@ TestNode {
 2. Assert: Gateway step has `step--active` class; Node and Done are dimmed.
 3. Navigate to page 4 (Node Scan).
 4. Assert: Gateway step has `step--done` class; Node step has `step--active` class; Done is dimmed.
-5. Navigate to page 6 (Done).
+5. Navigate to page 7 (Done).
 6. Assert: Gateway and Node steps have `step--done` class; Done step has `step--active` class.
 
 ---

@@ -470,7 +470,7 @@ All cryptographic operations are implemented in `crypto.rs`.  Key material is wr
 
 ### 6.4  AES-256-GCM encryption/decryption
 
-Used for Phase 1 (decrypt `PHONE_REGISTERED`) and Phase 2 (encrypt pairing payload) (PT-1102).
+Used for Phase 2 (encrypt pairing payload) (PT-1102).  Phase 1 does not use AEAD — `PHONE_REGISTERED` is a plaintext ACK (PT-0303).
 
 ```rust
 /// Decrypt AES-256-GCM ciphertext.
@@ -909,7 +909,7 @@ User inputs are validated before any BLE or cryptographic operation (PT-0403, PT
 | `i2c0_sda` | 0–21 when assigned; if assigned then `i2c0_scl` must also be assigned and differ | `phase2.rs` | `PairingError::InvalidPinConfig` |
 | `i2c0_scl` | 0–21 when assigned; if assigned then `i2c0_sda` must also be assigned and differ | `phase2.rs` | `PairingError::InvalidPinConfig` |
 | `one_wire_data` | 0–21 when assigned, or null | `phase2.rs` | `PairingError::InvalidPinConfig` |
-| `battery_adc` | 0–21 when assigned, or null | `phase2.rs` | `PairingError::InvalidPinConfig` |
+| `battery_adc` | 0–4 when assigned (ADC-capable GPIOs), or null | `phase2.rs` | `PairingError::InvalidPinConfig` |
 | `sensor_enable` | 0–21 when assigned, or null | `phase2.rs` | `PairingError::InvalidPinConfig` |
 
 All validation occurs *before* any BLE write, ensuring that invalid inputs never reach the transport layer.
@@ -994,8 +994,8 @@ class Navigator {
 A horizontal stepper bar in `<header>` with three steps:
 
 1. **Gateway** — active during pages 1–3
-2. **Node** — active during pages 4–5
-3. **Done** — active on page 6
+2. **Node** — active during pages 4–6
+3. **Done** — active on page 7
 
 Each step element uses CSS classes:
 - `step--active` — currently active phase (filled/highlighted)

@@ -308,7 +308,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Validates:** MD-0302
 
 **Procedure:**
-1. Flash a test firmware build that stalls the main loop after a trigger command (e.g., stops calling `feed_watchdog()` on a specific `GET_STATUS` sequence).
+1. Flash a test firmware build that stalls the main loop after a trigger command (e.g., stops calling `esp_task_wdt_reset()` on a specific `GET_STATUS` sequence).
 2. Send the trigger command.
 3. Wait up to 40 seconds.
 4. Assert: the modem reboots (watchdog hardware reset) and sends `MODEM_READY` on the serial port.
@@ -364,7 +364,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0500  Modem does not interpret frame contents
 
-**Validates:** MD-0202
+**Validates:** MD-0205
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
@@ -1429,7 +1429,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0400 | SEND_FRAME with body too short | MD-0208 |
 | T-0401 | SET_CHANNEL with invalid channel | MD-0209 |
 | T-0402 | Framing error recovery | MD-0102 |
-| T-0500 | Modem does not interpret frame contents | MD-0202 |
+| T-0500 | Modem does not interpret frame contents | MD-0205 |
 | T-0600 | Gateway Pairing Service lifecycle | MD-0407, MD-0412, MD-0413 |
 | T-0601 | BLE GATT characteristic setup | MD-0400 |
 | T-0602 | MTU negotiation ≥ 247 | MD-0402 |

@@ -1048,12 +1048,17 @@ The gateway MUST expose a separate local control-plane connector API for a singl
 **Description:**  
 The connector API MUST accept control-plane desired-state messages addressed to exactly one entity per message. The addressable entities are the singleton gateway entity or a registered node. Gateway-scoped desired state is selected by `entity_kind = "gateway"`; the connector contract does not use a gateway instance identifier, and any accompanying `entity_id` is ignored for gateway-targeted messages. Each desired-state message MUST represent the complete desired state for its target entity, not a partial patch. Upon acceptance, the gateway MUST update its local desired-state view for that entity and reconcile the desired state against the latest actual state and pending command state that the gateway already maintains. The control plane does not directly queue node commands through the connector.
 
+When a node-scoped `DESIRED_STATE` message includes an inline ELF binary (`assigned_program_elf`, CBOR key 5), the gateway MUST ingest the program locally through the program library before updating node state. The verification profile (`assigned_program_verification_profile`, CBOR key 6) determines the size and verification constraints; the default is `Resident`. If `assigned_program_hash` (CBOR key 1) is also present, the gateway MUST verify that the ingested program's hash matches exactly. If any ingestion step fails (invalid ELF, verification failure, size limit, or hash mismatch), the gateway MUST reject the entire `DESIRED_STATE` message without updating the node's desired state or persisting the program.
+
 **Acceptance criteria:**
 
 1. A desired-state message targets exactly one gateway or one node.
 2. Applying a desired-state message replaces the previously stored desired state for that entity.
 3. Desired-state ingestion updates the same gateway-owned reconciliation state used to decide future node `COMMAND` contents.
 4. The connector does not expose imperative cloud-originated operations such as direct `QueueReboot`, `AssignProgram`, or display RPCs as part of the normal control-plane path.
+5. When a node-scoped `DESIRED_STATE` includes `assigned_program_elf` (key 5), the gateway ingests the ELF through local Prevail verification and stores the resulting program image.
+6. If the declared `assigned_program_hash` (key 1) does not match the hash of the ingested program, the entire `DESIRED_STATE` message is rejected.
+7. An invalid or oversized inline ELF causes the entire `DESIRED_STATE` message to be rejected without updating node state.
 
 ---
 

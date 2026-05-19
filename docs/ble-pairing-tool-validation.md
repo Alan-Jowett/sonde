@@ -1312,7 +1312,7 @@ TestNode {
 
 **Procedure:**
 1. Call `provision_node(...)` with board layout `Some(BoardLayout { i2c0_sda: Some(6), i2c0_scl: Some(7), one_wire_data: Some(3), battery_adc: Some(22), sensor_enable: Some(4) })`.
-2. Assert: the call returns an error indicating that `battery_adc` is not an ADC-capable GPIO (must be 0–4).
+2. Assert: the call returns an error indicating that `battery_adc` is out of range (0–21).
 3. Assert: no NODE_PROVISION message is written to the BLE transport.
 
 ---

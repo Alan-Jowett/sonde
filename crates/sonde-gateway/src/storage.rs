@@ -110,6 +110,24 @@ pub trait Storage: Send + Sync {
         firmware_abi_version: u32,
         firmware_version: &str,
     ) -> Result<(), StorageError>;
+    /// Atomically set `current_program_hash` for a node, but only if the
+    /// node's `assigned_program_hash` still equals the given `program_hash`.
+    ///
+    /// This is used for lost-PROGRAM_ACK recovery during WAKE processing: the
+    /// node reports a program hash in its WAKE that matches the assigned hash,
+    /// proving it has already installed the program even though the gateway
+    /// never received the PROGRAM_ACK.
+    ///
+    /// The conditional check on `assigned_program_hash` prevents a stale WAKE
+    /// snapshot from overwriting a concurrent reassignment.
+    ///
+    /// Returns `Ok(true)` if the update was applied, `Ok(false)` if the
+    /// assigned hash no longer matches (no change made), or an error.
+    async fn reconcile_current_program_hash(
+        &self,
+        node_id: &str,
+        program_hash: &[u8],
+    ) -> Result<bool, StorageError>;
     /// Insert a node only if no node with the same `node_id` exists.
     ///
     /// Returns `true` if the node was inserted, `false` if it already existed.
@@ -376,6 +394,25 @@ impl Storage for InMemoryStorage {
                 Ok(true)
             }
         }
+    }
+
+    async fn reconcile_current_program_hash(
+        &self,
+        node_id: &str,
+        program_hash: &[u8],
+    ) -> Result<bool, StorageError> {
+        let mut nodes = self.nodes.write().await;
+        let node = nodes
+            .get_mut(node_id)
+            .ok_or_else(|| StorageError::NotFound(format!("node `{node_id}`")))?;
+        if node.assigned_program_hash.as_deref() != Some(program_hash) {
+            return Ok(false);
+        }
+        if node.current_program_hash.as_deref() == Some(program_hash) {
+            return Ok(false);
+        }
+        node.current_program_hash = Some(program_hash.to_vec());
+        Ok(true)
     }
 
     async fn delete_node(&self, node_id: &str) -> Result<(), StorageError> {

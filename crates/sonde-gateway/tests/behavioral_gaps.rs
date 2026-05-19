@@ -1305,10 +1305,13 @@ async fn t0700_registry_entry_all_fields_present() {
         Some(3700),
         "runtime battery must be updated by WAKE"
     );
-    // `current_program_hash` is only set via PROGRAM_ACK, not WAKE.
+    // After #961 fix: when the WAKE-reported hash matches
+    // `assigned_program_hash`, the gateway reconciles `current_program_hash`
+    // to recover from lost PROGRAM_ACK scenarios.
     assert_eq!(
-        stored.current_program_hash, None,
-        "current_program_hash must not be set by WAKE alone"
+        stored.current_program_hash.as_deref(),
+        Some(program_hash.as_slice()),
+        "current_program_hash must be reconciled when WAKE hash matches assigned hash"
     );
 }
 

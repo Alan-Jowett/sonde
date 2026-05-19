@@ -308,13 +308,13 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Validates:** MD-0302
 
 **Procedure:**
-1. Flash a test firmware build that stalls the main loop after a trigger command (e.g., stops calling `feed_watchdog()` on a specific `GET_STATUS` sequence).
+1. Flash a test firmware build that stalls the main loop after a trigger command (e.g., stops calling `esp_task_wdt_reset()` on a specific `GET_STATUS` sequence).
 2. Send the trigger command.
-3. Wait up to 15 seconds.
+3. Wait up to 40 seconds.
 4. Assert: the modem reboots (watchdog hardware reset) and sends `MODEM_READY` on the serial port.
 5. Assert: modem is fully operational after the watchdog-triggered reboot.
 
-> **Note:** This test requires a special test firmware build and real hardware. It cannot be validated via PTY mock. The 10-second watchdog timeout plus reboot time should complete within 15 seconds.
+> **Note:** This test requires a special test firmware build and real hardware. It cannot be validated via PTY mock. The 35-second watchdog timeout plus reboot time should complete within 40 seconds.
 
 ---
 
@@ -460,6 +460,20 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+### T-0605a  Indication queue bound rejects oversized payloads
+
+**Validates:** MD-0403 (criterion 5)
+
+**Procedure:**
+1. Connect via BLE with MTU = 247.
+2. Send a `BLE_INDICATE` from the gateway whose payload would produce more than 64 indication fragments (e.g., 64 × 244 + 1 = 15 617 bytes).
+3. Assert: the modem silently drops the message (no indication is sent to the phone).
+4. Assert: a warning log is emitted indicating the indication queue limit was exceeded.
+5. Send a subsequent `BLE_INDICATE` with a small payload (e.g., 100 bytes).
+6. Assert: the subsequent message is delivered successfully (the queue is not permanently broken).
+
+---
+
 ### T-0606  Opaque relay (no content inspection)
 
 **Validates:** MD-0401
@@ -600,6 +614,35 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 1. Connect a phone via BLE.
 2. Phone writes zero bytes to the Gateway Command characteristic.
 3. Assert: no `BLE_RECV` message is sent to the gateway.
+
+---
+
+### T-0613c  Pre-auth write replacement
+
+**Validates:** MD-0409 (criterion 6)
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect a BLE client (plain GATT connect, no client-initiated pairing).
+2. Send a first GATT write ("payload A") before pairing completes.
+3. Send a second GATT write ("payload B") before pairing completes.
+4. Allow server-initiated pairing to complete, confirm via `BLE_PAIRING_CONFIRM_REPLY(0x01)`.
+5. Assert: only one `BLE_RECV` is sent to the gateway, containing "payload B" (the second write replaced the first).
+
+---
+
+### T-0613d  GATT write dropped when BLE event queue is full
+
+**Validates:** MD-0409 (criterion 7)
+
+**Procedure:**
+1. Connect and authenticate a BLE client.
+2. Saturate the BLE event queue by injecting 32 events (e.g., rapid GATT writes or mock events).
+3. Send an additional GATT write while the queue is at capacity.
+4. Assert: the additional write is silently dropped.
+5. Assert: a warning log is emitted indicating the event queue is full.
+6. Drain the queue (poll the bridge until events are consumed).
+7. Send another GATT write.
+8. Assert: the new write is forwarded as `BLE_RECV` (queue accepts events again).
 
 ---
 
@@ -902,6 +945,26 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 2. Wait at least 60 seconds without sending any GATT writes that trigger security or completing pairing (the connection must remain in an unpaired, idle state).
 3. Assert: the modem disconnects the idle client due to the 60 s BLE idle timeout.
 4. Assert: `BLE_DISCONNECTED` is received on the gateway side as a result of the idle-timeout disconnect.
+5. Assert: if BLE is still enabled, the modem resumes advertising after the idle-timeout disconnect (a new phone scan discovers the service UUID).
+
+---
+
+### T-0637  LESC tentative accept model
+
+**Validates:** MD-0416
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect a BLE client.
+2. Allow server-initiated LESC Numeric Comparison pairing to proceed. The modem tentatively accepts the pairing at the SMP layer.
+3. Assert: `BLE_PAIRING_CONFIRM` is sent to the gateway with the 6-digit passkey.
+4. Assert: `BLE_CONNECTED` is **not** sent yet (deferred until operator approval).
+5. Send `BLE_PAIRING_CONFIRM_REPLY(0x01)` (operator accepts).
+6. Assert: `BLE_CONNECTED` is now sent to the gateway.
+7. Assert: any GATT write buffered before authentication is forwarded via `BLE_RECV` after `BLE_CONNECTED`.
+8. Repeat steps 1–3, but this time send `BLE_PAIRING_CONFIRM_REPLY(0x00)` (operator rejects).
+9. Assert: the BLE client is disconnected immediately.
+10. Assert: `BLE_DISCONNECTED` is sent to the gateway.
+11. Assert: NVS bond persistence is disabled (`CONFIG_BT_NIMBLE_NVS_PERSIST=n` in sdkconfig).
 
 ---
 
@@ -963,6 +1026,21 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 2. Write 20 bytes via GATT.
 3. Assert: INFO log indicating GATT write with payload length 20.
 
+---
+
+### T-0704a  BLE GATT write logging — buffered and flushed writes
+
+**Validates:** MD-0502 (criteria 2, 3)
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect a BLE client (plain GATT connect, no client-initiated pairing).
+2. Send a GATT write before pairing completes.
+3. Assert: INFO log indicating the write is buffered with payload length and authentication state (e.g., "GATT write N bytes buffered (awaiting authentication)").
+4. Complete pairing via `BLE_PAIRING_CONFIRM_REPLY(0x01)`.
+5. Assert: INFO log indicating the buffered write is flushed after authentication with payload length.
+
+---
+
 ### T-0705  BLE pairing event — LESC security initiated
 
 **Validates:** MD-0504
@@ -992,34 +1070,41 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0708  Build-type quiet strips INFO call-sites
 
-**Validates:** MD-0505
+**Validates:** MD-0505 (criteria 2, 4, 5, 6)
 
 **Procedure:**
 1. Build the modem firmware with the default `quiet` feature.
 2. Boot the modem and forward a few ESP-NOW frames.
 3. Capture UART diagnostic output.
-4. Assert: no INFO-level log lines appear (MD-0500–MD-0504 logs are compiled out).
-5. Assert: WARN-level logs (e.g., send failures) still appear.
+4. Assert: no INFO-level log lines appear (MD-0500–MD-0504 logs are compiled out, confirming compile-time maximum is WARN — criterion 2).
+5. Assert: WARN-level logs (e.g., send failures) still appear (confirming runtime default is WARN — criterion 4).
+6. Assert: MD-0500–MD-0504 INFO-level requirements are satisfied by the verbose build variant; release `quiet` builds omit them without functional behavior changes (criterion 5).
+7. Attempt to build with `--features quiet,verbose`. Assert: compilation fails with a `compile_error!` (criterion 6).
 
 ### T-0709  Build-type verbose retains INFO and DEBUG
 
-**Validates:** MD-0505
+**Validates:** MD-0505 (criteria 1, 3, 4)
 
 **Procedure:**
 1. Build the modem firmware with `--features esp,verbose --no-default-features`.
 2. Boot the modem and forward frames.
 3. Capture UART diagnostic output.
 4. Assert: INFO-level operational logs (ESP-NOW frame received/sent) are present.
-5. Assert: DEBUG-level logs (USB-CDC messages) are visible.
+5. Assert: DEBUG-level logs (USB-CDC messages) are visible (confirming compile-time maximum is DEBUG in verbose release — criterion 3).
+6. Assert: TRACE-level logs are not present in release verbose builds (TRACE call-sites are compiled out — criterion 3).
+7. In a debug build, assert: TRACE-level call-sites are compiled in (compile-time maximum is TRACE — criterion 1).
+8. Assert: the runtime default log level is INFO in both debug and release verbose builds (criterion 4).
 
 ### T-0710  Error diagnostic — BLE indication failure
 
-**Validates:** MD-0506
+**Validates:** MD-0506 (criteria 1, 2, 3)
 
 **Procedure:**
 1. Connect a BLE client and trigger an indication failure (e.g., disconnect mid-indication).
 2. Capture UART diagnostic output.
-3. Assert: the error log includes the operation name and NimBLE error (debug string).
+3. Assert: the error log includes the operation name and the platform-native error representation (e.g., NimBLE `Debug` output or return code where available) (criterion 1).
+4. Assert: the error log includes relevant context such as the connection handle and queue state (criterion 3).
+5. Where a corrective action is known, assert: the error includes actionable guidance text (e.g., "check BLE connection state") (criterion 2).
 
 ### T-0711  Error diagnostic — ESP-NOW send failure
 
@@ -1055,6 +1140,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 2. Wait for `EVENT_BUTTON` on the serial link.
 3. Assert: `EVENT_BUTTON` (type `0xB0`) is received.
 4. Assert: `button_type` = `0x00` (BUTTON_SHORT).
+5. Assert: `EVENT_BUTTON` is emitted within one main-loop poll cycle of the debounced release (MD-0603 criterion 1).
 
 ---
 
@@ -1129,6 +1215,17 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+### T-0806b  No GPIO interrupt registered for button
+
+**Validates:** MD-0604 (criterion 3)
+
+**Procedure:**
+1. Inspect the firmware source or runtime GPIO ISR table.
+2. Assert: no GPIO interrupt service routine is registered for GPIO2 (the button pin).
+3. Assert: button detection uses non-blocking GPIO polling in the main loop only.
+
+---
+
 ### T-0807  No button-semantic logic in modem
 
 **Validates:** MD-0605
@@ -1191,6 +1288,9 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 4. Observe the OLED output (or capture the display driver's mock I²C transactions).
 5. Assert: the rendered pixels match the source framebuffer orientation and bit packing.
 6. Assert: no `EVENT_ERROR` is emitted.
+7. Assert: the display write targets I²C address `0x3C` (MD-0701 criterion 1).
+8. Assert: every accepted update refreshes the full display image — all 8 pages are written, not a subset (MD-0701 criterion 3).
+9. Assert: the modem does not expose any partial-row, partial-page, or sub-rectangle display update command (MD-0700 criterion 6).
 
 ---
 
@@ -1232,6 +1332,8 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 2. Repeat the same traffic load while continuously sending reliable display transfers.
 3. Assert: ESP-NOW forwarding rate and latency show no measurable regression attributable to display rendering.
 4. Assert: display updates continue to complete during the traffic load.
+5. Send `GET_STATUS`, `SET_CHANNEL`, and other USB-CDC commands while a reliable display transfer is in progress.
+6. Assert: USB-CDC command processing continues normally — commands are acknowledged without delay (MD-0702 criterion 3).
 
 ---
 
@@ -1268,6 +1370,8 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 1. Configure the display transport to inject an I²C write failure during a completed display update.
 2. Send a valid reliable display transfer.
 3. Assert: `EVENT_ERROR(DISPLAY_WRITE_FAILED)` is received.
+4. Send `GET_STATUS` and an ESP-NOW or BLE command afterward.
+5. Assert: the modem remains fully operational for ESP-NOW, BLE, USB-CDC, and future reliable display transfers after the error (MD-0704 criterion 3).
 
 ---
 
@@ -1281,6 +1385,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 3. Observe the display driver's command stream (or instrument the mock).
 4. Assert: the SSD1306 native display-off command is sent.
 5. Assert: no `EVENT_ERROR` is emitted solely because the panel was idled.
+6. Assert: panel sleep does not emit `EVENT_BUTTON`, change BLE advertising state, or introduce local display semantics (MD-0705 criterion 4).
 
 ---
 
@@ -1295,8 +1400,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 4. Assert: the new framebuffer is rendered correctly.
 5. Wait less than 300 seconds and send a third valid display transfer.
 6. Assert: the panel does not sleep between the second and third updates because the idle timer was restarted by the second accepted transfer.
-4. Send `GET_STATUS` and an ESP-NOW or BLE command afterward.
-5. Assert: the modem remains operational after the display failure.
+7. Assert: panel wake does not emit `EVENT_BUTTON`, change BLE advertising state, or introduce local display semantics (MD-0705 criterion 4).
 
 ---
 
@@ -1333,6 +1437,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0603 | BLE write → USB-CDC relay | MD-0401 |
 | T-0604 | USB-CDC → BLE indication relay | MD-0401 |
 | T-0605 | Indication fragmentation | MD-0403 |
+| T-0605a | Indication queue bound rejects oversized payloads | MD-0403 |
 | T-0606 | Opaque relay (no content inspection) | MD-0401 |
 | T-0607 | BLE LESC Numeric Comparison — link establishment | MD-0404 |
 | T-0608 | BLE disconnect cleanup | MD-0405 |
@@ -1344,6 +1449,8 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0613 | BLE_RECV forwarding | MD-0409 |
 | T-0613a | Empty BLE_INDICATE silently discarded | MD-0408 |
 | T-0613b | Empty GATT write silently discarded | MD-0409 |
+| T-0613c | Pre-auth write replacement | MD-0409 |
+| T-0613d | GATT write dropped when BLE event queue is full | MD-0409 |
 | T-0614 | BLE_CONNECTED notification | MD-0410 |
 | T-0615 | BLE_DISCONNECTED notification | MD-0411 |
 | T-0616 | BLE relay round-trip | MD-0408, MD-0409 |
@@ -1367,11 +1474,13 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0634 | Write Long reassembly | MD-0409 |
 | T-0635 | BLE_ENABLE and BLE_DISABLE idempotency | MD-0413 |
 | T-0636 | BLE idle timeout disconnects unfinished pairing | MD-0415 |
+| T-0637 | LESC tentative accept model | MD-0416 |
 | T-0700 | ESP-NOW received frame logged | MD-0500 |
 | T-0701 | ESP-NOW sent frame logged | MD-0500 |
 | T-0702 | USB-CDC messages logged at DEBUG | MD-0503 |
 | T-0703 | BLE lifecycle events logged | MD-0501 |
 | T-0704 | BLE GATT write logging | MD-0502 |
+| T-0704a | BLE GATT write logging — buffered and flushed writes | MD-0502 |
 | T-0705 | BLE pairing event — LESC security initiated | MD-0504 |
 | T-0706 | BLE pairing event — authentication success | MD-0504 |
 | T-0707 | BLE pairing event — authentication failure | MD-0504 |
@@ -1387,6 +1496,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0805 | No event emitted while button is held | MD-0602 |
 | T-0806 | Button events do not interfere with ESP-NOW | MD-0604 |
 | T-0806a | Button events do not interfere with BLE pairing | MD-0604 |
+| T-0806b | No GPIO interrupt registered for button | MD-0604 |
 | T-0807 | No button-semantic logic in modem | MD-0605 |
 | T-0808 | EVENT_BUTTON round-trip codec | MD-0603 |
 | T-0809 | Release-bounce rejected | MD-0601 |

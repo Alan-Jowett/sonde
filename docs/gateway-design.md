@@ -553,8 +553,8 @@ Returns bytes from the stored CBOR program image for the requested chunk. Last c
 
 All gateway instances in a failover group serve identical bytes for the same hash (GW-1004).
 
-**Stateless chunk serving and cross-wake resumption (GW-0301):**
-Chunk serving is entirely stateless — the gateway does not track per-node transfer progress. Each `GET_CHUNK { chunk_index }` request simply looks up the corresponding byte range in the stored program image and returns a `CHUNK` response. Because the gateway holds no transfer state, a node that restarts from `chunk_index = 0` (e.g., after power loss or reboot) receives the first chunk again without error or special handling. Transfer resumption across multiple wake cycles is inherently supported: the node advances its own `chunk_index` and the gateway serves whatever chunk is requested, regardless of prior history.
+**Cross-wake transfer resumption (GW-0301):**
+Within a single wake cycle, the gateway tracks active-transfer parameters in a `ChunkedTransfer` session (program hash, chunk size, chunk count). Each `GET_CHUNK { chunk_index }` request is served by looking up the corresponding byte range in the stored program image using these session parameters — the gateway does not track per-chunk delivery progress. Across wake cycles, no transfer state is persisted: when a node re-wakes, a new session is created based on the current assignment state. A node that restarts from `chunk_index = 0` (e.g., after power loss) simply initiates a fresh `ChunkedTransfer` session and receives chunks from the beginning without error. Transfer completion across multiple wake cycles is inherently supported because the node drives its own `chunk_index` progression.
 
 ---
 

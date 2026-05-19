@@ -133,8 +133,9 @@ A configurable stub handler process (or in-process mock) that:
 4. Assert: response header `nonce` matches the WAKE nonce.
 5. Assert: CBOR payload contains `command_type`, `starting_seq`, and `timestamp_ms`.
 6. Assert: `timestamp_ms` is a reasonable UTC value (within 5 seconds of test clock).
-7. Send a second WAKE with a different nonce.
-8. Assert: the `starting_seq` in the second COMMAND differs from the first (fresh random value).
+7. Send at least 4 additional WAKEs, each with a distinct nonce, collecting all `starting_seq` values.
+8. Assert: the collected `starting_seq` values are not monotonically increasing or decreasing (rules out simple counters).
+9. Assert: no two `starting_seq` values are identical (fresh value each time).
 
 ---
 
@@ -147,7 +148,7 @@ A configurable stub handler process (or in-process mock) that:
 2. Trigger a chunked transfer.
 3. Capture all outbound CHUNK frames.
 4. Assert: every outbound frame ≤ 250 bytes.
-5. Assert: every outbound frame's plaintext payload (frame minus 11-byte header and 16-byte GCM tag) ≤ 223 bytes.
+5. Assert: the ciphertext region of every outbound frame (frame length minus 11-byte header minus 16-byte GCM tag) ≤ 223 bytes.
 
 ---
 

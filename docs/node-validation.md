@@ -100,6 +100,19 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N102a  Tampered header causes AEAD verification failure
+
+**Validates:** ND-0102, ND-0300
+
+**Procedure:**
+1. Capture a valid outbound frame (e.g., WAKE).
+2. Flip one bit in the 11-byte header (e.g., toggle bit 0 of the `msg_type` byte at offset 2).
+3. Attempt to decrypt the frame using the node's PSK with the tampered header as AAD.
+4. Assert: AES-256-GCM verification fails (authentication error, not CBOR decode error).
+5. Assert: the frame is discarded.
+
+---
+
 ### T-N103  Frame size enforcement
 
 **Validates:** ND-0103
@@ -434,6 +447,36 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N404a  Secure boot rejects unsigned firmware
+
+**Validates:** ND-0403
+
+**Procedure:**
+1. Build a node firmware image with secure boot enabled in `sdkconfig.defaults` (`CONFIG_SECURE_BOOT=y`).
+2. Flash the signed firmware to a device with secure boot provisioned.
+3. Assert: the signed firmware boots successfully.
+4. Flash an unsigned or tampered firmware image to the same device.
+5. Assert: the bootloader rejects the unsigned image and the node does not boot.
+
+> **Note:** This test requires target hardware with secure boot fuses provisioned. It is verified as a platform deployment test, not as part of the host-based test suite.
+
+---
+
+### T-N404b  Flash encryption protects PSK at rest
+
+**Validates:** ND-0403a
+
+**Procedure:**
+1. Build a node firmware image with flash encryption enabled in `sdkconfig.defaults` (`CONFIG_SECURE_FLASH_ENC_ENABLED=y`).
+2. Provision the node with a known PSK via BLE pairing.
+3. Assert: the firmware boots and completes a wake cycle using the provisioned PSK.
+4. Read the raw NVS flash partition contents via JTAG or `esptool.py read_flash`.
+5. Assert: the PSK bytes are not present in plaintext in the raw flash dump.
+
+> **Note:** This test requires target hardware with flash encryption fuses provisioned.
+
+---
+
 ## 7  Program transfer and execution tests
 
 ### T-N500  Complete chunked transfer
@@ -529,6 +572,18 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 4. Assert: program executes.
 5. Assert: after execution, ephemeral program memory is freed.
 6. Assert: resident program is unaffected.
+
+---
+
+### T-N505a  Ephemeral program with maps rejected
+
+**Validates:** ND-0503 (AC4)
+
+**Procedure:**
+1. Build a program image containing bytecode and a non-empty `maps` array (e.g., one `MapDef` with `map_type=0`, `key_size=4`, `value_size=4`, `max_entries=1`).
+2. Mock gateway responds with RUN_EPHEMERAL and transfers the image.
+3. Assert: the node rejects the program at decode time — no BPF execution occurs.
+4. Assert: the resident program is unaffected (next NOP cycle executes the resident program normally).
 
 ---
 
@@ -1543,6 +1598,18 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N1015a  Non-I/O helpers do not emit DEBUG logs
+
+**Validates:** ND-1010 (AC2)
+
+**Procedure:**
+1. Configure the node with DEBUG-level logging enabled.
+2. Install a program that calls non-I/O helpers: `map_lookup_elem`, `map_update_elem`, `get_time`, `get_battery_mv`, `delay_us`, `set_next_wake`, `bpf_trace_printk`.
+3. Run wake cycle.
+4. Assert: no DEBUG-level log lines are emitted for these helper calls (only I/O helpers produce DEBUG logs).
+
+---
+
 ### T-N1016  GPIO state after sleep preparation
 
 **Validates:** ND-1013
@@ -1681,7 +1748,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ### T-N1019  Build-type quiet strips INFO call-sites
 
-**Validates:** ND-1012
+**Validates:** ND-1012 (AC2, AC5)
 
 **Procedure:**
 1. Build the node firmware with the default `quiet` feature (no `verbose`).
@@ -1692,7 +1759,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ### T-N1020  Build-type verbose retains INFO and DEBUG
 
-**Validates:** ND-1012
+**Validates:** ND-1012 (AC3)
 
 **Procedure:**
 1. Build the node firmware with `--features esp,verbose --no-default-features`.
@@ -1700,6 +1767,37 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 3. Capture serial output.
 4. Assert: INFO-level operational logs (boot reason, wake cycle, WAKE sent) are present.
 5. Assert: DEBUG-level logs are visible when triggered (e.g., BPF helper I/O).
+
+### T-N1020a  Debug build retains TRACE call-sites
+
+**Validates:** ND-1012 (AC1)
+
+**Procedure:**
+1. Build the node firmware with `cfg(debug_assertions)` enabled (debug profile).
+2. Boot the node and complete a wake cycle with the runtime log level set to TRACE.
+3. Capture serial output.
+4. Assert: TRACE-level log lines are present (compile-time maximum is TRACE, so `trace!()` call-sites are compiled in and visible at TRACE runtime level).
+
+### T-N1020b  Runtime default log level
+
+**Validates:** ND-1012 (AC4)
+
+**Procedure:**
+1. Build the node firmware in debug mode (or with `verbose` feature).
+2. Boot the node without any explicit runtime log-level override.
+3. Capture serial output.
+4. Assert: the default runtime log level is INFO — INFO and above are visible, DEBUG and TRACE are not (unless explicitly lowered).
+5. Build with default `quiet` feature.
+6. Boot the node without any explicit runtime log-level override.
+7. Assert: the default runtime log level is WARN — only WARN and ERROR are visible.
+
+### T-N1020c  Quiet and verbose features are mutually exclusive
+
+**Validates:** ND-1012 (AC6)
+
+**Procedure:**
+1. Attempt to build the node firmware with both `quiet` and `verbose` features enabled: `--features esp,quiet,verbose`.
+2. Assert: the build fails with a compile-time error (e.g., `compile_error!` or conflicting `cfg` attributes).
 
 ### T-N1021  Error diagnostic includes operation and subsystem error
 
@@ -1801,6 +1899,18 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 3. Assert: the node enters BLE advertising successfully.
 
 > **Note:** This test requires target hardware with the NimBLE stack.
+
+---
+
+### T-N918c  sdkconfig.defaults sets main task stack size
+
+**Validates:** ND-0918 (AC1)
+
+**Procedure:**
+1. Open `crates/sonde-node/sdkconfig.defaults`.
+2. Assert: the file contains `CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384` (or a value ≥ 16384).
+
+> **Note:** This is a static inspection test, not a runtime test. It verifies the build configuration prerequisite for T-N918a and T-N918b.
 
 ---
 
@@ -2316,6 +2426,20 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N1103a  Wrong message type ignored during diagnostic listen window
+
+**Validates:** ND-1102 (AC3)
+
+**Procedure:**
+1. Boot node into BLE pairing mode and stage a valid `RUN_TEST_COMMAND` for `DIAG_FRAME`.
+2. Allow the node to reboot into test mode.
+3. During the listen window, send an ESP-NOW frame with `msg_type` ≠ `0x85` (e.g., `0x01` WAKE) at header offset 2.
+4. Assert: the node ignores the frame and continues listening.
+5. Then send a valid frame with `msg_type=0x85` (DIAG_REPLY).
+6. Assert: the node accepts the DIAG_REPLY and stores the result.
+
+---
+
 ### T-N1102a  BLE not active during pre-provisioning test execution
 
 **Validates:** ND-1102 (AC4)
@@ -2325,6 +2449,22 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 2. Allow the node to reboot into test mode.
 3. During the test-mode ESP-NOW phase, attempt a BLE scan.
 4. Assert: the node is NOT advertising BLE services during test execution.
+
+---
+
+### T-N1102b  Replacing a previously staged unexecuted command
+
+**Validates:** ND-1101 (AC — replacing staged command)
+
+**Procedure:**
+1. Boot node into BLE pairing mode.
+2. Send `RUN_TEST_COMMAND` A (e.g., `DIAG_FRAME` with `rf_channel=6` and payload `[0xAA; 50]`).
+3. Assert: `RUN_TEST_ACK(status=0x00)` received.
+4. Without disconnecting or rebooting, send `RUN_TEST_COMMAND` B (e.g., `DIAG_FRAME` with `rf_channel=11` and payload `[0xBB; 50]`).
+5. Assert: `RUN_TEST_ACK(status=0x00)` received.
+6. Disconnect BLE. Allow the node to reboot into test mode.
+7. Assert: the node executes command B (broadcasts on channel 11 with payload `[0xBB; 50]`).
+8. Assert: command A is not executed (no broadcast on channel 6 with payload `[0xAA; 50]`).
 
 ---
 
@@ -2367,6 +2507,20 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 4. Assert: the receiver counts exactly 4 broadcasts (1 initial + 3 retries).
 5. Assert: the time between consecutive broadcasts is approximately 2.2 seconds (2 s listen + 200 ms backoff).
 6. After the node reboots back into BLE pairing mode, assert the retained result reports a timeout.
+
+---
+
+### T-N1106a  Reply on first attempt terminates retry loop
+
+**Validates:** ND-1103 (AC4)
+
+**Procedure:**
+1. Boot node into BLE pairing mode and stage a valid `RUN_TEST_COMMAND`.
+2. Set up an ESP-NOW receiver that counts broadcasts AND replies with a `DIAG_REPLY` (`msg_type=0x85`) immediately after the first broadcast.
+3. Allow the node to reboot into test mode and execute the command.
+4. Assert: the receiver counts exactly 1 broadcast (no retries — the reply terminated the loop).
+5. After the node reboots back, send `READ_TEST_RESULT`.
+6. Assert: `TEST_RESULT(status=0x00)` with the reply frame.
 
 ---
 
@@ -2438,26 +2592,26 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 |---|---|
 | ND-0100 | T-N100 |
 | ND-0101 | T-N101, T-N919 |
-| ND-0102 | T-N102 |
+| ND-0102 | T-N102, T-N102a |
 | ND-0103 | T-N103, T-N104, T-N920 |
 | ND-0200 | T-N200, T-N201, T-N921 |
 | ND-0201 | T-N202, T-N202a, T-N202b, T-N203 |
 | ND-0202 | T-N204, T-N205, T-N206, T-N207, T-N922 |
 | ND-0203 | T-N205, T-N208, T-N209, T-N210, T-N923 |
-| ND-0300 | T-N606a, T-N606b (AEAD path) |
+| ND-0300 | T-N102a, T-N606a, T-N606b (AEAD path) |
 | ND-0301 | T-N301, T-N924 |
 | ND-0302 | T-N302, T-N303, T-N304, T-N925 |
 | ND-0303 | T-N305, T-N926 |
 | ND-0304 | T-N306, T-N927 |
 | ND-0400 | T-N100, T-N400, T-N401 |
 | ND-0402 | T-N404 |
-| ND-0403 | *(verified by secure boot platform tests)* |
-| ND-0403a | *(verified by flash encryption platform tests)* |
+| ND-0403 | T-N404a |
+| ND-0403a | T-N404b |
 | ND-0500 | T-N500, T-N500a, T-N500b |
 | ND-0501 | T-N501, T-N502 |
 | ND-0501a | T-N503, T-N928 |
 | ND-0502 | T-N504 |
-| ND-0503 | T-N505 |
+| ND-0503 | T-N505, T-N505a |
 | ND-0504 | T-N506 |
 | ND-0505 | T-N507, T-N508, T-N509, T-N929 |
 | ND-0506 | T-N508, T-N510 |
@@ -2492,7 +2646,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0915 | T-N917, T-N917a |
 | ND-0916 | T-N918 |
 | ND-0917 | T-N906 |
-| ND-0918 | T-N918a, T-N918b *(plus sdkconfig.defaults inspection)* |
+| ND-0918 | T-N918a, T-N918b, T-N918c |
 | ND-0919 | T-N942, T-N942a |
 | ND-0608 | T-N0607a, T-N0607b, T-N0607c, T-N0607d, T-N0607e, T-N0607f, T-N0607g |
 | ND-0608a | T-N202b, T-N0608a, T-N0608b, T-N0608c |
@@ -2513,17 +2667,17 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-1007 | T-N1008 |
 | ND-1008 | T-N1012, T-N1013, T-N1013a |
 | ND-1009 | T-N1009, T-N1010, T-N1011, T-N1011a, T-N1011b |
-| ND-1010 | T-N1015 |
+| ND-1010 | T-N1015, T-N1015a |
 | ND-1011 | T-N1017, T-N1018 |
-| ND-1012 | T-N1019, T-N1020 |
+| ND-1012 | T-N1019, T-N1020, T-N1020a, T-N1020b, T-N1020c |
 | ND-1013 | T-N1016 |
 | ND-1014 | T-N1021, T-N1021a, T-N1021b, T-N1021c |
 | ND-1015 | T-N1022 |
 | ND-1016 | T-N1023 |
 | ND-1100 | T-N1100, T-N1101, T-N1101a, T-N1101b, T-N1109, T-N1110 |
-| ND-1101 | T-N1100, T-N1102 |
-| ND-1102 | T-N1102, T-N1102a, T-N1103, T-N1104 |
-| ND-1103 | T-N1105, T-N1106 |
+| ND-1101 | T-N1100, T-N1102, T-N1102b |
+| ND-1102 | T-N1102, T-N1102a, T-N1103, T-N1103a, T-N1104 |
+| ND-1103 | T-N1105, T-N1106, T-N1106a |
 | ND-1104 | T-N1104, T-N1104a, T-N1105, T-N1107, T-N1108 |
 | ND-1105 | T-N1104, T-N1105, T-N1106 |
 | ND-1106 | T-N1107, T-N1109 |

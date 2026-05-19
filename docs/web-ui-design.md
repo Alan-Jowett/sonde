@@ -5,7 +5,7 @@
 > **Document status:** Draft  
 > **Scope:** Architecture and implementation design for the Sonde Web UI.  
 > **Audience:** Implementers (human or LLM agent) building the web UI and supporting Azure infrastructure.  
-> **Related:** [gateway-design.md](gateway-design.md), [gateway-validation.md](gateway-validation.md)
+> **Related:** [web-ui-requirements.md](web-ui-requirements.md), [web-ui-validation.md](web-ui-validation.md), [gateway-design.md](gateway-design.md)
 
 ---
 
@@ -22,7 +22,7 @@ Browser (SPA)
 ├── Dashboard (read actualstate table)
 ├── Desired State (read/write desiredstate table)
 ├── Program Upload (POST ELF to ProgramIngest function)
-├── Program List (read programs + programroute tables)
+├── Program List (read programs table)
 └── Sensor Data (read SensorData table, time-series graph)
      │
      │ MSAL.js Bearer Token
@@ -158,10 +158,11 @@ local `ProgramLibrary`.
 - MSAL.js 2.x with authorization code flow + PKCE.
 - Token caching in browser session storage.
 - Silent token renewal; redirect to login on expiry.
-- `redirectUri` explicitly set to `window.location.origin + window.location.pathname`
-  so the registered redirect URIs (`https://alan-jowett.github.io/sonde/` and
+- `redirectUri` explicitly set to `window.location.origin` plus the normalized
+  directory path (stripping any filename component like `index.html`) so the
+  registered redirect URIs (`https://alan-jowett.github.io/sonde/` and
   `https://sondeplatform.com/`) match regardless of which hostname or base path
-  the user accesses. This is necessary for GitHub Pages project sites where the
+  the user accesses.This is necessary for GitHub Pages project sites where the
   origin alone (`https://alan-jowett.github.io`) does not match the registered URI.
 - Configuration is loaded from the active environment in `localStorage`
   (see §11). `msalAuthority` is derived as
@@ -460,6 +461,6 @@ When the user switches to a different environment:
 2. `CONFIG` fields are updated from the selected environment
 3. The MSAL `PublicClientApplication` instance is discarded
 4. The active MSAL account is cleared
-5. `sessionStorage` is cleared (removes cached tokens)
+5. MSAL-related `sessionStorage` keys are cleared (keys starting with `msal.` or containing `.login.` or `.acquireToken.`) — other session data is preserved
 6. A new MSAL instance is initialized with the new environment's credentials
 7. The active tab is re-rendered

@@ -41,7 +41,8 @@ is removed. The existing `GatewayIdentity` serves both purposes:
 
 - **Ed25519**: BLE pairing challenge-response signing (unchanged).
 - **X25519**: Key exchange for master key rotation (via existing `to_x25519()`
-  conversion, GW-1202).
+  conversion). This supersedes the retired GW-1202; the conversion is
+  re-scoped under this specification as an escrow requirement.
 
 The `GatewayIdentity` seed is already encrypted at rest with the master key
 (AES-256-GCM, `gateway_id` as AAD). No additional storage is needed.
@@ -142,7 +143,10 @@ Gateway ACTUAL_STATE is emitted:
 | `rotation_in_progress` | 27 | bool | `true` if `pending_rotation` record exists |
 
 **CBOR key allocation note:** Keys 15–27 are new gateway-specific fields.
-Keys 1–14 retain their existing meanings for node/phone ACTUAL_STATE.
+Keys 1–11 retain their existing meanings for node/phone ACTUAL_STATE.
+Keys 12–14 are redefined by this spec for escrow (see §2.7): key 12
+becomes `encrypted_psk`, key 13 becomes `escrow_key_hint`, key 14
+becomes `master_key_id` (replacing the previous `escrow_key_version`).
 
 ### 2.5  Gateway DESIRED_STATE (new)
 
@@ -251,8 +255,9 @@ When the gateway receives a valid rotation payload, it:
    rotation payload's HKDF info and AES-GCM AAD must match the gateway's
    current epoch. If decryption succeeded, this is implicitly verified
    (AAD mismatch causes GCM authentication failure). As an explicit
-   check, the gateway verifies that `pending_rotation.new_epoch`
-   equals `current_epoch + 1`.
+   pre-persist check, the gateway computes `new_epoch = current_epoch + 1`
+   and verifies it is strictly greater than the current epoch before
+   writing the `pending_rotation` record in step 4.
 
 4. **Prepare:** Write `pending_rotation` record:
    ```sql
@@ -914,9 +919,11 @@ fields.
 1. Crash during `migrating_psks` phase — verify PSK migration resumes.
 2. Crash during `rewrapping_identity` phase — verify identity rewrap
    resumes, and identity is loadable with the old key on restart.
-3. Crash during `committing` phase — verify identity was already rewrapped
-   but old key is still active; crash recovery re-does identity rewrap
-   with old key and completes.
+3. Crash during `committing` phase — the `encrypted_seed_new` column
+   holds the new-key version but `encrypted_seed` still uses the old key.
+   Crash recovery completes the atomic commit transaction (step 7), which
+   promotes `encrypted_seed_new` → `encrypted_seed` and activates the
+   new master key. Verify identity is loadable after recovery.
 4. For each phase, verify the gateway identity is always loadable on
    restart (no key/identity mismatch).
 

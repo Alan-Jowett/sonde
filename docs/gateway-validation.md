@@ -1490,7 +1490,7 @@ A configurable stub handler process (or in-process mock) that:
 1. Start gateway with `--channel 1`.
 2. Call `SetModemChannel(7)`.
 3. Trigger a `REGISTER_PHONE` BLE pairing flow.
-4. Assert: the encrypted response contains `rf_channel = 7`, not `1`.
+4. Assert: the response contains `rf_channel = 7`, not `1`.
 
 ---
 

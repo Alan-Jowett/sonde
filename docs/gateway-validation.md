@@ -3096,7 +3096,7 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Start a gateway with the admin API enabled.
 2. Run `sonde-admin handler list` and assert: output contains zero handlers (empty table or empty JSON array with `--format json`).
-3. Run `sonde-admin handler add "*" echo --reply-timeout 5000 --working-dir /tmp` and assert: command succeeds.
+3. Run `sonde-admin handler add "*" echo --reply-timeout-ms 5000 --working-dir /tmp` and assert: command succeeds.
 4. Run `sonde-admin handler list` and assert: output contains one handler with `program_hash = "*"`, `command = "echo"`, `reply_timeout_ms = 5000`, and `working_dir = "/tmp"`.
 5. Run `sonde-admin handler list --format json` and assert: output is valid JSON containing the same handler fields.
 6. Run `sonde-admin handler add abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd echo2` (valid 64-char hex hash) and assert: command succeeds.

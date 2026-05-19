@@ -170,16 +170,14 @@ foreach ($role in @(
 }
 ```
 
-## 6. Grant the Microsoft Graph permission used by the Bicep Graph resources
+## 6. Grant the Microsoft Graph permissions for Entra app management
 
-`deploy/bicep/modules/companion-identity.bicep` creates:
+The Azure Live CI workflow creates and configures an Entra app registration
+and service principal via CLI (`az rest`, `az ad sp create`) before deploying
+the Bicep stack.
 
-1. `Microsoft.Graph/applications@v1.0`
-2. `Microsoft.Graph/servicePrincipals@v1.0`
-
-For the app-only identity used by GitHub OIDC, Microsoft's Graph Bicep docs list
-`Application.ReadWrite.OwnedBy` as the least-privileged application permission
-for both resource types.
+For the app-only identity used by GitHub OIDC, grant
+`Application.ReadWrite.OwnedBy` as the least-privileged application permission.
 
 ### Portal path
 
@@ -191,8 +189,7 @@ for both resource types.
 6. Grant **admin consent** for the tenant.
 
 If your tenant policy or ownership model prevents that least-privileged grant
-from working, re-check the current Microsoft Graph Bicep reference before
-granting a broader permission such as `Application.ReadWrite.All`.
+from working, grant `Application.ReadWrite.All` instead.
 
 ### CLI note
 

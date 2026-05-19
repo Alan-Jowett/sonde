@@ -51,10 +51,10 @@ param functionAppName string = ''
 @description('Optional override for the Azure handler Function hosting plan name.')
 param functionPlanName string = ''
 
-@description('GitHub Pages origin URL for the Web UI (used for Function App CORS and Entra SPA redirect URI). Defaults to the well-known GitHub Pages URL for the sonde repository.')
+@description('GitHub Pages origin URL for the Web UI (used for Function App CORS). Defaults to the well-known GitHub Pages URL for the sonde repository.')
 param githubPagesOrigin string = 'https://alan-jowett.github.io'
 
-@description('Custom domain origin for the Web UI (e.g. https://sondeplatform.com). Empty = GitHub Pages origin only.')
+@description('Custom domain origin for the Web UI (used for Function App CORS). Empty = GitHub Pages origin only.')
 param customDomainOrigin string = 'https://sondeplatform.com'
 
 var projectSlug = toLower(replace(replace(replace(replace(replace(project_name, '-', ''), '_', ''), ' ', ''), '.', ''), '/', ''))

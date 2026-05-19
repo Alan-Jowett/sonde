@@ -244,6 +244,8 @@ fi
 # Build SPA redirect URIs from the same env vars that Bicep previously used.
 github_pages_origin="${SONDE_AZURE_GITHUB_PAGES_ORIGIN:-https://alan-jowett.github.io}"
 github_pages_path="${SONDE_AZURE_GITHUB_PAGES_PATH:-/sonde/}"
+# Normalize path to ensure leading and trailing slashes
+github_pages_path="/$(printf '%s' "$github_pages_path" | sed 's|^/||;s|/$||')/"
 # shellcheck disable=SC2016 — $cert/$uris are jq variable refs, not shell.
 redirect_uris="$(printf '%s' "${github_pages_origin}${github_pages_path}")"
 if [ "${SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN+set}" = "set" ] && [ -n "$SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN" ]; then

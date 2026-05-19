@@ -271,8 +271,8 @@ When bootstrap is required, the Azure companion performs this sequence:
    ACL that allows the bootstrap operator and the configured Windows service
    identity for steady-state runtime to read the key while excluding generic
    broad-access principals.
-4. Base64-encode the certificate's DER public material for the Bicep
-   `companionCertificateBase64` parameter.
+4. Base64-encode the certificate's DER public material and pass it as
+   `COMPANION_CERT_BASE64` to the bootstrap container.
 5. Display "Authenticating…" on the modem display.
 6. Resolve the default bootstrap image reference as
    `ghcr.io/alan-jowett/sonde-azure-bootstrap:<matching companion version>`
@@ -500,9 +500,9 @@ certificate using Rust crypto libraries already present in the workspace
 - Output: `cert.pem` and `key.pem` written to a staging directory within the
   state volume
 
-The DER-encoded certificate public material is base64-encoded for the Bicep
-`companionCertificateBase64` parameter. This reuses the same parameter
-interface already defined in `deploy/bicep/main.bicep`.
+The DER-encoded certificate public material is base64-encoded and passed as
+`COMPANION_CERT_BASE64` to the bootstrap script, which registers it on the
+Entra app registration via the Microsoft Graph API.
 
 ### 8.2  Bollard bootstrap-image integration
 
@@ -548,7 +548,9 @@ that:
 3. Runs `az deployment sub create` with:
    - `--location` from `SONDE_AZURE_LOCATION` (default: `eastus`)
    - `--template-file` pointing to the copied `main.bicep`
-   - `--parameters companionCertificateBase64=<base64>` plus any additional
+   - `--parameters companionClientId=<appId>` and
+     `companionServicePrincipalObjectId=<spOid>` (resolved by the bootstrap
+     script before calling Bicep) plus any additional
      parameter overrides from environment variables
    - `--query properties.outputs` to extract only the deployment outputs
    - `--output json` for machine-parseable output

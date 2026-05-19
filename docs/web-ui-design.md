@@ -157,7 +157,7 @@ local `ProgramLibrary`.
 
 - MSAL.js 2.x with authorization code flow + PKCE.
 - Token caching in browser session storage.
-- Silent token renewal; redirect to login on expiry.
+- Silent token renewal via `acquireTokenSilent`; falls back to `acquireTokenPopup` on failure.
 - `redirectUri` explicitly set to `window.location.origin` plus the normalized
   directory path (stripping any filename component like `index.html`) so the
   registered redirect URIs (`https://alan-jowett.github.io/sonde/` and

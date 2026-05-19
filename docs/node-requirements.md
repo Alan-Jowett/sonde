@@ -273,11 +273,11 @@ The node MUST generate the WAKE nonce using the hardware random number generator
 **Source:** security.md §2.2
 
 **Description:**  
-The node MUST store its 256-bit PSK in a dedicated flash partition. The firmware reads the key at boot for AES-256-GCM frame encryption and decryption.
+The node MUST store its 256-bit PSK in NVS (namespace `sonde`, key `psk`). The firmware reads the key at boot for AES-256-GCM frame encryption and decryption.
 
 **Acceptance criteria:**
 
-1. The PSK is stored in a dedicated flash partition, separate from the program and map storage.
+1. The PSK is stored in NVS, separate from the program and map storage.
 2. The firmware can read the PSK at boot time.
 3. If no PSK is present (unpaired state), the node does not attempt to communicate with the gateway.
 
@@ -998,14 +998,13 @@ If writing to NVS fails during NODE_PROVISION processing, the node MUST respond 
 **Source:** ble-pairing-protocol.md §7.1, §8.3
 
 **Description:**  
-In the post-provision boot path (PSK stored, `reg_complete` NOT set) the node MUST initialise ESP-NOW on the stored RF channel (NVS key `channel`), load the encrypted payload (NVS key `peer_payload`) from NVS, and build a PEER_REQUEST frame (`msg_type` = 0x05, random 8-byte nonce, CBOR `{1: encrypted_payload}`, AES-256-GCM encrypted with `phone_psk` from NVS key `phone_psk`, using `phone_key_hint` from NVS key `phone_key_hint` in the frame header).
+In the post-provision boot path (PSK stored, `reg_complete` NOT set) the node MUST initialise ESP-NOW on the stored RF channel (NVS key `channel`), load the pre-built PEER_REQUEST frame (NVS key `peer_payload`) from NVS, and transmit it verbatim over ESP-NOW.  The `peer_payload` is a complete ESP-NOW frame (header + AES-256-GCM ciphertext + tag) built by the phone during BLE provisioning (see ble-pairing-protocol.md §7.1); the node does not perform any cryptographic operations on it.
 
 **Acceptance criteria:**
 
 1. ESP-NOW is initialised in WiFi station mode on the channel stored during provisioning.
-2. The frame uses `msg_type` 0x05 and a random 8-byte nonce.
-3. The CBOR payload contains key 1 mapped to `encrypted_payload`.
-4. The frame is AES-256-GCM encrypted with `phone_psk`; the frame header uses `phone_key_hint`.
+2. The `peer_payload` blob is transmitted over ESP-NOW without modification.
+3. The node does not require `phone_psk` or `phone_key_hint` — the frame is pre-built by the phone.
 
 ---
 
@@ -1107,15 +1106,13 @@ If WAKE fails (no response or AEAD decryption failure) after `reg_complete` is s
 **Source:** ble-pairing-protocol.md §8.4
 
 **Description:**  
-The node MUST store BLE pairing artifacts in NVS: `peer_payload` (variable-length blob for `encrypted_payload`), `reg_complete` (`u32` flag, 1 = registered), `phone_psk` (32-byte phone PSK for PEER_REQUEST encryption), and `phone_key_hint` (2-byte phone key hint for PEER_REQUEST frame header). These extend the existing NVS layout (`magic`, `key_hint`, `psk`, `channel`, `interval`, `active_p`, `prog_a`, `prog_b`).
+The node MUST store BLE pairing artifacts in NVS: `peer_payload` (variable-length blob containing the complete pre-built PEER_REQUEST frame) and `reg_complete` (`u32` flag, 1 = registered). These extend the existing NVS layout (`magic`, `key_hint`, `psk`, `channel`, `interval`, `active_p`, `prog_a`, `prog_b`). The node does not store `phone_psk` or `phone_key_hint` — the PEER_REQUEST frame is pre-built by the phone and forwarded verbatim (see ble-pairing-protocol.md §7.1, §8.4).
 
 **Acceptance criteria:**
 
 1. `peer_payload` is stored as a variable-length blob in NVS.
 2. `reg_complete` is stored as a `u32` flag in NVS.
-3. `phone_psk` is stored as a 32-byte blob in NVS.
-4. `phone_key_hint` is stored as a 2-byte blob in NVS.
-5. The existing NVS keys are not affected by the new fields.
+3. The existing NVS keys are not affected by the new fields.
 
 ---
 

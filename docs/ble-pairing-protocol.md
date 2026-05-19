@@ -666,7 +666,7 @@ There is no dedicated BLE factory-reset message.  To factory-reset a node via BL
 
 After the registration-complete flag is set, the node attempts a normal WAKE cycle.  If the gateway responds with a valid COMMAND (proving the node is registered and the gateway knows its PSK), the node erases the `encrypted_payload` from NVS.
 
-If the WAKE fails (no response or AEAD decryption failure), the node clears the registration-complete flag and reverts to sending `PEER_REQUEST` on the next boot.  This self-healing behavior ensures that a forged `PEER_ACK` (from an attacker who intercepted the node PSK) does not permanently brick the node.
+If the WAKE fails (no response or AEAD decryption failure) **and** the `encrypted_payload` (NVS key `peer_payload`) is still present, the node clears the registration-complete flag and reverts to sending `PEER_REQUEST` on the next boot.  This self-healing behavior ensures that a forged `PEER_ACK` (from an attacker who intercepted the node PSK) does not permanently brick the node.  Once the encrypted payload has been erased after a successful WAKE/COMMAND exchange, the node cannot self-heal and must continue normal WAKE retries or be re-provisioned via BLE.
 
 ### 8.4  NVS layout
 

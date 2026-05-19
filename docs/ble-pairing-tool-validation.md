@@ -1421,12 +1421,15 @@ TestNode {
 4. Assert: `trace!` and `debug!` call-sites are compiled in (compile-time maximum level is TRACE).
 5. Build `sonde-pair` in release mode (`cargo build -p sonde-pair --release`).
 6. Assert: `trace!` and `debug!` call-sites are no-ops (compile-time maximum level is INFO).
+7. Check `sonde-pair-ui` in debug mode (`cargo check -p sonde-pair-ui`).
+8. Check `sonde-pair-ui` in release mode (`cargo check -p sonde-pair-ui --release`).
+9. Assert: both checks succeed, confirming the tracing feature flags compile correctly for the UI crate.
 
 ---
 
 ### T-PT-1213b  Runtime EnvFilter defaults differ between debug and release
 
-**Validates:** PT-1213 (AC 3, 4, 6)  
+**Validates:** PT-1213 (AC 3, 4)  
 **Type:** CI / unit test
 
 **Procedure:**

@@ -110,11 +110,11 @@ The gateway becomes a first-class entity in the ACTUAL_STATE model. Entity
 kind is `"gateway"`, entity ID is `hex(gateway_id)` (16-byte random ID from
 `GatewayIdentity`).
 
-**Note:** This supersedes the existing `gateway-companion-api.md` rule that
-gateway-scoped `entity_id` must be empty string. With this spec, gateway
-`entity_id` carries the gateway's hex-encoded `gateway_id` to distinguish
-multiple gateways sharing one cloud deployment. The companion API document
-will be updated to reflect this change.
+**Note:** This supersedes `gateway-companion-api.md` §3.2 line 156 and
+§3.3 line 206, which mandate `entity_id = ""` for `entity_kind = "gateway"`.
+With this spec, gateway `entity_id` carries the hex-encoded `gateway_id`
+to distinguish multiple gateways sharing one cloud deployment. A companion
+patch to `gateway-companion-api.md` must update those sections accordingly.
 
 Gateway ACTUAL_STATE is emitted:
 - On startup (after identity and master key are loaded).
@@ -209,10 +209,12 @@ Total envelope: 45 bytes + ciphertext length.
 
 **Encryption parameters:**
 - Shared secret: `X25519(gw_private_key, sender_ephemeral_public)`
-- Derived key: `HKDF-SHA-256(shared_secret, salt="sonde-rotation-v1",
+- Derived key: `HKDF-SHA-256(shared_secret, hkdf_salt="sonde-rotation-v1",
   info=gateway_id || current_master_key_epoch_be64)` where
   `current_master_key_epoch_be64` is the 8-byte big-endian encoding of
   the gateway's current `master_key_epoch` from ACTUAL_STATE.
+  Note: the HKDF `hkdf_salt` is a fixed protocol constant, distinct from
+  the Argon2id KDF `salt` used for passphrase derivation.
 - Decryption: `AES-256-GCM-Open(derived_key, nonce, ciphertext_and_tag,
   aad=gateway_id || current_master_key_epoch_be64)`
 
@@ -220,7 +222,9 @@ Total envelope: 45 bytes + ciphertext length.
 1. `version` must be `0x01`. Reject unknown versions.
 2. `sender_ephemeral_public` must be 32 bytes and not a low-order point.
 3. Payload length must be ≥ 45 + 16 bytes (minimum ciphertext with tag).
-4. Decryption failure → reject silently (log warning).
+4. Decryption failure → for DESIRED_STATE ingress, log a warning and
+   discard (no response channel). For gRPC `SubmitRotation`, return
+   `accepted = false` with an error message.
 5. `rotation_code` must match stored code → reject with warning if not.
 6. `current_master_key_epoch` in AAD must match gateway's current epoch
    → reject stale/replayed payloads.
@@ -233,7 +237,7 @@ When the gateway receives a valid rotation payload, it:
 1. **Decrypt:** Use `GatewayIdentity.to_x25519()` to derive X25519 private key.
    Decrypt the payload using X25519 + HKDF-SHA-256 + AES-256-GCM:
    - Shared secret: `X25519(gw_private, sender_ephemeral_public)`
-   - Derived key: `HKDF-SHA-256(shared_secret, salt="sonde-rotation-v1",
+   - Derived key: `HKDF-SHA-256(shared_secret, hkdf_salt="sonde-rotation-v1",
      info=gateway_id || current_master_key_epoch_be64)`
    - Decrypt: `AES-256-GCM-Open(key, nonce, ciphertext,
      aad=gateway_id || current_master_key_epoch_be64)`
@@ -243,10 +247,12 @@ When the gateway receives a valid rotation payload, it:
    Verify `rotation_code` matches the stored code. If not → reject, log
    warning.
 
-3. **Verify epoch:** Verify the DESIRED_STATE's bound `master_key_epoch`
-   matches the gateway's current epoch. If not → reject (stale or
-   replayed rotation). The gateway only accepts rotations for its current
-   epoch.
+3. **Verify epoch:** The `current_master_key_epoch_be64` encoded into the
+   rotation payload's HKDF info and AES-GCM AAD must match the gateway's
+   current epoch. If decryption succeeded, this is implicitly verified
+   (AAD mismatch causes GCM authentication failure). As an explicit
+   check, the gateway verifies that `pending_rotation.new_epoch`
+   equals `current_epoch + 1`.
 
 4. **Prepare:** Write `pending_rotation` record:
    ```sql
@@ -273,6 +279,14 @@ When the gateway receives a valid rotation payload, it:
    - Update `master_key_id` and `master_key_epoch`.
    - Commit each record individually.
    After all records migrated, update phase to `rewrapping_identity`.
+
+   **Dual-key frame processing during migration:** While migration is in
+   progress, PSK records have mixed `master_key_epoch` values. During
+   frame processing, the gateway looks up candidate PSKs by `key_hint`
+   and decrypts each using the master key identified by that record's
+   `master_key_epoch` — old key for unmigrated records, new key for
+   migrated ones. Both keys are held in memory for the duration of
+   the rotation.
 
 6. **Rewrap identity seed** (phase `rewrapping_identity`): Re-encrypt
    `gateway_identity.encrypted_seed` under the new master key. Store the
@@ -318,9 +332,6 @@ When the gateway receives a valid rotation payload, it:
   (step 7). Therefore `GatewayIdentity` is always loadable with the
   current master key at startup, regardless of which phase the crash
   occurred in.
-  new key. If crash occurs between step 6 and step 7, the identity
-  was rewrapped but the old key is still active — recovery must
-  re-decrypt with old key and re-rewrap.
 
 ### 2.7  Node/phone ACTUAL_STATE escrow fields (replaces §20.3, §20.4)
 
@@ -332,7 +343,8 @@ Node-scoped ACTUAL_STATE gains three fields:
 | `escrow_key_hint` | 13 | uint/null | `key_hint` (u16) for Azure recovery lookup |
 | `master_key_id` | 14 | bstr (16 bytes)/null | Opaque master key ID that encrypted this PSK |
 
-Phone-scoped ACTUAL_STATE (`entity_kind = "phone"`) uses the same fields.
+Phone-scoped ACTUAL_STATE (`entity_kind = "phone"`, `entity_id = phone_id`)
+uses the same fields.
 
 The separate `EscrowBlob` CBOR format is removed. The encrypted PSK is
 the raw blob as stored in the database, paired with the `master_key_id`
@@ -682,7 +694,7 @@ Admin ──► Argon2id(passphrase, salt) ──► new_master_key
 **Steps:**
 1. Create `SqliteStorage` with a master key.
 2. Verify no `master_key_id` or `master_key_epoch` in `gateway_config`.
-3. Run startup initialization (§2.9 step 2b).
+3. Run startup initialization (§2.9 step 2c).
 4. Verify `master_key_id` is a random 16-byte value (non-zero).
 5. Verify `master_key_epoch = 1`.
 6. Verify all existing PSK records have `master_key_id` and

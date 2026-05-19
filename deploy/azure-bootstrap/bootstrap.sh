@@ -194,6 +194,13 @@ if [ -n "${SONDE_AZURE_GITHUB_PAGES_ORIGIN:-}" ]; then
 fi
 # shellcheck disable=SC2086 — intentional word-splitting on optional_params;
 # all values are URLs which cannot contain whitespace.
+#
+# On clean deploys the Microsoft Graph Bicep extension may fail because Entra
+# ID replication has not yet propagated the newly created app registration to
+# all read replicas.  The first attempt creates the app (which persists even
+# on overall deployment failure); the retry finds it fully replicated.
+# See: https://github.com/microsoftgraph/msgraph-bicep-types/issues/193
+deploy_exit=0
 deployment_outputs="$(az deployment sub create \
     --name "$deployment_name" \
     --location "$SONDE_AZURE_LOCATION" \
@@ -203,7 +210,22 @@ deployment_outputs="$(az deployment sub create \
                  "project_name=$SONDE_AZURE_PROJECT_NAME" \
                  $optional_params \
     --query 'properties.outputs' \
-    --output json)"
+    --output json)" || deploy_exit=$?
+if [ "$deploy_exit" -ne 0 ]; then
+    echo "Bicep deployment failed (exit $deploy_exit). Retrying in 60 s (Graph replication delay)." >&2
+    sleep 60
+    deployment_name="${deployment_name}-retry"
+    deployment_outputs="$(az deployment sub create \
+        --name "$deployment_name" \
+        --location "$SONDE_AZURE_LOCATION" \
+        --template-file /opt/sonde/deploy/bicep/main.bicep \
+        --parameters "companionCertificateBase64=$COMPANION_CERT_BASE64" \
+                     "location=$SONDE_AZURE_LOCATION" \
+                     "project_name=$SONDE_AZURE_PROJECT_NAME" \
+                     $optional_params \
+        --query 'properties.outputs' \
+        --output json)"
+fi
 
 read_required_deployment_outputs
 function_package_path="${SONDE_AZURE_FUNCTION_PACKAGE_PATH:-/opt/sonde/deploy/azure-handler/sonde-azure-handler-function.zip}"

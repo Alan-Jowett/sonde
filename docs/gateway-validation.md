@@ -305,8 +305,9 @@ A configurable stub handler process (or in-process mock) that:
 2. Assert: gateway accepts it, stores a CBOR program image.
 3. Assert: the stored image contains bytecode and map definitions.
 4. Assert: LDDW relocations are resolved to `src=1, imm=<map_index>`.
-5. Assert: the gateway binary does not link against LLVM, clang, or any compiler toolchain (AC5).
-6. Assert: chunk serving (GW-0300) reads from the pre-built CBOR image without re-encoding or re-verifying (AC6).
+5. Assert: the gateway binary does not link against LLVM, clang, or any compiler toolchain (AC5 — runtime).
+6. Assert: the build dependency graph (e.g., `cargo tree -p sonde-gateway`) contains no LLVM or clang crates (AC5 — build time).
+7. Assert: chunk serving (GW-0300) reads from the pre-built CBOR image without re-encoding or re-verifying (AC6).
 
 ---
 

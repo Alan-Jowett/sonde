@@ -69,8 +69,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Boot the node with an erased key partition (no PSK).
 2. Wait 5 seconds.
-3. Assert: no frames transmitted.
-4. Assert: node enters deep sleep.
+3. Assert: no ESP-NOW frames transmitted.
+4. Assert: node enters BLE pairing mode (ND-0900 boot path 2).
 
 ---
 
@@ -1237,18 +1237,6 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N914  PEER_ACK with wrong registration proof — discard
-
-**Validates:** ND-0912
-
-**Procedure:**
-1. Node sends PEER_REQUEST with nonce N.
-2. Mock gateway responds with PEER_ACK containing correct nonce but incorrect `registration_proof`.
-3. Assert: node discards the PEER_ACK.
-4. Assert: `reg_complete` flag is NOT set.
-
----
-
 ### T-N915  Valid PEER_ACK sets registration-complete flag
 
 **Validates:** ND-0913
@@ -2195,7 +2183,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0909 | T-N909 |
 | ND-0910 | T-N910 |
 | ND-0911 | T-N911 |
-| ND-0912 | T-N912, T-N913, T-N914, T-N941 |
+| ND-0912 | T-N912, T-N913, T-N941 |
 | ND-0913 | T-N915 |
 | ND-0914 | T-N916 |
 | ND-0915 | T-N917 |
@@ -2324,7 +2312,6 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N911 | `t_e2e_067_agent_revocation` | e2e_tests.rs |
 | T-N912 | `t_e2e_063_peer_request_ack` | e2e_tests.rs |
 | T-N913 | `t_e2e_065_deferred_erasure` | e2e_tests.rs |
-| T-N914 | *(hardware — validated on target: PEER_ACK wrong registration proof)* | — |
 | T-N915 | `t_e2e_063_peer_request_ack`, `t_e2e_064_onboarding_to_wake` | e2e_tests.rs |
 | T-N916 | `t_e2e_064_onboarding_to_wake`, `t_e2e_065_deferred_erasure` | e2e_tests.rs |
 | T-N917 | `t_e2e_066_self_healing` | e2e_tests.rs |

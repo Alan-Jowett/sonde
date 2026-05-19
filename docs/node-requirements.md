@@ -273,11 +273,11 @@ The node MUST generate the WAKE nonce using the hardware random number generator
 **Source:** security.md §2.2
 
 **Description:**  
-The node MUST store its 256-bit PSK in a dedicated flash partition. The firmware reads the key at boot for AES-256-GCM frame encryption and decryption.
+The node MUST store its 256-bit PSK in NVS (namespace `sonde`, key `psk`). The firmware reads the key at boot for AES-256-GCM frame encryption and decryption.
 
 **Acceptance criteria:**
 
-1. The PSK is stored in a dedicated flash partition, separate from the program and map storage.
+1. The PSK is stored in NVS, separate from the program and map storage.
 2. The firmware can read the PSK at boot time.
 3. If no PSK is present (unpaired state), the node does not attempt to communicate with the gateway.
 

@@ -72,3 +72,32 @@
 | T-WEB-0806 | WEB-0801 | Environment fields validated (all required, duplicate name rejected) | Manual | Planned |
 | T-WEB-0901 | WEB-0901 | GitHub Actions workflow deploys `deploy/web-ui/` to GitHub Pages on push to main | Infrastructure | Planned |
 | T-WEB-0902 | WEB-0902 | Bicep includes GitHub Pages and `sondeplatform.com` in CORS origins and SPA redirect URIs | Infrastructure | Planned |
+| T-WEB-1001 | WEB-1000 | Gateway tab appears in nav bar and requires authentication | Manual | Planned |
+| T-WEB-1002 | WEB-1001 | Modem status displays connection, channel, MAC from `gw:status` row | Manual | Planned |
+| T-WEB-1003 | WEB-1001 | Modem status shows "No modem data" when no `gw:status` row exists | Manual | Planned |
+| T-WEB-1004 | WEB-1002 | Set channel sends `POST /api/admin/command` with correct body | Manual | Planned |
+| T-WEB-1005 | WEB-1002 | Channel selector validates range 1–14 | Manual | Planned |
+| T-WEB-1006 | WEB-1003 | Scan button sends `POST /api/admin/command` scan_channels | Manual | Planned |
+| T-WEB-1007 | WEB-1003 | Scan results render in table when available | Manual | Planned |
+| T-WEB-1101 | WEB-1101 | Fingerprint displays 6 BIP-39 words matching admin CLI output | Manual | Planned |
+| T-WEB-1102 | WEB-1101 | Fingerprint shows "No recovery key" when pubkey row absent | Manual | Planned |
+| T-WEB-1103 | WEB-1102 | Escrow status displays all 5 lifecycle states with correct badges | Manual | Planned |
+| T-WEB-1104 | WEB-1102 | Warning banner shown when escrow state is not `ready` | Manual | Planned |
+| T-WEB-1105 | WEB-1102 | KDF params display from salt row; "No KDF salt" when absent | Manual | Planned |
+| T-WEB-1106 | WEB-1103 | Rotation wizard disabled when pubkey or salt missing | Manual | Planned |
+| T-WEB-1107 | WEB-1103 | Wizard validates passphrase length ≥ 12 and confirmation match | Manual | Planned |
+| T-WEB-1108 | WEB-1103 | Wizard performs Argon2id + X25519 + AES-256-GCM and sends to handler | Integration | Planned |
+| T-WEB-1109 | WEB-1103 | Wizard shows spinner during Argon2id derivation | Manual | Planned |
+| T-WEB-1110 | WEB-1103 | Success closes wizard and refreshes status | Manual | Planned |
+| T-WEB-1111 | WEB-1103 | Failure shows error and does not close wizard | Manual | Planned |
+| T-WEB-1112 | WEB-1103 | CDN scripts use pinned versions | Inspection | Planned |
+| T-WEB-1113 | WEB-1103 | Key material not persisted to localStorage/sessionStorage/cookies | Inspection | Planned |
+| T-WEB-1201 | WEB-1200 | Program delete button present on each row | Manual | Planned |
+| T-WEB-1202 | WEB-1200 | Delete confirmation dialog shown | Manual | Planned |
+| T-WEB-1203 | WEB-1200 | Successful delete refreshes list and shows toast | Manual | Planned |
+| T-WEB-1204 | WEB-1200 | Failed delete shows error toast | Manual | Planned |
+| T-WEB-1205 | WEB-1200 | Delete warning shown when program is referenced by desired-state rows | Manual | Planned |
+| T-WEB-1301 | WEB-1300 | Reboot button sends admin command and shows confirmation | Manual | Planned |
+| T-WEB-1302 | WEB-1300 | Reboot confirmation dialog shown before sending | Manual | Planned |
+| T-WEB-1303 | WEB-1301 | Ephemeral dropdown shows only ephemeral-profiled programs | Manual | Planned |
+| T-WEB-1304 | WEB-1301 | Ephemeral submission writes `desired_ephemeral_program_hash` to table | Integration | Planned |

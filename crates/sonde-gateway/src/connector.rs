@@ -636,6 +636,51 @@ impl ConnectorService {
                 }
                 Ok(())
             }
+            sonde_protocol::CONNECTOR_MSG_TYPE_ADMIN_COMMAND => {
+                let command = required_text(&map, 2, "command")?;
+                let params = required_map(&map, 3, "params")?;
+                let _operation_id = required_bytes(&map, 4, "operation_id")?;
+                let expiry_ms = optional_u64_field(&map, 6, "expiry_ms")?.unwrap_or(u64::MAX);
+
+                // Reject expired commands.
+                let now_ms =
+                    crate::admin::system_time_to_millis(std::time::SystemTime::now()).unwrap_or(0);
+                if now_ms > expiry_ms {
+                    return Err(format!(
+                        "ADMIN_COMMAND `{command}` expired (now={now_ms}, expiry={expiry_ms})"
+                    ));
+                }
+
+                match command.as_str() {
+                    "reboot_node" => {
+                        let node_id = optional_text_field(&params, 1, "node_id")?
+                            .ok_or("reboot_node: missing params.node_id")?;
+                        let mut pending = self.pending_commands.write().await;
+                        let commands = pending.entry(node_id).or_default();
+                        if !commands.iter().any(|c| matches!(c, PendingCommand::Reboot)) {
+                            commands.push(PendingCommand::Reboot);
+                        }
+                        Ok(())
+                    }
+                    "set_channel" | "scan_channels" => {
+                        // Modem operations require UsbEspNowTransport which
+                        // is not available in the connector service. These
+                        // will be implemented when the connector gains
+                        // transport injection.
+                        warn!(
+                            command = command.as_str(),
+                            "ADMIN_COMMAND modem operation not yet implemented on gateway side"
+                        );
+                        Ok(())
+                    }
+                    other => {
+                        // Unknown commands are silently discarded per
+                        // security design.
+                        warn!(command = other, "ignoring unknown ADMIN_COMMAND");
+                        Ok(())
+                    }
+                }
+            }
             _ => Err(format!(
                 "unsupported inbound connector msg_type `{msg_type:#x}`"
             )),
@@ -1012,7 +1057,6 @@ fn required_text(map: &[(Value, Value)], key: u64, field: &str) -> Result<String
         })
 }
 
-#[cfg(test)]
 fn required_bytes(map: &[(Value, Value)], key: u64, field: &str) -> Result<Vec<u8>, String> {
     map_get(map, key)
         .ok_or_else(|| format!("missing `{field}`"))
@@ -1060,6 +1104,21 @@ fn optional_u32_field(
             .as_integer()
             .and_then(|i| u64::try_from(i).ok())
             .and_then(|v| u32::try_from(v).ok())
+            .map(Some)
+            .ok_or_else(|| format!("`{field}` must be uint or null")),
+    }
+}
+
+fn optional_u64_field(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Option<u64>, String> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(value) => value
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
             .map(Some)
             .ok_or_else(|| format!("`{field}` must be uint or null")),
     }

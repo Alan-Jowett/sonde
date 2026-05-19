@@ -148,6 +148,7 @@ pub struct DesiredStateRow {
     pub node_id: String,
     pub desired_assigned_program_hash: Option<Vec<u8>>,
     pub desired_schedule_interval_s: Option<u32>,
+    pub desired_ephemeral_program_hash: Option<Vec<u8>>,
     pub timestamp_ms: u64,
 }
 
@@ -208,6 +209,16 @@ pub struct GatewayStatusDetails {
     pub escrow_salt: Option<Vec<u8>>,
     /// KDF parameters (Argon2id).
     pub escrow_kdf_params: Option<KdfParams>,
+    /// Whether the modem is currently connected.
+    pub modem_connected: Option<bool>,
+    /// Current modem radio channel.
+    pub modem_channel: Option<u32>,
+    /// Current modem MAC address.
+    pub modem_mac: Option<String>,
+    /// JSON-encoded modem scan results array.
+    pub scan_results: Option<String>,
+    /// Timestamp for the most recent modem scan.
+    pub scan_timestamp: Option<u64>,
 }
 
 /// KDF parameters for Argon2id (mirroring the gateway-side definition).
@@ -232,7 +243,7 @@ pub struct AppDataMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectorMessage {
-    ActualState(ActualStateMessage),
+    ActualState(Box<ActualStateMessage>),
     AppData(AppDataMessage),
     /// KEY_ESCROW_PUBKEY (msg_type 0x10, GW-2001).
     KeyEscrowPubkey(KeyEscrowPubkeyMessage),
@@ -275,6 +286,13 @@ pub trait HandlerStore: Send + Sync {
         program_hash: &[u8],
     ) -> Result<Option<ProgramImageRow>, HandlerError>;
     async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError>;
+    /// Remove a program image by hash (AZH-0700).
+    async fn remove_program_image(&self, program_hash: &[u8]) -> Result<bool, HandlerError> {
+        let _ = program_hash;
+        Err(HandlerError::Store(
+            "remove_program_image not implemented for this store backend".into(),
+        ))
+    }
     /// Append a row to the `SensorData` table for a `GW-0813` message (AZH-0500).
     async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError>;
 
@@ -319,6 +337,21 @@ pub trait HandlerStore: Send + Sync {
         let _ = (details, timestamp_ms);
         Err(HandlerError::Store(
             "store_gateway_escrow_state not implemented for this store backend".into(),
+        ))
+    }
+
+    /// Store gateway status details in the `actualstate` table.
+    ///
+    /// `timestamp_ms` is the ACTUAL_STATE message timestamp; implementations
+    /// should only update if the incoming timestamp is >= the stored one.
+    async fn store_gateway_status(
+        &self,
+        details: &GatewayStatusDetails,
+        timestamp_ms: u64,
+    ) -> Result<(), HandlerError> {
+        let _ = (details, timestamp_ms);
+        Err(HandlerError::Store(
+            "store_gateway_status not implemented for this store backend".into(),
         ))
     }
 
@@ -368,7 +401,7 @@ where
         match decode_connector_message(payload)? {
             ConnectorMessage::ActualState(actual_state) => {
                 match actual_state.entity_kind.as_str() {
-                    "node" => self.handle_actual_state(actual_state).await?,
+                    "node" => self.handle_actual_state(*actual_state).await?,
                     "phone" => {
                         // Phone escrow ACTUAL_STATE (AZH-0600): store escrow blob
                         // with phone-scoped partition key ("p:" prefix).
@@ -387,6 +420,9 @@ where
                         if let Some(ref details) = actual_state.status_details {
                             self.store
                                 .store_gateway_escrow_state(details, actual_state.timestamp_ms)
+                                .await?;
+                            self.store
+                                .store_gateway_status(details, actual_state.timestamp_ms)
                                 .await?;
 
                             // AZH-0603: first-writer-wins salt storage.
@@ -696,6 +732,141 @@ where
             source_filename: record.source_filename,
         })
     }
+
+    pub async fn handle_program_remove(&self, program_hash_hex: &str) -> Result<bool, IngestError> {
+        if program_hash_hex.len() != 64
+            || !program_hash_hex.bytes().all(|b| b.is_ascii_hexdigit())
+            || program_hash_hex.bytes().any(|b| b.is_ascii_uppercase())
+        {
+            return Err(IngestError::bad_request(
+                "program_hash must be a 64-character lowercase hex string",
+            ));
+        }
+        let hash_bytes = hex::decode(program_hash_hex)
+            .map_err(|e| IngestError::bad_request(format!("invalid hex: {e}")))?;
+        self.store
+            .remove_program_image(&hash_bytes)
+            .await
+            .map_err(|e| IngestError::internal(format!("delete failed: {e}")))
+    }
+
+    pub async fn handle_admin_command(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<AdminCommandResponse, IngestError> {
+        let command = body
+            .get("command")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| IngestError::bad_request("missing or invalid `command` field"))?;
+        if let Some(params) = body.get("params") {
+            if !params.is_object() {
+                return Err(IngestError::bad_request(
+                    "`params` must be an object when present",
+                ));
+            }
+        }
+        let params = body
+            .get("params")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        match command {
+            "set_channel" => {
+                let channel = params
+                    .get("channel")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| {
+                        IngestError::bad_request("set_channel requires `params.channel` (uint)")
+                    })?;
+                if !(1..=14).contains(&channel) {
+                    return Err(IngestError::bad_request("channel must be 1-14"));
+                }
+            }
+            "scan_channels" => {}
+            "reboot_node" => {
+                let node_id = params.get("node_id").and_then(|v| v.as_str());
+                if node_id.is_none_or(str::is_empty) {
+                    return Err(IngestError::bad_request(
+                        "reboot_node requires `params.node_id` (non-empty string)",
+                    ));
+                }
+            }
+            _ => {
+                return Err(IngestError::bad_request(format!(
+                    "unknown command: `{command}`"
+                )));
+            }
+        }
+
+        let operation_id = {
+            let mut buf = [0u8; 16];
+            getrandom::fill(&mut buf)
+                .map_err(|e| IngestError::internal(format!("RNG error: {e}")))?;
+            buf
+        };
+        let created_at = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX);
+        let expiry_ms = created_at.saturating_add(300_000);
+
+        let cbor_msg =
+            encode_admin_command(command, &params, &operation_id, created_at, expiry_ms)?;
+        self.publisher
+            .publish(&self.downstream_queue, cbor_msg)
+            .await
+            .map_err(|e| IngestError::internal(format!("enqueue failed: {e}")))?;
+
+        Ok(AdminCommandResponse {
+            operation_id: hex::encode(operation_id),
+            command: command.to_string(),
+        })
+    }
+
+    pub async fn handle_key_rotate(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<KeyRotateResponse, IngestError> {
+        let target_key_epoch = body
+            .get("target_key_epoch")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| IngestError::bad_request("missing `target_key_epoch`"))?;
+        let sender_public_key = decode_json_base64_field(body, "sender_public_key", 32)?;
+        let encrypted_master_key = decode_json_base64_field_any_len(body, "encrypted_master_key")?;
+        let nonce = decode_json_base64_field(body, "nonce", 12)?;
+        let tag = decode_json_base64_field(body, "tag", 16)?;
+        let operation_id = decode_json_base64_field(body, "operation_id", 16)?;
+        let rotation_counter = body
+            .get("rotation_counter")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| IngestError::bad_request("missing `rotation_counter`"))?;
+        let expiry_ms = body
+            .get("expiry_ms")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| IngestError::bad_request("missing `expiry_ms`"))?;
+
+        let cbor_msg = encode_master_key_install(&MasterKeyInstallMessage {
+            target_key_epoch,
+            sender_public_key: &sender_public_key,
+            encrypted_master_key: &encrypted_master_key,
+            nonce: &nonce,
+            tag: &tag,
+            operation_id: &operation_id,
+            rotation_counter,
+            expiry_ms,
+        })?;
+        self.publisher
+            .publish(&self.downstream_queue, cbor_msg)
+            .await
+            .map_err(|e| IngestError::internal(format!("enqueue failed: {e}")))?;
+
+        Ok(KeyRotateResponse {
+            operation_id: hex::encode(&operation_id),
+        })
+    }
 }
 
 /// Successful response from program ingestion.
@@ -707,6 +878,17 @@ pub struct IngestResponse {
     pub abi_version: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_filename: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminCommandResponse {
+    pub operation_id: String,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KeyRotateResponse {
+    pub operation_id: String,
 }
 
 /// Error from program ingestion with HTTP status code.
@@ -1019,6 +1201,21 @@ impl HandlerStore for AzureTablesStore {
         Ok(())
     }
 
+    async fn remove_program_image(&self, program_hash: &[u8]) -> Result<bool, HandlerError> {
+        let row_key = hex::encode(program_hash);
+        let entity_client = self
+            .programs_table
+            .partition_key_client("program")
+            .entity_client(row_key);
+        match entity_client.delete().await {
+            Ok(_) => Ok(true),
+            Err(e) if is_legacy_not_found(&e) => Ok(false),
+            Err(e) => Err(HandlerError::Store(format!(
+                "delete program-image row failed: {e}"
+            ))),
+        }
+    }
+
     async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError> {
         let entity = SensorDataEntity::try_from(row.clone())?;
         self.sensor_data_table
@@ -1213,6 +1410,81 @@ impl HandlerStore for AzureTablesStore {
         Ok(())
     }
 
+    async fn store_gateway_status(
+        &self,
+        details: &GatewayStatusDetails,
+        timestamp_ms: u64,
+    ) -> Result<(), HandlerError> {
+        let timestamp_ms_i64 = i64::try_from(timestamp_ms).map_err(|_| {
+            HandlerError::Store(format!("timestamp_ms {timestamp_ms} exceeds i64::MAX"))
+        })?;
+
+        let existing = self
+            .actual_state_table
+            .partition_key_client(GATEWAY_STATUS_PARTITION_KEY)
+            .entity_client(GATEWAY_STATUS_ROW_KEY)
+            .get::<GatewayStatusEntity>()
+            .await;
+        match existing {
+            Ok(response) => {
+                if response.entity.timestamp_ms > timestamp_ms_i64 {
+                    return Ok(());
+                }
+            }
+            Err(e) if is_legacy_not_found(&e) => {}
+            Err(e) => {
+                return Err(HandlerError::Store(format!(
+                    "query existing gateway status failed: {e}"
+                )));
+            }
+        }
+
+        let escrow_key_version = details
+            .escrow_key_version
+            .map(|v| {
+                i64::try_from(v).map_err(|_| {
+                    HandlerError::Store(format!("escrow_key_version {v} exceeds i64::MAX"))
+                })
+            })
+            .transpose()?;
+        let modem_channel = details
+            .modem_channel
+            .map(|v| {
+                i32::try_from(v)
+                    .map_err(|_| HandlerError::Store(format!("modem_channel {v} exceeds i32::MAX")))
+            })
+            .transpose()?;
+        let scan_timestamp = details
+            .scan_timestamp
+            .map(|v| {
+                i64::try_from(v).map_err(|_| {
+                    HandlerError::Store(format!("scan_timestamp {v} exceeds i64::MAX"))
+                })
+            })
+            .transpose()?;
+
+        let entity = GatewayStatusEntity {
+            partition_key: GATEWAY_STATUS_PARTITION_KEY.to_string(),
+            row_key: GATEWAY_STATUS_ROW_KEY.to_string(),
+            escrow_state: details.escrow_state.clone(),
+            escrow_key_version,
+            modem_connected: details.modem_connected,
+            modem_channel,
+            modem_mac: details.modem_mac.clone(),
+            scan_results: details.scan_results.clone(),
+            scan_timestamp,
+            timestamp_ms: timestamp_ms_i64,
+        };
+        self.actual_state_table
+            .partition_key_client(GATEWAY_STATUS_PARTITION_KEY)
+            .entity_client(GATEWAY_STATUS_ROW_KEY)
+            .insert_or_replace(entity)
+            .map_err(|e| HandlerError::Store(format!("prepare gateway status upsert failed: {e}")))?
+            .await
+            .map_err(|e| HandlerError::Store(format!("upsert gateway status failed: {e}")))?;
+        Ok(())
+    }
+
     async fn store_escrow_salt_if_absent(
         &self,
         salt: &[u8],
@@ -1359,6 +1631,8 @@ struct DesiredStateEntity {
     node_id: String,
     desired_assigned_program_hash: Option<String>,
     desired_schedule_interval_s: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    desired_ephemeral_program_hash: Option<String>,
     #[serde(deserialize_with = "deserialize_u64_flexible")]
     timestamp_ms: u64,
 }
@@ -1512,6 +1786,10 @@ impl TryFrom<DesiredStateEntity> for DesiredStateRow {
                 "desired_assigned_program_hash",
             )?,
             desired_schedule_interval_s: value.desired_schedule_interval_s,
+            desired_ephemeral_program_hash: decode_optional_program_hash(
+                value.desired_ephemeral_program_hash,
+                "desired_ephemeral_program_hash",
+            )?,
             timestamp_ms: value.timestamp_ms,
         })
     }
@@ -1527,6 +1805,9 @@ impl TryFrom<DesiredStateRow> for DesiredStateEntity {
             node_id: value.node_id,
             desired_assigned_program_hash: encode_optional_hex(value.desired_assigned_program_hash),
             desired_schedule_interval_s: value.desired_schedule_interval_s,
+            desired_ephemeral_program_hash: encode_optional_hex(
+                value.desired_ephemeral_program_hash,
+            ),
             timestamp_ms: value.timestamp_ms,
         })
     }
@@ -1600,21 +1881,27 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
     let map = decode_map(bytes)?;
     let msg_type = required_u64(&map, 1, "msg_type")?;
     match msg_type {
-        MSG_TYPE_ACTUAL_STATE => Ok(ConnectorMessage::ActualState(ActualStateMessage {
-            entity_kind: required_text(&map, 2, "entity_kind")?,
-            entity_id: required_text(&map, 3, "entity_id")?,
-            current_program_hash: optional_program_hash_field(&map, 4, "current_program_hash")?,
-            assigned_program_hash: optional_program_hash_field(&map, 5, "assigned_program_hash")?,
-            battery_mv: optional_u32_field(&map, 6, "battery_mv")?,
-            firmware_abi_version: optional_u32_field(&map, 7, "firmware_abi_version")?,
-            firmware_version: optional_text_field(&map, 8, "firmware_version")?,
-            timestamp_ms: required_u64(&map, 9, "timestamp_ms")?,
-            schedule_interval_s: optional_u32_field(&map, 11, "schedule_interval_s")?,
-            encrypted_psk_escrow: optional_bytes_field(&map, 12, "encrypted_psk_escrow")?,
-            escrow_key_hint: optional_u16_field(&map, 13, "escrow_key_hint")?,
-            escrow_key_version: optional_u64_field(&map, 14, "escrow_key_version")?,
-            status_details: decode_optional_status_details(&map, 10)?,
-        })),
+        MSG_TYPE_ACTUAL_STATE => Ok(ConnectorMessage::ActualState(Box::new(
+            ActualStateMessage {
+                entity_kind: required_text(&map, 2, "entity_kind")?,
+                entity_id: required_text(&map, 3, "entity_id")?,
+                current_program_hash: optional_program_hash_field(&map, 4, "current_program_hash")?,
+                assigned_program_hash: optional_program_hash_field(
+                    &map,
+                    5,
+                    "assigned_program_hash",
+                )?,
+                battery_mv: optional_u32_field(&map, 6, "battery_mv")?,
+                firmware_abi_version: optional_u32_field(&map, 7, "firmware_abi_version")?,
+                firmware_version: optional_text_field(&map, 8, "firmware_version")?,
+                timestamp_ms: required_u64(&map, 9, "timestamp_ms")?,
+                schedule_interval_s: optional_u32_field(&map, 11, "schedule_interval_s")?,
+                encrypted_psk_escrow: optional_bytes_field(&map, 12, "encrypted_psk_escrow")?,
+                escrow_key_hint: optional_u16_field(&map, 13, "escrow_key_hint")?,
+                escrow_key_version: optional_u64_field(&map, 14, "escrow_key_version")?,
+                status_details: decode_optional_status_details(&map, 10)?,
+            },
+        ))),
         MSG_TYPE_APP_DATA => Ok(ConnectorMessage::AppData(AppDataMessage {
             node_id: required_text(&map, 2, "node_id")?,
             program_hash: required_program_hash(&map, 3, "program_hash")?,
@@ -1673,6 +1960,10 @@ pub(crate) fn encode_desired_state(
             opt_bytes_value(row.desired_assigned_program_hash.as_deref()),
         ),
         map_entry(2, opt_u32_value(row.desired_schedule_interval_s)),
+        map_entry(
+            3,
+            opt_bytes_value(row.desired_ephemeral_program_hash.as_deref()),
+        ),
     ];
     if let Some(prog) = program_row {
         if !prog.elf_image.is_empty() {
@@ -1723,6 +2014,115 @@ fn encode_key_escrow_response(
     let mut bytes = Vec::new();
     ciborium::into_writer(&value, &mut bytes)
         .map_err(|e| HandlerError::Decode(format!("encode KEY_ESCROW_RESPONSE failed: {e}")))?;
+    Ok(bytes)
+}
+
+fn decode_json_base64_field(
+    body: &serde_json::Value,
+    field: &str,
+    expected_len: usize,
+) -> Result<Vec<u8>, IngestError> {
+    let s = body
+        .get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| IngestError::bad_request(format!("missing `{field}`")))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map_err(|e| IngestError::bad_request(format!("`{field}` invalid base64: {e}")))?;
+    if bytes.len() != expected_len {
+        return Err(IngestError::bad_request(format!(
+            "`{field}` must be {expected_len} bytes, got {}",
+            bytes.len()
+        )));
+    }
+    Ok(bytes)
+}
+
+fn decode_json_base64_field_any_len(
+    body: &serde_json::Value,
+    field: &str,
+) -> Result<Vec<u8>, IngestError> {
+    let s = body
+        .get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| IngestError::bad_request(format!("missing `{field}`")))?;
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map_err(|e| IngestError::bad_request(format!("`{field}` invalid base64: {e}")))
+}
+
+fn encode_admin_command(
+    command: &str,
+    params: &serde_json::Value,
+    operation_id: &[u8; 16],
+    created_at: u64,
+    expiry_ms: u64,
+) -> Result<Vec<u8>, IngestError> {
+    let params_cbor = match command {
+        "set_channel" => {
+            let channel = params.get("channel").and_then(|v| v.as_u64()).unwrap_or(0);
+            Value::Map(vec![map_entry(1, Value::Integer(channel.into()))])
+        }
+        "scan_channels" => Value::Map(vec![]),
+        "reboot_node" => {
+            let node_id = params.get("node_id").and_then(|v| v.as_str()).unwrap_or("");
+            Value::Map(vec![map_entry(1, Value::Text(node_id.to_string()))])
+        }
+        _ => {
+            return Err(IngestError::internal(format!(
+                "unsupported ADMIN_COMMAND `{command}`"
+            )));
+        }
+    };
+
+    let value = Value::Map(vec![
+        map_entry(
+            1,
+            Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_ADMIN_COMMAND.into()),
+        ),
+        map_entry(2, Value::Text(command.to_string())),
+        map_entry(3, params_cbor),
+        map_entry(4, Value::Bytes(operation_id.to_vec())),
+        map_entry(5, Value::Integer(created_at.into())),
+        map_entry(6, Value::Integer(expiry_ms.into())),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&value, &mut bytes)
+        .map_err(|e| IngestError::internal(format!("encode ADMIN_COMMAND failed: {e}")))?;
+    Ok(bytes)
+}
+
+struct MasterKeyInstallMessage<'a> {
+    target_key_epoch: u64,
+    sender_public_key: &'a [u8],
+    encrypted_master_key: &'a [u8],
+    nonce: &'a [u8],
+    tag: &'a [u8],
+    operation_id: &'a [u8],
+    rotation_counter: u64,
+    expiry_ms: u64,
+}
+
+fn encode_master_key_install(
+    message: &MasterKeyInstallMessage<'_>,
+) -> Result<Vec<u8>, IngestError> {
+    let value = Value::Map(vec![
+        map_entry(
+            1,
+            Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL.into()),
+        ),
+        map_entry(2, Value::Integer(message.target_key_epoch.into())),
+        map_entry(3, Value::Bytes(message.sender_public_key.to_vec())),
+        map_entry(4, Value::Bytes(message.encrypted_master_key.to_vec())),
+        map_entry(5, Value::Bytes(message.nonce.to_vec())),
+        map_entry(6, Value::Bytes(message.tag.to_vec())),
+        map_entry(7, Value::Bytes(message.operation_id.to_vec())),
+        map_entry(8, Value::Integer(message.rotation_counter.into())),
+        map_entry(9, Value::Integer(message.expiry_ms.into())),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&value, &mut bytes)
+        .map_err(|e| IngestError::internal(format!("encode MASTER_KEY_INSTALL failed: {e}")))?;
     Ok(bytes)
 }
 
@@ -1813,6 +2213,8 @@ struct GatewayEscrowPubkeyEntity {
 
 /// Gateway escrow metadata partition key (fixed).
 const ESCROW_PARTITION_KEY: &str = "gateway";
+const GATEWAY_STATUS_PARTITION_KEY: &str = "gw:status";
+const GATEWAY_STATUS_ROW_KEY: &str = "state";
 
 /// Azure Table entity for gateway escrow state (AZH-0605).
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1835,6 +2237,29 @@ struct GatewayEscrowStateEntity {
     kdf_params_json: Option<String>,
     /// ACTUAL_STATE message timestamp (Unix milliseconds) for out-of-order guard.
     #[serde(default)]
+    timestamp_ms: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct GatewayStatusEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    escrow_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    escrow_key_version: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    modem_connected: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    modem_channel: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    modem_mac: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scan_results: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scan_timestamp: Option<i64>,
     timestamp_ms: i64,
 }
 
@@ -2094,6 +2519,11 @@ fn decode_optional_status_details(
             let mut escrow_key_version = None;
             let mut escrow_salt = None;
             let mut escrow_kdf_params = None;
+            let mut modem_connected = None;
+            let mut modem_channel = None;
+            let mut modem_mac = None;
+            let mut scan_results = None;
+            let mut scan_timestamp = None;
 
             for (k, v) in sd_pairs {
                 let sd_key = match k {
@@ -2193,21 +2623,97 @@ fn decode_optional_status_details(
                             ));
                         }
                     }
+                    Some(10) => match v {
+                        Value::Bool(value) => modem_connected = Some(*value),
+                        Value::Null => {}
+                        _ => {
+                            return Err(HandlerError::Decode(
+                                "status_details modem_connected must be a bool".into(),
+                            ));
+                        }
+                    },
+                    Some(11) => match v {
+                        Value::Integer(i) => {
+                            let val: i128 = (*i).into();
+                            modem_channel = Some(u32::try_from(val).map_err(|_| {
+                                HandlerError::Decode(format!(
+                                    "status_details modem_channel {val} out of u32 range"
+                                ))
+                            })?);
+                        }
+                        Value::Null => {}
+                        _ => {
+                            return Err(HandlerError::Decode(
+                                "status_details modem_channel must be an integer".into(),
+                            ));
+                        }
+                    },
+                    Some(12) => match v {
+                        Value::Text(value) => modem_mac = Some(value.clone()),
+                        Value::Null => {}
+                        _ => {
+                            return Err(HandlerError::Decode(
+                                "status_details modem_mac must be text".into(),
+                            ));
+                        }
+                    },
+                    Some(13) => match v {
+                        Value::Array(_) => {
+                            scan_results = Some(
+                                serde_json::to_string(&cbor_value_to_json(v)?).map_err(|e| {
+                                    HandlerError::Decode(format!(
+                                        "status_details scan_results JSON encoding failed: {e}"
+                                    ))
+                                })?,
+                            );
+                        }
+                        Value::Null => {}
+                        _ => {
+                            return Err(HandlerError::Decode(
+                                "status_details scan_results must be an array".into(),
+                            ));
+                        }
+                    },
+                    Some(14) => match v {
+                        Value::Integer(i) => {
+                            let val: i128 = (*i).into();
+                            scan_timestamp = Some(u64::try_from(val).map_err(|_| {
+                                HandlerError::Decode(format!(
+                                    "status_details scan_timestamp {val} out of u64 range"
+                                ))
+                            })?);
+                        }
+                        Value::Null => {}
+                        _ => {
+                            return Err(HandlerError::Decode(
+                                "status_details scan_timestamp must be an integer".into(),
+                            ));
+                        }
+                    },
                     _ => {}
                 }
             }
 
-            // Only return Some if at least one field was populated.
             if escrow_state.is_some()
                 || escrow_key_version.is_some()
                 || escrow_salt.is_some()
                 || escrow_kdf_params.is_some()
+                || modem_connected.is_some()
+                || modem_channel.is_some()
+                || modem_mac.is_some()
+                || scan_results.is_some()
+                || scan_timestamp.is_some()
             {
                 Ok(Some(GatewayStatusDetails {
                     escrow_state,
                     escrow_key_version,
                     escrow_salt,
                     escrow_kdf_params,
+                    modem_connected,
+                    modem_channel,
+                    modem_mac,
+                    scan_results,
+                    scan_timestamp,
                 }))
             } else {
                 Ok(None)
@@ -2217,6 +2723,60 @@ fn decode_optional_status_details(
         Some(other) => Err(HandlerError::Decode(format!(
             "status_details (key 10) must be a map, got {:?}",
             other
+        ))),
+    }
+}
+
+fn cbor_value_to_json(value: &Value) -> Result<serde_json::Value, HandlerError> {
+    match value {
+        Value::Integer(i) => {
+            let val: i128 = (*i).into();
+            if let Ok(v) = i64::try_from(val) {
+                Ok(serde_json::Value::Number(serde_json::Number::from(v)))
+            } else if let Ok(v) = u64::try_from(val) {
+                Ok(serde_json::Value::Number(serde_json::Number::from(v)))
+            } else {
+                Err(HandlerError::Decode(format!(
+                    "CBOR integer {val} cannot be represented as JSON"
+                )))
+            }
+        }
+        Value::Bytes(bytes) => Ok(serde_json::Value::String(
+            base64::prelude::BASE64_STANDARD.encode(bytes),
+        )),
+        Value::Float(value) => serde_json::Number::from_f64(*value)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| HandlerError::Decode(format!("CBOR float {value} is not valid JSON"))),
+        Value::Text(text) => Ok(serde_json::Value::String(text.clone())),
+        Value::Bool(value) => Ok(serde_json::Value::Bool(*value)),
+        Value::Null => Ok(serde_json::Value::Null),
+        Value::Tag(_, inner) => cbor_value_to_json(inner),
+        Value::Array(values) => values
+            .iter()
+            .map(cbor_value_to_json)
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        Value::Map(entries) => entries
+            .iter()
+            .map(|(key, value)| {
+                let key = match key {
+                    Value::Text(text) => text.clone(),
+                    Value::Integer(i) => {
+                        let val: i128 = (*i).into();
+                        val.to_string()
+                    }
+                    _ => {
+                        return Err(HandlerError::Decode(
+                            "CBOR map key cannot be converted to JSON string".into(),
+                        ));
+                    }
+                };
+                Ok((key, cbor_value_to_json(value)?))
+            })
+            .collect::<Result<serde_json::Map<String, serde_json::Value>, _>>()
+            .map(serde_json::Value::Object),
+        other => Err(HandlerError::Decode(format!(
+            "CBOR value {other:?} cannot be converted to JSON"
         ))),
     }
 }
@@ -2303,6 +2863,12 @@ mod tests {
         assert_eq!(decoded, payload);
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct StoredGatewayStatus {
+        details: GatewayStatusDetails,
+        timestamp_ms: u64,
+    }
+
     #[derive(Default)]
     struct MemoryStore {
         actual_rows: Mutex<HashMap<String, Vec<ActualStateRow>>>,
@@ -2313,6 +2879,7 @@ mod tests {
         escrow_blobs_by_hint: Mutex<HashMap<u16, Vec<Vec<u8>>>>,
         stored_gateway_pubkeys: Mutex<Vec<(Vec<u8>, u64, u64)>>,
         stored_escrow_state: Mutex<Option<GatewayStatusDetails>>,
+        stored_gateway_status: Mutex<Option<StoredGatewayStatus>>,
         stored_salt: Mutex<Option<Vec<u8>>>,
     }
 
@@ -2429,6 +2996,15 @@ mod tests {
             Ok(())
         }
 
+        async fn remove_program_image(&self, program_hash: &[u8]) -> Result<bool, HandlerError> {
+            Ok(self
+                .program_images
+                .lock()
+                .await
+                .remove(&hex::encode(program_hash))
+                .is_some())
+        }
+
         async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError> {
             self.sensor_data_rows.lock().await.push(row.clone());
             Ok(())
@@ -2469,6 +3045,18 @@ mod tests {
             _timestamp_ms: u64,
         ) -> Result<(), HandlerError> {
             *self.stored_escrow_state.lock().await = Some(details.clone());
+            Ok(())
+        }
+
+        async fn store_gateway_status(
+            &self,
+            details: &GatewayStatusDetails,
+            timestamp_ms: u64,
+        ) -> Result<(), HandlerError> {
+            *self.stored_gateway_status.lock().await = Some(StoredGatewayStatus {
+                details: details.clone(),
+                timestamp_ms,
+            });
             Ok(())
         }
 
@@ -2680,6 +3268,7 @@ mod tests {
             node_id: node_id.to_string(),
             desired_assigned_program_hash,
             desired_schedule_interval_s,
+            desired_ephemeral_program_hash: None,
             timestamp_ms,
         }
     }
@@ -2879,7 +3468,7 @@ mod tests {
             optional_text_field(desired_state, 6, "assigned_program_verification_profile").unwrap(),
             Some("resident".to_string())
         );
-        assert!(map_get(desired_state, 3).is_none());
+        assert!(matches!(map_get(desired_state, 3), Some(Value::Null)));
     }
 
     #[tokio::test]
@@ -3314,9 +3903,23 @@ mod tests {
 
     #[test]
     fn desired_state_entity_round_trips() {
-        let row = desired_row("node-1", Some(vec![0x11; 32]), Some(60), 1234);
+        let mut row = desired_row("node-1", Some(vec![0x11; 32]), Some(60), 1234);
+        row.desired_ephemeral_program_hash = Some(vec![0x22; 32]);
         let entity = DesiredStateEntity::try_from(row.clone()).unwrap();
         assert_eq!(DesiredStateRow::try_from(entity).unwrap(), row);
+    }
+
+    #[test]
+    fn encode_desired_state_emits_ephemeral_program_hash() {
+        let mut row = desired_row("node-1", Some(vec![0x11; 32]), Some(60), 1234);
+        row.desired_ephemeral_program_hash = Some(vec![0x22; 32]);
+        let encoded = encode_desired_state(&row, None).unwrap();
+        let desired = decode_map(&encoded).unwrap();
+        let desired_state = map_get(&desired, 4).unwrap().as_map().unwrap();
+        assert_eq!(
+            optional_bytes_field(desired_state, 3, "ephemeral_program_hash").unwrap(),
+            Some(vec![0x22; 32])
+        );
     }
 
     #[test]
@@ -3379,6 +3982,7 @@ mod tests {
             node_id: "node-1".to_string(),
             desired_assigned_program_hash: Some("not-hex".to_string()),
             desired_schedule_interval_s: Some(60),
+            desired_ephemeral_program_hash: None,
             timestamp_ms: 1234,
         })
         .unwrap_err();
@@ -3956,6 +4560,208 @@ mod tests {
         assert_eq!(resp.abi_version, Some(i32::MAX as u32));
     }
 
+    #[tokio::test]
+    async fn program_remove_deletes_existing_program() {
+        let (store, handler) = make_ingest_handler();
+        let elf = make_test_elf(&minimal_bpf_code());
+        let ingest = handler
+            .handle_program_ingest(&make_ingest_body(&elf, Some("remove.o"), None, None))
+            .await
+            .unwrap();
+
+        let removed = handler
+            .handle_program_remove(&ingest.program_hash)
+            .await
+            .unwrap();
+        assert!(removed);
+
+        let hash_bytes = hex::decode(&ingest.program_hash).unwrap();
+        assert!(store
+            .load_program_image(&hash_bytes)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn program_remove_returns_false_for_missing_program() {
+        let (_store, handler) = make_ingest_handler();
+        let removed = handler
+            .handle_program_remove(&"ab".repeat(32))
+            .await
+            .unwrap();
+        assert!(!removed);
+    }
+
+    #[tokio::test]
+    async fn program_remove_rejects_invalid_hash() {
+        let (_store, handler) = make_ingest_handler();
+        let err = handler.handle_program_remove("not-hex").await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("program_hash"));
+    }
+
+    #[tokio::test]
+    async fn program_remove_rejects_wrong_length_hash() {
+        let (_store, handler) = make_ingest_handler();
+        let err = handler.handle_program_remove("abcd").await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("program_hash"));
+    }
+
+    #[tokio::test]
+    async fn admin_command_set_channel_enqueues_admin_command() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+        let body = serde_json::json!({
+            "command": "set_channel",
+            "params": {"channel": 6}
+        });
+
+        let resp = handler.handle_admin_command(&body).await.unwrap();
+        assert_eq!(resp.command, "set_channel");
+        assert_eq!(resp.operation_id.len(), 32);
+
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].0, "downstream");
+        let map = decode_map(&sends[0].1).unwrap();
+        assert_eq!(
+            required_u64(&map, 1, "msg_type").unwrap(),
+            sonde_protocol::CONNECTOR_MSG_TYPE_ADMIN_COMMAND
+        );
+        assert_eq!(required_text(&map, 2, "command").unwrap(), "set_channel");
+        let params = map_get(&map, 3).and_then(Value::as_map).cloned().unwrap();
+        assert_eq!(required_u64(&params, 1, "channel").unwrap(), 6);
+        let operation_id = required_bytes(&map, 4, "operation_id").unwrap();
+        assert_eq!(hex::encode(operation_id), resp.operation_id);
+        let created_at = required_u64(&map, 5, "created_at").unwrap();
+        let expiry_ms = required_u64(&map, 6, "expiry_ms").unwrap();
+        assert!(expiry_ms >= created_at.saturating_add(300_000));
+    }
+
+    #[tokio::test]
+    async fn admin_command_scan_channels_enqueues_empty_params_map() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+        let body = serde_json::json!({"command": "scan_channels"});
+
+        let resp = handler.handle_admin_command(&body).await.unwrap();
+        assert_eq!(resp.command, "scan_channels");
+
+        let sends = publisher.sends.lock().await;
+        let map = decode_map(&sends[0].1).unwrap();
+        let params = map_get(&map, 3).and_then(Value::as_map).cloned().unwrap();
+        assert!(params.is_empty());
+    }
+
+    #[tokio::test]
+    async fn admin_command_reboot_node_encodes_node_id() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+        let body = serde_json::json!({
+            "command": "reboot_node",
+            "params": {"node_id": "node-7"}
+        });
+
+        let resp = handler.handle_admin_command(&body).await.unwrap();
+        assert_eq!(resp.command, "reboot_node");
+
+        let sends = publisher.sends.lock().await;
+        let map = decode_map(&sends[0].1).unwrap();
+        let params = map_get(&map, 3).and_then(Value::as_map).cloned().unwrap();
+        assert_eq!(required_text(&params, 1, "node_id").unwrap(), "node-7");
+    }
+
+    #[tokio::test]
+    async fn admin_command_rejects_invalid_channel() {
+        let (_store, handler) = make_ingest_handler();
+        let body = serde_json::json!({
+            "command": "set_channel",
+            "params": {"channel": 15}
+        });
+
+        let err = handler.handle_admin_command(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("channel"));
+    }
+
+    #[tokio::test]
+    async fn admin_command_rejects_unknown_command() {
+        let (_store, handler) = make_ingest_handler();
+        let body = serde_json::json!({"command": "factory_reset"});
+
+        let err = handler.handle_admin_command(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("unknown command"));
+    }
+
+    #[tokio::test]
+    async fn key_rotate_enqueues_master_key_install() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+        let sender_public_key = [0x11u8; 32];
+        let encrypted_master_key = [0x22u8; 32];
+        let nonce = [0x33u8; 12];
+        let tag = [0x44u8; 16];
+        let operation_id = [0x55u8; 16];
+        let body = serde_json::json!({
+            "target_key_epoch": 7,
+            "sender_public_key": base64::engine::general_purpose::STANDARD.encode(sender_public_key),
+            "encrypted_master_key": base64::engine::general_purpose::STANDARD.encode(encrypted_master_key),
+            "nonce": base64::engine::general_purpose::STANDARD.encode(nonce),
+            "tag": base64::engine::general_purpose::STANDARD.encode(tag),
+            "operation_id": base64::engine::general_purpose::STANDARD.encode(operation_id),
+            "rotation_counter": 8,
+            "expiry_ms": 123456
+        });
+
+        let resp = handler.handle_key_rotate(&body).await.unwrap();
+        assert_eq!(resp.operation_id, hex::encode(operation_id));
+
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        let map = decode_map(&sends[0].1).unwrap();
+        assert_eq!(
+            required_u64(&map, 1, "msg_type").unwrap(),
+            sonde_protocol::CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL
+        );
+        assert_eq!(required_u64(&map, 2, "target_key_epoch").unwrap(), 7);
+        assert_eq!(
+            required_bytes(&map, 3, "sender_public_key").unwrap(),
+            sender_public_key
+        );
+        assert_eq!(
+            required_bytes(&map, 4, "encrypted_master_key").unwrap(),
+            encrypted_master_key
+        );
+        assert_eq!(required_bytes(&map, 5, "nonce").unwrap(), nonce);
+        assert_eq!(required_bytes(&map, 6, "tag").unwrap(), tag);
+        assert_eq!(
+            required_bytes(&map, 7, "operation_id").unwrap(),
+            operation_id
+        );
+        assert_eq!(required_u64(&map, 8, "rotation_counter").unwrap(), 8);
+        assert_eq!(required_u64(&map, 9, "expiry_ms").unwrap(), 123456);
+    }
+
+    #[tokio::test]
+    async fn key_rotate_rejects_missing_required_field() {
+        let (_store, handler) = make_ingest_handler();
+        let body = serde_json::json!({
+            "target_key_epoch": 7,
+            "sender_public_key": base64::engine::general_purpose::STANDARD.encode([0x11u8; 32])
+        });
+
+        let err = handler.handle_key_rotate(&body).await.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("encrypted_master_key"));
+    }
+
     #[test]
     fn chrono_iso8601_utc_now_has_valid_format() {
         let ts = chrono_iso8601_utc_now();
@@ -4412,6 +5218,32 @@ mod tests {
         assert!(
             matches!(err, HandlerError::Store(message) if message.contains("load_escrow_blobs_by_key_hint not implemented"))
         );
+
+        let err = store
+            .store_gateway_status(
+                &GatewayStatusDetails {
+                    escrow_state: None,
+                    escrow_key_version: None,
+                    escrow_salt: None,
+                    escrow_kdf_params: None,
+                    modem_connected: None,
+                    modem_channel: None,
+                    modem_mac: None,
+                    scan_results: None,
+                    scan_timestamp: None,
+                },
+                1,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, HandlerError::Store(message) if message.contains("store_gateway_status not implemented"))
+        );
+
+        let err = store.remove_program_image(&[0x42u8; 32]).await.unwrap_err();
+        assert!(
+            matches!(err, HandlerError::Store(message) if message.contains("remove_program_image not implemented"))
+        );
     }
 
     #[tokio::test]
@@ -4454,6 +5286,23 @@ mod tests {
                     map_entry(4, Value::Integer(1u64.into())),
                 ]),
             ),
+            map_entry(10, Value::Bool(true)),
+            map_entry(11, Value::Integer(15u64.into())),
+            map_entry(12, Value::Text("aa:bb:cc:dd:ee:ff".to_string())),
+            map_entry(
+                13,
+                Value::Array(vec![Value::Map(vec![
+                    (
+                        Value::Text("ssid".to_string()),
+                        Value::Text("mesh".to_string()),
+                    ),
+                    (
+                        Value::Text("rssi".to_string()),
+                        Value::Integer((-42).into()),
+                    ),
+                ])]),
+            ),
+            map_entry(14, Value::Integer(5678u64.into())),
         ]);
 
         let value = Value::Map(vec![
@@ -4477,6 +5326,21 @@ mod tests {
         assert_eq!(kdf.t_cost, 3);
         assert_eq!(kdf.p_cost, 1);
         assert_eq!(kdf.kdf_version, 1);
+
+        let gateway_status = store.stored_gateway_status.lock().await;
+        let status = gateway_status.as_ref().unwrap();
+        assert_eq!(status.timestamp_ms, 1234);
+        assert_eq!(status.details.modem_connected, Some(true));
+        assert_eq!(status.details.modem_channel, Some(15));
+        assert_eq!(
+            status.details.modem_mac.as_deref(),
+            Some("aa:bb:cc:dd:ee:ff")
+        );
+        let scan_results = status.details.scan_results.as_deref().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(scan_results).unwrap();
+        assert_eq!(parsed[0]["ssid"], serde_json::json!("mesh"));
+        assert_eq!(parsed[0]["rssi"], serde_json::json!(-42));
+        assert_eq!(status.details.scan_timestamp, Some(5678));
     }
 
     #[test]

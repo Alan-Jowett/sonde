@@ -112,6 +112,7 @@ Connector message type values are:
 | `0x02` | `ACTUAL_STATE` | Gateway → control plane |
 | `0x03` | `APP_DATA` | Gateway → control plane |
 | `0x04` | `CONNECTOR_HEALTH` | Gateway → control plane |
+| `0x20` | `ADMIN_COMMAND` | Control plane → gateway |
 
 Timestamps carried by connector messages are encoded as Unix time in
 milliseconds.
@@ -219,7 +220,18 @@ state.
 
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
-| *(no fields currently defined)* | — | — | Senders SHOULD encode an empty map (`{}`) when no additional status details are available. Receivers MUST accept an empty map and MUST ignore unknown integer keys for forward compatibility. |
+| `modem_connected` | 10 | bool | Modem USB-CDC connection state |
+| `modem_channel` | 11 | uint/null | Current WiFi channel |
+| `modem_mac` | 12 | tstr/null | Modem MAC address (colon-separated hex) |
+| `scan_results` | 13 | array/null | Array of maps: `{1: channel(uint), 2: rssi(int), 3: ssid(tstr)}` |
+| `scan_timestamp` | 14 | uint/null | Unix ms of last completed scan |
+
+Senders SHOULD encode an empty map (`{}`) when no additional status details
+are available. Receivers MUST accept an empty map and MUST ignore unknown
+integer keys for forward compatibility.
+
+> **Note:** Keys 1–4 are reserved for escrow lifecycle fields defined in
+> the PSK key escrow specification (evolve-887).
 
 ### 3.4  `APP_DATA` (gateway → control plane)
 
@@ -308,6 +320,34 @@ diagnostics.
 
 Receivers MUST ignore unknown integer keys in this map.
 
+### 3.6  `ADMIN_COMMAND` (control plane → gateway)
+
+Imperative one-shot commands from the admin SPA. Each command carries an
+`operation_id` for idempotency and an `expiry_ms` for staleness rejection,
+following the pattern established by `MASTER_KEY_INSTALL` (msg_type `0x13`
+in the PSK escrow specification).
+
+| Field | CBOR key | Type | Description |
+|---|---|---|---|
+| `msg_type` | 1 | uint | `0x20` |
+| `command` | 2 | tstr | Command name: `"set_channel"`, `"scan_channels"`, `"reboot_node"` |
+| `params` | 3 | map | Command parameters (integer-keyed CBOR map; schema per command) |
+| `operation_id` | 4 | bstr (16 bytes) | Unique operation ID for idempotency |
+| `created_at` | 5 | uint | Creation timestamp (Unix ms) |
+| `expiry_ms` | 6 | uint | Expiry timestamp (Unix ms); gateway rejects if `now > expiry_ms` |
+
+**Command parameter schemas:**
+
+`set_channel`: `{1: channel(uint)}` — WiFi channel 1–14.
+
+`scan_channels`: empty map `{}`.
+
+`reboot_node`: `{1: node_id(tstr)}` — target node identifier.
+
+The gateway MUST validate `expiry_ms` and reject expired commands. The
+gateway MUST deduplicate by `operation_id`. Unknown command names are
+silently discarded (no error response per security design).
+
 ---
 
 ## 4  Behavioral notes
@@ -318,7 +358,9 @@ Receivers MUST ignore unknown integer keys in this map.
    the gateway determines which node-facing commands are required to converge.
 3. Upstream application data is **informational only**; it does not replace the
    existing handler data-plane contract.
-4. Admin/operator workflows remain on `GatewayAdmin`; the connector API is not a
-   second admin surface.
+4. Admin/operator workflows primarily use `GatewayAdmin` for the full local
+   command set. `ADMIN_COMMAND` (§3.6) provides a limited remote-admin surface
+   for operations that must be accessible from the cloud (channel management,
+   remote reboot). The local gRPC `GatewayAdmin` remains authoritative.
 5. Bootstrap-only local clients use `GatewayAdmin` rather than the connector
    path when they need operator-visible actions such as transient display.

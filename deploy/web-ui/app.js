@@ -11,6 +11,7 @@ const CONFIG = {
   desiredStateTable: 'desiredstate',
   programsTable: 'programs',
   sensorDataTable: 'sensordata',
+  gatewayEscrowTable: 'gatewayescrow',
   refreshIntervalMs: 30000,
 };
 
@@ -78,7 +79,7 @@ const STORAGE_SCOPES = ['https://storage.azure.com/.default'];
 function functionScopes() {
   return [`api://${CONFIG.msalClientId}/user_impersonation`];
 }
-const TAB_IDS = ['dashboard', 'desired-state', 'programs', 'sensor-data'];
+const TAB_IDS = ['dashboard', 'desired-state', 'programs', 'sensor-data', 'gateway'];
 const APP = {
   msalApp: null,
   account: null,
@@ -88,6 +89,138 @@ const APP = {
   viewMessage: null,
   sensorChart: null,
 };
+
+// BIP-39 English wordlist (2048 entries) for key fingerprint computation.
+const BIP39_ENGLISH = [
+  "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd", "abuse", "access", "accident", "account", "accuse", "achieve", "acid"
+  , "acoustic", "acquire", "across", "act", "action", "actor", "actress", "actual", "adapt", "add", "addict", "address", "adjust", "admit", "adult", "advance"
+  , "advice", "aerobic", "affair", "afford", "afraid", "again", "age", "agent", "agree", "ahead", "aim", "air", "airport", "aisle", "alarm", "album"
+  , "alcohol", "alert", "alien", "all", "alley", "allow", "almost", "alone", "alpha", "already", "also", "alter", "always", "amateur", "amazing", "among"
+  , "amount", "amused", "analyst", "anchor", "ancient", "anger", "angle", "angry", "animal", "ankle", "announce", "annual", "another", "answer", "antenna", "antique"
+  , "anxiety", "any", "apart", "apology", "appear", "apple", "approve", "april", "arch", "arctic", "area", "arena", "argue", "arm", "armed", "armor"
+  , "army", "around", "arrange", "arrest", "arrive", "arrow", "art", "artefact", "artist", "artwork", "ask", "aspect", "assault", "asset", "assist", "assume"
+  , "asthma", "athlete", "atom", "attack", "attend", "attitude", "attract", "auction", "audit", "august", "aunt", "author", "auto", "autumn", "average", "avocado"
+  , "avoid", "awake", "aware", "away", "awesome", "awful", "awkward", "axis", "baby", "bachelor", "bacon", "badge", "bag", "balance", "balcony", "ball"
+  , "bamboo", "banana", "banner", "bar", "barely", "bargain", "barrel", "base", "basic", "basket", "battle", "beach", "bean", "beauty", "because", "become"
+  , "beef", "before", "begin", "behave", "behind", "believe", "below", "belt", "bench", "benefit", "best", "betray", "better", "between", "beyond", "bicycle"
+  , "bid", "bike", "bind", "biology", "bird", "birth", "bitter", "black", "blade", "blame", "blanket", "blast", "bleak", "bless", "blind", "blood"
+  , "blossom", "blouse", "blue", "blur", "blush", "board", "boat", "body", "boil", "bomb", "bone", "bonus", "book", "boost", "border", "boring"
+  , "borrow", "boss", "bottom", "bounce", "box", "boy", "bracket", "brain", "brand", "brass", "brave", "bread", "breeze", "brick", "bridge", "brief"
+  , "bright", "bring", "brisk", "broccoli", "broken", "bronze", "broom", "brother", "brown", "brush", "bubble", "buddy", "budget", "buffalo", "build", "bulb"
+  , "bulk", "bullet", "bundle", "bunker", "burden", "burger", "burst", "bus", "business", "busy", "butter", "buyer", "buzz", "cabbage", "cabin", "cable"
+  , "cactus", "cage", "cake", "call", "calm", "camera", "camp", "can", "canal", "cancel", "candy", "cannon", "canoe", "canvas", "canyon", "capable"
+  , "capital", "captain", "car", "carbon", "card", "cargo", "carpet", "carry", "cart", "case", "cash", "casino", "castle", "casual", "cat", "catalog"
+  , "catch", "category", "cattle", "caught", "cause", "caution", "cave", "ceiling", "celery", "cement", "census", "century", "cereal", "certain", "chair", "chalk"
+  , "champion", "change", "chaos", "chapter", "charge", "chase", "chat", "cheap", "check", "cheese", "chef", "cherry", "chest", "chicken", "chief", "child"
+  , "chimney", "choice", "choose", "chronic", "chuckle", "chunk", "churn", "cigar", "cinnamon", "circle", "citizen", "city", "civil", "claim", "clap", "clarify"
+  , "claw", "clay", "clean", "clerk", "clever", "click", "client", "cliff", "climb", "clinic", "clip", "clock", "clog", "close", "cloth", "cloud"
+  , "clown", "club", "clump", "cluster", "clutch", "coach", "coast", "coconut", "code", "coffee", "coil", "coin", "collect", "color", "column", "combine"
+  , "come", "comfort", "comic", "common", "company", "concert", "conduct", "confirm", "congress", "connect", "consider", "control", "convince", "cook", "cool", "copper"
+  , "copy", "coral", "core", "corn", "correct", "cost", "cotton", "couch", "country", "couple", "course", "cousin", "cover", "coyote", "crack", "cradle"
+  , "craft", "cram", "crane", "crash", "crater", "crawl", "crazy", "cream", "credit", "creek", "crew", "cricket", "crime", "crisp", "critic", "crop"
+  , "cross", "crouch", "crowd", "crucial", "cruel", "cruise", "crumble", "crunch", "crush", "cry", "crystal", "cube", "culture", "cup", "cupboard", "curious"
+  , "current", "curtain", "curve", "cushion", "custom", "cute", "cycle", "dad", "damage", "damp", "dance", "danger", "daring", "dash", "daughter", "dawn"
+  , "day", "deal", "debate", "debris", "decade", "december", "decide", "decline", "decorate", "decrease", "deer", "defense", "define", "defy", "degree", "delay"
+  , "deliver", "demand", "demise", "denial", "dentist", "deny", "depart", "depend", "deposit", "depth", "deputy", "derive", "describe", "desert", "design", "desk"
+  , "despair", "destroy", "detail", "detect", "develop", "device", "devote", "diagram", "dial", "diamond", "diary", "dice", "diesel", "diet", "differ", "digital"
+  , "dignity", "dilemma", "dinner", "dinosaur", "direct", "dirt", "disagree", "discover", "disease", "dish", "dismiss", "disorder", "display", "distance", "divert", "divide"
+  , "divorce", "dizzy", "doctor", "document", "dog", "doll", "dolphin", "domain", "donate", "donkey", "donor", "door", "dose", "double", "dove", "draft"
+  , "dragon", "drama", "drastic", "draw", "dream", "dress", "drift", "drill", "drink", "drip", "drive", "drop", "drum", "dry", "duck", "dumb"
+  , "dune", "during", "dust", "dutch", "duty", "dwarf", "dynamic", "eager", "eagle", "early", "earn", "earth", "easily", "east", "easy", "echo"
+  , "ecology", "economy", "edge", "edit", "educate", "effort", "egg", "eight", "either", "elbow", "elder", "electric", "elegant", "element", "elephant", "elevator"
+  , "elite", "else", "embark", "embody", "embrace", "emerge", "emotion", "employ", "empower", "empty", "enable", "enact", "end", "endless", "endorse", "enemy"
+  , "energy", "enforce", "engage", "engine", "enhance", "enjoy", "enlist", "enough", "enrich", "enroll", "ensure", "enter", "entire", "entry", "envelope", "episode"
+  , "equal", "equip", "era", "erase", "erode", "erosion", "error", "erupt", "escape", "essay", "essence", "estate", "eternal", "ethics", "evidence", "evil"
+  , "evoke", "evolve", "exact", "example", "excess", "exchange", "excite", "exclude", "excuse", "execute", "exercise", "exhaust", "exhibit", "exile", "exist", "exit"
+  , "exotic", "expand", "expect", "expire", "explain", "expose", "express", "extend", "extra", "eye", "eyebrow", "fabric", "face", "faculty", "fade", "faint"
+  , "faith", "fall", "false", "fame", "family", "famous", "fan", "fancy", "fantasy", "farm", "fashion", "fat", "fatal", "father", "fatigue", "fault"
+  , "favorite", "feature", "february", "federal", "fee", "feed", "feel", "female", "fence", "festival", "fetch", "fever", "few", "fiber", "fiction", "field"
+  , "figure", "file", "film", "filter", "final", "find", "fine", "finger", "finish", "fire", "firm", "first", "fiscal", "fish", "fit", "fitness"
+  , "fix", "flag", "flame", "flash", "flat", "flavor", "flee", "flight", "flip", "float", "flock", "floor", "flower", "fluid", "flush", "fly"
+  , "foam", "focus", "fog", "foil", "fold", "follow", "food", "foot", "force", "forest", "forget", "fork", "fortune", "forum", "forward", "fossil"
+  , "foster", "found", "fox", "fragile", "frame", "frequent", "fresh", "friend", "fringe", "frog", "front", "frost", "frown", "frozen", "fruit", "fuel"
+  , "fun", "funny", "furnace", "fury", "future", "gadget", "gain", "galaxy", "gallery", "game", "gap", "garage", "garbage", "garden", "garlic", "garment"
+  , "gas", "gasp", "gate", "gather", "gauge", "gaze", "general", "genius", "genre", "gentle", "genuine", "gesture", "ghost", "giant", "gift", "giggle"
+  , "ginger", "giraffe", "girl", "give", "glad", "glance", "glare", "glass", "glide", "glimpse", "globe", "gloom", "glory", "glove", "glow", "glue"
+  , "goat", "goddess", "gold", "good", "goose", "gorilla", "gospel", "gossip", "govern", "gown", "grab", "grace", "grain", "grant", "grape", "grass"
+  , "gravity", "great", "green", "grid", "grief", "grit", "grocery", "group", "grow", "grunt", "guard", "guess", "guide", "guilt", "guitar", "gun"
+  , "gym", "habit", "hair", "half", "hammer", "hamster", "hand", "happy", "harbor", "hard", "harsh", "harvest", "hat", "have", "hawk", "hazard"
+  , "head", "health", "heart", "heavy", "hedgehog", "height", "hello", "helmet", "help", "hen", "hero", "hidden", "high", "hill", "hint", "hip"
+  , "hire", "history", "hobby", "hockey", "hold", "hole", "holiday", "hollow", "home", "honey", "hood", "hope", "horn", "horror", "horse", "hospital"
+  , "host", "hotel", "hour", "hover", "hub", "huge", "human", "humble", "humor", "hundred", "hungry", "hunt", "hurdle", "hurry", "hurt", "husband"
+  , "hybrid", "ice", "icon", "idea", "identify", "idle", "ignore", "ill", "illegal", "illness", "image", "imitate", "immense", "immune", "impact", "impose"
+  , "improve", "impulse", "inch", "include", "income", "increase", "index", "indicate", "indoor", "industry", "infant", "inflict", "inform", "inhale", "inherit", "initial"
+  , "inject", "injury", "inmate", "inner", "innocent", "input", "inquiry", "insane", "insect", "inside", "inspire", "install", "intact", "interest", "into", "invest"
+  , "invite", "involve", "iron", "island", "isolate", "issue", "item", "ivory", "jacket", "jaguar", "jar", "jazz", "jealous", "jeans", "jelly", "jewel"
+  , "job", "join", "joke", "journey", "joy", "judge", "juice", "jump", "jungle", "junior", "junk", "just", "kangaroo", "keen", "keep", "ketchup"
+  , "key", "kick", "kid", "kidney", "kind", "kingdom", "kiss", "kit", "kitchen", "kite", "kitten", "kiwi", "knee", "knife", "knock", "know"
+  , "lab", "label", "labor", "ladder", "lady", "lake", "lamp", "language", "laptop", "large", "later", "latin", "laugh", "laundry", "lava", "law"
+  , "lawn", "lawsuit", "layer", "lazy", "leader", "leaf", "learn", "leave", "lecture", "left", "leg", "legal", "legend", "leisure", "lemon", "lend"
+  , "length", "lens", "leopard", "lesson", "letter", "level", "liar", "liberty", "library", "license", "life", "lift", "light", "like", "limb", "limit"
+  , "link", "lion", "liquid", "list", "little", "live", "lizard", "load", "loan", "lobster", "local", "lock", "logic", "lonely", "long", "loop"
+  , "lottery", "loud", "lounge", "love", "loyal", "lucky", "luggage", "lumber", "lunar", "lunch", "luxury", "lyrics", "machine", "mad", "magic", "magnet"
+  , "maid", "mail", "main", "major", "make", "mammal", "man", "manage", "mandate", "mango", "mansion", "manual", "maple", "marble", "march", "margin"
+  , "marine", "market", "marriage", "mask", "mass", "master", "match", "material", "math", "matrix", "matter", "maximum", "maze", "meadow", "mean", "measure"
+  , "meat", "mechanic", "medal", "media", "melody", "melt", "member", "memory", "mention", "menu", "mercy", "merge", "merit", "merry", "mesh", "message"
+  , "metal", "method", "middle", "midnight", "milk", "million", "mimic", "mind", "minimum", "minor", "minute", "miracle", "mirror", "misery", "miss", "mistake"
+  , "mix", "mixed", "mixture", "mobile", "model", "modify", "mom", "moment", "monitor", "monkey", "monster", "month", "moon", "moral", "more", "morning"
+  , "mosquito", "mother", "motion", "motor", "mountain", "mouse", "move", "movie", "much", "muffin", "mule", "multiply", "muscle", "museum", "mushroom", "music"
+  , "must", "mutual", "myself", "mystery", "myth", "naive", "name", "napkin", "narrow", "nasty", "nation", "nature", "near", "neck", "need", "negative"
+  , "neglect", "neither", "nephew", "nerve", "nest", "net", "network", "neutral", "never", "news", "next", "nice", "night", "noble", "noise", "nominee"
+  , "noodle", "normal", "north", "nose", "notable", "note", "nothing", "notice", "novel", "now", "nuclear", "number", "nurse", "nut", "oak", "obey"
+  , "object", "oblige", "obscure", "observe", "obtain", "obvious", "occur", "ocean", "october", "odor", "off", "offer", "office", "often", "oil", "okay"
+  , "old", "olive", "olympic", "omit", "once", "one", "onion", "online", "only", "open", "opera", "opinion", "oppose", "option", "orange", "orbit"
+  , "orchard", "order", "ordinary", "organ", "orient", "original", "orphan", "ostrich", "other", "outdoor", "outer", "output", "outside", "oval", "oven", "over"
+  , "own", "owner", "oxygen", "oyster", "ozone", "pact", "paddle", "page", "pair", "palace", "palm", "panda", "panel", "panic", "panther", "paper"
+  , "parade", "parent", "park", "parrot", "party", "pass", "patch", "path", "patient", "patrol", "pattern", "pause", "pave", "payment", "peace", "peanut"
+  , "pear", "peasant", "pelican", "pen", "penalty", "pencil", "people", "pepper", "perfect", "permit", "person", "pet", "phone", "photo", "phrase", "physical"
+  , "piano", "picnic", "picture", "piece", "pig", "pigeon", "pill", "pilot", "pink", "pioneer", "pipe", "pistol", "pitch", "pizza", "place", "planet"
+  , "plastic", "plate", "play", "please", "pledge", "pluck", "plug", "plunge", "poem", "poet", "point", "polar", "pole", "police", "pond", "pony"
+  , "pool", "popular", "portion", "position", "possible", "post", "potato", "pottery", "poverty", "powder", "power", "practice", "praise", "predict", "prefer", "prepare"
+  , "present", "pretty", "prevent", "price", "pride", "primary", "print", "priority", "prison", "private", "prize", "problem", "process", "produce", "profit", "program"
+  , "project", "promote", "proof", "property", "prosper", "protect", "proud", "provide", "public", "pudding", "pull", "pulp", "pulse", "pumpkin", "punch", "pupil"
+  , "puppy", "purchase", "purity", "purpose", "purse", "push", "put", "puzzle", "pyramid", "quality", "quantum", "quarter", "question", "quick", "quit", "quiz"
+  , "quote", "rabbit", "raccoon", "race", "rack", "radar", "radio", "rail", "rain", "raise", "rally", "ramp", "ranch", "random", "range", "rapid"
+  , "rare", "rate", "rather", "raven", "raw", "razor", "ready", "real", "reason", "rebel", "rebuild", "recall", "receive", "recipe", "record", "recycle"
+  , "reduce", "reflect", "reform", "refuse", "region", "regret", "regular", "reject", "relax", "release", "relief", "rely", "remain", "remember", "remind", "remove"
+  , "render", "renew", "rent", "reopen", "repair", "repeat", "replace", "report", "require", "rescue", "resemble", "resist", "resource", "response", "result", "retire"
+  , "retreat", "return", "reunion", "reveal", "review", "reward", "rhythm", "rib", "ribbon", "rice", "rich", "ride", "ridge", "rifle", "right", "rigid"
+  , "ring", "riot", "ripple", "risk", "ritual", "rival", "river", "road", "roast", "robot", "robust", "rocket", "romance", "roof", "rookie", "room"
+  , "rose", "rotate", "rough", "round", "route", "royal", "rubber", "rude", "rug", "rule", "run", "runway", "rural", "sad", "saddle", "sadness"
+  , "safe", "sail", "salad", "salmon", "salon", "salt", "salute", "same", "sample", "sand", "satisfy", "satoshi", "sauce", "sausage", "save", "say"
+  , "scale", "scan", "scare", "scatter", "scene", "scheme", "school", "science", "scissors", "scorpion", "scout", "scrap", "screen", "script", "scrub", "sea"
+  , "search", "season", "seat", "second", "secret", "section", "security", "seed", "seek", "segment", "select", "sell", "seminar", "senior", "sense", "sentence"
+  , "series", "service", "session", "settle", "setup", "seven", "shadow", "shaft", "shallow", "share", "shed", "shell", "sheriff", "shield", "shift", "shine"
+  , "ship", "shiver", "shock", "shoe", "shoot", "shop", "short", "shoulder", "shove", "shrimp", "shrug", "shuffle", "shy", "sibling", "sick", "side"
+  , "siege", "sight", "sign", "silent", "silk", "silly", "silver", "similar", "simple", "since", "sing", "siren", "sister", "situate", "six", "size"
+  , "skate", "sketch", "ski", "skill", "skin", "skirt", "skull", "slab", "slam", "sleep", "slender", "slice", "slide", "slight", "slim", "slogan"
+  , "slot", "slow", "slush", "small", "smart", "smile", "smoke", "smooth", "snack", "snake", "snap", "sniff", "snow", "soap", "soccer", "social"
+  , "sock", "soda", "soft", "solar", "soldier", "solid", "solution", "solve", "someone", "song", "soon", "sorry", "sort", "soul", "sound", "soup"
+  , "source", "south", "space", "spare", "spatial", "spawn", "speak", "special", "speed", "spell", "spend", "sphere", "spice", "spider", "spike", "spin"
+  , "spirit", "split", "spoil", "sponsor", "spoon", "sport", "spot", "spray", "spread", "spring", "spy", "square", "squeeze", "squirrel", "stable", "stadium"
+  , "staff", "stage", "stairs", "stamp", "stand", "start", "state", "stay", "steak", "steel", "stem", "step", "stereo", "stick", "still", "sting"
+  , "stock", "stomach", "stone", "stool", "story", "stove", "strategy", "street", "strike", "strong", "struggle", "student", "stuff", "stumble", "style", "subject"
+  , "submit", "subway", "success", "such", "sudden", "suffer", "sugar", "suggest", "suit", "summer", "sun", "sunny", "sunset", "super", "supply", "supreme"
+  , "sure", "surface", "surge", "surprise", "surround", "survey", "suspect", "sustain", "swallow", "swamp", "swap", "swarm", "swear", "sweet", "swift", "swim"
+  , "swing", "switch", "sword", "symbol", "symptom", "syrup", "system", "table", "tackle", "tag", "tail", "talent", "talk", "tank", "tape", "target"
+  , "task", "taste", "tattoo", "taxi", "teach", "team", "tell", "ten", "tenant", "tennis", "tent", "term", "test", "text", "thank", "that"
+  , "theme", "then", "theory", "there", "they", "thing", "this", "thought", "three", "thrive", "throw", "thumb", "thunder", "ticket", "tide", "tiger"
+  , "tilt", "timber", "time", "tiny", "tip", "tired", "tissue", "title", "toast", "tobacco", "today", "toddler", "toe", "together", "toilet", "token"
+  , "tomato", "tomorrow", "tone", "tongue", "tonight", "tool", "tooth", "top", "topic", "topple", "torch", "tornado", "tortoise", "toss", "total", "tourist"
+  , "toward", "tower", "town", "toy", "track", "trade", "traffic", "tragic", "train", "transfer", "trap", "trash", "travel", "tray", "treat", "tree"
+  , "trend", "trial", "tribe", "trick", "trigger", "trim", "trip", "trophy", "trouble", "truck", "true", "truly", "trumpet", "trust", "truth", "try"
+  , "tube", "tuition", "tumble", "tuna", "tunnel", "turkey", "turn", "turtle", "twelve", "twenty", "twice", "twin", "twist", "two", "type", "typical"
+  , "ugly", "umbrella", "unable", "unaware", "uncle", "uncover", "under", "undo", "unfair", "unfold", "unhappy", "uniform", "unique", "unit", "universe", "unknown"
+  , "unlock", "until", "unusual", "unveil", "update", "upgrade", "uphold", "upon", "upper", "upset", "urban", "urge", "usage", "use", "used", "useful"
+  , "useless", "usual", "utility", "vacant", "vacuum", "vague", "valid", "valley", "valve", "van", "vanish", "vapor", "various", "vast", "vault", "vehicle"
+  , "velvet", "vendor", "venture", "venue", "verb", "verify", "version", "very", "vessel", "veteran", "viable", "vibrant", "vicious", "victory", "video", "view"
+  , "village", "vintage", "violin", "virtual", "virus", "visa", "visit", "visual", "vital", "vivid", "vocal", "voice", "void", "volcano", "volume", "vote"
+  , "voyage", "wage", "wagon", "wait", "walk", "wall", "walnut", "want", "warfare", "warm", "warrior", "wash", "wasp", "waste", "water", "wave"
+  , "way", "wealth", "weapon", "wear", "weasel", "weather", "web", "wedding", "weekend", "weird", "welcome", "west", "wet", "whale", "what", "wheat"
+  , "wheel", "when", "where", "whip", "whisper", "wide", "width", "wife", "wild", "will", "win", "window", "wine", "wing", "wink", "winner"
+  , "winter", "wire", "wisdom", "wise", "wish", "witness", "wolf", "woman", "wonder", "wood", "wool", "word", "work", "world", "worry", "worth"
+  , "wrap", "wreck", "wrestle", "wrist", "write", "wrong", "yard", "year", "yellow", "you", "young", "youth", "zebra", "zero", "zone", "zoo"
+];
 
 const contentEl = document.getElementById('content');
 const authControlsEl = document.getElementById('auth-controls');
@@ -250,6 +383,138 @@ function parseErrorPayload(payload, fallback) {
     return payload.message;
   }
   return JSON.stringify(payload);
+}
+
+// Base64 encode/decode helpers for crypto operations
+function bytesToBase64(bytes) {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function concatBytes(...arrays) {
+  const total = arrays.reduce((sum, array) => sum + array.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const array of arrays) {
+    result.set(array, offset);
+    offset += array.length;
+  }
+  return result;
+}
+
+// Compute 6-word BIP-39 fingerprint from X25519 public key bytes
+async function computeFingerprint(publicKeyBytes) {
+  const hashBuffer = await crypto.subtle.digest('SHA-256', publicKeyBytes);
+  const hash = new Uint8Array(hashBuffer);
+  let bits = 0n;
+  for (let i = 0; i < 9; i++) {
+    bits = (bits << 8n) | BigInt(hash[i]);
+  }
+  const words = [];
+  for (let i = 0; i < 6; i++) {
+    const shift = 72n - 11n - 11n * BigInt(i);
+    const index = Number((bits >> shift) & 0x7FFn);
+    words.push(BIP39_ENGLISH[index]);
+  }
+  return words;
+}
+
+// HKDF-SHA-256 using Web Crypto
+async function hkdfSha256(ikm, salt, info, length) {
+  const saltBytes = typeof salt === 'string' ? new TextEncoder().encode(salt) : salt;
+  const baseKey = await crypto.subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: saltBytes, info },
+    baseKey,
+    length * 8,
+  );
+  return new Uint8Array(bits);
+}
+
+// Send admin command to handler
+async function sendAdminCommand(command, params) {
+  requireConfig('functionAppName', 'Function app name');
+  const token = await getFunctionToken();
+  const response = await fetch(
+    `https://${CONFIG.functionAppName}.azurewebsites.net/api/admin/command`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ command, params: params || {} }),
+    },
+  );
+  const text = await response.text();
+  let result = null;
+  if (text) {
+    try {
+      result = JSON.parse(text);
+    } catch {
+      result = text;
+    }
+  }
+  if (!response.ok) {
+    throw new Error(parseErrorPayload(result, `Admin command failed (${response.status}).`));
+  }
+  return result;
+}
+
+// Delete program from handler
+async function deleteProgramFromFunction(programHash) {
+  requireConfig('functionAppName', 'Function app name');
+  const token = await getFunctionToken();
+  const response = await fetch(
+    `https://${CONFIG.functionAppName}.azurewebsites.net/api/programs/${encodeURIComponent(programHash)}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  );
+  const text = await response.text();
+  let result = null;
+  if (text) {
+    try {
+      result = JSON.parse(text);
+    } catch {
+      result = text;
+    }
+  }
+  if (!response.ok) {
+    throw new Error(parseErrorPayload(result, `Delete failed (${response.status}).`));
+  }
+  return result;
+}
+
+// Read entity from Azure Table by partition key + row key
+async function getEntity(tableName, partitionKey, rowKey) {
+  const token = await getToken();
+  const url = entityUrl(tableName, partitionKey, rowKey);
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json;odata=nometadata',
+      Authorization: `Bearer ${token}`,
+      'x-ms-version': '2019-02-02',
+    },
+  });
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Entity query failed (${response.status}): ${text}`);
+  }
+  return response.json();
 }
 
 // 2. MSAL Authentication
@@ -534,7 +799,9 @@ async function renderDashboard() {
       queryTable(CONFIG.desiredStateTable, ''),
     ]);
 
-    const latestActual = latestByPartition(actualRows).sort((left, right) => String(left.node_id || '').localeCompare(String(right.node_id || '')));
+    const latestActual = latestByPartition(actualRows)
+      .filter((row) => row.node_id)
+      .sort((left, right) => String(left.node_id || '').localeCompare(String(right.node_id || '')));
     const desiredByPartition = new Map(latestByPartition(desiredRows).map((row) => [row.PartitionKey, row]));
 
     const rowsHtml = latestActual.map((actual) => {
@@ -559,6 +826,7 @@ async function renderDashboard() {
           <td>${formatHashCell(assignedProgram)}</td>
           <td>${escapeHtml(relativeTime(actual.timestamp_ms))}</td>
           <td><span class="badge ${diverged ? 'warning' : 'success'}">${diverged ? 'Diverged' : 'Aligned'}</span></td>
+          <td><button type="button" class="secondary dashboard-reboot-btn" data-node-id="${escapeHtml(actual.node_id || '')}">Reboot</button></td>
         </tr>
       `;
     }).join('');
@@ -577,12 +845,29 @@ async function renderDashboard() {
               <th>Assigned Program</th>
               <th>Last Seen</th>
               <th>Status</th>
+              <th>Actions</th>
             </tr>
           </thead>
-          <tbody>${rowsHtml || '<tr><td colspan="9" class="muted">No node state found.</td></tr>'}</tbody>
+          <tbody>${rowsHtml || '<tr><td colspan="10" class="muted">No node state found.</td></tr>'}</tbody>
         </table>
       </div>
     `);
+
+    for (const button of contentEl.querySelectorAll('.dashboard-reboot-btn')) {
+      button.addEventListener('click', async () => {
+        const nodeId = String(button.dataset.nodeId || '');
+        if (!nodeId || !confirm(`Reboot node ${nodeId}?`)) {
+          return;
+        }
+        try {
+          await sendAdminCommand('reboot_node', { node_id: nodeId });
+          showViewMessage('success', `Reboot queued for ${nodeId}.`);
+        } catch (error) {
+          showViewMessage('error', parseErrorPayload(error, 'Failed to queue reboot.'));
+        }
+        await renderDashboard();
+      });
+    }
   } catch (error) {
     renderError('Dashboard', error);
   }
@@ -650,10 +935,10 @@ async function renderDesiredState() {
 
     const latestActual = latestByPartition(actualRows)
       .filter((node) => node.node_id)
-      .sort((left, right) =>
-        String(left.node_id || '').localeCompare(String(right.node_id || '')));
+      .sort((left, right) => String(left.node_id || '').localeCompare(String(right.node_id || '')));
     const desiredByPartition = new Map(
-      latestByPartition(desiredRows).map((row) => [row.PartitionKey, row]));
+      latestByPartition(desiredRows).map((row) => [row.PartitionKey, row]),
+    );
 
     const nodeOptions = [
       '<option value="" disabled selected>Select a node…</option>',
@@ -664,6 +949,12 @@ async function renderDesiredState() {
     const programOptions = [
       '<option value="">No program target</option>',
       ...programs.map((program) => `<option value="${escapeHtml(program.RowKey)}">${escapeHtml(truncHash(program.RowKey))} — ${escapeHtml(program.source_filename || 'unnamed')}</option>`),
+    ].join('');
+    const ephemeralProgramOptions = [
+      '<option value="">None</option>',
+      ...programs
+        .filter((program) => program.verification_profile === 'ephemeral')
+        .map((program) => `<option value="${escapeHtml(program.RowKey)}">${escapeHtml(truncHash(program.RowKey))} — ${escapeHtml(program.source_filename || 'unnamed')}</option>`),
     ].join('');
 
     renderCard('Desired State', `
@@ -677,6 +968,9 @@ async function renderDesiredState() {
           </label>
           <label>Program Hash
             <select name="programHash">${programOptions}</select>
+          </label>
+          <label>Ephemeral Program (optional)
+            <select name="ephemeralProgramHash">${ephemeralProgramOptions}</select>
           </label>
           <div>
             <button type="submit" class="primary">Save Desired State</button>
@@ -695,14 +989,16 @@ async function renderDesiredState() {
     const nodeSelect = form?.querySelector('[name="nodeId"]');
     nodeSelect?.addEventListener('change', () => {
       const selectedNodeId = nodeSelect.value;
-      if (!selectedNodeId) return;
+      if (!selectedNodeId) {
+        return;
+      }
 
       const actualNode = latestActual.find((node) => node.node_id === selectedNodeId);
       const desiredNode = desiredByPartition.get(actualNode?.PartitionKey);
 
       // Per-field desired-over-actual fallback: use the desired value for
       // each field when present, otherwise fall back to the latest actual
-      // value.  We use ?? (not ||) so that a zero schedule or an explicit
+      // value. We use ?? (not ||) so that a zero schedule or an explicit
       // empty-string hash from a future schema change won't be skipped.
       const scheduleValue = desiredNode?.desired_schedule_interval_s
         ?? actualNode?.observed_schedule_interval_s
@@ -710,15 +1006,27 @@ async function renderDesiredState() {
       const hashValue = (desiredNode?.desired_assigned_program_hash
         ?? actualNode?.observed_assigned_program_hash
         ?? '').toLowerCase();
+      const ephemeralHashValue = String(desiredNode?.desired_ephemeral_program_hash || '').toLowerCase();
 
       const scheduleInput = form.querySelector('[name="scheduleInterval"]');
-      if (scheduleInput) scheduleInput.value = scheduleValue;
+      if (scheduleInput) {
+        scheduleInput.value = scheduleValue;
+      }
 
       const programSelect = form.querySelector('[name="programHash"]');
       if (programSelect) {
         const matchingOption = [...programSelect.options].find(
-          (opt) => opt.value.toLowerCase() === hashValue);
+          (opt) => opt.value.toLowerCase() === hashValue,
+        );
         programSelect.value = matchingOption ? matchingOption.value : '';
+      }
+
+      const ephemeralSelect = form.querySelector('[name="ephemeralProgramHash"]');
+      if (ephemeralSelect) {
+        const matchingOption = [...ephemeralSelect.options].find(
+          (opt) => opt.value.toLowerCase() === ephemeralHashValue,
+        );
+        ephemeralSelect.value = matchingOption ? matchingOption.value : '';
       }
     });
 
@@ -728,6 +1036,7 @@ async function renderDesiredState() {
       const nodeId = String(formData.get('nodeId') || '').trim();
       const scheduleValue = String(formData.get('scheduleInterval') || '').trim();
       const programHash = String(formData.get('programHash') || '').trim();
+      const ephemeralProgramHash = String(formData.get('ephemeralProgramHash') || '').trim();
 
       if (!nodeId) {
         showViewMessage('error', 'Node ID is required.');
@@ -753,6 +1062,9 @@ async function renderDesiredState() {
         }
         if (programHash) {
           entity.desired_assigned_program_hash = programHash.toLowerCase();
+        }
+        if (ephemeralProgramHash) {
+          entity.desired_ephemeral_program_hash = ephemeralProgramHash.toLowerCase();
         }
 
         await insertEntity(CONFIG.desiredStateTable, entity);
@@ -780,6 +1092,7 @@ function programRowsTable(programs) {
             <th>ABI</th>
             <th>Size</th>
             <th>Created</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -790,8 +1103,9 @@ function programRowsTable(programs) {
               <td>${escapeHtml(program.abi_version ?? '—')}</td>
               <td>${escapeHtml(program.size_bytes ?? '—')}</td>
               <td>${escapeHtml(program.created_at || '—')}</td>
+              <td><button type="button" class="secondary program-delete-btn" data-hash="${escapeHtml(program.RowKey)}" style="color:var(--danger)">🗑️</button></td>
             </tr>
-          `).join('') || '<tr><td colspan="5" class="muted">No programs found.</td></tr>'}
+          `).join('') || '<tr><td colspan="6" class="muted">No programs found.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -809,7 +1123,10 @@ async function renderPrograms() {
   APP.viewMessage = savedMessage;
 
   try {
-    const programs = await listPrograms();
+    const [programs, desiredRows] = await Promise.all([
+      listPrograms(),
+      queryTable(CONFIG.desiredStateTable, ''),
+    ]);
 
     renderCard('Programs', `
       <div class="panel stack">
@@ -839,6 +1156,34 @@ async function renderPrograms() {
         ${programRowsTable(programs)}
       </div>
     `);
+
+    const latestDesired = latestByPartition(desiredRows);
+    for (const button of contentEl.querySelectorAll('.program-delete-btn')) {
+      button.addEventListener('click', async () => {
+        const hash = String(button.dataset.hash || '');
+        if (!hash) {
+          return;
+        }
+        const matchingDesiredRows = latestDesired.filter(
+          (row) => String(row.desired_assigned_program_hash || '').toLowerCase() === hash.toLowerCase(),
+        );
+        const warning = matchingDesiredRows.length > 0
+          ? `
+
+⚠ This program is assigned to ${matchingDesiredRows.length} node(s). Deleting it will not unassign them.`
+          : '';
+        if (!confirm(`Delete program ${truncHash(hash)}?${warning}`)) {
+          return;
+        }
+        try {
+          await deleteProgramFromFunction(hash);
+          showViewMessage('success', `Program deleted: ${truncHash(hash)}`);
+        } catch (error) {
+          showViewMessage('error', parseErrorPayload(error, 'Failed to delete program.'));
+        }
+        await renderPrograms();
+      });
+    }
 
     const form = document.getElementById('program-upload-form');
     const fileInput = form?.querySelector('input[name="elf"]');
@@ -1608,6 +1953,445 @@ async function renderSensorData() {
   }
 }
 
+// 10. Gateway Tab (WEB-1000)
+async function renderGateway() {
+  if (!APP.account) {
+    requireAuthenticatedView('Gateway');
+    return;
+  }
+
+  const savedMessage = APP.viewMessage;
+  renderCard('Gateway', '<p class="muted">Loading gateway status…</p>');
+  APP.viewMessage = savedMessage;
+
+  try {
+    const [gwStatusRows, pubkeyEntity, stateEntity, saltEntity] = await Promise.all([
+      queryTable(CONFIG.actualStateTable, "PartitionKey eq 'gw:status'"),
+      getEntity(CONFIG.gatewayEscrowTable, 'gateway', 'pubkey').catch(() => null),
+      getEntity(CONFIG.gatewayEscrowTable, 'gateway', 'state').catch(() => null),
+      getEntity(CONFIG.gatewayEscrowTable, 'gateway', 'salt').catch(() => null),
+    ]);
+
+    const gwStatus = gwStatusRows.length > 0
+      ? gwStatusRows.reduce((left, right) => String(left.RowKey) < String(right.RowKey) ? left : right)
+      : null;
+
+    const modemConnected = gwStatus?.modem_connected;
+    const modemChannel = Number(gwStatus?.modem_channel);
+    const modemMac = gwStatus?.modem_mac;
+
+    const modemStatusHtml = gwStatus
+      ? `<div class="kv-grid">
+          <div class="kv"><strong>Connection</strong> <span class="badge ${modemConnected ? 'success' : 'error'}">${modemConnected ? 'Connected' : 'Disconnected'}</span></div>
+          <div class="kv"><strong>WiFi Channel</strong> <span>${escapeHtml(Number.isFinite(modemChannel) ? modemChannel : '—')}</span></div>
+          <div class="kv"><strong>MAC Address</strong> <code>${escapeHtml(modemMac || '—')}</code></div>
+        </div>`
+      : '<p class="muted">No modem data available.</p>';
+
+    let scanHtml = '';
+    if (gwStatus?.scan_results) {
+      try {
+        const results = typeof gwStatus.scan_results === 'string'
+          ? JSON.parse(gwStatus.scan_results)
+          : gwStatus.scan_results;
+        if (Array.isArray(results) && results.length > 0) {
+          const scanTime = gwStatus.scan_timestamp ? relativeTime(gwStatus.scan_timestamp) : '';
+          scanHtml = `
+            <h3>Scan Results ${scanTime ? `<span class="muted small">(${escapeHtml(scanTime)})</span>` : ''}</h3>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Channel</th><th>RSSI</th><th>SSID</th></tr></thead>
+              <tbody>${results.map((result) => `<tr><td>${escapeHtml(result.channel ?? result[1] ?? '')}</td><td>${escapeHtml(result.rssi ?? result[2] ?? '')}</td><td>${escapeHtml(result.ssid ?? result[3] ?? '')}</td></tr>`).join('')}</tbody>
+            </table></div>`;
+        }
+      } catch {
+        // Ignore malformed scan results.
+      }
+    }
+
+    const channelOptions = Array.from({ length: 14 }, (_, index) => index + 1)
+      .map((channel) => `<option value="${channel}" ${channel === modemChannel ? 'selected' : ''}>${channel}</option>`)
+      .join('');
+
+    let fingerprintHtml = '';
+    if (pubkeyEntity?.public_key) {
+      try {
+        const pubkeyBytes = base64ToBytes(pubkeyEntity.public_key);
+        const words = await computeFingerprint(pubkeyBytes);
+        fingerprintHtml = `
+          <div class="kv"><strong>Fingerprint</strong> <code class="fingerprint">${words.map(escapeHtml).join(' ')}</code></div>
+          <div class="kv"><strong>Key Epoch</strong> <span>${escapeHtml(pubkeyEntity.key_epoch ?? '—')}</span></div>
+          <div class="kv"><strong>Published</strong> <span>${escapeHtml(pubkeyEntity.created_at ? relativeTime(pubkeyEntity.created_at) : '—')}</span></div>`;
+      } catch (error) {
+        fingerprintHtml = `<p class="muted">Error computing fingerprint: ${escapeHtml(error.message)}</p>`;
+      }
+    } else {
+      fingerprintHtml = '<p class="muted">No recovery key published.</p>';
+    }
+
+    const escrowState = stateEntity?.escrow_state || null;
+    const keyVersion = stateEntity?.escrow_key_version;
+    const stateBadgeClass = escrowState === 'ready'
+      ? 'success'
+      : (escrowState === 'bootstrapping' || escrowState === 'rotation_in_progress')
+        ? 'warning'
+        : escrowState === 'degraded'
+          ? 'error'
+          : 'muted';
+    const stateDisplay = escrowState || 'Unknown';
+
+    let kdfHtml = '<span class="muted">No KDF salt configured.</span>';
+    if (saltEntity?.kdf_params_json) {
+      try {
+        const kdf = typeof saltEntity.kdf_params_json === 'string'
+          ? JSON.parse(saltEntity.kdf_params_json)
+          : saltEntity.kdf_params_json;
+        kdfHtml = `<span>Argon2id (m=${escapeHtml(kdf.m_cost)}, t=${escapeHtml(kdf.t_cost)}, p=${escapeHtml(kdf.p_cost)})</span>`;
+      } catch {
+        kdfHtml = '<span class="muted">Invalid KDF parameters.</span>';
+      }
+    }
+
+    const escrowWarning = escrowState && escrowState !== 'ready'
+      ? `<div class="alert warning">⚠ Key escrow is not ready (${escapeHtml(escrowState)}). Recovery may not be possible.</div>`
+      : '';
+    const canRotate = Boolean(pubkeyEntity?.public_key && saltEntity?.salt);
+
+    renderCard('Gateway', `
+      <div class="panel stack">
+        <h2>Modem</h2>
+        ${modemStatusHtml}
+        <form id="channel-form" class="form-grid" style="margin-top:1rem">
+          <label>WiFi Channel
+            <select name="channel">
+              <option value="" disabled ${Number.isFinite(modemChannel) ? '' : 'selected'}>Select channel…</option>
+              ${channelOptions}
+            </select>
+          </label>
+          <div style="display:flex;gap:0.5rem">
+            <button type="submit" class="primary">Set Channel</button>
+            <button type="button" class="secondary" id="scan-btn">Scan Channels</button>
+          </div>
+        </form>
+        ${scanHtml}
+      </div>
+
+      <div class="panel stack">
+        <h2>Key Escrow</h2>
+        ${escrowWarning}
+        <div class="kv-grid">
+          ${fingerprintHtml}
+          <div class="kv"><strong>Escrow State</strong> <span class="badge ${stateBadgeClass}">${escapeHtml(stateDisplay)}</span></div>
+          <div class="kv"><strong>Key Version</strong> <span>${escapeHtml(keyVersion ?? '—')}</span></div>
+          <div class="kv"><strong>KDF</strong> ${kdfHtml}</div>
+        </div>
+        <div style="margin-top:1rem">
+          <button type="button" class="primary" id="rotate-key-btn" ${canRotate ? '' : 'disabled title="Recovery key or KDF salt not available"'}>Rotate Key</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('channel-form')?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const channel = Number(new FormData(event.target).get('channel'));
+      if (!channel || channel < 1 || channel > 14) {
+        showViewMessage('error', 'Select a valid channel (1–14).');
+        await renderGateway();
+        return;
+      }
+      try {
+        await sendAdminCommand('set_channel', { channel });
+        showViewMessage('success', 'Channel change requested.');
+      } catch (error) {
+        showViewMessage('error', parseErrorPayload(error, 'Failed to set channel.'));
+      }
+      await renderGateway();
+    });
+
+    document.getElementById('scan-btn')?.addEventListener('click', async () => {
+      try {
+        await sendAdminCommand('scan_channels', {});
+        showViewMessage('success', 'Scan requested — results will appear on refresh.');
+      } catch (error) {
+        showViewMessage('error', parseErrorPayload(error, 'Failed to request scan.'));
+      }
+      await renderGateway();
+    });
+
+    document.getElementById('rotate-key-btn')?.addEventListener('click', () => {
+      showRotationWizard(pubkeyEntity, stateEntity, saltEntity);
+    });
+
+    setAutoRefresh(async () => {
+      if (APP.activeTab === 'gateway') {
+        await renderGateway();
+      }
+    });
+  } catch (error) {
+    renderError('Gateway', error);
+  }
+}
+
+function showRotationWizard(pubkeyEntity, stateEntity, saltEntity) {
+  const overlayHtml = `<div class="env-manager-overlay" id="rotation-overlay" role="dialog" aria-modal="true" aria-label="Key Rotation">
+    <div class="env-manager-panel panel" style="max-width:480px">
+      <h2>Rotate Master Key</h2>
+      <div id="rotation-step-1">
+        <p>Verify this fingerprint matches your gateway's OLED display:</p>
+        <div id="rotation-fingerprint" class="muted">Computing…</div>
+        <p class="small muted">Key epoch: ${escapeHtml(pubkeyEntity?.key_epoch ?? '—')}</p>
+        <label style="display:flex;gap:0.5rem;align-items:center;margin-top:0.75rem">
+          <input type="checkbox" id="fingerprint-verified">
+          I have verified the fingerprint
+        </label>
+        <div style="margin-top:1rem;display:flex;gap:0.5rem">
+          <button type="button" class="secondary" id="rotation-cancel-1">Cancel</button>
+          <button type="button" class="primary" id="rotation-next" disabled>Next →</button>
+        </div>
+      </div>
+      <div id="rotation-step-2" style="display:none">
+        <label>Passphrase (min 12 characters)
+          <input type="password" id="rotation-passphrase" minlength="12" autocomplete="off">
+        </label>
+        <label>Confirm passphrase
+          <input type="password" id="rotation-passphrase-confirm" autocomplete="off">
+        </label>
+        <div id="rotation-pass-error" class="alert error" style="display:none;margin-top:0.5rem"></div>
+        <div style="margin-top:1rem;display:flex;gap:0.5rem">
+          <button type="button" class="secondary" id="rotation-back">← Back</button>
+          <button type="button" class="primary" id="rotation-submit">Rotate Key</button>
+        </div>
+      </div>
+      <div id="rotation-step-3" style="display:none">
+        <p id="rotation-status" class="muted">Processing…</p>
+        <div class="spinner" style="margin:1rem 0"></div>
+      </div>
+      <div id="rotation-step-4" style="display:none">
+        <div id="rotation-result"></div>
+        <div style="margin-top:1rem;display:flex;gap:0.5rem">
+          <button type="button" class="primary" id="rotation-close">Close</button>
+          <button type="button" class="secondary" id="rotation-retry" style="display:none">Retry</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  let overlay = document.getElementById('rotation-overlay');
+  if (overlay) {
+    overlay.remove();
+  }
+  document.body.insertAdjacentHTML('beforeend', overlayHtml);
+
+  (async () => {
+    try {
+      const pubkeyBytes = base64ToBytes(pubkeyEntity.public_key);
+      const words = await computeFingerprint(pubkeyBytes);
+      document.getElementById('rotation-fingerprint').innerHTML =
+        `<code class="fingerprint" style="font-size:1.2em">${words.map(escapeHtml).join(' ')}</code>`;
+    } catch (error) {
+      document.getElementById('rotation-fingerprint').textContent = `Error: ${error.message}`;
+    }
+  })();
+
+  const checkbox = document.getElementById('fingerprint-verified');
+  const nextBtn = document.getElementById('rotation-next');
+  checkbox?.addEventListener('change', () => {
+    nextBtn.disabled = !checkbox.checked;
+  });
+
+  document.getElementById('rotation-cancel-1')?.addEventListener('click', () => {
+    document.getElementById('rotation-overlay')?.remove();
+  });
+
+  nextBtn?.addEventListener('click', () => {
+    document.getElementById('rotation-step-1').style.display = 'none';
+    document.getElementById('rotation-step-2').style.display = '';
+    document.getElementById('rotation-passphrase')?.focus();
+  });
+
+  document.getElementById('rotation-back')?.addEventListener('click', () => {
+    document.getElementById('rotation-step-2').style.display = 'none';
+    document.getElementById('rotation-step-1').style.display = '';
+  });
+
+  document.getElementById('rotation-submit')?.addEventListener('click', async () => {
+    const passphrase = document.getElementById('rotation-passphrase')?.value || '';
+    const confirmPassphrase = document.getElementById('rotation-passphrase-confirm')?.value || '';
+    const errorEl = document.getElementById('rotation-pass-error');
+
+    if (passphrase.length < 12) {
+      if (errorEl) {
+        errorEl.textContent = 'Passphrase must be at least 12 characters.';
+        errorEl.style.display = '';
+      }
+      return;
+    }
+    if (passphrase !== confirmPassphrase) {
+      if (errorEl) {
+        errorEl.textContent = 'Passphrases do not match.';
+        errorEl.style.display = '';
+      }
+      return;
+    }
+    if (errorEl) {
+      errorEl.style.display = 'none';
+    }
+
+    document.getElementById('rotation-step-2').style.display = 'none';
+    document.getElementById('rotation-step-3').style.display = '';
+
+    try {
+      await performKeyRotation(passphrase, pubkeyEntity, stateEntity, saltEntity);
+      document.getElementById('rotation-step-3').style.display = 'none';
+      document.getElementById('rotation-step-4').style.display = '';
+      document.getElementById('rotation-result').innerHTML =
+        '<div class="alert success">✓ Key rotation initiated. The gateway will process the rotation on the next cycle.</div>';
+    } catch (error) {
+      document.getElementById('rotation-step-3').style.display = 'none';
+      document.getElementById('rotation-step-4').style.display = '';
+      document.getElementById('rotation-result').innerHTML =
+        `<div class="alert error">✗ Key rotation failed: ${escapeHtml(error.message)}</div>`;
+      const retryBtn = document.getElementById('rotation-retry');
+      if (retryBtn) {
+        retryBtn.style.display = '';
+      }
+    }
+  });
+
+  document.getElementById('rotation-close')?.addEventListener('click', () => {
+    document.getElementById('rotation-overlay')?.remove();
+    renderGateway().catch((error) => renderError('Gateway', error));
+  });
+  document.getElementById('rotation-retry')?.addEventListener('click', () => {
+    document.getElementById('rotation-step-4').style.display = 'none';
+    document.getElementById('rotation-step-2').style.display = '';
+    document.getElementById('rotation-passphrase').value = '';
+    document.getElementById('rotation-passphrase-confirm').value = '';
+    document.getElementById('rotation-pass-error').style.display = 'none';
+  });
+}
+
+async function performKeyRotation(passphrase, pubkeyEntity, stateEntity, saltEntity) {
+  const statusEl = document.getElementById('rotation-status');
+  const pubkey = base64ToBytes(pubkeyEntity.public_key);
+  const salt = base64ToBytes(saltEntity.salt);
+  const keyEpoch = Number(pubkeyEntity.key_epoch);
+
+  if (pubkey.length !== 32) {
+    throw new Error('Recovery public key must be 32 bytes.');
+  }
+  if (salt.length === 0) {
+    throw new Error('KDF salt is missing.');
+  }
+  if (!Number.isFinite(keyEpoch) || keyEpoch < 0) {
+    throw new Error('Key epoch is invalid.');
+  }
+
+  let kdfParams = { m_cost: 65536, t_cost: 3, p_cost: 1 };
+  if (saltEntity.kdf_params_json) {
+    try {
+      const parsed = typeof saltEntity.kdf_params_json === 'string'
+        ? JSON.parse(saltEntity.kdf_params_json)
+        : saltEntity.kdf_params_json;
+      kdfParams = {
+        m_cost: parsed.m_cost || 65536,
+        t_cost: parsed.t_cost || 3,
+        p_cost: parsed.p_cost || 1,
+      };
+    } catch {
+      // Use default KDF parameters.
+    }
+  }
+
+  if (statusEl) {
+    statusEl.textContent = 'Deriving key with Argon2id…';
+  }
+  if (typeof argon2 === 'undefined') {
+    throw new Error('Argon2 library not loaded.');
+  }
+  const argonResult = await argon2.hash({
+    pass: passphrase,
+    salt,
+    type: argon2.ArgonType.Argon2id,
+    mem: kdfParams.m_cost,
+    time: kdfParams.t_cost,
+    parallelism: kdfParams.p_cost,
+    hashLen: 32,
+  });
+  const masterKey = argonResult.hash;
+
+  if (statusEl) {
+    statusEl.textContent = 'Generating ephemeral keypair…';
+  }
+  if (typeof nacl === 'undefined') {
+    throw new Error('TweetNaCl library not loaded.');
+  }
+  const ephemeral = nacl.box.keyPair();
+
+  const sharedSecret = nacl.scalarMult(ephemeral.secretKey, pubkey);
+  const operationId = crypto.getRandomValues(new Uint8Array(16));
+
+  if (statusEl) {
+    statusEl.textContent = 'Encrypting master key…';
+  }
+  const epochBuf = new ArrayBuffer(8);
+  const epochView = new DataView(epochBuf);
+  epochView.setBigUint64(0, BigInt(keyEpoch), false);
+  const targetEpochBe = new Uint8Array(epochBuf);
+  const info = concatBytes(targetEpochBe, operationId);
+  const hkdfKey = await hkdfSha256(sharedSecret, 'sonde-escrow-v1', info, 32);
+
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const aad = concatBytes(operationId, targetEpochBe);
+  const importedKey = await crypto.subtle.importKey('raw', hkdfKey, 'AES-GCM', false, ['encrypt']);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: nonce, additionalData: aad, tagLength: 128 },
+    importedKey,
+    masterKey,
+  );
+  const ctBytes = new Uint8Array(ciphertext);
+  const encryptedMasterKey = ctBytes.slice(0, ctBytes.length - 16);
+  const tag = ctBytes.slice(ctBytes.length - 16);
+
+  masterKey.fill(0);
+  ephemeral.secretKey.fill(0);
+  sharedSecret.fill(0);
+
+  if (statusEl) {
+    statusEl.textContent = 'Sending to gateway…';
+  }
+  const rotationCounter = stateEntity?.escrow_key_version != null
+    ? Number(stateEntity.escrow_key_version) + 1
+    : 1;
+  const payload = {
+    target_key_epoch: keyEpoch,
+    sender_public_key: bytesToBase64(ephemeral.publicKey),
+    encrypted_master_key: bytesToBase64(encryptedMasterKey),
+    nonce: bytesToBase64(nonce),
+    tag: bytesToBase64(tag),
+    operation_id: bytesToBase64(operationId),
+    rotation_counter: rotationCounter,
+    expiry_ms: Date.now() + 300000,
+  };
+
+  requireConfig('functionAppName', 'Function app name');
+  const token = await getFunctionToken();
+  const response = await fetch(
+    `https://${CONFIG.functionAppName}.azurewebsites.net/api/keys/rotate`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(parseErrorPayload(text, `Rotation failed (${response.status}).`));
+  }
+}
+
 // 9. Tab Router
 function setActiveTab(tabId) {
   APP.activeTab = TAB_IDS.includes(tabId) ? tabId : 'dashboard';
@@ -1632,6 +2416,9 @@ async function renderActiveTab() {
       break;
     case 'sensor-data':
       await renderSensorData();
+      break;
+    case 'gateway':
+      await renderGateway();
       break;
     case 'dashboard':
     default:

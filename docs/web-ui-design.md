@@ -463,3 +463,127 @@ When the user switches to a different environment:
 5. `sessionStorage` is cleared (removes cached tokens)
 6. A new MSAL instance is initialized with the new environment's credentials
 7. The active tab is re-rendered
+
+---
+
+## 12. Gateway Tab (WEB-1000)
+
+> **Requirements:** WEB-1000, WEB-1001, WEB-1002, WEB-1003, WEB-1100,
+> WEB-1101, WEB-1102, WEB-1103
+
+### 12.1 Overview
+
+The Gateway tab provides two panels:
+- **Modem** — status display, channel selector, scan trigger
+- **Key Escrow** — fingerprint, lifecycle status, rotation wizard
+
+Data sources:
+- `actualstate` table, `PartitionKey = "gw:status"` — modem status from
+  gateway-scoped `ACTUAL_STATE`.
+- `gatewayescrow` table, `PartitionKey = "gateway"` — recovery public key
+  (RowKey `"pubkey"`), escrow state (RowKey `"state"`), and KDF salt
+  (RowKey `"salt"`).
+
+The `gatewayescrow` table name is added as a hardcoded CONFIG constant:
+`gatewayEscrowTable: 'gatewayescrow'`.
+
+### 12.2 Modem Status Panel (WEB-1001)
+
+Renders a status card with connection state, WiFi channel, and MAC address
+from the `gw:status` row. Auto-refreshes using the same `setAutoRefresh()`
+mechanism as the Dashboard. Shows "No modem data available" when no
+gateway-scoped row exists.
+
+### 12.3 Channel Set Control (WEB-1002)
+
+A form with a WiFi channel dropdown (1–14) and "Set Channel" button. On
+submit, sends `POST /api/admin/command` with
+`{"command": "set_channel", "params": {"channel": N}}` using a Function
+App-scoped bearer token. Shows success/error toast.
+
+### 12.4 Channel Scan Control (WEB-1003)
+
+A "Scan Channels" button that sends `POST /api/admin/command` with
+`{"command": "scan_channels"}`. Scan results (channel, RSSI, SSID)
+display in a table when available in the `gw:status` row's
+`scan_results` column (JSON-encoded array).
+
+### 12.5 Key Escrow Panel (WEB-1100)
+
+Contains fingerprint display, status summary, and rotation button.
+
+### 12.6 Fingerprint Display (WEB-1101)
+
+Reads the pubkey from `gatewayescrow` table (PartitionKey `"gateway"`,
+RowKey `"pubkey"`, column `public_key` base64-encoded 32 bytes). Computes
+a 6-word BIP-39 fingerprint client-side using the algorithm from
+evolve-887 §20.10: SHA-256 the public key, pack bytes 0–8 into a 72-bit
+integer, extract six 11-bit indices from the most-significant 66 bits.
+
+The BIP-39 English wordlist (2048 entries) is embedded as a JS array
+constant in `app.js`.
+
+### 12.7 Escrow Status Display (WEB-1102)
+
+Displays escrow lifecycle state and key version from the `gatewayescrow`
+table (RowKey `"state"`), and KDF parameters from (RowKey `"salt"`).
+Badge colors: `ready` → green, `bootstrapping`/`rotation_in_progress` →
+yellow, `degraded` → red, `disabled` → grey, missing → grey "Unknown".
+Warning banner shown when escrow state is not `ready`.
+
+### 12.8 Key Rotation Wizard (WEB-1103)
+
+A modal wizard triggered by "Rotate Key" button (disabled when pubkey or
+salt is missing). CDN dependencies: `argon2-browser` (Argon2id WASM) and
+`tweetnacl` (X25519). All CDN scripts use pinned versions.
+
+Wizard steps:
+1. **Verify fingerprint** — display 6-word fingerprint, require checkbox
+   confirmation.
+2. **Enter passphrase** — min 12 chars, confirmation must match.
+3. **Processing** — Argon2id KDF, X25519 key exchange, HKDF-SHA-256 key
+   derivation, AES-256-GCM encryption (via Web Crypto), send to
+   `POST /api/keys/rotate`.
+4. **Result** — success closes wizard; failure shows error with retry.
+
+Key material references are nulled after use (best-effort; JS cannot
+guarantee memory zeroization).
+
+---
+
+## 13. Program Remove (WEB-1200)
+
+> **Requirements:** WEB-1200
+
+The program list table gains a "Delete" column. Each row shows a 🗑️
+button that, on click:
+
+1. Checks if any `desiredstate` rows reference the program hash; if so,
+   includes a warning in the confirm dialog.
+2. Shows `confirm()` dialog.
+3. On confirm, sends `DELETE /api/programs/{hash}` with Function
+   App-scoped bearer token.
+4. On success, refreshes list and shows success toast.
+5. On error, shows error toast.
+
+---
+
+## 14. Node Actions (WEB-1300)
+
+> **Requirements:** WEB-1300, WEB-1301
+
+### 14.1 Reboot Button (WEB-1300)
+
+Each node row in the Dashboard table gains an "Actions" column with a
+"Reboot" button. On click: confirm dialog, then
+`POST /api/admin/command` with
+`{"command": "reboot_node", "params": {"node_id": "..."}}`. Shows
+success/error toast.
+
+### 14.2 Ephemeral Program Dispatch (WEB-1301)
+
+The Desired State form gains an optional "Ephemeral Program" dropdown
+filtered to programs with `verification_profile === 'ephemeral'`. When
+selected, the submitted desired-state entity includes
+`desired_ephemeral_program_hash`. The Azure handler includes CBOR key 3
+in `DESIRED_STATE` when this field is present.

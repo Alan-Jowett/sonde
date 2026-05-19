@@ -65,7 +65,7 @@ program ingestion.
 
 Each requirement uses the following fields:
 
-- **ID** — Unique identifier (`WEB-XXYY`).
+- **ID** — Unique identifier. Functional requirements use `WEB-XXYY` (e.g., `WEB-0101`); cross-cutting requirements use `WEB-CC-NN` (e.g., `WEB-CC-01`).
 - **Title** — Short name.
 - **Description** — What the SPA must do, using RFC 2119 keywords.
 - **Acceptance criteria** — Observable, testable conditions (AC-1, AC-2, …).
@@ -709,7 +709,7 @@ is delegated to EasyAuth, not Azure Functions runtime keys.
 
 **Acceptance criteria:**
 
-1. `ProgramIngest/function.json` specifies `authLevel: "anonymous"`.
+1. `crates/sonde-azure-handler/function-app/ProgramIngest/function.json` specifies `authLevel: "anonymous"`.
 
 ---
 

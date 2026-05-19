@@ -128,11 +128,11 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Send a valid WAKE.
-2. Capture the COMMAND response.
-3. Assert: response header `nonce` matches the WAKE nonce.
-4. Assert: CBOR payload contains `command_type`, `starting_seq`, and `timestamp_ms`.
-5. Assert: `timestamp_ms` is a reasonable UTC value (within 5 seconds of test clock).
-6. Assert: exactly one COMMAND is emitted for this WAKE (no duplicates).
+2. Capture all COMMAND responses for a bounded window (e.g., 500 ms) after the WAKE.
+3. Assert: exactly one COMMAND is received (no duplicates within the window).
+4. Assert: response header `nonce` matches the WAKE nonce.
+5. Assert: CBOR payload contains `command_type`, `starting_seq`, and `timestamp_ms`.
+6. Assert: `timestamp_ms` is a reasonable UTC value (within 5 seconds of test clock).
 7. Send a second WAKE with a different nonce.
 8. Assert: the `starting_seq` in the second COMMAND differs from the first (fresh random value).
 
@@ -1801,7 +1801,7 @@ A configurable stub handler process (or in-process mock) that:
 4. Assert: the connector client receives exactly one upstream actual-state/status message for that `WAKE`.
 5. Assert: the message contains the expected `node_id`, current and assigned program hashes, `schedule_interval_s`, `battery_mv`, `firmware_abi_version`, `firmware_version`, and a recent timestamp.
 6. Assert: the message is emitted only after the gateway has updated the node's latest-known status.
-7. Trigger a gateway-scoped status change that materially affects reconciliation (e.g., remove the assigned program for the node via admin API, or disconnect and reconnect the connector).
+7. While the connector session remains continuously connected, trigger a gateway-scoped status change that materially affects reconciliation (e.g., remove or change the node's assigned program or schedule interval via the admin API).
 8. Assert: the connector client receives an upstream status update reflecting the gateway-scoped change.
 
 ---

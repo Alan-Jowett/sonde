@@ -2420,12 +2420,12 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1217  Key hint mismatch rejected
+### T-1217  Key hint consistency check
 
 **Validates:** GW-1217
 
 **Procedure:**
-1. Construct a `PEER_REQUEST` where the frame header `key_hint` differs from the `node_key_hint` in the CBOR payload.
+1. Construct a `PEER_REQUEST` whose CBOR `node_key_hint` does **not** match `SHA-256(node_psk)[30..32]`.
 2. Submit the frame.
 3. Assert: the gateway silently discards the frame.
 
@@ -2622,10 +2622,10 @@ A configurable stub handler process (or in-process mock) that:
 1. Complete modem startup.
 2. Using a BLE test client, scan for the modem and connect to its GATT server.
 3. Discover services and assert: the Gateway Pairing Service UUID matches the value specified for GW-1204 in `ble-pairing-protocol.md`.
-4. Within the Gateway Pairing Service, discover characteristics and assert: the request/command and indication/response characteristic UUIDs match the values specified for GW-1204.
+4. Within the Gateway Pairing Service, discover characteristics and assert: the Gateway Command characteristic UUID matches the value specified for GW-1204 and supports both Write and Indicate operations.
 5. Open a BLE pairing session via the admin API.
-6. Mock modem: inject a `BLE_RECV` message containing a `REGISTER_PHONE` command on the request characteristic.
-7. Assert: gateway processes the command and sends a `BLE_INDICATE` message to the modem on the indication characteristic containing a valid `PHONE_REGISTERED` response.
+6. Mock modem: inject a `BLE_RECV` message containing a `REGISTER_PHONE` command on the Gateway Command characteristic.
+7. Assert: gateway processes the command and sends a `BLE_INDICATE` message to the modem on the same Gateway Command characteristic containing a valid `PHONE_REGISTERED` response.
 8. Decode the indication payload and verify it contains `phone_key_hint`.
 
 ---

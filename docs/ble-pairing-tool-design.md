@@ -427,13 +427,15 @@ The transport guarantees cleanup on all paths:
 
 ### 5.6  LESC enforcement
 
-After connecting, both `pair_with_gateway()` (Phase 1) and `provision_node()` (Phase 2) call `enforce_lesc()` to verify that the BLE pairing method meets security requirements (PT-0904, PT-0106).  Both phases connect to the **modem** (which supports LESC Numeric Comparison), not directly to the node.  The function queries `BleTransport::pairing_method()`:
+After connecting, `pair_with_gateway()` (Phase 1) calls `enforce_lesc()` to verify that the BLE pairing method meets security requirements (PT-0904, PT-0106).  Phase 1 connects to the **modem**, which supports LESC Numeric Comparison.  The function queries `BleTransport::pairing_method()`:
 
 - **`NumericComparison`** — accepted (LESC Numeric Comparison confirmed).
 - **`None` (not observable)** — accepted (the OS enforced pairing; the transport cannot distinguish the method).
 - **`JustWorks`** or **`Unknown`** — rejected.  The transport is immediately disconnected and `PairingError::InsecurePairingMethod` is returned.
 
 This check runs before any protocol messages are exchanged, ensuring that an insecure BLE link is never used to transmit key material.
+
+`provision_node()` (Phase 2) does **not** call `enforce_lesc()`.  Phase 2 connects directly to the **node**, which uses LESC Just Works (ND-0904) because nodes are headless devices with no display or input for Numeric Comparison.  LESC Just Works still provides link-layer encryption but does not protect against active MITM — this residual risk is accepted for headless nodes per the protocol spec (ble-pairing-protocol.md §8.2).
 
 ### 5.7  Mock BLE transport
 

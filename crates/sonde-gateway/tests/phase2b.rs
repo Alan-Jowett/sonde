@@ -1301,3 +1301,157 @@ async fn t0607a_wake_retry_preserves_chunked_transfer_end_to_end() {
         "expected log message about WAKE retry reuse"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  T-09xx: Lost PROGRAM_ACK recovery (#961)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// T-0900: When a node's WAKE-reported program hash matches the assigned
+/// hash but differs from the stored `current_program_hash`, the gateway
+/// must reconcile the stored hash (lost PROGRAM_ACK recovery).
+#[tokio::test]
+#[traced_test]
+async fn t0900_wake_reconciles_current_program_hash_on_lost_ack() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let node = TestNode::new("node-900", 0x0900, [0x90; 32]);
+    let old_hash = store_test_program(&storage, b"old-program").await;
+    let new_hash = store_test_program(&storage, b"new-program").await;
+
+    let mut record = node.to_record();
+    record.assigned_program_hash = Some(new_hash.clone());
+    // Simulate a lost PROGRAM_ACK: current is still the old hash.
+    record.current_program_hash = Some(old_hash.clone());
+    storage.upsert_node(&record).await.unwrap();
+
+    // Node sends WAKE reporting the NEW (assigned) hash — it installed the
+    // program but the ACK was lost.
+    let (_, _, payload) = do_wake(&gw, &node, 1, &new_hash).await;
+    assert!(
+        matches!(payload, CommandPayload::Nop),
+        "should be Nop since WAKE hash == assigned hash"
+    );
+
+    // Verify the stored record was reconciled.
+    let stored = storage.get_node("node-900").await.unwrap().unwrap();
+    assert_eq!(
+        stored.current_program_hash.as_deref(),
+        Some(new_hash.as_slice()),
+        "current_program_hash must be reconciled to the assigned hash"
+    );
+
+    assert!(
+        logs_contain("WAKE reconciliation"),
+        "expected log message about WAKE reconciliation"
+    );
+}
+
+/// T-0901: When the WAKE-reported hash does NOT match the assigned hash,
+/// reconciliation must not occur — only a full chunked transfer + ACK
+/// should update `current_program_hash`.
+#[tokio::test]
+async fn t0901_wake_does_not_reconcile_mismatched_hash() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let node = TestNode::new("node-901", 0x0901, [0x91; 32]);
+    let assigned_hash = store_test_program(&storage, b"assigned-901").await;
+    let stale_hash = vec![0x42u8; 32];
+
+    let mut record = node.to_record();
+    record.assigned_program_hash = Some(assigned_hash.clone());
+    record.current_program_hash = None;
+    storage.upsert_node(&record).await.unwrap();
+
+    // Node sends WAKE with the stale hash (not the assigned hash).
+    let (_, _, payload) = do_wake(&gw, &node, 1, &stale_hash).await;
+    assert!(
+        matches!(payload, CommandPayload::UpdateProgram { .. }),
+        "should trigger UpdateProgram since WAKE hash != assigned hash"
+    );
+
+    // current_program_hash must NOT be set.
+    let stored = storage.get_node("node-901").await.unwrap().unwrap();
+    assert_eq!(
+        stored.current_program_hash, None,
+        "current_program_hash must not be set when WAKE hash does not match assigned hash"
+    );
+}
+
+/// T-0902: When `current_program_hash` is None and the WAKE hash matches
+/// the assigned hash, reconciliation sets it (first-boot scenario).
+#[tokio::test]
+async fn t0902_wake_reconciles_from_none() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let node = TestNode::new("node-902", 0x0902, [0x92; 32]);
+    let program_hash = store_test_program(&storage, b"first-boot").await;
+
+    let mut record = node.to_record();
+    record.assigned_program_hash = Some(program_hash.clone());
+    record.current_program_hash = None;
+    storage.upsert_node(&record).await.unwrap();
+
+    // Node sends WAKE with the assigned hash.
+    let (_, _, payload) = do_wake(&gw, &node, 1, &program_hash).await;
+    assert!(matches!(payload, CommandPayload::Nop));
+
+    let stored = storage.get_node("node-902").await.unwrap().unwrap();
+    assert_eq!(
+        stored.current_program_hash.as_deref(),
+        Some(program_hash.as_slice()),
+        "current_program_hash must be set from None when WAKE hash matches assigned"
+    );
+}
+
+/// T-0903: Reconciliation preserves firmware metadata that was updated
+/// in the same WAKE cycle (narrow update must not clobber other fields).
+#[tokio::test]
+async fn t0903_reconciliation_preserves_firmware_metadata() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let node = TestNode::new("node-903", 0x0903, [0x93; 32]);
+    let program_hash = store_test_program(&storage, b"metadata-test").await;
+
+    let mut record = node.to_record();
+    record.assigned_program_hash = Some(program_hash.clone());
+    record.current_program_hash = None;
+    record.firmware_abi_version = Some(1);
+    record.firmware_version = Some("0.1.0".to_string());
+    storage.upsert_node(&record).await.unwrap();
+
+    // WAKE with abi_version=5 and the assigned hash.
+    let frame = node.build_wake(1, 5, &program_hash, 3500);
+    let resp = gw
+        .process_frame(&frame, node.peer_address())
+        .await
+        .expect("expected COMMAND response");
+    let (_, msg) = decode_response(&resp, &node.psk);
+    assert!(matches!(
+        msg,
+        GatewayMessage::Command {
+            payload: CommandPayload::Nop,
+            ..
+        }
+    ));
+
+    let stored = storage.get_node("node-903").await.unwrap().unwrap();
+    assert_eq!(
+        stored.current_program_hash.as_deref(),
+        Some(program_hash.as_slice()),
+        "current_program_hash must be reconciled"
+    );
+    assert_eq!(
+        stored.firmware_abi_version,
+        Some(5),
+        "firmware_abi_version must not be clobbered by reconciliation"
+    );
+    assert_eq!(
+        stored.firmware_version.as_deref(),
+        Some(TEST_FIRMWARE_VERSION),
+        "firmware_version must not be clobbered by reconciliation"
+    );
+}

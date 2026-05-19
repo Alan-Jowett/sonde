@@ -1032,6 +1032,56 @@ impl Gateway {
             "COMMAND selected"
         );
 
+        // ── Lost-PROGRAM_ACK recovery (#961) ────────────────────────────
+        //
+        // If the node reports a program hash in its WAKE that matches the
+        // assigned hash but differs from the stored `current_program_hash`,
+        // the most likely explanation is a lost PROGRAM_ACK: the node
+        // installed the program successfully but the ACK was dropped over
+        // the radio.  Reconcile the stored hash so that downstream paths
+        // (decoder enrichment, handler routing) use the correct program.
+        //
+        // The conditional storage update is atomic: it only writes
+        // `current_program_hash` if `assigned_program_hash` still equals
+        // the WAKE-reported hash, preventing clobber of concurrent
+        // reassignments.
+        if let Some(assigned) = &node.assigned_program_hash {
+            if assigned.as_slice() == program_hash.as_slice()
+                && node.current_program_hash.as_deref() != Some(program_hash.as_slice())
+            {
+                match self
+                    .storage
+                    .reconcile_current_program_hash(&node.node_id, &program_hash)
+                    .await
+                {
+                    Ok(true) => {
+                        let ph_hex: String =
+                            program_hash.iter().map(|b| format!("{b:02x}")).collect();
+                        info!(
+                            node_id = %node.node_id,
+                            program_hash = %ph_hex,
+                            "WAKE reconciliation: node reports assigned program \
+                             — updated `current_program_hash` (lost PROGRAM_ACK recovery)"
+                        );
+                    }
+                    Ok(false) => {
+                        debug!(
+                            node_id = %node.node_id,
+                            "WAKE reconciliation skipped: condition no longer holds \
+                             (concurrent reassignment or already reconciled)"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            node_id = %node.node_id,
+                            error = %e,
+                            "WAKE reconciliation: failed to persist current_program_hash"
+                        );
+                    }
+                }
+            }
+        }
+
         // 6. Encode GatewayMessage::Command response
         // Peek at deferred reply for NOP commands; remove only after successful AEAD.
         let command_blob = if matches!(command_payload, CommandPayload::Nop) {

@@ -1158,6 +1158,44 @@ impl Storage for SqliteStorage {
         .await
     }
 
+    async fn reconcile_current_program_hash(
+        &self,
+        node_id: &str,
+        program_hash: &[u8],
+    ) -> Result<bool, StorageError> {
+        let node_id = node_id.to_string();
+        let program_hash = program_hash.to_vec();
+        self.with_conn(move |conn| {
+            let rows = conn
+                .execute(
+                    "UPDATE nodes
+                     SET current_program_hash = ?1
+                     WHERE node_id = ?2
+                       AND assigned_program_hash = ?1
+                       AND (current_program_hash IS NOT ?1)",
+                    params![program_hash, node_id],
+                )
+                .map_err(map_err)?;
+            if rows > 0 {
+                return Ok(true);
+            }
+            let exists = conn
+                .query_row(
+                    "SELECT 1 FROM nodes WHERE node_id = ?1",
+                    params![node_id],
+                    |_row| Ok(()),
+                )
+                .optional()
+                .map_err(map_err)?;
+            if exists.is_some() {
+                Ok(false)
+            } else {
+                Err(StorageError::NotFound(format!("node `{node_id}`")))
+            }
+        })
+        .await
+    }
+
     // ── Program library ────────────────────────────────────────
 
     async fn get_program(&self, hash: &[u8]) -> Result<Option<ProgramRecord>, StorageError> {

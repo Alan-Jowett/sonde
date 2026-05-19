@@ -128,14 +128,14 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Send a valid WAKE.
-2. Capture all COMMAND responses for a bounded window (e.g., 500 ms) after the WAKE.
-3. Assert: exactly one COMMAND is received (no duplicates within the window).
+2. Capture all COMMAND responses until the wake cycle ends (i.e., until the next WAKE is sent or the session is torn down).
+3. Assert: exactly one COMMAND is received for this WAKE (no duplicates).
 4. Assert: response header `nonce` matches the WAKE nonce.
 5. Assert: CBOR payload contains `command_type`, `starting_seq`, and `timestamp_ms`.
 6. Assert: `timestamp_ms` is a reasonable UTC value (within 5 seconds of test clock).
 7. Send at least 4 additional WAKEs, each with a distinct nonce, collecting all `starting_seq` values.
-8. Assert: the collected `starting_seq` values are not monotonically increasing or decreasing (rules out simple counters).
-9. Assert: no two `starting_seq` values are identical (fresh value each time).
+8. Assert: no two `starting_seq` values are identical (fresh value each time).
+9. Assert: the consecutive deltas between `starting_seq` values are not all equal (rules out simple incrementing counters).
 
 ---
 

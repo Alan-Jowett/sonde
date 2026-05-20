@@ -6,9 +6,10 @@
 > **Status:** Draft — Phase 2 specification changes
 > **Supersedes:** Escrow sections of evolve-887-specification.md (§§20.1–20.12,
 > §§2.2–2.4, §§3.1, §§4.1, §§5.1, §§6.1, §§7 T-2000–T-2009, §§8).
-> Also supersedes: `gateway-companion-api.md` §3.2 line 156 and §3.3
-> line 206 (empty `entity_id` for gateway); `gateway-requirements.md`
-> GW-0811 (`entity_id` ignored for gateway-scoped state).
+> Also supersedes: `gateway-companion-api.md` §3.2 and §3.3 ACTUAL_STATE /
+> DESIRED_STATE `entity_id` rules (empty string for gateway);
+> `gateway-requirements.md` GW-0811 (`entity_id` ignored for gateway-scoped
+> state).
 > **Pending companion patches:** The superseded sections in
 > `gateway-companion-api.md` and `gateway-requirements.md` are not
 > updated in this PR. Those documents remain intentionally stale until
@@ -118,11 +119,12 @@ INSERT OR REPLACE INTO gateway_config (key, value) VALUES ('rotation_code', ?);
 ### 2.4  Gateway ACTUAL_STATE (replaces §20.4, §20.5 status_details)
 
 The gateway becomes a first-class entity in the ACTUAL_STATE model. Entity
-kind is `"gateway"`, entity ID is `hex(gateway_id)` (16-byte random ID from
-`GatewayIdentity`).
+kind is `"gateway"`, entity ID is `hex(gateway_id)` — lowercase hex encoding
+of the raw 16-byte `gateway_id`, no `0x` prefix (e.g.,
+`"a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8"`).
 
-**Note:** This supersedes `gateway-companion-api.md` §3.2 line 156 and
-§3.3 line 206, which mandate `entity_id = ""` for `entity_kind = "gateway"`.
+**Note:** This supersedes `gateway-companion-api.md` §3.2 and §3.3
+ACTUAL_STATE / DESIRED_STATE `entity_id` rules (empty string for gateway).
 It also supersedes `gateway-requirements.md` GW-0811, which states that
 gateway-scoped state ignores `entity_id`. With this spec, gateway
 `entity_id` carries the hex-encoded `gateway_id` to distinguish multiple
@@ -168,6 +170,15 @@ Keys 1–11 retain their existing meanings for node/phone ACTUAL_STATE.
 Keys 12–14 are redefined by this spec for escrow (see §2.7): key 12
 becomes `encrypted_psk`, key 13 becomes `escrow_key_hint`, key 14
 becomes `master_key_id` (replacing the previous `escrow_key_version`).
+
+**Note on `master_key_id` key allocation:** Node/phone ACTUAL_STATE uses
+CBOR key 14 for `master_key_id` (identifies which key encrypted that
+entity's PSK). Gateway ACTUAL_STATE uses CBOR key 16 for `master_key_id`
+(the gateway's current key). These are semantically the same identifier
+but appear at different keys because keys 12–14 are the node/phone escrow
+tuple (`encrypted_psk`, `escrow_key_hint`, `master_key_id`) while keys
+15–27 are the gateway state block. Decoders dispatch on `entity_kind`
+to select the correct key.
 
 ### 2.5  Gateway DESIRED_STATE (new)
 
@@ -453,6 +464,10 @@ recovered_psk_record = {
           PRIMARY KEY (key_hint, node_id)
       );
       ```
+      The `master_key_epoch` is set to the gateway's current
+      `master_key_epoch` at insertion time (the `recovered_psk_record`
+      does not carry an epoch — it is implicit from the `master_key_id`
+      match verified in step 1a).
 2. On next frame with matching `key_hint`:
    a. Look up candidates in `pending_recovery`.
    b. For each candidate, decrypt `encrypted_psk` with the gateway's

@@ -277,14 +277,13 @@ confirmation step. The event loop works as follows:
 4. **Loop exit** — the event loop terminates when `WindowClosed` is received
    or the stream ends. The CLI exits with code 0 on normal completion.
 
-This subcommand is exempt from `--format json` because the interactive
-passkey confirmation requires TTY access. Although `--format` is a global
-flag accepted by clap, the `pairing start` handler ignores it and always
-produces text output. The current implementation does not detect non-TTY
-stdin; `read_line()` will consume piped input if available (e.g.,
-`echo y | sonde-admin …` accepts the pairing). If stdin is at EOF or the
-pipe provides no data, the read returns an empty line and the CLI sends
-`accept: false`.
+This subcommand always produces text output because it uses an interactive
+stderr prompt for passkey confirmation. Although `--format` is a global flag
+accepted by clap, the `pairing start` handler ignores it. The current
+implementation does not detect non-TTY stdin; `read_line()` will consume
+piped input if available (e.g., `echo y | sonde-admin …` accepts the
+pairing). If stdin is at EOF or the pipe provides no data, the read returns
+an empty line and the CLI sends `accept: false`.
 
 ---
 

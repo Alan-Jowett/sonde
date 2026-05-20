@@ -781,7 +781,9 @@ to avoid collisions when tests run in parallel.
 10. Unset `SONDE_PASSPHRASE` and invoke with stdin piped (not a TTY) and
     without `--passphrase`.
 11. Assert: exit code is non-zero.
-12. Assert: stderr indicates that a passphrase is required (no TTY available).
+12. Assert: exit code is non-zero and stderr contains an error from the
+    passphrase resolution path (e.g., `rpassword` failure or empty-passphrase
+    rejection).
 
 ---
 

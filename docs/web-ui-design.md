@@ -342,8 +342,9 @@ separate line on a time-series chart. The X-axis is time (derived from
   the admin selects which to display via the series selector.
 - Maximum 1000 rows per query (`$top=1000`). For longer time ranges,
   the SPA downsamples client-side: fetch up to 1000 rows for the
-  requested window, then thin the data points to a displayable density
-  (e.g., pick one point per pixel or per time bucket).
+  requested window, then downsample to a maximum of 500 points per
+  series (e.g., divide the time range into 500 equal buckets and
+  pick one representative point per bucket).
 - Int64 values exceeding `Number.MAX_SAFE_INTEGER` (2^53 - 1) are displayed
   as strings. The Azure handler encodes such values as JSON strings in the
   `decoded_readings` column (see AZH-0501 AC-5). The SPA MUST handle both
@@ -464,3 +465,64 @@ When the user switches to a different environment:
 5. MSAL-related `sessionStorage` keys are cleared (keys starting with `msal.` or containing `.login.` or `.acquireToken.`) — other session data is preserved
 6. A new MSAL instance is initialized with the new environment's credentials
 7. The active tab is re-rendered
+
+---
+
+## 12. Cross-Cutting Concerns
+
+### 12.1 HTML Output Escaping (WEB-CC-02)
+
+All user-supplied and server-sourced values rendered into HTML MUST pass
+through an `escapeHtml()` function before insertion. The function replaces
+the following five characters with their HTML entity equivalents:
+
+| Character | Entity |
+|-----------|--------|
+| `&` | `&amp;` |
+| `<` | `&lt;` |
+| `>` | `&gt;` |
+| `"` | `&quot;` |
+| `'` | `&#39;` |
+
+Replacement MUST be applied in the order shown (ampersand first) to avoid
+double-encoding. Every code path that builds HTML from dynamic values —
+including table cells, tooltips, modal content, and status indicators —
+MUST route through `escapeHtml()`. Raw string interpolation into `innerHTML`
+is prohibited for any value originating from Azure Table responses, URL
+parameters, or user input fields.
+
+### 12.2 MSAL Hash Routing Compatibility (WEB-CC-03)
+
+The SPA uses URL hash fragments for tab routing (e.g., `#dashboard`,
+`#programs`). MSAL.js also uses hash fragments for authorization code
+responses (e.g., `#code=…`). To prevent conflicts:
+
+1. **Before MSAL init:** If the current URL hash does not contain
+   MSAL-related tokens (`code=`, `error=`, `access_token=`), the hash is
+   temporarily saved and cleared via `history.replaceState()` so MSAL does
+   not misinterpret a routing hash as an auth response.
+2. **After MSAL processes the redirect:** The saved routing hash is restored
+   via `history.replaceState()` (not `window.location.hash`, which would
+   add a spurious history entry).
+3. **Auth hashes** (containing `code=`, `error=`, or `access_token=`) are
+   left intact for MSAL to consume.
+
+### 12.3 Popup Window Detection (WEB-CC-04)
+
+When MSAL.js opens a popup for interactive login, the SPA is loaded again
+inside the popup window. To avoid unnecessary API calls and duplicate
+rendering in the popup:
+
+- At `DOMContentLoaded`, the SPA checks `window.opener && window.opener !== window`.
+- If the check is true, the SPA skips calling `init()` entirely — no MSAL
+  initialization, no table queries, no UI rendering.
+- The popup page exists solely to receive the auth redirect and relay the
+  result back to the parent window via MSAL's internal messaging.
+
+---
+
+## 13. Revision History
+
+| Date | Author | Description |
+|------|--------|-------------|
+| 2026-05-19 | Trifecta remediation (#1012) | Added §12 (cross-cutting concerns: HTML escaping, MSAL hash routing, popup detection). Fixed §10.2 downsample cap to 500 points per series. |

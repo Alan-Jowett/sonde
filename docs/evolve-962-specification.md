@@ -9,6 +9,11 @@
 > Also supersedes: `gateway-companion-api.md` §3.2 line 156 and §3.3
 > line 206 (empty `entity_id` for gateway); `gateway-requirements.md`
 > GW-0811 (`entity_id` ignored for gateway-scoped state).
+> **Pending companion patches:** The superseded sections in
+> `gateway-companion-api.md` and `gateway-requirements.md` are not
+> updated in this PR. Those documents remain intentionally stale until
+> implementation begins; they will be patched in the same PR that
+> implements the gateway ACTUAL_STATE/DESIRED_STATE changes.
 > **Scope:** Simplify escrow architecture — eliminate imperative connector
 > messages, unify gateway identity, add rotation-code authentication, treat
 > gateway as first-class ACTUAL_STATE/DESIRED_STATE entity.
@@ -135,6 +140,15 @@ Gateway ACTUAL_STATE is emitted:
 | `entity_kind` | 2 | tstr | `"gateway"` |
 | `entity_id` | 3 | tstr | `hex(gateway_id)` |
 | `timestamp_ms` | 9 | uint | Current time (Unix ms) |
+
+**Common ACTUAL_STATE keys 4–8, 10–11:** For `entity_kind = "gateway"`,
+keys 4 (`current_program_hash`), 5 (`assigned_program_hash`),
+6 (`schedule_interval_s`), 7 (`battery_mv`), 8 (`firmware_abi_version`),
+10 (`status_details`), and 11 (`schedule_interval_s`) are node-specific
+and MUST be omitted (not encoded as null). Encoders MUST NOT include
+them; decoders MUST tolerate their absence. Key 9 (`timestamp_ms`) is
+shared and required for all entity kinds.
+
 | `channel` | 15 | uint | ESP-NOW channel |
 | `master_key_id` | 16 | bstr (16 bytes) | Opaque master key identifier |
 | `master_key_epoch` | 17 | uint | Monotonic master key epoch |
@@ -279,7 +293,11 @@ When the gateway receives a valid rotation payload, it:
        phase              TEXT    NOT NULL DEFAULT 'migrating_psks'
    );
    ```
-   The new master key is encrypted with the OLD master key for crash safety.
+   The new master key is encrypted with the OLD master key for crash safety,
+   using the same `encrypt_psk` pattern: `AES-256-GCM(old_master_key,
+   random_nonce_12B, new_master_key_32B, aad=b"sonde-pending-rotation")`.
+   The resulting `new_master_key_enc` blob is 60 bytes (12B nonce + 32B
+   ciphertext + 16B GCM tag).
    Phase values: `migrating_psks` → `rewrapping_identity` → `committing`.
    `new_epoch` is derived as `current_master_key_epoch + 1`. The gateway
    rejects the rotation if `new_epoch` does not equal the epoch bound into
@@ -456,11 +474,14 @@ recovered_psk_record = {
 Insert after step 2 (Initialize storage backend):
 
 > 2a. Check if `pending_rotation` exists. If so, resume rotation
->     (§2.6.2 crash recovery) before loading identity — this ensures
->     any interrupted rotation completes with the old master key.
+>     (§2.6.2 crash recovery). For phase `migrating_psks`, recovery
+>     proceeds without needing `GatewayIdentity` (only PSK records are
+>     touched). For phases `rewrapping_identity` and `committing`,
+>     recovery first loads `GatewayIdentity` using the current (old)
+>     master key (which is safe — see §2.6.2 key invariant), then
+>     completes the remaining steps.
 > 2b. Load `GatewayIdentity`. Derive X25519 public key via `to_x25519()`.
->     (Identity is always decryptable with the current master key — see
->     §2.6.2 key invariant.)
+>     (If already loaded during step 2a recovery, reuse the cached value.)
 > 2c. Load `master_key_id` and `master_key_epoch` from `gateway_config`.
 >     If absent (first start), generate random 16-byte `master_key_id`,
 >     set `master_key_epoch = 1`, backfill all existing PSK records,

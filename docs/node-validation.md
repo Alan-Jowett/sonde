@@ -1880,10 +1880,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0918 (AC2)
 
 **Procedure:**
-1. Boot the node with `CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384` (per sdkconfig.defaults).
+1. Boot the node with `CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576` (per sdkconfig.defaults; ND-0918 requires at least 16 KB).
 2. Run a full wake cycle including WAKE, COMMAND, BPF execution, and deep-sleep entry.
 3. Assert: the wake cycle completes without a stack overflow panic.
-4. Assert: high-water-mark stack usage is logged or observable (remains below 16384).
+4. Assert: high-water-mark stack usage is logged or observable (remains below 24576).
 
 > **Note:** This test requires target hardware. Host-based tests use stack configurations that differ from ESP-IDF.
 
@@ -1908,7 +1908,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Open `crates/sonde-node/sdkconfig.defaults`.
-2. Assert: the file contains `CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384` (or a value ≥ 16384).
+2. Assert: the file contains `CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576` (or a value ≥ 16384, per ND-0918).
 
 > **Note:** This is a static inspection test, not a runtime test. It verifies the build configuration prerequisite for T-N918a and T-N918b.
 

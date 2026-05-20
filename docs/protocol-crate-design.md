@@ -470,7 +470,7 @@ pub fn program_hash(image_cbor: &[u8], sha: &impl Sha256Provider) -> [u8; 32] {
 }
 ```
 
-Gateway uses RustCrypto `sha2`; node uses ESP-IDF hardware SHA.
+Gateway and node both use RustCrypto `sha2` (software SHA-256). The `Sha256Provider` trait allows platform-specific backends (e.g., ESP-IDF hardware SHA) to be substituted without changing protocol logic.
 
 ---
 

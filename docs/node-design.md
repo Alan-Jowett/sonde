@@ -33,7 +33,7 @@ The firmware is **uniform across all nodes** — application behavior is defined
 | BPF interpreter | `sonde-bpf` — custom RFC 9669 interpreter with tagged registers and zero heap allocation |
 | CBOR | Via `sonde-protocol` (`ciborium`) | serde-compatible; matches protocol crate implementation |
 | AES-256-GCM | RustCrypto `aes-gcm` crate (pure-Rust, `no_std`) (implements `sonde-protocol::AeadProvider` trait) | Pure-Rust AES-256-GCM; `no_std`-compatible, implements `AeadProvider` trait |
-| SHA-256 | ESP-IDF hardware SHA peripheral | Hardware-accelerated; used for program hash verification |
+| SHA-256 | `sha2` RustCrypto crate (software) | Pure-Rust SHA-256; used for program hash verification. Hardware acceleration via ESP-IDF peripheral is possible but not currently used — program updates are infrequent so software hashing is acceptable. |
 | RNG | ESP-IDF hardware TRNG | True random number generator; used for WAKE nonce |
 | Toolchain | Upstream Rust (C3) / `espup` (S3) | C3 is RISC-V (upstream); S3 is Xtensa (custom toolchain) |
 
@@ -355,6 +355,27 @@ pub enum BpfError {
 
 This trait is defined in the node firmware (not in `sonde-protocol`, since the gateway does not execute BPF). The `sonde-node` crate provides an adapter backed by `sonde-bpf`.
 
+The adapter internally wraps each registered helper as a `HelperDescriptor` (defined in `sonde-bpf`) which pairs the helper function with **return-type metadata**:
+
+```rust
+pub enum HelperReturn {
+    /// Helper returns a plain scalar (integer) value.
+    Scalar,
+    /// Helper returns a pointer into a map value (or null).
+    /// `map_arg` identifies which argument register carries the map pointer
+    /// (1-indexed), enabling the interpreter to derive pointer provenance.
+    MapValueOrNull { map_arg: u8 },
+}
+
+pub struct HelperDescriptor {
+    pub id: u32,
+    pub func: HelperFn,
+    pub ret: HelperReturn,
+}
+```
+
+This return-type tracking enables the `sonde-bpf` tagged register system to maintain pointer provenance across helper calls — when `map_lookup_elem` (helper 10) returns a non-null value, the interpreter tags the result register as a bounded map-value pointer, enabling safe bounds checking on subsequent memory accesses.
+
 The interpreter runs in bounded mode — an instruction counter enforces the instruction budget. If the budget is exceeded, execution is terminated and the program returns an error.
 
 ### 8.2  Helper registration
@@ -619,11 +640,13 @@ All inbound protocol errors result in **silent discard** — the node does not s
 | Flash (program) | 8 KB (2 × 4 KB) | — | 4 KB per program image |
 | BPF stack | 4 KB | — | 512 B × 8 frames |
 | Ephemeral program | — | — | Allocated from heap (≤ 2 KB) |
-| Main task stack (ND-0918) | 16 KB | — | `CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384` |
+| Main task stack (ND-0918) | 24 KB | — | `CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576`. ND-0918 requires at least 16 KB; 24 KB provides headroom for the BLE stack (NimBLE host + GATT server), PEER_REQUEST path, NVS, and BPF interpreter. |
 
 ---
 
 ## 14  Boot sequence
+
+The `sonde-node` crate contains a library (`src/lib.rs`) plus a firmware binary target at `src/bin/node.rs`. The Rust `fn main()` in that binary performs ESP-IDF setup, boot-mode selection, and the wake cycle launch. The `esp-idf-sys`/`esp-idf-svc` `binstart` feature provides the ESP-IDF startup bridge so the C `app_main()` entry invokes the Rust binary entry point. Build with `cargo +esp build -p sonde-node --bin node --features esp`.
 
 1. ESP-IDF initialization (clocks, peripherals, wifi/ESP-NOW).
 2. Task watchdog timer is configured and the main task is registered (ND-0919): `CONFIG_ESP_TASK_WDT_EN=y`, 20 s timeout, panic-on-expiry. The main task calls `esp_task_wdt_add()` at startup and `esp_task_wdt_delete()` after the wake cycle completes. If the wake cycle hangs, the watchdog triggers a hardware reset. For long-running modes (BLE pairing), the polling loop calls `esp_task_wdt_reset()` on each iteration to prevent spurious resets while still detecting hangs within a single 20 s polling window.

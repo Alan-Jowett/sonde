@@ -88,16 +88,17 @@ The wake cycle engine is the central state machine. It runs once per wake and th
 
 ### 4.1  State machine
 
-The state machine has five main states plus three alternate boot paths. Starting from BOOT, the node checks RTC-retained pre-provisioning test state, then reads credentials from NVS (§6.1) and the `reg_complete` flag (§6.1a) to determine the boot path (ND-0900): (1) staged pre-provisioning test command present → enter pre-provisioning test mode (§15.8); (2) no PSK in NVS or pairing button held ≥ 500 ms → enter BLE pairing mode (§15); (3) PSK present but `reg_complete` not set → enter PEER_REQUEST registration (§15.7); (4) PSK present and `reg_complete` set → enter WAKE SEND. WAKE SEND transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
+The state machine has five main states plus three alternate boot paths. Starting from BOOT, the node samples the pairing button GPIO for 500 ms (ND-0901). If the button is held and a PSK is present, the node performs an immediate factory reset (ND-0402, ND-0917) — erasing all credentials, programs, maps, schedule, and BLE artifacts — then enters BLE pairing mode as an unpaired node. Otherwise, the node checks RTC-retained pre-provisioning test state, then reads credentials from NVS (§6.1) and the `reg_complete` flag (§6.1a) to determine the boot path (ND-0900): (1) staged pre-provisioning test command present → enter pre-provisioning test mode (§15.8); (2) no PSK in NVS → enter BLE pairing mode (§15); (3) PSK present but `reg_complete` not set → enter PEER_REQUEST registration (§15.7); (4) PSK present and `reg_complete` set → enter WAKE SEND. WAKE SEND transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
 
 ```
 ┌─────────┐
 │  BOOT   │
 └────┬────┘
-     │ check PSK + reg_complete (ND-0900)
+     │ sample button, check PSK + reg_complete (ND-0900)
      │
+     ├── button held + PSK → factory reset (ND-0917) → BLE pairing mode (§15)
      ├── staged test command  → pre-provisioning test mode (§15.8)
-     ├── no PSK OR button held → BLE pairing mode (§15)
+     ├── no PSK              → BLE pairing mode (§15)
      ├── PSK + no reg_complete → PEER_REQUEST (§15.7)
      │
      ▼ PSK + reg_complete
@@ -130,7 +131,7 @@ The state machine has five main states plus three alternate boot paths. Starting
 
 ### 4.2  Wake sequence (detailed)
 
-1. **Boot/wake**: Initialize hardware. Determine boot path per ND-0900: (1) staged test command → pre-provisioning test mode, (2) no PSK or button held → BLE pairing mode, (3) PSK + no `reg_complete` → PEER_REQUEST registration, (4) PSK + `reg_complete` → proceed to step 2.
+1. **Boot/wake**: Initialize hardware. Sample pairing button GPIO for 500 ms (ND-0901). Determine boot path per ND-0900: (1) button held + PSK present → factory reset (ND-0917), then BLE pairing mode as unpaired, (2) staged test command → pre-provisioning test mode, (3) no PSK → BLE pairing mode, (4) PSK + no `reg_complete` → PEER_REQUEST registration, (5) PSK + `reg_complete` → proceed to step 2.
 2. **Generate nonce**: Hardware RNG produces a 64-bit random nonce.
 3. **Drain async queue**: Check the async queue (§8.6) from the previous cycle. If exactly 1 message is queued and it fits in the WAKE payload budget, include it as `blob` (CBOR key 10) in the WAKE message. Otherwise, `blob` is omitted and the queue is left intact for overflow drain in step 7 (NOP only).
 4. **Send WAKE**: Construct WAKE frame (`firmware_abi_version`, `program_hash`, `battery_mv`, `firmware_version`, and optionally `blob`). The `firmware_version` string is derived from `CARGO_PKG_VERSION` at compile time. `battery_mv` comes from the RTC-retained reading captured on the previous wake; if no value has been captured yet, it is `0`. AEAD-encrypt with PSK. Transmit via ESP-NOW.
@@ -245,14 +246,17 @@ These features are optional (`SHOULD` priority). The firmware operates correctly
 
 ### 6.2  Factory reset
 
-Factory reset (ND-0402, ND-0917) erases:
+Factory reset (ND-0402, ND-0917) is triggered by holding the pairing button ≥ 500 ms during boot on a paired node. The reset is performed immediately at boot, before entering BLE pairing mode. It erases:
 1. NVS credential keys (`magic`, `key_hint`, `psk`, `channel`, `interval`, `active_p` → erased).
 2. NVS pairing keys (`peer_payload`, `reg_complete` → erased).
 3. RTC slow SRAM (map data → zeroed).
 4. Both program partitions (`program_a`, `program_b` → erased).
 5. Schedule partition → reset to default interval.
+6. RTC-retained pre-provisioning test state (staged command and latest result → cleared).
 
-After reset, the magic bytes are missing → firmware detects unpaired state → enters BLE pairing mode on next boot.
+The `board_layout` NVS key is NOT erased (the physical board layout does not change between re-provisionings).
+
+After reset, the PSK is missing → firmware enters BLE pairing mode as an unpaired node on the same boot (no additional reboot needed). If any reset step fails, the node logs the error and enters deep sleep (fail-closed).
 
 ---
 
@@ -656,9 +660,11 @@ The `sonde-node` crate contains a library (`src/lib.rs`) plus a firmware binary 
 3. Sample pairing button GPIO for 500 ms (ND-0901).
 4. Read NVS credentials (§6.1): check magic bytes and load PSK/key_hint/channel if present. Read `reg_complete` flag (§6.1a).
 5. Determine boot path (ND-0900):
-   a. No valid PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode (§15). Does not return.
-   b. PSK present in NVS, `reg_complete` NOT set → enter PEER_REQUEST registration (§15.7). Does not return (sleeps after listen window).
-   c. PSK present in NVS, `reg_complete` set → continue to step 6 (normal WAKE cycle).
+   a. Pairing button held ≥ 500 ms AND valid PSK in NVS → perform factory reset (§6.2, ND-0917), then enter BLE pairing mode (§15) as unpaired. Does not return.
+   b. Staged pre-provisioning test command in RTC state (unpaired only) → enter pre-provisioning test mode (§15.8). Does not return (reboots after test).
+   c. No valid PSK in NVS → enter BLE pairing mode (§15). Does not return.
+   d. PSK present in NVS, `reg_complete` NOT set → enter PEER_REQUEST registration (§15.7). Does not return (sleeps after listen window).
+   e. PSK present in NVS, `reg_complete` set → continue to step 6 (normal WAKE cycle).
 6. Read schedule partition: load base interval and active program partition flag.
 7. Read active program partition: decode CBOR image header, extract program hash.
    - No program → set `program_hash` to zero-length.
@@ -671,7 +677,7 @@ The `sonde-node` crate contains a library (`src/lib.rs`) plus a firmware binary 
 
 ## 15  BLE pairing mode
 
-When the node boots unpaired, or the pairing button is held during boot (ND-0900, ND-0901), the firmware enters BLE pairing mode instead of the wake cycle engine. The entry point is `run_ble_pairing_mode()` in the `esp_ble_pairing` module (compiled only with the `esp` feature).
+When the node boots unpaired (either naturally or after a boot-button factory reset per ND-0917), the firmware enters BLE pairing mode instead of the wake cycle engine. The entry point is `run_ble_pairing_mode()` in the `esp_ble_pairing` module (compiled only with the `esp` feature). The function takes no `button_held` parameter — if the boot button was held on a paired node, the factory reset has already been performed before this function is called, so the node is always in an unpaired state on entry.
 
 ### 15.1  NimBLE stack
 

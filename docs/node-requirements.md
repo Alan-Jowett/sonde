@@ -855,14 +855,15 @@ During chunked transfer, if the node receives a CHUNK response with a `chunk_ind
 **Source:** ble-pairing-protocol.md §8.1
 
 **Description:**  
-On boot the node MUST check, in order: (1) a pending pre-provisioning test command is staged in RTC-retained state → enter pre-provisioning test mode, (2) no PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode, (3) PSK stored and `reg_complete` flag NOT set → send PEER_REQUEST, (4) PSK stored and `reg_complete` flag set → normal WAKE cycle. The pre-provisioning test-mode path is only used for unpaired nodes and is entered before BLE pairing mode so the node never attempts to keep BLE and ESP-NOW active concurrently. (The `reg_complete` NVS key is defined in ND-0916.)
+On boot the node MUST check, in order: (1) pairing button held ≥ 500 ms AND PSK present → perform factory reset (ND-0402), then enter BLE pairing mode as an unpaired node, (2) a pending pre-provisioning test command is staged in RTC-retained state → enter pre-provisioning test mode, (3) no PSK in NVS → enter BLE pairing mode, (4) PSK stored and `reg_complete` flag NOT set → send PEER_REQUEST, (5) PSK stored and `reg_complete` flag set → normal WAKE cycle. The pre-provisioning test-mode path is only used for unpaired nodes and is entered before BLE pairing mode so the node never attempts to keep BLE and ESP-NOW active concurrently. (The `reg_complete` NVS key is defined in ND-0916.)
 
 **Acceptance criteria:**
 
-1. If a pending pre-provisioning test command is present at boot, the node enters pre-provisioning test mode before evaluating the BLE pairing and normal wake paths.
-2. BLE pairing mode is entered when no PSK exists or the pairing button is held and no pending pre-provisioning test command is present.
-3. PEER_REQUEST path is taken when PSK is stored but registration is incomplete and no pending pre-provisioning test command is present.
-4. Normal WAKE cycle is entered only when PSK is stored, registration is complete, and no pending pre-provisioning test command is present.
+1. If the pairing button is held ≥ 500 ms and a PSK is present, the node performs a factory reset (ND-0402) and enters BLE pairing mode as an unpaired node.
+2. If a pending pre-provisioning test command is present at boot (and no button-triggered reset occurred), the node enters pre-provisioning test mode before evaluating the BLE pairing and normal wake paths.
+3. BLE pairing mode is entered when no PSK exists (including after a button-triggered factory reset) and no pending pre-provisioning test command is present.
+4. PEER_REQUEST path is taken when PSK is stored but registration is incomplete and no pending pre-provisioning test command is present.
+5. Normal WAKE cycle is entered only when PSK is stored, registration is complete, and no pending pre-provisioning test command is present.
 
 ---
 
@@ -935,16 +936,15 @@ The node MUST negotiate an ATT MTU of at least 247 bytes and MUST accept BLE LES
 **Source:** ble-pairing-protocol.md §8.2, steps 4a–4c
 
 **Description:**  
-On a NODE_PROVISION write the node MUST parse the fields `node_key_hint` (2B), `node_psk` (32B), `rf_channel` (1B), `payload_len` (2B BE), and `encrypted_payload` (`payload_len` bytes).  The node MUST validate `payload_len` before reading `encrypted_payload`.  If the pairing button was held at boot, the node MUST erase the existing PSK and all persistent state first (factory reset) before accepting the new credentials.
+On a NODE_PROVISION write the node MUST parse the fields `node_key_hint` (2B), `node_psk` (32B), `rf_channel` (1B), `payload_len` (2B BE), and `encrypted_payload` (`payload_len` bytes).  The node MUST validate `payload_len` before reading `encrypted_payload`.
 
-> **Note:** Under the current boot priority (ND-0900), BLE pairing mode is only entered when no PSK exists or the pairing button is held.  The protocol specification (ble-pairing-protocol.md §8.2 step 4b) additionally defines a NODE_ACK(0x01) "already paired" response for defense-in-depth, but this state is not reachable through the current boot path.  If future requirements add alternative entry paths to BLE pairing mode (e.g., a management command), the node MUST respond NODE_ACK(0x01) when pre-existing credentials are present and the pairing button was not held.
+> **Note:** Under the current boot priority (ND-0900), factory reset is performed immediately when the boot button is held on a paired node — before entering BLE pairing mode.  The node always enters BLE pairing mode in an unpaired state, so NODE_PROVISION never encounters pre-existing credentials.  A same-session re-provision (ND-0907) overwrites the credentials written earlier in the same BLE session.
 
 **Acceptance criteria:**
 
 1. All five fields (including `payload_len`) are parsed from the NODE_PROVISION payload.
 2. `payload_len` is validated before reading `encrypted_payload`.
-3. A node with button hold erases existing credentials before proceeding.
-4. A same-session re-provision (per ND-0907) overwrites current credentials and responds NODE_ACK(0x00).
+3. A same-session re-provision (per ND-0907) overwrites current credentials and responds NODE_ACK(0x00).
 
 ---
 
@@ -1118,20 +1118,25 @@ The node MUST store BLE pairing artifacts in NVS: `peer_payload` (variable-lengt
 
 ---
 
-### ND-0917  Factory reset via BLE
+### ND-0917  Factory reset via boot button
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §8.2.1, security.md §2.6
 
 **Description:**  
-Factory reset via BLE is triggered by holding the pairing button during boot, then sending NODE_PROVISION. The node MUST erase the existing PSK, all persistent map data, and the resident BPF program before writing new credentials.
+Factory reset is triggered by holding the pairing button ≥ 500 ms during boot on a paired node. The node MUST perform the full factory reset (ND-0402) — erasing the existing PSK, all persistent map data, BLE pairing artifacts, schedule, channel, and the resident BPF program — immediately at boot, before entering BLE pairing mode. After reset, the node enters BLE pairing mode as an unpaired node. This ensures that subsequent operations in BLE pairing mode (including radio diagnostics that trigger a reboot) do not cause the node to revert to its paired state.
 
 **Acceptance criteria:**
 
-1. The existing PSK is erased before new credentials are written.
+1. The existing PSK is erased before entering BLE pairing mode.
 2. All persistent map data is erased.
 3. The resident BPF program is erased.
-4. New credentials from NODE_PROVISION are written after the erase.
+4. BLE pairing artifacts (`peer_payload`, `reg_complete`) are erased.
+5. Schedule and channel are reset to defaults.
+6. Any staged pre-provisioning test command and retained test result in RTC state are cleared.
+7. The node enters BLE pairing mode as an unpaired node after the factory reset.
+8. `board_layout` is preserved across the factory reset.
+9. If any factory reset step fails, the node MUST NOT enter BLE pairing mode or the normal wake cycle; it MUST log the failure and enter deep sleep.
 
 ---
 
@@ -1648,7 +1653,7 @@ The BLE pre-provisioning test framework MUST support adding new test types witho
 | ND-0914 | Deferred payload erasure | Must |
 | ND-0915 | Self-healing on WAKE failure | Must |
 | ND-0916 | NVS layout for BLE pairing artifacts | Must |
-| ND-0917 | Factory reset via BLE | Must |
+| ND-0917 | Factory reset via boot button | Must |
 | ND-0918 | Main task stack size | Must |
 | ND-1000 | Boot reason logging | Must |
 | ND-1001 | Wake cycle started logging | Must |

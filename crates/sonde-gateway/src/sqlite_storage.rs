@@ -728,9 +728,12 @@ impl SqliteStorage {
             })?;
         }
         // Migration: evolve-962 — master_key_id, master_key_epoch, pending_recovery,
-        // encrypted_seed_new, and updated pending_rotation schema.
+        // and encrypted_seed_new columns. The pending_rotation table migration
+        // (from evolve-887 schema to evolve-962 schema) is deferred to the
+        // rotation execution wiring PR.
         {
             // Add master_key_id and master_key_epoch columns to nodes (GW-2001).
+            // Check each column independently to handle partially migrated DBs.
             let node_cols: Vec<String> = conn
                 .prepare("PRAGMA table_info(nodes)")
                 .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
@@ -740,13 +743,20 @@ impl SqliteStorage {
                     ))
                 })?;
             if !node_cols.iter().any(|n| n == "master_key_id") {
+                conn.execute_batch("ALTER TABLE nodes ADD COLUMN master_key_id BLOB")
+                    .map_err(|e| {
+                        StorageError::Internal(format!(
+                            "migration failed: ALTER TABLE nodes ADD COLUMN master_key_id: {e}"
+                        ))
+                    })?;
+            }
+            if !node_cols.iter().any(|n| n == "master_key_epoch") {
                 conn.execute_batch(
-                    "ALTER TABLE nodes ADD COLUMN master_key_id BLOB;
-                     ALTER TABLE nodes ADD COLUMN master_key_epoch INTEGER NOT NULL DEFAULT 0",
+                    "ALTER TABLE nodes ADD COLUMN master_key_epoch INTEGER NOT NULL DEFAULT 0",
                 )
                 .map_err(|e| {
                     StorageError::Internal(format!(
-                        "migration failed: ALTER TABLE nodes ADD COLUMN master_key_id/epoch: {e}"
+                        "migration failed: ALTER TABLE nodes ADD COLUMN master_key_epoch: {e}"
                     ))
                 })?;
             }
@@ -761,13 +771,20 @@ impl SqliteStorage {
                     ))
                 })?;
             if !phone_cols.iter().any(|n| n == "master_key_id") {
+                conn.execute_batch("ALTER TABLE phone_psks ADD COLUMN master_key_id BLOB")
+                    .map_err(|e| {
+                        StorageError::Internal(format!(
+                            "migration failed: ALTER TABLE phone_psks ADD COLUMN master_key_id: {e}"
+                        ))
+                    })?;
+            }
+            if !phone_cols.iter().any(|n| n == "master_key_epoch") {
                 conn.execute_batch(
-                    "ALTER TABLE phone_psks ADD COLUMN master_key_id BLOB;
-                     ALTER TABLE phone_psks ADD COLUMN master_key_epoch INTEGER NOT NULL DEFAULT 0",
+                    "ALTER TABLE phone_psks ADD COLUMN master_key_epoch INTEGER NOT NULL DEFAULT 0",
                 )
                 .map_err(|e| {
                     StorageError::Internal(format!(
-                        "migration failed: ALTER TABLE phone_psks ADD COLUMN master_key_id/epoch: {e}"
+                        "migration failed: ALTER TABLE phone_psks ADD COLUMN master_key_epoch: {e}"
                     ))
                 })?;
             }
@@ -970,6 +987,13 @@ impl SqliteStorage {
         master_key_id: &[u8; 16],
         master_key_epoch: u64,
     ) -> Result<(), StorageError> {
+        if encrypted_psk.len() != ENCRYPTED_PSK_LEN {
+            return Err(StorageError::Internal(format!(
+                "encrypted_psk must be {} bytes, got {}",
+                ENCRYPTED_PSK_LEN,
+                encrypted_psk.len()
+            )));
+        }
         let node_id = node_id.to_owned();
         let encrypted_psk = encrypted_psk.to_vec();
         let master_key_id = *master_key_id;
@@ -1011,12 +1035,16 @@ impl SqliteStorage {
                 .map_err(map_err)?;
             let rows = stmt
                 .query_map(params![key_hint as i64], |row| {
+                    let kh_raw: i64 = row.get(0)?;
+                    let epoch_raw: i64 = row.get(4)?;
                     Ok(PendingRecoveryRecord {
-                        key_hint: row.get::<_, i64>(0)? as u16,
+                        key_hint: u16::try_from(kh_raw)
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, kh_raw))?,
                         node_id: row.get(1)?,
                         encrypted_psk: row.get(2)?,
                         master_key_id: row.get(3)?,
-                        master_key_epoch: row.get::<_, i64>(4)? as u64,
+                        master_key_epoch: u64::try_from(epoch_raw)
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(4, epoch_raw))?,
                     })
                 })
                 .map_err(map_err)?;

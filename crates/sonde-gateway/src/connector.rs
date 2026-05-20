@@ -781,7 +781,10 @@ impl ConnectorService {
                 let desired_state = required_map(&map, 4, "desired_state")?;
 
                 match entity_kind.as_str() {
-                    "gateway" => self.apply_gateway_desired_state(&desired_state).await,
+                    "gateway" => {
+                        self.apply_gateway_desired_state(&entity_id, &desired_state)
+                            .await
+                    }
                     "node" => {
                         self.apply_node_desired_state(&entity_id, &desired_state)
                             .await
@@ -824,8 +827,12 @@ impl ConnectorService {
     /// Parse and forward gateway DESIRED_STATE (evolve-962 §2.5).
     async fn apply_gateway_desired_state(
         &self,
+        entity_id: &str,
         desired_state: &[(Value, Value)],
     ) -> Result<(), String> {
+        if entity_id.is_empty() {
+            warn!("gateway DESIRED_STATE has empty entity_id; expected hex(gateway_id)");
+        }
         let channel = optional_u32_field(desired_state, 15, "channel")?;
         let salt = optional_bytes_field(desired_state, 21, "salt")?;
         let kdf_params = parse_optional_kdf_params(desired_state, 22)?;
@@ -1208,6 +1215,11 @@ fn required_u64(map: &[(Value, Value)], key: u64, field: &str) -> Result<u64, St
         })
 }
 
+fn required_u32(map: &[(Value, Value)], key: u64, field: &str) -> Result<u32, String> {
+    let v = required_u64(map, key, field)?;
+    u32::try_from(v).map_err(|_| format!("`{field}` exceeds u32::MAX ({v})"))
+}
+
 fn required_text(map: &[(Value, Value)], key: u64, field: &str) -> Result<String, String> {
     map_get(map, key)
         .ok_or_else(|| format!("missing `{field}`"))
@@ -1290,10 +1302,10 @@ fn parse_optional_kdf_params(
 ) -> Result<Option<KdfParams>, String> {
     match map_get(map, key) {
         Some(Value::Map(kdf_map)) => {
-            let m_cost = required_u64(kdf_map, 1, "m_cost")? as u32;
-            let t_cost = required_u64(kdf_map, 2, "t_cost")? as u32;
-            let p_cost = required_u64(kdf_map, 3, "p_cost")? as u32;
-            let kdf_version = required_u64(kdf_map, 4, "kdf_version")? as u32;
+            let m_cost = required_u32(kdf_map, 1, "m_cost")?;
+            let t_cost = required_u32(kdf_map, 2, "t_cost")?;
+            let p_cost = required_u32(kdf_map, 3, "p_cost")?;
+            let kdf_version = required_u32(kdf_map, 4, "kdf_version")?;
             Ok(Some(KdfParams {
                 m_cost,
                 t_cost,
@@ -1319,19 +1331,35 @@ fn parse_optional_recovered_psks(
                     Value::Map(rec_map) => {
                         let node_id =
                             required_text(rec_map, 1, &format!("recovered_psks[{i}].node_id"))?;
-                        let key_hint =
-                            required_u64(rec_map, 2, &format!("recovered_psks[{i}].key_hint"))?
-                                as u16;
+                        let key_hint_raw =
+                            required_u64(rec_map, 2, &format!("recovered_psks[{i}].key_hint"))?;
+                        let key_hint = u16::try_from(key_hint_raw).map_err(|_| {
+                            format!(
+                                "recovered_psks[{i}].key_hint exceeds u16::MAX ({key_hint_raw})"
+                            )
+                        })?;
                         let encrypted_psk = required_bytes(
                             rec_map,
                             3,
                             &format!("recovered_psks[{i}].encrypted_psk"),
                         )?;
+                        if encrypted_psk.len() != 60 {
+                            return Err(format!(
+                                "recovered_psks[{i}].encrypted_psk must be 60 bytes, got {}",
+                                encrypted_psk.len()
+                            ));
+                        }
                         let master_key_id = required_bytes(
                             rec_map,
                             4,
                             &format!("recovered_psks[{i}].master_key_id"),
                         )?;
+                        if master_key_id.len() != 16 {
+                            return Err(format!(
+                                "recovered_psks[{i}].master_key_id must be 16 bytes, got {}",
+                                master_key_id.len()
+                            ));
+                        }
                         records.push(RecoveredPskRecord {
                             node_id,
                             key_hint,

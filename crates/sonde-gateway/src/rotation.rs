@@ -127,11 +127,13 @@ pub fn decrypt_rotation_payload(
         .map_err(|_| RotationError::Internal("nonce slice".into()))?;
     let ciphertext_and_tag = &payload[45..];
 
-    // Check for low-order point
+    // Check for low-order point — an all-zero shared secret indicates
+    // the sender used a low-order or invalid public key.
     let ephemeral_public = X25519PublicKey::from(sender_ephemeral_public);
-
-    // X25519 key agreement
     let shared_secret = gw_x25519_secret.diffie_hellman(&ephemeral_public);
+    if shared_secret.as_bytes().iter().all(|&b| b == 0) {
+        return Err(RotationError::LowOrderPoint);
+    }
 
     // Build HKDF info: gateway_id_raw || current_master_key_epoch_be64
     let mut info = Vec::with_capacity(24);
@@ -256,10 +258,10 @@ fn get_optional_kdf_params(
 ) -> Result<Option<KdfParamsPayload>, RotationError> {
     match get_value(map, key) {
         Some(ciborium::Value::Map(kdf_map)) => {
-            let m_cost = get_u64(kdf_map, 1, "m_cost")? as u32;
-            let t_cost = get_u64(kdf_map, 2, "t_cost")? as u32;
-            let p_cost = get_u64(kdf_map, 3, "p_cost")? as u32;
-            let kdf_version = get_u64(kdf_map, 4, "kdf_version")? as u32;
+            let m_cost = get_u32(kdf_map, 1, "m_cost")?;
+            let t_cost = get_u32(kdf_map, 2, "t_cost")?;
+            let p_cost = get_u32(kdf_map, 3, "p_cost")?;
+            let kdf_version = get_u32(kdf_map, 4, "kdf_version")?;
             Ok(Some(KdfParamsPayload {
                 m_cost,
                 t_cost,
@@ -287,6 +289,16 @@ fn get_u64(
         ))),
         None => Err(RotationError::PlaintextParse(format!("missing `{field}`"))),
     }
+}
+
+fn get_u32(
+    map: &[(ciborium::Value, ciborium::Value)],
+    key: u64,
+    field: &str,
+) -> Result<u32, RotationError> {
+    let v = get_u64(map, key, field)?;
+    u32::try_from(v)
+        .map_err(|_| RotationError::PlaintextParse(format!("`{field}` exceeds u32::MAX ({v})")))
 }
 
 /// Rate limiter for failed rotation attempts (GW-2006 validation rule 8).

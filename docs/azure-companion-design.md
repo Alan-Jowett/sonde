@@ -462,8 +462,8 @@ not replace the connector payload with an Azure-specific schema.
 
 ### 7.5  Downstream settlement
 
-For downstream desired-state requests, the Azure companion settles the Service
-Bus message as successful only after the raw connector payload has been written
+For downstream desired-state requests, the Azure companion settles the Storage
+Queue message as successful only after the raw connector payload has been written
 successfully to the local connector socket. This design intentionally stops at
 local handoff; the gateway connector protocol does not grow a separate
 round-trip acknowledgement just for Azure.

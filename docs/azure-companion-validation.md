@@ -29,6 +29,10 @@
 3. Run `docker run --rm <image> sonde-azure-companion bootstrap --help`.
 4. Run `docker run --rm <image> sonde-azure-companion run --help`.
 5. Assert: all commands succeed.
+6. Run `docker run --rm --entrypoint cat <image> /etc/os-release` and assert: the output identifies Alpine Linux.
+7. Run `docker run --rm --entrypoint sh <image> -c "command -v az"` and assert: the command fails (Azure CLI is not present in the runtime image).
+8. Run `docker run --rm --entrypoint sh <image> -c "ls /opt/sonde/deploy/bicep/ 2>/dev/null"` and assert: the directory does not exist or is empty (Bicep files are not bundled in the runtime image).
+9. Run `docker run --rm --entrypoint sh <image> -c "test -x /opt/sonde/deploy/azure-companion/entrypoint.sh"` and assert: the startup/orchestration entrypoint script is present and executable at the expected path.
 
 ---
 
@@ -42,6 +46,8 @@
 3. Run `docker run --rm --entrypoint sh <image> -c "ls /opt/sonde/deploy/bicep/"`.
 4. Assert: the image contains working Azure CLI tooling plus the bundled Bicep deployment files.
 5. Assert: the listing includes `main.bicep`, `bicepconfig.json`, and the `modules/` directory.
+6. Run `docker run --rm --entrypoint sh <image> -c "sh -n /opt/sonde/deploy/azure-bootstrap/bootstrap.sh"` and assert: the command exits with status 0.
+7. Assert: the bootstrap script passes shell syntax validation inside the image, confirming it can execute independently without files copied from the runtime image.
 
 ---
 
@@ -52,9 +58,11 @@
 **Procedure:**
 1. Create an empty temporary directory to use as the mounted state volume.
 2. Provide valid queue configuration to the bootstrap script.
-3. Invoke the Azure companion bootstrap entrypoint with that directory mounted as the state volume.
+3. Invoke the Azure companion bootstrap entrypoint with that directory mounted as the state volume and the required local gateway socket bindings exposed.
 4. Assert: the bootstrap path runs the dedicated bootstrap image before the long-running runtime starts.
 5. Assert: the bootstrap path invokes the Rust `bootstrap` flow, parses the device code from Azure CLI stderr, and forwards it to the modem display.
+6. Assert: the bootstrap entrypoint initializes the state volume directory structure before evaluating bootstrap-complete state.
+7. Assert: the gateway admin and connector socket bindings are available to the companion inside the container.
 
 ---
 
@@ -138,7 +146,7 @@
 
 ### T-AZC-0108  Long-running runtime connects through the gateway connector socket
 
-**Validates:** AZC-0301
+**Validates:** AZC-0101, AZC-0301
 
 **Procedure:**
 1. Start a test gateway exposing the connector socket.
@@ -201,7 +209,7 @@
 
 ### T-AZC-0113  Runtime uses certificate-based Azure authentication after bootstrap
 
-**Validates:** AZC-0305
+**Validates:** AZC-0101, AZC-0305
 
 **Procedure:**
 1. Prepare bootstrap-complete state containing the required certificate PEM, private-key PEM, and service-principal metadata including a `login_endpoint` value.
@@ -284,6 +292,8 @@
 4. Read the configured upstream Storage Queue.
 5. Assert: the queue receives the raw connector payload bytes unchanged.
 6. Assert: the runtime under test is the real `sonde-azure-companion`, not a broker mock.
+7. Assert: the Azure Storage Queue resources used in this run were provisioned specifically for this workflow dispatch (disposable), not shared with other environments.
+8. Assert: the workflow was triggered on-demand (e.g., `workflow_dispatch`) rather than as part of routine PR CI.
 
 ---
 
@@ -298,6 +308,7 @@
 4. Observe the payload received by the connector harness.
 5. Assert: the harness receives the raw payload bytes unchanged.
 6. Assert: the workflow does not require a full `sonde-gateway` process to validate this handoff.
+7. Assert: the Azure Storage Queue resources used in this run were provisioned specifically for this workflow dispatch (disposable), not shared with other environments.
 
 ---
 
@@ -358,15 +369,20 @@
 **Procedure:**
 1. Register the service via `sonde-azure-companion install`.
 2. Expose the gateway admin and connector named pipes at their default Windows paths.
-3. Ensure `%ProgramData%\sonde-azure-companion\` does not contain bootstrap-complete state.
+3. **Missing-artifacts sub-case:** Ensure `%ProgramData%\sonde-azure-companion\` does not contain the required provisioning artifacts (cert/key PEM files) but does contain valid queue configuration.
 4. Start the service: `sc.exe start sonde-azure-companion`.
 5. Assert: the service does not reach steady `RUNNING` runtime-bridge operation.
-6. Assert: service diagnostics clearly identify the missing provisioning artifacts or queue configuration.
+6. Assert: service diagnostics clearly identify the missing provisioning artifacts as the cause.
 7. Assert: the startup path does not attempt to pull or run the bootstrap image automatically.
-8. Populate bootstrap-complete state in `%ProgramData%\sonde-azure-companion\` and restart the service.
-9. Assert: the service now starts the runtime bridge normally and connects through the default named-pipe paths.
-10. Stop the service through SCM.
-11. Assert: the service stops cleanly without deleting the populated bootstrap-complete state.
+8. **Missing-queue-config sub-case:** Populate the provisioning artifacts but remove the queue configuration (both environment variables and persisted `storage-queues.json`).
+9. Restart the service.
+10. Assert: the service does not reach steady `RUNNING` runtime-bridge operation.
+11. Assert: service diagnostics clearly identify the missing queue configuration as the cause.
+12. Assert: the startup path does not attempt to pull or run the bootstrap image automatically.
+13. Populate full bootstrap-complete state in `%ProgramData%\sonde-azure-companion\` (both provisioning artifacts and queue configuration) and restart the service.
+14. Assert: the service now starts the runtime bridge normally and connects through the default named-pipe paths.
+15. Stop the service through SCM.
+16. Assert: the service stops cleanly without deleting the populated bootstrap-complete state.
 
 ---
 
@@ -492,7 +508,8 @@
 4. Assert: bootstrap completes successfully.
 5. Assert: the certificate PEM file has been regenerated (different fingerprint).
 6. Assert: `service-principal.json` has been rewritten.
-7. Assert: `check-runtime-ready` succeeds after re-bootstrap.
+7. Assert: the Bicep deployment phase received the newly regenerated certificate material (not the original certificate from step 1).
+8. Assert: `check-runtime-ready` succeeds after re-bootstrap.
 
 ---
 
@@ -590,7 +607,7 @@
 
 ### T-AZC-0415  Access token is not logged
 
-**Validates:** AZC-0401
+**Validates:** AZC-0101, AZC-0401
 
 **Procedure:**
 1. Run bootstrap with a stubbed device-flow that returns a known token value.
@@ -708,3 +725,87 @@
 4. Assert: "Deploying handler..." is displayed after "Deploying Azure...".
 5. Assert: "Configuring Entra..." is displayed after "Deploying handler...".
 6. Assert: each sub-phase also emits a corresponding stderr log message.
+
+---
+
+### T-AZC-0424  Retired `bootstrap-auth` subcommand is rejected
+
+**Validates:** AZC-0201
+
+**Procedure:**
+1. Run `sonde-azure-companion bootstrap-auth` (the retired subcommand name).
+2. Assert: the command exits with a non-zero status.
+3. Assert: the error output clearly indicates that `bootstrap-auth` is no longer accepted and directs the operator to use the unified `bootstrap` subcommand instead.
+4. Assert: no provisioning work is performed.
+
+---
+
+### T-AZC-0425  Environment variable override precedence for queue configuration
+
+**Validates:** AZC-0302
+
+**Procedure:**
+1. Prepare bootstrap-complete state with a persisted `storage-queues.json` containing known endpoint, upstream queue, and downstream queue values.
+2. Set environment variables for the same queue configuration fields with different values.
+3. Start the runtime and observe which configuration values are used by the broker transport layer.
+4. Assert: the environment variable values override the persisted file values for all three fields (endpoint, upstream queue, downstream queue).
+5. Set only the upstream queue environment variable (with a different value) while leaving the downstream queue and endpoint environment variables unset.
+6. Restart the runtime.
+7. Assert: the upstream queue uses the environment variable value while the downstream queue and endpoint use the persisted file values — each field is independently overridable.
+
+---
+
+### T-AZC-0426  Transport replacement does not change gateway-facing connector protocol
+
+**Validates:** AZC-0303
+
+**Procedure:**
+1. Start the runtime with a test double that records all messages exchanged on the local gateway connector socket.
+2. Inject representative upstream and downstream connector payloads using the concrete `reqwest`-based transport (or its test double).
+3. Record the connector protocol messages observed on the gateway-facing socket.
+4. Replace the broker transport implementation with an alternative test double (e.g., an in-memory mock that does not use `reqwest`).
+5. Repeat the same upstream and downstream connector payload injections.
+6. Assert: the connector protocol messages observed on the gateway-facing socket are identical in both runs — the transport replacement did not alter the gateway-facing protocol.
+
+---
+
+### T-AZC-0427  Bidirectional traffic uses the same long-lived connector session
+
+**Validates:** AZC-0304
+
+**Procedure:**
+1. Start the runtime with broker and local connector test doubles.
+2. Inject at least one upstream connector payload (gateway → upstream queue) through the local connector socket.
+3. Simultaneously deliver at least one downstream desired-state payload (downstream queue → gateway) from the broker test double.
+4. Assert: both upstream and downstream payloads are forwarded successfully.
+5. Assert: both directions use the same long-lived local connector session (not separate connections).
+6. Assert: the connector session remains open after processing traffic in both directions.
+
+---
+
+### T-AZC-0428  Docker socket bind-mount and Bollard auto-detection (positive path)
+
+**Validates:** AZC-0406
+
+**Procedure:**
+1. On the host, start a mock Docker API server listening on a temporary Unix socket.
+2. Start the Azure companion container with the mock socket bind-mounted into the container at the standard path (`/var/run/docker.sock`).
+3. Start the bootstrap subcommand inside the container.
+4. Assert: Bollard auto-detects the Docker socket at `/var/run/docker.sock` inside the container without explicit path configuration.
+5. Assert: bootstrap reaches the container-creation path and issues Docker API requests through the auto-detected socket to the mock server.
+6. Assert: bootstrap does not fall back to TCP-based Docker connectivity when the Unix socket is available.
+
+---
+
+### T-AZC-0429  Bootstrap without valid state proceeds regardless of `--force` flag
+
+**Validates:** AZC-0411
+
+**Procedure:**
+1. Prepare a state directory with no valid bootstrap-complete state (empty or containing only stale/incomplete artifacts).
+2. Run `sonde-azure-companion bootstrap --force` with stubbed services.
+3. Assert: bootstrap performs the full provisioning lifecycle (certificate generation, Docker API calls, Bicep deployment, artifact creation).
+4. Assert: bootstrap completes successfully and establishes bootstrap-complete state.
+5. Prepare a fresh state directory with no valid bootstrap-complete state (empty or containing only stale/incomplete artifacts).
+6. Run `sonde-azure-companion bootstrap` (without `--force`) from the fresh no-valid-state directory with the same stubbed services.
+7. Assert: bootstrap performs the same full provisioning lifecycle as in step 3 — the `--force` flag does not alter behavior when no valid state exists.

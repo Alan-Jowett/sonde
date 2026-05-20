@@ -819,7 +819,7 @@
 **Procedure:**
 1. Run `sonde-azure-companion bootstrap` with `--custom-domain-name sondeplatform.com --custom-domain-dns-resource-group my-dns-rg --custom-domain-dns-zone-name sondeplatform.com` and stubbed Docker/admin services.
 2. Assert: the bootstrap container is created with environment variables `SONDE_AZURE_CUSTOM_DOMAIN_NAME=sondeplatform.com`, `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP=my-dns-rg`, and `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME=sondeplatform.com`.
-3. Run `sonde-azure-companion bootstrap` without any custom domain flags.
+3. Run `sonde-azure-companion bootstrap` without any custom domain flags and with `SONDE_AZURE_CUSTOM_DOMAIN_NAME`, `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP`, and `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME` unset in the process environment.
 4. Assert: none of the three custom domain environment variables are present in the container environment.
 
 ---

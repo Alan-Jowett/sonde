@@ -728,7 +728,7 @@ custom domain on the Static Web App:
 |----------|---------------------|-------------|
 | `--custom-domain-name` | `SONDE_AZURE_CUSTOM_DOMAIN_NAME` | Custom domain FQDN (e.g., `sondeplatform.com`) |
 | `--custom-domain-dns-resource-group` | `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP` | Resource group containing the Azure DNS zone |
-| `--custom-domain-dns-zone-name` | `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME` | DNS zone name (defaults to custom domain name for apex domains) |
+| `--custom-domain-dns-zone-name` | `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME` | DNS zone name (operators typically set this to the custom domain name for apex domains) |
 
 When provided, the Rust companion passes each value individually to the
 bootstrap container as an environment variable. Each parameter is forwarded

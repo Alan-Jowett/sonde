@@ -912,8 +912,9 @@ Three parameters are accepted:
   `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP`) — the resource group
   containing the Azure DNS zone for the custom domain.
 - `--custom-domain-dns-zone-name` (env:
-  `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME`) — the DNS zone name; defaults to
-  the custom domain name for apex domains.
+  `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME`) — the DNS zone name. For apex
+  domains, operators typically set this to the custom domain name; no automatic
+  defaulting is applied.
 
 Each parameter is forwarded independently to the bootstrap container as an
 environment variable when set. Setting one does not require or imply setting

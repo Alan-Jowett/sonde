@@ -194,6 +194,12 @@ The companion binary mirrors the gateway's Windows service-management fallback:
 3. These commands manage only the service registration; they preserve the
    companion state directory and provisioning artifacts.
 
+When the Windows service fails to start or encounters SCM registration errors,
+the companion writes diagnostic messages to `<state_dir>/service.log` in append
+mode. This file aids post-mortem debugging in headless environments where
+stderr may not be captured. The companion creates the state directory if it
+does not already exist before writing the diagnostic log.
+
 ---
 
 ### 3.6  Live Azure CI runtime topology
@@ -232,7 +238,7 @@ transport and the runtime bridge semantics already defined in section 5.
 ## 4  Bootstrap flow
 
 > **Requirements:** AZC-0200, AZC-0201, AZC-0202, AZC-0203, AZC-0204, AZC-0205, AZC-0300,
-> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0407, AZC-0408, AZC-0409, AZC-0411
+> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0407, AZC-0408, AZC-0409, AZC-0411, AZC-0412
 
 ### 4.1  Bootstrap trigger
 
@@ -292,18 +298,17 @@ When bootstrap is required, the Azure companion performs this sequence:
     `ShowModemDisplayMessage` RPC with a short prompt plus the exact device
     code and `persistent = true` so the code remains visible until the next
     phase replaces it.
-12. Wait for the container to finish. On success, `az deployment sub create`
-    produces JSON deployment outputs on stdout.
-13. Display "Deploying Azure…" on the modem display (transitions from auth to
-    deployment phase may overlap in the single container session).
-14. Capture and parse the JSON outputs to extract `tenantId`, `clientId`,
-    Storage Queue endpoint, queue names, Function App name, and deployment
-    container values from the `companionBootstrapValues` output object.
-15. Use the bundled prebuilt `sonde-azure-handler` package from the bootstrap
-    image to populate the provisioned Function App deployment target.
-16. Poll Azure for Function App activation until the uploaded package is active
-    and at least one function is reported as loaded.
-17. The bootstrap script then deploys the Web UI SPA content and configures the
+12. While the container runs, the Rust companion monitors the stderr stream
+    for structured phase markers emitted by the bootstrap script
+    (`__SONDE_AZURE_DEPLOYMENT_START__`, `__SONDE_AZURE_DEPLOYING_HANDLER__`,
+    `__SONDE_AZURE_CONFIGURING_ENTRA__`) and updates the modem display
+    accordingly ("Deploying Azure…", "Deploying handler…",
+    "Configuring Entra…").
+13. Inside the container, after Bicep deployment, the bootstrap script deploys
+    the bundled prebuilt `sonde-azure-handler` package into the provisioned
+    Function App and polls Azure until at least one function is reported as
+    loaded (see §8.3 steps 4–5 for the container-side sequence).
+14. The bootstrap script then deploys the Web UI SPA content and configures the
     Entra app registration. This phase runs inside the bootstrap container
     where the Azure CLI session is still authenticated. The script:
     a. Extracts `staticWebAppName`, `staticWebAppHostname`, `companionClientId`,
@@ -322,16 +327,21 @@ When bootstrap is required, the Azure companion performs this sequence:
        Function App). If the scope already exists, this step is a no-op.
     If any sub-step fails, the bootstrap script exits non-zero and the
     bootstrap container reports failure.
-18. Write `service-principal.json` and `storage-queues.json` to the staging
+15. Wait for the container to finish. On success, the bootstrap script produces
+    JSON deployment outputs on stdout. The Rust companion captures and parses
+    the JSON outputs to extract `tenantId`, `clientId`, Storage Queue endpoint,
+    queue names, Function App name, and deployment container values from the
+    `companionBootstrapValues` output object.
+16. Write `service-principal.json` and `storage-queues.json` to the staging
     directory with the extracted values and relative paths to the certificate
     and private-key PEM files.
-19. Rename the staging directory into a new generation directory under the state
+17. Rename the staging directory into a new generation directory under the state
     volume, then atomically update the `.current-state` marker to point at that
     generation, leaving the previous generation untouched until the new one is
     fully committed.
-20. Remove the bootstrap container.
-21. Display "Bootstrap complete" on the modem display.
-22. The bootstrap wrapper/entrypoint reports overall success only after
+18. Remove the bootstrap container.
+19. Display "Bootstrap complete" on the modem display.
+20. The bootstrap wrapper/entrypoint reports overall success only after
     bootstrap-complete state has been established.
 
 If any step fails, the staging directory is cleaned up, the bootstrap
@@ -349,7 +359,7 @@ non-zero status. It does not continue to a console-only fallback.
 ## 5  Rust binary interface
 
 > **Requirements:** AZC-0100, AZC-0102, AZC-0103, AZC-0104, AZC-0105, AZC-0201, AZC-0202, AZC-0205, AZC-0300, AZC-0301, AZC-0302, AZC-0304, AZC-0305,
-> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0410, AZC-0411
+> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0410, AZC-0411, AZC-0412
 
 The `sonde-azure-companion` binary exposes three cross-platform runtime modes
 plus Windows service-management entrypoints:
@@ -374,7 +384,10 @@ plus Windows service-management entrypoints:
    without deleting persisted companion state.
 6. **service runtime entrypoint** *(Windows)* — the SCM-launched execution path
    that performs the runtime-ready check and either starts `run` or fails closed
-   per AZC-0205.
+   per AZC-0205. The service control handler responds to `ServiceControl::Stop`
+   and `ServiceControl::Shutdown` events by setting `StopPending` status and
+   signaling the async runtime via a oneshot channel, enabling graceful
+   shutdown of the connector bridge and in-flight Storage Queue operations.
 
 The companion receives explicit runtime configuration for the Storage Queue
 namespace and queue names rather than inferring deployment-specific defaults.
@@ -446,6 +459,20 @@ from the bootstrap-complete state and authenticate to Azure as an Entra
 application / service principal. Interactive device auth is bootstrap-only and
 is not part of normal runtime operation.
 
+Before constructing the client-assertion credential, the runtime validates that
+the certificate and private key form a matching keypair by extracting the
+subject public key info (SPKI) from both the certificate PEM and the private
+key PEM and comparing them. If the public keys do not match, startup fails
+with a configuration error. This guards against misconfigured state directories
+where certificate and key files originate from different generation cycles.
+
+The runtime loads the private key by attempting RSA, EC, and EdDSA PEM parsing
+in order. EC keys are further validated to be on the P-256 curve by requiring
+successful P-256 private-key parsing; non-P-256 EC keys are rejected. This
+allows operators who provision credentials outside the bootstrap flow to use
+RSA or EdDSA keys, while bootstrap-generated credentials remain ECDSA P-256
+(see §8.1).
+
 The OAuth token endpoint URL is constructed from the `login_endpoint` field
 persisted in `service-principal.json`, with any trailing slash stripped before
 appending `/{tenant_id}/oauth2/v2.0/token`. When the field is absent (pre-existing
@@ -485,7 +512,7 @@ a detected bridge failure.
 ## 8  Provisioning orchestration internals
 
 > **Requirements:** AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405,
-> AZC-0406, AZC-0407, AZC-0408, AZC-0409
+> AZC-0406, AZC-0407, AZC-0408, AZC-0409, AZC-0412
 
 ### 8.1  Certificate generation
 
@@ -525,7 +552,11 @@ Engine API. It does not shell out to the `docker` CLI. The integration flow:
    or host-side Bicep paths.
 6. Start the container and stream its output (stdout/stderr).
 7. Monitor the output for the device-code pattern from `az login --use-device-code`.
-   When detected, extract the code and display it on the modem via the admin API.
+   The primary regex matches the standard `enter the code <CODE> to authenticate`
+   pattern. If the primary pattern does not match, a fallback regex attempts to
+   extract the code from `microsoft.com/devicelogin` output lines, handling
+   variations in Azure CLI output format across versions. When detected, extract
+   the code and display it on the modem via the admin API.
 8. Wait for the container to exit and capture the JSON deployment outputs.
 9. Remove the container after completion (regardless of success or failure).
 
@@ -609,6 +640,24 @@ persisted Storage Queue configuration file (`storage-queues.json`) as an alterna
 to environment variables, enabling a fully automated startup after bootstrap.
 Environment variables, if set, override the persisted file values.
 
+#### Path traversal protection
+
+The `certificate_path` and `private_key_path` values in `service-principal.json`
+are relative paths resolved against the state directory. Before resolving, the
+runtime applies two layers of validation:
+
+1. **Lexical rejection** — the path must be relative and must not contain
+   parent-directory components (`..`), root-directory components, or Windows
+   drive prefixes. Any of these cause an immediate configuration error.
+2. **Canonical containment** — after joining the relative path with the state
+   directory, the resolved path is canonicalized and verified to remain within
+   the canonical state directory. This prevents symlink-based escapes that
+   pass lexical checks but resolve outside the state directory.
+
+Together these checks ensure that an attacker who controls the contents of
+`service-principal.json` cannot cause the runtime to read arbitrary files
+outside the state directory.
+
 ### 8.5  Bootstrap-image contents
 
 The bootstrap Dockerfile includes:
@@ -667,3 +716,25 @@ container via structured stderr markers (`__SONDE_AZURE_DEPLOYING_HANDLER__`
 and `__SONDE_AZURE_CONFIGURING_ENTRA__`). The companion watches for these
 markers alongside the existing `__SONDE_AZURE_DEPLOYMENT_START__` marker and
 updates the modem display accordingly.
+
+### 8.8  Custom domain support
+
+> **Requirements:** AZC-0412
+
+The `bootstrap` subcommand accepts three optional parameters for configuring a
+custom domain on the Static Web App:
+
+| CLI flag | Environment variable | Description |
+|----------|---------------------|-------------|
+| `--custom-domain-name` | `SONDE_AZURE_CUSTOM_DOMAIN_NAME` | Custom domain FQDN (e.g., `sondeplatform.com`) |
+| `--custom-domain-dns-resource-group` | `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP` | Resource group containing the Azure DNS zone |
+| `--custom-domain-dns-zone-name` | `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME` | DNS zone name (defaults to custom domain name for apex domains) |
+
+When provided, the Rust companion passes these values to the bootstrap
+container as environment variables. The bootstrap script is responsible for
+consuming them to create DNS records, register the custom domain on the Static
+Web App, and configure Entra redirect URIs as appropriate.
+
+All three parameters are optional. When `custom_domain_name` is absent, no
+custom domain environment variables are passed to the container and the
+bootstrap uses the default Azure-provided Static Web App hostname.

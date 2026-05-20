@@ -893,3 +893,39 @@ when needed (e.g., credential rotation).
 3. When valid state exists and `--force` is not set, bootstrap prints a message to stderr indicating that state already exists and exits with status 0.
 4. When valid state exists and `--force` is set, bootstrap performs the full provisioning lifecycle.
 5. When no valid state exists, bootstrap performs the full provisioning lifecycle regardless of the `--force` flag.
+
+---
+
+### AZC-0412  Custom domain configuration parameters for Static Web App
+
+**Priority:** Should
+**Source:** [issue #1031](https://github.com/Alan-Jowett/sonde/issues/1031)
+
+**Description:**
+The `bootstrap` subcommand MUST accept optional custom domain parameters that
+allow the operator to pass custom DNS configuration to the bootstrap container.
+Three parameters are accepted:
+
+- `--custom-domain-name` (env: `SONDE_AZURE_CUSTOM_DOMAIN_NAME`) — the custom
+  domain FQDN (e.g., `sondeplatform.com`).
+- `--custom-domain-dns-resource-group` (env:
+  `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP`) — the resource group
+  containing the Azure DNS zone for the custom domain.
+- `--custom-domain-dns-zone-name` (env:
+  `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME`) — the DNS zone name; defaults to
+  the custom domain name for apex domains.
+
+When `--custom-domain-name` is provided, the Rust companion passes all three
+values to the bootstrap container as environment variables. The bootstrap
+script is responsible for consuming them to perform custom domain
+configuration.
+
+When `--custom-domain-name` is absent, no custom domain environment variables
+are passed to the container and no custom domain configuration is performed.
+
+**Acceptance criteria:**
+
+1. `BootstrapArgs` includes all three custom domain CLI flags with corresponding environment variable overrides.
+2. All three parameters are optional; omitting them does not affect the rest of the bootstrap sequence.
+3. When `--custom-domain-name` is provided, the bootstrap container receives all three values as environment variables.
+4. When `--custom-domain-name` is absent, none of the three custom domain environment variables are present in the container environment.

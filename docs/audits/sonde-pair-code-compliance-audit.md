@@ -7,7 +7,7 @@
 
 ## 1. Executive Summary
 
-The `sonde-pair` crate was audited against its requirements (51 REQ-IDs), design, and validation documents. Of 51 requirements, 47 are fully implemented, 1 is partially implemented, and 3 are not directly verifiable from library code (UI-only requirements). The audit identified **10 findings**: 2 constraint violations (D10), 1 partial implementation (D8), and 7 instances of undocumented behavior (D9). The highest-severity finding is the `GW_INFO_RESPONSE` timeout set to 45 seconds instead of the specified 5 seconds (D10, High), which directly contradicts PT-0301, PT-1002, and validation test T-PT-802. Recommended action: update the timeout to match the spec (or update the spec to reflect the operational rationale documented in the code comment).
+The `sonde-pair` crate was audited against its requirements (51 REQ-IDs), design, and validation documents. Of 51 requirements, 47 are fully implemented, 1 is partially implemented, and 3 are not directly verifiable from library code (UI-only requirements). The audit identified **10 findings**: 1 active constraint violation (D10), 1 resolved constraint violation (D10, F-002 — GATT write retry removed in #997), 1 partial implementation (D8), and 7 instances of undocumented behavior (D9). The highest-severity active finding is the `GW_INFO_RESPONSE` timeout set to 45 seconds instead of the specified 5 seconds (D10, High), which directly contradicts PT-0301, PT-1002, and validation test T-PT-802. Recommended action: update the timeout to match the spec (or update the spec to reflect the operational rationale documented in the code comment).
 
 ---
 
@@ -64,25 +64,10 @@ This audit performs static code-to-specification traceability analysis on the `s
 - **Severity**: Medium
 - **Category**: D10_CONSTRAINT_VIOLATION_IN_CODE
 - **Spec Location**: PT-1003 §12 ("Tool MUST NOT silently retry failed protocol operations"), validation T-PT-803 ("no automatic retries; `write_characteristic` called exactly once")
-- **Code Location**: `crates/sonde-pair/src/btleplug_transport.rs:361–380`
-- **Description**: When a GATT write fails with "authentication" or "0x80650005" error (WinRT pairing dialog trigger), the btleplug transport retries the write up to 6 times with 5-second delays (total 30 seconds). This is functionally a workaround for the OS pairing dialog flow on WinRT, but it constitutes an implicit retry of a write operation at the transport layer.
-- **Evidence**:
-  - **Spec says** (PT-1003): "Tool MUST NOT silently retry failed protocol operations. If write or indication times out, tool reports failure."
-  - **Code does** (btleplug_transport.rs:361–368):
-    ```rust
-    if msg.contains("authentication") || msg.contains("0x80650005") {
-        debug!("GATT write requires auth — waiting for OS pairing dialog");
-        for attempt in 1..=6 {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            debug!(attempt, "retrying GATT write after pairing");
-            // ... retry write ...
-        }
-    }
-    ```
-  - **Mitigation**: PT-1003 notes "BLE-level connection retries by platform stack acceptable." This retry handles OS-initiated pairing which is arguably BLE-level behavior, but it is implemented in application code, not the platform stack itself.
-- **Impact**: On WinRT, the operator sees an implicit 30-second retry window during pairing dialog acceptance. If the operator dismisses the dialog, the tool silently retries instead of failing fast. Phase-level tests (T-PT-803) use mock transport and would not observe this behavior.
-- **Remediation**: Either (a) document this as an exception to PT-1003 specific to WinRT BLE pairing dialog handling, or (b) refactor to fail after the first write error and let the caller retry, or (c) add a specific "awaiting OS pairing" state that is visible to the operator. Option (a) is recommended as the behavior is practically necessary for WinRT.
-- **Confidence**: High — exact code location and retry count confirmed.
+- **Code Location**: `crates/sonde-pair/src/btleplug_transport.rs` (previously lines 361–380)
+- **Status**: **RESOLVED** — retry loop removed in #997. Write failures are now surfaced immediately. The modem handles the pre-auth race server-side via `ble_gap_security_initiate()` + pre-auth write buffering (MD-0409), making the client-side retry unnecessary.
+- **Description**: When a GATT write fails with "authentication" or "0x80650005" error (WinRT pairing dialog trigger), the btleplug transport retried the write up to 6 times with 5-second delays (total 30 seconds). This was functionally a workaround for the OS pairing dialog flow on WinRT, but it constituted an implicit retry of a write operation at the transport layer.
+- **Confidence**: High — retry loop removed; modem-side buffering confirmed.
 
 ---
 
@@ -263,9 +248,9 @@ This audit performs static code-to-specification traceability analysis on the `s
 | **Not applicable to library crate** | 3 (PT-0700 UI surface, PT-0105 Android permissions dialog, PT-1206 manual hardware testing) |
 | **D8 findings (unimplemented)** | 1 |
 | **D9 findings (undocumented behavior)** | 7 |
-| **D10 findings (constraint violations)** | 2 |
-| **Constraints verified compliant** | 26 of 29 documented constraints |
-| **Constraints violated** | 2 (timeout value, implicit retry) |
+| **D10 findings (constraint violations)** | 1 active, 1 resolved (#997) |
+| **Constraints verified compliant** | 27 of 29 documented constraints |
+| **Constraints violated (active)** | 1 (timeout value) |
 | **Constraints unverifiable (static analysis)** | 1 (PT-1206 manual hardware testing) |
 
 ### Overall Assessment
@@ -286,7 +271,7 @@ The incomplete Android `pairing_method()` (F-003) is the most security-relevant 
 |----------|---------|-----------------|--------|------|
 | 1 | F-001 | Reconcile `GW_INFO_RESPONSE` timeout: update spec to 45 s (with rationale) OR code to 5 s | S | Spec or behavioral change |
 | 2 | F-003 | Wire up Android `onBondStateChanged` JNI callback to report actual pairing method | M | JNI complexity; untested until hardware available |
-| 3 | F-002 | Document btleplug GATT write retry as PT-1003 exception for WinRT pairing dialog | S | None (documentation only) |
+| 3 | F-002 | **RESOLVED** — retry loop removed (#997); write failures surfaced immediately | — | — |
 | 4 | F-004 | Add PT-0805 requirement for plaintext-to-encrypted PSK migration | S | None (documentation only) |
 | 5 | F-007 | Add `gateway_id` mismatch to PT-0302 acceptance criteria | S | None (documentation only) |
 | 6 | F-006 | Add whitespace trimming to PT-0403 acceptance criteria | S | None (documentation only) |
@@ -324,3 +309,4 @@ The incomplete Android `pairing_method()` (F-003) is the most security-relevant 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2025-07-03 | Copilot (audit agent) | Initial audit report |
+| 1.1 | 2026-05-20 | Copilot | F-002 marked RESOLVED — GATT write retry loop removed (#997). Updated executive summary, D10 count, and coverage metrics. |

@@ -902,7 +902,7 @@ when needed (e.g., credential rotation).
 **Source:** [issue #1031](https://github.com/Alan-Jowett/sonde/issues/1031)
 
 **Description:**
-The `bootstrap` subcommand MUST accept optional custom domain parameters that
+The `bootstrap` subcommand SHOULD accept optional custom domain parameters that
 allow the operator to pass custom DNS configuration to the bootstrap container.
 Three parameters are accepted:
 

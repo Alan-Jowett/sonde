@@ -452,7 +452,7 @@ The transport requests ATT MTU ≥ 247 during connection.  The actual negotiated
 
 Per [ble-pairing-protocol.md §3.4](ble-pairing-protocol.md), indications may be fragmented across multiple ATT Handle Value Indications.  The `fragmentation.rs` module provides standalone helpers for both directions:
 
-- **Outbound (Write Long):** `fragment_for_write()` splits a payload into MTU-sized chunks.
+- **Outbound (Write Long):** `fragment_for_write()` splits a payload into caller-specified chunks (typically MTU − 3 bytes).
 - **Inbound (indication reassembly):** `IndicationReassembler` accumulates indication chunks until the envelope `LEN` field is satisfied, with a fixed maximum reassembly size of 4096 bytes to bound memory usage.
 
 Transport implementations may call these helpers when the underlying BLE stack does not handle fragmentation natively.  Desktop transports (e.g. `BtleplugTransport`) delegate Write Long to the OS BLE stack.  Current pairing protocol messages fit within a single indication, so `BtleplugTransport` returns individual indication payloads directly; transports that need multi-indication reassembly should use `IndicationReassembler`.  The reassembly logic:

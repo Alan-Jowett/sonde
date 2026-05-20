@@ -343,7 +343,8 @@ separate line on a time-series chart. The X-axis is time (derived from
 - Maximum 1000 rows per query (`$top=1000`). For longer time ranges,
   the SPA downsamples client-side: fetch up to 1000 rows for the
   requested window, then downsample to a maximum of 500 points per
-  series (e.g., pick one point per pixel or per time bucket).
+  series (e.g., divide the time range into 500 equal buckets and
+  pick one representative point per bucket).
 - Int64 values exceeding `Number.MAX_SAFE_INTEGER` (2^53 - 1) are displayed
   as strings. The Azure handler encodes such values as JSON strings in the
   `decoded_readings` column (see AZH-0501 AC-5). The SPA MUST handle both

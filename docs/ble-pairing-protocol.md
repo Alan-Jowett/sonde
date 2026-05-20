@@ -489,7 +489,7 @@ The node identifies reply frames by inspecting the `msg_type` byte at header off
 6. Tool sends `READ_TEST_RESULT` and waits up to **5 seconds** for `TEST_RESULT`.
 7. On `TEST_RESULT(status=0x00)`, the tool decrypts the raw `DIAG_REPLY` frame using `phone_psk`, combines the gateway-reported diagnostic fields with timing metadata and any available node-reported reply RSSI, and displays the result.
 8. On `TEST_RESULT(status=0x01)` (timeout) or `TEST_RESULT(status=0x03)` (execution error), the tool displays an error message with guidance.
-9. If the decrypted gateway `signal_quality` is `2` (bad), the tool displays a warning and requires installer confirmation before allowing provisioning to proceed.
+9. The tool evaluates the raw `rssi_dbm` from the decrypted `DIAG_REPLY` against its own hard-coded thresholds. If the RSSI indicates a poor signal, the tool displays a warning and requires installer confirmation before allowing provisioning to proceed.
 
 ### 6a.5  Timing
 

@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-use std::time::SystemTime;
-
-/// A timestamped battery voltage reading.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BatteryReading {
-    /// When the reading was taken.
-    pub timestamp: SystemTime,
-    /// Battery voltage in millivolts.
-    pub battery_mv: u32,
-}
-
 /// Sensor descriptor for a node's attached peripherals.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SensorDescriptor {
@@ -27,9 +16,7 @@ pub struct SensorDescriptor {
 }
 
 /// Node record. The `node_id` is an admin-assigned opaque identifier used to
-/// correlate a node across sessions and handler API calls. The `last_seen` and
-/// `last_battery_mv` fields are runtime-only overlays and are not persisted by
-/// durable storage backends.
+/// correlate a node across sessions and handler API calls.
 #[derive(Debug, Clone)]
 pub struct NodeRecord {
     pub node_id: String,
@@ -44,20 +31,12 @@ pub struct NodeRecord {
     pub schedule_interval_s: u32,
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
-    /// Most recent WAKE battery reading observed by the current gateway process.
-    /// Durable storage backends intentionally do not persist this field.
-    pub last_battery_mv: Option<u32>,
-    pub last_seen: Option<SystemTime>,
     /// RF channel the node operates on (1–13). Set during BLE pairing.
     pub rf_channel: Option<u8>,
     /// Attached sensor descriptors. Set during BLE pairing.
     pub sensors: Vec<SensorDescriptor>,
     /// Phone ID that registered this node (audit trail). Set during BLE pairing.
     pub registered_by_phone_id: Option<u32>,
-    /// Historical battery voltage readings retained only for struct/schema
-    /// compatibility with legacy battery-persistence code paths. New gateway
-    /// code does not populate or append to this list.
-    pub battery_history: Vec<BatteryReading>,
     /// Master key version used to encrypt this node's PSK (GW-2005).
     pub key_version: u64,
 }
@@ -75,28 +54,23 @@ impl NodeRecord {
             schedule_interval_s: 60,
             firmware_abi_version: None,
             firmware_version: None,
-            last_battery_mv: None,
-            last_seen: None,
             rf_channel: None,
             sensors: Vec::new(),
             registered_by_phone_id: None,
-            battery_history: Vec::new(),
             key_version: 0,
         }
     }
 
-    /// Update the in-memory WAKE overlay on a `NodeRecord`.
+    /// Update the durable WAKE metadata mirrored on a `NodeRecord`.
     ///
-    /// This caches the runtime-only battery reading plus the latest firmware
-    /// metadata in a cloned record used by admin/connector shaping. Durable
-    /// persistence of firmware metadata is handled separately by storage.
+    /// Runtime battery and last-seen overlays are tracked separately by
+    /// `SessionManager`; only firmware metadata lives on the record.
     pub fn update_telemetry(
         &mut self,
-        battery_mv: u32,
+        _battery_mv: u32,
         firmware_abi_version: u32,
         firmware_version: String,
     ) {
-        self.last_battery_mv = Some(battery_mv);
         self.firmware_abi_version = Some(firmware_abi_version);
         self.firmware_version = Some(firmware_version);
     }

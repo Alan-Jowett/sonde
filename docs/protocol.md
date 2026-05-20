@@ -176,7 +176,6 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 |---|---|---|
 | 1 | `diagnostic_type` | DIAG_REQUEST, DIAG_REPLY |
 | 2 | `rssi_dbm` | DIAG_REPLY |
-| 3 | `signal_quality` | DIAG_REPLY |
 
 `diagnostic_type` values:
 
@@ -427,21 +426,10 @@ Sent by the gateway in response to a valid `DIAG_REQUEST`. Authenticated with th
 |---|---|---|---|
 | `diagnostic_type` | uint | Yes | Echoes the `diagnostic_type` from the request. |
 | `rssi_dbm` | int | Yes | RSSI of the received `DIAG_REQUEST` frame, in dBm (typically −30 to −90). |
-| `signal_quality` | uint | Yes | Gateway's assessment: `0` = good, `1` = marginal, `2` = bad. |
 
 The `nonce` field in the header echoes the `DIAG_REQUEST` nonce, binding the reply to the request. The `key_hint` is the same phone `key_hint` from the request, so the pairing tool can look up its own PSK for decryption.
 
-Signal quality thresholds are configurable on the gateway (see `gateway-requirements.md`). Default values:
-
-| Assessment | RSSI range | Guidance |
-|---|---|---|
-| `0` (good) | ≥ −60 dBm | Reliable link. Proceed with provisioning. |
-| `1` (marginal) | < −60 dBm and ≥ −75 dBm | May work but consider repositioning. |
-| `2` (bad) | < −75 dBm | Unreliable link. Reposition node before provisioning. |
-
-The boundaries are inclusive: `−60 dBm` is good, `−75 dBm` is marginal.
-
-When the gateway cannot determine RSSI (e.g., loopback transport or test environment), it uses a sentinel value of `rssi_dbm = 0` and sets `signal_quality = 2` (bad) per **GW-1702**. Pairing tools should treat `rssi_dbm = 0` as "RSSI unavailable" rather than an actual measurement.
+When the gateway cannot determine RSSI (e.g., loopback transport or test environment), it uses a sentinel value of `rssi_dbm = 0` per **GW-1702**. Pairing tools should treat `rssi_dbm = 0` as "RSSI unavailable" rather than an actual measurement. The pairing tool applies its own hard-coded thresholds to the raw `rssi_dbm` value for display purposes.
 
 ---
 

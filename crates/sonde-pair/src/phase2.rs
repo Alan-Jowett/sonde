@@ -524,14 +524,14 @@ pub async fn check_rssi_with_artifacts(
             let reply_frame = result.reply_frame.as_deref().ok_or_else(|| {
                 PairingError::DiagnosticFailed("missing raw DIAG_REPLY frame".into())
             })?;
-            let (gateway_rssi_dbm, signal_quality) = crate::crypto::decrypt_diag_reply(
+            let gateway_rssi_dbm = crate::crypto::decrypt_diag_reply(
                 reply_frame,
                 &artifacts.phone_psk,
                 request_nonce,
             )?;
             Ok(DiagnosticResult {
                 gateway_rssi_dbm,
-                signal_quality,
+                signal_quality: crate::types::assess_signal_quality(gateway_rssi_dbm),
                 node_reply_rssi_dbm: result.reply_rssi_dbm,
                 attempt_count: result.attempt_count,
                 elapsed_ms: result.elapsed_ms,
@@ -1263,7 +1263,6 @@ mod tests {
                     let reply_payload = sonde_protocol::GatewayMessage::DiagReply {
                         diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
                         rssi_dbm: -58,
-                        signal_quality: sonde_protocol::SIGNAL_QUALITY_GOOD,
                     }
                     .encode()
                     .unwrap();

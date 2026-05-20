@@ -61,7 +61,6 @@ impl TestEnv {
                 Vec::new(),
             ))),
         );
-        gateway.set_rssi_thresholds(good, bad);
         Self { gateway }
     }
 }
@@ -105,12 +104,7 @@ async fn diag_request_good_rssi() {
         .await;
     assert!(response.is_some());
     match decode_diag_reply(&response.unwrap(), &TEST_PHONE_PSK) {
-        GatewayMessage::DiagReply {
-            signal_quality,
-            rssi_dbm,
-            ..
-        } => {
-            assert_eq!(signal_quality, 0);
+        GatewayMessage::DiagReply { rssi_dbm, .. } => {
             assert_eq!(rssi_dbm, -50);
         }
         other => panic!("expected DiagReply, got {:?}", other),
@@ -127,12 +121,7 @@ async fn diag_request_marginal_rssi() {
         .await
         .unwrap();
     match decode_diag_reply(&response, &TEST_PHONE_PSK) {
-        GatewayMessage::DiagReply {
-            signal_quality,
-            rssi_dbm,
-            ..
-        } => {
-            assert_eq!(signal_quality, 1);
+        GatewayMessage::DiagReply { rssi_dbm, .. } => {
             assert_eq!(rssi_dbm, -65);
         }
         other => panic!("expected DiagReply, got {:?}", other),
@@ -149,12 +138,7 @@ async fn diag_request_bad_rssi() {
         .await
         .unwrap();
     match decode_diag_reply(&response, &TEST_PHONE_PSK) {
-        GatewayMessage::DiagReply {
-            signal_quality,
-            rssi_dbm,
-            ..
-        } => {
-            assert_eq!(signal_quality, 2);
+        GatewayMessage::DiagReply { rssi_dbm, .. } => {
             assert_eq!(rssi_dbm, -80);
         }
         other => panic!("expected DiagReply, got {:?}", other),
@@ -162,8 +146,8 @@ async fn diag_request_bad_rssi() {
 }
 
 #[tokio::test]
-async fn diag_request_at_good_boundary() {
-    let env = TestEnv::with_thresholds(-60, -75).await;
+async fn diag_request_rssi_boundary() {
+    let env = TestEnv::new().await;
     let frame = build_diag_request(&TEST_PHONE_PSK);
     let response = env
         .gateway
@@ -171,22 +155,7 @@ async fn diag_request_at_good_boundary() {
         .await
         .unwrap();
     match decode_diag_reply(&response, &TEST_PHONE_PSK) {
-        GatewayMessage::DiagReply { signal_quality, .. } => assert_eq!(signal_quality, 0),
-        other => panic!("expected DiagReply, got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn diag_request_below_bad_boundary() {
-    let env = TestEnv::with_thresholds(-60, -75).await;
-    let frame = build_diag_request(&TEST_PHONE_PSK);
-    let response = env
-        .gateway
-        .process_frame_with_rssi(&frame, peer(), Some(-76))
-        .await
-        .unwrap();
-    match decode_diag_reply(&response, &TEST_PHONE_PSK) {
-        GatewayMessage::DiagReply { signal_quality, .. } => assert_eq!(signal_quality, 2),
+        GatewayMessage::DiagReply { rssi_dbm, .. } => assert_eq!(rssi_dbm, -60),
         other => panic!("expected DiagReply, got {:?}", other),
     }
 }
@@ -201,13 +170,8 @@ async fn diag_request_no_rssi_sentinel() {
         .await
         .unwrap();
     match decode_diag_reply(&response, &TEST_PHONE_PSK) {
-        GatewayMessage::DiagReply {
-            signal_quality,
-            rssi_dbm,
-            ..
-        } => {
+        GatewayMessage::DiagReply { rssi_dbm, .. } => {
             assert_eq!(rssi_dbm, 0);
-            assert_eq!(signal_quality, 2);
         }
         other => panic!("expected DiagReply, got {:?}", other),
     }

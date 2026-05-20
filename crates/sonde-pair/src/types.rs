@@ -63,7 +63,7 @@ pub struct PreProvisioningTestCommand {
 pub struct DiagnosticResult {
     /// Gateway-observed RSSI from the decrypted `DIAG_REPLY`.
     pub gateway_rssi_dbm: i8,
-    /// Gateway-reported signal-quality assessment.
+    /// Locally-computed signal-quality assessment based on hard-coded RSSI thresholds.
     pub signal_quality: u8,
     /// Node-observed RSSI of the received reply frame, when the platform
     /// exposes receive metadata for the reply.
@@ -72,6 +72,22 @@ pub struct DiagnosticResult {
     pub attempt_count: u64,
     /// Total node-side execution time for the test run.
     pub elapsed_ms: u64,
+}
+
+/// Hard-coded RSSI threshold (dBm) at or above which signal is "good".
+const RSSI_GOOD_THRESHOLD: i8 = -60;
+/// Hard-coded RSSI threshold (dBm) below which signal is "bad".
+const RSSI_BAD_THRESHOLD: i8 = -75;
+
+/// Assess RSSI signal quality using hard-coded thresholds.
+pub fn assess_signal_quality(rssi_dbm: i8) -> u8 {
+    if rssi_dbm >= RSSI_GOOD_THRESHOLD {
+        sonde_protocol::SIGNAL_QUALITY_GOOD
+    } else if rssi_dbm >= RSSI_BAD_THRESHOLD {
+        sonde_protocol::SIGNAL_QUALITY_MARGINAL
+    } else {
+        sonde_protocol::SIGNAL_QUALITY_BAD
+    }
 }
 
 /// Status codes from node provisioning acknowledgement.

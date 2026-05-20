@@ -40,7 +40,7 @@ fn node_help_lists_nested_subcommands() {
 
     assert!(output.status.success(), "node --help should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for subcommand in ["list", "get", "register", "remove", "factory-reset"] {
+    for subcommand in ["list", "get", "register", "remove"] {
         assert!(
             stdout.contains(subcommand),
             "node help should list `{subcommand}`: {stdout}"

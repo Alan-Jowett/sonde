@@ -99,17 +99,11 @@ pub const PEER_ACK_KEY_PROOF: u64 = 2;
 // CBOR integer keys (diagnostic messages — separate keyspace, scoped to msg_type 0x06/0x85)
 pub const DIAG_KEY_DIAGNOSTIC_TYPE: u64 = 1;
 pub const DIAG_KEY_RSSI_DBM: u64 = 2;
-pub const DIAG_KEY_SIGNAL_QUALITY: u64 = 3;
 
 // Diagnostic type codes
 pub const DIAG_TYPE_RSSI: u8 = 0x01;
 
-// Signal quality assessment codes
-pub const SIGNAL_QUALITY_GOOD: u8 = 0;
-pub const SIGNAL_QUALITY_MARGINAL: u8 = 1;
-pub const SIGNAL_QUALITY_BAD: u8 = 2;
-
-// BLE envelope message types (Node Command characteristic — separate from ESP-NOW msg_types)
+// BLE envelope message types(Node Command characteristic — separate from ESP-NOW msg_types)
 pub const BLE_NODE_PROVISION: u8 = 0x01;
 pub const BLE_RUN_TEST_COMMAND: u8 = 0x02;
 pub const BLE_READ_TEST_RESULT: u8 = 0x03;
@@ -339,7 +333,6 @@ pub enum GatewayMessage {
     DiagReply {
         diagnostic_type: u8,
         rssi_dbm: i8,
-        signal_quality: u8,
     },
 }
 

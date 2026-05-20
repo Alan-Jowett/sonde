@@ -11,7 +11,6 @@ pub mod decoder_platform;
 pub mod display_banner;
 pub mod display_control;
 pub mod engine;
-pub mod escrow;
 pub mod gateway_identity;
 pub mod handler;
 pub mod key_provider;
@@ -39,7 +38,7 @@ pub use handler::{
 };
 pub use phone_trust::{PhonePskRecord, PhonePskStatus};
 pub use program::{ProgramLibrary, ProgramRecord, VerificationProfile};
-pub use registry::{BatteryReading, NodeRecord, SensorDescriptor};
+pub use registry::{NodeRecord, SensorDescriptor};
 pub use session::{Session, SessionManager, SessionState};
 pub use sqlite_storage::SqliteStorage;
 pub use storage::{InMemoryStorage, Storage, StorageError};

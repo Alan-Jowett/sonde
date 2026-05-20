@@ -7,7 +7,7 @@
 //! T-0604–T-0607/T-1004 (session manager), T-0400–T-0407 (program library),
 //! and crypto unit tests.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use sonde_gateway::{
     InMemoryStorage, MockTransport, NodeRecord, ProgramLibrary, RustCryptoSha256, SessionManager,
@@ -69,59 +69,49 @@ async fn t0700_node_registry_persistence() {
     assert!(gone.is_none(), "node must not exist after deletion");
 }
 
-/// T-0702: Battery telemetry is runtime-only and not durably persisted.
+/// T-0702: Battery telemetry is tracked in `SessionManager` at runtime.
 #[tokio::test]
 async fn t0702_battery_level_tracking() {
-    let storage = InMemoryStorage::new();
-    let mut node = NodeRecord::new("node-bat".into(), 10, [0x01; 32]);
+    let sessions = SessionManager::new(Duration::from_secs(30));
 
-    assert!(
-        node.last_battery_mv.is_none(),
-        "initial battery must be None"
-    );
+    assert_eq!(sessions.get_battery_mv("node-bat").await, None);
 
-    // First WAKE: battery at 3300 mV.
-    node.update_telemetry(3300, 1, "0.7.0".into());
-    assert_eq!(node.last_battery_mv, Some(3300));
-    storage.upsert_node(&node).await.unwrap();
+    sessions.record_battery_mv("node-bat", 3300).await;
+    assert_eq!(sessions.get_battery_mv("node-bat").await, Some(3300));
 
-    let fetched = storage.get_node("node-bat").await.unwrap().unwrap();
-    assert_eq!(fetched.last_battery_mv, None);
+    sessions.record_battery_mv("node-bat", 2900).await;
+    assert_eq!(sessions.get_battery_mv("node-bat").await, Some(2900));
 
-    // Second WAKE: battery drops to 2900 mV.
-    node.update_telemetry(2900, 1, "0.7.0".into());
-    assert_eq!(node.last_battery_mv, Some(2900));
-    storage.upsert_node(&node).await.unwrap();
-
-    let fetched = storage.get_node("node-bat").await.unwrap().unwrap();
-    assert_eq!(fetched.last_battery_mv, None);
+    sessions.clear_battery_mv("node-bat").await;
+    assert_eq!(sessions.get_battery_mv("node-bat").await, None);
 }
 
-/// T-0702b: Local battery history is no longer accumulated or persisted.
+/// T-0702b: Runtime last-seen overlays are tracked separately from `NodeRecord`.
 #[tokio::test]
-async fn t0702b_battery_history_retention_and_cap() {
-    let storage = InMemoryStorage::new();
-    let mut node = NodeRecord::new("node-bat-hist".into(), 11, [0x42; 32]);
+async fn t0702b_runtime_last_seen_tracking() {
+    let sessions = SessionManager::new(Duration::from_secs(30));
+    let observed_at = SystemTime::now();
 
-    // Initially empty.
-    assert!(
-        node.battery_history.is_empty(),
-        "initial battery history must be empty"
+    assert!(sessions.get_last_seen("node-last-seen").await.is_none());
+
+    sessions
+        .record_last_seen("node-last-seen", observed_at)
+        .await;
+    assert_eq!(
+        sessions.get_last_seen("node-last-seen").await,
+        Some(observed_at)
+    );
+    assert_eq!(
+        sessions
+            .snapshot_last_seen()
+            .await
+            .get("node-last-seen")
+            .copied(),
+        Some(observed_at)
     );
 
-    // Send many readings; runtime history should remain empty.
-    for i in 0u32..105 {
-        node.update_telemetry(3000 + i, 1, "0.7.0".into());
-    }
-    assert!(
-        node.battery_history.is_empty(),
-        "battery history must stay empty"
-    );
-    storage.upsert_node(&node).await.unwrap();
-
-    let fetched = storage.get_node("node-bat-hist").await.unwrap().unwrap();
-    assert!(fetched.battery_history.is_empty());
-    assert_eq!(fetched.last_battery_mv, None);
+    sessions.clear_last_seen("node-last-seen").await;
+    assert!(sessions.get_last_seen("node-last-seen").await.is_none());
 }
 
 /// T-0703: Firmware ABI version tracking.

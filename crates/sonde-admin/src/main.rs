@@ -12,17 +12,6 @@ use sonde_admin::grpc_client::AdminClient;
 use sonde_admin::pb;
 use sonde_protocol::normalize_display_filename;
 
-/// SHA-256 provider for BIP-39 fingerprint computation.
-struct AdminSha256;
-impl sonde_protocol::Sha256Provider for AdminSha256 {
-    fn hash(&self, data: &[u8]) -> [u8; 32] {
-        use sha2::Digest;
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(data);
-        hasher.finalize().into()
-    }
-}
-
 #[derive(Parser)]
 #[command(name = "sonde-admin", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("SONDE_GIT_COMMIT"), ")"), about = "Sonde gateway administration CLI")]
 struct Cli {
@@ -119,11 +108,6 @@ enum Commands {
         #[command(subcommand)]
         action: HandlerAction,
     },
-    /// PSK key escrow management (GW-2000 series).
-    Key {
-        #[command(subcommand)]
-        action: KeyAction,
-    },
 }
 
 #[derive(Subcommand)]
@@ -146,13 +130,6 @@ enum NodeAction {
     },
     /// Remove a node from the registry.
     Remove {
-        /// Node identifier.
-        node_id: String,
-    },
-    /// Factory reset a node (GW-0705).
-    ///
-    /// Removes the node from the gateway registry and clears pending commands.
-    FactoryReset {
         /// Node identifier.
         node_id: String,
     },
@@ -289,35 +266,18 @@ enum HandlerAction {
     List,
 }
 
-#[derive(Subcommand)]
-enum KeyAction {
-    /// Display the gateway's recovery public key fingerprint (ADMIN-0901).
-    /// Currently requires --public-key; gateway fetch will be added later.
-    Fingerprint {
-        /// Hex-encoded public key (32 bytes). Required until gateway fetch is implemented.
-        #[arg(long)]
-        public_key: Option<String>,
-    },
-    /// Show escrow status (ADMIN-0902).
-    Status,
-}
-
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    let result = if command_runs_without_gateway(&cli.command) {
-        run_without_gateway(&cli)
-    } else {
-        let mut client = match AdminClient::connect(&cli.socket).await {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Failed to connect to gateway at {}: {e}", cli.socket);
-                process::exit(1);
-            }
-        };
-        run(&mut client, &cli).await
+    let mut client = match AdminClient::connect(&cli.socket).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to connect to gateway at {}: {e}", cli.socket);
+            process::exit(1);
+        }
     };
+    let result = run(&mut client, &cli).await;
     if let Err(e) = result {
         if let Some(status) = e.downcast_ref::<tonic::Status>() {
             let msg = status.message();
@@ -354,67 +314,6 @@ async fn main() {
         }
         process::exit(1);
     }
-}
-
-fn command_runs_without_gateway(command: &Commands) -> bool {
-    matches!(command, Commands::Key { .. })
-}
-
-fn run_without_gateway(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let json = matches!(cli.format, OutputFormat::Json);
-    match &cli.command {
-        Commands::Key { action } => match action {
-            KeyAction::Fingerprint { public_key } => {
-                print_key_fingerprint(public_key.as_deref(), json)
-            }
-            KeyAction::Status => {
-                if json {
-                    print_json(&serde_json::json!({
-                        "escrow_state": "unknown",
-                        "note": "escrow status query not yet implemented",
-                    }))?;
-                } else {
-                    println!("Escrow status query not yet implemented.");
-                    println!("Use gateway logs or Azure Table Storage to check escrow state.");
-                }
-                Ok(())
-            }
-        },
-        _ => Err("command requires gateway connection".into()),
-    }
-}
-
-/// Render a BIP-39-style fingerprint for a recovery public key.
-fn print_key_fingerprint(
-    public_key: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let hex_str = public_key.ok_or_else(|| {
-        "--public-key is required (gateway fetch not yet implemented)".to_string()
-    })?;
-    let bytes = hex::decode(hex_str).map_err(|e| format!("invalid hex public key: {e}"))?;
-    if bytes.len() != 32 {
-        return Err(format!("public key must be exactly 32 bytes, got {}", bytes.len()).into());
-    }
-    let pubkey_bytes: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| "public key must be exactly 32 bytes")?;
-
-    let sha = AdminSha256;
-    let words = sonde_protocol::compute_fingerprint(&pubkey_bytes, &sha);
-    if json {
-        print_json(&serde_json::json!({
-            "fingerprint": words,
-            "public_key": hex::encode(pubkey_bytes),
-        }))?;
-    } else {
-        println!("Key fingerprint:");
-        println!("  {} {}", words[0], words[1]);
-        println!("  {} {}", words[2], words[3]);
-        println!("  {} {}", words[4], words[5]);
-    }
-    Ok(())
 }
 
 /// Resolve the passphrase from the CLI arg (which also reads `SONDE_PASSPHRASE`
@@ -527,18 +426,6 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                         print_json(&serde_json::json!({"removed": node_id}))?;
                     } else {
                         println!("Removed node: {node_id}");
-                    }
-                }
-                NodeAction::FactoryReset { node_id } => {
-                    confirm(
-                        &format!("Factory reset node '{node_id}'? This will zeroize the node's PSK and remove it from the registry."),
-                        cli.yes,
-                    )?;
-                    client.factory_reset(node_id).await?;
-                    if json {
-                        print_json(&serde_json::json!({"factory_reset": node_id}))?;
-                    } else {
-                        println!("Factory reset node: {node_id}");
                     }
                 }
             }
@@ -993,10 +880,6 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
             }
         },
-        Commands::Key { .. } => {
-            // Handled by run_without_gateway(); this branch is unreachable.
-            unreachable!("Key commands are dispatched before gateway connection");
-        }
     }
 
     Ok(())
@@ -1115,36 +998,5 @@ mod tests {
         );
 
         assert!(program_names.is_empty());
-    }
-
-    #[test]
-    fn key_commands_run_without_gateway() {
-        assert!(command_runs_without_gateway(&Commands::Key {
-            action: KeyAction::Fingerprint { public_key: None },
-        }));
-        assert!(command_runs_without_gateway(&Commands::Key {
-            action: KeyAction::Status,
-        }));
-        assert!(!command_runs_without_gateway(&Commands::Status {
-            node_id: "node-1".to_string(),
-        }));
-    }
-
-    #[test]
-    fn fingerprint_without_public_key_fails_before_gateway_connect() {
-        let cli = Cli {
-            socket: default_socket().to_string(),
-            format: OutputFormat::Text,
-            yes: false,
-            verbose: false,
-            command: Commands::Key {
-                action: KeyAction::Fingerprint { public_key: None },
-            },
-        };
-
-        let err = run_without_gateway(&cli).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("--public-key is required (gateway fetch not yet implemented)"));
     }
 }

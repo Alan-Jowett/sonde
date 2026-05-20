@@ -176,6 +176,8 @@ fn format_program_identifier(hash: &[u8], program_names: &HashMap<Vec<u8>, Strin
 fn build_node_status_lines(
     nodes: &[NodeRecord],
     program_names: &HashMap<Vec<u8>, String>,
+    last_seen_by_node: &HashMap<String, SystemTime>,
+    battery_mv_by_node: &HashMap<String, u32>,
 ) -> Vec<String> {
     if nodes.is_empty() {
         return vec!["No nodes registered.".to_string()];
@@ -204,10 +206,10 @@ fn build_node_status_lines(
                 &format_program_identifier(hash, program_names),
             );
         }
-        if let Some(mv) = node.last_battery_mv {
+        if let Some(mv) = battery_mv_by_node.get(&node.node_id).copied() {
             push_wrapped_property_value(&mut lines, "battery", &format!("{mv} mV"));
         }
-        if let Some(last_seen) = node.last_seen {
+        if let Some(last_seen) = last_seen_by_node.get(&node.node_id).copied() {
             push_wrapped_property_value(
                 &mut lines,
                 "last seen",
@@ -227,17 +229,24 @@ fn build_node_status_lines(
 async fn node_status_nodes(
     storage: &Arc<dyn Storage>,
     session_manager: Option<&Arc<SessionManager>>,
-) -> Result<Vec<NodeRecord>, sonde_gateway::storage::StorageError> {
-    let mut nodes = storage.list_nodes().await?;
-    if let Some(session_manager) = session_manager {
-        let last_seen = session_manager.snapshot_last_seen().await;
-        let battery_mv = session_manager.snapshot_battery_mv().await;
-        for node in &mut nodes {
-            node.last_seen = last_seen.get(&node.node_id).copied();
-            node.last_battery_mv = battery_mv.get(&node.node_id).copied();
-        }
-    }
-    Ok(nodes)
+) -> Result<
+    (
+        Vec<NodeRecord>,
+        HashMap<String, SystemTime>,
+        HashMap<String, u32>,
+    ),
+    sonde_gateway::storage::StorageError,
+> {
+    let nodes = storage.list_nodes().await?;
+    let (last_seen, battery_mv) = if let Some(session_manager) = session_manager {
+        (
+            session_manager.snapshot_last_seen().await,
+            session_manager.snapshot_battery_mv().await,
+        )
+    } else {
+        (HashMap::new(), HashMap::new())
+    };
+    Ok((nodes, last_seen, battery_mv))
 }
 
 async fn render_status_page(
@@ -260,10 +269,15 @@ async fn render_status_page(
             RenderedStatusPage::Static(Box::new(render_display_message(&line_refs)))
         }
         StatusPage::Nodes => match node_status_nodes(storage, session_manager).await {
-            Ok(nodes) => {
+            Ok((nodes, last_seen_by_node, battery_mv_by_node)) => {
                 if nodes.is_empty() {
                     return RenderedStatusPage::Scrollable(render_status_text_page(
-                        &build_node_status_lines(&nodes, &HashMap::new()),
+                        &build_node_status_lines(
+                            &nodes,
+                            &HashMap::new(),
+                            &last_seen_by_node,
+                            &battery_mv_by_node,
+                        ),
                     ));
                 }
 
@@ -277,6 +291,8 @@ async fn render_status_page(
                 RenderedStatusPage::Scrollable(render_status_text_page(&build_node_status_lines(
                     &nodes,
                     &program_names,
+                    &last_seen_by_node,
+                    &battery_mv_by_node,
                 )))
             }
             Err(e) => {
@@ -778,14 +794,6 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     generate_master_key: bool,
 
-    /// RSSI threshold (dBm) at or above which signal quality is "good".
-    #[arg(long, default_value_t = -60)]
-    rssi_good_threshold: i8,
-
-    /// RSSI threshold (dBm) at or below which signal quality is "bad".
-    #[arg(long, default_value_t = -75)]
-    rssi_bad_threshold: i8,
-
     /// Run as a Windows NT service.
     ///
     /// This flag is set automatically by `sonde-gateway install` in the service
@@ -996,16 +1004,12 @@ async fn run_gateway(
     )));
 
     // Create gateway engine with the shared handler router (D-485, GW-1407).
-    let gateway = Arc::new({
-        let mut gw = Gateway::new_with_pending(
-            storage.clone(),
-            pending_commands.clone(),
-            session_manager.clone(),
-            handler_router.clone(),
-        );
-        gw.set_rssi_thresholds(cli.rssi_good_threshold, cli.rssi_bad_threshold);
-        gw
-    });
+    let gateway = Arc::new(Gateway::new_with_pending(
+        storage.clone(),
+        pending_commands.clone(),
+        session_manager.clone(),
+        handler_router.clone(),
+    ));
     let connector_service = ConnectorService::new(
         storage.clone(),
         pending_commands.clone(),
@@ -2062,27 +2066,29 @@ mod tests {
         framebuffer
     }
 
-    fn make_rich_node(node_id: &str, key_hint: u16, fill: u8, last_seen_s: u64) -> NodeRecord {
+    fn make_rich_node(node_id: &str, key_hint: u16, fill: u8, _last_seen_s: u64) -> NodeRecord {
         let mut node = NodeRecord::new(node_id.to_string(), key_hint, [fill; 32]);
         node.assigned_program_hash = Some(vec![fill; 32]);
         node.current_program_hash = Some(vec![fill.saturating_add(1); 32]);
-        node.last_battery_mv = Some(3200 + u32::from(fill));
-        node.last_seen = Some(UNIX_EPOCH + Duration::from_secs(last_seen_s));
         node.schedule_interval_s = 60 + u32::from(fill);
         node
     }
 
-    async fn seed_runtime_observation(session_manager: &Arc<SessionManager>, node: &NodeRecord) {
-        if let Some(last_seen) = node.last_seen {
-            session_manager
-                .record_last_seen(&node.node_id, last_seen)
-                .await;
-        }
-        if let Some(battery_mv) = node.last_battery_mv {
-            session_manager
-                .record_battery_mv(&node.node_id, battery_mv)
-                .await;
-        }
+    fn runtime_observation(fill: u8, last_seen_s: u64) -> (SystemTime, u32) {
+        (
+            UNIX_EPOCH + Duration::from_secs(last_seen_s),
+            3200 + u32::from(fill),
+        )
+    }
+
+    async fn seed_runtime_observation(
+        session_manager: &Arc<SessionManager>,
+        node_id: &str,
+        last_seen: SystemTime,
+        battery_mv: u32,
+    ) {
+        session_manager.record_last_seen(node_id, last_seen).await;
+        session_manager.record_battery_mv(node_id, battery_mv).await;
     }
 
     fn make_program_record(hash_fill: u8, source_filename: Option<&str>) -> ProgramRecord {
@@ -2101,8 +2107,18 @@ mod tests {
     fn node_status_lines_sort_nodes_and_omit_absent_fields() {
         let node_a = NodeRecord::new("a".to_string(), 1, [0x11; 32]);
         let node_b = make_rich_node("b", 2, 0x22, 1_700_000_000);
+        let (last_seen_b, battery_b) = runtime_observation(0x22, 1_700_000_000);
+        let mut last_seen_by_node = HashMap::new();
+        last_seen_by_node.insert(node_b.node_id.clone(), last_seen_b);
+        let mut battery_mv_by_node = HashMap::new();
+        battery_mv_by_node.insert(node_b.node_id.clone(), battery_b);
 
-        let lines = build_node_status_lines(&[node_b.clone(), node_a.clone()], &HashMap::new());
+        let lines = build_node_status_lines(
+            &[node_b.clone(), node_a.clone()],
+            &HashMap::new(),
+            &last_seen_by_node,
+            &battery_mv_by_node,
+        );
         let a_index = lines
             .iter()
             .position(|line| line == "- a")
@@ -2168,7 +2184,12 @@ mod tests {
     #[test]
     fn empty_node_status_lines_show_empty_registry_message() {
         assert_eq!(
-            build_node_status_lines(&[] as &[NodeRecord], &HashMap::new()),
+            build_node_status_lines(
+                &[] as &[NodeRecord],
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+            ),
             vec!["No nodes registered.".to_string()]
         );
     }
@@ -2191,8 +2212,21 @@ mod tests {
             },
         ]);
 
-        let lines =
-            build_node_status_lines(&[fallback_node.clone(), named_node.clone()], &program_names);
+        let (named_last_seen, named_battery) = runtime_observation(0x31, 1_700_000_000);
+        let (fallback_last_seen, fallback_battery) = runtime_observation(0x41, 1_700_000_060);
+        let mut last_seen_by_node = HashMap::new();
+        last_seen_by_node.insert(named_node.node_id.clone(), named_last_seen);
+        last_seen_by_node.insert(fallback_node.node_id.clone(), fallback_last_seen);
+        let mut battery_mv_by_node = HashMap::new();
+        battery_mv_by_node.insert(named_node.node_id.clone(), named_battery);
+        battery_mv_by_node.insert(fallback_node.node_id.clone(), fallback_battery);
+
+        let lines = build_node_status_lines(
+            &[fallback_node.clone(), named_node.clone()],
+            &program_names,
+            &last_seen_by_node,
+            &battery_mv_by_node,
+        );
 
         assert!(
             lines.iter().any(|line| line == "- a.o"),
@@ -2224,11 +2258,16 @@ mod tests {
         storage.store_program(&assigned_program).await.unwrap();
         storage.store_program(&current_program).await.unwrap();
         storage.upsert_node(&node).await.unwrap();
-        seed_runtime_observation(&session_manager, &node).await;
+        let (last_seen, battery_mv) = runtime_observation(0x31, 1_700_000_000);
+        seed_runtime_observation(&session_manager, &node.node_id, last_seen, battery_mv).await;
         let storage: Arc<dyn Storage> = storage;
 
         let rendered =
             render_status_page(&storage, Some(&session_manager), 6, StatusPage::Nodes).await;
+        let mut last_seen_by_node = HashMap::new();
+        last_seen_by_node.insert(node.node_id.clone(), last_seen);
+        let mut battery_mv_by_node = HashMap::new();
+        battery_mv_by_node.insert(node.node_id.clone(), battery_mv);
         let expected = render_status_text_page(&build_node_status_lines(
             &[node],
             &build_program_name_map(&[
@@ -2241,6 +2280,8 @@ mod tests {
                     source_filename: current_program.source_filename.clone(),
                 },
             ]),
+            &last_seen_by_node,
+            &battery_mv_by_node,
         ));
 
         match rendered {
@@ -2268,11 +2309,16 @@ mod tests {
 
         let rendered =
             render_status_page(&storage, Some(&session_manager), 6, StatusPage::Nodes).await;
-        let mut expected_node = node.clone();
-        expected_node.last_seen = Some(observed_at);
-        expected_node.last_battery_mv = Some(3300);
-        let expected =
-            render_status_text_page(&build_node_status_lines(&[expected_node], &HashMap::new()));
+        let mut last_seen_by_node = HashMap::new();
+        last_seen_by_node.insert(node.node_id.clone(), observed_at);
+        let mut battery_mv_by_node = HashMap::new();
+        battery_mv_by_node.insert(node.node_id.clone(), 3300);
+        let expected = render_status_text_page(&build_node_status_lines(
+            &[node.clone()],
+            &HashMap::new(),
+            &last_seen_by_node,
+            &battery_mv_by_node,
+        ));
 
         match rendered {
             RenderedStatusPage::Scrollable(framebuffer) => {
@@ -2767,6 +2813,8 @@ mod tests {
         let expected_nodes_page = render_status_text_page(&build_node_status_lines(
             &[] as &[NodeRecord],
             &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         ));
         assert_eq!(framebuffer, expected_nodes_page.visible_window(0));
         assert!(second_press.await.unwrap());
@@ -2801,15 +2849,37 @@ mod tests {
         let node_b = make_rich_node("node-b", 0x1002, 0x52, 1_700_000_060);
         storage.upsert_node(&node_a).await.unwrap();
         storage.upsert_node(&node_b).await.unwrap();
-        seed_runtime_observation(&session_manager, &node_a).await;
-        seed_runtime_observation(&session_manager, &node_b).await;
+        let (node_a_last_seen, node_a_battery) = runtime_observation(0x41, 1_700_000_000);
+        let (node_b_last_seen, node_b_battery) = runtime_observation(0x52, 1_700_000_060);
+        seed_runtime_observation(
+            &session_manager,
+            &node_a.node_id,
+            node_a_last_seen,
+            node_a_battery,
+        )
+        .await;
+        seed_runtime_observation(
+            &session_manager,
+            &node_b.node_id,
+            node_b_last_seen,
+            node_b_battery,
+        )
+        .await;
         let storage: Arc<dyn Storage> = storage;
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
+        let mut last_seen_by_node = HashMap::new();
+        last_seen_by_node.insert(node_a.node_id.clone(), node_a_last_seen);
+        last_seen_by_node.insert(node_b.node_id.clone(), node_b_last_seen);
+        let mut battery_mv_by_node = HashMap::new();
+        battery_mv_by_node.insert(node_a.node_id.clone(), node_a_battery);
+        battery_mv_by_node.insert(node_b.node_id.clone(), node_b_battery);
         let expected_page = render_status_text_page(&build_node_status_lines(
             &[node_a.clone(), node_b.clone()],
             &HashMap::new(),
+            &last_seen_by_node,
+            &battery_mv_by_node,
         ));
         assert!(expected_page.is_scrollable(), "rich node page must scroll");
 
@@ -2873,15 +2943,37 @@ mod tests {
         let node_b = make_rich_node("node-b", 0x1002, 0x52, 1_700_000_060);
         storage.upsert_node(&node_a).await.unwrap();
         storage.upsert_node(&node_b).await.unwrap();
-        seed_runtime_observation(&session_manager, &node_a).await;
-        seed_runtime_observation(&session_manager, &node_b).await;
+        let (node_a_last_seen, node_a_battery) = runtime_observation(0x41, 1_700_000_000);
+        let (node_b_last_seen, node_b_battery) = runtime_observation(0x52, 1_700_000_060);
+        seed_runtime_observation(
+            &session_manager,
+            &node_a.node_id,
+            node_a_last_seen,
+            node_a_battery,
+        )
+        .await;
+        seed_runtime_observation(
+            &session_manager,
+            &node_b.node_id,
+            node_b_last_seen,
+            node_b_battery,
+        )
+        .await;
         let storage: Arc<dyn Storage> = storage;
         let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 2048];
 
+        let mut last_seen_by_node = HashMap::new();
+        last_seen_by_node.insert(node_a.node_id.clone(), node_a_last_seen);
+        last_seen_by_node.insert(node_b.node_id.clone(), node_b_last_seen);
+        let mut battery_mv_by_node = HashMap::new();
+        battery_mv_by_node.insert(node_a.node_id.clone(), node_a_battery);
+        battery_mv_by_node.insert(node_b.node_id.clone(), node_b_battery);
         let expected_nodes_page = render_status_text_page(&build_node_status_lines(
             &[node_a.clone(), node_b.clone()],
             &HashMap::new(),
+            &last_seen_by_node,
+            &battery_mv_by_node,
         ));
 
         tokio::time::pause();
@@ -2967,6 +3059,8 @@ mod tests {
 
         let expected_page = render_status_text_page(&build_node_status_lines(
             &[] as &[NodeRecord],
+            &HashMap::new(),
+            &HashMap::new(),
             &HashMap::new(),
         ));
         assert!(

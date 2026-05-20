@@ -212,17 +212,17 @@ to avoid collisions when tests run in parallel.
 
 **Procedure:**
 1. Start an admin server with a registered node.
-2. Invoke `sonde-admin node remove <node-id>` with stdin connected to a PTY.
+2. Invoke `sonde-admin --socket <endpoint> node remove <node-id>` with stdin connected to a PTY.
 3. Assert: stderr contains `[y/N]:` prompt text.
 4. Write `n\n` to stdin.
 5. Assert: exit code is non-zero and the node is not removed.
-6. Re-invoke `sonde-admin node remove <node-id>` with stdin connected to a PTY.
+6. Re-invoke `sonde-admin --socket <endpoint> node remove <node-id>` with stdin connected to a PTY.
 7. Write `y\n` to stdin.
 8. Assert: exit code is 0 and the node is removed.
-9. Re-register the node and re-invoke with stdin connected to a PTY.
+9. Re-register the node and re-invoke `sonde-admin --socket <endpoint> node remove <node-id>` with stdin connected to a PTY.
 10. Write `Y\n` to stdin.
 11. Assert: exit code is 0 and the node is removed (uppercase accepted).
-12. Re-register the node and re-invoke with `--yes`.
+12. Re-register the node and re-invoke with `sonde-admin --socket <endpoint> --yes node remove <node-id>`.
 13. Assert: exit code is 0 and the node is removed without a prompt.
 
 ---
@@ -234,11 +234,11 @@ to avoid collisions when tests run in parallel.
 
 **Procedure:**
 1. Start an admin server with a registered node.
-2. Invoke `sonde-admin node remove <node-id>` with stdin piped (not a TTY) and without `--yes`.
+2. Invoke `sonde-admin --socket <endpoint> node remove <node-id>` with stdin piped (not a TTY) and without `--yes`.
 3. Assert: exit code is non-zero.
 4. Assert: stderr contains "non-interactive" or "--yes".
 5. Assert: the node is not removed.
-6. Re-invoke `sonde-admin --yes node remove <node-id>` with stdin piped (not a TTY).
+6. Re-invoke `sonde-admin --socket <endpoint> --yes node remove <node-id>` with stdin piped (not a TTY).
 7. Assert: exit code is 0 and the node is removed.
 
 ---

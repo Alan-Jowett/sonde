@@ -280,9 +280,9 @@ confirmation step. The event loop works as follows:
 This subcommand is exempt from `--format json` because the interactive
 passkey confirmation requires TTY access. Although `--format` is a global
 flag accepted by clap, the `pairing start` handler ignores it and always
-produces text output. If stdin is not a TTY when a passkey event
-arrives, the CLI sends `accept: false` to `ConfirmBlePairing` and prints
-a warning to stderr.
+produces text output. The current implementation does not detect non-TTY
+stdin; if stdin is piped or reaches EOF during a passkey prompt, the
+blocking read returns an empty line and the CLI sends `accept: false`.
 
 ---
 

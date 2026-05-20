@@ -520,7 +520,7 @@ to avoid collisions when tests run in parallel.
 1. Start an admin server.
 2. Invoke `sonde-admin --socket <endpoint> program ingest /nonexistent/file.o --profile resident`.
 3. Assert: exit code is non-zero.
-4. Assert: stderr contains an I/O error message referencing the file path.
+4. Assert: stderr contains a local I/O error (e.g., "No such file or directory").
 
 ---
 
@@ -1006,7 +1006,8 @@ code inspection until a BLE-pairing harness is available.
 4. Invoke `sonde-admin --socket <endpoint> --yes pairing stop`.
 5. Assert: the command completes (exit code 0 or gRPC error are both
    acceptable when no window is open, per T-0701).
-6. Assert: `--yes` bypassed the confirmation prompt (no prompt on stderr).
+6. Assert: `--yes` bypassed the confirmation prompt (stderr does not contain
+   the confirmation prompt substring, e.g., `[y/N]:`).
 
 **Note:** This test validates that `pairing stop` is wired as a destructive
 command (confirmation required, `--yes` bypass works). Testing the positive

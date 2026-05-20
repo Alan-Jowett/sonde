@@ -2681,6 +2681,321 @@ The node-facing `program_hash` MUST remain the SHA-256 of the CBOR-encoded node 
 
 ---
 
+## 24  PSK Key Escrow and Master Key Rotation (GW-2000)
+
+### GW-2000  Unified gateway identity
+
+**Priority:** Must
+**Source:** Issue #962 (supersedes evolve-887 GW-2000)
+
+**Description:**
+The gateway MUST use its existing `GatewayIdentity` Ed25519 keypair for both
+BLE pairing challenge-response signing and X25519 key exchange for master key
+rotation (via `to_x25519()` conversion). No separate escrow keypair is
+generated or stored.
+
+**Acceptance criteria:**
+
+1. No `escrow_keypair` table or `EscrowKeypair` type exists.
+2. `GatewayIdentity.to_x25519()` produces a valid X25519 public key.
+3. The X25519 public key is included in gateway ACTUAL_STATE (CBOR key 18).
+
+---
+
+### GW-2001  Master key identification
+
+**Priority:** Must
+**Source:** Issue #962 (supersedes evolve-887 GW-2005)
+
+**Description:**
+Each PSK record in `nodes` and `phone_psks` MUST carry an opaque
+`master_key_id` (BLOB, 16 bytes, random) and a monotonic
+`master_key_epoch` (INTEGER). On first startup, the gateway MUST generate
+a random 16-byte `master_key_id`, set `master_key_epoch = 1`, and
+backfill all existing PSK records.
+
+**Acceptance criteria:**
+
+1. `master_key_id` is a random 16-byte value, NOT a hash of the key.
+2. `master_key_epoch` starts at 1 and is monotonically incremented.
+3. Existing PSK records are backfilled on first startup.
+4. Values are stable across restarts (not regenerated).
+
+---
+
+### GW-2002  Rotation code authentication
+
+**Priority:** Must
+**Source:** Issue #962
+
+**Description:**
+The gateway MUST generate a random single-use rotation code
+(`[A-Z0-9]`, 6 characters, ~31 bits of entropy) using CSPRNG with
+rejection sampling. The code MUST be displayed on the modem and
+included inside the X25519-encrypted rotation payload for
+physical-presence authentication. On successful rotation, a new code
+MUST be generated. The code MUST NOT be published to the cloud or
+connector.
+
+**Acceptance criteria:**
+
+1. Code is 6 uppercase alphanumeric characters.
+2. Code is generated using `getrandom::fill()` with rejection sampling.
+3. Only the correct, unused code is accepted.
+4. A new code is generated after each successful rotation.
+5. Code is never included in ACTUAL_STATE or connector messages.
+
+---
+
+### GW-2003  Gateway ACTUAL_STATE publication
+
+**Priority:** Must
+**Source:** Issue #962 (supersedes evolve-887 GW-2001)
+
+**Description:**
+The gateway MUST emit its own ACTUAL_STATE with `entity_kind = "gateway"`
+and `entity_id = hex(gateway_id)` (lowercase hex, no `0x` prefix). Gateway
+ACTUAL_STATE MUST include: channel, master_key_id, master_key_epoch,
+x25519_public_key, fingerprint_words, missing_key_hints, salt, kdf_params,
+gateway_version, gateway_commit, modem_firmware_version, modem_firmware_commit,
+rotation_in_progress. Node-specific keys 4–8, 10–11 MUST be omitted.
+
+Gateway ACTUAL_STATE is emitted on startup, connector reconnection, and
+whenever gateway state changes.
+
+**Acceptance criteria:**
+
+1. ACTUAL_STATE emitted with all required gateway-specific fields.
+2. `entity_kind = "gateway"`, `entity_id = hex(gateway_id)`.
+3. Node-specific CBOR keys 4–8, 10–11 are absent.
+4. Emitted on startup and connector reconnection.
+
+---
+
+### GW-2004  Gateway DESIRED_STATE handling
+
+**Priority:** Must
+**Source:** Issue #962
+
+**Description:**
+The gateway MUST accept DESIRED_STATE with `entity_kind = "gateway"` and
+process the following fields from the `desired_state` map: `channel`
+(CBOR key 15), `salt` (key 21), `kdf_params` (key 22),
+`rotation_payload` (key 28), `recovered_psks` (key 29).
+
+**Convergence behavior:**
+- Channel: switch if different from current.
+- Salt/KDF params: adopt from DESIRED_STATE if no local salt; once set
+  locally, salt is immutable except via rotation payload.
+- Rotation payload: process if valid (see GW-2006).
+- Recovered PSKs: process each record (see GW-2009).
+
+**Acceptance criteria:**
+
+1. Gateway switches channel when DESIRED_STATE channel differs.
+2. Salt adopted when gateway has no local salt.
+3. Local salt not overwritten by DESIRED_STATE after first set.
+4. All DESIRED_STATE fields processed.
+
+---
+
+### GW-2005  Node ACTUAL_STATE escrow fields
+
+**Priority:** Must
+**Source:** Issue #962 (supersedes evolve-887 GW-2003)
+
+**Description:**
+Node ACTUAL_STATE MUST include three escrow fields: `encrypted_psk`
+(CBOR key 12, bstr 60 bytes), `escrow_key_hint` (key 13, uint 0–65535),
+and `master_key_id` (key 14, bstr 16 bytes). Phone PSKs are NOT escrowed
+(phone ACTUAL_STATE is never emitted).
+
+Escrow fields are emitted on node registration, after key rotation, and
+on connector reconnection.
+
+**Acceptance criteria:**
+
+1. Node ACTUAL_STATE includes keys 12, 13, 14.
+2. Phone ACTUAL_STATE is never emitted.
+3. After rotation, all node escrow fields re-emitted with new master_key_id.
+
+---
+
+### GW-2006  Master key rotation
+
+**Priority:** Must
+**Source:** Issue #962 (supersedes evolve-887 GW-2006)
+
+**Description:**
+The gateway MUST accept a `RotationPayloadV1` (via DESIRED_STATE key 28
+or gRPC `SubmitRotation`) containing a new master key, rotation code,
+and new master_key_id encrypted with X25519 + HKDF-SHA-256 + AES-256-GCM.
+
+The gateway MUST: (1) decrypt using GatewayIdentity X25519 private key,
+(2) verify rotation code, (3) verify master_key_epoch via AAD,
+(4) prepare pending_rotation record and purge pending_recovery,
+(5) migrate all PSK records (nodes and phone_psks) to new key,
+(6) rewrap identity seed, (7) atomic commit.
+
+A rotation payload received while a rotation is already in progress
+MUST be silently discarded.
+
+**Acceptance criteria:**
+
+1. Valid rotation payload accepted, epoch incremented.
+2. All PSK records (nodes and phone_psks) re-encrypted with new key.
+3. Wrong rotation code rejected with warning.
+4. Replay (same epoch) rejected.
+5. Concurrent rotation payload silently discarded.
+
+---
+
+### GW-2007  Crash-safe key rotation
+
+**Priority:** Must
+**Source:** Issue #962 (supersedes evolve-887 GW-2007)
+
+**Description:**
+Key rotation MUST be crash-safe via a `pending_rotation` table with
+three phases: `migrating_psks`, `rewrapping_identity`, `committing`.
+On startup, if `pending_rotation` exists, the gateway MUST resume from
+the recorded phase. During all pre-commit phases, the original
+`encrypted_seed` remains encrypted with the old key, ensuring
+`GatewayIdentity` is always loadable on restart.
+
+**Acceptance criteria:**
+
+1. Crash during any phase resumes correctly on restart.
+2. GatewayIdentity is loadable after crash at any phase.
+3. All PSKs fully migrated after recovery.
+4. `pending_rotation` deleted after successful commit.
+
+---
+
+### GW-2008  Salt management
+
+**Priority:** Must
+**Source:** Issue #962 (supersedes evolve-887 GW-2008)
+
+**Description:**
+The gateway MUST adopt salt from DESIRED_STATE if it has no local salt.
+Once set, local salt is immutable except via rotation payload delivery.
+Salt MUST be included in gateway ACTUAL_STATE.
+
+**Acceptance criteria:**
+
+1. Salt adopted from DESIRED_STATE when gateway has no local salt.
+2. Existing local salt not overwritten by DESIRED_STATE.
+3. Salt updated via rotation payload.
+4. Salt reported in ACTUAL_STATE.
+
+---
+
+### GW-2009  Declarative node recovery
+
+**Priority:** Must
+**Source:** Issue #962 (supersedes evolve-887 GW-2009)
+
+**Description:**
+When a frame arrives with an unknown `key_hint`, the gateway MUST:
+(1) rate-limit to 1 hint per key_hint per 60 seconds (max 256 entries,
+LRU eviction), (2) add the key_hint to `missing_key_hints` in the next
+ACTUAL_STATE, (3) clear after reporting (one-shot; node wake cycle
+provides natural retry), (4) discard the frame (no buffering).
+
+When `recovered_psks` arrive in DESIRED_STATE, the gateway MUST:
+(1) verify `master_key_id` matches current key, (2) insert into
+`pending_recovery` table, (3) trial-decrypt on next matching frame,
+(4) promote to `nodes` on success, (5) expire after 24 hours.
+
+**Acceptance criteria:**
+
+1. Unknown key_hint reported in ACTUAL_STATE missing_key_hints.
+2. Rate limiting: same key_hint not re-reported within 60 seconds.
+3. Recovered PSK with wrong master_key_id rejected.
+4. Successful trial authentication promotes node.
+5. Pending recovery records expire after 24 hours.
+
+---
+
+### GW-2010  Rotation code display on modem
+
+**Priority:** Must
+**Source:** Issue #962
+
+**Description:**
+The gateway MUST render and send two display pages to the modem via the
+existing display-transfer subprotocol (GW-1101b): (1) BIP-39 fingerprint
+page (6 words in 3 rows), (2) rotation code page (label + 6-char code).
+
+**Acceptance criteria:**
+
+1. Fingerprint page shows 6 BIP-39 words.
+2. Rotation code page shows current code.
+3. Pages sent to modem on startup and after rotation (new code).
+
+---
+
+### GW-2011  Fingerprint computation
+
+**Priority:** Must
+**Source:** Issue #962
+
+**Description:**
+The gateway MUST compute a 6-word BIP-39 fingerprint from the SHA-256 of
+the X25519 public key (derived from `GatewayIdentity`), extracting 66
+bits. The BIP-39 wordlist MUST be shared in `sonde-protocol`.
+
+**Acceptance criteria:**
+
+1. Fingerprint computed from X25519 public key.
+2. 6 words from BIP-39 wordlist.
+3. Fingerprint matches independent computation from same public key.
+
+---
+
+### GW-2012  gRPC rotation API
+
+**Priority:** Must
+**Source:** Issue #962
+
+**Description:**
+The gateway admin gRPC service MUST expose a `SubmitRotation` method
+that accepts a `RotationPayloadV1` binary and returns `{accepted: bool,
+error: string}`. Both gRPC and DESIRED_STATE rotation paths MUST
+converge on the same rotation handler.
+
+**Acceptance criteria:**
+
+1. `SubmitRotation` accepts valid payload, returns accepted=true.
+2. Invalid payload returns accepted=false with error message.
+3. Both paths produce identical rotation behavior.
+
+---
+
+### GW-2013  Pending recovery purge on rotation
+
+**Priority:** Must
+**Source:** Issue #962
+
+**Description:**
+When initiating a key rotation, the gateway MUST purge all records from
+`pending_recovery` in the same database transaction as creating the
+`pending_rotation` record. Old recovery records are encrypted with the
+pre-rotation master key and cannot be decrypted after rotation. Known
+nodes (in the `nodes` table) have their PSKs re-encrypted during
+migration and re-emitted via ACTUAL_STATE. Nodes mid-recovery (in
+`pending_recovery` but not yet promoted) become unrecoverable from Azure
+after rotation — this is an accepted edge case requiring manual
+reprovisioning.
+
+**Acceptance criteria:**
+
+1. `pending_recovery` purged atomically with `pending_rotation` creation.
+2. Known nodes re-emitted with new `master_key_id` after rotation.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -2822,3 +3137,17 @@ The node-facing `program_hash` MUST remain the SHA-256 of the CBOR-encoded node 
 | GW-1904 | Decoder BPF context and helper API | Must |
 | GW-1905 | Decoder backward compatibility | Must |
 | GW-1906 | Node program hash stability | Must |
+| GW-2000 | Unified gateway identity | Must |
+| GW-2001 | Master key identification | Must |
+| GW-2002 | Rotation code authentication | Must |
+| GW-2003 | Gateway ACTUAL_STATE publication | Must |
+| GW-2004 | Gateway DESIRED_STATE handling | Must |
+| GW-2005 | Node ACTUAL_STATE escrow fields | Must |
+| GW-2006 | Master key rotation | Must |
+| GW-2007 | Crash-safe key rotation | Must |
+| GW-2008 | Salt management | Must |
+| GW-2009 | Declarative node recovery | Must |
+| GW-2010 | Rotation code display on modem | Must |
+| GW-2011 | Fingerprint computation | Must |
+| GW-2012 | gRPC rotation API | Must |
+| GW-2013 | Pending recovery purge on rotation | Must |

@@ -22,9 +22,39 @@ use crate::storage::Storage;
 #[derive(Debug)]
 pub enum EscrowInboundMessage {
     /// KEY_ESCROW_RESPONSE (msg_type 0x12) — raw CBOR bytes.
+    /// RETIRED by evolve-962 — replaced by `recovered_psks` in gateway DESIRED_STATE.
     KeyEscrowResponse(Vec<u8>),
     /// MASTER_KEY_INSTALL (msg_type 0x13) — raw CBOR bytes.
+    /// RETIRED by evolve-962 — replaced by `rotation_payload` in gateway DESIRED_STATE.
     MasterKeyInstall(Vec<u8>),
+}
+
+/// Parsed gateway DESIRED_STATE fields from evolve-962 §2.5.
+#[derive(Clone, Debug, Default)]
+pub struct GatewayDesiredState {
+    /// Desired ESP-NOW channel (CBOR key 15).
+    pub channel: Option<u32>,
+    /// KDF salt from cloud (CBOR key 21).
+    pub salt: Option<Vec<u8>>,
+    /// KDF parameters from cloud (CBOR key 22).
+    pub kdf_params: Option<KdfParams>,
+    /// X25519-encrypted rotation payload (CBOR key 28).
+    pub rotation_payload: Option<Vec<u8>>,
+    /// Recovered PSK records for missing nodes (CBOR key 29).
+    pub recovered_psks: Option<Vec<RecoveredPskRecord>>,
+}
+
+/// A single recovered PSK record from DESIRED_STATE (evolve-962 §2.8).
+#[derive(Clone, Debug)]
+pub struct RecoveredPskRecord {
+    /// Node identifier.
+    pub node_id: String,
+    /// Key hint (u16).
+    pub key_hint: u16,
+    /// Encrypted PSK blob (60 bytes).
+    pub encrypted_psk: Vec<u8>,
+    /// Opaque master key ID (16 bytes).
+    pub master_key_id: Vec<u8>,
 }
 
 pub const MSG_TYPE_DESIRED_STATE: u64 = 0x01;
@@ -78,12 +108,12 @@ enum ConnectorOutboundMessage {
         firmware_abi_version: Option<u32>,
         firmware_version: Option<String>,
         timestamp_ms: u64,
-        /// Encrypted PSK escrow blob (CBOR-encoded EscrowBlob), CBOR key 12.
+        /// Encrypted PSK blob (60 bytes: nonce + ciphertext + tag), CBOR key 12.
         encrypted_psk_escrow: Option<Vec<u8>>,
-        /// Key hint from escrow blob metadata, CBOR key 13.
+        /// Key hint (u16) for Azure recovery lookup, CBOR key 13.
         escrow_key_hint: Option<u16>,
-        /// Master key version from escrow blob metadata, CBOR key 14.
-        escrow_key_version: Option<u64>,
+        /// Opaque master key ID (16 bytes) that encrypted this PSK, CBOR key 14.
+        master_key_id: Option<Vec<u8>>,
         /// Gateway-scoped status_details extension (escrow state + salt).
         status_details: Option<StatusDetails>,
     },
@@ -104,6 +134,9 @@ enum ConnectorOutboundMessage {
         remediation: String,
     },
     /// Recovery public key publication (GW-2001).
+    /// RETIRED by evolve-962 — replaced by gateway ACTUAL_STATE field
+    /// `x25519_public_key` (key 18). Kept temporarily for compilation
+    /// until all callers are migrated.
     KeyEscrowPubkey {
         public_key: [u8; 32],
         key_epoch: u64,
@@ -111,10 +144,33 @@ enum ConnectorOutboundMessage {
         fingerprint_words: [String; 6],
     },
     /// Request escrowed PSK(s) for an unknown key_hint (GW-2009).
+    /// RETIRED by evolve-962 — replaced by gateway ACTUAL_STATE field
+    /// `missing_key_hints` (key 20). Kept temporarily for compilation
+    /// until all callers are migrated.
     KeyEscrowRequest { key_hint: u16, request_id: [u8; 16] },
+    /// Gateway-scoped ACTUAL_STATE with all evolve-962 fields (keys 15–27).
+    GatewayActualState {
+        entity_id: String,
+        timestamp_ms: u64,
+        channel: u32,
+        master_key_id: [u8; 16],
+        master_key_epoch: u64,
+        x25519_public_key: [u8; 32],
+        fingerprint_words: [String; 6],
+        missing_key_hints: Vec<u16>,
+        salt: Option<Vec<u8>>,
+        kdf_params: Option<KdfParams>,
+        gateway_version: String,
+        gateway_commit: String,
+        modem_firmware_version: Option<String>,
+        modem_firmware_commit: Option<String>,
+        rotation_in_progress: bool,
+    },
 }
 
 /// Gateway-scoped ACTUAL_STATE status_details for escrow.
+/// RETIRED by evolve-962 — replaced by GatewayActualState variant.
+/// Kept temporarily for compilation until all callers are migrated.
 #[derive(Clone, Debug, Default)]
 pub struct StatusDetails {
     pub escrow_state: Option<String>,
@@ -147,7 +203,7 @@ impl ConnectorOutboundMessage {
                 timestamp_ms,
                 encrypted_psk_escrow,
                 escrow_key_hint,
-                escrow_key_version,
+                master_key_id,
                 status_details,
             } => {
                 let mut pairs = vec![
@@ -205,8 +261,8 @@ impl ConnectorOutboundMessage {
                 ));
                 pairs.push(map_entry(
                     14,
-                    match escrow_key_version {
-                        Some(kv) => Value::Integer((*kv).into()),
+                    match master_key_id {
+                        Some(ref id) => Value::Bytes(id.clone()),
                         None => Value::Null,
                     },
                 ));
@@ -298,6 +354,81 @@ impl ConnectorOutboundMessage {
                 map_entry(2, Value::Integer((*key_hint as u64).into())),
                 map_entry(3, Value::Bytes(request_id.to_vec())),
             ]),
+            Self::GatewayActualState {
+                entity_id,
+                timestamp_ms,
+                channel,
+                master_key_id,
+                master_key_epoch,
+                x25519_public_key,
+                fingerprint_words,
+                missing_key_hints,
+                salt,
+                kdf_params,
+                gateway_version,
+                gateway_commit,
+                modem_firmware_version,
+                modem_firmware_commit,
+                rotation_in_progress,
+            } => {
+                let mut pairs = vec![
+                    map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+                    map_entry(2, Value::Text("gateway".to_string())),
+                    map_entry(3, Value::Text(entity_id.clone())),
+                    map_entry(9, Value::Integer((*timestamp_ms).into())),
+                    // Keys 15–27: gateway-specific fields
+                    map_entry(15, Value::Integer((*channel as u64).into())),
+                    map_entry(16, Value::Bytes(master_key_id.to_vec())),
+                    map_entry(17, Value::Integer((*master_key_epoch).into())),
+                    map_entry(18, Value::Bytes(x25519_public_key.to_vec())),
+                    map_entry(
+                        19,
+                        Value::Array(fingerprint_words.iter().cloned().map(Value::Text).collect()),
+                    ),
+                    map_entry(
+                        20,
+                        Value::Array(
+                            missing_key_hints
+                                .iter()
+                                .map(|h| Value::Integer((*h as u64).into()))
+                                .collect(),
+                        ),
+                    ),
+                ];
+                // Salt (key 21): null if absent
+                pairs.push(map_entry(
+                    21,
+                    match salt {
+                        Some(ref s) => Value::Bytes(s.clone()),
+                        None => Value::Null,
+                    },
+                ));
+                // KDF params (key 22): null if absent
+                pairs.push(map_entry(
+                    22,
+                    match kdf_params {
+                        Some(ref kdf) => Value::Map(vec![
+                            map_entry(1, Value::Integer((kdf.m_cost as u64).into())),
+                            map_entry(2, Value::Integer((kdf.t_cost as u64).into())),
+                            map_entry(3, Value::Integer((kdf.p_cost as u64).into())),
+                            map_entry(4, Value::Integer((kdf.kdf_version as u64).into())),
+                        ]),
+                        None => Value::Null,
+                    },
+                ));
+                pairs.push(map_entry(23, Value::Text(gateway_version.clone())));
+                pairs.push(map_entry(24, Value::Text(gateway_commit.clone())));
+                pairs.push(map_entry(
+                    25,
+                    opt_text_value(modem_firmware_version.as_deref()),
+                ));
+                pairs.push(map_entry(
+                    26,
+                    opt_text_value(modem_firmware_commit.as_deref()),
+                ));
+                pairs.push(map_entry(27, Value::Bool(*rotation_in_progress)));
+                Value::Map(pairs)
+            }
         };
 
         let mut bytes = Vec::new();
@@ -358,7 +489,7 @@ impl ConnectorEventHub {
             timestamp_ms,
             encrypted_psk_escrow: None,
             escrow_key_hint: None,
-            escrow_key_version: None,
+            master_key_id: None,
             status_details: None,
         });
     }
@@ -377,12 +508,12 @@ impl ConnectorEventHub {
         timestamp_ms: u64,
         encrypted_psk_escrow: Option<Vec<u8>>,
         escrow_key_hint: Option<u16>,
-        escrow_key_version: Option<u64>,
+        master_key_id: Option<Vec<u8>>,
     ) {
         let escrow_fields = match encrypted_psk_escrow {
             Some(blob) => {
-                if let (Some(key_hint), Some(key_version)) = (escrow_key_hint, escrow_key_version) {
-                    (Some(blob), Some(key_hint), Some(key_version))
+                if let (Some(key_hint), Some(key_id)) = (escrow_key_hint, master_key_id) {
+                    (Some(blob), Some(key_hint), Some(key_id))
                 } else {
                     error!(
                         node_id = %node_id,
@@ -405,7 +536,7 @@ impl ConnectorEventHub {
             timestamp_ms,
             encrypted_psk_escrow: escrow_fields.0,
             escrow_key_hint: escrow_fields.1,
-            escrow_key_version: escrow_fields.2,
+            master_key_id: escrow_fields.2,
             status_details: None,
         });
     }
@@ -424,7 +555,7 @@ impl ConnectorEventHub {
             timestamp_ms: current_time_ms(),
             encrypted_psk_escrow: None,
             escrow_key_hint: None,
-            escrow_key_version: None,
+            master_key_id: None,
             status_details: Some(details),
         });
     }
@@ -450,6 +581,47 @@ impl ConnectorEventHub {
         let _ = self.tx.send(ConnectorOutboundMessage::KeyEscrowRequest {
             key_hint,
             request_id,
+        });
+    }
+
+    /// Emit gateway ACTUAL_STATE with all evolve-962 fields (GW-2003).
+    ///
+    /// Emitted on startup, connector reconnection, and whenever gateway state
+    /// changes (channel change, rotation complete, etc.).
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_gateway_actual_state(
+        &self,
+        entity_id: String,
+        channel: u32,
+        master_key_id: [u8; 16],
+        master_key_epoch: u64,
+        x25519_public_key: [u8; 32],
+        fingerprint_words: [String; 6],
+        missing_key_hints: Vec<u16>,
+        salt: Option<Vec<u8>>,
+        kdf_params: Option<KdfParams>,
+        gateway_version: String,
+        gateway_commit: String,
+        modem_firmware_version: Option<String>,
+        modem_firmware_commit: Option<String>,
+        rotation_in_progress: bool,
+    ) {
+        let _ = self.tx.send(ConnectorOutboundMessage::GatewayActualState {
+            entity_id,
+            timestamp_ms: current_time_ms(),
+            channel,
+            master_key_id,
+            master_key_epoch,
+            x25519_public_key,
+            fingerprint_words,
+            missing_key_hints,
+            salt,
+            kdf_params,
+            gateway_version,
+            gateway_commit,
+            modem_firmware_version,
+            modem_firmware_commit,
+            rotation_in_progress,
         });
     }
 
@@ -499,6 +671,8 @@ pub struct ConnectorService {
     max_message_size: usize,
     /// Channel for forwarding escrow inbound messages to the gateway engine.
     escrow_inbound_tx: Option<tokio::sync::mpsc::UnboundedSender<EscrowInboundMessage>>,
+    /// Channel for forwarding parsed gateway DESIRED_STATE to the gateway engine.
+    gateway_desired_state_tx: Option<tokio::sync::mpsc::UnboundedSender<GatewayDesiredState>>,
 }
 
 impl ConnectorService {
@@ -515,6 +689,7 @@ impl ConnectorService {
             event_hub,
             max_message_size: max_message_size.max(1),
             escrow_inbound_tx: None,
+            gateway_desired_state_tx: None,
         }
     }
 
@@ -524,6 +699,14 @@ impl ConnectorService {
         tx: tokio::sync::mpsc::UnboundedSender<EscrowInboundMessage>,
     ) {
         self.escrow_inbound_tx = Some(tx);
+    }
+
+    /// Set the channel for forwarding parsed gateway DESIRED_STATE.
+    pub fn set_gateway_desired_state_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<GatewayDesiredState>,
+    ) {
+        self.gateway_desired_state_tx = Some(tx);
     }
 
     pub async fn handle_connection<T>(&self, stream: T) -> Result<(), String>
@@ -598,11 +781,7 @@ impl ConnectorService {
                 let desired_state = required_map(&map, 4, "desired_state")?;
 
                 match entity_kind.as_str() {
-                    "gateway" => {
-                        let _ = entity_id;
-                        let _ = desired_state;
-                        Ok(())
-                    }
+                    "gateway" => self.apply_gateway_desired_state(&desired_state).await,
                     "node" => {
                         self.apply_node_desired_state(&entity_id, &desired_state)
                             .await
@@ -640,6 +819,34 @@ impl ConnectorService {
                 "unsupported inbound connector msg_type `{msg_type:#x}`"
             )),
         }
+    }
+
+    /// Parse and forward gateway DESIRED_STATE (evolve-962 §2.5).
+    async fn apply_gateway_desired_state(
+        &self,
+        desired_state: &[(Value, Value)],
+    ) -> Result<(), String> {
+        let channel = optional_u32_field(desired_state, 15, "channel")?;
+        let salt = optional_bytes_field(desired_state, 21, "salt")?;
+        let kdf_params = parse_optional_kdf_params(desired_state, 22)?;
+        let rotation_payload = optional_bytes_field(desired_state, 28, "rotation_payload")?;
+        let recovered_psks = parse_optional_recovered_psks(desired_state, 29)?;
+
+        let gw_ds = GatewayDesiredState {
+            channel,
+            salt,
+            kdf_params,
+            rotation_payload,
+            recovered_psks,
+        };
+
+        if let Some(ref tx) = self.gateway_desired_state_tx {
+            tx.send(gw_ds)
+                .map_err(|_| "gateway desired state channel closed".to_string())?;
+        } else {
+            warn!("gateway DESIRED_STATE received but no handler configured; ignoring");
+        }
+        Ok(())
     }
 
     async fn apply_node_desired_state(
@@ -1012,7 +1219,6 @@ fn required_text(map: &[(Value, Value)], key: u64, field: &str) -> Result<String
         })
 }
 
-#[cfg(test)]
 fn required_bytes(map: &[(Value, Value)], key: u64, field: &str) -> Result<Vec<u8>, String> {
     map_get(map, key)
         .ok_or_else(|| format!("missing `{field}`"))
@@ -1077,6 +1283,74 @@ fn optional_text_field(
     }
 }
 
+/// Parse optional KDF params from a CBOR map field.
+fn parse_optional_kdf_params(
+    map: &[(Value, Value)],
+    key: u64,
+) -> Result<Option<KdfParams>, String> {
+    match map_get(map, key) {
+        Some(Value::Map(kdf_map)) => {
+            let m_cost = required_u64(kdf_map, 1, "m_cost")? as u32;
+            let t_cost = required_u64(kdf_map, 2, "t_cost")? as u32;
+            let p_cost = required_u64(kdf_map, 3, "p_cost")? as u32;
+            let kdf_version = required_u64(kdf_map, 4, "kdf_version")? as u32;
+            Ok(Some(KdfParams {
+                m_cost,
+                t_cost,
+                p_cost,
+                kdf_version,
+            }))
+        }
+        Some(Value::Null) | None => Ok(None),
+        Some(_) => Err("kdf_params must be a map or null".to_string()),
+    }
+}
+
+/// Parse optional recovered PSK records from a CBOR array field.
+fn parse_optional_recovered_psks(
+    map: &[(Value, Value)],
+    key: u64,
+) -> Result<Option<Vec<RecoveredPskRecord>>, String> {
+    match map_get(map, key) {
+        Some(Value::Array(arr)) => {
+            let mut records = Vec::with_capacity(arr.len());
+            for (i, item) in arr.iter().enumerate() {
+                match item {
+                    Value::Map(rec_map) => {
+                        let node_id =
+                            required_text(rec_map, 1, &format!("recovered_psks[{i}].node_id"))?;
+                        let key_hint =
+                            required_u64(rec_map, 2, &format!("recovered_psks[{i}].key_hint"))?
+                                as u16;
+                        let encrypted_psk = required_bytes(
+                            rec_map,
+                            3,
+                            &format!("recovered_psks[{i}].encrypted_psk"),
+                        )?;
+                        let master_key_id = required_bytes(
+                            rec_map,
+                            4,
+                            &format!("recovered_psks[{i}].master_key_id"),
+                        )?;
+                        records.push(RecoveredPskRecord {
+                            node_id,
+                            key_hint,
+                            encrypted_psk,
+                            master_key_id,
+                        });
+                    }
+                    _ => {
+                        return Err(format!("recovered_psks[{i}] must be a map, got {:?}", item));
+                    }
+                }
+            }
+            Ok(Some(records))
+        }
+        Some(Value::Null) | None => Ok(None),
+        Some(_) => Err("recovered_psks must be an array or null".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1095,7 +1369,7 @@ mod tests {
             timestamp_ms: 1234,
             encrypted_psk_escrow: None,
             escrow_key_hint: None,
-            escrow_key_version: None,
+            master_key_id: None,
             status_details: None,
         };
 
@@ -1181,7 +1455,7 @@ mod tests {
             1234,
             Some(vec![0xAA; 8]),
             None,
-            Some(7),
+            Some(vec![0x42; 16]),
         );
 
         let message = rx.try_recv().unwrap();

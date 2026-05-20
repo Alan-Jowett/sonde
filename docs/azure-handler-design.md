@@ -481,3 +481,115 @@ On successful verification the handler upserts one row in the `Programs` table
 (§4.4) containing both the CBOR-encoded program image and the original ELF
 binary. The ELF is retained so the reconciliation path (§5 step 11) can embed
 it in downstream `GW-0811` messages without requiring a separate ELF store.
+
+---
+
+## 9  PSK escrow state storage and recovery
+
+> **Requirements:** AZH-0600, AZH-0601, AZH-0602, AZH-0603, AZH-0604, AZH-0605
+
+The PSK escrow redesign extends the handler's ACTUAL_STATE and DESIRED_STATE
+storage so gateway escrow state is stored alongside existing node reconciliation
+data. Gateway rows are singleton upserts keyed by gateway identity, while node
+rows retain the existing history-oriented keying.
+
+### 9.1  ACTUAL_STATE schema extension
+
+The `actualstate` Azure Table is extended with the following escrow-related
+columns:
+
+| Column | Type | Applicable entity_kind | Description |
+|--------|------|------------------------|-------------|
+| `encrypted_psk` | `Binary`/null | node | Raw encrypted PSK blob stored with node ACTUAL_STATE. |
+| `master_key_id` | `Binary`/null | node, gateway | Opaque master key identifier used for escrow matching. |
+| `key_hint` | `Edm.Int64`/null | node | Recovery lookup hint for node PSKs. |
+| `x25519_public_key` | `Binary`/null | gateway | Gateway X25519 public key. |
+| `channel` | `Edm.Int64`/null | gateway | Current ESP-NOW channel. |
+| `master_key_epoch` | `Edm.Int64`/null | gateway | Current gateway master-key epoch. |
+| `salt` | `Binary`/null | gateway | Gateway-reported KDF salt. |
+| `kdf_params_json` | `String`/null | gateway | JSON encoding of KDF parameters. |
+| `gateway_version` | `String`/null | gateway | Gateway binary semver. |
+| `gateway_commit` | `String`/null | gateway | Gateway binary git commit. |
+| `modem_firmware_version` | `String`/null | gateway | Modem firmware semver. |
+| `modem_firmware_commit` | `String`/null | gateway | Modem firmware git commit. |
+| `missing_key_hints` | `String`/null | gateway | JSON array of missing key hints reported by the gateway. |
+| `fingerprint_words` | `String`/null | gateway | JSON array of 6 BIP-39 fingerprint words. |
+| `rotation_in_progress` | `Edm.Boolean`/null | gateway | `true` if a key rotation is in progress. |
+
+Phone ACTUAL_STATE is not escrowed and is therefore not stored in this table.
+
+Gateway rows use `PartitionKey = "g:" + gateway_id_hex` and
+`RowKey = "state"`. This is a singleton upsert keyed by one gateway identity,
+not a reverse-timestamp history row.
+
+Node row keying is unchanged from the existing design: node ACTUAL_STATE rows
+remain keyed by `PartitionKey = "n:" + SHA256(node_id)` with reverse-timestamp
+history `RowKey` values.
+
+### 9.2  ACTUAL_STATE handling by entity kind
+
+For `ACTUAL_STATE` with `entity_kind = "gateway"`, the handler:
+
+1. upserts the singleton gateway row in `actualstate`,
+2. stores all gateway escrow and recovery fields from the message, and
+3. triggers recovery work if `missing_key_hints` is non-empty.
+
+For `ACTUAL_STATE` with `entity_kind = "node"`, the handler continues storing
+node observation data in the existing node row shape and additionally persists
+`encrypted_psk`, `master_key_id`, and `key_hint` for later recovery queries.
+
+For `ACTUAL_STATE` with `entity_kind = "phone"`, the handler does not create an
+`actualstate` row because phones are not part of PSK escrow recovery.
+
+### 9.3  Missing `key_hint` recovery
+
+When a gateway row reports non-empty `missing_key_hints`, the handler should
+latch or enqueue recovery work immediately because later gateway ACTUAL_STATE
+messages may overwrite the reported hints before recovery materializes.
+
+Recovery processing is:
+
+1. read the gateway row's `master_key_id` and each reported `key_hint`,
+2. query node rows whose `key_hint` matches a reported hint,
+3. filter matches to rows whose `master_key_id` exactly matches the gateway's
+   reported `master_key_id`, and
+4. construct `recovered_psks` records for the next gateway DESIRED_STATE using
+   node `entity_id`, `key_hint`, `encrypted_psk`, and `master_key_id`.
+
+This match on both `key_hint` and `master_key_id` prevents the handler from
+returning PSKs encrypted under an older or newer master-key era.
+
+### 9.4  Rotation payload relay
+
+The SPA writes gateway rotation intent to the `desiredstate` table. The handler
+reads that opaque payload and includes it in the next gateway DESIRED_STATE as
+`rotation_payload` (CBOR key 28 inside map key 4) without inspecting or
+rewriting the payload.
+
+The handler clears `rotation_payload` after observing a gateway ACTUAL_STATE row
+whose `master_key_epoch` has incremented relative to the previously stored
+gateway row. This makes the DESIRED_STATE relay one-shot while still relying on
+gateway-reported convergence.
+
+### 9.5  Salt management and gateway DESIRED_STATE construction
+
+The gateway is authoritative for salt. The handler stores whatever salt the
+gateway reports in ACTUAL_STATE. When constructing gateway DESIRED_STATE, the
+handler includes the stored salt only if the gateway reports `salt = null`.
+If the gateway reports a non-null salt, the handler preserves that value in the
+gateway row and does not override it via DESIRED_STATE.
+
+Gateway DESIRED_STATE uses:
+
+- `entity_kind = "gateway"`
+- `entity_id = hex(gateway_id)`
+- `PartitionKey = "g:" + gateway_id_hex` in the `desiredstate` table
+- CBOR key 15 for `channel`
+- CBOR key 21 for `salt`
+- CBOR key 22 for `kdf_params`
+- CBOR key 28 for `rotation_payload`
+- CBOR key 29 for `recovered_psks`
+
+These keys align the shared channel and salt/KDF fields with gateway
+ACTUAL_STATE while reserving keys 28 and 29 for DESIRED_STATE-only escrow
+payloads.

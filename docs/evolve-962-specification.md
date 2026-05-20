@@ -10,11 +10,6 @@
 > DESIRED_STATE `entity_id` rules (empty string for gateway);
 > `gateway-requirements.md` GW-0811 (`entity_id` ignored for gateway-scoped
 > state).
-> **Pending companion patches:** The superseded sections in
-> `gateway-companion-api.md` and `gateway-requirements.md` are not
-> updated in this PR. Those documents remain intentionally stale until
-> implementation begins; they will be patched in the same PR that
-> implements the gateway ACTUAL_STATE/DESIRED_STATE changes.
 > **Scope:** Simplify escrow architecture — eliminate imperative connector
 > messages, unify gateway identity, add rotation-code authentication, treat
 > gateway as first-class ACTUAL_STATE/DESIRED_STATE entity.
@@ -108,11 +103,16 @@ INSERT OR REPLACE INTO gateway_config (key, value) VALUES ('rotation_code', ?);
 ```
 
 **Rotation code lifecycle:**
-1. Gateway generates a random 6-character alphanumeric code on first startup.
+1. Gateway generates a random 6-character uppercase alphanumeric code
+   (`[A-Z0-9]`, 36^6 ≈ 2.18 × 10^9 ≈ 31 bits of entropy) on first startup.
+   The code is generated using CSPRNG (`getrandom::fill()`) with rejection
+   sampling over the 36-symbol alphabet to avoid modulo bias.
 2. Code is displayed on the modem alongside the BIP-39 fingerprint.
 3. Admin reads the code from the modem display.
 4. Admin includes the code in the rotation request (inside the encrypted payload).
-5. Gateway verifies the code matches.
+   The admin CLI and SPA MUST normalize user input to uppercase before
+   including it in the rotation payload.
+5. Gateway verifies the code matches (case-sensitive after normalization).
 6. On successful rotation, gateway generates a new code.
 7. Code is never published to the cloud or connector.
 
@@ -199,10 +199,16 @@ The cloud drives gateway configuration changes via DESIRED_STATE with
 | Field | CBOR key | Type | Description |
 |-------|----------|------|-------------|
 | `channel` | 15 | uint/null | Desired ESP-NOW channel |
-| `rotation_payload` | 16 | bstr/null | X25519-encrypted rotation payload (see §2.6) |
-| `recovered_psks` | 17 | array/null | Recovered PSK records for missing nodes (see §2.8) |
-| `salt` | 18 | bstr (16 bytes)/null | KDF salt from cloud |
-| `kdf_params` | 19 | map/null | KDF parameters from cloud |
+| `salt` | 21 | bstr (16 bytes)/null | KDF salt from cloud |
+| `kdf_params` | 22 | map/null | KDF parameters from cloud |
+| `rotation_payload` | 28 | bstr/null | X25519-encrypted rotation payload (see §2.6) |
+| `recovered_psks` | 29 | array/null | Recovered PSK records for missing nodes (see §2.8) |
+
+**CBOR key alignment note:** Keys shared between ACTUAL_STATE and
+DESIRED_STATE use the same key numbers (15 for `channel`, 21 for `salt`,
+22 for `kdf_params`). DESIRED_STATE-only fields use keys 28–29 to avoid
+collision with ACTUAL_STATE keys 23–27 (gateway/modem version fields and
+`rotation_in_progress`).
 
 **Convergence behavior:**
 - **Channel:** If `channel` differs from current, gateway switches and
@@ -267,6 +273,12 @@ Total envelope: 45 bytes + ciphertext length.
 6. `current_master_key_epoch` in AAD must match gateway's current epoch
    → reject stale/replayed payloads.
 7. `new_master_key` must be 32 bytes. `new_master_key_id` must be 16 bytes.
+8. **Rate limiting:** The gateway MUST rate-limit failed rotation attempts
+   to at most 3 per 5-minute window per epoch. After exceeding the limit,
+   further attempts are silently discarded (DESIRED_STATE) or rejected
+   with a rate-limit error (gRPC) until the window expires. This prevents
+   online brute-force of the 31-bit rotation code by an attacker who
+   can submit DESIRED_STATE via compromised Azure credentials.
 
 #### 2.6.2  Rotation execution
 
@@ -293,7 +305,8 @@ When the gateway receives a valid rotation payload, it:
    and verifies it is strictly greater than the current epoch before
    writing the `pending_rotation` record in step 4.
 
-4. **Prepare:** Write `pending_rotation` record:
+4. **Prepare:** In a single database transaction:
+   a. Write `pending_rotation` record:
    ```sql
    CREATE TABLE IF NOT EXISTS pending_rotation (
        id                 INTEGER PRIMARY KEY CHECK (id = 1),
@@ -304,6 +317,19 @@ When the gateway receives a valid rotation payload, it:
        phase              TEXT    NOT NULL DEFAULT 'migrating_psks'
    );
    ```
+   b. Purge all records from `pending_recovery` — these are encrypted with
+      the old master key and cannot be decrypted after rotation completes.
+      For nodes already known to the gateway (in the `nodes` table), their
+      PSKs are re-encrypted during migration (step 5) and re-emitted via
+      ACTUAL_STATE, updating the Azure blobs with the new `master_key_id`.
+      For nodes that were mid-recovery (in `pending_recovery` but not yet
+      promoted to `nodes`), their Azure blobs still carry the old
+      `master_key_id`. These nodes will wake, trigger `missing_key_hints`,
+      but the handler will not return their PSKs (master_key_id mismatch).
+      **This is an accepted edge case:** nodes mid-recovery during rotation
+      require manual reprovisioning. The window is narrow (recovery TTL
+      is 24 hours; rotation is an infrequent operator action).
+
    The new master key is encrypted with the OLD master key for crash safety,
    using the same `encrypt_psk` pattern: `AES-256-GCM(old_master_key,
    random_nonce_12B, new_master_key_32B, aad=b"sonde-pending-rotation")`.
@@ -315,8 +341,8 @@ When the gateway receives a valid rotation payload, it:
    the rotation payload AAD plus one (i.e., the payload was created for
    the gateway's current epoch).
 
-5. **Migrate PSKs** (phase `migrating_psks`): For each record where
-   `master_key_epoch < new_epoch`:
+5. **Migrate PSKs** (phase `migrating_psks`): For each record in `nodes`
+   and `phone_psks` where `master_key_epoch < new_epoch`:
    - Decrypt PSK with old master key.
    - Re-encrypt PSK with new master key.
    - Update `master_key_id` and `master_key_epoch`.
@@ -378,7 +404,7 @@ When the gateway receives a valid rotation payload, it:
   current master key at startup, regardless of which phase the crash
   occurred in.
 
-### 2.7  Node/phone ACTUAL_STATE escrow fields (replaces §20.3, §20.4)
+### 2.7  Node ACTUAL_STATE escrow fields (replaces §20.3, §20.4)
 
 Node-scoped ACTUAL_STATE gains three fields:
 
@@ -388,8 +414,12 @@ Node-scoped ACTUAL_STATE gains three fields:
 | `escrow_key_hint` | 13 | uint (0–65535)/null | `key_hint` (u16) for Azure recovery lookup |
 | `master_key_id` | 14 | bstr (16 bytes)/null | Opaque master key ID that encrypted this PSK |
 
-Phone-scoped ACTUAL_STATE (`entity_kind = "phone"`, `entity_id = phone_id`)
-uses the same fields.
+**Phone PSKs are NOT escrowed.** Phone PSKs are encrypted at rest with the
+master key and are re-encrypted during key rotation (§2.6.2 step 5), but
+they are never published to the cloud via ACTUAL_STATE. Phone escrow may
+be added in a future specification — the CBOR key assignments and handler
+schema are designed to accommodate `entity_kind = "phone"` without
+protocol changes.
 
 **`encrypted_psk` format** (60 bytes, identical to the DB storage format):
 
@@ -402,14 +432,13 @@ uses the same fields.
 
 - Encryption: `AES-256-GCM(master_key, nonce, plaintext_psk,
   aad=node_id_utf8)` where `node_id_utf8` is the UTF-8 encoding of the
-  node's `node_id` string (for phone PSKs, `aad=node_id_utf8` where
-  `node_id` is the string representation of `phone_id`).
+  node's `node_id` string.
 - The blob is opaque to the cloud — the handler stores and returns it
   without inspection or decryption.
 
 Escrow fields are emitted:
-- On node/phone registration.
-- After key rotation (all records re-emitted with new `master_key_id`).
+- On node registration.
+- After key rotation (all node records re-emitted with new `master_key_id`).
 - On connector reconnection (full state replay).
 
 ### 2.8  Declarative node recovery (replaces §20.9)
@@ -547,8 +576,8 @@ The following imperative message types from evolve-887 are removed:
 |------------|------|-------------|
 | `0x10` | `KEY_ESCROW_PUBKEY` | Gateway ACTUAL_STATE field `x25519_public_key` (CBOR key 18) |
 | `0x11` | `KEY_ESCROW_REQUEST` | Gateway ACTUAL_STATE field `missing_key_hints` (CBOR key 20) |
-| `0x12` | `KEY_ESCROW_RESPONSE` | Gateway DESIRED_STATE field `recovered_psks` (CBOR key 17) |
-| `0x13` | `MASTER_KEY_INSTALL` | Gateway DESIRED_STATE field `rotation_payload` (CBOR key 16) |
+| `0x12` | `KEY_ESCROW_RESPONSE` | Gateway DESIRED_STATE field `recovered_psks` (CBOR key 29) |
+| `0x13` | `MASTER_KEY_INSTALL` | Gateway DESIRED_STATE field `rotation_payload` (CBOR key 28) |
 
 The `ConnectorOutboundMessage::KeyEscrowPubkey` and
 `ConnectorOutboundMessage::KeyEscrowRequest` variants are removed.
@@ -562,7 +591,7 @@ Gateway ACTUAL_STATE gains CBOR keys 15–27 (as defined in §2.4).
 
 ### 3.3  DESIRED_STATE extension
 
-Gateway DESIRED_STATE gains CBOR keys 15–19 (as defined in §2.5).
+Gateway DESIRED_STATE gains CBOR keys 15, 21, 22, 28, 29 (as defined in §2.5).
 
 ---
 
@@ -577,9 +606,9 @@ existing `ActualState` table with `entity_kind = "gateway"`.
 
 | Column | Type | Applicable entity_kind | Description |
 |--------|------|----------------------|-------------|
-| `encrypted_psk` | binary/null | node, phone | Raw encrypted PSK blob |
-| `master_key_id` | binary/null | node, phone, gateway | Opaque master key ID |
-| `key_hint` | int64/null | node, phone | key_hint for recovery queries |
+| `encrypted_psk` | binary/null | node | Raw encrypted PSK blob |
+| `master_key_id` | binary/null | node, gateway | Opaque master key ID |
+| `key_hint` | int64/null | node | key_hint for recovery queries |
 | `x25519_public_key` | binary/null | gateway | X25519 public key |
 | `channel` | int64/null | gateway | ESP-NOW channel |
 | `master_key_epoch` | int64/null | gateway | Monotonic master key epoch |
@@ -590,18 +619,21 @@ existing `ActualState` table with `entity_kind = "gateway"`.
 | `modem_firmware_version` | string/null | gateway | Modem firmware semver |
 | `modem_firmware_commit` | string/null | gateway | Modem firmware git commit |
 | `missing_key_hints` | string/null | gateway | JSON array of missing key_hints |
+| `fingerprint_words` | string/null | gateway | JSON array of 6 BIP-39 words |
+| `rotation_in_progress` | bool/null | gateway | `true` if rotation is in progress |
 
 ### 4.2  Message handling (replaces §8.2)
 
 **ACTUAL_STATE with `entity_kind = "gateway"`:**
-- Upsert gateway row in `ActualState`. Use `entity_id` (gateway_id) as
-  partition/row key.
+- Upsert gateway row in `ActualState`. Use `PartitionKey = "g:" +
+  entity_id` (hex-encoded gateway_id) and `RowKey = "state"` (singleton
+  upsert — gateway state is current, not historical).
 - If `missing_key_hints` is non-empty, look up matching escrowed PSKs
   from node rows where `key_hint` matches and `master_key_id` matches
   the gateway's reported `master_key_id`.
 - Include matching PSKs in the next gateway DESIRED_STATE as `recovered_psks`.
 
-**ACTUAL_STATE with `entity_kind = "node"` or `"phone"`:**
+**ACTUAL_STATE with `entity_kind = "node"`:**
 - Store `encrypted_psk`, `master_key_id`, and `key_hint` alongside other
   state in the `ActualState` row.
 
@@ -945,6 +977,27 @@ fields.
 
 ---
 
+### T-GW-2006c  Phone PSKs not escrowed
+
+**Covers:** §2.7 (phone escrow exclusion)
+**Method:** Integration test
+
+**Steps:**
+1. Start gateway with 2 registered nodes and 1 phone PSK.
+2. Connect a mock connector consumer.
+3. Verify node ACTUAL_STATE includes `encrypted_psk` (key 12),
+   `escrow_key_hint` (key 13), and `master_key_id` (key 14) for each node.
+4. Verify NO ACTUAL_STATE is emitted with `entity_kind = "phone"`.
+5. Perform key rotation.
+6. Verify node ACTUAL_STATE is re-emitted with updated escrow fields.
+7. Verify phone PSK is re-encrypted with new key in local DB.
+8. Verify still no phone ACTUAL_STATE emitted.
+
+**Pass criteria:** Phone PSKs rotate locally but are never published to
+the connector.
+
+---
+
 ### T-GW-2007  Salt management
 
 **Covers:** §2.5, §2.6
@@ -1069,7 +1122,41 @@ identity loading failure.
 
 ---
 
-## 9  Removed Artifacts Summary
+## 9  Design Changes — Web UI (SPA)
+
+The SPA rotation flow is fully specified in the web-ui spec trifecta:
+
+- **Requirements:** `web-ui-requirements.md` §15 Key Management (WEB-1000 series)
+- **Design:** `web-ui-design.md` §13 Key Management
+- **Validation:** `web-ui-validation.md` T-WEB-1000 series
+
+The SPA performs master key rotation via the following flow:
+
+1. Read gateway ACTUAL_STATE from Azure `actualstate` Table
+   (`PartitionKey = "g:" + gateway_id_hex`, `RowKey = "state"`).
+2. Compute BIP-39 fingerprint **locally** from the `x25519_public_key`
+   field (SHA-256 → 66 bits → 6 BIP-39 words). The SPA MUST NOT use
+   the `fingerprint_words` field stored in Azure — a compromised Azure
+   could substitute a rogue public key with pre-matched words. Display
+   the locally-computed fingerprint and prompt operator to verify against
+   the modem display.
+3. Prompt for rotation code (from modem display) and passphrase.
+4. Derive new master key: `Argon2id(passphrase, salt, kdf_params)` using
+   a WASM Argon2id implementation.
+5. Construct `RotationPayloadV1` (§2.6.1) using browser-side cryptography:
+   X25519 key exchange via `noble-curves`, HKDF-SHA-256 and AES-256-GCM
+   via Web Crypto API.
+6. Write `rotation_payload` into gateway DESIRED_STATE row in Azure
+   `desiredstate` Table (`PartitionKey = "g:" + gateway_id_hex`).
+7. Poll gateway ACTUAL_STATE for `master_key_epoch` increment.
+
+The SPA authenticates via Entra ID (MSAL.js) and accesses Azure Storage
+Tables directly via REST API — the same pattern used for node desired
+state management.
+
+---
+
+## 10  Removed Artifacts Summary
 
 The following artifacts from evolve-887-specification.md are superseded:
 

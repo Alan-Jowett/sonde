@@ -1112,3 +1112,101 @@ registers a phone, revokes it with `--yes`, and asserts on stdout.
 4. Assert: stdout contains "Removed handler for program" and `*`.
 
 ---
+
+## 11  Key management tests
+
+### T-0900  Key rotation — happy path
+
+**Validates:** ADMIN-0900
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start a gateway test harness that exposes `GetGatewayState` and `SubmitRotation`.
+2. Obtain the current rotation code from the modem display path used by the test harness.
+3. Invoke `sonde-admin key rotate --gateway-url <url>` with a valid passphrase and the correct rotation code.
+4. Assert: the command displays the gateway fingerprint and prompts for confirmation.
+5. Assert: `SubmitRotation` succeeds.
+6. Assert: a subsequent `GetGatewayState` call reports an incremented `master_key_epoch`.
+
+**Expected:** Rotation succeeds and the gateway reports the new `master_key_epoch`.
+
+---
+
+### T-0901  Key rotation — wrong rotation code
+
+**Validates:** ADMIN-0900
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start a gateway test harness with a known rotation code.
+2. Invoke `sonde-admin key rotate --gateway-url <url>` with a valid passphrase and an incorrect rotation code.
+3. Assert: the gateway rejects the `SubmitRotation` request.
+4. Assert: the CLI exits non-zero and displays the gateway's error.
+
+**Expected:** The gateway rejects the rotation and the admin CLI displays an error.
+
+---
+
+### T-0902  Key rotation — passphrase too short
+
+**Validates:** ADMIN-0900
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start a gateway test harness with a valid fingerprint and rotation code.
+2. Invoke `sonde-admin key rotate --gateway-url <url>` and enter a 10-character passphrase.
+3. Assert: the CLI rejects the passphrase before calling `SubmitRotation`.
+4. Assert: the command exits non-zero with a local validation error.
+
+**Expected:** The admin CLI rejects the passphrase before sending a request to the gateway.
+
+---
+
+### T-0903  Key fingerprint display
+
+**Validates:** ADMIN-0901
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start a gateway test harness with a known `fingerprint_words` value in ACTUAL_STATE.
+2. Invoke `sonde-admin key fingerprint --gateway-url <url>`.
+3. Assert: exit code is 0.
+4. Assert: stdout displays the same 6 BIP-39 words reported by `GetGatewayState`.
+
+**Expected:** The CLI displays the 6-word fingerprint from gateway ACTUAL_STATE.
+
+---
+
+### T-0904  Key status display
+
+**Validates:** ADMIN-0902
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start a gateway test harness with known values for `master_key_epoch`,
+   `master_key_id`, `rotation_in_progress`, salt, and `kdf_params`.
+2. Invoke `sonde-admin key status --gateway-url <url>`.
+3. Assert: exit code is 0.
+4. Assert: stdout displays `master_key_epoch`, `master_key_id`,
+   `rotation_in_progress`, salt status, and `kdf_params`.
+5. Assert: `rotation_in_progress` is rendered as `true` or `false`.
+
+**Expected:** The CLI shows `master_key_epoch`, `master_key_id`, `rotation_in_progress`, salt, and `kdf_params`.
+
+---
+
+### T-0905  Key material zeroization
+
+**Validates:** ADMIN-0900
+**Category:** New automated (CLI process test with tracing capture)
+
+**Procedure:**
+1. Start a gateway test harness and enable tracing capture for the CLI process.
+2. Invoke `sonde-admin key rotate --gateway-url <url>` with a known passphrase and rotation code.
+3. Capture stderr/stdout and the tracing sink for the duration of the command.
+4. Assert: the passphrase, derived master key, derived encryption key, and raw rotation payload bytes never appear in logs or terminal output.
+5. Assert: the command still completes through the normal success or rejection path.
+
+**Expected:** Passphrase and derived keys are not logged.
+
+---

@@ -199,6 +199,32 @@ pub fn render_gateway_version_banner(version: &str) -> [u8; DISPLAY_FRAME_BODY_S
     render_display_message(&["Sonde Gateway", &line2])
 }
 
+/// Render the BIP-39 key fingerprint display page (GW-2010, page 1).
+///
+/// Layout (128×64 OLED):
+/// ```text
+/// Row 1 (y≈8):   word1  word2
+/// Row 2 (y≈28):  word3  word4
+/// Row 3 (y≈48):  word5  word6
+/// ```
+pub fn render_fingerprint_page(words: &[&str; 6]) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
+    let line1 = format!("{} {}", words[0], words[1]);
+    let line2 = format!("{} {}", words[2], words[3]);
+    let line3 = format!("{} {}", words[4], words[5]);
+    render_display_message(&[&line1, &line2, &line3])
+}
+
+/// Render the rotation code display page (GW-2010, page 2).
+///
+/// Layout (128×64 OLED):
+/// ```text
+/// Row 1 (y≈16):  ROTATION CODE
+/// Row 2 (y≈40):  <6-char code>
+/// ```
+pub fn render_rotation_code_page(code: &str) -> [u8; DISPLAY_FRAME_BODY_SIZE] {
+    render_display_message(&["ROTATION CODE", code])
+}
+
 pub fn render_status_text_page(lines: &[String]) -> ScrollableFramebuffer {
     if lines.is_empty() {
         return ScrollableFramebuffer::new(FRAMEBUFFER_HEIGHT);

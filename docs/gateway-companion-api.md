@@ -153,12 +153,12 @@ gateway reconciliation outcomes.
 |---|---|---|---|
 | `msg_type` | 1 | uint | `0x01` |
 | `entity_kind` | 2 | tstr | `"gateway"` or `"node"` |
-| `entity_id` | 3 | tstr | Opaque identifier of the target entity. For `entity_kind = "node"`, this is the target node identifier. For `entity_kind = "gateway"`, senders MUST encode `""` and receivers MUST ignore the field when interpreting gateway-scoped state. |
+| `entity_id` | 3 | tstr | Opaque identifier of the target entity. For `entity_kind = "node"`, this is the target node identifier. For `entity_kind = "gateway"`, this is the lowercase hex encoding of the raw 16-byte `gateway_id` (e.g., `"a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8"`). |
 | `desired_state` | 4 | map | Complete desired-state map for the target entity. The payload schema depends on `entity_kind`; see sections 3.2.1 and 3.2.2. Any map nested under `desired_state` also uses integer CBOR keys. |
 
-The connector API models exactly one gateway entity per connector stream, so
-gateway-scoped state is selected by `entity_kind`, not by a gateway instance
-identifier.
+The connector API models exactly one gateway entity per connector stream.
+The `entity_id` field distinguishes multiple gateways sharing one cloud
+deployment (e.g., during gateway replacement failover).
 
 #### 3.2.1  `desired_state` payload for `entity_kind = "gateway"`
 
@@ -166,7 +166,11 @@ identifier.
 
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
-| *(no fields currently defined)* | — | — | Senders SHOULD encode an empty map (`{}`) for gateway desired state in this draft. Receivers MUST accept an empty map and MUST ignore unknown integer keys for forward compatibility. |
+| `channel` | 15 | uint/null | Desired ESP-NOW channel. `null` means no channel change requested. |
+| `salt` | 21 | bstr (16 bytes)/null | KDF salt from cloud. Adopted by gateway only if it has no local salt. `null` means no salt provided. |
+| `kdf_params` | 22 | map/null | KDF parameters `{1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}`. `null` means no params provided. |
+| `rotation_payload` | 28 | bstr/null | X25519-encrypted `RotationPayloadV1` for master key rotation. `null` means no rotation requested. See `evolve-962-specification.md` §2.6.1 for format. |
+| `recovered_psks` | 29 | array/null | Array of recovered PSK records for missing nodes. Each record is a CBOR map: `{1: node_id (tstr), 2: key_hint (uint), 3: encrypted_psk (bstr), 4: master_key_id (bstr)}`. `null` means no recovery records. |
 
 #### 3.2.2  `desired_state` payload for `entity_kind = "node"`
 
@@ -203,7 +207,7 @@ state.
 |---|---|---|---|
 | `msg_type` | 1 | uint | `0x02` |
 | `entity_kind` | 2 | tstr | `"gateway"` or `"node"` |
-| `entity_id` | 3 | tstr | Opaque identifier of the affected entity. For `entity_kind = "node"`, this is the affected node identifier. For `entity_kind = "gateway"`, senders MUST encode `""` and receivers MUST ignore the field when interpreting gateway-scoped state. |
+| `entity_id` | 3 | tstr | Opaque identifier of the affected entity. For `entity_kind = "node"`, this is the affected node identifier. For `entity_kind = "gateway"`, this is the lowercase hex encoding of the raw 16-byte `gateway_id`. |
 | `current_program_hash` | 4 | bstr/null | Current node program hash when applicable. |
 | `assigned_program_hash` | 5 | bstr/null | Gateway-assigned resident program hash when applicable. |
 | `battery_mv` | 6 | uint/null | Latest node battery reading in millivolts when applicable. |
@@ -212,6 +216,28 @@ state.
 | `timestamp_ms` | 9 | uint | Reception timestamp in Unix milliseconds. For node-scoped `ACTUAL_STATE`, this is the node's last check-in time as observed by the gateway. |
 | `status_details` | 10 | map | Additional gateway- or entity-scoped status fields relevant to reconciliation. See section 3.3.1. |
 | `schedule_interval_s` | 11 | uint/null | Latest node wake interval in seconds when applicable. |
+| `encrypted_psk` | 12 | bstr (60 bytes)/null | Encrypted PSK blob for node escrow. Node-scoped only; omit for gateway. |
+| `escrow_key_hint` | 13 | uint (0–65535)/null | `key_hint` (u16) for Azure recovery lookup. Node-scoped only. |
+| `master_key_id` | 14 | bstr (16 bytes)/null | Opaque master key ID that encrypted this node's PSK. Node-scoped only. |
+| `channel` | 15 | uint/null | ESP-NOW channel. Gateway-scoped only. |
+| `master_key_id` | 16 | bstr (16 bytes)/null | Gateway's current master key ID. Gateway-scoped only. |
+| `master_key_epoch` | 17 | uint/null | Monotonic master key epoch. Gateway-scoped only. |
+| `x25519_public_key` | 18 | bstr (32 bytes)/null | X25519 public key derived from GatewayIdentity. Gateway-scoped only. |
+| `fingerprint_words` | 19 | array of tstr/null | 6-word BIP-39 fingerprint. Gateway-scoped only. |
+| `missing_key_hints` | 20 | array of uint/null | Unknown key_hints (one-shot, cleared after reporting). Gateway-scoped only. |
+| `salt` | 21 | bstr (16 bytes)/null | KDF salt. Gateway-scoped only. |
+| `kdf_params` | 22 | map/null | `{1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}`. Gateway-scoped only. |
+| `gateway_version` | 23 | tstr/null | Gateway binary semver. Gateway-scoped only. |
+| `gateway_commit` | 24 | tstr/null | Gateway binary git commit. Gateway-scoped only. |
+| `modem_firmware_version` | 25 | tstr/null | Modem firmware semver. Gateway-scoped only. |
+| `modem_firmware_commit` | 26 | tstr/null | Modem firmware git commit. Gateway-scoped only. |
+| `rotation_in_progress` | 27 | bool/null | `true` if rotation is in progress. Gateway-scoped only. |
+
+**Key scoping:** Keys 4–8, 10–11 are node-specific and MUST be omitted for
+`entity_kind = "gateway"`. Keys 12–14 are node escrow fields. Keys 15–27
+are gateway-specific and MUST be omitted for `entity_kind = "node"`. Key 9
+(`timestamp_ms`) is shared and required for all entity kinds. Decoders
+dispatch on `entity_kind` to interpret the correct keys.
 
 #### 3.3.1  `status_details` payload
 

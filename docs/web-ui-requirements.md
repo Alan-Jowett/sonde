@@ -32,6 +32,7 @@ program ingestion.
 ### In scope
 
 - SPA front-end behavior (all tabs: Dashboard, Desired State, Programs, Sensor Data)
+- Key Management (gateway status, master key rotation)
 - Environment manager (runtime configuration via `localStorage`)
 - Authentication via MSAL.js (Entra ID)
 - Program upload flow (SPA → ProgramIngest Azure Function)
@@ -52,12 +53,16 @@ program ingestion.
 |------|------------|
 | **SPA** | Single-page application — the web UI served from `deploy/web-ui/`. |
 | **Actual state** | The latest telemetry row a node has reported, stored in the `actualstate` Azure Table. |
+| **BIP-39 fingerprint** | Six-word fingerprint string displayed in the UI so the operator can verify the gateway identity against the modem. |
 | **Desired state** | An operator-specified target configuration for a node, stored in the `desiredstate` Azure Table. |
 | **Divergence** | A mismatch between a node's actual state and its desired state (program hash or schedule interval). |
 | **Environment** | A named set of Azure backend connection details (client ID, tenant ID, storage account, function app) stored in `localStorage`. |
+| **Gateway status** | The gateway ACTUAL_STATE summary shown in a dedicated dashboard card, read from the `actualstate` Azure Table with `PartitionKey = "g:" + gateway_id_hex` and `RowKey = "state"`. |
 | **ProgramIngest** | An HTTP-triggered Azure Function that accepts ELF uploads, runs Prevail verification, and stores verified program images. |
-| **Series** | A unique `(NodeId, ProgramHash, ReadingName)` tuple in sensor data, rendered as one line on the time-series chart. |
 | **Reverse-timestamp RowKey** | `{(u64::MAX - timestamp_ms):016x}:{(u64::MAX - sequence):016x}:{random_nonce:016x}` — ensures newest rows sort first in Azure Tables. |
+| **Rotation code** | A six-character operator-entered confirmation code normalized to uppercase `[A-Z0-9]` and included in the encrypted rotation payload. |
+| **Rotation payload** | The encrypted `RotationPayloadV1` binary blob written to the gateway's `desiredstate` row to request master key rotation. |
+| **Series** | A unique `(NodeId, ProgramHash, ReadingName)` tuple in sensor data, rendered as one line on the time-series chart. |
 
 ---
 
@@ -1041,7 +1046,203 @@ initialization to avoid unnecessary API calls and rendering.
 
 ---
 
-## 15  Dependencies
+## 15  Key Management (WEB-1000)
+
+### WEB-1001  Gateway Status Display
+
+**Priority:** Must
+**Source:** Issue #962
+**Confidence:** High
+
+**Description:**
+The dashboard MUST display a gateway status card showing information from the
+gateway's ACTUAL_STATE row in the `actualstate` Azure Table
+(`PartitionKey = "g:" + gateway_id_hex`, `RowKey = "state"`). The card MUST
+show the BIP-39 fingerprint (6 words), `master_key_epoch`, `master_key_id`
+(hex), `rotation_in_progress`, salt status (present/absent),
+`gateway_version`, `modem_firmware_version`, and `channel`.
+
+**Critical:** The BIP-39 fingerprint MUST be computed locally in the SPA
+from the `x25519_public_key` field — NOT read from the Azure-stored
+`fingerprint_words` field. The SPA computes SHA-256 of the public key,
+extracts 66 bits, and maps to 6 BIP-39 words using the same wordlist as
+the gateway. This ensures that a compromised Azure cannot substitute a
+rogue public key with pre-matched fingerprint words. The admin verifies
+the SPA-computed fingerprint against the modem display.
+
+The gateway status card MUST be rendered as a separate UI element and MUST
+NOT appear in the node table or node dropdown.
+
+**Acceptance criteria:**
+
+1. The gateway status card displays all required fields.
+2. The BIP-39 fingerprint is computed locally from `x25519_public_key`, not
+   read from the stored `fingerprint_words` field.
+3. The gateway ACTUAL_STATE row is not shown in the node table.
+4. Node dropdowns exclude gateway entities.
+
+---
+
+### WEB-1002  Key Rotation Initiation
+
+**Priority:** Must
+**Source:** Issue #962
+**Confidence:** High
+
+**Description:**
+A `Rotate Key` button on the gateway status card MUST open a modal that shows
+(1) the BIP-39 fingerprint with instructions to verify it against the modem,
+(2) a rotation code input limited to 6 characters and normalized to uppercase
+`[A-Z0-9]`, (3) a masked passphrase input that requires either at least 20
+characters or 6 space-separated words, (4) the current salt from the gateway
+ACTUAL_STATE or a `first rotation` indicator if the salt is null, and (5) a
+confirmation action. If the browser lacks the required rotation crypto
+capabilities, the button MUST be disabled with a tooltip explaining the
+requirement.
+
+**Acceptance criteria:**
+
+1. The modal validates rotation code format as 6 characters from `[A-Z0-9]`.
+2. The modal validates the passphrase length requirement.
+3. Unsupported browsers show the action as disabled with an explanatory message.
+
+---
+
+### WEB-1003  Passphrase-Based Key Derivation
+
+**Priority:** Must
+**Source:** Issue #962
+**Confidence:** High
+
+**Description:**
+The SPA MUST derive the new master key using
+`Argon2id(passphrase, salt, kdf_params)` via a WASM Argon2id implementation
+(e.g., `argon2-browser`). The default KDF parameters for the first rotation are
+`m_cost=65536`, `t_cost=3`, and `p_cost=1`. If the gateway ACTUAL_STATE
+includes `kdf_params`, the SPA MUST use those parameters instead. Passphrase and
+derived key material MUST be cleared from JavaScript variables after use on a
+best-effort basis.
+
+**Acceptance criteria:**
+
+1. The derived key matches the gateway's expected output for the same inputs.
+2. `kdf_params` from ACTUAL_STATE are used when present.
+3. Key material is cleared after use on a best-effort basis.
+
+---
+
+### WEB-1004  Rotation Payload Construction
+
+**Priority:** Must
+**Source:** Issue #962, evolve-962 §2.6.1
+**Confidence:** High
+
+**Description:**
+The SPA MUST construct a `RotationPayloadV1` binary payload with the following
+format: version byte `0x01`; a fresh ephemeral X25519 keypair generated with a
+CDN-loaded `noble-curves` implementation; shared secret
+`X25519(ephemeral_private, gateway_x25519_public_key)`; HKDF-SHA-256 derived key
+using `shared_secret`, `hkdf_salt = b"sonde-rotation-v1"`, and
+`info = gateway_id_raw || current_master_key_epoch_be64`; a random 12-byte nonce
+from `crypto.getRandomValues()`; CBOR plaintext map
+`{1: new_master_key, 2: rotation_code, 3: new_master_key_id, 4: salt, 5: kdf_params}`;
+AES-256-GCM ciphertext using the derived key, nonce, and
+`aad = gateway_id_raw || current_master_key_epoch_be64`; and final output
+`version || ephemeral_public || nonce || ciphertext_and_tag`.
+
+**Acceptance criteria:**
+
+1. The payload format matches evolve-962 §2.6.1.
+2. A fresh ephemeral keypair is generated for each rotation.
+3. `gateway_id` in the AEAD AAD is the raw 16-byte value, not a hex string.
+
+---
+
+### WEB-1005  Rotation Submission
+
+**Priority:** Must
+**Source:** Issue #962
+**Confidence:** High
+
+**Description:**
+The SPA MUST write the rotation payload into the gateway's DESIRED_STATE row in
+the `desiredstate` Azure Table. The row MUST use
+`PartitionKey = "g:" + gateway_id_hex`, a reverse-timestamp `RowKey` using the
+same format as node desired state rows, and a `rotation_payload` entity property
+encoded as binary data for the Azure Table REST API.
+
+**Acceptance criteria:**
+
+1. A DESIRED_STATE row is created in the `desiredstate` table.
+2. The `PartitionKey` uses the `g:` gateway prefix.
+
+---
+
+### WEB-1006  Rotation Status Monitoring
+
+**Priority:** Must
+**Source:** Issue #962
+**Confidence:** High
+
+**Description:**
+After submitting a rotation payload, the SPA MUST poll the gateway ACTUAL_STATE
+row every 5 seconds for up to 120 seconds and watch for `master_key_epoch` to
+increment. On success, the SPA MUST display `Rotation complete` with the new
+epoch. On timeout, it MUST display `Rotation may still be in progress — check gateway status.`
+If `rotation_in_progress` transitions from false to false without an epoch
+change, the SPA MUST display `Rotation failed`.
+
+**Acceptance criteria:**
+
+1. Success is detected within the 120-second polling window.
+2. Timeout is handled gracefully.
+3. A progress indicator is shown while polling.
+
+---
+
+### WEB-1007  Gateway ACTUAL_STATE Read
+
+**Priority:** Must
+**Source:** Issue #962
+**Confidence:** High
+
+**Description:**
+The SPA MUST read the gateway ACTUAL_STATE from the `actualstate` Azure Table
+using `PartitionKey = "g:" + gateway_id_hex` and `RowKey = "state"`. The
+`gateway_id` is discovered by querying for rows with `PartitionKey` values that
+start with `g:`. If multiple gateways exist, the SPA MUST display all of them
+and let the operator select one.
+
+**Acceptance criteria:**
+
+1. The gateway row is read successfully.
+2. Multiple gateways are handled.
+3. A missing gateway row shows `No gateway connected`.
+
+---
+
+### WEB-1008  Browser-Side Key Hygiene
+
+**Priority:** Must
+**Source:** Issue #962, security review
+**Confidence:** High
+
+**Description:**
+The SPA MUST NOT store the passphrase, master key, or derived key material in
+`localStorage`, `sessionStorage`, or cookies. The encrypted `rotation_payload`
+is the only cryptographic artifact written to Azure. After rotation completes or
+fails, the SPA SHOULD overwrite JavaScript variables that held key material with
+zeros on a best-effort basis.
+
+**Acceptance criteria:**
+
+1. No key material is stored in browser storage.
+2. Only `rotation_payload` is written to Azure.
+3. Key variables are cleared after use on a best-effort basis.
+
+---
+
+## 16  Dependencies
 
 ### DEP-001  MSAL.js Browser Library
 
@@ -1070,7 +1271,7 @@ HTTP routes.
 
 ---
 
-## 16  Assumptions
+## 17  Assumptions
 
 ### ASM-001  Azure Public Cloud Only
 
@@ -1090,7 +1291,7 @@ environment configuration.
 
 ---
 
-## 17  Risks
+## 18  Risks
 
 ### RISK-001  CDN Availability
 
@@ -1110,7 +1311,7 @@ storage.
 
 ---
 
-## 18  Revision History
+## 19  Revision History
 
 | Date | Author | Description |
 |------|--------|-------------|

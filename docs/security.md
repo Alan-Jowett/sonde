@@ -501,3 +501,83 @@ BLE-mediated pairing via a phone app provides the best tradeoff between security
 > **Note:** USB-mediated pairing was originally considered for bench testing and development. It was removed because the ESP32 ROM retains UART resources in a way that prevents reliable serial communication during pairing — a hardware limitation that cannot be worked around in firmware. USB/UART remains available for firmware flashing and debug console output.
 
 Direct ESP-NOW pairing (without BLE intermediary) was considered and rejected — it would require a secure key-agreement protocol over the untrusted radio, adding complexity and a new attack surface.  The BLE intermediary isolates the key exchange from the operational radio channel.
+
+---
+
+## 10  PSK key escrow and master key rotation
+
+> **Source:** Issue #962, `evolve-962-specification.md`
+
+### 10.1  Key hierarchy
+
+```
+passphrase + salt ──► Argon2id ──► master_key (32 bytes)
+                                      │
+                              ┌───────┴────────┐
+                              ▼                ▼
+                    Encrypt(PSK_node1)  Encrypt(PSK_node2) ...
+                              │                │
+                              ▼                ▼
+                       Azure ACTUAL_STATE   (encrypted blobs)
+```
+
+The master key encrypts all PSK records (nodes and phone_psks) at rest.
+The master key itself is derived from a passphrase via Argon2id and is
+never stored in Azure — only opaque encrypted PSK blobs transit the cloud.
+
+### 10.2  Master key delivery
+
+```
+Admin ──► Argon2id(passphrase, salt) ──► new_master_key
+            +                                   │
+         rotation_code (from modem)      X25519(ephemeral, gw_pubkey)
+                                                │
+                                        HKDF-SHA-256 + AES-256-GCM
+                                                │
+                                   ┌────────────┘
+                                   ▼
+                    {new_key, rotation_code, new_key_id, salt, kdf}
+                                   │
+                        ──► DESIRED_STATE ──► Gateway
+                                                │
+                                     X25519(gw_privkey, ephemeral)
+                                                │
+                                        HKDF-SHA-256 + AES-256-GCM
+                                                │
+                                    verify rotation_code
+                                    verify master_key_epoch
+                                                │
+                                                ▼
+                                          install new key
+```
+
+### 10.3  Threat analysis
+
+| Threat | Mitigation | Residual risk |
+|--------|------------|---------------|
+| Azure compromise → PSK disclosure | PSKs encrypted with master key; key never in Azure | None (AES-256-GCM) |
+| Azure compromise → forced key rotation | Rotation requires rotation_code from modem display; attacker cannot read physical display | Requires physical access to modem |
+| Azure MITM on public key | BIP-39 fingerprint computed locally by SPA from `x25519_public_key`, NOT read from Azure-stored `fingerprint_words`. Admin verifies SPA-computed fingerprint against modem display (66-bit work factor). A compromised Azure cannot substitute a rogue key with pre-matched words. | Targeted collision requires ~2^66 operations |
+| Offline passphrase brute-force | Argon2id (64 MiB memory-hard); `master_key_id` is opaque random (NOT a hash of key) — no offline verifier in cloud | Computationally infeasible without direct gateway access |
+| `key_hint` amplification (radio→cloud) | Rate limiting: 1 hint per `key_hint` per 60 seconds; max 256 dedup entries (LRU) | Bounded amplification factor |
+| Fake recovered PSKs from cloud | Provisional `pending_recovery` table; promoted only after successful frame authentication | Bogus records expire after 24h |
+| Rotation crash → split-brain keys | Two-key window + `pending_rotation` record + per-record `master_key_epoch` | Auto-recoverable on restart |
+| DESIRED_STATE replay (old rotation) | `master_key_epoch` bound into HKDF info and AES-256-GCM AAD; gateway rejects if epoch ≠ current | Stale rotations rejected |
+| Gateway physical compromise | Exposes master key in memory → all PSKs | Accepted; HSM/enclave as future enhancement |
+| Passphrase loss | Irrecoverable by design | Accepted; admin retention requirement |
+| Browser key exposure (SPA rotation) | Key material not stored in `localStorage`/`sessionStorage`; best-effort JS variable clearing; only encrypted payload written to Azure | JS runtime does not guarantee zeroization |
+
+### 10.4  Rotation code security properties
+
+The rotation code provides physical-presence authentication:
+
+- **Entropy:** `[A-Z0-9]` × 6 = 36^6 ≈ 31 bits. Single-use (consumed on successful rotation).
+- **Channel:** Never leaves the modem display → admin → encrypted payload. Not published to cloud or connector.
+- **Brute-force resistance:** The rotation code is inside the X25519-encrypted payload. An attacker with Azure credentials CAN construct valid encrypted payloads (the gateway's public key is published in ACTUAL_STATE) and submit guessed rotation codes via DESIRED_STATE. However, the gateway rate-limits failed rotation attempts (3 per 5-minute window per epoch), and submitting DESIRED_STATE requires valid Entra ID credentials. At 31 bits of entropy and 3 attempts per 5 minutes, exhaustive brute-force would take ~69 years.
+
+### 10.5  Escrow trust model
+
+- **PSK blobs are opaque to the cloud.** The Azure handler stores and returns encrypted blobs without inspection.
+- **No offline passphrase verifier.** `master_key_id` is a random opaque identifier, not a hash of the key material.
+- **Recovery is trial-based.** Recovered PSKs are placed in `pending_recovery` and only promoted after successful frame authentication.
+- **Phone PSKs are not escrowed.** This is a scoping decision; the protocol supports phone escrow without modification.

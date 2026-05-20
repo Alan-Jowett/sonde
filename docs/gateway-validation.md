@@ -4564,6 +4564,297 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+## 18  PSK key escrow and master key rotation tests
+
+### T-2000  Master key identification — first startup
+
+**Traces to:** GW-2001 (AC-1, AC-2, AC-3, AC-4)
+
+**Steps:**
+1. Create `SqliteStorage` with a master key.
+2. Verify no `master_key_id` or `master_key_epoch` in `gateway_config`.
+3. Run startup initialization.
+4. Verify `master_key_id` is a random 16-byte value (non-zero).
+5. Verify `master_key_epoch = 1`.
+6. Verify all existing PSK records have `master_key_id` and `master_key_epoch` backfilled.
+7. Restart — verify same values are loaded (not regenerated).
+
+**Expected:**
+1. Stable `master_key_id` across restarts; epoch = 1; all records backfilled.
+
+---
+
+### T-2001  Gateway ACTUAL_STATE publication
+
+**Traces to:** GW-2003 (AC-1, AC-2, AC-3, AC-4)
+
+**Steps:**
+1. Start gateway with identity, master key, and registered nodes.
+2. Connect a mock connector consumer.
+3. Verify gateway ACTUAL_STATE is received with `entity_kind = "gateway"`.
+4. Verify fields: `entity_id`, `channel`, `master_key_id`, `master_key_epoch`,
+   `x25519_public_key`, `fingerprint_words`, `gateway_version`, `gateway_commit`.
+5. Verify `fingerprint_words` matches independent computation from public key.
+6. Verify `rotation_in_progress = false`.
+7. Verify node ACTUAL_STATE includes `encrypted_psk` (key 12),
+   `escrow_key_hint` (key 13), and `master_key_id` (key 14).
+
+**Expected:**
+1. Gateway ACTUAL_STATE emitted on startup with all required fields.
+
+---
+
+### T-2002  Gateway DESIRED_STATE channel change
+
+**Traces to:** GW-2004 (AC-1)
+
+**Steps:**
+1. Start gateway on channel 1.
+2. Deliver gateway DESIRED_STATE with `channel = 5`.
+3. Verify gateway switches to channel 5.
+4. Verify updated ACTUAL_STATE reports `channel = 5`.
+
+**Expected:**
+1. Channel converges to desired value.
+
+---
+
+### T-2003  Rotation code authentication
+
+**Traces to:** GW-2002 (AC-1, AC-2, AC-3, AC-4, AC-5)
+
+**Steps:**
+1. Start gateway, read rotation code from `gateway_config`.
+2. Submit rotation payload with correct rotation code — verify accepted.
+3. Verify new rotation code generated (different from old).
+4. Submit rotation payload with old (used) code — verify rejected.
+5. Submit rotation payload with wrong code — verify rejected.
+6. Verify rejection is logged as a warning.
+
+**Expected:**
+1. Only correct, unused rotation codes are accepted.
+
+---
+
+### T-2004  Master key rotation — happy path
+
+**Traces to:** GW-2006 (AC-1, AC-2)
+
+**Steps:**
+1. Start gateway with 3 registered nodes and 1 phone PSK.
+2. Record old `master_key_id` and `master_key_epoch`.
+3. Submit valid rotation payload via DESIRED_STATE.
+4. Verify all PSK records (nodes and phone_psks) updated with new
+   `master_key_id` and `master_key_epoch = old_epoch + 1`.
+5. Verify old master key no longer decrypts any PSK record.
+6. Verify new master key decrypts all PSK records.
+7. Verify updated gateway ACTUAL_STATE: new epoch, new id,
+   `rotation_in_progress = false`.
+8. Verify node ACTUAL_STATE re-emitted with new `encrypted_psk`
+   and `master_key_id`.
+
+**Expected:**
+1. All PSKs migrated; old key unusable; state updated.
+
+---
+
+### T-2004a  Rotation validation failures
+
+**Traces to:** GW-2006 (AC-3, AC-4, AC-5)
+
+**Steps:**
+1. Submit rotation with wrong `master_key_epoch` in AAD — verify rejected.
+2. Submit rotation with wrong `rotation_code` — verify rejected.
+3. Submit rotation with corrupted ciphertext — verify decryption failure.
+4. Submit identical rotation twice (replay) — verify second rejected
+   (epoch already incremented).
+
+**Expected:**
+1. All invalid rotations rejected.
+
+---
+
+### T-2004b  Concurrent rotation discard
+
+**Traces to:** GW-2006 (AC-5)
+
+**Steps:**
+1. Start gateway with registered nodes.
+2. Begin key rotation (rotation enters `migrating_psks` phase).
+3. While rotation is in progress, submit a second valid rotation payload
+   via DESIRED_STATE.
+4. Verify second payload is silently discarded.
+5. Submit a third valid rotation payload via gRPC `SubmitRotation`.
+6. Verify gRPC returns `accepted = false` with "rotation already in
+   progress" error.
+7. Verify original rotation completes successfully.
+
+**Expected:**
+1. Concurrent payloads rejected without affecting active rotation.
+
+---
+
+### T-2005  Crash-safe key rotation
+
+**Traces to:** GW-2007 (AC-1, AC-2, AC-3, AC-4)
+
+**Steps:**
+1. Start gateway with 10 registered nodes.
+2. Begin key rotation, simulate crash after 5 nodes migrated.
+3. Restart gateway — verify `pending_rotation` detected during storage
+   initialization (step 2a of startup sequence).
+4. Verify auto-resume migrates remaining 5 nodes before ACTUAL_STATE emission.
+5. Verify all 10 nodes have new `master_key_id` and `master_key_epoch`.
+6. Verify `pending_rotation` deleted.
+7. Verify first ACTUAL_STATE after restart reports `rotation_in_progress = false`
+   (rotation completed during startup before ACTUAL_STATE emission).
+
+**Expected:**
+1. Partial rotation is resumed and completed after crash.
+
+---
+
+### T-2006  Declarative node recovery
+
+**Traces to:** GW-2009 (AC-1, AC-2, AC-4, AC-5)
+
+**Steps:**
+1. Start gateway with an empty local registry.
+2. Send a valid encrypted WAKE frame with unknown `key_hint`.
+3. Verify `missing_key_hints` includes the key_hint in next ACTUAL_STATE.
+4. Verify the hint is cleared from subsequent ACTUAL_STATE emissions.
+5. Send same key_hint within 60 seconds — verify NOT re-reported (rate limit).
+6. Deliver `recovered_psks` in DESIRED_STATE with matching key_hint
+   and `master_key_id`.
+7. Verify PSK stored in `pending_recovery` table.
+8. Send another frame with same key_hint — verify frame is processed
+   using the recovered PSK.
+9. Verify node promoted from `pending_recovery` to `nodes` table.
+
+**Expected:**
+1. Full recovery cycle works; rate limiting enforced.
+
+---
+
+### T-2006a  Provisional recovery — wrong PSK
+
+**Traces to:** GW-2009 (AC-5)
+
+**Steps:**
+1. Insert a bogus PSK into `pending_recovery`.
+2. Send a frame with matching `key_hint`.
+3. Verify trial-decryption fails.
+4. Verify bogus record remains in `pending_recovery` (not promoted).
+5. Verify the bogus record is purged after 24 hours.
+
+**Expected:**
+1. Bad PSKs do not pollute the nodes table.
+
+---
+
+### T-2006b  Provisional recovery — mismatched master_key_id
+
+**Traces to:** GW-2009 (AC-3)
+
+**Steps:**
+1. Deliver `recovered_psks` with `master_key_id` that doesn't match
+   the gateway's current key.
+2. Verify the record is skipped (not inserted into `pending_recovery`).
+
+**Expected:**
+1. PSKs from a different key era are rejected.
+
+---
+
+### T-2006c  Phone PSKs not escrowed
+
+**Traces to:** GW-2005 (AC-2)
+
+**Steps:**
+1. Start gateway with 2 registered nodes and 1 phone PSK.
+2. Connect a mock connector consumer.
+3. Verify node ACTUAL_STATE includes escrow fields for each node.
+4. Verify NO ACTUAL_STATE is emitted with `entity_kind = "phone"`.
+5. Perform key rotation.
+6. Verify node ACTUAL_STATE re-emitted with updated escrow fields.
+7. Verify phone PSK re-encrypted with new key in local DB.
+8. Verify still no phone ACTUAL_STATE emitted.
+
+**Expected:**
+1. Phone PSKs rotate locally but are never published to the connector.
+
+---
+
+### T-2007  Salt management
+
+**Traces to:** GW-2008 (AC-1, AC-2, AC-3, AC-4)
+
+**Steps:**
+1. Start gateway with no local salt — verify `salt = null` in ACTUAL_STATE.
+2. Deliver DESIRED_STATE with salt — verify gateway adopts it.
+3. Verify subsequent ACTUAL_STATE reports the adopted salt.
+4. Deliver DESIRED_STATE with a different salt — verify gateway keeps
+   its existing salt (local wins once set).
+5. Perform rotation with salt in payload — verify salt updated.
+
+**Expected:**
+1. Salt adoption and immutability semantics correct.
+
+---
+
+### T-2008  gRPC rotation path
+
+**Traces to:** GW-2012 (AC-1, AC-2, AC-3)
+
+**Steps:**
+1. Start gateway with identity and master key.
+2. Read rotation code from `gateway_config`.
+3. Build a valid `RotationPayloadV1` with correct rotation code.
+4. Submit via gRPC `SubmitRotation`.
+5. Verify rotation succeeds (new epoch in ACTUAL_STATE).
+6. Submit same payload again — verify rejected (epoch already incremented).
+7. Submit via DESIRED_STATE with another valid payload — verify both
+   paths use the same rotation handler.
+
+**Expected:**
+1. gRPC and DESIRED_STATE rotation paths are equivalent.
+
+---
+
+### T-2009  Crash recovery — all rotation phases
+
+**Traces to:** GW-2007 (AC-1, AC-2)
+
+**Steps:**
+1. Crash during `migrating_psks` phase — verify PSK migration resumes.
+2. Crash during `rewrapping_identity` phase — verify identity rewrap
+   resumes and identity is loadable with old key on restart.
+3. Crash during `committing` phase — verify recovery completes the
+   atomic commit and identity is loadable after recovery.
+4. For each phase, verify the gateway identity is always loadable on
+   restart (no key/identity mismatch).
+
+**Expected:**
+1. Crash at any phase boundary recovers correctly.
+
+---
+
+### T-2010  Pending recovery purge on rotation
+
+**Traces to:** GW-2013 (AC-1, AC-2)
+
+**Steps:**
+1. Insert records into `pending_recovery`.
+2. Initiate key rotation.
+3. Verify `pending_recovery` is empty after `pending_rotation` is created.
+4. Complete rotation.
+5. Verify known nodes re-emitted with new `master_key_id` in ACTUAL_STATE.
+
+**Expected:**
+1. Old recovery records purged atomically with rotation start.
+
+---
+
 | GW-1306 | T-1306a, T-1306b, T-1306c, T-1306d |
 | GW-1307 | T-1307a, T-1307b, T-1307c, T-1307d, T-1307e, T-1307f, T-1307g, T-1307h, T-1307i |
 | GW-1308 | T-1308 |
@@ -4604,3 +4895,17 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1904 | T-1904, T-1904a, T-1904b, T-1904c, T-1904d, T-1904e, T-1904f, T-1904g |
 | GW-1905 | T-1900a, T-1903a |
 | GW-1906 | T-1906 |
+| GW-2000 | T-2001 |
+| GW-2001 | T-2000 |
+| GW-2002 | T-2003 |
+| GW-2003 | T-2001 |
+| GW-2004 | T-2002 |
+| GW-2005 | T-2001, T-2006c |
+| GW-2006 | T-2004, T-2004a |
+| GW-2007 | T-2005, T-2009 |
+| GW-2008 | T-2007 |
+| GW-2009 | T-2006, T-2006a, T-2006b |
+| GW-2010 | T-2001 |
+| GW-2011 | T-2001 |
+| GW-2012 | T-2008 |
+| GW-2013 | T-2010 |

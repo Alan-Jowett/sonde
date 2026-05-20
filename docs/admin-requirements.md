@@ -726,3 +726,67 @@ hash, command, arguments, and working directory.
 3. Empty list prints "No handlers configured." in text mode.
 
 ---
+
+## 11  Key management subcommands
+
+### ADMIN-0900  Key rotation
+
+**Priority:** Must
+**Source:** `docs/evolve-962-specification.md` §5.1–§5.1.1
+
+**Description:**
+`sonde-admin key rotate [--gateway-url <url>]` MUST perform master key rotation
+via the gateway's local gRPC admin API. The command MUST fetch gateway
+ACTUAL_STATE, display the reported 6-word BIP-39 fingerprint, prompt the user
+for confirmation, prompt for the rotation code shown on the modem display,
+prompt for a masked passphrase, reject passphrases shorter than 20 characters
+and fewer than 6 words, fetch the current salt, derive the new master key via
+Argon2id, generate a random 16-byte `new_master_key_id`, build a
+`RotationPayloadV1`, submit it via `SubmitRotation`, and poll until
+`master_key_epoch` changes.
+
+The rotation code input MUST be normalized to uppercase before use. The
+passphrase and all derived keys MUST be wrapped in `Zeroizing` containers and
+MUST be zeroized on completion.
+
+**Acceptance criteria:**
+
+1. Successful rotation increments `master_key_epoch`.
+2. A passphrase shorter than 20 characters and fewer than 6 words is rejected.
+3. An incorrect rotation code is rejected by the gateway and the CLI displays an error.
+4. Key material is zeroized on completion.
+
+---
+
+### ADMIN-0901  Key fingerprint
+
+**Priority:** Must
+**Source:** `docs/evolve-962-specification.md` §5.2
+
+**Description:**
+`sonde-admin key fingerprint [--gateway-url <url>]` MUST fetch gateway
+ACTUAL_STATE and display the 6-word BIP-39 fingerprint reported by the gateway.
+The command MUST perform no key derivation, encryption, or rotation submission.
+
+**Acceptance criteria:**
+
+1. The displayed fingerprint matches the gateway's reported `fingerprint_words`.
+
+---
+
+### ADMIN-0902  Key status
+
+**Priority:** Must
+**Source:** `docs/evolve-962-specification.md` §5.3
+
+**Description:**
+`sonde-admin key status [--gateway-url <url>]` MUST fetch gateway ACTUAL_STATE
+and display `master_key_epoch`, `master_key_id` (hex),
+`rotation_in_progress`, salt status, and KDF parameters.
+
+**Acceptance criteria:**
+
+1. All fields from gateway ACTUAL_STATE are displayed.
+2. `rotation_in_progress` is shown as a boolean.
+
+---

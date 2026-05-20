@@ -915,17 +915,14 @@ Three parameters are accepted:
   `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME`) — the DNS zone name; defaults to
   the custom domain name for apex domains.
 
-When `--custom-domain-name` is provided, the Rust companion passes all three
-values to the bootstrap container as environment variables. The bootstrap
-script is responsible for consuming them to perform custom domain
-configuration.
-
-When `--custom-domain-name` is absent, no custom domain environment variables
-are passed to the container and no custom domain configuration is performed.
+Each parameter is forwarded independently to the bootstrap container as an
+environment variable when set. Setting one does not require or imply setting
+the others. The bootstrap script does not currently consume these environment
+variables; they are passed through for future use.
 
 **Acceptance criteria:**
 
 1. `BootstrapArgs` includes all three custom domain CLI flags with corresponding environment variable overrides.
 2. All three parameters are optional; omitting them does not affect the rest of the bootstrap sequence.
-3. When `--custom-domain-name` is provided, the bootstrap container receives all three values as environment variables.
-4. When `--custom-domain-name` is absent, none of the three custom domain environment variables are present in the container environment.
+3. Each custom domain parameter that is set is forwarded to the bootstrap container as its corresponding environment variable, independently of the others.
+4. When none of the three parameters are set, none of the three custom domain environment variables are present in the container environment.

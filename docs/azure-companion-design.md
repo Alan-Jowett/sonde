@@ -730,11 +730,13 @@ custom domain on the Static Web App:
 | `--custom-domain-dns-resource-group` | `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP` | Resource group containing the Azure DNS zone |
 | `--custom-domain-dns-zone-name` | `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME` | DNS zone name (defaults to custom domain name for apex domains) |
 
-When provided, the Rust companion passes these values to the bootstrap
-container as environment variables. The bootstrap script is responsible for
-consuming them to create DNS records, register the custom domain on the Static
-Web App, and configure Entra redirect URIs as appropriate.
+When provided, the Rust companion passes each value individually to the
+bootstrap container as an environment variable. Each parameter is forwarded
+independently — setting one does not require or imply setting the others.
+The bootstrap script does not currently consume these environment variables;
+they are passed through for future use. The existing
+`SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN` variable (consumed by the bootstrap script
+for CORS and Entra redirect URI configuration) remains a separate mechanism.
 
-All three parameters are optional. When `custom_domain_name` is absent, no
-custom domain environment variables are passed to the container and the
-bootstrap uses the default Azure-provided Static Web App hostname.
+All three parameters are optional and independent. When none are set, no
+custom domain environment variables are passed to the container.

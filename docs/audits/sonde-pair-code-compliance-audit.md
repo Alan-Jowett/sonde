@@ -249,8 +249,8 @@ This audit performs static code-to-specification traceability analysis on the `s
 | **D8 findings (unimplemented)** | 1 |
 | **D9 findings (undocumented behavior)** | 7 |
 | **D10 findings (constraint violations)** | 1 active, 1 resolved (#997) |
-| **Constraints verified compliant** | 27 of 29 documented constraints |
-| **Constraints violated** | 1 active (timeout value), 1 resolved (implicit retry, #997) |
+| **Constraints verified compliant** | 28 of 29 documented constraints |
+| **Constraints violated (active)** | 1 (timeout value) |
 | **Constraints unverifiable (static analysis)** | 1 (PT-1206 manual hardware testing) |
 
 ### Overall Assessment
@@ -309,3 +309,4 @@ The incomplete Android `pairing_method()` (F-003) is the most security-relevant 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2025-07-03 | Copilot (audit agent) | Initial audit report |
+| 1.1 | 2026-05-20 | Copilot | F-002 marked RESOLVED — GATT write retry loop removed (#997). Updated executive summary, D10 count, and coverage metrics. |

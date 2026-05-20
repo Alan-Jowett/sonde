@@ -891,13 +891,27 @@ impl SqliteStorage {
                     })?,
                     None => {
                         // Partially initialized DB — id exists but epoch missing.
-                        // Treat as epoch 1 and persist.
-                        conn.execute(
+                        // Repair: set epoch=1 and backfill any rows still missing.
+                        let tx = conn.unchecked_transaction().map_err(map_err)?;
+                        tx.execute(
                             "INSERT INTO gateway_config (key, value) VALUES ('master_key_epoch', '1') \
                              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                             [],
                         )
                         .map_err(map_err)?;
+                        tx.execute(
+                            "UPDATE nodes SET master_key_id = ?1, master_key_epoch = 1 \
+                             WHERE master_key_id IS NULL",
+                            params![id_bytes.as_slice()],
+                        )
+                        .map_err(map_err)?;
+                        tx.execute(
+                            "UPDATE phone_psks SET master_key_id = ?1, master_key_epoch = 1 \
+                             WHERE master_key_id IS NULL",
+                            params![id_bytes.as_slice()],
+                        )
+                        .map_err(map_err)?;
+                        tx.commit().map_err(map_err)?;
                         1
                     }
                 };
@@ -1006,6 +1020,11 @@ impl SqliteStorage {
                 "encrypted_psk must be {} bytes, got {}",
                 ENCRYPTED_PSK_LEN,
                 encrypted_psk.len()
+            )));
+        }
+        if master_key_epoch > i64::MAX as u64 {
+            return Err(StorageError::Internal(format!(
+                "master_key_epoch {master_key_epoch} exceeds SQLite integer range"
             )));
         }
         let node_id = node_id.to_owned();

@@ -514,8 +514,24 @@ impl ConnectorEventHub {
     ) {
         let escrow_fields = match encrypted_psk_escrow {
             Some(blob) => {
-                if let (Some(key_hint), Some(key_id)) = (escrow_key_hint, master_key_id) {
-                    (Some(blob), Some(key_hint), Some(key_id))
+                if blob.len() != 60 {
+                    error!(
+                        node_id = %node_id,
+                        len = blob.len(),
+                        "dropping escrow: encrypted_psk must be 60 bytes"
+                    );
+                    (None, None, None)
+                } else if let (Some(key_hint), Some(key_id)) = (escrow_key_hint, master_key_id) {
+                    if key_id.len() != 16 {
+                        error!(
+                            node_id = %node_id,
+                            len = key_id.len(),
+                            "dropping escrow: master_key_id must be 16 bytes"
+                        );
+                        (None, None, None)
+                    } else {
+                        (Some(blob), Some(key_hint), Some(key_id))
+                    }
                 } else {
                     error!(
                         node_id = %node_id,

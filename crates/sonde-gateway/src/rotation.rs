@@ -157,9 +157,11 @@ pub fn decrypt_rotation_payload(
         aad: &aad,
     };
 
-    let plaintext = cipher
-        .decrypt(nonce, gcm_payload)
-        .map_err(|_| RotationError::DecryptionFailed)?;
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(nonce, gcm_payload)
+            .map_err(|_| RotationError::DecryptionFailed)?,
+    );
 
     // Parse CBOR plaintext: {1: new_master_key, 2: rotation_code, 3: new_master_key_id, 4: salt, 5: kdf_params}
     parse_rotation_plaintext(&plaintext)
@@ -176,7 +178,7 @@ fn parse_rotation_plaintext(plaintext: &[u8]) -> Result<DecryptedRotation, Rotat
     };
 
     // Key 1: new_master_key (bstr, 32 bytes)
-    let new_key_bytes = get_bytes(&map, 1, "new_master_key")?;
+    let new_key_bytes = Zeroizing::new(get_bytes(&map, 1, "new_master_key")?);
     if new_key_bytes.len() != 32 {
         return Err(RotationError::InvalidKeyLength(new_key_bytes.len()));
     }

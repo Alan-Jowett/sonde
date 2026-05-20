@@ -29,7 +29,7 @@
 3. Run `docker run --rm <image> sonde-azure-companion bootstrap --help`.
 4. Run `docker run --rm <image> sonde-azure-companion run --help`.
 5. Assert: all commands succeed.
-6. Run `docker run --rm <image> cat /etc/os-release` and assert: the output identifies Alpine Linux.
+6. Run `docker run --rm --entrypoint cat <image> /etc/os-release` and assert: the output identifies Alpine Linux.
 7. Run `docker run --rm --entrypoint sh <image> -c "command -v az"` and assert: the command fails (Azure CLI is not present in the runtime image).
 8. Run `docker run --rm --entrypoint sh <image> -c "ls /opt/sonde/deploy/bicep/ 2>/dev/null"` and assert: the directory does not exist or is empty (Bicep files are not bundled in the runtime image).
 9. Run `docker run --rm --entrypoint sh <image> -c "test -x /opt/sonde/deploy/azure-companion/entrypoint.sh"` and assert: the startup/orchestration entrypoint script is present and executable at the expected path.

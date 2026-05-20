@@ -809,3 +809,40 @@
 5. Prepare a fresh state directory with no valid bootstrap-complete state (empty or containing only stale/incomplete artifacts).
 6. Run `sonde-azure-companion bootstrap` (without `--force`) from the fresh no-valid-state directory with the same stubbed services.
 7. Assert: bootstrap performs the same full provisioning lifecycle as in step 3 — the `--force` flag does not alter behavior when no valid state exists.
+
+---
+
+### T-AZC-0430  Bootstrap passes custom domain parameters to container
+
+**Validates:** AZC-0412
+
+**Procedure:**
+1. Run `sonde-azure-companion bootstrap` with `--custom-domain-name sondeplatform.com --custom-domain-dns-resource-group my-dns-rg --custom-domain-dns-zone-name sondeplatform.com` and stubbed Docker/admin services.
+2. Assert: the bootstrap container is created with environment variables `SONDE_AZURE_CUSTOM_DOMAIN_NAME=sondeplatform.com`, `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP=my-dns-rg`, and `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME=sondeplatform.com`.
+3. Run `sonde-azure-companion bootstrap` without any custom domain flags and with `SONDE_AZURE_CUSTOM_DOMAIN_NAME`, `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP`, and `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME` unset in the process environment.
+4. Assert: none of the three custom domain environment variables are present in the container environment.
+
+---
+
+### T-AZC-0431  Custom domain parameters accepted via environment variables
+
+**Validates:** AZC-0412
+
+**Procedure:**
+1. Set `SONDE_AZURE_CUSTOM_DOMAIN_NAME=example.org`, `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP=dns-rg`, `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME=example.org` in the process environment.
+2. Run `sonde-azure-companion bootstrap` with no CLI custom domain flags but with stubbed Docker/admin services.
+3. Assert: the bootstrap container receives all three custom domain values via its environment variables.
+
+---
+
+### T-AZC-0432  Custom domain parameters forwarded independently
+
+**Validates:** AZC-0412
+
+**Procedure:**
+1. Run `sonde-azure-companion bootstrap` with only `--custom-domain-name sondeplatform.com` and with `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP` and `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME` unset in the process environment. Use stubbed Docker/admin services.
+2. Assert: the bootstrap container environment contains `SONDE_AZURE_CUSTOM_DOMAIN_NAME=sondeplatform.com` but does not contain `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP` or `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME`.
+3. Run `sonde-azure-companion bootstrap` with only `--custom-domain-dns-resource-group my-rg` and with `SONDE_AZURE_CUSTOM_DOMAIN_NAME` and `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME` unset. Use stubbed Docker/admin services.
+4. Assert: the bootstrap container environment contains `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP=my-rg` but does not contain `SONDE_AZURE_CUSTOM_DOMAIN_NAME` or `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME`.
+5. Run `sonde-azure-companion bootstrap` with only `--custom-domain-dns-zone-name myzone.com` and with `SONDE_AZURE_CUSTOM_DOMAIN_NAME` and `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP` unset. Use stubbed Docker/admin services.
+6. Assert: the bootstrap container environment contains `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME=myzone.com` but does not contain `SONDE_AZURE_CUSTOM_DOMAIN_NAME` or `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP`.

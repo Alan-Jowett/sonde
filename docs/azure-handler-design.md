@@ -279,8 +279,12 @@ choices that enable SPA queries are:
    UTF-8 bytes)` enables `PartitionKey` equality filters for per-node queries.
 2. **Reverse-tick row key** — newest-first (reverse-chronological) ordering
    enables `RowKey` range filters for time-range queries. To query a time
-   window, the SPA computes reverse-tick values for the start and end
-   timestamps and uses them as `RowKey` range bounds.
+   window `[start_ms, end_ms]`, the SPA computes reverse-tick values
+   (`u64::MAX - ts`) for each bound. Because the mapping inverts the
+   ordering, the lexicographic range bounds are
+   `reverse_tick(end_ms) <= RowKey < reverse_tick(start_ms) + ":"~`
+   (the `":" + suffix` portion of the key falls after the reverse-tick
+   prefix in lexicographic order).
 3. **`program_hash` property** — stored as a top-level `Edm.String` column,
    enabling property-filter queries within a single node partition.
 

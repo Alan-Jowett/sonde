@@ -66,7 +66,7 @@
 1. Start with no actual-state rows and no desired-state rows for a test node.
 2. Deliver one node-scoped `GW-0812` containing current program, assigned program, schedule, battery, firmware data, and timestamp.
 3. Assert: exactly one new actual-state row is created for that node.
-4. Assert: the new actual-state row's observed fields — current program hash, assigned program hash, schedule interval, battery, firmware ABI version, firmware version, and timestamp — match the corresponding values from the source `GW-0812` message.
+4. Assert: the new actual-state row's observed fields — `observed_current_program_hash`, `observed_assigned_program_hash`, `observed_schedule_interval_s`, `battery_mv`, `firmware_abi_version`, `firmware_version`, and `timestamp_ms` — match the corresponding values from the source `GW-0812` message.
 5. Assert: no desired-state row is created for that node.
 6. Assert: no downstream `GW-0811` message is published.
 
@@ -342,11 +342,12 @@ divergence publication instead of treating that redelivery as permanently stale.
 **Validates:** AZH-0502 (AC-2)
 
 **Procedure:**
-1. Insert 6 `SensorData` rows for the same node: 3 with `program_hash` = `"aaa..."`,
-   3 with `program_hash` = `"bbb..."`.
+1. Insert 6 `SensorData` rows for the same node: 3 with `program_hash` =
+   `"aa"*32` (64 lowercase hex chars), 3 with `program_hash` = `"bb"*32`.
 2. Query the node's partition with a `PartitionKey` equality filter and a
-   `program_hash` property filter for `"aaa..."`.
-3. Assert: exactly 3 rows returned, all with `program_hash` = `"aaa..."`.
+   `program_hash` equality filter for the full 64-character `"aa"*32` string.
+3. Assert: exactly 3 rows returned, all with `program_hash` matching the
+   filter (full 64-char equality, case-sensitive).
 4. Assert: rows are returned in reverse-chronological order (newest first).
 
 ---

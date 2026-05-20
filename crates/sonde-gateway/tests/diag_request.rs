@@ -31,10 +31,6 @@ struct TestEnv {
 
 impl TestEnv {
     async fn new() -> Self {
-        Self::with_thresholds(-60, -75).await
-    }
-
-    async fn with_thresholds(good: i8, bad: i8) -> Self {
         let storage = Arc::new(InMemoryStorage::new());
         let crypto_sha = RustCryptoSha256;
         let phone_psk_hash = crypto_sha.hash(&TEST_PHONE_PSK);
@@ -53,7 +49,7 @@ impl TestEnv {
         let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
         let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let mut gateway = Gateway::new_with_pending(
+        let gateway = Gateway::new_with_pending(
             storage.clone(),
             pending_commands,
             session_manager,

@@ -752,16 +752,6 @@ fn required_text(map: &[(Value, Value)], key: u64, field: &str) -> Result<String
         })
 }
 
-#[cfg(test)]
-fn required_bytes(map: &[(Value, Value)], key: u64, field: &str) -> Result<Vec<u8>, String> {
-    map_get(map, key)
-        .ok_or_else(|| format!("missing `{field}`"))
-        .and_then(|value| match value {
-            Value::Bytes(bytes) => Ok(bytes.clone()),
-            _ => Err(format!("`{field}` must be bstr")),
-        })
-}
-
 fn required_map(
     map: &[(Value, Value)],
     key: u64,

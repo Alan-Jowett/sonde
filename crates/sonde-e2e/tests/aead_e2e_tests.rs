@@ -134,7 +134,6 @@ async fn t_e2e_002b_consecutive_wake_cycles() {
     let stats1 = node.run_wake_cycle(&env);
     assert_eq!(stats1.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats1.response_count > 0);
-    let record_after_first = env.storage.get_node("aead-multi").await.unwrap().unwrap();
     assert_eq!(
         env.gateway
             .session_manager()
@@ -146,7 +145,6 @@ async fn t_e2e_002b_consecutive_wake_cycles() {
     let stats2 = node.run_wake_cycle(&env);
     assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats2.response_count > 0);
-    let record_after_second = env.storage.get_node("aead-multi").await.unwrap().unwrap();
     assert_eq!(
         env.gateway
             .session_manager()
@@ -224,7 +222,6 @@ async fn t_e2e_003_wrong_psk_rejected() {
     );
 
     // Gateway must not have updated telemetry.
-    let record = env.storage.get_node("aead-wrong").await.unwrap().unwrap();
     assert!(
         env.gateway
             .session_manager()
@@ -264,7 +261,6 @@ async fn t_e2e_004_tampered_frame_discarded() {
     );
 
     // Gateway must not have updated telemetry.
-    let record = env.storage.get_node("aead-tamper").await.unwrap().unwrap();
     assert!(
         env.gateway
             .session_manager()

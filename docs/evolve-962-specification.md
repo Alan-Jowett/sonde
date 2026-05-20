@@ -143,7 +143,7 @@ Gateway ACTUAL_STATE is emitted:
 
 **Common ACTUAL_STATE keys 4–8, 10–11:** For `entity_kind = "gateway"`,
 keys 4 (`current_program_hash`), 5 (`assigned_program_hash`),
-6 (`schedule_interval_s`), 7 (`battery_mv`), 8 (`firmware_abi_version`),
+6 (`battery_mv`), 7 (`firmware_abi_version`), 8 (`firmware_version`),
 10 (`status_details`), and 11 (`schedule_interval_s`) are node-specific
 and MUST be omitted (not encoded as null). Encoders MUST NOT include
 them; decoders MUST tolerate their absence. Key 9 (`timestamp_ms`) is
@@ -236,7 +236,7 @@ Total envelope: 45 bytes + ciphertext length.
 - Shared secret: `X25519(gw_private_key, sender_ephemeral_public)`
 - Derived key: `HKDF-SHA-256(shared_secret, hkdf_salt=b"sonde-rotation-v1",
   info=gateway_id_raw || current_master_key_epoch_be64)` where
-  `hkdf_salt` is the 18-byte ASCII encoding of `"sonde-rotation-v1"`
+  `hkdf_salt` is the 17-byte ASCII encoding of `"sonde-rotation-v1"`
   (no NUL terminator), `gateway_id_raw` is the raw 16-byte `gateway_id`
   (not hex-encoded), and `current_master_key_epoch_be64` is the 8-byte
   big-endian encoding of the gateway's current `master_key_epoch`.

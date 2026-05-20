@@ -249,7 +249,7 @@ This audit performs static code-to-specification traceability analysis on the `s
 | **D8 findings (unimplemented)** | 1 |
 | **D9 findings (undocumented behavior)** | 7 |
 | **D10 findings (constraint violations)** | 1 active, 1 resolved (#997) |
-| **Constraints verified compliant** | 28 of 29 documented constraints |
+| **Constraints verified compliant** | 27 of 29 documented constraints |
 | **Constraints violated (active)** | 1 (timeout value) |
 | **Constraints unverifiable (static analysis)** | 1 (PT-1206 manual hardware testing) |
 

@@ -402,8 +402,8 @@ impl BleTransport for BtleplugTransport {
             )?;
 
             // Write failures are surfaced immediately — no implicit retry
-            // (PT-1003).  The modem handles the pre-auth race server-side
-            // via `ble_gap_security_initiate()` + pre-auth write buffering.
+            // (PT-1003).  The remote device handles the pre-auth race
+            // server-side via security initiation + pre-auth write buffering.
             state
                 .peripheral
                 .write(&chr, &data, WriteType::WithResponse)

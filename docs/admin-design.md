@@ -246,6 +246,47 @@ hash fields returned by the node-oriented RPC response.
 
 ---
 
+## 6a  Pairing start — interactive event loop
+
+The `pairing start` subcommand differs from all other subcommands because it
+uses a **server-streaming RPC** (`OpenBlePairing`) and includes an interactive
+confirmation step. The event loop works as follows:
+
+1. **RPC initiation** — the CLI sends an `OpenBlePairingRequest` with the
+   requested `duration_s` (default 120) and begins iterating the response
+   stream.
+2. **Event dispatch** — each `BlePairingEvent` variant maps to a user-visible
+   action:
+
+   | Event variant | CLI action |
+   |---------------|-----------|
+   | `WindowOpened` | Print "BLE pairing window opened for {duration_s}s" to stdout |
+   | `Passkey { passkey }` | Print "Passkey: {passkey:06}" to stdout and prompt `Confirm pairing? (y/n):` on stderr |
+   | `PhoneConnected { mtu }` | Print "Phone connected (MTU={mtu})" to stdout |
+   | `PhoneDisconnected` | Print "Phone disconnected" to stdout |
+   | `PhoneRegistered { label, phone_key_hint }` | Print "Phone registered: {label} (key_hint=0x{phone_key_hint:04x})" to stdout |
+   | `WindowClosed` | Print "BLE pairing window closed" to stdout; break the event loop |
+
+3. **Passkey confirmation** — when the `Passkey` event is received:
+   - The CLI prints the passkey formatted as `{:06}` (six-digit, zero-padded).
+   - A confirmation prompt `Confirm pairing? (y/n):` is written to stderr
+     (not stdout) to avoid contaminating piped output.
+   - The CLI reads a single line from stdin. Only `y` or `Y` is accepted.
+   - The CLI calls the `ConfirmBlePairing` unary RPC with the user's
+     response (`accept: true` or `accept: false`).
+4. **Loop exit** — the event loop terminates when `WindowClosed` is received
+   or the stream ends. The CLI exits with code 0 on normal completion.
+
+This subcommand always produces text output because it uses an interactive
+stderr prompt for passkey confirmation. Although `--format` is a global flag
+accepted by clap, the `pairing start` handler ignores it. The current
+implementation does not detect non-TTY stdin; `read_line()` will consume
+piped input if available (e.g., `echo y | sonde-admin …` accepts the
+pairing). If stdin is at EOF or the pipe provides no data, the read returns
+an empty line and the CLI sends `accept: false`.
+
+---
+
 ## 7  Error handling
 
 ### 7.1  Connection errors

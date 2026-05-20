@@ -68,13 +68,17 @@ to avoid collisions when tests run in parallel.
 ### T-0100  Subcommand help output
 
 **Validates:** ADMIN-0100
-**Category:** New automated
+**Category:** New automated (CLI process test)
 
 **Procedure:**
-1. Run `sonde-admin --help`.
-2. Assert: output contains all top-level subcommands (`node`, `program`, `schedule`, `reboot`, `ephemeral`, `status`, `state`, `modem`, `pairing`, `handler`).
-3. Run `sonde-admin node --help`.
-4. Assert: output contains nested subcommands (`list`, `get`, `register`, `remove`, `factory-reset`).
+1. Invoke `sonde-admin --help`.
+2. Assert: exit code is 0.
+3. Assert: stdout contains the required top-level subcommands (`node`, `program`, `schedule`, `reboot`, `ephemeral`, `status`, `state`, `modem`, `pairing`, `handler`).
+4. Invoke `sonde-admin node --help`.
+5. Assert: exit code is 0.
+6. Assert: stdout contains nested subcommands (`list`, `get`, `register`, `remove`, `factory-reset`).
+7. Invoke `sonde-admin invalid-subcommand`.
+8. Assert: exit code is non-zero and stderr contains a clap-generated error message.
 
 ---
 
@@ -103,16 +107,51 @@ to avoid collisions when tests run in parallel.
 
 ---
 
+### T-0101a  Gateway connection — CLI socket override and error message
+
+**Validates:** ADMIN-0101
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Invoke `sonde-admin --socket /nonexistent/path node list`.
+2. Assert: exit code is non-zero.
+3. Assert: stderr contains the endpoint path `/nonexistent/path`.
+4. Start an admin server on a known endpoint.
+5. Invoke `sonde-admin --socket <endpoint> node list`.
+6. Assert: exit code is 0.
+
+---
+
+### T-0101b  Gateway connection — default endpoint and platform retry
+
+**Validates:** ADMIN-0101
+**Category:** Structural
+
+**Procedure:**
+1. Verify by code inspection that `AdminClient::connect()` uses the
+   platform-default endpoint (`/var/run/sonde/admin.sock` on Unix,
+   `\\.\pipe\sonde-admin` on Windows) when `--socket` is not specified.
+2. On Windows (`#[cfg(windows)]`): verify by code inspection that
+   `ERROR_PIPE_BUSY` (OS error 231) triggers a retry loop with 50ms
+   intervals for up to 5 seconds before returning a timeout error.
+3. On Unix: verify that the connection uses the OS default socket connect
+   timeout (no custom retry logic).
+
+---
+
 ### T-0103  JSON output format
 
 **Validates:** ADMIN-0102
-**Category:** New automated
+**Category:** New automated (CLI process test)
 
 **Procedure:**
-1. Register a node via the test harness.
-2. Call `node list` with `--format json`.
-3. Assert: output is valid JSON.
-4. Assert: JSON contains `node_id` and `key_hint` fields.
+1. Start an admin server and register a node via the test harness.
+2. Invoke `sonde-admin --socket <endpoint> --format json node list`.
+3. Assert: exit code is 0.
+4. Assert: stdout is valid JSON.
+5. Assert: JSON contains `node_id` and `key_hint` fields.
+6. Invoke `sonde-admin --socket <endpoint> node list`.
+7. Assert: stdout contains the node ID in human-readable text (not JSON).
 
 ---
 
@@ -151,6 +190,21 @@ to avoid collisions when tests run in parallel.
 
 ---
 
+### T-0105a  Timestamp formatting — visible in CLI text output
+
+**Validates:** ADMIN-0107
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server, register a node, and process a WAKE so that
+   `last_seen_ms` is populated with a known timestamp.
+2. Invoke `sonde-admin --socket <endpoint> node list`.
+3. Assert: the text output contains a `YYYY-MM-DD HH:MM:SS UTC` formatted
+   timestamp for the node's last seen field.
+4. Invoke `sonde-admin --socket <endpoint> --format json node list`.
+5. Assert: the JSON output contains a numeric `last_seen_ms` field (not a
+   formatted string).
+
 ### T-0107  Destructive command confirmation — interactive
 
 **Validates:** ADMIN-0103
@@ -158,11 +212,18 @@ to avoid collisions when tests run in parallel.
 
 **Procedure:**
 1. Start an admin server with a registered node.
-2. Invoke `sonde-admin node remove <node-id>` with stdin connected to a PTY.
-3. Write `n\n` to stdin.
-4. Assert: exit code is non-zero and the node is not removed.
-5. Re-invoke with `--yes`.
-6. Assert: exit code is 0 and the node is removed.
+2. Invoke `sonde-admin --socket <endpoint> node remove <node-id>` with stdin connected to a PTY.
+3. Assert: stderr contains `[y/N]:` prompt text.
+4. Write `n\n` to stdin.
+5. Assert: exit code is non-zero and the node is not removed.
+6. Re-invoke `sonde-admin --socket <endpoint> node remove <node-id>` with stdin connected to a PTY.
+7. Write `y\n` to stdin.
+8. Assert: exit code is 0 and the node is removed.
+9. Re-register the node and re-invoke `sonde-admin --socket <endpoint> node remove <node-id>` with stdin connected to a PTY.
+10. Write `Y\n` to stdin.
+11. Assert: exit code is 0 and the node is removed (uppercase accepted).
+12. Re-register the node and re-invoke with `sonde-admin --socket <endpoint> --yes node remove <node-id>`.
+13. Assert: exit code is 0 and the node is removed without a prompt.
 
 ---
 
@@ -172,9 +233,13 @@ to avoid collisions when tests run in parallel.
 **Category:** New automated (CLI process test)
 
 **Procedure:**
-1. Invoke `sonde-admin node remove <node-id>` with stdin piped (not a TTY) and without `--yes`.
-2. Assert: exit code is non-zero.
-3. Assert: stderr contains "non-interactive" or "--yes".
+1. Start an admin server with a registered node.
+2. Invoke `sonde-admin --socket <endpoint> node remove <node-id>` with stdin piped (not a TTY) and without `--yes`.
+3. Assert: exit code is non-zero.
+4. Assert: stderr contains "non-interactive" or "--yes".
+5. Assert: the node is not removed.
+6. Re-invoke `sonde-admin --socket <endpoint> --yes node remove <node-id>` with stdin piped (not a TTY).
+7. Assert: exit code is 0 and the node is removed.
 
 ---
 
@@ -282,11 +347,50 @@ to avoid collisions when tests run in parallel.
 ### T-0202  Register node — invalid PSK length
 
 **Validates:** ADMIN-0202
-**Category:** New automated
+**Category:** New automated (CLI process test)
 
 **Procedure:**
-1. Attempt to register a node with a 16-byte PSK (32 hex chars).
-2. Assert: CLI rejects with an error message containing "32 bytes".
+1. Start an admin server.
+2. Invoke `sonde-admin --socket <endpoint> node register test-node 4660 aabbccdd` (8 hex chars, 4 bytes — not 32).
+3. Assert: exit code is non-zero.
+4. Assert: stderr contains "32 bytes" or a clear error about PSK length.
+5. Invoke `sonde-admin --socket <endpoint> node register test-node 4660 ZZZZ` (invalid hex).
+6. Assert: exit code is non-zero and stderr indicates invalid hex input.
+
+---
+
+### T-0200a  List nodes — CLI output format
+
+**Validates:** ADMIN-0200
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server with no registered nodes.
+2. Invoke `sonde-admin --socket <endpoint> node list`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains "No nodes registered."
+5. Register a node via the test harness.
+6. Invoke `sonde-admin --socket <endpoint> node list`.
+7. Assert: stdout contains the node ID and key hint.
+8. Invoke `sonde-admin --socket <endpoint> --format json node list`.
+9. Assert: stdout is valid JSON containing the node ID and key hint.
+
+---
+
+### T-0201c  Get node — CLI output format
+
+**Validates:** ADMIN-0201
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server and register a node.
+2. Invoke `sonde-admin --socket <endpoint> node get <node-id>`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains the node ID and key hint.
+5. Invoke `sonde-admin --socket <endpoint> node get nonexistent-node`.
+6. Assert: exit code is non-zero (gRPC error).
+7. Invoke `sonde-admin --socket <endpoint> --format json node get <node-id>`.
+8. Assert: stdout is valid JSON containing node details.
 
 ---
 
@@ -316,6 +420,42 @@ to avoid collisions when tests run in parallel.
 
 ---
 
+### T-0203a  Remove node — CLI confirmation and output
+
+**Validates:** ADMIN-0203
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server and register a node.
+2. Invoke `sonde-admin --socket <endpoint> node remove <node-id>` with stdin
+   connected to a PTY.
+3. Assert: stderr contains the node ID in the prompt text.
+4. Assert: stderr contains `[y/N]:`.
+5. Write `y\n` to stdin.
+6. Assert: exit code is 0.
+7. Assert: stdout contains "Removed node:" and the node ID.
+8. Invoke `sonde-admin --socket <endpoint> node list`.
+9. Assert: stdout contains "No nodes registered."
+
+---
+
+### T-0204a  Factory reset — CLI confirmation and output
+
+**Validates:** ADMIN-0204
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server and register a node.
+2. Invoke `sonde-admin --socket <endpoint> node factory-reset <node-id>` with
+   stdin piped (not a TTY) and without `--yes`.
+3. Assert: exit code is non-zero (non-interactive refusal).
+4. Invoke `sonde-admin --socket <endpoint> --yes node factory-reset <node-id>`
+   with stdin piped.
+5. Assert: exit code is 0.
+6. Assert: stdout contains "Factory reset node:" and the node ID.
+
+---
+
 ## 5  Program management tests
 
 ### T-0300  Ingest and list program
@@ -324,7 +464,7 @@ to avoid collisions when tests run in parallel.
 **Category:** Existing automated (`grpc_ingest_list_program`, debug-only)
 
 **Procedure:**
-1. Build a minimal CBOR program image (bytecode + empty maps).
+1. Prepare a valid BPF ELF object file (e.g., from `test-programs/`).
 2. Call `ingest_program()` with profile `Resident`.
 3. Assert: returned hash is non-empty and size is non-zero.
 4. Call `list_programs()`.
@@ -371,6 +511,71 @@ to avoid collisions when tests run in parallel.
 
 ---
 
+### T-0300b  Ingest program — CLI file-I/O error
+
+**Validates:** ADMIN-0300
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server.
+2. Invoke `sonde-admin --socket <endpoint> program ingest /nonexistent/file.o --profile resident`.
+3. Assert: exit code is non-zero.
+4. Assert: stderr contains a local I/O error (e.g., "No such file or directory").
+
+---
+
+### T-0300c  List programs — CLI output format
+
+**Validates:** ADMIN-0301
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server with no programs.
+2. Invoke `sonde-admin --socket <endpoint> program list`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains "No programs stored."
+5. Ingest a valid BPF ELF program via the test harness.
+6. Invoke `sonde-admin --socket <endpoint> program list`.
+7. Assert: stdout contains the program hash, size, and profile.
+8. Invoke `sonde-admin --socket <endpoint> --format json program list`.
+9. Assert: stdout is valid JSON containing `hash`, `size`, `profile`,
+   `source_filename`, and `has_decoder` fields.
+
+---
+
+### T-0301a  Assign program — CLI output
+
+**Validates:** ADMIN-0302
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server, register a node, and ingest a program.
+2. Invoke `sonde-admin --socket <endpoint> program assign <node-id> <program-hash>`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains "Assigned program" and both the hash and node ID.
+5. Invoke with an invalid hex hash.
+6. Assert: exit code is non-zero and stderr indicates invalid hex input.
+
+---
+
+### T-0302a  Remove program — CLI confirmation and output
+
+**Validates:** ADMIN-0303
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server and ingest a program.
+2. Invoke `sonde-admin --socket <endpoint> program remove <program-hash>` with
+   stdin piped (not a TTY) and without `--yes`.
+3. Assert: exit code is non-zero (non-interactive refusal).
+4. Invoke `sonde-admin --socket <endpoint> --yes program remove <program-hash>`.
+5. Assert: exit code is 0.
+6. Assert: stdout contains "Removed program:" and the hash.
+7. Invoke `sonde-admin --socket <endpoint> program list`.
+8. Assert: stdout contains "No programs stored."
+
+---
+
 ## 6  Operational subcommand tests
 
 ### T-0400  Set schedule
@@ -397,6 +602,34 @@ to avoid collisions when tests run in parallel.
 
 ---
 
+### T-0400a  Set schedule — CLI output
+
+**Validates:** ADMIN-0400
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server and register a node.
+2. Invoke `sonde-admin --socket <endpoint> schedule set <node-id> 120`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains "Set schedule for" and the node ID and "120".
+5. Invoke `sonde-admin --socket <endpoint> --format json schedule set <node-id> 60`.
+6. Assert: stdout is valid JSON containing `node_id` and `interval_s`.
+
+---
+
+### T-0401a  Queue reboot — CLI output
+
+**Validates:** ADMIN-0401
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server and register a node.
+2. Invoke `sonde-admin --socket <endpoint> reboot <node-id>`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains "Queued reboot for node:" and the node ID.
+
+---
+
 ### T-0402  Queue ephemeral
 
 **Validates:** ADMIN-0402
@@ -406,6 +639,19 @@ to avoid collisions when tests run in parallel.
 1. Register a node and ingest an ephemeral program.
 2. Call `queue_ephemeral(node_id, program_hash)`.
 3. Assert: call succeeds.
+
+---
+
+### T-0402a  Queue ephemeral — CLI output
+
+**Validates:** ADMIN-0402
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server, register a node, and ingest an ephemeral program.
+2. Invoke `sonde-admin --socket <endpoint> ephemeral <node-id> <program-hash>`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains "Queued ephemeral program" and the node ID.
 
 ---
 
@@ -484,6 +730,63 @@ to avoid collisions when tests run in parallel.
 
 ---
 
+### T-0500a  State import — CLI confirmation, file read, and output
+
+**Validates:** ADMIN-0501
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server and register a node.
+2. Export state to a temporary file via the client-wrapper test harness.
+3. Invoke `sonde-admin --socket <endpoint> state import <file> --passphrase test`
+   with stdin piped (not a TTY) and without `--yes`.
+4. Assert: exit code is non-zero (non-interactive refusal).
+5. Invoke `sonde-admin --socket <endpoint> --yes state import <file> --passphrase test`.
+6. Assert: exit code is 0.
+7. Assert: stdout contains "Imported state from" and the file path.
+
+---
+
+### T-0500b  State export — CLI output
+
+**Validates:** ADMIN-0500
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server and register a node.
+2. Invoke `sonde-admin --socket <endpoint> state export <temp-file> --passphrase test`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains "Exported" and "bytes to" and the file path.
+5. Assert: the output file exists and is non-empty.
+
+---
+
+### T-0501a  Passphrase resolution — priority order and TTY fallback
+
+**Validates:** ADMIN-0502
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server and register a node.
+2. Invoke `sonde-admin --socket <endpoint> state export <file1> --passphrase cli-pass`.
+3. Assert: exit code is 0 (CLI argument accepted).
+4. Set `SONDE_PASSPHRASE=env-pass` and invoke
+   `sonde-admin --socket <endpoint> state export <file2>` without `--passphrase`.
+5. Assert: exit code is 0 (env var is used as fallback).
+6. Set `SONDE_PASSPHRASE=env-pass` and invoke
+   `sonde-admin --socket <endpoint> state export <file3> --passphrase cli-pass`.
+7. Assert: exit code is 0.
+8. Invoke `sonde-admin --socket <endpoint> --yes state import <file3> --passphrase cli-pass`.
+9. Assert: import succeeds (exit code 0), proving CLI arg took priority over env var.
+10. Unset `SONDE_PASSPHRASE` and invoke with stdin piped (not a TTY) and
+    without `--passphrase`.
+11. Assert: exit code is non-zero.
+12. Assert: exit code is non-zero and stderr contains an error from the
+    passphrase resolution path (e.g., `rpassword` failure or empty-passphrase
+    rejection).
+
+---
+
 ## 8  Modem management tests
 
 ### T-0600  Modem status — no modem configured
@@ -516,6 +819,49 @@ to avoid collisions when tests run in parallel.
 **Procedure:**
 1. Call `scan_modem_channels()` against the default test harness (no modem transport configured).
 2. Assert: returns a gRPC `UNAVAILABLE` error.
+
+---
+
+### T-0600a  Modem status — CLI error output
+
+**Validates:** ADMIN-0600
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server without a modem transport.
+2. Invoke `sonde-admin --socket <endpoint> modem status`.
+3. Assert: exit code is non-zero.
+4. Assert: stderr contains an error message about modem unavailability.
+
+---
+
+### T-0601a  Modem set-channel — CLI output and local validation
+
+**Validates:** ADMIN-0601
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Invoke `sonde-admin modem set-channel 0`.
+2. Assert: exit code is non-zero (clap rejects out-of-range locally).
+3. Invoke `sonde-admin modem set-channel 15`.
+4. Assert: exit code is non-zero (clap rejects out-of-range locally).
+5. Start an admin server without a modem transport.
+6. Invoke `sonde-admin --socket <endpoint> modem set-channel 6`.
+7. Assert: exit code is non-zero (server returns UNAVAILABLE).
+8. Assert: stderr contains an error message.
+
+---
+
+### T-0602a  Modem scan — CLI output
+
+**Validates:** ADMIN-0602
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server without a modem transport.
+2. Invoke `sonde-admin --socket <endpoint> modem scan`.
+3. Assert: exit code is non-zero.
+4. Assert: stderr contains an error message about modem unavailability.
 
 ---
 
@@ -607,6 +953,92 @@ peer simulator. Structural verification that the passkey prompt calls
 
 ---
 
+### T-0703a  Pairing start — acceptance criteria coverage
+
+**Validates:** ADMIN-0700
+**Category:** Structural
+
+**Procedure:**
+This test validates all six acceptance criteria from ADMIN-0700 by structural
+code inspection until a BLE-pairing harness is available.
+
+1. **AC-1 (duration):** Assert: the `pairing start` CLI path sends
+   `duration_s` from the `--duration-s` flag (default 120) to
+   `OpenBlePairingRequest`.
+2. **AC-2 (passkey format):** Assert: the `Passkey` event handler
+   formats the passkey with `{:06}` (6-digit, zero-padded).
+3. **AC-3 (prompt on stderr):** Assert: the passkey confirmation prompt
+   `Confirm pairing? (y/n):` is written to stderr, not stdout.
+4. **AC-4 (ConfirmBlePairing):** Assert: after reading the user's `y`/`n`
+   response, the CLI calls `ConfirmBlePairing` with `accept: true` or
+   `accept: false`.
+5. **AC-5 (event printing):** Assert: each `BlePairingEvent` variant
+   (`WindowOpened`, `Passkey`, `PhoneConnected`, `PhoneDisconnected`,
+   `PhoneRegistered`, `WindowClosed`) produces a distinct stdout message.
+6. **AC-6 (loop exit):** Assert: the event loop breaks on `WindowClosed`.
+
+---
+
+### T-0700a  List phones — CLI output format
+
+**Validates:** ADMIN-0702
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server with no registered phones.
+2. Invoke `sonde-admin --socket <endpoint> pairing list-phones`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains the expected table headers (e.g., "ID", "Key Hint",
+   "Label", "Status") and no data rows.
+5. Invoke `sonde-admin --socket <endpoint> --format json pairing list-phones`.
+6. Assert: stdout is valid JSON containing an empty array.
+
+---
+
+### T-0701a  Pairing stop — CLI confirmation and output
+
+**Validates:** ADMIN-0701
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server.
+2. Invoke `sonde-admin --socket <endpoint> pairing stop` with stdin piped
+   (not a TTY) and without `--yes`.
+3. Assert: exit code is non-zero (non-interactive refusal per ADMIN-0104).
+4. Invoke `sonde-admin --socket <endpoint> --yes pairing stop`.
+5. Assert: the command completes (exit code 0 or gRPC error are both
+   acceptable when no window is open, per T-0701).
+6. Assert: `--yes` bypassed the confirmation prompt (stderr does not contain
+   the confirmation prompt substring, e.g., `[y/N]:`).
+
+**Note:** This test validates that `pairing stop` is wired as a destructive
+command (confirmation required, `--yes` bypass works). Testing the positive
+close-an-open-window path requires a BLE-pairing harness and is deferred
+until such a harness is defined.
+
+---
+
+### T-0702a  Revoke phone — positive path
+
+**Validates:** ADMIN-0703
+**Category:** Structural/manual until a phone registration harness is documented
+
+**Procedure:**
+1. Perform structural verification that the `pairing revoke-phone` CLI path:
+   a. Calls `confirm()` before executing (destructive command per ADMIN-0103).
+   b. Invokes the `RevokePhone` RPC with the provided `phone_id`.
+   c. On success, prints "Phone {id} revoked" to stdout (text mode) or
+      `{"phone_id": <id>, "status": "revoked"}` (JSON mode).
+2. Assert: `--yes` bypasses the confirmation prompt.
+3. Assert: the CLI exits with code 0 on success.
+
+**Note:** Automated positive-path testing requires a phone registration
+harness (a way to register a phone without real BLE). When such a harness
+is available, this test should be promoted to a CLI process test that
+registers a phone, revokes it with `--yes`, and asserts on stdout.
+
+---
+
 ## 10  Handler management tests
 
 ### T-0800  Add and list handler
@@ -632,5 +1064,51 @@ peer simulator. Structural verification that the passkey prompt calls
 2. Call `remove_handler("*")`.
 3. Assert: call succeeds.
 4. Assert: `list_handlers()` returns empty.
+
+---
+
+### T-0800a  Handler add — CLI output
+
+**Validates:** ADMIN-0800
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server.
+2. Invoke `sonde-admin --socket <endpoint> handler add "*" echo hello`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains "Added handler for program" and `*`.
+5. Invoke `sonde-admin --socket <endpoint> --format json handler add "*" echo world`.
+6. Assert: stdout is valid JSON containing `added` and `program_hash` fields.
+
+---
+
+### T-0800b  Handler list — CLI output format
+
+**Validates:** ADMIN-0802
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server with no handlers.
+2. Invoke `sonde-admin --socket <endpoint> handler list`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains "No handlers configured."
+5. Add a handler via the test harness.
+6. Invoke `sonde-admin --socket <endpoint> handler list`.
+7. Assert: stdout contains the program hash, command, and arguments.
+8. Invoke `sonde-admin --socket <endpoint> --format json handler list`.
+9. Assert: stdout is valid JSON array containing handler objects.
+
+---
+
+### T-0801a  Handler remove — CLI output
+
+**Validates:** ADMIN-0801
+**Category:** New automated (CLI process test)
+
+**Procedure:**
+1. Start an admin server and add a handler.
+2. Invoke `sonde-admin --socket <endpoint> handler remove "*"`.
+3. Assert: exit code is 0.
+4. Assert: stdout contains "Removed handler for program" and `*`.
 
 ---

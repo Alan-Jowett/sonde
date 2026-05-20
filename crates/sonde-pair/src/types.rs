@@ -63,8 +63,10 @@ pub struct PreProvisioningTestCommand {
 pub struct DiagnosticResult {
     /// Gateway-observed RSSI from the decrypted `DIAG_REPLY`.
     pub gateway_rssi_dbm: i8,
-    /// Locally-computed signal-quality assessment based on hard-coded RSSI thresholds.
-    pub signal_quality: u8,
+    /// Locally-computed signal-quality assessment based on hard-coded RSSI
+    /// thresholds. `None` when `gateway_rssi_dbm` is the sentinel value `0`
+    /// (meaning "RSSI unavailable", GW-1702).
+    pub signal_quality: Option<u8>,
     /// Node-observed RSSI of the received reply frame, when the platform
     /// exposes receive metadata for the reply.
     pub node_reply_rssi_dbm: Option<i8>,
@@ -81,18 +83,18 @@ const RSSI_BAD_THRESHOLD: i8 = -75;
 
 /// Assess RSSI signal quality using hard-coded thresholds.
 ///
-/// The sentinel value `rssi_dbm = 0` means "RSSI unavailable" (GW-1702)
-/// and is classified as BAD so the pairing UI prompts for confirmation.
-pub fn assess_signal_quality(rssi_dbm: i8) -> u8 {
+/// Returns `None` for the sentinel value `rssi_dbm = 0` ("RSSI unavailable",
+/// GW-1702). Per protocol.md, tools must not apply threshold classification
+/// to the sentinel and should display "RSSI unavailable" instead.
+pub fn assess_signal_quality(rssi_dbm: i8) -> Option<u8> {
     if rssi_dbm == 0 {
-        // Sentinel: RSSI unavailable — treat as bad to surface a warning.
-        sonde_protocol::SIGNAL_QUALITY_BAD
+        None
     } else if rssi_dbm >= RSSI_GOOD_THRESHOLD {
-        sonde_protocol::SIGNAL_QUALITY_GOOD
+        Some(sonde_protocol::SIGNAL_QUALITY_GOOD)
     } else if rssi_dbm >= RSSI_BAD_THRESHOLD {
-        sonde_protocol::SIGNAL_QUALITY_MARGINAL
+        Some(sonde_protocol::SIGNAL_QUALITY_MARGINAL)
     } else {
-        sonde_protocol::SIGNAL_QUALITY_BAD
+        Some(sonde_protocol::SIGNAL_QUALITY_BAD)
     }
 }
 
@@ -184,15 +186,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sentinel_rssi_zero_is_bad() {
-        assert_eq!(assess_signal_quality(0), sonde_protocol::SIGNAL_QUALITY_BAD);
+    fn sentinel_rssi_zero_is_unavailable() {
+        assert_eq!(assess_signal_quality(0), None);
     }
 
     #[test]
     fn good_rssi() {
         assert_eq!(
             assess_signal_quality(-50),
-            sonde_protocol::SIGNAL_QUALITY_GOOD
+            Some(sonde_protocol::SIGNAL_QUALITY_GOOD)
         );
     }
 
@@ -200,7 +202,7 @@ mod tests {
     fn exact_good_threshold_is_good() {
         assert_eq!(
             assess_signal_quality(-60),
-            sonde_protocol::SIGNAL_QUALITY_GOOD
+            Some(sonde_protocol::SIGNAL_QUALITY_GOOD)
         );
     }
 
@@ -208,7 +210,7 @@ mod tests {
     fn just_below_good_threshold_is_marginal() {
         assert_eq!(
             assess_signal_quality(-61),
-            sonde_protocol::SIGNAL_QUALITY_MARGINAL
+            Some(sonde_protocol::SIGNAL_QUALITY_MARGINAL)
         );
     }
 
@@ -216,7 +218,7 @@ mod tests {
     fn exact_bad_threshold_is_marginal() {
         assert_eq!(
             assess_signal_quality(-75),
-            sonde_protocol::SIGNAL_QUALITY_MARGINAL
+            Some(sonde_protocol::SIGNAL_QUALITY_MARGINAL)
         );
     }
 
@@ -224,7 +226,7 @@ mod tests {
     fn just_below_bad_threshold_is_bad() {
         assert_eq!(
             assess_signal_quality(-76),
-            sonde_protocol::SIGNAL_QUALITY_BAD
+            Some(sonde_protocol::SIGNAL_QUALITY_BAD)
         );
     }
 
@@ -232,7 +234,7 @@ mod tests {
     fn very_bad_rssi() {
         assert_eq!(
             assess_signal_quality(-90),
-            sonde_protocol::SIGNAL_QUALITY_BAD
+            Some(sonde_protocol::SIGNAL_QUALITY_BAD)
         );
     }
 }

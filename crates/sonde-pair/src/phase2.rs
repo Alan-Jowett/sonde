@@ -1322,7 +1322,10 @@ mod tests {
         );
         assert_eq!(transport.inner.disconnect_count, 2);
         assert_eq!(result.gateway_rssi_dbm, -58);
-        assert_eq!(result.signal_quality, sonde_protocol::SIGNAL_QUALITY_GOOD);
+        assert_eq!(
+            result.signal_quality,
+            Some(sonde_protocol::SIGNAL_QUALITY_GOOD)
+        );
         assert_eq!(result.node_reply_rssi_dbm, Some(-67));
         assert_eq!(result.attempt_count, 2);
         assert_eq!(result.elapsed_ms, 4_300);

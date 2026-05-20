@@ -40,6 +40,7 @@
 4. Assert: the published payload is a node-scoped `GW-0811` `DESIRED_STATE` message.
 5. Assert: the payload contains the row's desired `assigned_program_hash` and desired `schedule_interval_s`.
 6. Assert: the payload does not invent a non-null `ephemeral_program_hash`.
+7. Assert: the published payload conforms to the `GW-0811` `DESIRED_STATE` connector schema defined in [gateway-companion-api.md](gateway-companion-api.md) and contains no additional out-of-contract keys at any nesting level (AZH-0101 AC-4).
 
 ---
 
@@ -65,14 +66,15 @@
 1. Start with no actual-state rows and no desired-state rows for a test node.
 2. Deliver one node-scoped `GW-0812` containing current program, assigned program, schedule, battery, firmware data, and timestamp.
 3. Assert: exactly one new actual-state row is created for that node.
-4. Assert: no desired-state row is created for that node.
-5. Assert: no downstream `GW-0811` message is published.
+4. Assert: the new actual-state row's observed fields — `observed_current_program_hash`, `observed_assigned_program_hash`, `observed_schedule_interval_s`, `battery_mv`, `firmware_abi_version`, `firmware_version`, and `timestamp_ms` — match the corresponding values from the source `GW-0812` message.
+5. Assert: no desired-state row is created for that node.
+6. Assert: no downstream `GW-0811` message is published.
 
 ---
 
 ### T-AZH-0202  Every `GW-0812` appends a new actual-state row
 
-**Validates:** AZH-0202
+**Validates:** AZH-0200, AZH-0202
 
 **Procedure:**
 1. Deliver two node-scoped `GW-0812` messages for the same node.
@@ -158,6 +160,7 @@ published when both desired fields diverge simultaneously.
 4. Repeat for desired-state rows.
 5. Assert: repeated timestamps can coexist without overwriting one another.
 6. Assert: when two rows share the same `timestamp_ms` within one handler process lifetime, the later-appended row sorts ahead of the earlier one for `Top(1)`.
+7. Assert: the `Top(1)` lookup issues a partition-scoped query with a row limit (e.g., `$top=1`) and relies on service-side `RowKey` ordering, rather than fetching all rows and sorting client-side.
 
 ---
 
@@ -196,6 +199,9 @@ published when both desired fields diverge simultaneously.
 2. Deliver one or more node-scoped `GW-0812` messages.
 3. Assert: actual-state writes occur as expected.
 4. Assert: no desired-state write is attempted by the reconciliation path.
+5. Pre-seed a desired-state row via the test fixture (simulating an external admin surface), then deliver a divergent `GW-0812` for the same node.
+6. Assert: the handler reads the externally authored desired-state row and uses it for divergence evaluation.
+7. Assert: the handler still does not write or mutate any desired-state row during this reconciliation.
 
 ---
 
@@ -247,6 +253,13 @@ divergence publication instead of treating that redelivery as permanently stale.
    `node_id`, `program_hash`, and `raw_payload` (base64 of original blob).
 3. Assert: `RowKey` is a reverse-tick key with uniqueness suffix.
 
+> **Cross-spec dependency:** `SensorData` table pre-provisioning in Bicep
+> (AZH-0500 AC-4) is a provisioning concern. The provisioning validation
+> plan (`azure-provisioning-validation.md`) should assert that the
+> `SensorData` table is included in the provisioned table set. See
+> `T-AZP-0103` — note that it currently references node-state and
+> program-route tables and needs updating to include `SensorData`.
+
 ---
 
 ### T-AZH-0500a  Duplicate-timestamp writes use unique RowKey suffixes
@@ -284,6 +297,7 @@ divergence publication instead of treating that redelivery as permanently stale.
 2. Assert: parsing the `decoded_readings` column as JSON yields an object
    containing `temperature_mc` = `25125` and `humidity_pct` = `4500`
    (comparison is on parsed values, not exact string representation).
+3. Assert: the `decoded_readings` column is stored as an `Edm.String` Azure Table property (not `Edm.Binary` or other type).
 
 ---
 
@@ -313,10 +327,46 @@ divergence publication instead of treating that redelivery as permanently stale.
 
 ### T-AZH-0502  SensorData queryable by node and time range
 
-**Validates:** AZH-0502
+**Validates:** AZH-0502 (AC-1)
 
 **Procedure:**
 1. Insert 10 `SensorData` rows for the same node at 1-second intervals.
 2. Query with `PartitionKey` filter and `RowKey` range covering the middle
    5 rows.
 3. Assert: exactly 5 rows returned in reverse-chronological order.
+
+---
+
+### T-AZH-0502a  SensorData queryable by program hash within a node partition
+
+**Validates:** AZH-0502 (AC-2)
+
+**Procedure:**
+1. Insert 6 `SensorData` rows for the same node: 3 with `program_hash` =
+   `"aa"*32` (64 lowercase hex chars), 3 with `program_hash` = `"bb"*32`.
+2. Query the node's partition with a `PartitionKey` equality filter and a
+   `program_hash` equality filter for the full 64-character `"aa"*32` string.
+3. Assert: exactly 3 rows returned, all with `program_hash` matching the
+   filter (full 64-char equality, case-sensitive).
+4. Assert: rows are returned in reverse-chronological order (newest first).
+
+---
+
+### T-AZH-0502b  SensorData SPA access and query performance (provisioning scope)
+
+**Covered by:** Provisioning validation (not handler-scoped)
+
+> **Cross-spec dependency:** AZH-0502 AC-3 (query performance) and AC-4
+> (SPA read access) are owned by the provisioning stack, not by the Azure
+> handler function. The provisioning validation plan
+> (`azure-provisioning-validation.md`) should include:
+>
+> - A test asserting that the SPA's Entra identity is granted read access
+>   to the `SensorData` table (AC-4).
+> - A test asserting that a 1000-row node partition query completes within
+>   2 seconds via the Azure Table Storage REST API (AC-3).
+>
+> See `T-AZP-0103` for related provisioning table validation. SPA Entra
+> read-access and query performance tests do not yet have provisioning
+> validation entries — placeholder test cases should be added to
+> `azure-provisioning-validation.md` in a follow-up.

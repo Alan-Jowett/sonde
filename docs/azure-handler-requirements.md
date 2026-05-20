@@ -375,8 +375,9 @@ queries by:
 
 No additional API endpoint in the Azure handler is required — the SPA queries
 Azure Table Storage directly. The handler's responsibility is limited to
-writing rows (AZH-0500). The provisioning stack (AZH-0400) must grant the
-SPA's Entra identity read access to the `SensorData` table.
+writing rows (AZH-0500). The provisioning stack must grant the SPA's Entra
+identity read access to the `SensorData` table (see
+[azure-provisioning-requirements.md](azure-provisioning-requirements.md)).
 
 **Acceptance criteria:**
 

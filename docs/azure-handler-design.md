@@ -36,7 +36,7 @@ intent only by publishing `GW-0811` desired-state messages.
 
 ## 2  Runtime topology
 
-> **Requirements:** AZH-0100, AZH-0101, AZH-0303, AZH-0400
+> **Requirements:** AZH-0100, AZH-0101, AZH-0400
 
 The Azure handler runs inside the Azure Function App provisioned by the Bicep
 stack. The Function App uses a system-assigned managed identity with:
@@ -69,7 +69,7 @@ because it publishes `GW-0811` by calling the downstream queue sender directly.
 
 ## 3  Connector message interpretation
 
-> **Requirements:** AZH-0100, AZH-0201, AZH-0202, AZH-0203, AZH-0301
+> **Requirements:** AZH-0100, AZH-0201, AZH-0202, AZH-0203
 
 ### 3.1  `GW-0812` fields consumed by the handler
 
@@ -221,7 +221,7 @@ never seeds or updates desired-state rows while processing `GW-0812`.
 
 ## 6  `GW-0813` sensor data storage
 
-> **Requirements:** AZH-0500, AZH-0501
+> **Requirements:** AZH-0500, AZH-0501, AZH-0502
 
 For each `GW-0813` invocation:
 
@@ -268,6 +268,37 @@ suffix for chronological ordering and append uniqueness.
 
 `SensorData` writes complete the `GW-0813` handling path — no further routing
 or delivery is performed.
+
+### 6.2  SensorData query boundary (AZH-0502)
+
+The handler owns the `SensorData` table schema (§6.1) and is responsible for
+writing rows that support the query patterns required by AZH-0502. The schema
+choices that enable SPA queries are:
+
+1. **Node-scoped partition key** — `"n:" + lowercase-hex-encoded SHA-256(node_id
+   UTF-8 bytes)` enables `PartitionKey` equality filters for per-node queries.
+2. **Reverse-tick row key** — newest-first (reverse-chronological) ordering
+   enables `RowKey` range filters for time-range queries. To query a time
+   window `[start_ms, end_ms]`, the SPA computes reverse-tick values
+   (`u64::MAX - ts`) for each bound. Because the mapping inverts the
+   ordering, the lexicographic range is lower-bounded by
+   `reverse_tick(end_ms)` (inclusive) and upper-bounded by
+   `reverse_tick(start_ms - 1)` (inclusive), selecting all rows whose
+   reverse-tick prefix falls within that interval. The `":"` separator
+   between the reverse-tick prefix and the uniqueness suffix ensures that
+   suffix bytes do not interfere with prefix-based range comparisons.
+3. **`program_hash` property** — stored as a top-level `Edm.String` column,
+   enabling property-filter queries within a single node partition.
+
+The handler does not expose an HTTP query endpoint. The SPA queries the Azure
+Table Storage REST API directly using the logged-in user's Entra bearer token.
+Cross-node program-hash queries are performed as parallel per-node requests by
+the SPA (AZH-0502 AC-2).
+
+Read access for the SPA's Entra identity and query performance requirements
+(AZH-0502 AC-3, AC-4) are owned by the provisioning stack. See
+[azure-provisioning-design.md](azure-provisioning-design.md) for RBAC
+configuration.
 
 ---
 

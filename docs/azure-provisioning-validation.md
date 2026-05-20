@@ -19,16 +19,20 @@
 
 **Validates:** AZP-0100
 
-**Procedure:**
+**Procedure — Case A: Explicit inputs:**
 1. Invoke the top-level deployment entrypoint under `deploy/bicep/` with test values for `location`, `project_name`, and `resource_group_name`.
 2. Run the Bicep validation or what-if path supported by the workflow.
 3. Assert: the plan includes the foundational resources defined by this specification.
 4. Assert: the documented defaults for `location` and `project_name` are `eastus` and `sonde`.
 5. Assert: the deployment inputs and outputs are documented.
-6. Invoke the deployment entrypoint without supplying `resource_group_name`.
-7. Assert: the deployment succeeds and derives a resource group name from `project_name` without requiring the caller to provide one.
-8. Invoke the deployment with a `project_name` that requires normalization to satisfy Azure naming constraints (e.g., uppercase or special characters).
-9. Assert: the derived resource names satisfy Azure provider naming rules and the normalization behavior is documented or applied transparently.
+
+**Procedure — Case B: Omit `resource_group_name`:**
+1. Invoke the deployment entrypoint without supplying `resource_group_name`.
+2. Assert: the deployment succeeds and derives a resource group name from `project_name` without requiring the caller to provide one.
+
+**Procedure — Case C: `project_name` normalization:**
+1. Invoke the deployment with a `project_name` that requires normalization to satisfy Azure naming constraints (e.g., uppercase or special characters).
+2. Assert: the derived resource names satisfy Azure provider naming rules and the normalization behavior is documented or applied transparently.
 
 ---
 

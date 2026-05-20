@@ -23,10 +23,10 @@ enum BootMode {
 }
 
 #[cfg(any(feature = "esp", test))]
-fn select_boot_mode(has_staged_test: bool, has_psk: bool, button_held: bool) -> BootMode {
+fn select_boot_mode(has_staged_test: bool, has_psk: bool) -> BootMode {
     if has_staged_test && !has_psk {
         BootMode::PreProvisioningTest
-    } else if !has_psk || button_held {
+    } else if !has_psk {
         BootMode::BlePairing
     } else {
         BootMode::WakeCycle
@@ -134,18 +134,17 @@ fn main() {
     // Boot priority (ND-0900)
     //
     // Check in order:
-    //   1. Staged pre-provisioning test command → test mode
-    //   2. No PSK OR pairing button held ≥ 500 ms → BLE pairing mode
-    //   3. PSK stored, reg_complete NOT set → PEER_REQUEST mode (WAKE cycle variant)
-    //   4. PSK stored, reg_complete set → normal WAKE cycle
+    //   1. Pairing button held ≥ 500 ms AND PSK present → factory reset + BLE
+    //   2. Staged pre-provisioning test command (unpaired only) → test mode
+    //   3. No PSK → BLE pairing mode
+    //   4. PSK stored, reg_complete NOT set → PEER_REQUEST mode (WAKE cycle variant)
+    //   5. PSK stored, reg_complete set → normal WAKE cycle
     // ---------------------------------------------------------------------------
 
-    // (2) No PSK, or pairing button held ≥ 500 ms → BLE pairing mode.
-    //
     // Pairing button is GPIO 9 on the ESP32-C3 DevKitM-1 (active LOW).
     // We sample it for 500 ms immediately after boot.  If the pin is
     // held LOW for the entire sampling window, button_held = true, which
-    // triggers a factory reset before accepting new BLE credentials (ND-0917).
+    // triggers an immediate factory reset (ND-0917).
     let button_held = {
         // GPIO 9 is the BOOT button on most ESP32-C3 boards.
         // Configure as input with internal pull-up (active LOW).
@@ -168,13 +167,35 @@ fn main() {
                 );
             }
         }
-        if held {
-            info!("pairing button held ≥ 500 ms — will factory reset on BLE provision");
-        }
         held
     };
 
-    let has_psk = storage.read_key().is_some();
+    let mut has_psk = storage.read_key().is_some();
+
+    // (1) Boot button held on a paired node → immediate factory reset (ND-0917).
+    // Erases PSK, programs, maps, schedule, channel, BLE artifacts, and
+    // staged test state. After reset, the node is unpaired and enters BLE
+    // pairing mode. If the reset fails, enter deep sleep (fail-closed).
+    if button_held && has_psk {
+        warn!("pairing button held ≥ 500 ms on paired node — performing factory reset (ND-0917)");
+        let mut ks = sonde_node::key_store::KeyStore::new(&mut storage);
+        match ks.factory_reset(&mut map_storage) {
+            Ok(()) => {
+                warn!("factory reset complete — node is now unpaired");
+                has_psk = false;
+            }
+            Err(e) => {
+                warn!(
+                    "factory reset failed: {} — entering deep sleep (fail-closed)",
+                    e
+                );
+                sleep_ctrl.enter_deep_sleep(60);
+            }
+        }
+    } else if button_held {
+        info!("pairing button held ≥ 500 ms on unpaired node — no reset needed");
+    }
+
     let mut has_staged_test = storage.read_staged_test_command().is_some();
     if has_staged_test && has_psk {
         warn!("ignoring stale staged pre-provisioning test command on paired node");
@@ -188,7 +209,7 @@ fn main() {
         }
     }
 
-    match select_boot_mode(has_staged_test, has_psk, button_held) {
+    match select_boot_mode(has_staged_test, has_psk) {
         BootMode::PreProvisioningTest => {
             let staged_command = storage
                 .read_staged_test_command()
@@ -242,10 +263,7 @@ fn main() {
             sleep_ctrl.reboot();
         }
         BootMode::BlePairing => {
-            info!(
-                "entering BLE pairing mode (no PSK={}, button_held={})",
-                !has_psk, button_held
-            );
+            info!("entering BLE pairing mode (no PSK={})", !has_psk);
 
             let pairing_board_layout = storage
                 .read_board_layout()
@@ -253,7 +271,7 @@ fn main() {
             let mut pairing_hal = EspHal::new(pairing_board_layout);
             pairing_hal.enter_active_gpio_state();
 
-            match run_ble_pairing_mode(&mut storage, &mut map_storage, button_held) {
+            match run_ble_pairing_mode(&mut storage) {
                 Ok(()) => {
                     info!("BLE pairing mode exited — rebooting");
                     pairing_hal.prepare_for_sleep();
@@ -345,27 +363,31 @@ mod tests {
     use super::{select_boot_mode, BootMode};
 
     #[test]
-    fn staged_test_takes_priority_over_ble_pairing_conditions() {
-        assert_eq!(
-            select_boot_mode(true, false, true),
-            BootMode::PreProvisioningTest
-        );
-        assert_eq!(
-            select_boot_mode(true, false, false),
-            BootMode::PreProvisioningTest
-        );
-        assert_eq!(select_boot_mode(true, true, true), BootMode::BlePairing);
-        assert_eq!(select_boot_mode(true, true, false), BootMode::WakeCycle);
+    fn staged_test_takes_priority_when_unpaired() {
+        // Staged test command + unpaired → pre-provisioning test mode
+        assert_eq!(select_boot_mode(true, false), BootMode::PreProvisioningTest);
     }
 
     #[test]
-    fn ble_pairing_selected_only_without_staged_test() {
-        assert_eq!(select_boot_mode(false, false, false), BootMode::BlePairing);
-        assert_eq!(select_boot_mode(false, true, true), BootMode::BlePairing);
+    fn staged_test_ignored_when_paired() {
+        // Staged test command + paired → WakeCycle (stale test is cleared
+        // in the boot path before select_boot_mode is called)
+        assert_eq!(select_boot_mode(true, true), BootMode::WakeCycle);
     }
 
     #[test]
-    fn wake_cycle_selected_only_for_paired_node_without_staged_test() {
-        assert_eq!(select_boot_mode(false, true, false), BootMode::WakeCycle);
+    fn ble_pairing_selected_when_unpaired() {
+        // No PSK, no staged test → BLE pairing
+        assert_eq!(select_boot_mode(false, false), BootMode::BlePairing);
     }
+
+    #[test]
+    fn wake_cycle_selected_for_paired_node() {
+        // PSK present, no staged test → normal WAKE cycle
+        assert_eq!(select_boot_mode(false, true), BootMode::WakeCycle);
+    }
+
+    // Note: button_held + PSK → factory reset is handled in the boot path
+    // before select_boot_mode is called (has_psk becomes false after reset).
+    // The select_boot_mode function no longer knows about button state.
 }

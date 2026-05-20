@@ -129,7 +129,6 @@ fn test_diag_reply_round_trip() {
     let msg = GatewayMessage::DiagReply {
         diagnostic_type: DIAG_TYPE_RSSI,
         rssi_dbm: -55,
-        signal_quality: SIGNAL_QUALITY_GOOD,
     };
     assert_eq!(msg.msg_type(), MSG_DIAG_REPLY);
 
@@ -145,7 +144,6 @@ fn test_diag_reply_negative_rssi() {
         let msg = GatewayMessage::DiagReply {
             diagnostic_type: DIAG_TYPE_RSSI,
             rssi_dbm: rssi,
-            signal_quality: SIGNAL_QUALITY_BAD,
         };
         let cbor = msg.encode().expect("encode");
         let decoded = GatewayMessage::decode(MSG_DIAG_REPLY, &cbor).expect("decode");
@@ -185,13 +183,12 @@ fn test_diag_reply_deterministic_encoding() {
     let msg = GatewayMessage::DiagReply {
         diagnostic_type: DIAG_TYPE_RSSI,
         rssi_dbm: -70,
-        signal_quality: SIGNAL_QUALITY_MARGINAL,
     };
     let cbor1 = msg.encode().expect("encode 1");
     let cbor2 = msg.encode().expect("encode 2");
     assert_eq!(cbor1, cbor2, "encoding must be deterministic");
 
-    // Verify CBOR keys are in ascending order (1, 2, 3)
+    // Verify CBOR keys are in ascending order (1, 2)
     let value: ciborium::Value = ciborium::from_reader(cbor1.as_slice()).expect("valid CBOR");
     if let ciborium::Value::Map(pairs) = value {
         let keys: Vec<u64> = pairs
@@ -200,7 +197,7 @@ fn test_diag_reply_deterministic_encoding() {
                 u64::try_from(k.as_integer().expect("integer key")).expect("non-negative")
             })
             .collect();
-        assert_eq!(keys, vec![1, 2, 3], "CBOR keys must be 1, 2, 3 in order");
+        assert_eq!(keys, vec![1, 2], "CBOR keys must be 1, 2 in order");
     } else {
         panic!("Expected CBOR map");
     }

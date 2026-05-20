@@ -211,7 +211,12 @@ fn diagnostic_review_success(result: &DiagnosticResult) -> DiagnosticReview {
             result.gateway_rssi_dbm, node_reply_summary, result.attempt_count, result.elapsed_ms
         ),
         gateway_rssi_dbm: Some(result.gateway_rssi_dbm),
-        signal_quality: Some(signal_quality_label(result.signal_quality)),
+        signal_quality: Some(
+            result
+                .signal_quality
+                .map(signal_quality_label)
+                .unwrap_or_else(|| "Unavailable".into()),
+        ),
         node_reply_rssi_dbm: result.node_reply_rssi_dbm,
         attempt_count: Some(result.attempt_count),
         elapsed_ms: Some(result.elapsed_ms),

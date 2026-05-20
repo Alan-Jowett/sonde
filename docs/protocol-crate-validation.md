@@ -1020,7 +1020,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Validates:** protocol-crate-design.md §12.1, §6.2
 
 **Procedure:**
-1. Construct a `GatewayMessage::DiagReply { diagnostic_type: 0x01, rssi_dbm: -55, signal_quality: 0 }`.
+1. Construct a `GatewayMessage::DiagReply { diagnostic_type: 0x01, rssi_dbm: -55 }`.
 2. Encode with `GatewayMessage::encode()`.
 3. Decode with `GatewayMessage::decode(MSG_DIAG_REPLY, &cbor)`.
 4. Assert: decoded message equals the original.
@@ -1043,7 +1043,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Validates:** protocol-crate-design.md §12.1
 
 **Procedure:**
-1. Construct `GatewayMessage::DiagReply { diagnostic_type: 0x01, rssi_dbm: -70, signal_quality: 1 }`.
+1. Construct `GatewayMessage::DiagReply { diagnostic_type: 0x01, rssi_dbm: -70 }`.
 2. Encode twice.
 3. Assert: both encodings are byte-identical (deterministic encoding per RFC 8949 §4.2).
 

@@ -38,7 +38,6 @@ use crate::ble_pairing::{
     parse_node_provision, BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
 };
 use crate::error::NodeResult;
-use crate::map_storage::MapStorage;
 use crate::traits::PlatformStorage;
 
 // ---------------------------------------------------------------------------
@@ -64,18 +63,20 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// starts advertising as `sonde-XXXX`, and processes inbound NODE_PROVISION
 /// writes until the BLE connection drops.
 ///
-/// `button_held`: if the pairing button was held at boot, the first
-/// NODE_PROVISION triggers a factory reset before writing new credentials
-/// (ND-0917).
+/// The node MUST be unpaired (no PSK in NVS) before calling this function.
+/// Factory reset, if needed, is performed at boot before entering BLE pairing
+/// mode (ND-0917).
 ///
 /// Returns `Ok(())` when the BLE connection is terminated (the caller should
 /// reboot per ND-0907), or `Err` if BLE initialisation fails.
-pub fn run_ble_pairing_mode<S: PlatformStorage>(
-    storage: &mut S,
-    map_storage: &mut MapStorage,
-    button_held: bool,
-) -> NodeResult<()> {
-    let paired_on_entry = storage.read_key().is_some();
+pub fn run_ble_pairing_mode<S: PlatformStorage>(storage: &mut S) -> NodeResult<()> {
+    // Invariant: BLE pairing mode is only entered when the node is unpaired.
+    // If a PSK is found, the boot path has a bug — fail closed.
+    if storage.read_key().is_some() {
+        return Err(crate::error::NodeError::StorageError(
+            "BLE pairing mode entered while still paired — aborting",
+        ));
+    }
 
     // The GATT write callback cannot hold &mut storage (not Send, lifetime
     // issues). Instead, the callback stores raw write bytes in a shared
@@ -283,13 +284,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                 Some((msg_type, body)) if msg_type == BLE_MSG_NODE_PROVISION => {
                     match parse_node_provision(body) {
                         Ok(provision) => {
-                            let status = handle_node_provision(
-                                &provision,
-                                storage,
-                                map_storage,
-                                button_held,
-                                paired_on_entry,
-                            );
+                            let status = handle_node_provision(&provision, storage);
                             info!("BLE: NODE_PROVISION handled, status=0x{:02x}", status);
                             Some(encode_node_ack(status))
                         }

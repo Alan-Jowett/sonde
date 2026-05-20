@@ -233,4 +233,9 @@ pub trait PlatformStorage {
     fn write_test_result(&mut self, _result: &TestResult) -> NodeResult<()> {
         Ok(())
     }
+
+    /// Clear any retained pre-provisioning test result from RTC memory.
+    fn clear_test_result(&mut self) -> NodeResult<()> {
+        Ok(())
+    }
 }

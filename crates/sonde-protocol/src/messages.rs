@@ -85,7 +85,6 @@ pub enum GatewayMessage {
     DiagReply {
         diagnostic_type: u8,
         rssi_dbm: i8,
-        signal_quality: u8,
     },
 }
 
@@ -380,12 +379,10 @@ impl GatewayMessage {
             GatewayMessage::DiagReply {
                 diagnostic_type,
                 rssi_dbm,
-                signal_quality,
             } => {
                 alloc::vec![
                     (DIAG_KEY_DIAGNOSTIC_TYPE, u8_val(*diagnostic_type)),
                     (DIAG_KEY_RSSI_DBM, i8_val(*rssi_dbm)),
-                    (DIAG_KEY_SIGNAL_QUALITY, u8_val(*signal_quality)),
                 ]
             }
         };
@@ -463,7 +460,6 @@ impl GatewayMessage {
             MSG_DIAG_REPLY => Ok(GatewayMessage::DiagReply {
                 diagnostic_type: get_u8(&fields, DIAG_KEY_DIAGNOSTIC_TYPE)?,
                 rssi_dbm: get_i8(&fields, DIAG_KEY_RSSI_DBM)?,
-                signal_quality: get_u8(&fields, DIAG_KEY_SIGNAL_QUALITY)?,
             }),
             _ => Err(DecodeError::InvalidMsgType(msg_type)),
         }

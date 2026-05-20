@@ -94,7 +94,13 @@ async fn t_e2e_001_nop_wake_cycle() {
 
     // Verify gateway updated durable firmware metadata and runtime observations.
     let record = env.storage.get_node("aead-nop").await.unwrap().unwrap();
-    assert_eq!(record.last_battery_mv, None);
+    assert_eq!(
+        env.gateway
+            .session_manager()
+            .get_battery_mv("aead-nop")
+            .await,
+        Some(0)
+    );
     assert!(env
         .gateway
         .session_manager()
@@ -128,14 +134,24 @@ async fn t_e2e_002b_consecutive_wake_cycles() {
     let stats1 = node.run_wake_cycle(&env);
     assert_eq!(stats1.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats1.response_count > 0);
-    let record_after_first = env.storage.get_node("aead-multi").await.unwrap().unwrap();
-    assert_eq!(record_after_first.last_battery_mv, None);
+    assert_eq!(
+        env.gateway
+            .session_manager()
+            .get_battery_mv("aead-multi")
+            .await,
+        Some(0)
+    );
 
     let stats2 = node.run_wake_cycle(&env);
     assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats2.response_count > 0);
-    let record_after_second = env.storage.get_node("aead-multi").await.unwrap().unwrap();
-    assert_eq!(record_after_second.last_battery_mv, None);
+    assert_eq!(
+        env.gateway
+            .session_manager()
+            .get_battery_mv("aead-multi")
+            .await,
+        Some(0)
+    );
 
     // Verify nonce uniqueness across cycles.
     assert!(
@@ -206,7 +222,6 @@ async fn t_e2e_003_wrong_psk_rejected() {
     );
 
     // Gateway must not have updated telemetry.
-    let record = env.storage.get_node("aead-wrong").await.unwrap().unwrap();
     assert!(
         env.gateway
             .session_manager()
@@ -216,7 +231,11 @@ async fn t_e2e_003_wrong_psk_rejected() {
         "runtime `last_seen` should be None — gateway silently discarded the WAKE"
     );
     assert_eq!(
-        record.last_battery_mv, None,
+        env.gateway
+            .session_manager()
+            .get_battery_mv("aead-wrong")
+            .await,
+        None,
         "battery should not be updated on auth failure"
     );
 }
@@ -242,7 +261,6 @@ async fn t_e2e_004_tampered_frame_discarded() {
     );
 
     // Gateway must not have updated telemetry.
-    let record = env.storage.get_node("aead-tamper").await.unwrap().unwrap();
     assert!(
         env.gateway
             .session_manager()
@@ -252,7 +270,11 @@ async fn t_e2e_004_tampered_frame_discarded() {
         "runtime `last_seen` should be None — gateway silently discarded the tampered WAKE"
     );
     assert_eq!(
-        record.last_battery_mv, None,
+        env.gateway
+            .session_manager()
+            .get_battery_mv("aead-tamper")
+            .await,
+        None,
         "battery should not be updated on tampered frame"
     );
 }
@@ -727,8 +749,14 @@ async fn t_e2e_002_aead_authentication_round_trip() {
         stats.response_count > 0,
         "gateway must respond to valid AEAD frame"
     );
-    let rec = env.storage.get_node("aead-002").await.unwrap().unwrap();
-    assert_eq!(rec.last_battery_mv, None);
+    let _rec = env.storage.get_node("aead-002").await.unwrap().unwrap();
+    assert_eq!(
+        env.gateway
+            .session_manager()
+            .get_battery_mv("aead-002")
+            .await,
+        Some(0)
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -1966,8 +1966,6 @@ The Windows MSI installer MUST add the `bin` directory (default `%ProgramFiles%\
 **Description:**  
 The Windows MSI installer MUST include a custom dialog page that collects the modem COM port and registers the gateway as a Windows service during installation. The dialog SHOULD auto-detect the ESP32-S3 modem by scanning for USB devices matching VID `303A` / PID `1001` and pre-populating the COM port field. If no device is detected, the operator enters the port manually. The installer uses sensible defaults for all other parameters: database at `%ProgramData%\sonde\gateway.db`, master key at `%ProgramData%\sonde\master-key.hex`, key provider `file`, channel `1`. The service is registered with `SERVICE_AUTO_START` so the gateway starts on boot.
 
-The `sonde-gateway install` / `sonde-gateway uninstall` CLI subcommands remain available as a fallback for headless, scripted, or non-Windows deployments.
-
 **Acceptance criteria:**
 
 1. The MSI install wizard includes a "Modem Configuration" dialog page with a COM port dropdown (or text field).
@@ -1977,26 +1975,6 @@ The `sonde-gateway install` / `sonde-gateway uninstall` CLI subcommands remain a
 5. The `%ProgramData%\sonde\` directory is created during install with appropriate ACLs.
 6. On MSI uninstall, the service is stopped and removed. Database and key files are preserved.
 7. On MSI upgrade, the service is stopped before upgrade and restarted after, preserving the existing configuration.
-8. `sonde-gateway install --port COM5 [--db ...] [--master-key-file ...]` remains functional as a CLI fallback for re-registration or headless scenarios.
-9. `sonde-gateway uninstall` removes the service registration without deleting data files.
-
----
-
-### GW-1502  Post-install service unregistration CLI
-
-**Priority:** Must  
-**Source:** Issue #524
-
-**Description:**  
-The `sonde-gateway` binary MUST support a `sonde-gateway uninstall` subcommand that stops and removes the platform service registration. On Windows, this stops the SCM service (if running) and deletes the service entry. On Linux, this stops and disables the systemd unit. The command MUST NOT delete the database, configuration files, or master key material.
-
-**Acceptance criteria:**
-
-1. After `sonde-gateway uninstall`, the Windows service is no longer listed in `sc query sonde-gateway`.
-2. After `sonde-gateway uninstall`, the systemd unit is stopped and disabled (`systemctl is-enabled sonde-gateway.service` returns `disabled`).
-3. Running `sonde-gateway uninstall` when no service is registered exits successfully with an informational message (idempotent).
-4. The database file, master key file, and configuration directory are preserved after uninstall.
-5. The command requires elevated privileges and exits with a clear error message if run unprivileged.
 
 ---
 
@@ -2145,92 +2123,6 @@ The gateway MUST always initialize a `HandlerRouter` from the database at startu
 
 ---
 
-## 15  App bundle deployment
-
-### GW-1600  CLI — bundle deploy
-
-**Priority:** Must
-**Source:** [issue #491](https://github.com/Alan-Jowett/sonde/issues/491), [bundle-format.md](bundle-format.md) §7
-
-**Description:**
-The `sonde-admin` CLI MUST provide a `deploy` subcommand that accepts a `.sondeapp` bundle file and orchestrates deployment to the connected gateway.
-
-**Acceptance criteria:**
-
-1. `sonde-admin deploy <bundle-path>` validates the bundle, ingests programs, configures handlers, and assigns programs to nodes.
-2. The deployment sequence follows the order defined in [bundle-format.md](bundle-format.md) §7.1: validate → ingest programs → configure handlers → assign to nodes.
-3. On success, the command prints a summary of actions taken (programs ingested, handlers configured, nodes assigned) and exits with code 0.
-4. On failure, the command prints the failing step, the error, and which prior steps completed, and exits with a non-zero code.
-
----
-
-### GW-1601  Idempotent deploy
-
-**Priority:** Must
-**Source:** [bundle-format.md](bundle-format.md) §7.2
-
-**Description:**
-Deploying the same bundle twice MUST produce the same end state. The second deploy MUST skip operations that are already complete.
-
-**Acceptance criteria:**
-
-1. A program that already exists in the gateway library (same content hash) is not re-ingested; the command reports "skipped (already ingested)".
-2. A handler that already exists with identical configuration is not re-added; the command reports "skipped (already configured)".
-3. A node already assigned to the correct program is not re-assigned; the command reports "skipped (already assigned)".
-4. The second deploy completes faster than the first (no redundant I/O).
-5. If a handler exists for the same program hash but with different configuration (different command, args, or timeout), the deploy prints a warning ("handler conflict: existing handler for `<hash>` has different config; skipping — use `sonde-admin handler remove` then re-deploy to update") and exits with code 0.
-
----
-
-### GW-1602  CLI — bundle undeploy
-
-**Priority:** Must
-**Source:** [issue #491](https://github.com/Alan-Jowett/sonde/issues/491), [bundle-format.md](bundle-format.md) §8
-
-**Description:**
-The `sonde-admin` CLI MUST provide an `undeploy` subcommand that reverses the effects of a previous `deploy`.
-
-**Acceptance criteria:**
-
-1. `sonde-admin undeploy <bundle-path>` removes handlers configured by the bundle.
-2. Nodes still assigned to bundle programs are listed with a warning but NOT automatically unassigned (safety constraint per [bundle-format.md](bundle-format.md) §8.2).
-3. With `--remove-programs`, programs from the bundle are removed from the library if they are not assigned to any node.
-4. Programs still assigned to nodes are NOT removed; the command warns about each one.
-5. With `--force`, programs are removed even if assigned (unassigns first).
-6. Handlers, programs, or nodes not defined in the bundle are never affected.
-
----
-
-### GW-1603  CLI — bundle validate
-
-**Priority:** Must
-**Source:** [issue #491](https://github.com/Alan-Jowett/sonde/issues/491)
-
-**Description:**
-The `sonde-admin` CLI MUST provide a `validate` subcommand that checks a `.sondeapp` file without deploying it.
-
-**Acceptance criteria:**
-
-1. `sonde-admin validate <bundle-path>` runs all validation rules from [bundle-format.md](bundle-format.md) §6 and exits with code 0 on a valid bundle.
-2. On an invalid bundle, exits with non-zero code and prints all validation errors to stderr.
-3. Does not contact the gateway (offline validation only).
-
----
-
-### GW-1604  Deploy dry-run mode
-
-**Priority:** Should
-**Source:** [bundle-format.md](bundle-format.md) §7.4
-
-**Description:**
-The `sonde-admin deploy` command SHOULD support a `--dry-run` flag that shows what deployment actions would be taken without executing them.
-
-**Acceptance criteria:**
-
-1. `sonde-admin deploy --dry-run <bundle-path>` validates the bundle and prints the list of actions (ingest, handler add, assign) that would be performed.
-2. No gRPC calls are made to the gateway in dry-run mode (except optionally querying current state for idempotency checking).
-3. Exit code is 0 if the bundle is valid, non-zero if invalid.
-
 ---
 
 ## 16  Pairing-time diagnostics
@@ -2284,30 +2176,6 @@ When processing a `DIAG_REQUEST` with `diagnostic_type` = `0x01` (`DIAG_RSSI`), 
 
 ---
 
-### GW-1703  Signal quality assessment
-
-**Priority:** Must  
-**Source:** protocol.md §5.9
-
-**Description:**  
-The gateway MUST assess the RSSI value against configurable thresholds and include a `signal_quality` field in the `DIAG_REPLY`: `0` = good, `1` = marginal, `2` = bad.
-
-Default thresholds:
-
-| Assessment | RSSI range |
-|---|---|
-| Good (`0`) | ≥ −60 dBm |
-| Marginal (`1`) | −60 to −75 dBm (exclusive of −60, inclusive of −75) |
-| Bad (`2`) | < −75 dBm |
-
-**Acceptance criteria:**
-
-1. The `signal_quality` field is set based on the measured RSSI and the configured thresholds.
-2. Threshold values are configurable (see GW-1705).
-3. The assessment uses the default thresholds listed above when no custom configuration is provided.
-
----
-
 ### GW-1704  DIAG_REPLY construction
 
 **Priority:** Must  
@@ -2316,31 +2184,15 @@ Default thresholds:
 **Description:**  
 The gateway MUST construct a `DIAG_REPLY` frame (`msg_type` `0x85`) encrypted with the same `phone_psk` that was used to decrypt the `DIAG_REQUEST`. The `nonce` field in the reply header MUST echo the `nonce` from the request, binding the reply to the request. The `key_hint` in the reply header MUST be the phone's `key_hint`.
 
-CBOR payload: `{ 1: diagnostic_type, 2: rssi_dbm, 3: signal_quality }`.
+CBOR payload: `{ 1: diagnostic_type, 2: rssi_dbm }`.
 
 **Acceptance criteria:**
 
 1. The `DIAG_REPLY` frame is encrypted with the same `phone_psk` used for decryption.
 2. The `nonce` in the reply header echoes the request nonce.
 3. The `key_hint` matches the phone's key hint.
-4. The CBOR payload contains all three required fields with correct types.
+4. The CBOR payload contains both required fields with correct types.
 5. The reply is sent via the modem, addressed to the sender MAC from the `RECV_FRAME`.
-
----
-
-### GW-1705  Configurable RSSI thresholds
-
-**Priority:** Should  
-**Source:** protocol.md §5.9
-
-**Description:**  
-The gateway SHOULD support configurable RSSI thresholds for the signal quality assessment. Thresholds are specified as two `i8` values: `good_threshold` (default: −60 dBm) and `bad_threshold` (default: −75 dBm). RSSI ≥ `good_threshold` → good; RSSI < `bad_threshold` → bad; otherwise → marginal.
-
-**Acceptance criteria:**
-
-1. RSSI thresholds can be set via CLI flags (`--rssi-good-threshold`, `--rssi-bad-threshold`).
-2. Default values are used when no configuration is provided.
-3. The gateway validates that `good_threshold` > `bad_threshold` at startup and logs an error if not.
 
 ---
 
@@ -2350,12 +2202,12 @@ The gateway SHOULD support configurable RSSI thresholds for the signal quality a
 **Source:** GW-1307
 
 **Description:**  
-The gateway MUST log `DIAG_REQUEST` reception and `DIAG_REPLY` transmission at `INFO` level, including: the sender MAC, the phone `key_hint`, the measured RSSI, and the signal quality assessment. PSK values MUST NOT be logged (consistent with GW-1307).
+The gateway MUST log `DIAG_REQUEST` reception and `DIAG_REPLY` transmission at `INFO` level, including: the sender MAC, the phone `key_hint`, and the measured RSSI. PSK values MUST NOT be logged (consistent with GW-1307).
 
 **Acceptance criteria:**
 
 1. `DIAG_REQUEST` reception is logged at `INFO` level with sender MAC and key_hint.
-2. `DIAG_REPLY` transmission is logged at `INFO` level with RSSI and signal quality.
+2. `DIAG_REPLY` transmission is logged at `INFO` level with RSSI.
 3. No PSK material appears in any log entry.
 
 ---
@@ -3109,19 +2961,11 @@ reprovisioning.
 | GW-1406 | State export/import — handler configuration | Should |
 | GW-1500 | Installer PATH registration | Must |
 | GW-1501 | Installer service registration with COM port auto-detect | Must |
-| GW-1502 | Post-install service unregistration CLI | Must |
 | GW-1503 | Linux package systemd integration | Should |
-| GW-1600 | CLI — bundle deploy | Must |
-| GW-1601 | Idempotent deploy | Must |
-| GW-1602 | CLI — bundle undeploy | Must |
-| GW-1603 | CLI — bundle validate | Must |
-| GW-1604 | Deploy dry-run mode | Should |
 | GW-1700 | DIAG_REQUEST reception | Must |
 | GW-1701 | DIAG_REQUEST session bypass | Must |
 | GW-1702 | RSSI measurement | Must |
-| GW-1703 | Signal quality assessment | Must |
 | GW-1704 | DIAG_REPLY construction | Must |
-| GW-1705 | Configurable RSSI thresholds | Should |
 | GW-1706 | Diagnostic logging | Must |
 | GW-1800 | Multi-architecture container image | Must |
 | GW-1801 | Container image tagging | Must |

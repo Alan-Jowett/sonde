@@ -452,7 +452,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     last_seen_epoch_s INTEGER,
     rf_channel INTEGER,
     sensors_json TEXT,
-    registered_by_phone_id INTEGER
+    registered_by_phone_id INTEGER,
+    key_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_key_hint ON nodes(key_hint);
 
@@ -478,7 +479,8 @@ CREATE TABLE IF NOT EXISTS phone_psks (
     psk BLOB NOT NULL,
     label TEXT NOT NULL,
     issued_at_epoch_s INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active'
+    status TEXT NOT NULL DEFAULT 'active',
+    key_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_phone_psks_key_hint ON phone_psks(phone_key_hint);
 CREATE TABLE IF NOT EXISTS battery_readings (
@@ -679,93 +681,51 @@ impl SqliteStorage {
                     })?;
             }
         }
-        // Migration: create escrow tables and add key_version column (GW-2000–GW-2007).
-        {
-            // Escrow keypair table (GW-2000)
+        // Migrate nodes table: add key_version column if missing.
+        let has_node_key_version = conn
+            .prepare("PRAGMA table_info(nodes)")
+            .and_then(|mut stmt| {
+                let names: rusqlite::Result<Vec<String>> =
+                    stmt.query_map([], |row| row.get::<_, String>(1))?.collect();
+                names.map(|ns| ns.iter().any(|n| n == "key_version"))
+            })
+            .map_err(|e| {
+                StorageError::Internal(format!(
+                    "migration check failed (table: nodes, column: key_version): {e}"
+                ))
+            })?;
+        if !has_node_key_version {
             conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS escrow_keypair (
-                    id          INTEGER PRIMARY KEY CHECK (id = 1),
-                    secret_enc  BLOB NOT NULL,
-                    public_key  BLOB NOT NULL,
-                    epoch       INTEGER NOT NULL,
-                    created_at  INTEGER NOT NULL
-                )",
+                "ALTER TABLE nodes ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0",
             )
             .map_err(|e| {
                 StorageError::Internal(format!(
-                    "migration failed: CREATE TABLE escrow_keypair: {e}"
+                    "migration failed: ALTER TABLE nodes ADD COLUMN key_version: {e}"
                 ))
             })?;
-
-            // Pending rotation table (GW-2007)
+        }
+        // Migrate phone_psks table: add key_version column if missing.
+        let has_phone_key_version = conn
+            .prepare("PRAGMA table_info(phone_psks)")
+            .and_then(|mut stmt| {
+                let names: rusqlite::Result<Vec<String>> =
+                    stmt.query_map([], |row| row.get::<_, String>(1))?.collect();
+                names.map(|ns| ns.iter().any(|n| n == "key_version"))
+            })
+            .map_err(|e| {
+                StorageError::Internal(format!(
+                    "migration check failed (table: phone_psks, column: key_version): {e}"
+                ))
+            })?;
+        if !has_phone_key_version {
             conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS pending_rotation (
-                    id                  INTEGER PRIMARY KEY CHECK (id = 1),
-                    new_master_key_enc  BLOB    NOT NULL,
-                    new_key_version     INTEGER NOT NULL,
-                    operation_id        BLOB    NOT NULL,
-                    privkey_rewrapped   BOOLEAN NOT NULL DEFAULT FALSE,
-                    started_at          INTEGER NOT NULL
-                )",
+                "ALTER TABLE phone_psks ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0",
             )
             .map_err(|e| {
                 StorageError::Internal(format!(
-                    "migration failed: CREATE TABLE pending_rotation: {e}"
+                    "migration failed: ALTER TABLE phone_psks ADD COLUMN key_version: {e}"
                 ))
             })?;
-
-            // Escrow operations dedup table (GW-2006)
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS escrow_operations (
-                    operation_id BLOB PRIMARY KEY,
-                    processed_at INTEGER NOT NULL
-                )",
-            )
-            .map_err(|e| {
-                StorageError::Internal(format!(
-                    "migration failed: CREATE TABLE escrow_operations: {e}"
-                ))
-            })?;
-
-            // Add key_version column to nodes table (GW-2005)
-            let node_cols: Vec<String> = conn
-                .prepare("PRAGMA table_info(nodes)")
-                .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
-                .map_err(|e| {
-                    StorageError::Internal(format!(
-                        "migration check failed (table: nodes, column: key_version): {e}"
-                    ))
-                })?;
-            if !node_cols.iter().any(|n| n == "key_version") {
-                conn.execute_batch(
-                    "ALTER TABLE nodes ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0",
-                )
-                .map_err(|e| {
-                    StorageError::Internal(format!(
-                        "migration failed: ALTER TABLE nodes ADD COLUMN key_version: {e}"
-                    ))
-                })?;
-            }
-
-            // Add key_version column to phone_psks table (GW-2005)
-            let phone_cols: Vec<String> = conn
-                .prepare("PRAGMA table_info(phone_psks)")
-                .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
-                .map_err(|e| {
-                    StorageError::Internal(format!(
-                        "migration check failed (table: phone_psks, column: key_version): {e}"
-                    ))
-                })?;
-            if !phone_cols.iter().any(|n| n == "key_version") {
-                conn.execute_batch(
-                    "ALTER TABLE phone_psks ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0",
-                )
-                .map_err(|e| {
-                    StorageError::Internal(format!(
-                        "migration failed: ALTER TABLE phone_psks ADD COLUMN key_version: {e}"
-                    ))
-                })?;
-            }
         }
         // Migration: evolve-962 — master_key_id, master_key_epoch, pending_recovery,
         // encrypted_seed_new, and updated pending_rotation schema.
@@ -1240,11 +1200,11 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         )
     })?;
     let rf_channel: Option<u8> = {
-        let v: Option<u32> = row.get(10)?;
+        let v: Option<u32> = row.get(8)?;
         v.map(|c| {
             u8::try_from(c).map_err(|_| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    10,
+                    8,
                     rusqlite::types::Type::Integer,
                     format!("rf_channel {c} out of u8 range").into(),
                 )
@@ -1253,13 +1213,13 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         .transpose()?
     };
     let desired_schedule_interval_s: Option<u32> = row.get(5)?;
-    let sensors_json: Option<String> = row.get(11)?;
-    let registered_by_phone_id: Option<u32> = row.get(12)?;
-    let firmware_version: Option<String> = row.get(13)?;
-    let key_version_raw: i64 = row.get(14)?;
+    let sensors_json: Option<String> = row.get(9)?;
+    let registered_by_phone_id: Option<u32> = row.get(10)?;
+    let firmware_version: Option<String> = row.get(11)?;
+    let key_version_raw: i64 = row.get(12)?;
     let key_version = u64::try_from(key_version_raw).map_err(|_| {
         rusqlite::Error::FromSqlConversionFailure(
-            14,
+            12,
             rusqlite::types::Type::Integer,
             format!("negative key_version: {key_version_raw}").into(),
         )
@@ -1284,14 +1244,11 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         schedule_interval_s,
         firmware_abi_version: row.get(7)?,
         firmware_version,
-        last_battery_mv: None,
-        last_seen: None,
         rf_channel,
         sensors: sensors_json
             .map(|j| sensors_from_json(&j))
             .unwrap_or_default(),
         registered_by_phone_id,
-        battery_history: Vec::new(),
         key_version,
     })
 }
@@ -1307,8 +1264,8 @@ impl Storage for SqliteStorage {
                 .prepare(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
-                     firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
-                     sensors_json, registered_by_phone_id, firmware_version, key_version FROM nodes",
+                     firmware_abi_version, rf_channel, sensors_json, registered_by_phone_id, \
+                     firmware_version, key_version FROM nodes",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -1331,9 +1288,8 @@ impl Storage for SqliteStorage {
                 .query_row(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
-                     firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
-                     sensors_json, registered_by_phone_id, firmware_version, key_version \
-                     FROM nodes WHERE node_id = ?1",
+                     firmware_abi_version, rf_channel, sensors_json, registered_by_phone_id, \
+                     firmware_version, key_version FROM nodes WHERE node_id = ?1",
                     params![node_id],
                     |row| row_to_node(row, &mk),
                 )
@@ -1351,9 +1307,8 @@ impl Storage for SqliteStorage {
                 .prepare(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
-                     firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
-                     sensors_json, registered_by_phone_id, firmware_version, key_version \
-                     FROM nodes WHERE key_hint = ?1",
+                     firmware_abi_version, rf_channel, sensors_json, registered_by_phone_id, \
+                     firmware_version, key_version FROM nodes WHERE key_hint = ?1",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -1395,7 +1350,8 @@ impl Storage for SqliteStorage {
                  desired_schedule_interval_s = excluded.desired_schedule_interval_s, \
                  schedule_interval_s = excluded.schedule_interval_s, \
                  firmware_abi_version = excluded.firmware_abi_version, \
-                 last_seen_epoch_s = excluded.last_seen_epoch_s, \
+                 last_battery_mv = NULL, \
+                 last_seen_epoch_s = NULL, \
                  rf_channel = excluded.rf_channel, \
                  sensors_json = excluded.sensors_json, \
                  registered_by_phone_id = excluded.registered_by_phone_id, \
@@ -2331,224 +2287,6 @@ impl Storage for SqliteStorage {
         })
         .await
     }
-
-    // ── PSK key escrow (GW-2000–GW-2007) ──────────────────────
-
-    async fn get_escrow_keypair(
-        &self,
-    ) -> Result<Option<crate::storage::EscrowKeypairRecord>, StorageError> {
-        self.with_conn(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT secret_enc, public_key, epoch, created_at \
-                     FROM escrow_keypair WHERE id = 1",
-                )
-                .map_err(map_err)?;
-            let result = stmt
-                .query_row([], |row| {
-                    let secret_enc: Vec<u8> = row.get(0)?;
-                    let public_key_blob: Vec<u8> = row.get(1)?;
-                    let epoch_raw: i64 = row.get(2)?;
-                    let created_at_raw: i64 = row.get(3)?;
-                    let epoch = u64::try_from(epoch_raw).map_err(|_| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            2,
-                            rusqlite::types::Type::Integer,
-                            format!("negative escrow keypair epoch: {epoch_raw}").into(),
-                        )
-                    })?;
-                    let created_at = u64::try_from(created_at_raw).map_err(|_| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            3,
-                            rusqlite::types::Type::Integer,
-                            format!("negative escrow keypair created_at: {created_at_raw}").into(),
-                        )
-                    })?;
-                    Ok((secret_enc, public_key_blob, epoch, created_at))
-                })
-                .optional()
-                .map_err(map_err)?;
-            match result {
-                Some((secret_enc, public_key_blob, epoch, created_at)) => {
-                    if public_key_blob.len() != 32 {
-                        return Err(StorageError::Internal(format!(
-                            "escrow public key has wrong length: {}",
-                            public_key_blob.len()
-                        )));
-                    }
-                    let mut public_key = [0u8; 32];
-                    public_key.copy_from_slice(&public_key_blob);
-                    Ok(Some(crate::storage::EscrowKeypairRecord {
-                        secret_enc,
-                        public_key,
-                        epoch,
-                        created_at,
-                    }))
-                }
-                None => Ok(None),
-            }
-        })
-        .await
-    }
-
-    async fn store_escrow_keypair(
-        &self,
-        record: &crate::storage::EscrowKeypairRecord,
-    ) -> Result<(), StorageError> {
-        let secret_enc = record.secret_enc.clone();
-        let public_key = record.public_key.to_vec();
-        let epoch = i64::try_from(record.epoch).map_err(|_| {
-            StorageError::Internal(format!(
-                "escrow keypair epoch {} exceeds i64::MAX",
-                record.epoch
-            ))
-        })?;
-        let created_at = i64::try_from(record.created_at).map_err(|_| {
-            StorageError::Internal(format!(
-                "escrow keypair created_at {} exceeds i64::MAX",
-                record.created_at
-            ))
-        })?;
-        self.with_conn(move |conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO escrow_keypair \
-                 (id, secret_enc, public_key, epoch, created_at) \
-                 VALUES (1, ?1, ?2, ?3, ?4)",
-                params![secret_enc, public_key, epoch, created_at],
-            )
-            .map_err(map_err)?;
-            Ok(())
-        })
-        .await
-    }
-
-    async fn try_record_operation(&self, operation_id: &[u8; 16]) -> Result<bool, StorageError> {
-        let op_id = operation_id.to_vec();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_millis() as i64;
-        self.with_conn(move |conn| {
-            let changes = conn
-                .execute(
-                    "INSERT OR IGNORE INTO escrow_operations (operation_id, processed_at) \
-                     VALUES (?1, ?2)",
-                    params![op_id, now],
-                )
-                .map_err(map_err)?;
-            Ok(changes > 0)
-        })
-        .await
-    }
-
-    async fn get_pending_rotation(
-        &self,
-    ) -> Result<Option<crate::storage::PendingRotationRecord>, StorageError> {
-        self.with_conn(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT new_master_key_enc, new_key_version, operation_id, \
-                            privkey_rewrapped, started_at \
-                     FROM pending_rotation WHERE id = 1",
-                )
-                .map_err(map_err)?;
-            let result = stmt
-                .query_row([], |row| {
-                    let new_key_version_raw = row.get::<_, i64>(1)?;
-                    let new_key_version = u64::try_from(new_key_version_raw).map_err(|_| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            1,
-                            rusqlite::types::Type::Integer,
-                            format!(
-                                "negative pending rotation new_key_version: {new_key_version_raw}"
-                            )
-                            .into(),
-                        )
-                    })?;
-                    let started_at_raw = row.get::<_, i64>(4)?;
-                    let started_at = u64::try_from(started_at_raw).map_err(|_| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            4,
-                            rusqlite::types::Type::Integer,
-                            format!("negative pending rotation started_at: {started_at_raw}")
-                                .into(),
-                        )
-                    })?;
-                    let operation_id_blob: Vec<u8> = row.get(2)?;
-                    let operation_id: [u8; 16] =
-                        operation_id_blob.as_slice().try_into().map_err(|_| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                2,
-                                rusqlite::types::Type::Blob,
-                                format!(
-                                    "operation_id has wrong length: expected 16, got {}",
-                                    operation_id_blob.len()
-                                )
-                                .into(),
-                            )
-                        })?;
-                    Ok(crate::storage::PendingRotationRecord {
-                        new_master_key_enc: row.get(0)?,
-                        new_key_version,
-                        operation_id,
-                        privkey_rewrapped: row.get(3)?,
-                        started_at,
-                    })
-                })
-                .optional()
-                .map_err(map_err)?;
-            Ok(result)
-        })
-        .await
-    }
-
-    async fn store_pending_rotation(
-        &self,
-        record: &crate::storage::PendingRotationRecord,
-    ) -> Result<(), StorageError> {
-        let new_master_key_enc = record.new_master_key_enc.clone();
-        let new_key_version = i64::try_from(record.new_key_version).map_err(|_| {
-            StorageError::Internal(format!(
-                "pending rotation new_key_version {} exceeds i64::MAX",
-                record.new_key_version
-            ))
-        })?;
-        let operation_id = record.operation_id.to_vec();
-        let privkey_rewrapped = record.privkey_rewrapped;
-        let started_at = i64::try_from(record.started_at).map_err(|_| {
-            StorageError::Internal(format!(
-                "pending rotation started_at {} exceeds i64::MAX",
-                record.started_at
-            ))
-        })?;
-        self.with_conn(move |conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO pending_rotation \
-                 (id, new_master_key_enc, new_key_version, operation_id, \
-                  privkey_rewrapped, started_at) \
-                 VALUES (1, ?1, ?2, ?3, ?4, ?5)",
-                params![
-                    new_master_key_enc,
-                    new_key_version,
-                    operation_id,
-                    privkey_rewrapped,
-                    started_at
-                ],
-            )
-            .map_err(map_err)?;
-            Ok(())
-        })
-        .await
-    }
-
-    async fn delete_pending_rotation(&self) -> Result<(), StorageError> {
-        self.with_conn(move |conn| {
-            conn.execute("DELETE FROM pending_rotation", [])
-                .map_err(map_err)?;
-            Ok(())
-        })
-        .await
-    }
 }
 
 #[cfg(test)]
@@ -2557,6 +2295,54 @@ mod tests {
 
     /// A fixed test master key — must not be used outside of tests.
     const TEST_MASTER_KEY_RAW: [u8; 32] = [0x42u8; 32];
+
+    /// Old schema without key_version columns for migration tests.
+    const OLD_SCHEMA_NO_KEY_VERSION: &str = "
+        CREATE TABLE nodes (
+            node_id TEXT PRIMARY KEY,
+            key_hint INTEGER NOT NULL,
+            psk BLOB NOT NULL,
+            assigned_program_hash BLOB,
+            current_program_hash BLOB,
+            desired_schedule_interval_s INTEGER,
+            schedule_interval_s INTEGER NOT NULL DEFAULT 60,
+            firmware_abi_version INTEGER,
+            firmware_version TEXT,
+            last_battery_mv INTEGER,
+            last_seen_epoch_s INTEGER,
+            rf_channel INTEGER,
+            sensors_json TEXT,
+            registered_by_phone_id INTEGER
+        );
+        CREATE INDEX idx_nodes_key_hint ON nodes(key_hint);
+        CREATE TABLE programs (
+            hash BLOB PRIMARY KEY,
+            image BLOB NOT NULL,
+            size INTEGER NOT NULL,
+            verification_profile TEXT NOT NULL,
+            abi_version INTEGER,
+            source_filename TEXT
+        );
+        CREATE TABLE phone_psks (
+            phone_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone_key_hint INTEGER NOT NULL,
+            psk BLOB NOT NULL,
+            label TEXT NOT NULL,
+            issued_at_epoch_s INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active'
+        );
+        CREATE INDEX idx_phone_psks_key_hint ON phone_psks(phone_key_hint);
+        CREATE TABLE gateway_identity (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            encrypted_seed BLOB NOT NULL,
+            gateway_id BLOB NOT NULL,
+            public_key BLOB NOT NULL
+        );
+        CREATE TABLE gateway_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    ";
 
     fn test_key() -> Zeroizing<[u8; 32]> {
         Zeroizing::new(TEST_MASTER_KEY_RAW)
@@ -2574,12 +2360,9 @@ mod tests {
             schedule_interval_s: 60,
             firmware_abi_version: None,
             firmware_version: None,
-            last_battery_mv: None,
-            last_seen: None,
             rf_channel: None,
             sensors: Vec::new(),
             registered_by_phone_id: None,
-            battery_history: Vec::new(),
         }
     }
 
@@ -2618,7 +2401,6 @@ mod tests {
         assert_eq!(fetched.assigned_program_hash, Some(vec![0xFF; 32]));
         assert_eq!(fetched.desired_schedule_interval_s, Some(60));
         assert_eq!(fetched.schedule_interval_s, 60);
-        assert_eq!(fetched.last_seen, None);
 
         // List.
         assert_eq!(store.list_nodes().await.unwrap().len(), 1);
@@ -2688,133 +2470,6 @@ mod tests {
             with_fn[0].source_filename.as_deref(),
             Some("tmp102_sensor.o")
         );
-    }
-
-    #[tokio::test]
-    async fn test_get_escrow_keypair_rejects_negative_values() {
-        let store = SqliteStorage::in_memory(test_key()).unwrap();
-        store
-            .with_conn(|conn| {
-                conn.execute(
-                    "INSERT OR REPLACE INTO escrow_keypair (id, secret_enc, public_key, epoch, created_at) \
-                     VALUES (1, ?1, ?2, ?3, ?4)",
-                    params![vec![0xAAu8; 48], vec![0x42u8; 32], -1i64, 1i64],
-                )
-                .unwrap();
-                Ok(())
-            })
-            .await
-            .unwrap();
-
-        let err = store.get_escrow_keypair().await.unwrap_err();
-        assert!(err.to_string().contains("negative escrow keypair epoch"));
-    }
-
-    #[tokio::test]
-    async fn test_store_escrow_keypair_rejects_values_above_i64_max() {
-        let store = SqliteStorage::in_memory(test_key()).unwrap();
-        let err = store
-            .store_escrow_keypair(&crate::storage::EscrowKeypairRecord {
-                secret_enc: vec![0xAAu8; 48],
-                public_key: [0x42u8; 32],
-                epoch: i64::MAX as u64 + 1,
-                created_at: 1,
-            })
-            .await
-            .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("escrow keypair epoch 9223372036854775808 exceeds i64::MAX"));
-    }
-
-    #[tokio::test]
-    async fn test_get_pending_rotation_rejects_negative_values() {
-        let store = SqliteStorage::in_memory(test_key()).unwrap();
-        store
-            .with_conn(|conn| {
-                conn.execute(
-                    "INSERT OR REPLACE INTO pending_rotation \
-                     (id, new_master_key_enc, new_key_version, operation_id, privkey_rewrapped, started_at) \
-                     VALUES (1, ?1, ?2, ?3, ?4, ?5)",
-                    params![vec![0xAAu8; 48], -1i64, vec![0x55u8; 16], false, 1i64],
-                )
-                .unwrap();
-                Ok(())
-            })
-            .await
-            .unwrap();
-
-        let err = store.get_pending_rotation().await.unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("negative pending rotation new_key_version"));
-    }
-
-    #[tokio::test]
-    async fn test_store_pending_rotation_rejects_values_above_i64_max() {
-        let store = SqliteStorage::in_memory(test_key()).unwrap();
-        let err = store
-            .store_pending_rotation(&crate::storage::PendingRotationRecord {
-                new_master_key_enc: vec![0xAAu8; 48],
-                new_key_version: i64::MAX as u64 + 1,
-                operation_id: [0x55u8; 16],
-                privkey_rewrapped: false,
-                started_at: 1,
-            })
-            .await
-            .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("pending rotation new_key_version 9223372036854775808 exceeds i64::MAX"));
-    }
-
-    #[tokio::test]
-    async fn test_try_record_operation_idempotency() {
-        let store = SqliteStorage::in_memory(test_key()).unwrap();
-        let op_id = [0x42u8; 16];
-
-        // First call succeeds (new operation)
-        let first = store.try_record_operation(&op_id).await.unwrap();
-        assert!(first, "first recording should succeed");
-
-        // Duplicate returns false
-        let second = store.try_record_operation(&op_id).await.unwrap();
-        assert!(!second, "duplicate recording should return false");
-
-        // Different operation_id succeeds
-        let other = [0x99u8; 16];
-        let third = store.try_record_operation(&other).await.unwrap();
-        assert!(third, "different operation_id should succeed");
-    }
-
-    #[tokio::test]
-    async fn test_pending_rotation_round_trip_and_delete() {
-        let store = SqliteStorage::in_memory(test_key()).unwrap();
-
-        // Initially empty
-        assert!(store.get_pending_rotation().await.unwrap().is_none());
-
-        // Store a record
-        let record = crate::storage::PendingRotationRecord {
-            new_master_key_enc: vec![0xAAu8; 48],
-            new_key_version: 3,
-            operation_id: [0x55u8; 16],
-            privkey_rewrapped: false,
-            started_at: 1_700_000_000,
-        };
-        store.store_pending_rotation(&record).await.unwrap();
-
-        // Load and verify round-trip
-        let loaded = store.get_pending_rotation().await.unwrap().unwrap();
-        assert_eq!(loaded.new_master_key_enc, record.new_master_key_enc);
-        assert_eq!(loaded.new_key_version, 3);
-        assert_eq!(loaded.operation_id, [0x55u8; 16]);
-        assert!(!loaded.privkey_rewrapped);
-        assert_eq!(loaded.started_at, 1_700_000_000);
-
-        // Delete clears it
-        store.delete_pending_rotation().await.unwrap();
-        assert!(store.get_pending_rotation().await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -2928,7 +2583,6 @@ mod tests {
         node.desired_schedule_interval_s = Some(120);
         node.schedule_interval_s = 120;
         node.key_hint = 2;
-        node.last_battery_mv = Some(3300);
         store.upsert_node(&node).await.unwrap();
 
         // Only one record, with updated values.
@@ -2938,7 +2592,6 @@ mod tests {
         assert_eq!(fetched.desired_schedule_interval_s, Some(120));
         assert_eq!(fetched.schedule_interval_s, 120);
         assert_eq!(fetched.key_hint, 2);
-        assert_eq!(fetched.last_battery_mv, None);
     }
 
     /// GW-0601a migration: existing databases with plaintext 32-byte PSK blobs
@@ -3026,7 +2679,8 @@ mod tests {
                      last_seen_epoch_s INTEGER,
                      rf_channel INTEGER,
                      sensors_json TEXT,
-                     registered_by_phone_id INTEGER
+                     registered_by_phone_id INTEGER,
+                     key_version INTEGER NOT NULL DEFAULT 0
                  );
                  CREATE INDEX idx_nodes_key_hint ON nodes(key_hint);
                  CREATE TABLE programs (
@@ -3049,7 +2703,8 @@ mod tests {
                      psk BLOB NOT NULL,
                      label TEXT NOT NULL,
                      issued_at_epoch_s INTEGER NOT NULL,
-                     status TEXT NOT NULL DEFAULT 'active'
+                     status TEXT NOT NULL DEFAULT 'active',
+                     key_version INTEGER NOT NULL DEFAULT 0
                  );
                  CREATE INDEX idx_phone_psks_key_hint ON phone_psks(phone_key_hint);
                  CREATE TABLE battery_readings (
@@ -3516,8 +3171,6 @@ mod tests {
             .unwrap();
 
         let loaded = store.get_node("batt1").await.unwrap().unwrap();
-        assert_eq!(loaded.last_battery_mv, None);
-        assert!(loaded.battery_history.is_empty());
 
         let mut updated = loaded.clone();
         updated.schedule_interval_s = 120;
@@ -3543,7 +3196,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(stored_battery, Some(3300));
+        assert_eq!(stored_battery, None);
         assert_eq!(stored_history_count, 1);
     }
 
@@ -3643,7 +3296,7 @@ mod tests {
         // Create a DB with the old schema (no key_version column).
         {
             let conn = Connection::open(&path).unwrap();
-            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(OLD_SCHEMA_NO_KEY_VERSION).unwrap();
             let encrypted_psk = encrypt_psk(&master_key, "node-1", &[0xABu8; 32]).unwrap();
             conn.execute(
                 "INSERT INTO nodes (node_id, key_hint, psk, schedule_interval_s) \
@@ -3686,7 +3339,7 @@ mod tests {
         // Create a DB with the old schema (no key_version column on phone_psks).
         {
             let conn = Connection::open(&path).unwrap();
-            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(OLD_SCHEMA_NO_KEY_VERSION).unwrap();
             let encrypted_psk = encrypt_phone_psk(&master_key, 1, &[0xCDu8; 32]).unwrap();
             conn.execute(
                 "INSERT INTO phone_psks (phone_key_hint, psk, label, issued_at_epoch_s, status) \

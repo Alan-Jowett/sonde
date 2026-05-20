@@ -893,3 +893,37 @@ when needed (e.g., credential rotation).
 3. When valid state exists and `--force` is not set, bootstrap prints a message to stderr indicating that state already exists and exits with status 0.
 4. When valid state exists and `--force` is set, bootstrap performs the full provisioning lifecycle.
 5. When no valid state exists, bootstrap performs the full provisioning lifecycle regardless of the `--force` flag.
+
+---
+
+### AZC-0412  Custom domain configuration parameters for Static Web App
+
+**Priority:** Should
+**Source:** [issue #1031](https://github.com/Alan-Jowett/sonde/issues/1031)
+
+**Description:**
+The `bootstrap` subcommand SHOULD accept optional custom domain parameters that
+allow the operator to pass custom DNS configuration to the bootstrap container.
+Three parameters are accepted:
+
+- `--custom-domain-name` (env: `SONDE_AZURE_CUSTOM_DOMAIN_NAME`) — the custom
+  domain FQDN (e.g., `sondeplatform.com`).
+- `--custom-domain-dns-resource-group` (env:
+  `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP`) — the resource group
+  containing the Azure DNS zone for the custom domain.
+- `--custom-domain-dns-zone-name` (env:
+  `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME`) — the DNS zone name. For apex
+  domains, operators typically set this to the custom domain name; no automatic
+  defaulting is applied.
+
+Each parameter is forwarded independently to the bootstrap container as an
+environment variable when set. Setting one does not require or imply setting
+the others. The bootstrap script does not currently consume these environment
+variables; they are passed through for future use.
+
+**Acceptance criteria:**
+
+1. `BootstrapArgs` includes all three custom domain CLI flags with corresponding environment variable overrides.
+2. All three parameters are optional; omitting them does not affect the rest of the bootstrap sequence.
+3. Each custom domain parameter that is set is forwarded to the bootstrap container as its corresponding environment variable, independently of the others.
+4. When none of the three parameters are set, none of the three custom domain environment variables are present in the container environment.

@@ -1500,41 +1500,4 @@ mod tests {
             );
         }
     }
-
-    #[tokio::test]
-    async fn gateway_emits_key_escrow_request_for_unknown_node_when_escrow_ready() {
-        let storage = std::sync::Arc::new(crate::storage::InMemoryStorage::new());
-        let gateway = crate::engine::Gateway::new(storage, std::time::Duration::from_secs(30));
-        gateway
-            .set_escrow_state(crate::escrow::EscrowState::Ready)
-            .await;
-        let hub = gateway.connector_event_hub();
-        let mut rx = hub.subscribe();
-
-        let header = sonde_protocol::FrameHeader {
-            key_hint: 0x1234,
-            msg_type: sonde_protocol::MSG_APP_DATA,
-            nonce: 7,
-        };
-        let raw = sonde_protocol::encode_frame(
-            &header,
-            b"recovery-test",
-            &[0x42u8; 32],
-            &crate::aead::GatewayAead,
-            &crate::crypto::RustCryptoSha256,
-        )
-        .unwrap();
-
-        assert!(gateway.process_frame(&raw, vec![0xAA; 6]).await.is_none());
-
-        let message = rx.try_recv().unwrap();
-        let encoded = message.encode().unwrap();
-        let decoded = decode_map(&encoded).unwrap();
-        assert_eq!(
-            required_u64(&decoded, 1, "msg_type").unwrap(),
-            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST
-        );
-        assert_eq!(required_u64(&decoded, 2, "key_hint").unwrap(), 0x1234);
-        assert_eq!(required_bytes(&decoded, 3, "request_id").unwrap().len(), 16);
-    }
 }

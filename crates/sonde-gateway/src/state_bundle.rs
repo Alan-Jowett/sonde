@@ -949,12 +949,9 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         schedule_interval_s,
         firmware_abi_version: firmware_abi_version.flatten(),
         firmware_version,
-        last_battery_mv: None,
-        last_seen: None,
         rf_channel,
         sensors,
         registered_by_phone_id,
-        battery_history: Vec::new(),
         key_version,
     })
 }
@@ -1477,7 +1474,6 @@ mod tests {
         let mut node1 = make_node("node-a", 0x1234);
         node1.desired_schedule_interval_s = None;
         node1.schedule_interval_s = 120;
-        node1.last_battery_mv = Some(3700);
         node1.key_version = 7;
         let mut node2 = make_node("node-b", 0x5678);
         node2.key_version = 9;
@@ -1499,7 +1495,6 @@ mod tests {
         assert_eq!(na.psk[0], 0x34);
         assert_eq!(na.desired_schedule_interval_s, None);
         assert_eq!(na.schedule_interval_s, 120);
-        assert_eq!(na.last_battery_mv, None);
         assert_eq!(na.key_version, 7);
 
         let nb = out_nodes.iter().find(|n| n.node_id == "node-b").unwrap();
@@ -1591,8 +1586,6 @@ mod tests {
         assert!(node.assigned_program_hash.is_none());
         assert!(node.current_program_hash.is_none());
         assert!(node.firmware_abi_version.is_none());
-        assert!(node.last_battery_mv.is_none());
-        assert!(node.last_seen.is_none());
 
         let bundle = encrypt_state(&[node], &[], "pass").unwrap();
         let (out, _) = decrypt_state(&bundle, "pass").unwrap();
@@ -1600,8 +1593,6 @@ mod tests {
         assert!(n.assigned_program_hash.is_none());
         assert!(n.current_program_hash.is_none());
         assert!(n.firmware_abi_version.is_none());
-        assert!(n.last_battery_mv.is_none());
-        assert!(n.last_seen.is_none());
     }
 
     #[test]
@@ -1841,28 +1832,43 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_omits_battery_telemetry() {
-        use crate::registry::BatteryReading;
-        use std::time::{Duration, UNIX_EPOCH};
+    fn legacy_battery_telemetry_fields_are_ignored_on_import() {
+        use ciborium::value::Value;
 
-        let mut node = make_node("batt-node", 0xAAAA);
-        node.last_battery_mv = Some(3300);
-        node.battery_history = vec![
-            BatteryReading {
-                timestamp: UNIX_EPOCH + Duration::from_secs(1700000000),
-                battery_mv: 3300,
-            },
-            BatteryReading {
-                timestamp: UNIX_EPOCH + Duration::from_secs(1700001000),
-                battery_mv: 3250,
-            },
-        ];
+        let node = node_from_cbor(Value::Map(vec![
+            (
+                Value::Integer(NODE_KEY_ID.into()),
+                Value::Text("batt-node".into()),
+            ),
+            (
+                Value::Integer(NODE_KEY_HINT.into()),
+                Value::Integer(0xAAAAu64.into()),
+            ),
+            (
+                Value::Integer(NODE_KEY_PSK.into()),
+                Value::Bytes(vec![0x42; 32]),
+            ),
+            (
+                Value::Integer(NODE_KEY_SCHEDULE.into()),
+                Value::Integer(60u64.into()),
+            ),
+            (
+                Value::Integer(NODE_KEY_BATTERY.into()),
+                Value::Integer(3300u64.into()),
+            ),
+            (
+                Value::Integer(NODE_KEY_LAST_SEEN.into()),
+                Value::Integer(1_700_000_000i64.into()),
+            ),
+            (
+                Value::Integer(NODE_KEY_BATTERY_HISTORY.into()),
+                Value::Array(Vec::new()),
+            ),
+        ]))
+        .unwrap();
 
-        let bundle = encrypt_state(&[node], &[], "batt-pass").unwrap();
-        let (nodes, _) = decrypt_state(&bundle, "batt-pass").unwrap();
-
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].last_battery_mv, None);
-        assert!(nodes[0].battery_history.is_empty());
+        assert_eq!(node.node_id, "batt-node");
+        assert_eq!(node.key_hint, 0xAAAA);
+        assert_eq!(node.schedule_interval_s, 60);
     }
 }

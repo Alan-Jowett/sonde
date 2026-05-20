@@ -292,7 +292,7 @@ In the Tauri pairing tool, this diagnostic is part of the normal node-provisioni
 - The flow is explicitly split into **stage** and **read** phases so the tool never assumes the original BLE connection will survive test execution.
 - After receiving `RUN_TEST_ACK`, the node reboots into BLE pairing mode.  The tool reconnects with a 500 ms backoff between attempts and a 15 s total timeout budget (`POST_REBOOT_RECONNECT_TIMEOUT_MS`).  In tests, these values are shortened to 0 ms / 50 ms for fast execution.
 - The outer BLE workflow is generic over `test_type`; only the test-specific payload builder changes when new test kinds are added later.
-- For `DiagFrame`, the tool combines the decrypted gateway reply (`rssi_dbm`, `signal_quality`) with the node-reported reply RSSI and elapsed-time metadata from `TEST_RESULT`.
+- For `DiagFrame`, the tool combines the decrypted gateway reply (`rssi_dbm`) with the node-reported reply RSSI and elapsed-time metadata from `TEST_RESULT`, and applies local hard-coded thresholds to assess signal quality.
 - The automatic diagnostic is advisory rather than a hard gate: the operator may continue provisioning after a failure, but only by taking an explicit **continue anyway** action.
 - Success also requires explicit confirmation so the operator can review the measured result before provisioning continues.
 

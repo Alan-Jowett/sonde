@@ -230,7 +230,7 @@ pub fn decrypt_diag_reply(
     raw_frame: &[u8],
     phone_psk: &[u8; 32],
     expected_nonce: u64,
-) -> Result<(i8, u8), PairingError> {
+) -> Result<i8, PairingError> {
     let sha = PairSha256;
     let aead = PairAead;
 
@@ -256,11 +256,7 @@ pub fn decrypt_diag_reply(
         .map_err(|e| PairingError::DiagnosticFailed(format!("DIAG_REPLY CBOR decode: {}", e)))?;
 
     match msg {
-        sonde_protocol::GatewayMessage::DiagReply {
-            rssi_dbm,
-            signal_quality,
-            ..
-        } => Ok((rssi_dbm, signal_quality)),
+        sonde_protocol::GatewayMessage::DiagReply { rssi_dbm, .. } => Ok(rssi_dbm),
         _ => Err(PairingError::DiagnosticFailed(
             "unexpected message variant".into(),
         )),
@@ -496,7 +492,6 @@ mod aead_tests {
         let reply = sonde_protocol::GatewayMessage::DiagReply {
             diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
             rssi_dbm: -55,
-            signal_quality: sonde_protocol::SIGNAL_QUALITY_GOOD,
         };
         let cbor = reply.encode().unwrap();
         let header = sonde_protocol::FrameHeader {
@@ -507,9 +502,8 @@ mod aead_tests {
         let frame =
             sonde_protocol::encode_frame(&header, &cbor, &psk, &PairAead, &PairSha256).unwrap();
 
-        let (rssi, sq) = decrypt_diag_reply(&frame, &psk, nonce).unwrap();
+        let rssi = decrypt_diag_reply(&frame, &psk, nonce).unwrap();
         assert_eq!(rssi, -55);
-        assert_eq!(sq, sonde_protocol::SIGNAL_QUALITY_GOOD);
     }
 
     #[test]
@@ -518,7 +512,6 @@ mod aead_tests {
         let reply = sonde_protocol::GatewayMessage::DiagReply {
             diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
             rssi_dbm: -55,
-            signal_quality: 0,
         };
         let cbor = reply.encode().unwrap();
         let header = sonde_protocol::FrameHeader {
@@ -539,7 +532,6 @@ mod aead_tests {
         let reply = sonde_protocol::GatewayMessage::DiagReply {
             diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
             rssi_dbm: -55,
-            signal_quality: 0,
         };
         let cbor = reply.encode().unwrap();
         let header = sonde_protocol::FrameHeader {
@@ -562,7 +554,6 @@ mod aead_tests {
         let reply = sonde_protocol::GatewayMessage::DiagReply {
             diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
             rssi_dbm: -40,
-            signal_quality: sonde_protocol::SIGNAL_QUALITY_GOOD,
         };
         let cbor = reply.encode().unwrap();
         let header = sonde_protocol::FrameHeader {

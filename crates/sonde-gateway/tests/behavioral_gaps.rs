@@ -641,12 +641,13 @@ async fn t0600_hmac_failure_state_unchanged() {
         "session state variant must not change after AEAD failure"
     );
 
-    // Verify: registry unchanged (battery_mv, firmware_abi_version not overwritten
-    // by the bad frame's payload values).
+    // Verify: durable metadata and runtime battery observation are not overwritten
+    // by the bad frame's payload values.
     let node_after = storage.get_node("node-iso").await.unwrap().unwrap();
     assert_eq!(
-        node_before.last_battery_mv, node_after.last_battery_mv,
-        "battery_mv must not change after AEAD failure"
+        gw.session_manager().get_battery_mv("node-iso").await,
+        Some(3300),
+        "runtime battery_mv must not change after AEAD failure"
     );
     assert_eq!(
         node_before.firmware_abi_version, node_after.firmware_abi_version,
@@ -1288,10 +1289,6 @@ async fn t0700_registry_entry_all_fields_present() {
         stored.firmware_abi_version,
         Some(5),
         "firmware_abi_version must be updated by WAKE"
-    );
-    assert_eq!(
-        stored.last_battery_mv, None,
-        "battery must not be durably persisted"
     );
     assert!(
         gw.session_manager()

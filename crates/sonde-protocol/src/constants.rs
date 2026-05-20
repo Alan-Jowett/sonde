@@ -94,15 +94,14 @@ pub const MAP_KEY_READONLY: u64 = 6;
 // Keys are scoped per msg_type — key 1 in DIAG_REQUEST (diagnostic_type)
 // is unrelated to key 1 in WAKE (firmware_abi_version).
 // DIAG_REQUEST: { 1: diagnostic_type }
-// DIAG_REPLY:   { 1: diagnostic_type, 2: rssi_dbm, 3: signal_quality }
+// DIAG_REPLY:   { 1: diagnostic_type, 2: rssi_dbm }
 pub const DIAG_KEY_DIAGNOSTIC_TYPE: u64 = 1;
 pub const DIAG_KEY_RSSI_DBM: u64 = 2;
-pub const DIAG_KEY_SIGNAL_QUALITY: u64 = 3;
 
 // Diagnostic type codes
 pub const DIAG_TYPE_RSSI: u8 = 0x01;
 
-// Signal quality assessment codes
+// Signal quality assessment codes (used by pairing tool for local RSSI classification)
 pub const SIGNAL_QUALITY_GOOD: u8 = 0;
 pub const SIGNAL_QUALITY_MARGINAL: u8 = 1;
 pub const SIGNAL_QUALITY_BAD: u8 = 2;
@@ -112,15 +111,19 @@ pub const CONNECTOR_MSG_TYPE_DESIRED_STATE: u64 = 0x01;
 pub const CONNECTOR_MSG_TYPE_ACTUAL_STATE: u64 = 0x02;
 pub const CONNECTOR_MSG_TYPE_APP_DATA: u64 = 0x03;
 pub const CONNECTOR_MSG_TYPE_CONNECTOR_HEALTH: u64 = 0x04;
+/// Legacy: KEY_ESCROW_PUBKEY message type. The gateway escrow subsystem was
+/// removed, but the azure-handler still needs to recognize this msg_type on
+/// the inbound connector channel.
 pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY: u64 = 0x10;
+/// Legacy: KEY_ESCROW_REQUEST message type. Used by azure-handler for
+/// escrow blob lookup/response on the control-plane channel.
 pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST: u64 = 0x11;
+/// Legacy: KEY_ESCROW_RESPONSE message type. Sent by azure-handler back
+/// to the gateway with matching escrow blobs.
 pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE: u64 = 0x12;
+/// Legacy: MASTER_KEY_INSTALL message type. Used by the control plane to
+/// deliver a new master key to the gateway during key rotation.
 pub const CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL: u64 = 0x13;
-
-// CBOR integer keys for ACTUAL_STATE escrow fields
-pub const ACTUAL_STATE_KEY_ENCRYPTED_PSK_ESCROW: u64 = 12;
-pub const ACTUAL_STATE_KEY_ESCROW_KEY_HINT: u64 = 13;
-pub const ACTUAL_STATE_KEY_ESCROW_KEY_VERSION: u64 = 14;
 
 // CBOR integer keys for escrow blob format (GW-2002, separate keyspace)
 pub const ESCROW_BLOB_KEY_VERSION_FIELD: u64 = 1;

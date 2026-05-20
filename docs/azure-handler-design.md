@@ -277,8 +277,10 @@ choices that enable SPA queries are:
 
 1. **Node-scoped partition key** — `"n:" + lowercase-hex-encoded SHA-256(node_id
    UTF-8 bytes)` enables `PartitionKey` equality filters for per-node queries.
-2. **Reverse-tick row key** — chronological ordering enables `RowKey` range
-   filters for time-range queries.
+2. **Reverse-tick row key** — newest-first (reverse-chronological) ordering
+   enables `RowKey` range filters for time-range queries. To query a time
+   window, the SPA computes reverse-tick values for the start and end
+   timestamps and uses them as `RowKey` range bounds.
 3. **`program_hash` property** — stored as a top-level `Edm.String` column,
    enabling property-filter queries within a single node partition.
 

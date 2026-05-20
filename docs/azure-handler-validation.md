@@ -40,7 +40,7 @@
 4. Assert: the published payload is a node-scoped `GW-0811` `DESIRED_STATE` message.
 5. Assert: the payload contains the row's desired `assigned_program_hash` and desired `schedule_interval_s`.
 6. Assert: the payload does not invent a non-null `ephemeral_program_hash`.
-7. Assert: the published payload does not contain imperative gateway commands outside the `GW-0811` desired-state contract (AZH-0101 AC-4).
+7. Assert: the published payload contains only fields defined by the `GW-0811` `DESIRED_STATE` schema (`entity_kind`, `entity_id`, desired program/schedule fields, and optional program metadata). No additional keys, imperative commands, or out-of-contract fields are present (AZH-0101 AC-4).
 
 ---
 
@@ -365,6 +365,7 @@ divergence publication instead of treating that redelivery as permanently stale.
 > - A test asserting that a 1000-row node partition query completes within
 >   2 seconds via the Azure Table Storage REST API (AC-3).
 >
-> See `T-AZP-0103` and `T-AZP-0203` for related provisioning validation.
-> These tests are integration/live-CI level and require a deployed Azure
-> stack.
+> See `T-AZP-0103` for related provisioning table validation. SPA Entra
+> read-access and query performance tests do not yet have provisioning
+> validation entries — placeholder test cases should be added to
+> `azure-provisioning-validation.md` in a follow-up.

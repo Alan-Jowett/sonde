@@ -498,10 +498,11 @@ responses (e.g., `#code=…`). To prevent conflicts:
 
 1. **Before MSAL init:** If the current URL hash does not contain
    MSAL-related tokens (`code=`, `error=`, `access_token=`), the hash is
-   temporarily saved and cleared so MSAL does not misinterpret a routing
-   hash as an auth response.
+   temporarily saved and cleared via `history.replaceState()` so MSAL does
+   not misinterpret a routing hash as an auth response.
 2. **After MSAL processes the redirect:** The saved routing hash is restored
-   via `window.location.hash`.
+   via `history.replaceState()` (not `window.location.hash`, which would
+   add a spurious history entry).
 3. **Auth hashes** (containing `code=`, `error=`, or `access_token=`) are
    left intact for MSAL to consume.
 

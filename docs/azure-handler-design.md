@@ -5,8 +5,8 @@
 > **Document status:** Draft
 > **Scope:** Internal design for the Azure cloud-side handler hosted in the
 > Azure Function App. Covers upstream connector message intake, Azure Table
-> schemas, node-state reconciliation, downstream `GW-0811` publication, and
-> `GW-0813` sensor data storage.
+> schemas, node-state reconciliation, downstream `GW-0811` publication,
+> `GW-0813` sensor data storage, and BPF program ingestion.
 > **Audience:** Implementers building the Azure Function App and reviewers
 > auditing traceability to the gateway connector contract.
 > **Related:** [azure-handler-requirements.md](azure-handler-requirements.md),
@@ -26,8 +26,10 @@ Azure handler owns the first Sonde-aware cloud logic:
 1. consume upstream connector messages from the upstream queue,
 2. append node-scoped `GW-0812` actual-state messages to actual-state history,
 3. compare the latest eligible actual-state row against the latest desired-state
-   row and publish a complete node-scoped `GW-0811` when they diverge, and
-4. store `GW-0813` application-data messages in the `SensorData` table.
+   row and publish a complete node-scoped `GW-0811` when they diverge,
+4. store `GW-0813` application-data messages in the `SensorData` table, and
+5. accept BPF program ELF uploads via an HTTP trigger, verify and store them in
+   the `Programs` table for downstream embedding.
 
 The handler does not replace the gateway's reconciler model. It expresses cloud
 intent only by publishing `GW-0811` desired-state messages.
@@ -42,18 +44,60 @@ The Azure handler runs inside the Azure Function App provisioned by the Bicep
 stack. The Function App uses a system-assigned managed identity with:
 
 1. receive permission on the upstream queue,
-2. send permission on the downstream queue, and
+2. send permission on the downstream queue,
 3. append permission on `ActualNodeState`, read permission on
-   `DesiredNodeState`, and read/write permission on `SensorData`.
+   `DesiredNodeState`, and read/write permission on `SensorData`, and
+4. read/write permission on `Programs` (read for ELF embedding in `GW-0811`,
+   write for program ingestion via the `ProgramIngest` HTTP trigger).
 
 The final permission set covers the handler's own tables. No external handler
 queue permissions are required.
 
 ### 2.1  Trigger model
 
-The Function App uses a Storage Queue-triggered entrypoint for upstream connector
-messages. Each invocation receives one raw connector payload from the upstream
-queue and performs the following dispatch:
+The Azure handler is deployed as an Azure Functions **Custom Handler**. Instead
+of running in-process, the Functions host forwards trigger invocations as HTTP
+requests to an Axum HTTP server listening on the port specified by the
+`FUNCTIONS_CUSTOMHANDLER_PORT` environment variable (default `3000`).
+
+The server exposes three routes:
+
+| Route | Trigger type | Purpose |
+|-------|-------------|---------|
+| `POST /` | Storage Queue | Upstream connector message dispatch |
+| `POST /{*path}` | Storage Queue (fallback) | Same as above — catches any function name path |
+| `POST /ProgramIngest` | HTTP (`/api/programs/ingest`) | Program ingestion (§8) |
+
+#### Queue trigger envelope
+
+For Storage Queue-triggered invocations the Functions host wraps the queue
+message in a JSON envelope. The handler extracts the raw connector payload by
+probing the following paths in order:
+
+1. `data.message`
+2. `Data.message`
+3. `Data` (top-level)
+4. `Body` or `body` (top-level)
+5. If `data` is an object with exactly one key, use that key's value.
+
+The extracted value is then decoded as:
+
+- a JSON **string** — stripped of surrounding double-quotes if present, then
+  base64-decoded (falling back to raw UTF-8 bytes if base64 fails),
+- a JSON **array** — interpreted as a byte array of `u8` values, or
+- a JSON **object** — re-serialized as JSON bytes.
+
+#### HTTP trigger envelope
+
+For the `ProgramIngest` HTTP trigger the Functions host wraps the HTTP request
+body in an envelope at `Data.req.Body` (case-insensitive: `data`/`Data`,
+`req`/`Req`, `Body`/`body`). The handler extracts and JSON-parses the body
+string.
+
+#### Dispatch rules
+
+After extracting the connector payload from a queue trigger, the handler
+performs the following dispatch:
 
 1. decode the top-level connector `msg_type`,
 2. if `msg_type = ACTUAL_STATE` and `entity_kind = "node"`, invoke node-state
@@ -86,8 +130,9 @@ node reconciliation it consumes:
 7. `timestamp_ms` as last check-in time, and
 8. `schedule_interval_s`.
 
-Gateway-scoped `ACTUAL_STATE` messages are outside the node-table ownership of
-this document and are therefore logged and ignored by the reconciliation path.
+Gateway-scoped and phone-scoped `ACTUAL_STATE` messages (`entity_kind` values
+other than `"node"`) are outside the node-table ownership of this document and
+are therefore logged and ignored by the handler.
 
 ### 3.2  `GW-0813` fields consumed by the handler
 
@@ -104,24 +149,27 @@ Fields beyond `program_hash` were previously opaque to the handler; the
 
 ## 4  Azure Table schemas
 
-> **Requirements:** AZH-0200, AZH-0205, AZH-0206
+> **Requirements:** AZH-0200, AZH-0205, AZH-0206, AZH-0500, WEB-0304
 
-The design uses two Azure Tables:
+The design uses four Azure Tables:
 
 1. **`ActualNodeState`** — append-only actual-state history keyed for latest-per-node queries.
 2. **`DesiredNodeState`** — append-only desired-state history keyed for latest-per-node queries.
+3. **`SensorData`** — append-only sensor data history (§6.1).
+4. **`Programs`** — BPF program image store, upserted by `ProgramIngest` (§8).
 
 ### 4.1  `ActualNodeState` schema
 
 Each row uses:
 
 - `PartitionKey = "n:" + lowercase hex-encoded SHA-256(node_id UTF-8 bytes)`
-- `RowKey = <reverse_tick_ms as fixed-width lowercase hex> + ":" + <implementation-defined suffix that preserves append uniqueness and orders later appends first within the same timestamp for one handler process lifetime>`
+- `RowKey = <reverse_tick_hex>:<reverse_sequence_hex>:<process_nonce_hex>` (see [History RowKey format](#history-rowkey-format) below)
 
 The row contains the following logical columns:
 
 | Column | Purpose |
 |--------|---------|
+| `entity_kind` | Entity kind string. In-memory only — not persisted as an Azure Table property. Currently hard-coded to `"node"` on deserialization since the handler only processes node-scoped rows. Present in the handler's row model for dispatch routing. |
 | `node_id` | Original opaque node identifier used by gateway and handlers. |
 | `observed_current_program_hash` | Node-reported current resident program hash, nullable. |
 | `observed_assigned_program_hash` | Gateway-reported assigned resident program hash, nullable. |
@@ -133,19 +181,15 @@ The row contains the following logical columns:
 
 The node-scoped `PartitionKey` keeps each node's history in one queryable
 partition. The reverse-tick `RowKey` prefix makes newer timestamps sort first.
-The suffix preserves append-only behavior when multiple deliveries share the
-same `timestamp_ms`, and it orders later appends before earlier appends only
-within one handler process lifetime. Across restarts or concurrent handler
-instances, equal-timestamp row ordering is intentionally unspecified, so the
-reconciliation path must not depend on `Top(1)` returning the most recently
-appended equal-timestamp row.
+See [History RowKey format](#history-rowkey-format) for the complete three-part
+scheme.
 
 ### 4.2  `DesiredNodeState` schema
 
 Each row uses:
 
 - `PartitionKey = "n:" + lowercase hex-encoded SHA-256(node_id UTF-8 bytes)`
-- `RowKey = <reverse_tick_ms as fixed-width lowercase hex> + ":" + <implementation-defined suffix that preserves append uniqueness and orders later appends first within the same timestamp for one handler process lifetime>`
+- `RowKey = <reverse_tick_hex>:<reverse_sequence_hex>:<process_nonce_hex>` (see [History RowKey format](#history-rowkey-format))
 
 The row contains:
 
@@ -158,6 +202,53 @@ The row contains:
 
 The Azure handler reads this table but does not write it. Admin/control-plane
 surfaces append desired-state rows when requested state changes.
+
+### 4.3  History RowKey format
+
+All history tables (`ActualNodeState`, `DesiredNodeState`, and `SensorData`)
+use the same three-part `RowKey` format:
+
+```
+{reverse_tick_hex}:{reverse_sequence_hex}:{process_nonce_hex}
+```
+
+Each component is a 16-character, zero-padded, lowercase hexadecimal `u64`:
+
+| Component | Value | Purpose |
+|-----------|-------|---------|
+| `reverse_tick_hex` | `u64::MAX - timestamp_ms` | Newest timestamps sort first for `Top(1)` queries. |
+| `reverse_sequence_hex` | `u64::MAX - sequence` | Monotonically incrementing per-process counter (reversed). Within one handler process lifetime, later appends sort before earlier appends when timestamps are equal. |
+| `process_nonce_hex` | Random `u64` generated once at process startup | Provides probabilistic uniqueness across concurrent handler instances and restarts; collisions are negligibly unlikely. |
+
+The `":"` separators ensure that each component is compared independently during
+lexicographic ordering. Across restarts or concurrent handler instances,
+equal-timestamp row ordering is intentionally unspecified, so the reconciliation
+path must not depend on `Top(1)` returning the most recently appended
+equal-timestamp row.
+
+### 4.4  `Programs` table schema
+
+The `Programs` table stores ingested BPF program images. It is written by the
+`ProgramIngest` HTTP trigger (§8) and read by the reconciliation path when
+embedding ELF images in downstream `GW-0811` payloads (§5 step 11).
+
+Each row uses:
+
+- `PartitionKey = "program"` (single partition for all programs)
+- `RowKey = lowercase hex-encoded program_hash`
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| `cbor_image` | `String` (base64) | CBOR-encoded BPF program image extracted from ELF. |
+| `elf_image` | `String` (base64) | Original uploaded ELF binary, max 1 MB. Used for inline embedding in `GW-0811`. |
+| `source_filename` | `String` | Normalized source filename (basename only), nullable. |
+| `abi_version` | `Edm.Int32` | Firmware ABI version the program targets, nullable. |
+| `size_bytes` | `Edm.Int32` | CBOR image size in bytes. |
+| `verification_profile` | `String` | `"resident"` or `"ephemeral"`. |
+| `created_at` | `String` | ISO 8601 UTC timestamp of ingestion. |
+
+Programs are upserted (insert-or-replace) keyed by `program_hash`. Re-ingesting
+the same ELF overwrites the existing row.
 
 ---
 
@@ -263,8 +354,8 @@ exceeding that threshold are encoded as JSON strings to preserve precision
 (AZH-0501 AC-5). Otherwise `decoded_readings` is `""`.
 
 The `PartitionKey` and `RowKey` follow the same patterns as `ActualNodeState`
-(§4.1) — hashed partition key for safe table keys, reverse-tick plus uniqueness
-suffix for chronological ordering and append uniqueness.
+— hashed partition key for safe table keys, three-part history RowKey (§4.3)
+for chronological ordering and append uniqueness.
 
 `SensorData` writes complete the `GW-0813` handling path — no further routing
 or delivery is performed.
@@ -316,3 +407,77 @@ operations that determine externally visible control-plane behavior:
 This failure model preserves at-least-once retry behavior from the Azure
 Function runtime instead of silently pretending that state was reconciled or
 sensor data was stored.
+
+---
+
+## 8  Program ingestion
+
+> **Requirements:** WEB-0300, WEB-0301, WEB-0302, WEB-0303, WEB-0304,
+> WEB-0305, WEB-0306, WEB-0307, WEB-0308
+> (defined in [web-ui-requirements.md](web-ui-requirements.md))
+
+The Azure handler hosts the `ProgramIngest` HTTP trigger endpoint used by the
+SPA (and any authorized client) to upload BPF ELF binaries for verification
+and storage.
+
+### 8.1  Endpoint
+
+| Property | Value |
+|----------|-------|
+| External route | `POST /api/programs/ingest` |
+| Auth level | `anonymous` (authentication enforced by Function App EasyAuth; see WEB-0503, WEB-0606, WEB-0607 in [web-ui-requirements.md](web-ui-requirements.md) and [azure-provisioning-design.md](azure-provisioning-design.md)) |
+| Custom Handler route | `POST /ProgramIngest` |
+| Binding | `ProgramIngest/function.json` — HTTP trigger in, HTTP out (`res`) |
+
+### 8.2  Request schema
+
+The request body is JSON:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `elf` | `String` (base64) | Yes | Base64-encoded ELF binary. |
+| `source_filename` | `String` | No | Original filename. Normalized to basename only (path components stripped). |
+| `abi_version` | `Integer` | No | Firmware ABI version the program targets. Must be non-negative and ≤ `i32::MAX` (2,147,483,647). |
+| `verification_profile` | `String` | No | `"resident"` (default) or `"ephemeral"`. Controls BPF verification profile and CBOR image size limits. |
+
+### 8.3  Validation rules
+
+1. `elf` must be present, non-empty, and valid base64.
+2. Decoded ELF size must not exceed 1 MB (1,048,576 bytes). A pre-decode
+   length check on the base64 string rejects obviously oversized payloads
+   before allocating the decoded buffer.
+3. `verification_profile`, if present, must be exactly `"resident"` or
+   `"ephemeral"`.
+4. `abi_version`, if present, must be a non-negative integer within
+   `Edm.Int32` range.
+5. The ELF binary is passed through `ProgramLibrary::ingest_elf()` for BPF
+   bytecode extraction and Prevail verification. Verification failure is
+   rejected with HTTP 422.
+
+### 8.4  Response schema
+
+On success (HTTP 200):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `program_hash` | `String` | Lowercase hex SHA-256 of the CBOR program image. |
+| `size` | `Integer` | CBOR image size in bytes. |
+| `abi_version` | `Integer` | Echo of the supplied ABI version, if any. |
+| `source_filename` | `String` | Normalized filename, if any. |
+
+On error, the response body is `{"error": "<message>"}` with an HTTP status
+code embedded in the Azure Functions output binding envelope:
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Missing or malformed fields, invalid base64, empty ELF. |
+| 413 | ELF exceeds 1 MB size limit. |
+| 422 | BPF verification/ingestion failed (invalid bytecode, size limit exceeded by verification profile). |
+| 500 | Internal error (store write failure). |
+
+### 8.5  Storage
+
+On successful verification the handler upserts one row in the `Programs` table
+(§4.4) containing both the CBOR-encoded program image and the original ELF
+binary. The ELF is retained so the reconciliation path (§5 step 11) can embed
+it in downstream `GW-0811` messages without requiring a separate ELF store.

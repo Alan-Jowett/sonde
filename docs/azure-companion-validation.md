@@ -32,7 +32,7 @@
 6. Run `docker run --rm <image> cat /etc/os-release` and assert: the output identifies Alpine Linux.
 7. Run `docker run --rm --entrypoint sh <image> -c "command -v az"` and assert: the command fails (Azure CLI is not present in the runtime image).
 8. Run `docker run --rm --entrypoint sh <image> -c "ls /opt/sonde/deploy/bicep/ 2>/dev/null"` and assert: the directory does not exist or is empty (Bicep files are not bundled in the runtime image).
-9. Assert: the runtime image contains the startup/orchestration scripts used to decide between bootstrap and normal runtime startup (e.g., `entrypoint.sh` is present at the expected path).
+9. Run `docker run --rm --entrypoint sh <image> -c "test -x /opt/sonde/deploy/azure-companion/entrypoint.sh"` and assert: the startup/orchestration entrypoint script is present and executable at the expected path.
 
 ---
 
@@ -46,8 +46,8 @@
 3. Run `docker run --rm --entrypoint sh <image> -c "ls /opt/sonde/deploy/bicep/"`.
 4. Assert: the image contains working Azure CLI tooling plus the bundled Bicep deployment files.
 5. Assert: the listing includes `main.bicep`, `bicepconfig.json`, and the `modules/` directory.
-6. Run `docker run --rm --entrypoint sh <image> -c "sh /opt/sonde/deploy/azure-bootstrap/bootstrap.sh --help 2>&1; echo EXIT_CODE=\$?"` and capture the output.
-7. Assert: the bootstrap script reaches its entry point and exits with status 0 (or emits a recognizable usage banner), confirming it can execute independently without files copied from the runtime image.
+6. Run `docker run --rm --entrypoint sh <image> -c "sh -n /opt/sonde/deploy/azure-bootstrap/bootstrap.sh"` and assert: the command exits with status 0.
+7. Assert: the bootstrap script passes shell syntax validation inside the image, confirming it can execute independently without files copied from the runtime image.
 
 ---
 

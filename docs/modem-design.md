@@ -403,7 +403,7 @@ The build script (`build.rs`) captures the current git commit SHA at compile tim
 2. Otherwise, run `git rev-parse --short HEAD` to obtain the local commit.
 3. If neither is available (e.g., building outside a git repository), fall back to the string `"unknown"`.
 
-Empty values are ignored, and the selected value is normalized to the first 7 characters before injection. The short SHA provides firmware traceability without adding binary size or runtime overhead — the value is baked into the binary at compile time and requires no runtime git access.
+Empty values are ignored, and the selected value is normalized to the first 7 characters before injection. The short SHA provides firmware traceability with negligible binary size impact and no runtime overhead — the value is baked into the binary at compile time via `env!()` and requires no runtime git access.
 
 ### 14.1  Dual-port setup
 

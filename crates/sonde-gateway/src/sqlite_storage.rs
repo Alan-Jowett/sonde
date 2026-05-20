@@ -922,8 +922,13 @@ impl SqliteStorage {
 
             // First startup — generate and backfill.
             let mut master_key_id = [0u8; 16];
-            getrandom::fill(&mut master_key_id)
-                .map_err(|e| StorageError::Internal(format!("master_key_id rng: {e}")))?;
+            loop {
+                getrandom::fill(&mut master_key_id)
+                    .map_err(|e| StorageError::Internal(format!("master_key_id rng: {e}")))?;
+                if master_key_id != [0u8; 16] {
+                    break;
+                }
+            }
             let epoch: u64 = 1;
             let hex_id = hex::encode(master_key_id);
 

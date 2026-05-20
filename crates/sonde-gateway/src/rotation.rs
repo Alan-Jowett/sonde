@@ -191,6 +191,10 @@ fn parse_rotation_plaintext(plaintext: &[u8]) -> Result<DecryptedRotation, Rotat
     };
 
     // Key 1: new_master_key (bstr, 32 bytes)
+    // Note: ciborium's decoded Value::Map retains an owned copy of the key
+    // bytes that is freed but not zeroed on drop. A custom CBOR deserializer
+    // would be needed to eliminate this residual; accepted as a known
+    // limitation (the plaintext buffer itself is Zeroizing).
     let new_key_bytes = Zeroizing::new(get_bytes(&map, 1, "new_master_key")?);
     if new_key_bytes.len() != 32 {
         return Err(RotationError::InvalidKeyLength(new_key_bytes.len()));

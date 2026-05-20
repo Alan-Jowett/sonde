@@ -260,28 +260,28 @@ confirmation step. The event loop works as follows:
 
    | Event variant | CLI action |
    |---------------|-----------|
-   | `WindowOpened` | Print "BLE pairing window opened" to stdout |
-   | `PhoneConnected` | Print "Phone connected: {phone_id}" to stdout |
-   | `PhoneDisconnected` | Print "Phone disconnected: {phone_id}" to stdout |
-   | `PasskeyDisplay { passkey }` | Print the 6-digit zero-padded passkey to stdout and prompt `Confirm passkey? [y/N]:` on stderr |
-   | `PhoneRegistered { phone_id }` | Print "Phone registered: {phone_id}" to stdout |
+   | `WindowOpened` | Print "BLE pairing window opened for {duration_s}s" to stdout |
+   | `Passkey { passkey }` | Print "Passkey: {passkey:06}" to stdout and prompt `Confirm pairing? (y/n):` on stderr |
+   | `PhoneConnected { mtu }` | Print "Phone connected (MTU={mtu})" to stdout |
+   | `PhoneDisconnected` | Print "Phone disconnected" to stdout |
+   | `PhoneRegistered { label, phone_key_hint }` | Print "Phone registered: {label} (key_hint=0x{phone_key_hint:04x})" to stdout |
    | `WindowClosed` | Print "BLE pairing window closed" to stdout; break the event loop |
 
-3. **Passkey confirmation** — when the `PasskeyDisplay` event is received:
+3. **Passkey confirmation** — when the `Passkey` event is received:
    - The CLI prints the passkey formatted as `{:06}` (six-digit, zero-padded).
-   - A confirmation prompt `Confirm passkey? [y/N]:` is written to stderr
+   - A confirmation prompt `Confirm pairing? (y/n):` is written to stderr
      (not stdout) to avoid contaminating piped output.
    - The CLI reads a single line from stdin. Only `y` or `Y` is accepted.
    - The CLI calls the `ConfirmBlePairing` unary RPC with the user's
-     response (`confirmed: true` or `confirmed: false`).
+     response (`accept: true` or `accept: false`).
 4. **Loop exit** — the event loop terminates when `WindowClosed` is received
    or the stream ends. The CLI exits with code 0 on normal completion.
 
 This subcommand is exempt from `--format json` because the interactive
-passkey confirmation requires TTY access. If `--format json` is passed,
-clap rejects it (the `pairing start` subcommand does not include the format
-flag in its argument definition). If stdin is not a TTY when a passkey event
-arrives, the CLI sends `confirmed: false` to `ConfirmBlePairing` and prints
+passkey confirmation requires TTY access. Although `--format` is a global
+flag accepted by clap, the `pairing start` handler ignores it and always
+produces text output. If stdin is not a TTY when a passkey event
+arrives, the CLI sends `accept: false` to `ConfirmBlePairing` and prints
 a warning to stderr.
 
 ---

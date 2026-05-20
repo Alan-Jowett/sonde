@@ -73,7 +73,7 @@ to avoid collisions when tests run in parallel.
 **Procedure:**
 1. Invoke `sonde-admin --help`.
 2. Assert: exit code is 0.
-3. Assert: stdout contains all top-level subcommands (`node`, `program`, `schedule`, `reboot`, `ephemeral`, `status`, `state`, `modem`, `pairing`, `handler`).
+3. Assert: stdout contains the required top-level subcommands (`node`, `program`, `schedule`, `reboot`, `ephemeral`, `status`, `state`, `modem`, `pairing`, `handler`).
 4. Invoke `sonde-admin node --help`.
 5. Assert: exit code is 0.
 6. Assert: stdout contains nested subcommands (`list`, `get`, `register`, `remove`, `factory-reset`).
@@ -351,10 +351,10 @@ to avoid collisions when tests run in parallel.
 
 **Procedure:**
 1. Start an admin server.
-2. Invoke `sonde-admin --socket <endpoint> node register test-node 0x1234 aabbccdd` (16 hex chars, 8 bytes).
+2. Invoke `sonde-admin --socket <endpoint> node register test-node 4660 aabbccdd` (8 hex chars, 4 bytes — not 32).
 3. Assert: exit code is non-zero.
 4. Assert: stderr contains "32 bytes" or a clear error about PSK length.
-5. Invoke `sonde-admin --socket <endpoint> node register test-node 0x1234 ZZZZ` (invalid hex).
+5. Invoke `sonde-admin --socket <endpoint> node register test-node 4660 ZZZZ` (invalid hex).
 6. Assert: exit code is non-zero and stderr indicates invalid hex input.
 
 ---
@@ -776,8 +776,8 @@ to avoid collisions when tests run in parallel.
 6. Set `SONDE_PASSPHRASE=env-pass` and invoke
    `sonde-admin --socket <endpoint> state export <file3> --passphrase cli-pass`.
 7. Assert: exit code is 0.
-8. Import `<file3>` with `--passphrase cli-pass`.
-9. Assert: import succeeds (proving CLI arg took priority over env var).
+8. Invoke `sonde-admin --socket <endpoint> --yes state import <file3> --passphrase cli-pass`.
+9. Assert: import succeeds (exit code 0), proving CLI arg took priority over env var.
 10. Unset `SONDE_PASSPHRASE` and invoke with stdin piped (not a TTY) and
     without `--passphrase`.
 11. Assert: exit code is non-zero.
@@ -963,15 +963,15 @@ code inspection until a BLE-pairing harness is available.
 1. **AC-1 (duration):** Assert: the `pairing start` CLI path sends
    `duration_s` from the `--duration-s` flag (default 120) to
    `OpenBlePairingRequest`.
-2. **AC-2 (passkey format):** Assert: the `PasskeyDisplay` event handler
+2. **AC-2 (passkey format):** Assert: the `Passkey` event handler
    formats the passkey with `{:06}` (6-digit, zero-padded).
 3. **AC-3 (prompt on stderr):** Assert: the passkey confirmation prompt
-   `Confirm passkey? [y/N]:` is written to stderr, not stdout.
+   `Confirm pairing? (y/n):` is written to stderr, not stdout.
 4. **AC-4 (ConfirmBlePairing):** Assert: after reading the user's `y`/`n`
-   response, the CLI calls `ConfirmBlePairing` with `confirmed: true` or
-   `confirmed: false`.
+   response, the CLI calls `ConfirmBlePairing` with `accept: true` or
+   `accept: false`.
 5. **AC-5 (event printing):** Assert: each `BlePairingEvent` variant
-   (`WindowOpened`, `PhoneConnected`, `PhoneDisconnected`, `PasskeyDisplay`,
+   (`WindowOpened`, `Passkey`, `PhoneConnected`, `PhoneDisconnected`,
    `PhoneRegistered`, `WindowClosed`) produces a distinct stdout message.
 6. **AC-6 (loop exit):** Assert: the event loop breaks on `WindowClosed`.
 
@@ -986,7 +986,8 @@ code inspection until a BLE-pairing harness is available.
 1. Start an admin server with no registered phones.
 2. Invoke `sonde-admin --socket <endpoint> pairing list-phones`.
 3. Assert: exit code is 0.
-4. Assert: stdout indicates no phones are registered.
+4. Assert: stdout contains the expected table headers (e.g., "ID", "Key Hint",
+   "Label", "Status") and no data rows.
 5. Invoke `sonde-admin --socket <endpoint> --format json pairing list-phones`.
 6. Assert: stdout is valid JSON containing an empty array.
 
@@ -1073,7 +1074,7 @@ registers a phone, revokes it with `--yes`, and asserts on stdout.
 2. Invoke `sonde-admin --socket <endpoint> handler add "*" echo hello`.
 3. Assert: exit code is 0.
 4. Assert: stdout contains "Added handler for program" and `*`.
-5. Invoke `sonde-admin --socket <endpoint> --format json handler add "aabbccdd..." echo world`.
+5. Invoke `sonde-admin --socket <endpoint> --format json handler add "*" echo world`.
 6. Assert: stdout is valid JSON containing `added` and `program_hash` fields.
 
 ---

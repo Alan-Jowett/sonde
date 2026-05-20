@@ -12,7 +12,7 @@ clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 httpdate = "1"
 hyper-util = "0.1"
-jsonwebtoken = { version = "10", default-features = false, features = ["use_pem"] }
+jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
 regex = "1"
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
 p256 = { version = "0.13", features = ["pkcs8"] }

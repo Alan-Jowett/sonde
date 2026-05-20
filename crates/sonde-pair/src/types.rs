@@ -80,8 +80,14 @@ const RSSI_GOOD_THRESHOLD: i8 = -60;
 const RSSI_BAD_THRESHOLD: i8 = -75;
 
 /// Assess RSSI signal quality using hard-coded thresholds.
+///
+/// The sentinel value `rssi_dbm = 0` means "RSSI unavailable" (GW-1702)
+/// and is classified as BAD so the pairing UI prompts for confirmation.
 pub fn assess_signal_quality(rssi_dbm: i8) -> u8 {
-    if rssi_dbm >= RSSI_GOOD_THRESHOLD {
+    if rssi_dbm == 0 {
+        // Sentinel: RSSI unavailable — treat as bad to surface a warning.
+        sonde_protocol::SIGNAL_QUALITY_BAD
+    } else if rssi_dbm >= RSSI_GOOD_THRESHOLD {
         sonde_protocol::SIGNAL_QUALITY_GOOD
     } else if rssi_dbm >= RSSI_BAD_THRESHOLD {
         sonde_protocol::SIGNAL_QUALITY_MARGINAL

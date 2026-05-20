@@ -111,6 +111,10 @@ pub const CONNECTOR_MSG_TYPE_DESIRED_STATE: u64 = 0x01;
 pub const CONNECTOR_MSG_TYPE_ACTUAL_STATE: u64 = 0x02;
 pub const CONNECTOR_MSG_TYPE_APP_DATA: u64 = 0x03;
 pub const CONNECTOR_MSG_TYPE_CONNECTOR_HEALTH: u64 = 0x04;
+/// Legacy: KEY_ESCROW_PUBKEY message type. The gateway escrow subsystem was
+/// removed, but the azure-handler still needs to recognize this msg_type on
+/// the inbound connector channel.
+pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY: u64 = 0x10;
 pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST: u64 = 0x11;
 pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE: u64 = 0x12;
 pub const CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL: u64 = 0x13;

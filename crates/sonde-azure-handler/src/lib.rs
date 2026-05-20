@@ -1622,7 +1622,7 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
             timestamp_ms: required_u64(&map, 5, "timestamp_ms")?,
             readings: decode_optional_readings(&map, 16)?,
         })),
-        0x10 => {
+        sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY => {
             let public_key = required_bytes(&map, 2, "public_key")?;
             if public_key.len() != 32 {
                 return Err(HandlerError::Decode(format!(

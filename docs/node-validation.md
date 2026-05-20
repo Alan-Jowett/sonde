@@ -2770,7 +2770,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N903 | *(hardware — validated on target: MTU negotiation and LESC pairing)* | — |
 | T-N904 | `t_n904_happy_path`, `t_e2e_062_node_ble_provisioning`, `t_e2e_068_factory_reset_reprovision`, `t_e2e_070_full_use_case` | ble_pairing.rs, e2e_tests.rs |
 | T-N905 | `t_n905_same_session_reprovision` | ble_pairing.rs |
-| T-N906 | `t_n906_provision_overwrites_existing_credentials` | ble_pairing.rs |
+| T-N906 | `test_factory_reset`, `test_factory_reset_erase_key_fails`, `test_factory_reset_clear_staged_test_command_fails`, `test_factory_reset_clear_test_result_fails` *(factory reset logic)*; *(hardware — boot-button orchestration validated on target)* | key_store.rs |
 | T-N907 | `t_n907_nvs_write_key_failure`, `t_n907_nvs_write_channel_failure`, `t_n907_nvs_write_peer_payload_failure`, `t_n907_nvs_write_reg_complete_failure` | ble_pairing.rs |
 | T-N908 | *(hardware — validated on target: BLE mode persistence after provisioning)* | — |
 | T-N909 | `t_e2e_063_peer_request_ack` | e2e_tests.rs |

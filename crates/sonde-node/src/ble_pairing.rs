@@ -1108,16 +1108,15 @@ mod tests {
     }
 
     // --- T-N906: Factory reset now happens at boot, not in handle_node_provision ---
-    // See key_store.rs for factory_reset tests and node.rs for boot-level tests.
-    // handle_node_provision no longer performs factory reset or defense-in-depth
-    // rejection — the node is always unpaired when BLE pairing mode starts.
+    // Factory reset is tested via KeyStore::factory_reset() in key_store.rs.
+    // Boot-button orchestration is hardware-validated on target.
+    // The test below verifies that handle_node_provision correctly overwrites
+    // existing credentials (same-session re-provision, ND-0907).
 
-    /// T-N906: NODE_PROVISION on a node that has already been provisioned in
-    /// this BLE session (same-session re-provision) overwrites credentials.
-    /// This replaces the old button-held factory-reset test since factory reset
-    /// now happens at boot.
+    /// Same-session re-provision on a node that already has credentials
+    /// overwrites them without error (ND-0907 variant).
     #[test]
-    fn t_n906_provision_overwrites_existing_credentials() {
+    fn provision_overwrites_existing_credentials() {
         // Simulate same-session re-provision: node was provisioned earlier
         // in this BLE session.
         let mut storage = MockStorage::with_key(0x0099, [0x55u8; 32]);

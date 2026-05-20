@@ -901,13 +901,13 @@ impl SqliteStorage {
                         .map_err(map_err)?;
                         tx.execute(
                             "UPDATE nodes SET master_key_id = ?1, master_key_epoch = 1 \
-                             WHERE master_key_id IS NULL",
+                             WHERE master_key_id IS NULL OR master_key_epoch < 1",
                             params![id_bytes.as_slice()],
                         )
                         .map_err(map_err)?;
                         tx.execute(
                             "UPDATE phone_psks SET master_key_id = ?1, master_key_epoch = 1 \
-                             WHERE master_key_id IS NULL",
+                             WHERE master_key_id IS NULL OR master_key_epoch < 1",
                             params![id_bytes.as_slice()],
                         )
                         .map_err(map_err)?;
@@ -1117,12 +1117,17 @@ impl SqliteStorage {
 
     /// Expire pending_recovery records older than `max_age_secs`.
     pub async fn expire_pending_recovery(&self, max_age_secs: u64) -> Result<u64, StorageError> {
+        let max_age = i64::try_from(max_age_secs).map_err(|_| {
+            StorageError::Internal(format!(
+                "max_age_secs {max_age_secs} exceeds SQLite integer range"
+            ))
+        })?;
         self.with_conn(move |conn| {
             let deleted = conn
                 .execute(
                     "DELETE FROM pending_recovery \
                      WHERE received_at < strftime('%s', 'now') - ?1",
-                    params![max_age_secs as i64],
+                    params![max_age],
                 )
                 .map_err(map_err)?;
             Ok(deleted as u64)

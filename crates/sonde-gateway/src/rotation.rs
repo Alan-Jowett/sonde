@@ -16,6 +16,11 @@ use zeroize::Zeroizing;
 /// Minimum total payload length: version(1) + ephemeral_public(32) + nonce(12) + tag(16) = 61.
 const MIN_PAYLOAD_LEN: usize = 1 + 32 + 12 + 16;
 
+/// Maximum total payload length. The plaintext is a small CBOR map (~100 bytes),
+/// so the encrypted payload should be well under 1 KiB. Reject larger payloads
+/// to prevent expensive AEAD work on oversized inputs.
+const MAX_PAYLOAD_LEN: usize = 1024;
+
 /// HKDF salt constant (17 bytes, ASCII "sonde-rotation-v1").
 const HKDF_SALT: &[u8; 17] = b"sonde-rotation-v1";
 
@@ -24,6 +29,8 @@ const HKDF_SALT: &[u8; 17] = b"sonde-rotation-v1";
 pub enum RotationError {
     /// Payload too short.
     TooShort(usize),
+    /// Payload too large.
+    TooLarge(usize),
     /// Unknown version byte.
     UnknownVersion(u8),
     /// Ephemeral public key is a low-order point.
@@ -49,6 +56,9 @@ impl std::fmt::Display for RotationError {
         match self {
             Self::TooShort(len) => {
                 write!(f, "payload too short: {len} bytes (min {MIN_PAYLOAD_LEN})")
+            }
+            Self::TooLarge(len) => {
+                write!(f, "payload too large: {len} bytes (max {MAX_PAYLOAD_LEN})")
             }
             Self::UnknownVersion(v) => write!(f, "unknown rotation payload version: {v:#04x}"),
             Self::LowOrderPoint => write!(f, "ephemeral public key is a low-order point"),
@@ -110,6 +120,9 @@ pub fn decrypt_rotation_payload(
 ) -> Result<DecryptedRotation, RotationError> {
     if payload.len() < MIN_PAYLOAD_LEN {
         return Err(RotationError::TooShort(payload.len()));
+    }
+    if payload.len() > MAX_PAYLOAD_LEN {
+        return Err(RotationError::TooLarge(payload.len()));
     }
 
     // Version check

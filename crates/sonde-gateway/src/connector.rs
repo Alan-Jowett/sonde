@@ -848,8 +848,18 @@ impl ConnectorService {
         entity_id: &str,
         desired_state: &[(Value, Value)],
     ) -> Result<(), String> {
+        // Validate entity_id format: must be 32 lowercase hex chars (16-byte gateway_id).
         if entity_id.is_empty() {
             warn!("gateway DESIRED_STATE has empty entity_id; expected hex(gateway_id)");
+        } else if entity_id.len() != 32
+            || !entity_id
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(format!(
+                "gateway DESIRED_STATE entity_id must be 32 lowercase hex chars, got {:?}",
+                entity_id
+            ));
         }
         let channel = optional_u32_field(desired_state, 15, "channel")?;
         let salt = optional_bytes_field(desired_state, 21, "salt")?;

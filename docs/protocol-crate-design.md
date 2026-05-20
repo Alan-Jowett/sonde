@@ -103,7 +103,7 @@ pub const DIAG_KEY_RSSI_DBM: u64 = 2;
 // Diagnostic type codes
 pub const DIAG_TYPE_RSSI: u8 = 0x01;
 
-// BLE envelope message types(Node Command characteristic — separate from ESP-NOW msg_types)
+// BLE envelope message types (Node Command characteristic — separate from ESP-NOW msg_types)
 pub const BLE_NODE_PROVISION: u8 = 0x01;
 pub const BLE_RUN_TEST_COMMAND: u8 = 0x02;
 pub const BLE_READ_TEST_RESULT: u8 = 0x03;

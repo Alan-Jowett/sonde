@@ -4271,7 +4271,10 @@ mod tests {
     #[test]
     fn decode_key_escrow_pubkey_rejects_non_text_fingerprint_words() {
         let value = Value::Map(vec![
-            map_entry(1, Value::Integer(0x10u64.into())),
+            map_entry(
+                1,
+                Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY.into()),
+            ),
             map_entry(2, Value::Bytes(vec![0x42u8; 32])),
             map_entry(3, Value::Integer(1u64.into())),
             map_entry(4, Value::Integer(2u64.into())),

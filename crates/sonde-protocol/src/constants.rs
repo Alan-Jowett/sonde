@@ -115,8 +115,14 @@ pub const CONNECTOR_MSG_TYPE_CONNECTOR_HEALTH: u64 = 0x04;
 /// removed, but the azure-handler still needs to recognize this msg_type on
 /// the inbound connector channel.
 pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY: u64 = 0x10;
+/// Legacy: KEY_ESCROW_REQUEST message type. Used by azure-handler for
+/// escrow blob lookup/response on the control-plane channel.
 pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST: u64 = 0x11;
+/// Legacy: KEY_ESCROW_RESPONSE message type. Sent by azure-handler back
+/// to the gateway with matching escrow blobs.
 pub const CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE: u64 = 0x12;
+/// Legacy: MASTER_KEY_INSTALL message type. Used by the control plane to
+/// deliver a new master key to the gateway during key rotation.
 pub const CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL: u64 = 0x13;
 
 // CBOR integer keys for escrow blob format (GW-2002, separate keyspace)

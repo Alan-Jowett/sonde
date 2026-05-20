@@ -281,8 +281,10 @@ This subcommand is exempt from `--format json` because the interactive
 passkey confirmation requires TTY access. Although `--format` is a global
 flag accepted by clap, the `pairing start` handler ignores it and always
 produces text output. The current implementation does not detect non-TTY
-stdin; if stdin is piped or reaches EOF during a passkey prompt, the
-blocking read returns an empty line and the CLI sends `accept: false`.
+stdin; `read_line()` will consume piped input if available (e.g.,
+`echo y | sonde-admin …` accepts the pairing). If stdin is at EOF or the
+pipe provides no data, the read returns an empty line and the CLI sends
+`accept: false`.
 
 ---
 

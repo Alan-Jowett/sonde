@@ -788,11 +788,12 @@
 **Validates:** AZC-0406
 
 **Procedure:**
-1. Start the Azure companion container with the Docker socket bind-mounted from the host at the standard path (`/var/run/docker.sock`).
-2. Start the bootstrap subcommand with a mock Docker API server listening on the bind-mounted socket path.
-3. Assert: Bollard auto-detects the Docker socket inside the container without explicit path configuration.
-4. Assert: bootstrap reaches the container-creation path and issues Docker API requests through the auto-detected socket.
-5. Assert: bootstrap does not fall back to TCP-based Docker connectivity when the Unix socket is available.
+1. On the host, start a mock Docker API server listening on a temporary Unix socket.
+2. Start the Azure companion container with the mock socket bind-mounted into the container at the standard path (`/var/run/docker.sock`).
+3. Start the bootstrap subcommand inside the container.
+4. Assert: Bollard auto-detects the Docker socket at `/var/run/docker.sock` inside the container without explicit path configuration.
+5. Assert: bootstrap reaches the container-creation path and issues Docker API requests through the auto-detected socket to the mock server.
+6. Assert: bootstrap does not fall back to TCP-based Docker connectivity when the Unix socket is available.
 
 ---
 

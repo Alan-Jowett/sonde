@@ -455,7 +455,7 @@ Per [ble-pairing-protocol.md §3.4](ble-pairing-protocol.md), indications may be
 - **Outbound (Write Long):** `fragment_for_write()` splits a payload into MTU-sized chunks.
 - **Inbound (indication reassembly):** `IndicationReassembler` accumulates indication chunks until the envelope `LEN` field is satisfied, with a fixed maximum reassembly size of 4096 bytes to bound memory usage.
 
-Transport implementations may call these helpers when the underlying BLE stack does not handle fragmentation natively.  Desktop transports (e.g. `BtleplugTransport`) typically delegate Write Long and indication reassembly to the OS BLE stack and do not use these helpers directly.  The reassembly logic:
+Transport implementations may call these helpers when the underlying BLE stack does not handle fragmentation natively.  Desktop transports (e.g. `BtleplugTransport`) delegate Write Long to the OS BLE stack.  Current pairing protocol messages fit within a single indication, so `BtleplugTransport` returns individual indication payloads directly; transports that need multi-indication reassembly should use `IndicationReassembler`.  The reassembly logic:
 
 1. Receives the first indication chunk.  Parses the envelope header (TYPE + LEN) to determine the expected total body length.
 2. Buffers subsequent indication chunks until accumulated body bytes equal `LEN`.

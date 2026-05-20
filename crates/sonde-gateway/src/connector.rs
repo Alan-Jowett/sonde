@@ -116,8 +116,6 @@ enum ConnectorOutboundMessage {
         escrow_key_hint: Option<u16>,
         /// Opaque master key ID (16 bytes) that encrypted this PSK, CBOR key 14.
         master_key_id: Option<Vec<u8>>,
-        /// Gateway-scoped status_details extension (escrow state + salt).
-        status_details: Option<StatusDetails>,
     },
     AppData {
         node_id: String,
@@ -151,34 +149,27 @@ enum ConnectorOutboundMessage {
     /// until all callers are migrated.
     KeyEscrowRequest { key_hint: u16, request_id: [u8; 16] },
     /// Gateway-scoped ACTUAL_STATE with all evolve-962 fields (keys 15–27).
-    GatewayActualState {
-        entity_id: String,
-        timestamp_ms: u64,
-        channel: u32,
-        master_key_id: [u8; 16],
-        master_key_epoch: u64,
-        x25519_public_key: [u8; 32],
-        fingerprint_words: [String; 6],
-        missing_key_hints: Vec<u16>,
-        salt: Option<Vec<u8>>,
-        kdf_params: Option<KdfParams>,
-        gateway_version: String,
-        gateway_commit: String,
-        modem_firmware_version: Option<String>,
-        modem_firmware_commit: Option<String>,
-        rotation_in_progress: bool,
-    },
+    GatewayActualState(Box<GatewayActualStateData>),
 }
 
-/// Gateway-scoped ACTUAL_STATE status_details for escrow.
-/// RETIRED by evolve-962 — replaced by GatewayActualState variant.
-/// Kept temporarily for compilation until all callers are migrated.
-#[derive(Clone, Debug, Default)]
-pub struct StatusDetails {
-    pub escrow_state: Option<String>,
-    pub escrow_key_version: Option<u64>,
-    pub escrow_salt: Option<Vec<u8>>,
-    pub escrow_kdf_params: Option<KdfParams>,
+/// Data for the gateway ACTUAL_STATE message (evolve-962 §2.4).
+#[derive(Clone, Debug)]
+pub struct GatewayActualStateData {
+    pub entity_id: String,
+    pub timestamp_ms: u64,
+    pub channel: u32,
+    pub master_key_id: [u8; 16],
+    pub master_key_epoch: u64,
+    pub x25519_public_key: [u8; 32],
+    pub fingerprint_words: [String; 6],
+    pub missing_key_hints: Vec<u16>,
+    pub salt: Option<Vec<u8>>,
+    pub kdf_params: Option<KdfParams>,
+    pub gateway_version: String,
+    pub gateway_commit: String,
+    pub modem_firmware_version: Option<String>,
+    pub modem_firmware_commit: Option<String>,
+    pub rotation_in_progress: bool,
 }
 
 /// KDF parameters for Argon2id.
@@ -206,7 +197,6 @@ impl ConnectorOutboundMessage {
                 encrypted_psk_escrow,
                 escrow_key_hint,
                 master_key_id,
-                status_details,
             } => {
                 let mut pairs = vec![
                     map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
@@ -220,29 +210,8 @@ impl ConnectorOutboundMessage {
                     map_entry(9, Value::Integer((*timestamp_ms).into())),
                 ];
 
-                // Build status_details map (key 10)
-                let mut sd_pairs = Vec::new();
-                if let Some(ref sd) = status_details {
-                    if let Some(ref state_str) = sd.escrow_state {
-                        sd_pairs.push(map_entry(1, Value::Text(state_str.clone())));
-                    }
-                    if let Some(kv) = sd.escrow_key_version {
-                        sd_pairs.push(map_entry(2, Value::Integer(kv.into())));
-                    }
-                    if let Some(ref salt) = sd.escrow_salt {
-                        sd_pairs.push(map_entry(3, Value::Bytes(salt.clone())));
-                    }
-                    if let Some(ref kdf) = sd.escrow_kdf_params {
-                        let kdf_map = Value::Map(vec![
-                            map_entry(1, Value::Integer((kdf.m_cost as u64).into())),
-                            map_entry(2, Value::Integer((kdf.t_cost as u64).into())),
-                            map_entry(3, Value::Integer((kdf.p_cost as u64).into())),
-                            map_entry(4, Value::Integer((kdf.kdf_version as u64).into())),
-                        ]);
-                        sd_pairs.push(map_entry(4, kdf_map));
-                    }
-                }
-                pairs.push(map_entry(10, Value::Map(sd_pairs)));
+                // status_details (key 10) — encode empty map for backward compatibility
+                pairs.push(map_entry(10, Value::Map(Vec::new())));
 
                 pairs.push(map_entry(11, opt_u32_value(*schedule_interval_s)));
 
@@ -356,59 +325,46 @@ impl ConnectorOutboundMessage {
                 map_entry(2, Value::Integer((*key_hint as u64).into())),
                 map_entry(3, Value::Bytes(request_id.to_vec())),
             ]),
-            Self::GatewayActualState {
-                entity_id,
-                timestamp_ms,
-                channel,
-                master_key_id,
-                master_key_epoch,
-                x25519_public_key,
-                fingerprint_words,
-                missing_key_hints,
-                salt,
-                kdf_params,
-                gateway_version,
-                gateway_commit,
-                modem_firmware_version,
-                modem_firmware_commit,
-                rotation_in_progress,
-            } => {
+            Self::GatewayActualState(data) => {
                 let mut pairs = vec![
                     map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
                     map_entry(2, Value::Text("gateway".to_string())),
-                    map_entry(3, Value::Text(entity_id.clone())),
-                    map_entry(9, Value::Integer((*timestamp_ms).into())),
-                    // Keys 15–27: gateway-specific fields
-                    map_entry(15, Value::Integer((*channel as u64).into())),
-                    map_entry(16, Value::Bytes(master_key_id.to_vec())),
-                    map_entry(17, Value::Integer((*master_key_epoch).into())),
-                    map_entry(18, Value::Bytes(x25519_public_key.to_vec())),
+                    map_entry(3, Value::Text(data.entity_id.clone())),
+                    map_entry(9, Value::Integer(data.timestamp_ms.into())),
+                    map_entry(15, Value::Integer((data.channel as u64).into())),
+                    map_entry(16, Value::Bytes(data.master_key_id.to_vec())),
+                    map_entry(17, Value::Integer(data.master_key_epoch.into())),
+                    map_entry(18, Value::Bytes(data.x25519_public_key.to_vec())),
                     map_entry(
                         19,
-                        Value::Array(fingerprint_words.iter().cloned().map(Value::Text).collect()),
+                        Value::Array(
+                            data.fingerprint_words
+                                .iter()
+                                .cloned()
+                                .map(Value::Text)
+                                .collect(),
+                        ),
                     ),
                     map_entry(
                         20,
                         Value::Array(
-                            missing_key_hints
+                            data.missing_key_hints
                                 .iter()
                                 .map(|h| Value::Integer((*h as u64).into()))
                                 .collect(),
                         ),
                     ),
                 ];
-                // Salt (key 21): null if absent
                 pairs.push(map_entry(
                     21,
-                    match salt {
+                    match data.salt {
                         Some(ref s) => Value::Bytes(s.clone()),
                         None => Value::Null,
                     },
                 ));
-                // KDF params (key 22): null if absent
                 pairs.push(map_entry(
                     22,
-                    match kdf_params {
+                    match data.kdf_params {
                         Some(ref kdf) => Value::Map(vec![
                             map_entry(1, Value::Integer((kdf.m_cost as u64).into())),
                             map_entry(2, Value::Integer((kdf.t_cost as u64).into())),
@@ -418,17 +374,17 @@ impl ConnectorOutboundMessage {
                         None => Value::Null,
                     },
                 ));
-                pairs.push(map_entry(23, Value::Text(gateway_version.clone())));
-                pairs.push(map_entry(24, Value::Text(gateway_commit.clone())));
+                pairs.push(map_entry(23, Value::Text(data.gateway_version.clone())));
+                pairs.push(map_entry(24, Value::Text(data.gateway_commit.clone())));
                 pairs.push(map_entry(
                     25,
-                    opt_text_value(modem_firmware_version.as_deref()),
+                    opt_text_value(data.modem_firmware_version.as_deref()),
                 ));
                 pairs.push(map_entry(
                     26,
-                    opt_text_value(modem_firmware_commit.as_deref()),
+                    opt_text_value(data.modem_firmware_commit.as_deref()),
                 ));
-                pairs.push(map_entry(27, Value::Bool(*rotation_in_progress)));
+                pairs.push(map_entry(27, Value::Bool(data.rotation_in_progress)));
                 Value::Map(pairs)
             }
         };
@@ -492,7 +448,6 @@ impl ConnectorEventHub {
             encrypted_psk_escrow: None,
             escrow_key_hint: None,
             master_key_id: None,
-            status_details: None,
         });
     }
 
@@ -555,26 +510,6 @@ impl ConnectorEventHub {
             encrypted_psk_escrow: escrow_fields.0,
             escrow_key_hint: escrow_fields.1,
             master_key_id: escrow_fields.2,
-            status_details: None,
-        });
-    }
-
-    /// Emit gateway-scoped ACTUAL_STATE with escrow status details (GW-2004).
-    pub fn emit_gateway_escrow_state(&self, details: StatusDetails) {
-        let _ = self.tx.send(ConnectorOutboundMessage::ActualState {
-            entity_kind: "gateway",
-            entity_id: String::new(),
-            current_program_hash: None,
-            assigned_program_hash: None,
-            schedule_interval_s: None,
-            battery_mv: None,
-            firmware_abi_version: None,
-            firmware_version: None,
-            timestamp_ms: current_time_ms(),
-            encrypted_psk_escrow: None,
-            escrow_key_hint: None,
-            master_key_id: None,
-            status_details: Some(details),
         });
     }
 
@@ -624,23 +559,27 @@ impl ConnectorEventHub {
         modem_firmware_commit: Option<String>,
         rotation_in_progress: bool,
     ) {
-        let _ = self.tx.send(ConnectorOutboundMessage::GatewayActualState {
-            entity_id,
-            timestamp_ms: current_time_ms(),
-            channel,
-            master_key_id,
-            master_key_epoch,
-            x25519_public_key,
-            fingerprint_words,
-            missing_key_hints,
-            salt,
-            kdf_params,
-            gateway_version,
-            gateway_commit,
-            modem_firmware_version,
-            modem_firmware_commit,
-            rotation_in_progress,
-        });
+        let _ = self
+            .tx
+            .send(ConnectorOutboundMessage::GatewayActualState(Box::new(
+                GatewayActualStateData {
+                    entity_id,
+                    timestamp_ms: current_time_ms(),
+                    channel,
+                    master_key_id,
+                    master_key_epoch,
+                    x25519_public_key,
+                    fingerprint_words,
+                    missing_key_hints,
+                    salt,
+                    kdf_params,
+                    gateway_version,
+                    gateway_commit,
+                    modem_firmware_version,
+                    modem_firmware_commit,
+                    rotation_in_progress,
+                },
+            )));
     }
 
     pub fn emit_app_data(
@@ -849,9 +788,8 @@ impl ConnectorService {
         desired_state: &[(Value, Value)],
     ) -> Result<(), String> {
         // Validate entity_id format: must be 32 lowercase hex chars (16-byte gateway_id).
-        if entity_id.is_empty() {
-            warn!("gateway DESIRED_STATE has empty entity_id; expected hex(gateway_id)");
-        } else if entity_id.len() != 32
+        if entity_id.is_empty()
+            || entity_id.len() != 32
             || !entity_id
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
@@ -1435,7 +1373,6 @@ mod tests {
             encrypted_psk_escrow: None,
             escrow_key_hint: None,
             master_key_id: None,
-            status_details: None,
         };
 
         let encoded = message.encode().unwrap();

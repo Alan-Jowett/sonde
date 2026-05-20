@@ -38,7 +38,7 @@ pub struct PendingRecoveryRecord {
 /// a ciphertext blob between node rows to cause PSK confusion.
 ///
 /// Returns a blob of the form `nonce (12 B) || ciphertext+tag (48 B)`.
-fn encrypt_psk(
+pub(crate) fn encrypt_psk(
     master_key: &[u8; 32],
     node_id: &str,
     psk: &[u8; 32],
@@ -3542,5 +3542,80 @@ mod tests {
             .insert_pending_recovery(42, "node-1", &[0xBBu8; 30], &[0xAAu8; 16], 1)
             .await;
         assert!(result.is_err(), "should reject non-60-byte PSK blob");
+    }
+
+    #[tokio::test]
+    async fn test_pending_recovery_expire() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        store
+            .insert_pending_recovery(42, "node-old", &[0xBBu8; 60], &[0xAAu8; 16], 1)
+            .await
+            .unwrap();
+        // Backdate the record by directly updating received_at.
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE pending_recovery SET received_at = strftime('%s', 'now') - 90000 \
+                     WHERE node_id = 'node-old'",
+                    [],
+                )
+                .map_err(map_err)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        // Insert a fresh record.
+        store
+            .insert_pending_recovery(43, "node-new", &[0xCCu8; 60], &[0xAAu8; 16], 1)
+            .await
+            .unwrap();
+        // Expire records older than 24 hours (86400 seconds).
+        let expired = store.expire_pending_recovery(86400).await.unwrap();
+        assert_eq!(expired, 1, "only the backdated record should expire");
+        assert!(store.lookup_pending_recovery(42).await.unwrap().is_empty());
+        assert_eq!(store.lookup_pending_recovery(43).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_init_master_key_id_backfills_existing_nodes() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        // Insert a node directly via SQL with no master_key_id/epoch.
+        store
+            .with_conn(|conn| {
+                let psk = crate::sqlite_storage::encrypt_psk(
+                    &[0x42u8; 32],
+                    "backfill-test",
+                    &[0x99u8; 32],
+                )?;
+                conn.execute(
+                    "INSERT INTO nodes (node_id, key_hint, psk, schedule_interval_s, key_version) \
+                     VALUES ('backfill-test', 0x1234, ?1, 60, 0)",
+                    params![psk],
+                )
+                .map_err(map_err)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        // Initialize master key ID — should backfill.
+        let (mk_id, epoch) = store.init_master_key_id().await.unwrap();
+        assert_eq!(epoch, 1);
+        // Verify the node was backfilled.
+        store
+            .with_conn(move |conn| {
+                let (db_id, db_epoch): (Vec<u8>, i64) = conn
+                    .query_row(
+                        "SELECT master_key_id, master_key_epoch FROM nodes \
+                         WHERE node_id = 'backfill-test'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(map_err)?;
+                assert_eq!(db_id, mk_id.as_slice());
+                assert_eq!(db_epoch, 1);
+                Ok(())
+            })
+            .await
+            .unwrap();
     }
 }

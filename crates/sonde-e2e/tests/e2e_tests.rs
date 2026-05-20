@@ -193,13 +193,7 @@ async fn t_e2e_062_node_ble_provisioning() {
         board_layout: sonde_node::ble_pairing::ProvisionedBoardLayout::Absent,
     };
     let mut node = NodeProxy::new_unpaired();
-    let status = handle_node_provision(
-        &provision,
-        &mut node.storage,
-        &mut node.map_storage,
-        false,
-        false,
-    );
+    let status = handle_node_provision(&provision, &mut node.storage);
     assert_eq!(status, NODE_ACK_SUCCESS, "NODE_PROVISION must succeed");
 
     // Verify node storage state.
@@ -618,13 +612,7 @@ async fn t_e2e_068_factory_reset_reprovision() {
         encrypted_payload: new_encrypted_payload,
         board_layout: sonde_node::ble_pairing::ProvisionedBoardLayout::Absent,
     };
-    let status = handle_node_provision(
-        &provision,
-        &mut node.storage,
-        &mut node.map_storage,
-        false,
-        false,
-    );
+    let status = handle_node_provision(&provision, &mut node.storage);
     assert_eq!(status, NODE_ACK_SUCCESS);
 
     // Run PEER_REQUEST + WAKE with new identity.

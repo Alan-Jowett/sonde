@@ -1209,15 +1209,20 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ### T-N900  Boot priority order
 
-**Validates:** ND-0900
+**Validates:** ND-0900, ND-0917
 
 **Procedure:**
 1. Configure node with no PSK, pairing button not held.
 2. Assert: node enters BLE pairing mode.
-3. Configure node with PSK stored, `reg_complete` not set.
-4. Assert: node sends PEER_REQUEST.
-5. Configure node with PSK stored, `reg_complete` set.
-6. Assert: node enters normal WAKE cycle.
+3. Configure node with PSK stored, pairing button held ≥ 500 ms.
+4. Assert: factory reset is performed (PSK, programs, maps, schedule, BLE artifacts, staged test state erased; board_layout preserved).
+5. Assert: node enters BLE pairing mode as an unpaired node.
+6. Configure node with staged pre-provisioning test command, no PSK, pairing button not held.
+7. Assert: node enters pre-provisioning test mode.
+8. Configure node with PSK stored, `reg_complete` not set, pairing button not held.
+9. Assert: node sends PEER_REQUEST.
+10. Configure node with PSK stored, `reg_complete` set, pairing button not held.
+11. Assert: node enters normal WAKE cycle.
 
 ---
 
@@ -1307,17 +1312,19 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N906  NODE_PROVISION with pairing button — factory reset
+### T-N906  Boot button factory reset on paired node
 
-**Validates:** ND-0905, ND-0917
+**Validates:** ND-0900, ND-0917
 
 **Procedure:**
-1. Provision a node with credentials and a resident BPF program.
+1. Provision a node with credentials and a resident BPF program. Stage a pre-provisioning test command in RTC state.
 2. Reboot with pairing button held ≥ 500 ms.
-3. Write NODE_PROVISION with new credentials.
-4. Assert: existing PSK, persistent map data, and resident BPF program are erased before new credentials are written.
-5. Assert: node responds NODE_ACK(0x00).
-6. Assert: NVS contains only the new credentials.
+3. Assert: factory reset is performed at boot — existing PSK, persistent map data, resident BPF program, BLE pairing artifacts, schedule, channel, and staged pre-provisioning test state are erased.
+4. Assert: `board_layout` is preserved.
+5. Assert: node enters BLE pairing mode as an unpaired node (no `button_held` parameter passed to BLE pairing mode).
+6. Write NODE_PROVISION with new credentials.
+7. Assert: node responds NODE_ACK(0x00).
+8. Assert: NVS contains only the new credentials.
 
 ---
 
@@ -2628,12 +2635,12 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0800 | T-N800 |
 | ND-0801 | T-N801, T-N803, T-N938 |
 | ND-0802 | T-N802 |
-| ND-0900 | T-N900 |
+| ND-0900 | T-N900, T-N1102 |
 | ND-0901 | T-N901 |
 | ND-0902 | T-N902 |
 | ND-0903 | T-N902 |
 | ND-0904 | T-N903, T-N939 |
-| ND-0905 | T-N904, T-N905, T-N906, T-N940 |
+| ND-0905 | T-N904, T-N905, T-N940 |
 | ND-0906 | T-N904 |
 | ND-0907 | T-N905, T-N908 |
 | ND-0908 | T-N907 |
@@ -2645,7 +2652,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0914 | T-N916 |
 | ND-0915 | T-N917, T-N917a |
 | ND-0916 | T-N918 |
-| ND-0917 | T-N906 |
+| ND-0917 | T-N900, T-N906 |
 | ND-0918 | T-N918a, T-N918b, T-N918c |
 | ND-0919 | T-N942, T-N942a |
 | ND-0608 | T-N0607a, T-N0607b, T-N0607c, T-N0607d, T-N0607e, T-N0607f, T-N0607g |
@@ -2763,7 +2770,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N903 | *(hardware — validated on target: MTU negotiation and LESC pairing)* | — |
 | T-N904 | `t_n904_happy_path`, `t_e2e_062_node_ble_provisioning`, `t_e2e_068_factory_reset_reprovision`, `t_e2e_070_full_use_case` | ble_pairing.rs, e2e_tests.rs |
 | T-N905 | `t_n905_same_session_reprovision` | ble_pairing.rs |
-| T-N906 | `t_n906_factory_reset_on_button_hold` | ble_pairing.rs |
+| T-N906 | `t_n906_factory_reset_at_boot`, `t_n906_factory_reset_on_button_hold` | node.rs, ble_pairing.rs |
 | T-N907 | `t_n907_nvs_write_key_failure`, `t_n907_nvs_write_channel_failure`, `t_n907_nvs_write_peer_payload_failure`, `t_n907_nvs_write_reg_complete_failure` | ble_pairing.rs |
 | T-N908 | *(hardware — validated on target: BLE mode persistence after provisioning)* | — |
 | T-N909 | `t_e2e_063_peer_request_ack` | e2e_tests.rs |

@@ -1,0 +1,6 @@
+{
+  "msalClientId": "56abfa35-3b5f-4ffb-a0ea-79130dcaf4b1",
+  "msalAuthority": "https://login.microsoftonline.com/2a9c7506-6cc4-4400-a9fc-8322259f6a4e",
+  "storageAccount": "sts2jb46h7tqwje",
+  "functionAppName": "sonde-decoder-our7bn66"
+}

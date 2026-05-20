@@ -30,19 +30,20 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
             .map(|(key_hint, psk)| NodeIdentity { key_hint, psk })
     }
 
-    /// Factory reset: erase PSK, programs, map data, schedule, and channel.
+    /// Factory reset: erase all persistent state, including PSK.
     ///
     /// Per security.md §2.6 and node-design.md §6.2, this erases:
-    /// 1. Key partition (PSK + key_hint + magic)
-    /// 2. Both program partitions
-    /// 3. All map data in sleep-persistent memory (zeroed)
-    /// 4. Schedule partition (reset to default interval)
-    /// 5. Stored WiFi channel (reset to default)
-    /// 6. BLE pairing artifacts: peer_payload erased, reg_complete cleared (ND-0917)
+    /// 1. Both program partitions
+    /// 2. All map data in sleep-persistent memory (zeroed)
+    /// 3. Schedule partition (reset to default interval)
+    /// 4. Stored WiFi channel (reset to default)
+    /// 5. BLE pairing artifacts: peer_payload erased, reg_complete cleared (ND-0917)
+    /// 6. Staged pre-provisioning test command and retained test result (ND-0917)
+    /// 7. Key partition (PSK + key_hint + magic) — erased last so partial
+    ///    failures leave the node still paired and retryable
     ///
     /// After this, the node is inert until re-paired via BLE.
     pub fn factory_reset(&mut self, map_storage: &mut MapStorage) -> NodeResult<()> {
-        self.storage.erase_key()?;
         self.storage.erase_program(0)?;
         self.storage.erase_program(1)?;
         map_storage.clear_all();
@@ -56,6 +57,14 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
         // Always reset the reg_complete flag so the next boot does not skip
         // the PEER_REQUEST phase.
         self.storage.write_reg_complete(false)?;
+        // Clear any staged pre-provisioning test command and retained test
+        // result so stale diagnostic state does not survive the reset (ND-0917).
+        self.storage.clear_staged_test_command()?;
+        self.storage.clear_test_result()?;
+        // Erase the PSK last — if any earlier step fails, the node remains
+        // paired and the operator can retry the factory reset. Erasing the
+        // PSK first would leave the node unpaired with stale state.
+        self.storage.erase_key()?;
         Ok(())
     }
 }
@@ -76,6 +85,8 @@ mod tests {
         channel: Option<u8>,
         peer_payload: Option<Vec<u8>>,
         reg_complete: bool,
+        staged_test_command: bool,
+        test_result: bool,
         // Failure-injection flags for error-path testing.
         fail_erase_key: bool,
         fail_erase_program: bool,
@@ -83,6 +94,8 @@ mod tests {
         fail_write_channel: bool,
         fail_erase_peer_payload: bool,
         fail_write_reg_complete: bool,
+        fail_clear_staged_test_command: bool,
+        fail_clear_test_result: bool,
     }
 
     impl MockStorage {
@@ -96,12 +109,16 @@ mod tests {
                 channel: None,
                 peer_payload: None,
                 reg_complete: false,
+                staged_test_command: false,
+                test_result: false,
                 fail_erase_key: false,
                 fail_erase_program: false,
                 fail_reset_schedule: false,
                 fail_write_channel: false,
                 fail_erase_peer_payload: false,
                 fail_write_reg_complete: false,
+                fail_clear_staged_test_command: false,
+                fail_clear_test_result: false,
             }
         }
     }
@@ -222,6 +239,26 @@ mod tests {
             self.reg_complete = complete;
             Ok(())
         }
+
+        fn clear_staged_test_command(&mut self) -> NodeResult<()> {
+            if self.fail_clear_staged_test_command {
+                return Err(NodeError::StorageError(
+                    "injected clear_staged_test_command failure",
+                ));
+            }
+            self.staged_test_command = false;
+            Ok(())
+        }
+
+        fn clear_test_result(&mut self) -> NodeResult<()> {
+            if self.fail_clear_test_result {
+                return Err(NodeError::StorageError(
+                    "injected clear_test_result failure",
+                ));
+            }
+            self.test_result = false;
+            Ok(())
+        }
     }
 
     #[test]
@@ -235,7 +272,7 @@ mod tests {
     #[test]
     fn test_factory_reset() {
         // T-N404: Factory reset erases all persistent state (key, programs,
-        // schedule, channel, BLE artifacts, map data).
+        // schedule, channel, BLE artifacts, map data, staged test state).
         let mut storage = MockStorage::new();
         let psk = [0xDD; 32];
         storage.key = Some((10, psk));
@@ -246,6 +283,8 @@ mod tests {
         storage.channel = Some(6);
         storage.peer_payload = Some(vec![0xAB; 64]);
         storage.reg_complete = true;
+        storage.staged_test_command = true;
+        storage.test_result = true;
 
         let mut map_storage = MapStorage::new(4096);
         // Allocate some maps to verify they get cleared
@@ -283,6 +322,9 @@ mod tests {
             map_storage.get(0).unwrap().lookup(0).unwrap(),
             &[0, 0, 0, 0]
         );
+        // Staged test state must be cleared (ND-0917)
+        assert!(!storage.staged_test_command);
+        assert!(!storage.test_result);
     }
 
     #[test]
@@ -314,18 +356,24 @@ mod tests {
         s.channel = Some(6);
         s.peer_payload = Some(vec![0xAB; 64]);
         s.reg_complete = true;
+        s.staged_test_command = true;
+        s.test_result = true;
         s
     }
 
     #[test]
     fn test_factory_reset_erase_key_fails() {
         // T-N405: erase_key failure propagates from factory_reset.
+        // Since erase_key is now the last step, earlier steps succeed
+        // but the PSK remains — the node stays paired and retryable.
         let mut storage = populated_storage();
         storage.fail_erase_key = true;
         let mut map_storage = MapStorage::new(4096);
         let mut ks = KeyStore::new(&mut storage);
         let err = ks.factory_reset(&mut map_storage).unwrap_err();
         assert_eq!(err, NodeError::StorageError("injected erase_key failure"));
+        // PSK is still present (erase_key is last and failed)
+        assert!(storage.key.is_some());
     }
 
     #[test]
@@ -396,5 +444,37 @@ mod tests {
             err,
             NodeError::StorageError("injected write_reg_complete failure")
         );
+    }
+
+    #[test]
+    fn test_factory_reset_clear_staged_test_command_fails() {
+        // clear_staged_test_command failure propagates from factory_reset.
+        let mut storage = populated_storage();
+        storage.fail_clear_staged_test_command = true;
+        let mut map_storage = MapStorage::new(4096);
+        let mut ks = KeyStore::new(&mut storage);
+        let err = ks.factory_reset(&mut map_storage).unwrap_err();
+        assert_eq!(
+            err,
+            NodeError::StorageError("injected clear_staged_test_command failure")
+        );
+        // PSK should still be present (erase_key is after this step)
+        assert!(storage.key.is_some());
+    }
+
+    #[test]
+    fn test_factory_reset_clear_test_result_fails() {
+        // clear_test_result failure propagates from factory_reset.
+        let mut storage = populated_storage();
+        storage.fail_clear_test_result = true;
+        let mut map_storage = MapStorage::new(4096);
+        let mut ks = KeyStore::new(&mut storage);
+        let err = ks.factory_reset(&mut map_storage).unwrap_err();
+        assert_eq!(
+            err,
+            NodeError::StorageError("injected clear_test_result failure")
+        );
+        // PSK should still be present (erase_key is after this step)
+        assert!(storage.key.is_some());
     }
 }

@@ -685,6 +685,12 @@ impl crate::traits::PlatformStorage for NvsStorage {
         rtc.valid = 1;
         Ok(())
     }
+
+    fn clear_test_result(&mut self) -> NodeResult<()> {
+        let rtc = unsafe { &mut LATEST_TEST_RESULT };
+        *rtc = RtcTestResult::zero();
+        Ok(())
+    }
 }
 
 #[cfg(test)]

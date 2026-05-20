@@ -281,10 +281,12 @@ choices that enable SPA queries are:
    enables `RowKey` range filters for time-range queries. To query a time
    window `[start_ms, end_ms]`, the SPA computes reverse-tick values
    (`u64::MAX - ts`) for each bound. Because the mapping inverts the
-   ordering, the lexicographic range bounds are
-   `reverse_tick(end_ms) <= RowKey < reverse_tick(start_ms) + ":"~`
-   (the `":" + suffix` portion of the key falls after the reverse-tick
-   prefix in lexicographic order).
+   ordering, the lexicographic range is lower-bounded by
+   `reverse_tick(end_ms)` (inclusive) and upper-bounded by
+   `reverse_tick(start_ms - 1)` (inclusive), selecting all rows whose
+   reverse-tick prefix falls within that interval. The `":"` separator
+   between the reverse-tick prefix and the uniqueness suffix ensures that
+   suffix bytes do not interfere with prefix-based range comparisons.
 3. **`program_hash` property** — stored as a top-level `Edm.String` column,
    enabling property-filter queries within a single node partition.
 

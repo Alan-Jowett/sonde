@@ -40,7 +40,7 @@
 4. Assert: the published payload is a node-scoped `GW-0811` `DESIRED_STATE` message.
 5. Assert: the payload contains the row's desired `assigned_program_hash` and desired `schedule_interval_s`.
 6. Assert: the payload does not invent a non-null `ephemeral_program_hash`.
-7. Assert: the published payload contains only fields defined by the `GW-0811` `DESIRED_STATE` schema (`entity_kind`, `entity_id`, desired program/schedule fields, and optional program metadata). No additional keys, imperative commands, or out-of-contract fields are present (AZH-0101 AC-4).
+7. Assert: the published payload conforms to the `GW-0811` `DESIRED_STATE` connector schema defined in [gateway-companion-api.md](gateway-companion-api.md) and contains no additional out-of-contract keys at any nesting level (AZH-0101 AC-4).
 
 ---
 

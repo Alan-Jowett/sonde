@@ -153,6 +153,8 @@ The ESP-NOW receive callback is invoked from the WiFi task. It receives:
 The callback copies the frame into the ESP-NOW RX ring buffer; the main loop drains the ring and writes `RECV_FRAME` messages to USB. For each frame that is successfully forwarded to USB, the `rx_count` counter is incremented.
 
 > **ESP-NOW RX ring buffer (D9-1):** The ESP-NOW receive callback stores inbound frames in a pre-allocated, fixed-capacity ring buffer (`RX_RING_CAP = 16` slots). When the ring is full (or a push into the ring fails), incoming frames are silently dropped and a `drop_count` counter is incremented. If the WiFi-task callback cannot acquire the ring mutex (contention with the main loop draining the buffer), the frame is also dropped, and this is recorded separately via an atomic `contention_drops` counter. This is intentional — the callback runs in the WiFi task context where heap allocation and blocking are unsafe.
+>
+> **Mutex poison recovery:** Both the receive callback and the main-loop drain path recover from a poisoned `rx_ring` mutex via `PoisonError::into_inner()` instead of propagating the panic. This prevents a transient consumer panic from permanently disabling frame reception. The drain and reset paths log a warning once per driver instance when recovering from poison (via an `AtomicBool` guard). The WiFi-task receive callback also recovers from poison, but does not log from the callback context (logging from the WiFi task is unsafe).
 
 ### 6.3  Send path
 
@@ -177,9 +179,9 @@ On `SCAN_CHANNELS`:
 
 1. Call `esp_wifi_scan_start()` with `channel = 0` (all channels), blocking mode.
 2. Call `esp_wifi_scan_get_ap_records()`.
-3. Aggregate per channel: count APs, track strongest RSSI.
-4. Send `SCAN_RESULT`.
-5. Re-initialize ESP-NOW on the current channel (scanning may disrupt it).
+3. Aggregate per channel: count APs, track strongest RSSI. Only channel values in the range 1–14 are indexed into the aggregation array; out-of-range channels (e.g., from malformed AP records) are silently skipped to prevent out-of-bounds panics.
+4. Restore the WiFi channel to the pre-scan value via `esp_wifi_set_channel()` (scanning disrupts the active channel). A full `esp_now_deinit()` / `esp_now_init()` cycle is **not** required — the ESP-NOW stack remains operational across a WiFi scan; only the channel needs restoring.
+5. Send `SCAN_RESULT`.
 
 ---
 
@@ -391,6 +393,18 @@ The modem uses the Rust `log` crate with the ESP-IDF logging backend (`EspLogger
 
 This separation is critical: the USB-CDC port (GPIO19/20) carries the binary modem protocol exclusively. Mixing log text into the protocol stream would corrupt framing. The UART port is independent and can be monitored concurrently.
 
+### 14.0a  Build-time commit SHA injection
+
+The build script (`build.rs`) captures the current git commit SHA at compile time and injects it as the `SONDE_GIT_COMMIT` environment variable via `cargo:rustc-env`. The firmware logs the short SHA (first 7 characters) in the boot banner and in the diagnostic log line emitted when `MODEM_READY` is sent. The `MODEM_READY` protocol payload itself is unchanged (`firmware_version` + `mac_address`).
+
+**Resolution order:**
+
+1. If the `SONDE_GIT_COMMIT` environment variable is set (CI sets this from `github.sha`), use that value.
+2. Otherwise, run `git rev-parse --short HEAD` to obtain the local commit.
+3. If neither is available (e.g., building outside a git repository), fall back to the string `"unknown"`.
+
+Empty values are ignored, and the selected value is normalized to the first 7 characters before injection. The short SHA provides firmware traceability with negligible binary size impact and no runtime overhead — the value is baked into the binary at compile time via `env!()` and requires no runtime git access.
+
 ### 14.1  Dual-port setup
 
 On a typical ESP32-S3-DevKitC-1 with two USB connectors:
@@ -519,6 +533,8 @@ The modem uses BLE LESC Numeric Comparison as the default pairing method (MD-040
 6. On successful pairing and operator acceptance, the link is encrypted and `BLE_CONNECTED` is sent (MD-0410).
 
 Just Works remains available as a fallback when the phone does not support Numeric Comparison (MD-0404).
+
+> **Android encryption-state polling fallback:** On some Android devices, NimBLE's `on_authentication_complete` callback is not reliably fired after LESC Numeric Comparison. The modem works around this by polling the BLE connection's encryption state (`check_encryption_fallback()`) on each main-loop iteration. The polling path is a no-op outside an active Numeric Comparison session. During active pairing it probes NimBLE with `ble_gap_conn_find()`, checks encryption and MTU, then completes the same pairing state transition used by `on_authentication_complete()`. Successful fallback logs at `info!`; lookup errors are warning-logged once per connection. This polling has no effect when `on_authentication_complete` fires normally.
 
 > **Tentative accept model (D9-5, MD-0416):** NimBLE's `on_confirm_pin` callback is synchronous — it requires an immediate yes/no return and cannot block waiting for the gateway's asynchronous `BLE_PAIRING_CONFIRM_REPLY`. The modem returns `true` to let the BLE stack proceed with LESC key exchange immediately, then relays the passkey to the gateway for operator verification. This means the encrypted link is established *before* operator approval. Multiple mitigations bound the security impact: (1) `BleEvent::Connected` is deferred until the operator accepts, (2) GATT writes are gated on the `authenticated` flag (see § 15.2.1 below), (3) NVS bond persistence is disabled (`CONFIG_BT_NIMBLE_NVS_PERSIST=n`), and (4) the client is disconnected immediately on rejection.
 

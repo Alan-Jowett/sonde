@@ -25,6 +25,10 @@
 3. Assert: the plan includes the foundational resources defined by this specification.
 4. Assert: the documented defaults for `location` and `project_name` are `eastus` and `sonde`.
 5. Assert: the deployment inputs and outputs are documented.
+6. Invoke the deployment entrypoint without supplying `resource_group_name`.
+7. Assert: the deployment succeeds and derives a resource group name from `project_name` without requiring the caller to provide one.
+8. Invoke the deployment with a `project_name` that requires normalization to satisfy Azure naming constraints (e.g., uppercase or special characters).
+9. Assert: the derived resource names satisfy Azure provider naming rules and the normalization behavior is documented or applied transparently.
 
 ---
 
@@ -32,11 +36,15 @@
 
 **Validates:** AZP-0101
 
-**Procedure:**
-1. Deploy the workflow into a test subscription or resource group.
-2. Inspect the resulting resource group and managed resources.
-3. Assert: the deployment targets the expected resource group.
-4. Assert: Storage Queue, Storage, and Function placeholder resources carry the required `project = sonde` tag unless a deliberate override was supplied.
+**Procedure — Case A: Create new resource group:**
+1. Deploy the workflow without supplying a `resource_group_name` override into a test subscription where the derived resource group does not yet exist.
+2. Assert: the workflow creates a new dedicated resource group.
+3. Assert: Storage Queue, Storage, and Function placeholder resources carry the required `project = sonde` tag unless a deliberate override was supplied.
+
+**Procedure — Case B: Use explicit resource-group override:**
+1. Deploy the workflow with an explicit `resource_group_name` override pointing at a pre-existing or caller-specified resource group.
+2. Assert: the workflow targets the caller-specified resource group instead of deriving a second group.
+3. Assert: Storage Queue, Storage, and Function placeholder resources carry the required `project = sonde` tag unless a deliberate override was supplied.
 
 ---
 
@@ -79,7 +87,8 @@
 5. Assert: the Function App is configured with `WEBSITE_RUN_FROM_PACKAGE` for package deployment.
 6. Assert: the bootstrap script clears `linuxFxVersion` before zip deployment (custom handler, no managed runtime).
 7. Assert: the Function App does not require an Application Insights resource for basic log access.
-8. Assert: the deployment target used by the repository-owned package deployment step is present or explicitly surfaced by deployment outputs/documentation.
+8. Assert: the deployment outputs or documentation explicitly identify the Function App resources (e.g., Function App name, hosting plan, resource ID) used by the Azure handler path.
+9. Assert: the deployment target used by the repository-owned package deployment step is present or explicitly surfaced by deployment outputs/documentation.
 
 ---
 
@@ -91,11 +100,13 @@
 1. Run the repository-owned bootstrap workflow against a disposable Azure test stack.
 2. Inspect the bootstrap image contents or documented build outputs.
 3. Assert: the bundled handler package includes the `sonde-azure-handler` executable, `host.json`, and the function metadata required by the Function App host.
-4. After bootstrap completes, query Azure for the Function App.
-5. Assert: Azure reports at least one loaded function for the provisioned Function App.
-6. Assert: the operator did not need to upload a separate handler package manually.
-7. Re-run bootstrap against the same stack.
-8. Assert: bootstrap can replace or refresh the deployed handler package without requiring manual cleanup first.
+4. Assert: the deployed package is a prebuilt repository-owned artifact carried by the bootstrap image, not a package compiled or assembled ad hoc during the bootstrap run itself. Verify by inspecting the bootstrap run logs and image contents to confirm the bootstrap process deploys a bundled artifact and does not invoke build or package-assembly commands.
+5. After bootstrap completes, query Azure for the Function App.
+6. Assert: Azure reports at least one loaded function for the provisioned Function App.
+7. Assert: bootstrap does not report overall success until Azure confirms the package is active and at least one function is loaded — i.e., bootstrap gates its success status on the activation check.
+8. Assert: the operator did not need to upload a separate handler package manually.
+9. Re-run bootstrap against the same stack.
+10. Assert: bootstrap can replace or refresh the deployed handler package without requiring manual cleanup first.
 
 ---
 
@@ -133,7 +144,7 @@
 1. Run the provisioning workflow.
 2. Collect the documented outputs and artifacts from the handoff contract.
 3. Compare them against the runtime-state inputs expected by `sonde-azure-companion`.
-4. Assert: the handoff includes tenant ID, client ID, certificate material or reference, private-key material or reference, Storage Queue endpoint/queue values, and the Function App / deployment-target values needed by bootstrap package deployment.
+4. Assert: the handoff includes tenant ID, client ID, login endpoint, certificate material or reference, private-key material or reference, Storage Queue endpoint/queue values, and the Function App / deployment-target values needed by bootstrap package deployment.
 5. Assert: the handoff can be translated into `service-principal.json`, certificate PEM, and private-key PEM without inventing extra undocumented values.
 
 ---
@@ -164,6 +175,8 @@
 2. Run the same deployment again with the same inputs.
 3. Assert: the second run converges without creating duplicate foundational resources.
 4. Assert: any intentionally constrained one-time behavior is documented.
+5. Inject a deployment failure (e.g., invalid parameter, unreachable resource) and observe the workflow output.
+6. Assert: the workflow surfaces the deployment failure explicitly rather than silently masking it or reporting success.
 
 ---
 
@@ -191,6 +204,8 @@
 5. Assert: the workflow deploys the Bicep stack into that resource group.
 6. Assert: the workflow proceeds to validation rather than stopping immediately after deployment.
 7. Assert: the workflow attempts teardown in the same run after validation completes.
+8. Inspect the GitHub Actions workflow trigger configuration.
+9. Assert: the workflow is not triggered by routine pull-request CI — it is a manually dispatched or separately scoped workflow that does not run on every PR change.
 
 ---
 
@@ -211,12 +226,22 @@
 
 **Validates:** AZP-0304
 
-**Procedure:**
+**Procedure — Case A: Validation-step failure:**
 1. Dispatch the live Azure validation workflow against the dedicated CI-owned disposable resource group.
 2. Force a validation-step failure after the Azure stack has been created.
 3. Assert: the workflow still executes its teardown path after the injected failure.
 4. If teardown succeeds, assert: the disposable resource group is removed.
 5. If teardown fails, assert: the workflow reports the retained resource group explicitly instead of reporting overall success.
+
+**Procedure — Case B: Provisioning-step failure:**
+1. Dispatch the live Azure validation workflow with an intentionally invalid provisioning input to force a deployment failure before validation begins.
+2. Assert: the workflow still executes its teardown path after the provisioning failure.
+3. Assert: any partially provisioned resources in the CI-owned resource group are cleaned up or the retained state is surfaced explicitly.
+
+**Procedure — Case C: Documentation safety boundary:**
+1. Inspect the workflow documentation and setup guide.
+2. Assert: the documentation states that arbitrary operator-managed resource groups are out of scope for CI deletion.
+3. Assert: the documentation identifies the CI-owned resource group as the only group subject to destructive preflight and post-run cleanup.
 
 ---
 

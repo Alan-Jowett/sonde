@@ -251,6 +251,7 @@ The handoff contract includes:
 |-------|----------|
 | Entra tenant ID | `service-principal.json` |
 | Entra client ID | `service-principal.json` |
+| Login endpoint | `service-principal.json` — OAuth token endpoint base for the target cloud |
 | Certificate reference or exported PEM | certificate PEM material used by the runtime |
 | Private-key reference or exported PEM | private-key PEM material used by the runtime |
 | Storage Queue endpoint | Azure companion runtime configuration |

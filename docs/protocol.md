@@ -429,7 +429,7 @@ Sent by the gateway in response to a valid `DIAG_REQUEST`. Authenticated with th
 
 The `nonce` field in the header echoes the `DIAG_REQUEST` nonce, binding the reply to the request. The `key_hint` is the same phone `key_hint` from the request, so the pairing tool can look up its own PSK for decryption.
 
-When the gateway cannot determine RSSI (e.g., loopback transport or test environment), it uses a sentinel value of `rssi_dbm = 0` per **GW-1702**. Pairing tools should treat `rssi_dbm = 0` as "RSSI unavailable" rather than an actual measurement. The pairing tool applies its own hard-coded thresholds to the raw `rssi_dbm` value for display purposes.
+When the gateway cannot determine RSSI (e.g., loopback transport or test environment), it uses a sentinel value of `rssi_dbm = 0` per **GW-1702**. Pairing tools MUST treat `rssi_dbm = 0` as "RSSI unavailable" rather than an actual measurement — specifically, they must NOT apply RSSI thresholds to the sentinel value. When `rssi_dbm = 0`, the tool should display "RSSI unavailable" and warn/require confirmation before proceeding. Threshold-based signal quality classification applies only to non-zero `rssi_dbm` values.
 
 ---
 

@@ -178,3 +178,61 @@ pub struct SensorDescriptor {
 }
 
 pub use sonde_protocol::BoardLayout;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sentinel_rssi_zero_is_bad() {
+        assert_eq!(assess_signal_quality(0), sonde_protocol::SIGNAL_QUALITY_BAD);
+    }
+
+    #[test]
+    fn good_rssi() {
+        assert_eq!(
+            assess_signal_quality(-50),
+            sonde_protocol::SIGNAL_QUALITY_GOOD
+        );
+    }
+
+    #[test]
+    fn exact_good_threshold_is_good() {
+        assert_eq!(
+            assess_signal_quality(-60),
+            sonde_protocol::SIGNAL_QUALITY_GOOD
+        );
+    }
+
+    #[test]
+    fn just_below_good_threshold_is_marginal() {
+        assert_eq!(
+            assess_signal_quality(-61),
+            sonde_protocol::SIGNAL_QUALITY_MARGINAL
+        );
+    }
+
+    #[test]
+    fn exact_bad_threshold_is_marginal() {
+        assert_eq!(
+            assess_signal_quality(-75),
+            sonde_protocol::SIGNAL_QUALITY_MARGINAL
+        );
+    }
+
+    #[test]
+    fn just_below_bad_threshold_is_bad() {
+        assert_eq!(
+            assess_signal_quality(-76),
+            sonde_protocol::SIGNAL_QUALITY_BAD
+        );
+    }
+
+    #[test]
+    fn very_bad_rssi() {
+        assert_eq!(
+            assess_signal_quality(-90),
+            sonde_protocol::SIGNAL_QUALITY_BAD
+        );
+    }
+}

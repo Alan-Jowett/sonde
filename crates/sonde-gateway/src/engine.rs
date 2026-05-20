@@ -867,7 +867,7 @@ impl Gateway {
             }
         };
         let mut updated_node = node.clone();
-        updated_node.update_telemetry(battery_mv, firmware_abi_version, firmware_version);
+        updated_node.update_firmware_metadata(firmware_abi_version, firmware_version);
         if metadata_persisted {
             let observed_at = SystemTime::now();
             self.session_manager

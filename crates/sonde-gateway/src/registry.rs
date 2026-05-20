@@ -61,13 +61,12 @@ impl NodeRecord {
         }
     }
 
-    /// Update the durable WAKE metadata mirrored on a `NodeRecord`.
+    /// Update durable firmware metadata on a cloned `NodeRecord`.
     ///
-    /// Runtime battery and last-seen overlays are tracked separately by
+    /// Runtime battery and last-seen data are tracked separately by
     /// `SessionManager`; only firmware metadata lives on the record.
-    pub fn update_telemetry(
+    pub fn update_firmware_metadata(
         &mut self,
-        _battery_mv: u32,
         firmware_abi_version: u32,
         firmware_version: String,
     ) {

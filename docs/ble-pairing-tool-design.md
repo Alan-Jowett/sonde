@@ -339,7 +339,7 @@ pub enum ServiceType {
 
 /// Returns the `ServiceType` for a device based on its advertised service UUIDs.
 /// Returns `None` if the device does not advertise a recognised service.
-pub fn service_type(device: &ScannedDevice) -> Option<ServiceType>;
+pub fn service_type(device: &ScannedDevice) -> Option<ServiceType> { /* … */ }
 ```
 
 **Service-UUID → type classification (PT-0201):**  The `discovery::service_type()` function classifies a `ScannedDevice` by inspecting its `service_uuids`.  The classification is external to `ScannedDevice` — it is applied by the `DeviceScanner` when presenting results to the UI.  The mapping is:
@@ -500,24 +500,25 @@ All cryptographic operations are implemented in `crypto.rs`.  Key material is wr
 Used for Phase 2 (encrypt pairing payload) (PT-1102).  Phase 1 does not use AEAD — `PHONE_REGISTERED` is a plaintext ACK (PT-0303).
 
 ```rust
-/// Decrypt AES-256-GCM ciphertext.
-/// AAD = "sonde-pairing-v2" (PT-1102).  Caller supplies a pre-extracted nonce.
-pub fn aes_gcm_decrypt(
+/// Encrypt with AES-256-GCM.
+/// Caller generates a 12-byte nonce (via `getrandom::fill`) and passes it in.
+/// AAD = "sonde-pairing-v2" for pairing payloads (PT-1102).
+pub fn aes256gcm_encrypt(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, PairingError>
+
+/// Decrypt with AES-256-GCM.
+/// Caller supplies a pre-extracted nonce.
+/// Returns plaintext in a `Zeroizing` wrapper on success.
+pub fn aes256gcm_decrypt(
     key: &[u8; 32],
     nonce: &[u8; 12],
     ciphertext: &[u8],
     aad: &[u8],
-) -> Result<Vec<u8>, PairingError>
-
-/// Encrypt plaintext with AES-256-GCM.
-/// AAD = "sonde-pairing-v2" (PT-1102).  Nonce is 12 random bytes from rng.
-/// Returns (nonce, ciphertext_with_tag).
-pub fn aes_gcm_encrypt(
-    key: &[u8; 32],
-    plaintext: &[u8],
-    aad: &[u8],
-    rng: &dyn RngProvider,
-) -> Result<([u8; 12], Vec<u8>), PairingError>
+) -> Result<Zeroizing<Vec<u8>>, PairingError>
 ```
 
 ### 6.5  SHA-256 key_hint derivation

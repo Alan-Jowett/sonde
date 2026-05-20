@@ -32,9 +32,11 @@ pub enum EscrowInboundMessage {
 /// Parsed gateway DESIRED_STATE fields from evolve-962 §2.5.
 #[derive(Clone, Debug, Default)]
 pub struct GatewayDesiredState {
+    /// Gateway entity_id (hex-encoded gateway_id).
+    pub entity_id: String,
     /// Desired ESP-NOW channel (CBOR key 15).
     pub channel: Option<u32>,
-    /// KDF salt from cloud (CBOR key 21).
+    /// KDF salt from cloud (CBOR key 21, 16 bytes).
     pub salt: Option<Vec<u8>>,
     /// KDF parameters from cloud (CBOR key 22).
     pub kdf_params: Option<KdfParams>,
@@ -835,11 +837,20 @@ impl ConnectorService {
         }
         let channel = optional_u32_field(desired_state, 15, "channel")?;
         let salt = optional_bytes_field(desired_state, 21, "salt")?;
+        if let Some(ref s) = salt {
+            if s.len() != 16 {
+                return Err(format!(
+                    "gateway DESIRED_STATE salt must be 16 bytes, got {}",
+                    s.len()
+                ));
+            }
+        }
         let kdf_params = parse_optional_kdf_params(desired_state, 22)?;
         let rotation_payload = optional_bytes_field(desired_state, 28, "rotation_payload")?;
         let recovered_psks = parse_optional_recovered_psks(desired_state, 29)?;
 
         let gw_ds = GatewayDesiredState {
+            entity_id: entity_id.to_owned(),
             channel,
             salt,
             kdf_params,

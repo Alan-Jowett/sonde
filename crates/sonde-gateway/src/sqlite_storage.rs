@@ -877,16 +877,30 @@ impl SqliteStorage {
                         id_bytes.len()
                     )));
                 }
-                let epoch_str: String = conn
+                let epoch_str: Option<String> = conn
                     .query_row(
                         "SELECT value FROM gateway_config WHERE key = 'master_key_epoch'",
                         [],
                         |row| row.get(0),
                     )
+                    .optional()
                     .map_err(map_err)?;
-                let epoch: u64 = epoch_str.parse().map_err(|e| {
-                    StorageError::Internal(format!("invalid master_key_epoch: {e}"))
-                })?;
+                let epoch: u64 = match epoch_str {
+                    Some(s) => s.parse().map_err(|e| {
+                        StorageError::Internal(format!("invalid master_key_epoch: {e}"))
+                    })?,
+                    None => {
+                        // Partially initialized DB — id exists but epoch missing.
+                        // Treat as epoch 1 and persist.
+                        conn.execute(
+                            "INSERT INTO gateway_config (key, value) VALUES ('master_key_epoch', '1') \
+                             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            [],
+                        )
+                        .map_err(map_err)?;
+                        1
+                    }
+                };
                 let mut arr = [0u8; 16];
                 arr.copy_from_slice(&id_bytes);
                 return Ok((arr, epoch));
@@ -3407,5 +3421,102 @@ mod tests {
             "migrated phone PSK should default to key_version 0"
         );
         assert_eq!(*phones[0].psk, [0xCDu8; 32]);
+    }
+
+    // ── Escrow initialization tests (GW-2001, GW-2002) ─────────
+
+    #[tokio::test]
+    async fn test_init_master_key_id_first_startup() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let (id, epoch) = store.init_master_key_id().await.unwrap();
+        assert_eq!(epoch, 1);
+        assert_ne!(id, [0u8; 16], "master_key_id should be random, not zero");
+    }
+
+    #[tokio::test]
+    async fn test_init_master_key_id_stable_across_calls() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let (id1, epoch1) = store.init_master_key_id().await.unwrap();
+        let (id2, epoch2) = store.init_master_key_id().await.unwrap();
+        assert_eq!(id1, id2, "master_key_id must be stable");
+        assert_eq!(epoch1, epoch2, "master_key_epoch must be stable");
+    }
+
+    #[tokio::test]
+    async fn test_init_rotation_code_first_startup() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let code = store.init_rotation_code().await.unwrap();
+        assert_eq!(code.len(), 6);
+        assert!(
+            code.bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()),
+            "code must be [A-Z0-9]: got {code:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_init_rotation_code_stable_across_calls() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let code1 = store.init_rotation_code().await.unwrap();
+        let code2 = store.init_rotation_code().await.unwrap();
+        assert_eq!(code1, code2, "rotation_code must be stable");
+    }
+
+    // ── Pending recovery tests (GW-2009) ────────────────────────
+
+    #[tokio::test]
+    async fn test_pending_recovery_insert_and_lookup() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let mk_id = [0xAAu8; 16];
+        let psk = [0xBBu8; 60];
+        store
+            .insert_pending_recovery(42, "node-1", &psk, &mk_id, 1)
+            .await
+            .unwrap();
+        let records = store.lookup_pending_recovery(42).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].node_id, "node-1");
+        assert_eq!(records[0].key_hint, 42);
+        assert_eq!(records[0].encrypted_psk, psk);
+        assert_eq!(records[0].master_key_id, mk_id);
+        assert_eq!(records[0].master_key_epoch, 1);
+    }
+
+    #[tokio::test]
+    async fn test_pending_recovery_delete() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        store
+            .insert_pending_recovery(42, "node-1", &[0xBBu8; 60], &[0xAAu8; 16], 1)
+            .await
+            .unwrap();
+        store.delete_pending_recovery(42, "node-1").await.unwrap();
+        let records = store.lookup_pending_recovery(42).await.unwrap();
+        assert!(records.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_pending_recovery_purge() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        store
+            .insert_pending_recovery(1, "n1", &[0xBBu8; 60], &[0xAAu8; 16], 1)
+            .await
+            .unwrap();
+        store
+            .insert_pending_recovery(2, "n2", &[0xCCu8; 60], &[0xAAu8; 16], 1)
+            .await
+            .unwrap();
+        let purged = store.purge_pending_recovery().await.unwrap();
+        assert_eq!(purged, 2);
+        assert!(store.lookup_pending_recovery(1).await.unwrap().is_empty());
+        assert!(store.lookup_pending_recovery(2).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_pending_recovery_rejects_wrong_psk_length() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let result = store
+            .insert_pending_recovery(42, "node-1", &[0xBBu8; 30], &[0xAAu8; 16], 1)
+            .await;
+        assert!(result.is_err(), "should reject non-60-byte PSK blob");
     }
 }

@@ -183,8 +183,18 @@ fn parse_rotation_plaintext(plaintext: &[u8]) -> Result<DecryptedRotation, Rotat
     let mut new_master_key = Zeroizing::new([0u8; 32]);
     new_master_key.copy_from_slice(&new_key_bytes);
 
-    // Key 2: rotation_code (tstr)
+    // Key 2: rotation_code (tstr, must be [A-Z0-9]{6})
     let rotation_code = get_text(&map, 2, "rotation_code")?;
+    if rotation_code.len() != 6
+        || !rotation_code
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+    {
+        return Err(RotationError::PlaintextParse(format!(
+            "rotation_code must be 6 characters from [A-Z0-9], got {:?}",
+            rotation_code
+        )));
+    }
 
     // Key 3: new_master_key_id (bstr, 16 bytes)
     let new_id_bytes = get_bytes(&map, 3, "new_master_key_id")?;
@@ -194,8 +204,8 @@ fn parse_rotation_plaintext(plaintext: &[u8]) -> Result<DecryptedRotation, Rotat
     let mut new_master_key_id = [0u8; 16];
     new_master_key_id.copy_from_slice(&new_id_bytes);
 
-    // Key 4: salt (bstr/null, optional)
-    let salt = get_optional_bytes(&map, 4);
+    // Key 4: salt (bstr/null, optional — 16 bytes when present)
+    let salt = get_optional_bytes_strict(&map, 4, "salt", Some(16))?;
 
     // Key 5: kdf_params (map/null, optional)
     let kdf_params = get_optional_kdf_params(&map, 5)?;
@@ -245,10 +255,28 @@ fn get_text(
     }
 }
 
-fn get_optional_bytes(map: &[(ciborium::Value, ciborium::Value)], key: u64) -> Option<Vec<u8>> {
+fn get_optional_bytes_strict(
+    map: &[(ciborium::Value, ciborium::Value)],
+    key: u64,
+    field: &str,
+    expected_len: Option<usize>,
+) -> Result<Option<Vec<u8>>, RotationError> {
     match get_value(map, key) {
-        Some(ciborium::Value::Bytes(b)) => Some(b.clone()),
-        _ => None,
+        Some(ciborium::Value::Bytes(b)) => {
+            if let Some(len) = expected_len {
+                if b.len() != len {
+                    return Err(RotationError::PlaintextParse(format!(
+                        "`{field}` must be {len} bytes, got {}",
+                        b.len()
+                    )));
+                }
+            }
+            Ok(Some(b.clone()))
+        }
+        Some(ciborium::Value::Null) | None => Ok(None),
+        Some(_) => Err(RotationError::PlaintextParse(format!(
+            "`{field}` must be bstr or null"
+        ))),
     }
 }
 

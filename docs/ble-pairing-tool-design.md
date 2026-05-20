@@ -453,7 +453,7 @@ The transport requests ATT MTU ≥ 247 during connection.  The actual negotiated
 Per [ble-pairing-protocol.md §3.4](ble-pairing-protocol.md), indications may be fragmented across multiple ATT Handle Value Indications.  The `fragmentation.rs` module provides standalone helpers for both directions:
 
 - **Outbound (Write Long):** `fragment_for_write()` splits a payload into MTU-sized chunks.
-- **Inbound (indication reassembly):** `IndicationReassembler` accumulates indication chunks until the envelope `LEN` field is satisfied, with a configurable maximum reassembly size (4096 bytes) to bound memory usage.
+- **Inbound (indication reassembly):** `IndicationReassembler` accumulates indication chunks until the envelope `LEN` field is satisfied, with a fixed maximum reassembly size of 4096 bytes to bound memory usage.
 
 Transport implementations may call these helpers when the underlying BLE stack does not handle fragmentation natively.  Desktop transports (e.g. `BtleplugTransport`) typically delegate Write Long and indication reassembly to the OS BLE stack and do not use these helpers directly.  The reassembly logic:
 
@@ -618,16 +618,16 @@ After successful Phase 1, the following artifacts are persisted (PT-0800):
 
 #### Windows (`FilePairingStore` + `DpapiPskProtector`)
 
-- Location: `%APPDATA%\sonde\pairing.json`
+- Location: `%APPDATA%\sonde\pairing-aead.json`
 - Format: JSON-serialized `PairingArtifacts` (keys as hex strings)
 - PSK bytes are protected at rest using the Windows Data Protection API (DPAPI) via `DpapiPskProtector` (enabled by the `dpapi` Cargo feature).  DPAPI encrypts the PSK under the current Windows user account — the encrypted blob cannot be decrypted without the account credentials, even with direct file-system access.
 - When `DpapiPskProtector` is configured, `save_artifacts()` writes a `phone_psk_protected` field (opaque DPAPI blob, hex-encoded) instead of the plaintext `phone_psk` field.  `load_artifacts()` decrypts the blob back to the 32-byte PSK.
-- The file is created with restricted permissions (user-only read/write via `SetFileSecurityW`)
+- Writes are atomic (write-to-temp, then rename) to prevent corruption on crash
 - On corruption (invalid JSON, missing fields): returns `PairingError::StoreCorrupted` with a clear message and offers to reset (PT-0803)
 
 #### Linux (`FilePairingStore` + `SecretServicePskProtector`)
 
-- Location: `~/.config/sonde/pairing.json`
+- Location: `~/.config/sonde/pairing-aead.json`
 - Format: same JSON layout as Windows, but the `phone_psk` field is protected by the Linux Secret Service keyring rather than stored in plaintext
 - The `SecretServicePskProtector` (enabled via the `secret-service-store` Cargo feature) stores and retrieves the 32-byte PSK through D-Bus using GNOME Keyring, KWallet, or any other freedesktop.org Secret Service-compatible backend
 - The PSK is stored as a binary secret under attributes `service = "sonde-pair"` and `account = "sonde-pair-phone-psk"` (configurable label)
@@ -836,7 +836,7 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 - **MTU negotiation:** WinRT handles ATT MTU exchange during connection.  The negotiated MTU is available via `BluetoothLEDevice.MaxPduSize`.  Note that WinRT may negotiate a lower MTU than requested; the protocol layer handles the < 247 rejection.
 - **Numeric Comparison:** The modem initiates LESC pairing server-side via `ble_gap_security_initiate` (MD-0404 criterion 5).  WinRT responds to the SMP Security Request by presenting the OS pairing dialog.  `btleplug` does not expose the negotiated pairing method to user-space, so `BtleplugTransport::pairing_method()` returns `None` to indicate OS-enforced security (PT-0904).  A Just Works fallback for gateway connections MUST be treated as a connection failure (PT-0300).
 - **Pre-connect scan:** When `connect()` is called on a fresh `BtleplugTransport`, the adapter may have no cached peripherals.  If the target device is not found among the adapter's known peripherals, `connect()` runs a short 3-second scan to populate the WinRT device cache before retrying the lookup.
-- **Storage:** `%APPDATA%\sonde\pairing.json` with restricted file permissions (ACL: user-only read/write).  PSK is protected at rest via DPAPI (see §7.3).
+- **Storage:** `%APPDATA%\sonde\pairing-aead.json` with PSK protected at rest via DPAPI (see §7.3).
 - **GATT write retry (WinRT auth errors):** On Windows, a GATT write issued before WinRT has completed its internal authentication handshake fails with `HRESULT 0x80650005`.  This is a **platform-level** pre-authentication concern, not a protocol-level retry, and is therefore compatible with PT-1003 (no implicit protocol retries).  `BtleplugTransport` retries the write up to 6 times with a 5-second delay between attempts, allowing the OS pairing dialog and LESC handshake to complete.  If all retries are exhausted, the write is reported as failed.  These retries occur at the BLE transport layer before the first protocol byte is accepted — they are equivalent to waiting for the connection to become usable, similar to the "BLE-level connection retries by the platform stack" exception in PT-1003.
 
 ### 9.2  Android (Android BLE API)

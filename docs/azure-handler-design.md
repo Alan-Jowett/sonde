@@ -169,7 +169,7 @@ The row contains the following logical columns:
 
 | Column | Purpose |
 |--------|---------|
-| `entity_kind` | Entity kind string (e.g. `"node"`). In-memory only — not persisted as an Azure Table property. Derived from the `PartitionKey` prefix on read (`"n:"` → `"node"`). Present in the handler's row model for dispatch routing. |
+| `entity_kind` | Entity kind string. In-memory only — not persisted as an Azure Table property. Currently hard-coded to `"node"` on deserialization since the handler only processes node-scoped rows. Present in the handler's row model for dispatch routing. |
 | `node_id` | Original opaque node identifier used by gateway and handlers. |
 | `observed_current_program_hash` | Node-reported current resident program hash, nullable. |
 | `observed_assigned_program_hash` | Gateway-reported assigned resident program hash, nullable. |

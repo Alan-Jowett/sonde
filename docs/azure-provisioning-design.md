@@ -251,6 +251,7 @@ The handoff contract includes:
 |-------|----------|
 | Entra tenant ID | `service-principal.json` |
 | Entra client ID | `service-principal.json` |
+| Login endpoint | `service-principal.json` — authority host URL for the target cloud (e.g., `https://login.microsoftonline.com`), used to construct OAuth token endpoints |
 | Certificate reference or exported PEM | certificate PEM material used by the runtime |
 | Private-key reference or exported PEM | private-key PEM material used by the runtime |
 | Storage Queue endpoint | Azure companion runtime configuration |

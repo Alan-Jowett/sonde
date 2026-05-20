@@ -598,8 +598,8 @@ These are **structural checks** (CI build targets, dependency graph review) — 
 3. Assert: after Phase 1 completes and the PSK is persisted, the in-memory copy is dropped (verified structurally by type signatures using `Zeroizing<[u8; N]>`).
 4. Complete a successful Phase 2 flow (node provisioning with AES-256-GCM encryption).
 5. Assert: the AES-256-GCM key used for payload encryption is wrapped in `Zeroizing<[u8; 32]>`.
-6. Assert: the AES-256-GCM nonce is wrapped in `Zeroizing<[u8; 12]>`.
-7. Assert: after encryption completes, no unwrapped copies of AES key or nonce remain in scope (verified structurally by type signatures).
+6. Assert: AES-256-GCM nonces are stack-allocated in short-lived scopes and go out of scope immediately after the encrypt/decrypt call (nonces are not secret — they are sent in cleartext — so `Zeroizing` wrapping is not required, but they must not persist beyond their use site).
+7. Assert: after encryption completes, no unwrapped copies of AES key material remain in scope (verified structurally by type signatures).
 
 ---
 

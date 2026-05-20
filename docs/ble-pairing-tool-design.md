@@ -78,11 +78,10 @@ crates/sonde-pair/
 
 ```toml
 [dependencies]
-sonde-protocol = { path = "../sonde-protocol" }
-ed25519-dalek = { version = "2", features = ["zeroize"] }
+sonde-protocol = { path = "../sonde-protocol", default-features = false }
 sha2 = "0.10"
 aes-gcm = "0.10"
-getrandom = "0.3"
+getrandom = { version = "0.4", features = ["std"] }
 zeroize = { version = "1", features = ["derive"] }
 ciborium = "0.2"
 tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_info"] }
@@ -91,6 +90,7 @@ thiserror = "2"
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 tracing-test = "0.2"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 ```
 
 > **Note (PT-1213):** The `sonde-pair-ui` application crate MUST also declare `tracing` with the same `features = ["max_level_trace", "release_max_level_info"]` to ensure compile-time log-level gating in both crates.

@@ -367,9 +367,12 @@ pub enum HelperReturn {
     MapValueOrNull { map_arg: u8 },
 }
 
+/// In `sonde-bpf`, the helper function type is:
+///   pub type Helper = fn(u64, u64, u64, u64, u64) -> u64;
+/// (same signature as the node firmware's `HelperFn` alias)
 pub struct HelperDescriptor {
     pub id: u32,
-    pub func: HelperFn,
+    pub func: Helper,
     pub ret: HelperReturn,
 }
 ```

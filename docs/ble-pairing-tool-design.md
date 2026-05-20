@@ -60,7 +60,19 @@ crates/sonde-pair/
     ├── validation.rs           # Input validation (node_id, rf_channel, label, payload size)
     ├── transport.rs            # BleTransport trait definition
     ├── store.rs                # PairingStore trait + MockPairingStore (PT-0802)
-    └── rng.rs                  # RngProvider trait (injectable CSPRNG for testing)
+    ├── rng.rs                  # RngProvider trait (injectable CSPRNG for testing)
+    ├── fragmentation.rs        # BLE ATT Write Long fragmentation + indication reassembly helpers
+    │
+    │   # ── Platform transport implementations (feature-gated) ──────────
+    ├── btleplug_transport.rs   # Desktop BLE transport via btleplug (feature: `btleplug`)
+    ├── loopback_transport.rs   # TCP-backed fake BLE transport for integration testing (feature: `loopback-ble`)
+    ├── android_transport.rs    # Android BLE transport via JNI (feature: `android`)
+    │
+    │   # ── Platform storage implementations (feature-gated) ────────────
+    ├── file_store.rs           # JSON file-based PairingStore with optional PskProtector (feature: `file-store`)
+    ├── dpapi.rs                # Windows DPAPI PskProtector for at-rest PSK encryption (feature: `dpapi`, Windows only)
+    ├── secret_service_store.rs # Linux Secret Service PskProtector via D-Bus keyring (feature: `secret-service-store`, Linux only)
+    └── android_store.rs        # Android EncryptedSharedPreferences PairingStore (feature: `android`)
 ```
 
 ### 3.1  Dependency rules
@@ -240,7 +252,9 @@ In the Tauri pairing tool, this diagnostic is part of the normal node-provisioni
 ┌──────────────────┐
 │ Reconnect later  │
 │ node reboots     │
-│ connect again    │
+│ reconnect with   │
+│ 500ms backoff,   │
+│ 15s timeout      │
 └────┬─────────────┘
      ▼
 ┌──────────────────┐
@@ -276,6 +290,7 @@ In the Tauri pairing tool, this diagnostic is part of the normal node-provisioni
 **Key design decisions:**
 
 - The flow is explicitly split into **stage** and **read** phases so the tool never assumes the original BLE connection will survive test execution.
+- After receiving `RUN_TEST_ACK`, the node reboots into BLE pairing mode.  The tool reconnects with a 500 ms backoff between attempts and a 15 s total timeout budget (`POST_REBOOT_RECONNECT_TIMEOUT_MS`).  In tests, these values are shortened to 0 ms / 50 ms for fast execution.
 - The outer BLE workflow is generic over `test_type`; only the test-specific payload builder changes when new test kinds are added later.
 - For `DiagFrame`, the tool combines the decrypted gateway reply (`rssi_dbm`, `signal_quality`) with the node-reported reply RSSI and elapsed-time metadata from `TEST_RESULT`.
 - The automatic diagnostic is advisory rather than a hard gate: the operator may continue provisioning after a failure, but only by taking an explicit **continue anyway** action.
@@ -435,7 +450,12 @@ The transport requests ATT MTU ≥ 247 during connection.  The actual negotiated
 
 ### 5.4  Indication reassembly
 
-Per [ble-pairing-protocol.md §3.4](ble-pairing-protocol.md), indications may be fragmented across multiple ATT Handle Value Indications.  The transport implementation:
+Per [ble-pairing-protocol.md §3.4](ble-pairing-protocol.md), indications may be fragmented across multiple ATT Handle Value Indications.  The `fragmentation.rs` module provides standalone helpers for both directions:
+
+- **Outbound (Write Long):** `fragment_for_write()` splits a payload into MTU-sized chunks.
+- **Inbound (indication reassembly):** `IndicationReassembler` accumulates indication chunks until the envelope `LEN` field is satisfied, with a configurable maximum reassembly size (4096 bytes) to bound memory usage.
+
+Transport implementations may call these helpers when the underlying BLE stack does not handle fragmentation natively.  Desktop transports (e.g. `BtleplugTransport`) typically delegate Write Long and indication reassembly to the OS BLE stack and do not use these helpers directly.  The reassembly logic:
 
 1. Receives the first indication chunk.  Parses the envelope header (TYPE + LEN) to determine the expected total body length.
 2. Buffers subsequent indication chunks until accumulated body bytes equal `LEN`.
@@ -596,11 +616,13 @@ After successful Phase 1, the following artifacts are persisted (PT-0800):
 
 ### 7.3  Platform storage backends
 
-#### Windows (`FilePairingStore`)
+#### Windows (`FilePairingStore` + `DpapiPskProtector`)
 
 - Location: `%APPDATA%\sonde\pairing.json`
 - Format: JSON-serialized `PairingArtifacts` (keys as hex strings)
-- PSK bytes are hex-encoded in the JSON; the file is created with restricted permissions (user-only read/write via `SetFileSecurityW`)
+- PSK bytes are protected at rest using the Windows Data Protection API (DPAPI) via `DpapiPskProtector` (enabled by the `dpapi` Cargo feature).  DPAPI encrypts the PSK under the current Windows user account — the encrypted blob cannot be decrypted without the account credentials, even with direct file-system access.
+- When `DpapiPskProtector` is configured, `save_artifacts()` writes a `phone_psk_protected` field (opaque DPAPI blob, hex-encoded) instead of the plaintext `phone_psk` field.  `load_artifacts()` decrypts the blob back to the 32-byte PSK.
+- The file is created with restricted permissions (user-only read/write via `SetFileSecurityW`)
 - On corruption (invalid JSON, missing fields): returns `PairingError::StoreCorrupted` with a clear message and offers to reset (PT-0803)
 
 #### Linux (`FilePairingStore` + `SecretServicePskProtector`)
@@ -813,9 +835,8 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 - **Scan filter:** WinRT's `BluetoothLEAdvertisementWatcher` does not reliably match 16-bit BLE service UUIDs passed as expanded 128-bit UUIDs in the `ScanFilter`.  The `BtleplugTransport` scans with an empty filter and relies on the `DeviceScanner` application layer for UUID-based filtering.
 - **MTU negotiation:** WinRT handles ATT MTU exchange during connection.  The negotiated MTU is available via `BluetoothLEDevice.MaxPduSize`.  Note that WinRT may negotiate a lower MTU than requested; the protocol layer handles the < 247 rejection.
 - **Numeric Comparison:** The modem initiates LESC pairing server-side via `ble_gap_security_initiate` (MD-0404 criterion 5).  WinRT responds to the SMP Security Request by presenting the OS pairing dialog.  `btleplug` does not expose the negotiated pairing method to user-space, so `BtleplugTransport::pairing_method()` returns `None` to indicate OS-enforced security (PT-0904).  A Just Works fallback for gateway connections MUST be treated as a connection failure (PT-0300).
-- **Pre-connect scan:** When `pair_gateway` creates a fresh `BtleplugTransport`, the adapter has no cached peripherals.  The `connect()` method runs a short 3-second scan if the target is not found in the cache.
-- **Storage:** `%APPDATA%\sonde\pairing.json` with restricted file permissions (ACL: user-only read/write).
-- **Known issues:** Some Windows BLE drivers have limited Write Long support.  The transport should fall back to standard writes if the payload fits within (MTU − 3) bytes and only use Write Long for larger messages.
+- **Pre-connect scan:** When `connect()` is called on a fresh `BtleplugTransport`, the adapter may have no cached peripherals.  If the target device is not found among the adapter's known peripherals, `connect()` runs a short 3-second scan to populate the WinRT device cache before retrying the lookup.
+- **Storage:** `%APPDATA%\sonde\pairing.json` with restricted file permissions (ACL: user-only read/write).  PSK is protected at rest via DPAPI (see §7.3).
 - **GATT write retry (WinRT auth errors):** On Windows, a GATT write issued before WinRT has completed its internal authentication handshake fails with `HRESULT 0x80650005`.  This is a **platform-level** pre-authentication concern, not a protocol-level retry, and is therefore compatible with PT-1003 (no implicit protocol retries).  `BtleplugTransport` retries the write up to 6 times with a 5-second delay between attempts, allowing the OS pairing dialog and LESC handshake to complete.  If all retries are exhausted, the write is reported as failed.  These retries occur at the BLE transport layer before the first protocol byte is accepted — they are equivalent to waiting for the connection to become usable, similar to the "BLE-level connection retries by the platform stack" exception in PT-1003.
 
 ### 9.2  Android (Android BLE API)

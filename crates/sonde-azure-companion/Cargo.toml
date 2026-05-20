@@ -7,7 +7,7 @@ license = "MIT"
 [dependencies]
 azure_core = { version = "0.25", default-features = false }
 base64 = "0.22"
-bollard = "0.20"
+bollard = "0.21"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 httpdate = "1"

@@ -19,7 +19,7 @@ const MIN_PAYLOAD_LEN: usize = 1 + 32 + 12 + 16;
 /// Maximum total payload length. The plaintext is a small CBOR map (~100 bytes),
 /// so the encrypted payload should be well under 1 KiB. Reject larger payloads
 /// to prevent expensive AEAD work on oversized inputs.
-const MAX_PAYLOAD_LEN: usize = 1024;
+pub(crate) const MAX_PAYLOAD_LEN: usize = 1024;
 
 /// HKDF salt constant (17 bytes, ASCII "sonde-rotation-v1").
 const HKDF_SALT: &[u8; 17] = b"sonde-rotation-v1";

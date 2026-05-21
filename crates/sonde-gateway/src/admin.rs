@@ -1293,6 +1293,10 @@ impl GatewayAdmin for AdminService {
         let fp = sonde_protocol::fingerprint::compute_fingerprint(x25519_public.as_bytes(), &sha);
 
         // Channel — default to 1 if absent, error if stored value is malformed.
+        // Channel — default to 1 if absent, error on non-integer.
+        // Range is NOT validated here: this is a read-only diagnostic RPC,
+        // so reporting the stored value (even if out-of-range) helps operators
+        // diagnose DB issues. SetModemChannel enforces 1..=14 on writes.
         let channel: u32 = match self
             .storage
             .get_config("espnow_channel")
@@ -1346,7 +1350,10 @@ impl GatewayAdmin for AdminService {
             None => None,
         };
 
-        // Check pending_rotation table for active rotation.
+        // Check for active rotation via the `pending_rotation_phase` config key.
+        // This key is set by the rotation engine when a rotation begins and
+        // cleared on commit. When the engine wiring lands, this will reflect
+        // the actual pending_rotation table state.
         let rotation_in_progress = self
             .storage
             .get_config("pending_rotation_phase")
@@ -1375,6 +1382,11 @@ impl GatewayAdmin for AdminService {
     ///
     /// Both this gRPC path and the DESIRED_STATE connector path converge
     /// on the same rotation handler in the gateway engine.
+    ///
+    /// The `rotation_tx` channel is wired at gateway startup via
+    /// `with_rotation_tx()`. Until the engine wiring PR lands, this RPC
+    /// returns `UNAVAILABLE` — the correct gRPC status for an
+    /// unconfigured backend.
     async fn submit_rotation(
         &self,
         request: Request<SubmitRotationRequest>,
@@ -1391,13 +1403,14 @@ impl GatewayAdmin for AdminService {
                 error: "rotation_payload is empty".to_string(),
             }));
         }
-        // Enforce max payload size consistent with rotation.rs MAX_PAYLOAD_LEN.
-        if payload.len() > 1024 {
+        // Enforce max payload size (shared constant with rotation.rs).
+        if payload.len() > crate::rotation::MAX_PAYLOAD_LEN {
             return Ok(Response::new(SubmitRotationResponse {
                 accepted: false,
                 error: format!(
-                    "rotation_payload too large: {} bytes (max 1024)",
-                    payload.len()
+                    "rotation_payload too large: {} bytes (max {})",
+                    payload.len(),
+                    crate::rotation::MAX_PAYLOAD_LEN,
                 ),
             }));
         }

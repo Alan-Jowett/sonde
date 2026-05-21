@@ -147,7 +147,7 @@ async function loadBip39Wordlist() {
   if (BIP39_WORDLIST) return BIP39_WORDLIST;
   try {
     const response = await fetch(
-      'https://cdn.jsdelivr.net/gh/bitcoin/bips@master/bip-0039/english.txt'
+      'https://cdn.jsdelivr.net/gh/bitcoin/bips@ce1862ac6bcffa1dd20aad858380e51e66e949ea/bip-0039/english.txt'
     );
     if (!response.ok) throw new Error(`Failed to load BIP-39 wordlist: ${response.status}`);
     const text = await response.text();
@@ -175,8 +175,10 @@ async function computeBip39Fingerprint(x25519PublicKeyBytes) {
     const bitOffset = i * 11;
     const byteIdx = Math.floor(bitOffset / 8);
     const bitShift = bitOffset % 8;
-    // Read 16 bits from byteIdx and byteIdx+1, then extract 11 bits.
-    const val = ((hashBytes[byteIdx] << 8) | (hashBytes[byteIdx + 1] || 0)) >> (16 - 11 - bitShift);
+    // Read 24 bits (3 bytes) to handle 11-bit windows that span 3 bytes.
+    const val = ((hashBytes[byteIdx] << 16)
+      | ((hashBytes[byteIdx + 1] || 0) << 8)
+      | (hashBytes[byteIdx + 2] || 0)) >>> (24 - 11 - bitShift);
     const idx = val & 0x7ff;
     words.push(wordlist[idx]);
   }
@@ -184,7 +186,7 @@ async function computeBip39Fingerprint(x25519PublicKeyBytes) {
 }
 
 function hexToBytes(hex) {
-  if (!hex || hex.length % 2 !== 0) return null;
+  if (!hex || hex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex)) return null;
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < hex.length; i += 2) {
     bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
@@ -245,8 +247,9 @@ async function renderGatewayStatusCard(gatewayRows) {
     }
 
     const epoch = gw.master_key_epoch ?? '—';
-    const mkid = gw.master_key_id
-      ? bytesToHex(base64ToBytes(gw.master_key_id) || [])
+    const mkidBytes = gw.master_key_id ? base64ToBytes(gw.master_key_id) : null;
+    const mkid = mkidBytes && mkidBytes.length > 0
+      ? bytesToHex(mkidBytes)
       : '—';
     const rotInProgress = gw.rotation_in_progress === true ? 'Yes' : 'No';
     const saltStatus = gw.salt ? 'Present' : 'Absent';
@@ -265,7 +268,7 @@ async function renderGatewayStatusCard(gatewayRows) {
         <div class="kv-grid">
           <div class="kv"><strong>Fingerprint</strong> ${fingerprintHtml}</div>
           <div class="kv"><strong>Epoch</strong> ${escapeHtml(epoch)}</div>
-          <div class="kv"><strong>Master Key ID</strong> <code>${escapeHtml(mkid.slice(0, 16))}…</code></div>
+          <div class="kv"><strong>Master Key ID</strong> <code>${mkid === '—' ? '—' : escapeHtml(mkid.slice(0, 16)) + '…'}</code></div>
           <div class="kv"><strong>Rotation in progress</strong> ${escapeHtml(rotInProgress)}</div>
           <div class="kv"><strong>Salt</strong> ${escapeHtml(saltStatus)}</div>
           <div class="kv"><strong>Gateway version</strong> ${escapeHtml(gwVersion)}</div>
@@ -286,7 +289,9 @@ function hasRotationCrypto() {
       && typeof crypto.subtle.importKey === 'function'
       && typeof crypto.subtle.deriveBits === 'function'
       && typeof crypto.getRandomValues === 'function'
-      && typeof WebAssembly !== 'undefined';
+      && typeof WebAssembly !== 'undefined'
+      && typeof argon2 !== 'undefined'
+      && (typeof noble_curves_x25519 !== 'undefined' || typeof nobleEd25519 !== 'undefined');
   } catch {
     return false;
   }
@@ -296,7 +301,6 @@ function hasRotationCrypto() {
 function showRotationModal(gatewayRow) {
   const gwId = gatewayRow.PartitionKey?.replace('g:', '') || '';
   const saltStatus = gatewayRow.salt ? 'Current salt loaded' : 'First rotation (no salt)';
-  const kdfParamsRaw = gatewayRow.kdf_params_json;
   const epoch = Number(gatewayRow.master_key_epoch) || 0;
 
   // Compute fingerprint synchronously (already loaded wordlist by now).
@@ -550,9 +554,9 @@ function encodeCborUintEntry(parts, key, value) {
   } else if (value < 256) {
     parts.push(0x18, value);
   } else if (value < 65536) {
-    parts.push(0x19, (value >> 8) & 0xff, value & 0xff);
+    parts.push(0x19, (value >>> 8) & 0xff, value & 0xff);
   } else {
-    parts.push(0x1a, (value >> 24) & 0xff, (value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff);
+    parts.push(0x1a, (value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff);
   }
 }
 

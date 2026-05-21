@@ -22,8 +22,16 @@ CONFIG_ESP_CONSOLE_UART_NUM=0
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=n
 
-# Log level: INFO captures the boot-marker lines the smoke test asserts on.
-CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# Log level: WARN suppresses the verbose ESP-IDF component chatter
+# (heap_init, wifi_init, phy_init, etc.) that adds ~200 ms to boot.
+# The verbose firmware variant overrides this via sdkconfig.verbose
+# (applied with ESP_IDF_SDKCONFIG_DEFAULTS); the QEMU smoke test runs
+# against the verbose build where INFO markers are present.
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+
+# Bootloader log level: suppress the 2nd-stage bootloader's partition
+# table dump, segment loading, and flash detection messages.
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
 
 # Size optimizations — reduce firmware binary size.
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y

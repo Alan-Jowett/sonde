@@ -19,6 +19,7 @@ pub mod phone_trust;
 pub mod program;
 pub mod registry;
 pub mod rotation;
+pub mod rotation_engine;
 pub mod session;
 pub mod sonde_platform;
 pub mod sqlite_storage;
@@ -40,6 +41,7 @@ pub use handler::{
 pub use phone_trust::{PhonePskRecord, PhonePskStatus};
 pub use program::{ProgramLibrary, ProgramRecord, VerificationProfile};
 pub use registry::{NodeRecord, SensorDescriptor};
+pub use rotation_engine::RotationEngine;
 pub use session::{Session, SessionManager, SessionState};
 pub use sqlite_storage::SqliteStorage;
 pub use storage::{InMemoryStorage, Storage, StorageError};

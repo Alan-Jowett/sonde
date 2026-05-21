@@ -1542,7 +1542,35 @@ fn deserialize_optional_i64_flexible<'de, D: serde::Deserializer<'de>>(
             Ok(None)
         }
         fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Option<i64>, D2::Error> {
-            deserialize_optional_i64_flexible(d)
+            // Use a non-optional inner visitor to avoid infinite recursion.
+            struct I64Visitor;
+            impl<'de> serde::de::Visitor<'de> for I64Visitor {
+                type Value = i64;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("an i64, u64, f64, or numeric string")
+                }
+                fn visit_i64<E: de::Error>(self, v: i64) -> Result<i64, E> {
+                    Ok(v)
+                }
+                fn visit_u64<E: de::Error>(self, v: u64) -> Result<i64, E> {
+                    i64::try_from(v).map_err(|_| E::custom(format!("{v} is not a valid i64")))
+                }
+                fn visit_f64<E: de::Error>(self, v: f64) -> Result<i64, E> {
+                    if !v.is_finite()
+                        || v.fract() != 0.0
+                        || v < (i64::MIN as f64)
+                        || v > (i64::MAX as f64)
+                    {
+                        return Err(E::custom(format!("{v} is not a valid i64")));
+                    }
+                    Ok(v as i64)
+                }
+                fn visit_str<E: de::Error>(self, v: &str) -> Result<i64, E> {
+                    v.parse::<i64>()
+                        .map_err(|_| E::custom(format!("cannot parse \"{v}\" as i64")))
+                }
+            }
+            d.deserialize_any(I64Visitor).map(Some)
         }
         fn visit_i64<E: de::Error>(self, v: i64) -> Result<Option<i64>, E> {
             Ok(Some(v))
@@ -1553,7 +1581,8 @@ fn deserialize_optional_i64_flexible<'de, D: serde::Deserializer<'de>>(
                 .map_err(|_| E::custom(format!("{v} is not a valid i64")))
         }
         fn visit_f64<E: de::Error>(self, v: f64) -> Result<Option<i64>, E> {
-            if !v.is_finite() || v.fract() != 0.0 {
+            if !v.is_finite() || v.fract() != 0.0 || v < (i64::MIN as f64) || v > (i64::MAX as f64)
+            {
                 return Err(E::custom(format!("{v} is not a valid i64")));
             }
             Ok(Some(v as i64))

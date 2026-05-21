@@ -30,6 +30,7 @@ struct KdfParamsJson {
     m_cost: u32,
     t_cost: u32,
     p_cost: u32,
+    #[serde(alias = "version")]
     kdf_version: u32,
 }
 
@@ -1292,7 +1293,6 @@ impl GatewayAdmin for AdminService {
         let sha = crate::crypto::RustCryptoSha256;
         let fp = sonde_protocol::fingerprint::compute_fingerprint(x25519_public.as_bytes(), &sha);
 
-        // Channel — default to 1 if absent, error if stored value is malformed.
         // Channel — default to 1 if absent, error on non-integer.
         // Range is NOT validated here: this is a read-only diagnostic RPC,
         // so reporting the stored value (even if out-of-range) helps operators
@@ -1403,6 +1403,17 @@ impl GatewayAdmin for AdminService {
                 error: "rotation_payload is empty".to_string(),
             }));
         }
+        // Fail fast on obviously-too-short payloads (shared constant with rotation.rs).
+        if payload.len() < crate::rotation::MIN_PAYLOAD_LEN {
+            return Ok(Response::new(SubmitRotationResponse {
+                accepted: false,
+                error: format!(
+                    "rotation_payload too short: {} bytes (min {})",
+                    payload.len(),
+                    crate::rotation::MIN_PAYLOAD_LEN,
+                ),
+            }));
+        }
         // Enforce max payload size (shared constant with rotation.rs).
         if payload.len() > crate::rotation::MAX_PAYLOAD_LEN {
             return Ok(Response::new(SubmitRotationResponse {
@@ -1419,16 +1430,17 @@ impl GatewayAdmin for AdminService {
         tx.send((payload, resp_tx))
             .map_err(|_| Status::internal("rotation channel closed"))?;
 
-        match resp_rx.await {
-            Ok(Ok(())) => Ok(Response::new(SubmitRotationResponse {
+        match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx).await {
+            Ok(Ok(Ok(()))) => Ok(Response::new(SubmitRotationResponse {
                 accepted: true,
                 error: String::new(),
             })),
-            Ok(Err(e)) => Ok(Response::new(SubmitRotationResponse {
+            Ok(Ok(Err(e))) => Ok(Response::new(SubmitRotationResponse {
                 accepted: false,
                 error: e,
             })),
-            Err(_) => Err(Status::internal("rotation handler dropped response")),
+            Ok(Err(_)) => Err(Status::internal("rotation handler dropped response")),
+            Err(_) => Err(Status::deadline_exceeded("rotation handler timed out")),
         }
     }
 

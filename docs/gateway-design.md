@@ -383,6 +383,7 @@ The gateway maintains a separate in-memory map for per-node runtime observations
 pub struct RuntimeNodeState {
     pub last_seen: Option<SystemTime>,
     pub last_battery_mv: Option<u32>,
+    pub last_wake_rssi_dbm: Option<i8>,
 }
 ```
 
@@ -889,7 +890,7 @@ The `Gateway::process_frame` / `handle_wake` / `handle_peer_request` methods emi
 
 - **PEER_REQUEST processed** — `node_id`, `key_hint`, `result` (`"registered"` or `"duplicate"`)
 - **PEER_ACK frame encoded** — `node_id`
-- **WAKE received** — `node_id`, `seq`, `battery_mv`
+- **WAKE received** — `node_id`, `seq`, `battery_mv`, `wake_rssi_dbm`
 - **COMMAND selected** — `node_id`, `command_type`
 - **Session created** — `node_id` (emitted in `handle_wake` after `create_session`)
 - **Session expired** — `node_id` (emitted in `SessionManager::reap_expired`)
@@ -1210,6 +1211,8 @@ node `send_recv()` responses.
 The node actual-state payload continues to include `battery_mv` from the just-
 processed WAKE even though battery telemetry is runtime-only locally and is not
 written to durable gateway storage.
+The payload also includes `wake_rssi_dbm` (CBOR key 28) when the modem supplies
+RSSI metadata; the field is null when the transport does not provide RSSI.
 
 ### 13A.4  External transport boundary and loss signaling
 

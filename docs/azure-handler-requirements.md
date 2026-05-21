@@ -109,7 +109,7 @@ are `assigned_program_hash` and `schedule_interval_s`.
 
 1. `ActualNodeState` stores append-only actual-state rows for each `node_id`.
 2. `DesiredNodeState` stores append-only desired-state rows for each `node_id`.
-3. Actual-state rows contain observed `current_program_hash`, observed gateway-assigned program hash, observed `schedule_interval_s`, `battery_mv`, firmware ABI/version fields, and `timestamp_ms`.
+3. Actual-state rows contain observed `current_program_hash`, observed gateway-assigned program hash, observed `schedule_interval_s`, `battery_mv`, `wake_rssi_dbm`, firmware ABI/version fields, and `timestamp_ms`.
 4. Desired-state rows contain desired `assigned_program_hash` and desired `schedule_interval_s`.
 5. The schema distinguishes actual-state history from desired-state history rather than collapsing them into one mutable row shape.
 
@@ -152,7 +152,7 @@ rather than overwriting or discarding them at write time.
 **Acceptance criteria:**
 
 1. Each node-scoped `GW-0812` appends exactly one new actual-state row.
-2. The appended row's `timestamp_ms`, `battery_mv`, firmware ABI/version fields, current program, assigned program, and schedule fields match the message.
+2. The appended row's `timestamp_ms`, `battery_mv`, `wake_rssi_dbm`, firmware ABI/version fields, current program, assigned program, and schedule fields match the message.
 3. Repeated delivery of the same logical check-in results in multiple history rows rather than in-place replacement.
 4. Older deliveries may still be appended for diagnostics and audit history.
 

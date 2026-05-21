@@ -566,6 +566,7 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     "node_id": status.node_id,
                     "current_program_hash": hex::encode(&status.current_program_hash),
                     "battery_mv": status.battery_mv,
+                    "wake_rssi_dbm": status.last_wake_rssi_dbm,
                     "firmware_abi_version": status.firmware_abi_version,
                     "last_seen_ms": status.last_seen_ms,
                     "has_active_session": status.has_active_session,
@@ -583,6 +584,9 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 );
                 if let Some(mv) = status.battery_mv {
                     println!("Battery:  {mv} mV");
+                }
+                if let Some(rssi) = status.last_wake_rssi_dbm {
+                    println!("RSSI:     {rssi} dBm");
                 }
                 if let Some(abi) = status.firmware_abi_version {
                     println!("ABI:      {abi}");
@@ -957,6 +961,9 @@ fn print_node(n: &pb::NodeInfo, program_names: &HashMap<Vec<u8>, String>, verbos
     if let Some(mv) = n.last_battery_mv {
         println!("    battery:  {mv} mV");
     }
+    if let Some(rssi) = n.last_wake_rssi_dbm {
+        println!("    RSSI:     {rssi} dBm");
+    }
     if let Some(ms) = n.last_seen_ms {
         println!("    last seen: {}", format_epoch_ms(ms));
     }
@@ -972,6 +979,7 @@ fn node_to_json(n: &pb::NodeInfo) -> serde_json::Value {
         "assigned_program_hash": hex::encode(&n.assigned_program_hash),
         "current_program_hash": hex::encode(&n.current_program_hash),
         "last_battery_mv": n.last_battery_mv,
+        "last_wake_rssi_dbm": n.last_wake_rssi_dbm,
         "last_firmware_abi_version": n.last_firmware_abi_version,
         "last_seen_ms": n.last_seen_ms,
         "schedule_interval_s": n.schedule_interval_s,

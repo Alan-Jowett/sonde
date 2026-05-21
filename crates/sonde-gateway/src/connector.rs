@@ -116,6 +116,8 @@ enum ConnectorOutboundMessage {
         escrow_key_hint: Option<u16>,
         /// Opaque master key ID (16 bytes) that encrypted this PSK, CBOR key 14.
         master_key_id: Option<Vec<u8>>,
+        /// Modem-measured RSSI (dBm) of the node's WAKE frame, CBOR key 28.
+        wake_rssi_dbm: Option<i8>,
     },
     AppData {
         node_id: String,
@@ -197,6 +199,7 @@ impl ConnectorOutboundMessage {
                 encrypted_psk_escrow,
                 escrow_key_hint,
                 master_key_id,
+                wake_rssi_dbm,
             } => {
                 let mut pairs = vec![
                     map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
@@ -234,6 +237,15 @@ impl ConnectorOutboundMessage {
                     14,
                     match master_key_id {
                         Some(ref id) => Value::Bytes(id.clone()),
+                        None => Value::Null,
+                    },
+                ));
+
+                // WAKE RSSI (key 28) — node-scoped only
+                pairs.push(map_entry(
+                    28,
+                    match wake_rssi_dbm {
+                        Some(rssi) => Value::Integer((*rssi as i64).into()),
                         None => Value::Null,
                     },
                 ));
@@ -434,6 +446,7 @@ impl ConnectorEventHub {
         firmware_abi_version: u32,
         firmware_version: String,
         timestamp_ms: u64,
+        wake_rssi_dbm: Option<i8>,
     ) {
         let _ = self.tx.send(ConnectorOutboundMessage::ActualState {
             entity_kind: "node",
@@ -448,6 +461,7 @@ impl ConnectorEventHub {
             encrypted_psk_escrow: None,
             escrow_key_hint: None,
             master_key_id: None,
+            wake_rssi_dbm,
         });
     }
 
@@ -466,6 +480,7 @@ impl ConnectorEventHub {
         encrypted_psk_escrow: Option<Vec<u8>>,
         escrow_key_hint: Option<u16>,
         master_key_id: Option<Vec<u8>>,
+        wake_rssi_dbm: Option<i8>,
     ) {
         let escrow_fields = match encrypted_psk_escrow {
             Some(blob) => {
@@ -510,6 +525,7 @@ impl ConnectorEventHub {
             encrypted_psk_escrow: escrow_fields.0,
             escrow_key_hint: escrow_fields.1,
             master_key_id: escrow_fields.2,
+            wake_rssi_dbm,
         });
     }
 
@@ -1373,6 +1389,7 @@ mod tests {
             encrypted_psk_escrow: None,
             escrow_key_hint: None,
             master_key_id: None,
+            wake_rssi_dbm: Some(-42),
         };
 
         let encoded = message.encode().unwrap();
@@ -1386,6 +1403,38 @@ mod tests {
             optional_u32_field(&decoded, 11, "schedule_interval_s").unwrap(),
             Some(60)
         );
+        // WAKE RSSI at key 28 (signed integer)
+        match map_get(&decoded, 28) {
+            Some(Value::Integer(i)) => {
+                let val: i128 = (*i).into();
+                assert_eq!(val, -42);
+            }
+            other => panic!("expected signed integer at key 28, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn actual_state_encoding_emits_null_rssi_when_absent() {
+        let message = ConnectorOutboundMessage::ActualState {
+            entity_kind: "node",
+            entity_id: "node-1".to_string(),
+            current_program_hash: Some(vec![0x11; 32]),
+            assigned_program_hash: None,
+            schedule_interval_s: None,
+            battery_mv: Some(3300),
+            firmware_abi_version: Some(1),
+            firmware_version: None,
+            timestamp_ms: 1234,
+            encrypted_psk_escrow: None,
+            escrow_key_hint: None,
+            master_key_id: None,
+            wake_rssi_dbm: None,
+        };
+
+        let encoded = message.encode().unwrap();
+        let decoded = decode_map(&encoded).unwrap();
+
+        assert!(matches!(map_get(&decoded, 28), Some(Value::Null)));
     }
 
     #[test]
@@ -1458,6 +1507,7 @@ mod tests {
             Some(vec![0xAA; 8]),
             None,
             Some(vec![0x42; 16]),
+            Some(-65),
         );
 
         let message = rx.try_recv().unwrap();

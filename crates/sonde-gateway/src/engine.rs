@@ -382,7 +382,7 @@ impl Gateway {
 
         match decoded.header.msg_type {
             MSG_WAKE => {
-                self.handle_wake(&node, &decoded.header, &payload, peer)
+                self.handle_wake(&node, &decoded.header, &payload, peer, rssi)
                     .await
             }
             MSG_GET_CHUNK | MSG_PROGRAM_ACK | MSG_APP_DATA => {
@@ -677,6 +677,7 @@ impl Gateway {
         header: &FrameHeader,
         payload: &[u8],
         peer: PeerAddress,
+        rssi: Option<i8>,
     ) -> Option<(FrameHeader, Vec<u8>, bool)> {
         // 1. Decode NodeMessage::Wake from payload
         let (firmware_abi_version, program_hash, battery_mv, firmware_version, wake_blob) =
@@ -750,6 +751,7 @@ impl Gateway {
             node_id = %node.node_id,
             seq = starting_seq,
             battery_mv,
+            wake_rssi_dbm = ?rssi,
             "WAKE received"
         );
 
@@ -855,6 +857,9 @@ impl Gateway {
                 );
                 self.session_manager.clear_last_seen(&node.node_id).await;
                 self.session_manager.clear_battery_mv(&node.node_id).await;
+                self.session_manager
+                    .clear_wake_rssi_dbm(&node.node_id)
+                    .await;
                 false
             }
             Err(e) => {
@@ -876,6 +881,11 @@ impl Gateway {
             self.session_manager
                 .record_battery_mv(&node.node_id, battery_mv)
                 .await;
+            if let Some(rssi_val) = rssi {
+                self.session_manager
+                    .record_wake_rssi_dbm(&node.node_id, rssi_val)
+                    .await;
+            }
         }
 
         self.connector_event_hub.emit_actual_state_for_node(
@@ -887,6 +897,7 @@ impl Gateway {
             firmware_abi_version,
             updated_node.firmware_version.clone().unwrap_or_default(),
             timestamp_ms,
+            rssi,
         );
 
         // 4a. Emit node_online EVENT to handlers (GW-0507)
@@ -1176,9 +1187,11 @@ impl Gateway {
         header: &FrameHeader,
         payload: &[u8],
         peer: PeerAddress,
+        rssi: Option<i8>,
     ) -> Option<Vec<u8>> {
-        let (response_header, response_cbor, deferred_delivered) =
-            self.handle_wake_core(node, header, payload, peer).await?;
+        let (response_header, response_cbor, deferred_delivered) = self
+            .handle_wake_core(node, header, payload, peer, rssi)
+            .await?;
         let frame = self.encode_response(&response_header, &response_cbor, &node.psk)?;
         // Only remove deferred reply if it was actually included in this NOP COMMAND.
         if deferred_delivered {

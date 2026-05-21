@@ -208,6 +208,7 @@ fn node_to_info(
     n: &NodeRecord,
     last_seen: Option<std::time::SystemTime>,
     last_battery_mv: Option<u32>,
+    last_wake_rssi_dbm: Option<i8>,
 ) -> NodeInfo {
     let last_seen_ms = last_seen.and_then(system_time_to_millis);
     NodeInfo {
@@ -219,6 +220,7 @@ fn node_to_info(
         last_firmware_abi_version: n.firmware_abi_version,
         last_seen_ms,
         schedule_interval_s: Some(n.schedule_interval_s),
+        last_wake_rssi_dbm: last_wake_rssi_dbm.map(|v| v as i32),
     }
 }
 
@@ -227,6 +229,7 @@ pub(crate) struct NodeStatusSnapshot {
     pub(crate) node_id: String,
     pub(crate) current_program_hash: Vec<u8>,
     pub(crate) battery_mv: Option<u32>,
+    pub(crate) wake_rssi_dbm: Option<i8>,
     pub(crate) firmware_abi_version: Option<u32>,
     pub(crate) last_seen_ms: Option<u64>,
     pub(crate) has_active_session: bool,
@@ -443,10 +446,12 @@ pub(crate) async fn get_node_status_impl(
         .await
         .and_then(system_time_to_millis);
     let battery_mv = session_manager.get_battery_mv(node_id).await;
+    let wake_rssi_dbm = session_manager.get_wake_rssi_dbm(node_id).await;
     Ok(NodeStatusSnapshot {
         node_id: node.node_id,
         current_program_hash: node.current_program_hash.unwrap_or_default(),
         battery_mv,
+        wake_rssi_dbm,
         firmware_abi_version: node.firmware_abi_version,
         last_seen_ms,
         has_active_session,
@@ -536,6 +541,7 @@ impl GatewayAdmin for AdminService {
         let nodes = list_nodes_impl(&self.storage).await?;
         let last_seen = self.session_manager.snapshot_last_seen().await;
         let battery_mv = self.session_manager.snapshot_battery_mv().await;
+        let wake_rssi_dbm = self.session_manager.snapshot_wake_rssi_dbm().await;
         let mut nodes: Vec<_> = nodes
             .iter()
             .map(|node| {
@@ -543,6 +549,7 @@ impl GatewayAdmin for AdminService {
                     node,
                     last_seen.get(&node.node_id).copied(),
                     battery_mv.get(&node.node_id).copied(),
+                    wake_rssi_dbm.get(&node.node_id).copied(),
                 )
             })
             .collect();
@@ -558,7 +565,13 @@ impl GatewayAdmin for AdminService {
         let node = get_node_impl(&self.storage, node_id).await?;
         let last_seen = self.session_manager.get_last_seen(node_id).await;
         let battery_mv = self.session_manager.get_battery_mv(node_id).await;
-        Ok(Response::new(node_to_info(&node, last_seen, battery_mv)))
+        let wake_rssi_dbm = self.session_manager.get_wake_rssi_dbm(node_id).await;
+        Ok(Response::new(node_to_info(
+            &node,
+            last_seen,
+            battery_mv,
+            wake_rssi_dbm,
+        )))
     }
 
     async fn register_node(
@@ -640,6 +653,7 @@ impl GatewayAdmin for AdminService {
         self.session_manager.remove_session(node_id).await;
         self.session_manager.clear_last_seen(node_id).await;
         self.session_manager.clear_battery_mv(node_id).await;
+        self.session_manager.clear_wake_rssi_dbm(node_id).await;
 
         Ok(Response::new(Empty {}))
     }
@@ -684,6 +698,7 @@ impl GatewayAdmin for AdminService {
         self.session_manager.remove_session(node_id).await;
         self.session_manager.clear_last_seen(node_id).await;
         self.session_manager.clear_battery_mv(node_id).await;
+        self.session_manager.clear_wake_rssi_dbm(node_id).await;
 
         // Clear any pending commands for the removed node.
         self.pending_commands.write().await.remove(node_id);
@@ -921,6 +936,7 @@ impl GatewayAdmin for AdminService {
             firmware_abi_version: status.firmware_abi_version,
             last_seen_ms: status.last_seen_ms,
             has_active_session: status.has_active_session,
+            last_wake_rssi_dbm: status.wake_rssi_dbm.map(|v| v as i32),
         }))
     }
 
@@ -1136,6 +1152,7 @@ impl GatewayAdmin for AdminService {
         self.pending_commands.write().await.clear();
         self.session_manager.clear_all_last_seen().await;
         self.session_manager.clear_all_battery_mv().await;
+        self.session_manager.clear_all_wake_rssi_dbm().await;
 
         Ok(Response::new(Empty {}))
     }

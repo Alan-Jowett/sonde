@@ -514,15 +514,21 @@ where
         let fingerprint_words = msg
             .fingerprint_words
             .as_ref()
-            .map(|words| serde_json::to_string(words).unwrap_or_default());
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| HandlerError::Decode(format!("serialize fingerprint_words: {e}")))?;
         let missing_key_hints_json = msg
             .missing_key_hints
             .as_ref()
-            .map(|hints| serde_json::to_string(hints).unwrap_or_default());
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| HandlerError::Decode(format!("serialize missing_key_hints: {e}")))?;
         let kdf_params_json = msg
             .kdf_params
             .as_ref()
-            .map(|params| serde_json::to_string(params).unwrap_or_default());
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| HandlerError::Decode(format!("serialize kdf_params: {e}")))?;
 
         let gw_row = GatewayActualStateRow {
             gateway_id: gateway_id.clone(),
@@ -549,7 +555,7 @@ where
             .and_then(|p| p.master_key_epoch)
             .unwrap_or(0);
         let cur_epoch = msg.master_key_epoch.unwrap_or(0);
-        let epoch_incremented = cur_epoch > prev_epoch && prev_epoch > 0;
+        let epoch_incremented = previous.is_some() && cur_epoch > prev_epoch;
 
         // Load rotation_payload from SPA-written desired-state row.
         let gw_desired = self.store.load_gateway_desired_state(gateway_id).await?;

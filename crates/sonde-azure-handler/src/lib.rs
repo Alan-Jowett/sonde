@@ -478,9 +478,11 @@ where
             ));
         }
         // Validate entity_id is well-formed hex (gateway_id is hex-encoded).
-        if !msg.entity_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if !msg.entity_id.len().is_multiple_of(2)
+            || !msg.entity_id.bytes().all(|b| b.is_ascii_hexdigit())
+        {
             return Err(HandlerError::Decode(format!(
-                "gateway entity_id must be hex, got `{}`",
+                "gateway entity_id must be even-length hex, got `{}`",
                 msg.entity_id
             )));
         }

@@ -146,9 +146,7 @@ let BIP39_WORDLIST = null;
 async function loadBip39Wordlist() {
   if (BIP39_WORDLIST) return BIP39_WORDLIST;
   try {
-    const response = await fetch(
-      'https://cdn.jsdelivr.net/gh/bitcoin/bips@ce1862ac6bcffa1dd20aad858380e51e66e949ea/bip-0039/english.txt'
-    );
+    const response = await fetch('vendor/bip39-english.txt');
     if (!response.ok) throw new Error(`Failed to load BIP-39 wordlist: ${response.status}`);
     const text = await response.text();
     BIP39_WORDLIST = text.trim().split('\n').map((w) => w.trim()).filter((w) => w.length > 0);

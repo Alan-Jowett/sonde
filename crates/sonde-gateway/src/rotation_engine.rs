@@ -421,7 +421,7 @@ impl RotationEngine {
                         node.current_program_hash.clone(),
                         node.assigned_program_hash.clone(),
                         node.schedule_interval_s,
-                        0, // battery_mv not stored in DB
+                        node.last_battery_mv,
                         node.firmware_abi_version,
                         node.firmware_version.clone(),
                         current_time_ms(),

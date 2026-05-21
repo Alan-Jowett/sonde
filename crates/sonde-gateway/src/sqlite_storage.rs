@@ -431,25 +431,30 @@ fn validate_master_key(
         .map_err(map_err)?;
 
     if let Some((node_id, psk_blob)) = psk_row {
-        let current_err = decrypt_psk(master_key, &node_id, &psk_blob).err();
-        if let Some(decrypt_err) = current_err {
-            // If we have a pending new key (interrupted rotation), try that.
-            if let Some(new_key) = pending_new_key {
-                let _decrypted = Zeroizing::new(
-                    decrypt_psk(new_key, &node_id, &psk_blob).map_err(|e| {
-                        StorageError::Internal(format!(
-                            "master key validation failed — cannot decrypt PSK for node \
-                             `{node_id}` with either current or pending rotation key: {e}; \
-                             this may indicate a wrong master key or corrupt/tampered database data",
-                        ))
-                    })?,
-                );
-            } else {
-                return Err(StorageError::Internal(format!(
-                    "master key validation failed — cannot decrypt PSK for node \
-                     `{node_id}`: {decrypt_err}; this may indicate a wrong master key or \
-                     corrupt/tampered database data",
-                )));
+        match decrypt_psk(master_key, &node_id, &psk_blob) {
+            Ok(psk) => {
+                // Zeroize the validated PSK immediately.
+                let _z = Zeroizing::new(psk);
+            }
+            Err(decrypt_err) => {
+                // If we have a pending new key (interrupted rotation), try that.
+                if let Some(new_key) = pending_new_key {
+                    let _decrypted = Zeroizing::new(
+                        decrypt_psk(new_key, &node_id, &psk_blob).map_err(|e| {
+                            StorageError::Internal(format!(
+                                "master key validation failed — cannot decrypt PSK for node \
+                                 `{node_id}` with either current or pending rotation key: {e}; \
+                                 this may indicate a wrong master key or corrupt/tampered database data",
+                            ))
+                        })?,
+                    );
+                } else {
+                    return Err(StorageError::Internal(format!(
+                        "master key validation failed — cannot decrypt PSK for node \
+                         `{node_id}`: {decrypt_err}; this may indicate a wrong master key or \
+                         corrupt/tampered database data",
+                    )));
+                }
             }
         }
     }
@@ -623,6 +628,7 @@ pub struct NodeEscrowRecord {
     pub firmware_version: String,
     pub current_program_hash: Vec<u8>,
     pub assigned_program_hash: Option<Vec<u8>>,
+    pub last_battery_mv: u32,
 }
 
 /// AAD for encrypting the new master key in the `pending_rotation` table.
@@ -1713,7 +1719,7 @@ impl SqliteStorage {
                 .prepare(
                     "SELECT node_id, key_hint, psk, master_key_id, \
                      schedule_interval_s, firmware_abi_version, firmware_version, \
-                     current_program_hash, assigned_program_hash FROM nodes",
+                     current_program_hash, assigned_program_hash, last_battery_mv FROM nodes",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -1730,6 +1736,7 @@ impl SqliteStorage {
                         firmware_version: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
                         current_program_hash: row.get::<_, Option<Vec<u8>>>(7)?.unwrap_or_default(),
                         assigned_program_hash: row.get(8)?,
+                        last_battery_mv: row.get::<_, Option<u32>>(9)?.unwrap_or(0),
                     })
                 })
                 .map_err(map_err)?;

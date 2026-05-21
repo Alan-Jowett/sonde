@@ -1647,17 +1647,22 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
                 timestamp_ms: required_u64(&map, 9, "timestamp_ms")?,
                 schedule_interval_s: optional_u32_field(&map, 11, "schedule_interval_s")?,
                 // Node escrow fields (keys 12–14)
-                encrypted_psk: optional_bytes_field(&map, 12, "encrypted_psk")?,
+                encrypted_psk: optional_fixed_bytes_field(&map, 12, 60, "encrypted_psk")?,
                 escrow_key_hint: optional_u16_field(&map, 13, "escrow_key_hint")?,
-                node_master_key_id: optional_bytes_field(&map, 14, "node_master_key_id")?,
+                node_master_key_id: optional_fixed_bytes_field(&map, 14, 16, "node_master_key_id")?,
                 // Gateway-scoped fields (keys 15–27)
                 channel: optional_u32_field(&map, 15, "channel")?,
-                gateway_master_key_id: optional_bytes_field(&map, 16, "gateway_master_key_id")?,
+                gateway_master_key_id: optional_fixed_bytes_field(
+                    &map,
+                    16,
+                    16,
+                    "gateway_master_key_id",
+                )?,
                 master_key_epoch: optional_u64_field(&map, 17, "master_key_epoch")?,
-                x25519_public_key: optional_bytes_field(&map, 18, "x25519_public_key")?,
+                x25519_public_key: optional_fixed_bytes_field(&map, 18, 32, "x25519_public_key")?,
                 fingerprint_words: decode_optional_string_array(&map, 19)?,
                 missing_key_hints: decode_optional_uint_array(&map, 20)?,
-                salt: optional_bytes_field(&map, 21, "salt")?,
+                salt: optional_fixed_bytes_field(&map, 21, 16, "salt")?,
                 kdf_params: decode_optional_kdf_params(&map, 22)?,
                 gateway_version: optional_text_field(&map, 23, "gateway_version")?,
                 gateway_commit: optional_text_field(&map, 24, "gateway_commit")?,
@@ -2001,6 +2006,19 @@ fn optional_bytes_field(
     }
 }
 
+fn optional_fixed_bytes_field(
+    map: &[(Value, Value)],
+    key: u64,
+    expected_len: usize,
+    field: &str,
+) -> Result<Option<Vec<u8>>, HandlerError> {
+    let value = optional_bytes_field(map, key, field)?;
+    if let Some(ref bytes) = value {
+        validate_bytes_length(bytes, expected_len, field)?;
+    }
+    Ok(value)
+}
+
 fn optional_u32_field(
     map: &[(Value, Value)],
     key: u64,
@@ -2195,11 +2213,16 @@ fn decode_optional_base64(
 }
 
 fn validate_program_hash_length(bytes: &[u8], field: &str) -> Result<(), HandlerError> {
-    if bytes.len() == 32 {
+    validate_bytes_length(bytes, 32, field)
+}
+
+fn validate_bytes_length(bytes: &[u8], expected: usize, field: &str) -> Result<(), HandlerError> {
+    if bytes.len() == expected {
         return Ok(());
     }
     Err(HandlerError::Decode(format!(
-        "`{field}` must be exactly 32 bytes"
+        "`{field}` must be exactly {expected} bytes, got {}",
+        bytes.len()
     )))
 }
 

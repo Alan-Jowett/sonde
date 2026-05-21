@@ -310,7 +310,7 @@ function showRotationModal(gatewayRow) {
     : null;
 
   const modalHtml = `
-    <div class="overlay" id="rotation-overlay">
+    <div class="overlay" id="rotation-overlay" role="dialog" aria-modal="true" aria-label="Rotate Master Key">
       <div class="modal" style="max-width:480px">
         <h2>Rotate Master Key</h2>
         <p><strong>Step 1:</strong> Verify the fingerprint below matches the modem display.</p>
@@ -321,7 +321,7 @@ function showRotationModal(gatewayRow) {
               placeholder="ABC123" autocomplete="off" style="text-transform:uppercase" required>
           </label>
           <label>Passphrase (≥20 chars or 6+ words)
-            <input name="passphrase" type="password" minlength="20"
+            <input name="passphrase" type="password"
               placeholder="Enter passphrase…" required>
           </label>
           <p class="muted small">${escapeHtml(saltStatus)}</p>
@@ -354,6 +354,18 @@ function showRotationModal(gatewayRow) {
   document.getElementById('rotation-cancel-btn')?.addEventListener('click', () => {
     document.getElementById('rotation-overlay')?.remove();
   });
+
+  // Escape to close
+  const rotationOverlay = document.getElementById('rotation-overlay');
+  rotationOverlay?.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') rotationOverlay.remove();
+  });
+  // Click outside modal to close
+  rotationOverlay?.addEventListener('click', (e) => {
+    if (e.target === rotationOverlay) rotationOverlay.remove();
+  });
+  // Focus the first input
+  rotationOverlay?.querySelector('input')?.focus();
 
   document.getElementById('rotation-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();

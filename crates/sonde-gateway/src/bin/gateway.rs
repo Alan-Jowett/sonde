@@ -211,7 +211,7 @@ fn build_node_status_lines(
             push_wrapped_property_value(&mut lines, "battery", &format!("{mv} mV"));
         }
         if let Some(rssi) = wake_rssi_dbm_by_node.get(&node.node_id).copied() {
-            push_wrapped_property_value(&mut lines, "RSSI", &format!("{rssi} dBm"));
+            push_wrapped_property_value(&mut lines, "rssi", &format!("{rssi} dBm"));
         }
         if let Some(last_seen) = last_seen_by_node.get(&node.node_id).copied() {
             push_wrapped_property_value(
@@ -2201,6 +2201,35 @@ mod tests {
                 &HashMap::new(),
             ),
             vec!["No nodes registered.".to_string()]
+        );
+    }
+
+    #[test]
+    fn node_status_lines_render_rssi_when_present_and_omit_when_absent() {
+        let node_a = make_rich_node("alpha", 1, 0x11, 1_700_000_000);
+        let node_b = make_rich_node("bravo", 2, 0x22, 1_700_000_060);
+
+        let mut rssi_by_node: HashMap<String, i8> = HashMap::new();
+        rssi_by_node.insert(node_a.node_id.clone(), -65);
+        // node_b intentionally has no RSSI
+
+        let lines = build_node_status_lines(
+            &[node_a, node_b],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &rssi_by_node,
+        );
+
+        // RSSI property and value lines should appear once (for node_a only)
+        assert_eq!(
+            lines.iter().filter(|line| *line == "rssi").count(),
+            1,
+            "rssi should appear once (only for node with RSSI data)"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("-65 dBm")),
+            "rssi value should render as '-65 dBm'"
         );
     }
 

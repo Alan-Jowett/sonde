@@ -1403,6 +1403,38 @@ mod tests {
             optional_u32_field(&decoded, 11, "schedule_interval_s").unwrap(),
             Some(60)
         );
+        // WAKE RSSI at key 28 (signed integer)
+        match map_get(&decoded, 28) {
+            Some(Value::Integer(i)) => {
+                let val: i128 = (*i).into();
+                assert_eq!(val, -42);
+            }
+            other => panic!("expected signed integer at key 28, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn actual_state_encoding_emits_null_rssi_when_absent() {
+        let message = ConnectorOutboundMessage::ActualState {
+            entity_kind: "node",
+            entity_id: "node-1".to_string(),
+            current_program_hash: Some(vec![0x11; 32]),
+            assigned_program_hash: None,
+            schedule_interval_s: None,
+            battery_mv: Some(3300),
+            firmware_abi_version: Some(1),
+            firmware_version: None,
+            timestamp_ms: 1234,
+            encrypted_psk_escrow: None,
+            escrow_key_hint: None,
+            master_key_id: None,
+            wake_rssi_dbm: None,
+        };
+
+        let encoded = message.encode().unwrap();
+        let decoded = decode_map(&encoded).unwrap();
+
+        assert!(matches!(map_get(&decoded, 28), Some(Value::Null)));
     }
 
     #[test]

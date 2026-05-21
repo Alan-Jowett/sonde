@@ -993,7 +993,12 @@ impl TryFrom<ActualStateEntity> for ActualStateRow {
             )?,
             observed_schedule_interval_s: value.observed_schedule_interval_s,
             battery_mv: value.battery_mv,
-            wake_rssi_dbm: value.wake_rssi_dbm.and_then(|v| i8::try_from(v).ok()),
+            wake_rssi_dbm: match value.wake_rssi_dbm {
+                None => None,
+                Some(v) => Some(i8::try_from(v).map_err(|_| {
+                    HandlerError::Store(format!("`wake_rssi_dbm` value {v} is out of i8 range"))
+                })?),
+            },
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
             timestamp_ms: value.timestamp_ms,
@@ -3440,5 +3445,80 @@ mod tests {
             "node entity should use 'n:' partition prefix, got: {}",
             entity.partition_key
         );
+    }
+
+    #[tokio::test]
+    async fn actual_state_with_rssi_decodes_negative_value() {
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("node".to_string())),
+            map_entry(3, Value::Text("node-rssi".to_string())),
+            map_entry(4, Value::Null),
+            map_entry(5, Value::Null),
+            map_entry(6, Value::Integer(3300u64.into())),
+            map_entry(7, Value::Integer(1u64.into())),
+            map_entry(8, Value::Text("1.0.0".to_string())),
+            map_entry(9, Value::Integer(9999u64.into())),
+            map_entry(10, Value::Map(Vec::new())),
+            map_entry(11, Value::Null),
+            map_entry(28, Value::Integer((-65i64).into())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        handler.handle_payload(&bytes).await.unwrap();
+
+        let rows = store.actual_rows_for("node-rssi").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].wake_rssi_dbm, Some(-65));
+    }
+
+    #[tokio::test]
+    async fn actual_state_without_rssi_key_decodes_as_none() {
+        // sample_actual_state does not include key 28 — backward compatibility
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        handler
+            .handle_payload(&sample_actual_state(
+                "node-no-rssi",
+                Some(&[0xAA; 32]),
+                None,
+                Some(60),
+            ))
+            .await
+            .unwrap();
+
+        let rows = store.actual_rows_for("node-no-rssi").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].wake_rssi_dbm, None);
+    }
+
+    #[test]
+    fn actual_state_rssi_rejects_wrong_type() {
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("node".to_string())),
+            map_entry(3, Value::Text("node-bad".to_string())),
+            map_entry(4, Value::Null),
+            map_entry(5, Value::Null),
+            map_entry(6, Value::Null),
+            map_entry(7, Value::Null),
+            map_entry(8, Value::Null),
+            map_entry(9, Value::Integer(1234u64.into())),
+            map_entry(28, Value::Text("not-an-int".to_string())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+
+        let result = decode_connector_message(&bytes);
+        assert!(result.is_err(), "string value at key 28 should fail decode");
     }
 }

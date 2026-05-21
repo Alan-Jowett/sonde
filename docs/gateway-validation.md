@@ -2076,10 +2076,10 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Start a gateway instance with a mock modem and complete the startup handshake.
-2. Populate storage with at least two nodes whose metadata exercises optional fields: assigned/current program identifiers, battery, last seen, and schedule on one node, and at least one omitted optional field on another. At least one displayed program must have `source_filename` metadata and at least one displayed program must exercise hash fallback.
+2. Populate storage with at least two nodes whose metadata exercises optional fields: assigned/current program identifiers, battery, RSSI, last seen, and schedule on one node, and at least one omitted optional field on another. At least one displayed program must have `source_filename` metadata and at least one displayed program must exercise hash fallback.
 3. Inject `EVENT_BUTTON(BUTTON_SHORT)` twice while no BLE pairing session is active so the second page shown is `Nodes`.
 4. Reassemble the first visible `Nodes` page framebuffer.
-5. Assert: the rendered text uses `node_id`, assigned/current program identifiers, battery, last seen, and schedule in `node_id` order; omits absent optional fields; excludes `key_hint`; formats `last seen` in local time with locale-style date/time output; and renders each displayed field as a left-aligned property line followed by a left-aligned `- value` line.
+5. Assert: the rendered text uses `node_id`, assigned/current program identifiers, battery, RSSI, last seen, and schedule in `node_id` order; omits absent optional fields; excludes `key_hint`; formats `last seen` in local time with locale-style date/time output; and renders each displayed field as a left-aligned property line followed by a left-aligned `- value` line.
 6. Assert: when a displayed program has `source_filename`, the rendered identifier is that basename and never a full path; when `source_filename` is absent, the rendered identifier is the hash.
 
 ---

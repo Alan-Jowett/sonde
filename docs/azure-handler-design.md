@@ -125,10 +125,11 @@ node reconciliation it consumes:
 2. `current_program_hash`,
 3. `assigned_program_hash`,
 4. `battery_mv`,
-5. `firmware_abi_version`,
-6. `firmware_version`,
-7. `timestamp_ms` as last check-in time, and
-8. `schedule_interval_s`.
+5. `wake_rssi_dbm`,
+6. `firmware_abi_version`,
+7. `firmware_version`,
+8. `timestamp_ms` as last check-in time, and
+9. `schedule_interval_s`.
 
 Gateway-scoped and phone-scoped `ACTUAL_STATE` messages (`entity_kind` values
 other than `"node"`) are outside the node-table ownership of this document and
@@ -175,6 +176,7 @@ The row contains the following logical columns:
 | `observed_assigned_program_hash` | Gateway-reported assigned resident program hash, nullable. |
 | `observed_schedule_interval_s` | Gateway-reported node schedule interval, nullable. |
 | `battery_mv` | Latest battery reading from `GW-0812`, nullable. |
+| `wake_rssi_dbm` | Modem-measured receive RSSI (dBm) of the WAKE frame, nullable. |
 | `firmware_abi_version` | Latest firmware ABI version, nullable. |
 | `firmware_version` | Latest firmware version, nullable. |
 | `timestamp_ms` | Check-in time carried by the source `GW-0812`. |

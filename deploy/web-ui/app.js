@@ -1030,6 +1030,7 @@ async function renderDashboard() {
         <tr>
           <td>${escapeHtml(actual.node_id || '—')}</td>
           <td>${escapeHtml(actual.battery_mv ?? '—')}</td>
+          <td>${escapeHtml(actual.wake_rssi_dbm != null ? actual.wake_rssi_dbm + ' dBm' : '—')}</td>
           <td>${escapeHtml(actual.firmware_version || '—')}</td>
           <td>${escapeHtml(actual.firmware_abi_version ?? '—')}</td>
           <td title="${escapeHtml(scheduleTitle)}">${escapeHtml(scheduleDisplay)}</td>
@@ -1049,6 +1050,7 @@ async function renderDashboard() {
             <tr>
               <th>Node ID</th>
               <th>Battery (mV)</th>
+              <th>RSSI</th>
               <th>Firmware</th>
               <th>ABI</th>
               <th>Schedule (s)</th>

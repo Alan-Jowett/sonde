@@ -96,6 +96,7 @@ pub struct ActualStateRow {
     pub observed_assigned_program_hash: Option<Vec<u8>>,
     pub observed_schedule_interval_s: Option<u32>,
     pub battery_mv: Option<u32>,
+    pub wake_rssi_dbm: Option<i8>,
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
     pub timestamp_ms: u64,
@@ -156,6 +157,7 @@ impl ActualStateRow {
             observed_assigned_program_hash: message.assigned_program_hash.clone(),
             observed_schedule_interval_s: message.schedule_interval_s,
             battery_mv: message.battery_mv,
+            wake_rssi_dbm: message.wake_rssi_dbm,
             firmware_abi_version: message.firmware_abi_version,
             firmware_version: message.firmware_version.clone(),
             timestamp_ms: message.timestamp_ms,
@@ -207,6 +209,7 @@ pub struct ActualStateMessage {
     pub current_program_hash: Option<Vec<u8>>,
     pub assigned_program_hash: Option<Vec<u8>>,
     pub battery_mv: Option<u32>,
+    pub wake_rssi_dbm: Option<i8>,
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
     pub timestamp_ms: u64,
@@ -1344,6 +1347,8 @@ struct ActualStateEntity {
     observed_assigned_program_hash: Option<String>,
     observed_schedule_interval_s: Option<u32>,
     battery_mv: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    wake_rssi_dbm: Option<i32>,
     firmware_abi_version: Option<u32>,
     firmware_version: Option<String>,
     #[serde(deserialize_with = "deserialize_u64_flexible")]
@@ -1642,6 +1647,12 @@ impl TryFrom<ActualStateEntity> for ActualStateRow {
             )?,
             observed_schedule_interval_s: value.observed_schedule_interval_s,
             battery_mv: value.battery_mv,
+            wake_rssi_dbm: match value.wake_rssi_dbm {
+                None => None,
+                Some(v) => Some(i8::try_from(v).map_err(|_| {
+                    HandlerError::Store(format!("`wake_rssi_dbm` value {v} is out of i8 range"))
+                })?),
+            },
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
             timestamp_ms: value.timestamp_ms,
@@ -1667,6 +1678,7 @@ impl TryFrom<ActualStateRow> for ActualStateEntity {
             ),
             observed_schedule_interval_s: value.observed_schedule_interval_s,
             battery_mv: value.battery_mv,
+            wake_rssi_dbm: value.wake_rssi_dbm.map(|v| v as i32),
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
             timestamp_ms: value.timestamp_ms,
@@ -1792,6 +1804,7 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
                     "assigned_program_hash",
                 )?,
                 battery_mv: optional_u32_field(&map, 6, "battery_mv")?,
+                wake_rssi_dbm: optional_i8_field(&map, 28, "wake_rssi_dbm")?,
                 firmware_abi_version: optional_u32_field(&map, 7, "firmware_abi_version")?,
                 firmware_version: optional_text_field(&map, 8, "firmware_version")?,
                 timestamp_ms: required_u64(&map, 9, "timestamp_ms")?,
@@ -2182,6 +2195,24 @@ fn optional_u32_field(
             .and_then(|v| u32::try_from(v).ok())
             .map(Some)
             .ok_or_else(|| HandlerError::Decode(format!("`{field}` must be uint or null"))),
+    }
+}
+
+fn optional_i8_field(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Option<i8>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(value) => value
+            .as_integer()
+            .and_then(|i| i64::try_from(i).ok())
+            .and_then(|v| i8::try_from(v).ok())
+            .map(Some)
+            .ok_or_else(|| {
+                HandlerError::Decode(format!("`{field}` must be int (-128..127) or null"))
+            }),
     }
 }
 
@@ -3152,6 +3183,7 @@ mod tests {
                 observed_assigned_program_hash: Some(vec![0xAA; 32]),
                 observed_schedule_interval_s: Some(60),
                 battery_mv: Some(3200),
+                wake_rssi_dbm: None,
                 firmware_abi_version: Some(2),
                 firmware_version: Some("2.0.0".to_string()),
                 timestamp_ms: 5000,
@@ -3263,6 +3295,7 @@ mod tests {
                 observed_assigned_program_hash: Some(vec![0xBB; 32]),
                 observed_schedule_interval_s: Some(60),
                 battery_mv: Some(3200),
+                wake_rssi_dbm: None,
                 firmware_abi_version: Some(1),
                 firmware_version: Some("1.2.3".to_string()),
                 timestamp_ms: 1234,
@@ -3451,6 +3484,7 @@ mod tests {
             observed_assigned_program_hash: Some(vec![0x33; 32]),
             observed_schedule_interval_s: Some(30),
             battery_mv: Some(3300),
+            wake_rssi_dbm: None,
             firmware_abi_version: Some(1),
             firmware_version: Some("1.2.3".to_string()),
             timestamp_ms: 1234,
@@ -4564,6 +4598,7 @@ mod tests {
             observed_assigned_program_hash: None,
             observed_schedule_interval_s: None,
             battery_mv: None,
+            wake_rssi_dbm: None,
             firmware_abi_version: None,
             firmware_version: None,
             timestamp_ms: 1234,
@@ -4695,6 +4730,7 @@ mod tests {
                 encrypted_psk: Some(psk_blob.clone()),
                 escrow_key_hint: Some(42),
                 master_key_id: Some(master_key_id.clone()),
+                wake_rssi_dbm: None,
             })
             .await
             .unwrap();
@@ -4753,6 +4789,7 @@ mod tests {
                 encrypted_psk: Some(vec![0xBBu8; 60]),
                 escrow_key_hint: Some(42),
                 master_key_id: Some(node_mkid),
+                wake_rssi_dbm: None,
             })
             .await
             .unwrap();
@@ -5010,5 +5047,80 @@ mod tests {
         let mut bytes = Vec::new();
         ciborium::into_writer(&value, &mut bytes).unwrap();
         bytes
+    }
+
+    #[tokio::test]
+    async fn actual_state_with_rssi_decodes_negative_value() {
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("node".to_string())),
+            map_entry(3, Value::Text("node-rssi".to_string())),
+            map_entry(4, Value::Null),
+            map_entry(5, Value::Null),
+            map_entry(6, Value::Integer(3300u64.into())),
+            map_entry(7, Value::Integer(1u64.into())),
+            map_entry(8, Value::Text("1.0.0".to_string())),
+            map_entry(9, Value::Integer(9999u64.into())),
+            map_entry(10, Value::Map(Vec::new())),
+            map_entry(11, Value::Null),
+            map_entry(28, Value::Integer((-65i64).into())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        handler.handle_payload(&bytes).await.unwrap();
+
+        let rows = store.actual_rows_for("node-rssi").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].wake_rssi_dbm, Some(-65));
+    }
+
+    #[tokio::test]
+    async fn actual_state_without_rssi_key_decodes_as_none() {
+        // sample_actual_state does not include key 28 — backward compatibility
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler =
+            AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "desired-state");
+
+        handler
+            .handle_payload(&sample_actual_state(
+                "node-no-rssi",
+                Some(&[0xAA; 32]),
+                None,
+                Some(60),
+            ))
+            .await
+            .unwrap();
+
+        let rows = store.actual_rows_for("node-no-rssi").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].wake_rssi_dbm, None);
+    }
+
+    #[test]
+    fn actual_state_rssi_rejects_wrong_type() {
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("node".to_string())),
+            map_entry(3, Value::Text("node-bad".to_string())),
+            map_entry(4, Value::Null),
+            map_entry(5, Value::Null),
+            map_entry(6, Value::Null),
+            map_entry(7, Value::Null),
+            map_entry(8, Value::Null),
+            map_entry(9, Value::Integer(1234u64.into())),
+            map_entry(28, Value::Text("not-an-int".to_string())),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+
+        let result = decode_connector_message(&bytes);
+        assert!(result.is_err(), "string value at key 28 should fail decode");
     }
 }

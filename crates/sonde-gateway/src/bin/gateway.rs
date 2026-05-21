@@ -178,6 +178,7 @@ fn build_node_status_lines(
     program_names: &HashMap<Vec<u8>, String>,
     last_seen_by_node: &HashMap<String, SystemTime>,
     battery_mv_by_node: &HashMap<String, u32>,
+    wake_rssi_dbm_by_node: &HashMap<String, i8>,
 ) -> Vec<String> {
     if nodes.is_empty() {
         return vec!["No nodes registered.".to_string()];
@@ -209,6 +210,9 @@ fn build_node_status_lines(
         if let Some(mv) = battery_mv_by_node.get(&node.node_id).copied() {
             push_wrapped_property_value(&mut lines, "battery", &format!("{mv} mV"));
         }
+        if let Some(rssi) = wake_rssi_dbm_by_node.get(&node.node_id).copied() {
+            push_wrapped_property_value(&mut lines, "rssi", &format!("{rssi} dBm"));
+        }
         if let Some(last_seen) = last_seen_by_node.get(&node.node_id).copied() {
             push_wrapped_property_value(
                 &mut lines,
@@ -234,19 +238,21 @@ async fn node_status_nodes(
         Vec<NodeRecord>,
         HashMap<String, SystemTime>,
         HashMap<String, u32>,
+        HashMap<String, i8>,
     ),
     sonde_gateway::storage::StorageError,
 > {
     let nodes = storage.list_nodes().await?;
-    let (last_seen, battery_mv) = if let Some(session_manager) = session_manager {
+    let (last_seen, battery_mv, wake_rssi_dbm) = if let Some(session_manager) = session_manager {
         (
             session_manager.snapshot_last_seen().await,
             session_manager.snapshot_battery_mv().await,
+            session_manager.snapshot_wake_rssi_dbm().await,
         )
     } else {
-        (HashMap::new(), HashMap::new())
+        (HashMap::new(), HashMap::new(), HashMap::new())
     };
-    Ok((nodes, last_seen, battery_mv))
+    Ok((nodes, last_seen, battery_mv, wake_rssi_dbm))
 }
 
 async fn render_status_page(
@@ -269,7 +275,7 @@ async fn render_status_page(
             RenderedStatusPage::Static(Box::new(render_display_message(&line_refs)))
         }
         StatusPage::Nodes => match node_status_nodes(storage, session_manager).await {
-            Ok((nodes, last_seen_by_node, battery_mv_by_node)) => {
+            Ok((nodes, last_seen_by_node, battery_mv_by_node, wake_rssi_dbm_by_node)) => {
                 if nodes.is_empty() {
                     return RenderedStatusPage::Scrollable(render_status_text_page(
                         &build_node_status_lines(
@@ -277,6 +283,7 @@ async fn render_status_page(
                             &HashMap::new(),
                             &last_seen_by_node,
                             &battery_mv_by_node,
+                            &wake_rssi_dbm_by_node,
                         ),
                     ));
                 }
@@ -293,6 +300,7 @@ async fn render_status_page(
                     &program_names,
                     &last_seen_by_node,
                     &battery_mv_by_node,
+                    &wake_rssi_dbm_by_node,
                 )))
             }
             Err(e) => {
@@ -2118,6 +2126,7 @@ mod tests {
             &HashMap::new(),
             &last_seen_by_node,
             &battery_mv_by_node,
+            &HashMap::new(),
         );
         let a_index = lines
             .iter()
@@ -2189,8 +2198,38 @@ mod tests {
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
+                &HashMap::new(),
             ),
             vec!["No nodes registered.".to_string()]
+        );
+    }
+
+    #[test]
+    fn node_status_lines_render_rssi_when_present_and_omit_when_absent() {
+        let node_a = make_rich_node("alpha", 1, 0x11, 1_700_000_000);
+        let node_b = make_rich_node("bravo", 2, 0x22, 1_700_000_060);
+
+        let mut rssi_by_node: HashMap<String, i8> = HashMap::new();
+        rssi_by_node.insert(node_a.node_id.clone(), -65);
+        // node_b intentionally has no RSSI
+
+        let lines = build_node_status_lines(
+            &[node_a, node_b],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &rssi_by_node,
+        );
+
+        // RSSI property and value lines should appear once (for node_a only)
+        assert_eq!(
+            lines.iter().filter(|line| *line == "rssi").count(),
+            1,
+            "rssi should appear once (only for node with RSSI data)"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("-65 dBm")),
+            "rssi value should render as '-65 dBm'"
         );
     }
 
@@ -2226,6 +2265,7 @@ mod tests {
             &program_names,
             &last_seen_by_node,
             &battery_mv_by_node,
+            &HashMap::new(),
         );
 
         assert!(
@@ -2282,6 +2322,7 @@ mod tests {
             ]),
             &last_seen_by_node,
             &battery_mv_by_node,
+            &HashMap::new(),
         ));
 
         match rendered {
@@ -2318,6 +2359,7 @@ mod tests {
             &HashMap::new(),
             &last_seen_by_node,
             &battery_mv_by_node,
+            &HashMap::new(),
         ));
 
         match rendered {
@@ -2815,6 +2857,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
         ));
         assert_eq!(framebuffer, expected_nodes_page.visible_window(0));
         assert!(second_press.await.unwrap());
@@ -2880,6 +2923,7 @@ mod tests {
             &HashMap::new(),
             &last_seen_by_node,
             &battery_mv_by_node,
+            &HashMap::new(),
         ));
         assert!(expected_page.is_scrollable(), "rich node page must scroll");
 
@@ -2974,6 +3018,7 @@ mod tests {
             &HashMap::new(),
             &last_seen_by_node,
             &battery_mv_by_node,
+            &HashMap::new(),
         ));
 
         tokio::time::pause();
@@ -3059,6 +3104,7 @@ mod tests {
 
         let expected_page = render_status_text_page(&build_node_status_lines(
             &[] as &[NodeRecord],
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),

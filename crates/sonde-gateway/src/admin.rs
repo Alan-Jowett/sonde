@@ -24,6 +24,20 @@ use crate::session::SessionManager;
 use crate::storage::{HandlerRecord, Storage};
 use crate::transient_display::{show_modem_display_message, ActiveDisplayState};
 
+/// JSON-deserializable KDF parameters (stored in gateway_config).
+#[derive(serde::Deserialize)]
+struct KdfParamsJson {
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+    #[serde(alias = "version")]
+    kdf_version: u32,
+}
+
+/// Channel type for rotation payload submission with oneshot response.
+pub type RotationSubmitChannel =
+    tokio::sync::mpsc::UnboundedSender<(Vec<u8>, tokio::sync::oneshot::Sender<Result<(), String>>)>;
+
 pub mod pb {
     tonic::include_proto!("sonde.admin");
 }
@@ -43,6 +57,8 @@ pub struct AdminService {
     handler_configs: RwLock<Vec<HandlerConfig>>,
     /// Shared handler router for live reload (GW-1404, GW-1407).
     handler_router: Option<Arc<tokio::sync::RwLock<HandlerRouter>>>,
+    /// Channel for submitting rotation payloads to the gateway engine (GW-2012).
+    rotation_tx: Option<RotationSubmitChannel>,
 }
 
 impl AdminService {
@@ -61,6 +77,7 @@ impl AdminService {
             display_state: None,
             handler_configs: RwLock::new(Vec::new()),
             handler_router: None,
+            rotation_tx: None,
         }
     }
 
@@ -109,6 +126,12 @@ impl AdminService {
     /// Set the shared handler router for live reload (GW-1404, GW-1407).
     pub fn with_handler_router(mut self, router: Arc<tokio::sync::RwLock<HandlerRouter>>) -> Self {
         self.handler_router = Some(router);
+        self
+    }
+
+    /// Set the channel for submitting rotation payloads to the gateway engine.
+    pub fn with_rotation_tx(mut self, tx: RotationSubmitChannel) -> Self {
+        self.rotation_tx = Some(tx);
         self
     }
 
@@ -185,6 +208,7 @@ fn node_to_info(
     n: &NodeRecord,
     last_seen: Option<std::time::SystemTime>,
     last_battery_mv: Option<u32>,
+    last_wake_rssi_dbm: Option<i8>,
 ) -> NodeInfo {
     let last_seen_ms = last_seen.and_then(system_time_to_millis);
     NodeInfo {
@@ -196,6 +220,7 @@ fn node_to_info(
         last_firmware_abi_version: n.firmware_abi_version,
         last_seen_ms,
         schedule_interval_s: Some(n.schedule_interval_s),
+        last_wake_rssi_dbm: last_wake_rssi_dbm.map(|v| v as i32),
     }
 }
 
@@ -204,6 +229,7 @@ pub(crate) struct NodeStatusSnapshot {
     pub(crate) node_id: String,
     pub(crate) current_program_hash: Vec<u8>,
     pub(crate) battery_mv: Option<u32>,
+    pub(crate) wake_rssi_dbm: Option<i8>,
     pub(crate) firmware_abi_version: Option<u32>,
     pub(crate) last_seen_ms: Option<u64>,
     pub(crate) has_active_session: bool,
@@ -420,10 +446,12 @@ pub(crate) async fn get_node_status_impl(
         .await
         .and_then(system_time_to_millis);
     let battery_mv = session_manager.get_battery_mv(node_id).await;
+    let wake_rssi_dbm = session_manager.get_wake_rssi_dbm(node_id).await;
     Ok(NodeStatusSnapshot {
         node_id: node.node_id,
         current_program_hash: node.current_program_hash.unwrap_or_default(),
         battery_mv,
+        wake_rssi_dbm,
         firmware_abi_version: node.firmware_abi_version,
         last_seen_ms,
         has_active_session,
@@ -513,6 +541,7 @@ impl GatewayAdmin for AdminService {
         let nodes = list_nodes_impl(&self.storage).await?;
         let last_seen = self.session_manager.snapshot_last_seen().await;
         let battery_mv = self.session_manager.snapshot_battery_mv().await;
+        let wake_rssi_dbm = self.session_manager.snapshot_wake_rssi_dbm().await;
         let mut nodes: Vec<_> = nodes
             .iter()
             .map(|node| {
@@ -520,6 +549,7 @@ impl GatewayAdmin for AdminService {
                     node,
                     last_seen.get(&node.node_id).copied(),
                     battery_mv.get(&node.node_id).copied(),
+                    wake_rssi_dbm.get(&node.node_id).copied(),
                 )
             })
             .collect();
@@ -535,7 +565,13 @@ impl GatewayAdmin for AdminService {
         let node = get_node_impl(&self.storage, node_id).await?;
         let last_seen = self.session_manager.get_last_seen(node_id).await;
         let battery_mv = self.session_manager.get_battery_mv(node_id).await;
-        Ok(Response::new(node_to_info(&node, last_seen, battery_mv)))
+        let wake_rssi_dbm = self.session_manager.get_wake_rssi_dbm(node_id).await;
+        Ok(Response::new(node_to_info(
+            &node,
+            last_seen,
+            battery_mv,
+            wake_rssi_dbm,
+        )))
     }
 
     async fn register_node(
@@ -617,6 +653,7 @@ impl GatewayAdmin for AdminService {
         self.session_manager.remove_session(node_id).await;
         self.session_manager.clear_last_seen(node_id).await;
         self.session_manager.clear_battery_mv(node_id).await;
+        self.session_manager.clear_wake_rssi_dbm(node_id).await;
 
         Ok(Response::new(Empty {}))
     }
@@ -661,6 +698,7 @@ impl GatewayAdmin for AdminService {
         self.session_manager.remove_session(node_id).await;
         self.session_manager.clear_last_seen(node_id).await;
         self.session_manager.clear_battery_mv(node_id).await;
+        self.session_manager.clear_wake_rssi_dbm(node_id).await;
 
         // Clear any pending commands for the removed node.
         self.pending_commands.write().await.remove(node_id);
@@ -898,6 +936,7 @@ impl GatewayAdmin for AdminService {
             firmware_abi_version: status.firmware_abi_version,
             last_seen_ms: status.last_seen_ms,
             has_active_session: status.has_active_session,
+            last_wake_rssi_dbm: status.wake_rssi_dbm.map(|v| v as i32),
         }))
     }
 
@@ -1113,6 +1152,7 @@ impl GatewayAdmin for AdminService {
         self.pending_commands.write().await.clear();
         self.session_manager.clear_all_last_seen().await;
         self.session_manager.clear_all_battery_mv().await;
+        self.session_manager.clear_all_wake_rssi_dbm().await;
 
         Ok(Response::new(Empty {}))
     }
@@ -1213,6 +1253,212 @@ impl GatewayAdmin for AdminService {
             })
             .collect();
         Ok(Response::new(ListHandlersResponse { handlers }))
+    }
+
+    // ── Key management RPCs (GW-2012) ──────────────────────────
+
+    /// Return the gateway's current state for key management operations.
+    ///
+    /// Provides the X25519 public key, BIP-39 fingerprint, master key
+    /// identification, salt, KDF params, and rotation status needed by
+    /// the admin CLI `key rotate`, `key fingerprint`, and `key status`
+    /// commands.
+    async fn get_gateway_state(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<GatewayState>, Status> {
+        // Load gateway identity (source of truth for gateway_id).
+        let identity = self
+            .storage
+            .load_gateway_identity()
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found("gateway identity not initialized"))?;
+
+        let gateway_id_bytes = identity.gateway_id().to_vec();
+
+        // Master key identification.
+        let master_key_id_hex = self
+            .storage
+            .get_config("master_key_id")
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found("master key not initialized"))?;
+        let master_key_id = hex::decode(&master_key_id_hex)
+            .map_err(|e| Status::internal(format!("invalid master_key_id hex: {e}")))?;
+        if master_key_id.len() != 16 {
+            return Err(Status::internal(format!(
+                "master_key_id has wrong length: {} (expected 16)",
+                master_key_id.len()
+            )));
+        }
+
+        let master_key_epoch: u64 = self
+            .storage
+            .get_config("master_key_epoch")
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found("master key epoch not initialized"))?
+            .parse()
+            .map_err(|e| Status::internal(format!("invalid master_key_epoch: {e}")))?;
+
+        // X25519 public key and fingerprint.
+        let (_, x25519_public) = identity
+            .to_x25519()
+            .map_err(|e| Status::internal(format!("X25519 conversion failed: {e}")))?;
+
+        let sha = crate::crypto::RustCryptoSha256;
+        let fp = sonde_protocol::fingerprint::compute_fingerprint(x25519_public.as_bytes(), &sha);
+
+        // Channel — default to 1 if absent, error on non-integer.
+        // Range is NOT validated here: this is a read-only diagnostic RPC,
+        // so reporting the stored value (even if out-of-range) helps operators
+        // diagnose DB issues. SetModemChannel enforces 1..=14 on writes.
+        let channel: u32 = match self
+            .storage
+            .get_config("espnow_channel")
+            .await
+            .map_err(storage_err)?
+        {
+            Some(s) => s
+                .parse()
+                .map_err(|e| Status::internal(format!("invalid espnow_channel: {e}")))?,
+            None => 1,
+        };
+
+        // Salt — error if stored but malformed, None if absent.
+        let salt = match self
+            .storage
+            .get_config("kdf_salt")
+            .await
+            .map_err(storage_err)?
+        {
+            Some(s) => {
+                let bytes = hex::decode(&s)
+                    .map_err(|e| Status::internal(format!("invalid kdf_salt hex: {e}")))?;
+                if bytes.len() != 16 {
+                    return Err(Status::internal(format!(
+                        "kdf_salt has wrong length: {} (expected 16)",
+                        bytes.len()
+                    )));
+                }
+                Some(bytes)
+            }
+            None => None,
+        };
+
+        // KDF params — error if stored but malformed, None if absent.
+        let kdf_params = match self
+            .storage
+            .get_config("kdf_params_json")
+            .await
+            .map_err(storage_err)?
+        {
+            Some(json) => {
+                let p: KdfParamsJson = serde_json::from_str(&json)
+                    .map_err(|e| Status::internal(format!("invalid kdf_params_json: {e}")))?;
+                Some(KdfParameters {
+                    m_cost: p.m_cost,
+                    t_cost: p.t_cost,
+                    p_cost: p.p_cost,
+                    kdf_version: p.kdf_version,
+                })
+            }
+            None => None,
+        };
+
+        // Check for active rotation via the `pending_rotation_phase` config key.
+        // This key is set by the rotation engine when a rotation begins and
+        // cleared on commit. When the engine wiring lands, this will reflect
+        // the actual pending_rotation table state.
+        let rotation_in_progress = self
+            .storage
+            .get_config("pending_rotation_phase")
+            .await
+            .map_err(storage_err)?
+            .is_some();
+
+        Ok(Response::new(GatewayState {
+            gateway_id: gateway_id_bytes,
+            channel,
+            master_key_id,
+            master_key_epoch,
+            x25519_public_key: x25519_public.as_bytes().to_vec(),
+            fingerprint_words: fp.iter().map(|w| w.to_string()).collect(),
+            rotation_in_progress,
+            salt,
+            kdf_params,
+            gateway_version: env!("CARGO_PKG_VERSION").to_string(),
+            gateway_commit: option_env!("SONDE_GIT_COMMIT")
+                .unwrap_or("unknown")
+                .to_string(),
+        }))
+    }
+
+    /// Accept a RotationPayloadV1 and forward it to the rotation engine.
+    ///
+    /// Both this gRPC path and the DESIRED_STATE connector path converge
+    /// on the same rotation handler in the gateway engine.
+    ///
+    /// The `rotation_tx` channel is wired at gateway startup via
+    /// `with_rotation_tx()`. Until the engine wiring PR lands, this RPC
+    /// returns `UNAVAILABLE` — the correct gRPC status for an
+    /// unconfigured backend.
+    async fn submit_rotation(
+        &self,
+        request: Request<SubmitRotationRequest>,
+    ) -> Result<Response<SubmitRotationResponse>, Status> {
+        let tx = self
+            .rotation_tx
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("rotation handler not configured"))?;
+
+        let payload = request.into_inner().rotation_payload;
+        if payload.is_empty() {
+            return Ok(Response::new(SubmitRotationResponse {
+                accepted: false,
+                error: "rotation_payload is empty".to_string(),
+            }));
+        }
+        // Fail fast on obviously-too-short payloads (shared constant with rotation.rs).
+        if payload.len() < crate::rotation::MIN_PAYLOAD_LEN {
+            return Ok(Response::new(SubmitRotationResponse {
+                accepted: false,
+                error: format!(
+                    "rotation_payload too short: {} bytes (min {})",
+                    payload.len(),
+                    crate::rotation::MIN_PAYLOAD_LEN,
+                ),
+            }));
+        }
+        // Enforce max payload size (shared constant with rotation.rs).
+        if payload.len() > crate::rotation::MAX_PAYLOAD_LEN {
+            return Ok(Response::new(SubmitRotationResponse {
+                accepted: false,
+                error: format!(
+                    "rotation_payload too large: {} bytes (max {})",
+                    payload.len(),
+                    crate::rotation::MAX_PAYLOAD_LEN,
+                ),
+            }));
+        }
+
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        tx.send((payload, resp_tx))
+            .map_err(|_| Status::unavailable("rotation channel closed"))?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx).await {
+            Ok(Ok(Ok(()))) => Ok(Response::new(SubmitRotationResponse {
+                accepted: true,
+                error: String::new(),
+            })),
+            Ok(Ok(Err(e))) => Ok(Response::new(SubmitRotationResponse {
+                accepted: false,
+                error: e,
+            })),
+            Ok(Err(_)) => Err(Status::internal("rotation handler dropped response")),
+            Err(_) => Err(Status::deadline_exceeded("rotation handler timed out")),
+        }
     }
 
     /// Get modem status (channel, counters, uptime).

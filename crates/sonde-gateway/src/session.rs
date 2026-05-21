@@ -73,6 +73,7 @@ pub struct SessionManager {
     sessions: RwLock<HashMap<String, Session>>,
     last_seen: RwLock<HashMap<String, SystemTime>>,
     last_battery_mv: RwLock<HashMap<String, u32>>,
+    last_wake_rssi_dbm: RwLock<HashMap<String, i8>>,
     timeout: Duration,
     /// Held as a write-lock during state import to prevent new sessions
     /// from being created while the storage is being replaced.  Normal
@@ -87,6 +88,7 @@ impl SessionManager {
             sessions: RwLock::new(HashMap::new()),
             last_seen: RwLock::new(HashMap::new()),
             last_battery_mv: RwLock::new(HashMap::new()),
+            last_wake_rssi_dbm: RwLock::new(HashMap::new()),
             timeout,
             import_lock: RwLock::new(()),
         }
@@ -189,6 +191,19 @@ impl SessionManager {
         self.last_battery_mv.read().await.get(node_id).copied()
     }
 
+    /// Record the modem-measured RSSI of the most recent WAKE frame.
+    pub async fn record_wake_rssi_dbm(&self, node_id: &str, rssi_dbm: i8) {
+        self.last_wake_rssi_dbm
+            .write()
+            .await
+            .insert(node_id.to_string(), rssi_dbm);
+    }
+
+    /// Get the runtime WAKE RSSI for a node, if any.
+    pub async fn get_wake_rssi_dbm(&self, node_id: &str) -> Option<i8> {
+        self.last_wake_rssi_dbm.read().await.get(node_id).copied()
+    }
+
     /// Return a snapshot of runtime last-seen timestamps keyed by node ID.
     pub async fn snapshot_last_seen(&self) -> HashMap<String, SystemTime> {
         self.last_seen.read().await.clone()
@@ -197,6 +212,11 @@ impl SessionManager {
     /// Return a snapshot of runtime battery readings keyed by node ID.
     pub async fn snapshot_battery_mv(&self) -> HashMap<String, u32> {
         self.last_battery_mv.read().await.clone()
+    }
+
+    /// Return a snapshot of runtime WAKE RSSI readings keyed by node ID.
+    pub async fn snapshot_wake_rssi_dbm(&self) -> HashMap<String, i8> {
+        self.last_wake_rssi_dbm.read().await.clone()
     }
 
     /// Remove the runtime last-seen timestamp for a node.
@@ -209,6 +229,11 @@ impl SessionManager {
         self.last_battery_mv.write().await.remove(node_id);
     }
 
+    /// Remove the runtime WAKE RSSI reading for a node.
+    pub async fn clear_wake_rssi_dbm(&self, node_id: &str) {
+        self.last_wake_rssi_dbm.write().await.remove(node_id);
+    }
+
     /// Remove all runtime last-seen timestamps.
     pub async fn clear_all_last_seen(&self) {
         self.last_seen.write().await.clear();
@@ -217,6 +242,11 @@ impl SessionManager {
     /// Remove all runtime battery readings.
     pub async fn clear_all_battery_mv(&self) {
         self.last_battery_mv.write().await.clear();
+    }
+
+    /// Remove all runtime WAKE RSSI readings.
+    pub async fn clear_all_wake_rssi_dbm(&self) {
+        self.last_wake_rssi_dbm.write().await.clear();
     }
 
     /// Remove all sessions that have exceeded the configured timeout.

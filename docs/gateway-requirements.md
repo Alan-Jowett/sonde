@@ -1072,12 +1072,12 @@ The gateway MUST emit upstream control-plane messages that describe actual
 gateway and node state changes relevant to reconciliation. For nodes, this
 includes the state learned when the gateway accepts and processes an
 authenticated `WAKE`, such as `node_id`, current and assigned program hashes
-when known, `schedule_interval_s`, `battery_mv`, firmware ABI/version data, and
+when known, `schedule_interval_s`, `battery_mv`, `wake_rssi_dbm`, firmware ABI/version data, and
 a reception timestamp encoded as Unix time in milliseconds. For node-scoped
 actual-state updates, that timestamp is the node's last check-in time as
 observed by the gateway. `battery_mv` remains part of the emitted actual-state
 record even though battery telemetry is runtime-only locally and is not durably
-persisted under GW-0702. These upstream messages are produced only after the
+persisted under GW-0702. `wake_rssi_dbm` carries the modem-measured receive RSSI (dBm) of the node's WAKE frame, or null when the transport does not supply RSSI metadata. These upstream messages are produced only after the
 gateway has updated its latest-known actual state for the affected entity.
 
 **Acceptance criteria:**
@@ -1303,8 +1303,8 @@ framebuffer rendering; the modem continues to render only the received
 framebuffer bytes. The default status-page sequence consists of a `Channel`
 page and a `Nodes` page. The `Nodes` page text output MUST show the key
 operational node details in `node_id` order: `node_id`, assigned/current
-program identifiers, battery, last seen, and schedule, with optional fields
-omitted when absent. Battery and last seen are runtime-only observation fields:
+program identifiers, battery, RSSI, last seen, and schedule, with optional fields
+omitted when absent. Battery, RSSI, and last seen are runtime-only observation fields:
 they are absent until the node completes a `WAKE` in the current gateway
 process and disappear again after gateway restart until the next `WAKE`. For
 assigned/current programs, the default display identifier is the stored
@@ -1320,7 +1320,7 @@ registered.`
 
 1. A `BUTTON_SHORT` event received while no BLE pairing session is active causes the gateway to send a new reliable display transfer for the next status page.
 2. Consecutive short presses advance through the configured status-page sequence in order; the default sequence remains `Channel` followed by `Nodes`.
-3. The `Nodes` page renders `node_id`, assigned/current program identifiers, battery, last seen, and schedule in `node_id` order, omits absent optional fields, excludes `key_hint`, and uses a left-aligned property line followed by a `- value` line for each displayed field.
+3. The `Nodes` page renders `node_id`, assigned/current program identifiers, battery, RSSI, last seen, and schedule in `node_id` order, omits absent optional fields, excludes `key_hint`, and uses a left-aligned property line followed by a `- value` line for each displayed field.
 4. When a program record has `source_filename`, the `Nodes` page uses that basename as the program identifier and never renders a full path; otherwise it renders the hash.
 5. When the node registry is empty, the `Nodes` page displays `No nodes registered.`
 6. Status-page framebuffer generation remains gateway-owned; the modem receives only opaque framebuffer data.

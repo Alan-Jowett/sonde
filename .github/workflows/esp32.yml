@@ -44,6 +44,7 @@ jobs:
             features: esp,verbose
             no_default_features: --no-default-features
             artifact: node-firmware-verbose
+            sdkconfig_extra: ;crates/sonde-node/sdkconfig.verbose
 
     container:
       image: ghcr.io/alan-jowett/sonde-esp-dev:latest
@@ -60,7 +61,7 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           workspaces: ". -> target"
-          key: esp32c3-riscv-${{ hashFiles('crates/sonde-node/sdkconfig.defaults', '.github/docker/Dockerfile.esp-dev') }}
+          key: esp32c3-riscv-${{ matrix.variant }}-${{ hashFiles('crates/sonde-node/sdkconfig.defaults', 'crates/sonde-node/sdkconfig.verbose', '.github/docker/Dockerfile.esp-dev') }}
 
       # ------------------------------------------------------------------ #
       # Build
@@ -80,7 +81,7 @@ jobs:
         # ESP-IDF defaults. We also delete any cached sdkconfig and CMake
         # cache so a stale rust-cache restore cannot override our settings.
         env:
-          ESP_IDF_SDKCONFIG_DEFAULTS: crates/sonde-node/sdkconfig.defaults
+          ESP_IDF_SDKCONFIG_DEFAULTS: crates/sonde-node/sdkconfig.defaults${{ matrix.sdkconfig_extra || '' }}
           ESP_IDF_COMPONENT_MANAGER: "off"
           SONDE_GIT_COMMIT: ${{ github.sha }}
         run: |
@@ -174,6 +175,12 @@ jobs:
       # ------------------------------------------------------------------ #
 
       - name: Run QEMU smoke test
+        # Only run on the verbose variant — the default (quiet) build sets
+        # CONFIG_LOG_DEFAULT_LEVEL_WARN which suppresses the INFO-level
+        # ESP-IDF boot markers this test asserts on.  The verbose build
+        # still validates the same thing: correct cross-compilation,
+        # flash-image assembly, bootloader chain, and CPU init.
+        if: matrix.variant == 'verbose'
         # Source IDF export.sh so qemu-system-riscv32 is on PATH.
         #
         # NOTE: The smoke test checks for ESP-IDF boot markers instead of

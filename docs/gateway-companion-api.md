@@ -232,8 +232,9 @@ state.
 | `modem_firmware_version` | 25 | tstr/null | Modem firmware semver. Gateway-scoped only. |
 | `modem_firmware_commit` | 26 | tstr/null | Modem firmware git commit. Gateway-scoped only. |
 | `rotation_in_progress` | 27 | bool/null | `true` if rotation is in progress. Gateway-scoped only. |
+| `wake_rssi_dbm` | 28 | int/null | Modem-measured receive RSSI (dBm) of the node's WAKE frame. Node-scoped only; null when the transport does not supply RSSI metadata. |
 
-**Key scoping:** Keys 4–8, 10–11 are node-specific and MUST be omitted for
+**Key scoping:** Keys 4–8, 10–11, 28 are node-specific and MUST be omitted for
 `entity_kind = "gateway"`. Keys 12–14 are node escrow fields. Keys 15–27
 are gateway-specific and MUST be omitted for `entity_kind = "node"`. Key 9
 (`timestamp_ms`) is shared and required for all entity kinds. Decoders

@@ -66,7 +66,7 @@
 1. Start with no actual-state rows and no desired-state rows for a test node.
 2. Deliver one node-scoped `GW-0812` containing current program, assigned program, schedule, battery, firmware data, and timestamp.
 3. Assert: exactly one new actual-state row is created for that node.
-4. Assert: the new actual-state row's observed fields — `observed_current_program_hash`, `observed_assigned_program_hash`, `observed_schedule_interval_s`, `battery_mv`, `firmware_abi_version`, `firmware_version`, and `timestamp_ms` — match the corresponding values from the source `GW-0812` message.
+4. Assert: the new actual-state row's observed fields — `observed_current_program_hash`, `observed_assigned_program_hash`, `observed_schedule_interval_s`, `battery_mv`, `wake_rssi_dbm`, `firmware_abi_version`, `firmware_version`, and `timestamp_ms` — match the corresponding values from the source `GW-0812` message.
 5. Assert: no desired-state row is created for that node.
 6. Assert: no downstream `GW-0811` message is published.
 

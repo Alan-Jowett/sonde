@@ -1567,7 +1567,6 @@ impl SqliteStorage {
                 )
                 .map_err(map_err)?;
             if updated == 0 {
-                let _ = tx.execute("ROLLBACK", []);
                 return Err(StorageError::Internal(
                     "commit_rotation: encrypted_seed_new is NULL — \
                      cannot promote; identity rewrap may not have completed"

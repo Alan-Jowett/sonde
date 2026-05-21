@@ -16,9 +16,7 @@ use zeroize::Zeroizing;
 
 use crate::connector::{ConnectorEventHub, GatewayDesiredState};
 use crate::gateway_identity::GatewayIdentity;
-use crate::rotation::{
-    decrypt_rotation_payload, DecryptedRotation, RotationError, RotationRateLimiter,
-};
+use crate::rotation::{decrypt_rotation_payload, DecryptedRotation, RotationRateLimiter};
 use crate::sqlite_storage::SqliteStorage;
 
 /// Channel type matching the admin service's rotation submission channel.
@@ -195,13 +193,6 @@ impl RotationEngine {
         let decrypted =
             match decrypt_rotation_payload(payload, &x25519_secret, gateway_id, current_epoch) {
                 Ok(d) => d,
-                Err(RotationError::WrongRotationCode) => {
-                    self.rate_limiter.record_failure(current_epoch);
-                    return Err("rotation code does not match".into());
-                }
-                Err(RotationError::RateLimited) => {
-                    return Err("rotation attempt rate-limited".into());
-                }
                 Err(e) => {
                     self.rate_limiter.record_failure(current_epoch);
                     return Err(format!("rotation payload error: {e}"));
@@ -509,10 +500,10 @@ impl RotationEngine {
         let kdf_params = pending.kdf_params_json.as_deref().and_then(|json| {
             let v: serde_json::Value = serde_json::from_str(json).ok()?;
             Some(crate::rotation::KdfParamsPayload {
-                m_cost: v["m_cost"].as_u64()? as u32,
-                t_cost: v["t_cost"].as_u64()? as u32,
-                p_cost: v["p_cost"].as_u64()? as u32,
-                kdf_version: v["kdf_version"].as_u64()? as u32,
+                m_cost: u32::try_from(v["m_cost"].as_u64()?).ok()?,
+                t_cost: u32::try_from(v["t_cost"].as_u64()?).ok()?,
+                p_cost: u32::try_from(v["p_cost"].as_u64()?).ok()?,
+                kdf_version: u32::try_from(v["kdf_version"].as_u64()?).ok()?,
             })
         });
 

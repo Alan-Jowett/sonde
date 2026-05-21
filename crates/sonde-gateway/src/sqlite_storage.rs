@@ -605,6 +605,10 @@ pub struct PendingRotationRecord {
     pub new_epoch: u64,
     /// Current rotation phase.
     pub phase: String,
+    /// KDF salt from the rotation payload (persisted for crash recovery).
+    pub salt: Option<Vec<u8>>,
+    /// KDF params from the rotation payload, serialized as JSON.
+    pub kdf_params_json: Option<String>,
 }
 
 /// Node escrow metadata for ACTUAL_STATE re-emission after rotation.
@@ -951,7 +955,9 @@ impl SqliteStorage {
                     new_master_key_id  BLOB    NOT NULL,
                     new_epoch          INTEGER NOT NULL,
                     started_at         INTEGER NOT NULL,
-                    phase              TEXT    NOT NULL DEFAULT 'migrating_psks'
+                    phase              TEXT    NOT NULL DEFAULT 'migrating_psks',
+                    salt               BLOB,
+                    kdf_params_json    TEXT
                 )",
             )
             .map_err(|e| {
@@ -1005,9 +1011,12 @@ impl SqliteStorage {
                 )
                 .optional()
                 .map_err(map_err)?;
-            pending.map(|(_, epoch_raw)| RotationKeyState {
-                new_key: Arc::new(Zeroizing::new(**new_key)),
-                new_epoch: epoch_raw as u64,
+            pending.and_then(|(_, epoch_raw): (Vec<u8>, i64)| {
+                let new_epoch = u64::try_from(epoch_raw).ok()?;
+                Some(RotationKeyState {
+                    new_key: Arc::new(Zeroizing::new(**new_key)),
+                    new_epoch,
+                })
             })
         } else {
             None
@@ -1191,6 +1200,7 @@ impl SqliteStorage {
     /// Write a pending_rotation record and purge pending_recovery (§2.6.2 step 4).
     ///
     /// The new master key is encrypted with the OLD master key for crash safety.
+    /// Salt and KDF params are persisted so crash recovery can apply them.
     /// This must be called within a single logical operation — the DB transaction
     /// ensures atomicity of both the insert and the purge.
     pub async fn write_pending_rotation(
@@ -1198,9 +1208,11 @@ impl SqliteStorage {
         new_master_key: &[u8; 32],
         new_master_key_id: &[u8; 16],
         new_epoch: u64,
+        salt: Option<&[u8]>,
+        kdf_params: Option<&crate::rotation::KdfParamsPayload>,
     ) -> Result<(), StorageError> {
         let mk = self.master_key();
-        let new_key = *new_master_key;
+        let new_key = Zeroizing::new(*new_master_key);
         let new_id = *new_master_key_id;
 
         // Encrypt the new master key with the old key (AAD = "sonde-pending-rotation").
@@ -1225,6 +1237,17 @@ impl SqliteStorage {
             StorageError::Internal(format!("new_epoch {new_epoch} exceeds i64::MAX"))
         })?;
 
+        let salt_blob = salt.map(|s| s.to_vec());
+        let kdf_json = kdf_params.map(|p| {
+            serde_json::json!({
+                "m_cost": p.m_cost,
+                "t_cost": p.t_cost,
+                "p_cost": p.p_cost,
+                "kdf_version": p.kdf_version,
+            })
+            .to_string()
+        });
+
         self.with_conn(move |conn| {
             let tx = conn.unchecked_transaction().map_err(map_err)?;
 
@@ -1235,9 +1258,15 @@ impl SqliteStorage {
             // Insert pending_rotation record.
             tx.execute(
                 "INSERT INTO pending_rotation \
-                 (id, new_master_key_enc, new_master_key_id, new_epoch, started_at, phase) \
-                 VALUES (1, ?1, ?2, ?3, strftime('%s', 'now'), 'migrating_psks')",
-                params![enc_blob, new_id.as_slice(), epoch_i64],
+                 (id, new_master_key_enc, new_master_key_id, new_epoch, started_at, phase, salt, kdf_params_json) \
+                 VALUES (1, ?1, ?2, ?3, strftime('%s', 'now'), 'migrating_psks', ?4, ?5)",
+                params![
+                    enc_blob,
+                    new_id.as_slice(),
+                    epoch_i64,
+                    salt_blob,
+                    kdf_json,
+                ],
             )
             .map_err(map_err)?;
 
@@ -1248,35 +1277,59 @@ impl SqliteStorage {
     }
 
     /// Read the pending_rotation record, if one exists.
+    #[allow(clippy::type_complexity)]
     pub async fn read_pending_rotation(
         &self,
     ) -> Result<Option<PendingRotationRecord>, StorageError> {
         self.with_conn(|conn| {
-            let row: Option<(Vec<u8>, Vec<u8>, i64, String)> = conn
+            let row: Option<(
+                Vec<u8>,
+                Vec<u8>,
+                i64,
+                String,
+                Option<Vec<u8>>,
+                Option<String>,
+            )> = conn
                 .query_row(
-                    "SELECT new_master_key_enc, new_master_key_id, new_epoch, phase \
-                     FROM pending_rotation WHERE id = 1",
+                    "SELECT new_master_key_enc, new_master_key_id, new_epoch, phase, \
+                     salt, kdf_params_json FROM pending_rotation WHERE id = 1",
                     [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(map_err)?;
             match row {
                 None => Ok(None),
-                Some((enc, id_vec, epoch_raw, phase)) => {
+                Some((enc, id_vec, epoch_raw, phase, salt, kdf_params_json)) => {
                     if id_vec.len() != 16 {
                         return Err(StorageError::Internal(format!(
                             "pending_rotation.new_master_key_id has wrong length: {} (expected 16)",
                             id_vec.len()
                         )));
                     }
+                    let new_epoch = u64::try_from(epoch_raw).map_err(|_| {
+                        StorageError::Internal(format!(
+                            "pending_rotation.new_epoch is negative: {epoch_raw}"
+                        ))
+                    })?;
                     let mut new_master_key_id = [0u8; 16];
                     new_master_key_id.copy_from_slice(&id_vec);
                     Ok(Some(PendingRotationRecord {
                         new_master_key_enc: enc,
                         new_master_key_id,
-                        new_epoch: epoch_raw as u64,
+                        new_epoch,
                         phase,
+                        salt,
+                        kdf_params_json,
                     }))
                 }
             }
@@ -1309,7 +1362,9 @@ impl SqliteStorage {
         &self,
         new_epoch: u64,
     ) -> Result<Vec<String>, StorageError> {
-        let epoch_i64 = new_epoch as i64;
+        let epoch_i64 = i64::try_from(new_epoch).map_err(|_| {
+            StorageError::Internal(format!("new_epoch {new_epoch} exceeds i64::MAX"))
+        })?;
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare("SELECT node_id FROM nodes WHERE master_key_epoch < ?1")
@@ -1332,8 +1387,8 @@ impl SqliteStorage {
         new_epoch: u64,
     ) -> Result<(), StorageError> {
         let node_id = node_id.to_owned();
-        let old_key = *old_key;
-        let new_key = *new_key;
+        let old_key = Zeroizing::new(*old_key);
+        let new_key = Zeroizing::new(*new_key);
         let new_key_id = *new_key_id;
         let epoch_i64 = i64::try_from(new_epoch).map_err(|_| {
             StorageError::Internal(format!("new_epoch {new_epoch} exceeds i64::MAX"))
@@ -1376,7 +1431,9 @@ impl SqliteStorage {
         &self,
         new_epoch: u64,
     ) -> Result<Vec<u32>, StorageError> {
-        let epoch_i64 = new_epoch as i64;
+        let epoch_i64 = i64::try_from(new_epoch).map_err(|_| {
+            StorageError::Internal(format!("new_epoch {new_epoch} exceeds i64::MAX"))
+        })?;
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare("SELECT phone_id FROM phone_psks WHERE master_key_epoch < ?1")
@@ -1398,8 +1455,8 @@ impl SqliteStorage {
         new_key_id: &[u8; 16],
         new_epoch: u64,
     ) -> Result<(), StorageError> {
-        let old_key = *old_key;
-        let new_key = *new_key;
+        let old_key = Zeroizing::new(*old_key);
+        let new_key = Zeroizing::new(*new_key);
         let new_key_id = *new_key_id;
         let epoch_i64 = i64::try_from(new_epoch).map_err(|_| {
             StorageError::Internal(format!("new_epoch {new_epoch} exceeds i64::MAX"))
@@ -1939,7 +1996,13 @@ fn row_to_node(
     // During rotation, migrated records have the new epoch; unmigrated records
     // have the old epoch.
     let epoch_raw: i64 = row.get(13)?;
-    let record_epoch = epoch_raw as u64;
+    let record_epoch = u64::try_from(epoch_raw).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            13,
+            rusqlite::types::Type::Integer,
+            format!("negative master_key_epoch: {epoch_raw}").into(),
+        )
+    })?;
 
     let decrypt_key = match rotation_key {
         Some((new_key, new_epoch)) if record_epoch >= new_epoch => new_key,
@@ -2643,7 +2706,11 @@ impl Storage for SqliteStorage {
             for row in rows {
                 let (phone_id, key_hint, psk_blob, label, issued_at, status_str, key_version_raw, epoch_raw) =
                     row.map_err(map_err)?;
-                let record_epoch = epoch_raw as u64;
+                let record_epoch = u64::try_from(epoch_raw).map_err(|_| {
+                    StorageError::Internal(format!(
+                        "negative master_key_epoch: {epoch_raw}"
+                    ))
+                })?;
                 let decrypt_key: &[u8; 32] = match rk.as_ref() {
                     Some(s) if record_epoch >= s.new_epoch => &s.new_key,
                     _ => &mk,
@@ -2706,7 +2773,11 @@ impl Storage for SqliteStorage {
             for row in rows {
                 let (phone_id, kh, psk_blob, label, issued_at, status_str, key_version_raw, epoch_raw) =
                     row.map_err(map_err)?;
-                let record_epoch = epoch_raw as u64;
+                let record_epoch = u64::try_from(epoch_raw).map_err(|_| {
+                    StorageError::Internal(format!(
+                        "negative master_key_epoch: {epoch_raw}"
+                    ))
+                })?;
                 let decrypt_key: &[u8; 32] = match rk.as_ref() {
                     Some(s) if record_epoch >= s.new_epoch => &s.new_key,
                     _ => &mk,

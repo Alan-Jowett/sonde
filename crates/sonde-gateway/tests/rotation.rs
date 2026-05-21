@@ -388,7 +388,7 @@ async fn test_t2004b_concurrent_rotation_discard() {
 
     // Manually create a pending_rotation to simulate an in-progress rotation.
     store
-        .write_pending_rotation(&new_key, &new_id, epoch + 1)
+        .write_pending_rotation(&new_key, &new_id, epoch + 1, None, None)
         .await
         .unwrap();
     assert!(store.is_rotation_in_progress().await.unwrap());
@@ -453,7 +453,7 @@ async fn test_t2005_crash_safe_rotation() {
 
     // Step 4: Prepare.
     store
-        .write_pending_rotation(&new_key, &new_id, new_epoch)
+        .write_pending_rotation(&new_key, &new_id, new_epoch, None, None)
         .await
         .unwrap();
 
@@ -580,7 +580,7 @@ async fn test_t2009_crash_recovery_all_phases() {
 
         // Prepare + migrate all PSKs + set phase to rewrapping_identity.
         store
-            .write_pending_rotation(&new_key, &new_id, new_epoch)
+            .write_pending_rotation(&new_key, &new_id, new_epoch, None, None)
             .await
             .unwrap();
         let nodes = store.list_unmigrated_node_ids(new_epoch).await.unwrap();
@@ -622,7 +622,7 @@ async fn test_t2009_crash_recovery_all_phases() {
 
         // Prepare + migrate + rewrap + set phase to committing.
         store
-            .write_pending_rotation(&new_key, &new_id, new_epoch)
+            .write_pending_rotation(&new_key, &new_id, new_epoch, None, None)
             .await
             .unwrap();
         let nodes = store.list_unmigrated_node_ids(new_epoch).await.unwrap();

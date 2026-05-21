@@ -29,11 +29,30 @@ pub type RotationSubmitChannel =
 type RotationSubmitReceiver =
     mpsc::UnboundedReceiver<(Vec<u8>, oneshot::Sender<Result<(), String>>)>;
 
+/// Notification sent when a rotation completes, carrying the new key state
+/// so the gateway can emit a full gateway ACTUAL_STATE.
+#[derive(Debug, Clone)]
+pub struct RotationCompleteNotification {
+    pub new_master_key_id: [u8; 16],
+    pub new_epoch: u64,
+}
+
 /// Rotation execution engine.
 ///
 /// Receives rotation payloads from two channels (gRPC and DESIRED_STATE),
 /// validates them, and executes the 8-step rotation pipeline. At most one
 /// rotation can be active at a time; concurrent requests are rejected.
+///
+/// ## Startup wiring
+///
+/// The gateway binary (or test harness) must:
+/// 1. Call [`RotationEngine::resume_pending_rotation`] before starting the
+///    connector or admin service (step 2a per gateway-design.md §23.11).
+/// 2. Create channels, pass senders to [`AdminService::with_rotation_tx`]
+///    and [`ConnectorService::set_gateway_desired_state_tx`].
+/// 3. Spawn [`RotationEngine::run`] as a tokio task.
+/// 4. Optionally subscribe to `rotation_complete_tx` to trigger gateway
+///    ACTUAL_STATE re-emission on rotation completion.
 pub struct RotationEngine {
     storage: Arc<SqliteStorage>,
     identity: GatewayIdentity,
@@ -45,6 +64,10 @@ pub struct RotationEngine {
     desired_state_rx: mpsc::UnboundedReceiver<GatewayDesiredState>,
     /// Set to `true` while a rotation is executing to reject concurrent requests.
     rotation_active: Arc<AtomicBool>,
+    /// Optional notification channel for rotation completion. The gateway
+    /// binary subscribes to trigger a full gateway ACTUAL_STATE re-emission
+    /// (which requires runtime state not available to this engine).
+    rotation_complete_tx: Option<mpsc::UnboundedSender<RotationCompleteNotification>>,
 }
 
 impl RotationEngine {
@@ -63,7 +86,21 @@ impl RotationEngine {
             grpc_rx,
             desired_state_rx,
             rotation_active: Arc::new(AtomicBool::new(false)),
+            rotation_complete_tx: None,
         }
+    }
+
+    /// Set the notification channel for rotation completion events.
+    ///
+    /// When a rotation completes, the engine sends a [`RotationCompleteNotification`]
+    /// so the gateway can emit a full gateway ACTUAL_STATE with all runtime fields
+    /// (channel, version, fingerprint, etc.).
+    pub fn with_rotation_complete_tx(
+        mut self,
+        tx: mpsc::UnboundedSender<RotationCompleteNotification>,
+    ) -> Self {
+        self.rotation_complete_tx = Some(tx);
+        self
     }
 
     /// Run the rotation engine event loop.
@@ -92,9 +129,8 @@ impl RotationEngine {
     /// Handle a full DESIRED_STATE message — process rotation_payload if present.
     async fn handle_desired_state(&mut self, state: GatewayDesiredState) {
         if let Some(payload) = state.rotation_payload {
-            if let Err(e) = self.handle_rotation_payload(&payload, false).await {
-                warn!(error = %e, "DESIRED_STATE rotation payload rejected");
-            }
+            // Errors from DESIRED_STATE rotation are silently discarded per spec.
+            let _ = self.handle_rotation_payload(&payload, false).await;
         }
         // Future: handle recovered_psks, salt, kdf_params, channel changes here.
     }
@@ -142,9 +178,11 @@ impl RotationEngine {
 
         // Rate limit check.
         if !self.rate_limiter.check(current_epoch) {
-            let msg = "rotation attempt rate-limited";
-            warn!("{msg}");
-            return Err(msg.into());
+            if is_grpc {
+                return Err("rotation attempt rate-limited".into());
+            }
+            // DESIRED_STATE: silently discard per evolve-962 §2.6.1 rule 8.
+            return Err("rate-limited".into());
         }
 
         // Decrypt the rotation payload.
@@ -215,6 +253,8 @@ impl RotationEngine {
                 &decrypted.new_master_key,
                 &decrypted.new_master_key_id,
                 new_epoch,
+                decrypted.salt.as_deref(),
+                decrypted.kdf_params.as_ref(),
             )
             .await
             .map_err(|e| format!("prepare failed: {e}"))?;
@@ -366,7 +406,20 @@ impl RotationEngine {
     }
 
     /// Emit updated ACTUAL_STATE after rotation completes (step 8).
-    async fn emit_post_rotation_state(&self, _new_epoch: u64, _new_key_id: &[u8; 16]) {
+    ///
+    /// Emits per-node ACTUAL_STATE with updated escrow fields. For gateway-level
+    /// ACTUAL_STATE (which requires runtime state like channel, version, fingerprint),
+    /// sends a [`RotationCompleteNotification`] via the optional callback channel
+    /// so the gateway binary can emit a full gateway ACTUAL_STATE.
+    async fn emit_post_rotation_state(&self, new_epoch: u64, new_key_id: &[u8; 16]) {
+        // Notify the gateway binary to emit a full gateway ACTUAL_STATE.
+        if let Some(ref tx) = self.rotation_complete_tx {
+            let _ = tx.send(RotationCompleteNotification {
+                new_master_key_id: *new_key_id,
+                new_epoch,
+            });
+        }
+
         // Re-emit node ACTUAL_STATE with updated escrow fields.
         match self.storage.list_node_escrow_state().await {
             Ok(nodes) => {
@@ -443,7 +496,19 @@ impl RotationEngine {
             grpc_rx: mpsc::unbounded_channel().1,
             desired_state_rx: mpsc::unbounded_channel().1,
             rotation_active: Arc::new(AtomicBool::new(true)),
+            rotation_complete_tx: None,
         };
+
+        // Parse salt/kdf_params from the pending_rotation record for crash recovery.
+        let kdf_params = pending.kdf_params_json.as_deref().and_then(|json| {
+            let v: serde_json::Value = serde_json::from_str(json).ok()?;
+            Some(crate::rotation::KdfParamsPayload {
+                m_cost: v["m_cost"].as_u64()? as u32,
+                t_cost: v["t_cost"].as_u64()? as u32,
+                p_cost: v["p_cost"].as_u64()? as u32,
+                kdf_version: v["kdf_version"].as_u64()? as u32,
+            })
+        });
 
         let result = engine
             .execute_rotation_phases(
@@ -451,8 +516,8 @@ impl RotationEngine {
                 &new_key,
                 &pending.new_master_key_id,
                 pending.new_epoch,
-                None, // salt/kdf_params are stored in the rotation payload, not pending_rotation
-                None,
+                pending.salt.as_deref(),
+                kdf_params.as_ref(),
             )
             .await;
 
@@ -498,7 +563,7 @@ mod tests {
 
         // After writing a pending_rotation, it should report in progress.
         store
-            .write_pending_rotation(&[0xAAu8; 32], &[0xBBu8; 16], 2)
+            .write_pending_rotation(&[0xAAu8; 32], &[0xBBu8; 16], 2, None, None)
             .await
             .unwrap();
         let in_progress = store.is_rotation_in_progress().await.unwrap();

@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Verbose-build overrides — applied AFTER sdkconfig.defaults to restore
+# INFO-level ESP-IDF component logging for the verbose firmware variant.
+# The QEMU smoke test depends on these INFO-level boot markers.
+
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y

@@ -277,8 +277,9 @@ impl RotationEngine {
 
         if let Err(ref e) = result {
             error!(error = %e, "rotation failed during execution");
-            // Leave pending_rotation in place for crash recovery.
-            self.storage.clear_rotation_new_key();
+            // Leave pending_rotation AND rotation_key_state in place: some PSKs
+            // may already be migrated to new_epoch, so dual-key decryption must
+            // remain active until the next restart resolves the situation.
             return result;
         }
 
@@ -455,10 +456,15 @@ impl RotationEngine {
     /// Called at startup before the main event loop. If `pending_rotation`
     /// exists in the database, decrypts the new key and resumes from the
     /// recorded phase.
+    ///
+    /// Returns `Ok(Some(notification))` if a rotation was resumed and committed,
+    /// `Ok(None)` if no pending rotation existed. The caller should use the
+    /// returned notification to trigger gateway ACTUAL_STATE re-emission
+    /// and node escrow re-emission once the connector is ready.
     pub async fn resume_pending_rotation(
         storage: &Arc<SqliteStorage>,
         identity: &GatewayIdentity,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<RotationCompleteNotification>, String> {
         let pending = storage
             .read_pending_rotation()
             .await
@@ -466,7 +472,7 @@ impl RotationEngine {
 
         let pending = match pending {
             Some(p) => p,
-            None => return Ok(false),
+            None => return Ok(None),
         };
 
         info!(
@@ -523,7 +529,7 @@ impl RotationEngine {
 
         if let Err(ref e) = result {
             error!(error = %e, "crash recovery rotation failed");
-            storage.clear_rotation_new_key();
+            // Keep dual-key state — some PSKs may be partially migrated.
             return Err(format!("crash recovery failed: {e}"));
         }
 
@@ -535,7 +541,10 @@ impl RotationEngine {
             new_epoch = pending.new_epoch,
             "crash recovery rotation completed"
         );
-        Ok(true)
+        Ok(Some(RotationCompleteNotification {
+            new_master_key_id: pending.new_master_key_id,
+            new_epoch: pending.new_epoch,
+        }))
     }
 }
 

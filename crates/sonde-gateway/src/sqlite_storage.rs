@@ -431,8 +431,8 @@ fn validate_master_key(
         .map_err(map_err)?;
 
     if let Some((node_id, psk_blob)) = psk_row {
-        let current_ok = decrypt_psk(master_key, &node_id, &psk_blob).is_ok();
-        if !current_ok {
+        let current_err = decrypt_psk(master_key, &node_id, &psk_blob).err();
+        if let Some(decrypt_err) = current_err {
             // If we have a pending new key (interrupted rotation), try that.
             if let Some(new_key) = pending_new_key {
                 let _decrypted = Zeroizing::new(
@@ -447,7 +447,7 @@ fn validate_master_key(
             } else {
                 return Err(StorageError::Internal(format!(
                     "master key validation failed — cannot decrypt PSK for node \
-                     `{node_id}`; this may indicate a wrong master key or \
+                     `{node_id}`: {decrypt_err}; this may indicate a wrong master key or \
                      corrupt/tampered database data",
                 )));
             }
@@ -1556,12 +1556,24 @@ impl SqliteStorage {
             let tx = conn.unchecked_transaction().map_err(map_err)?;
 
             // Promote encrypted_seed_new → encrypted_seed.
-            tx.execute(
-                "UPDATE gateway_identity SET encrypted_seed = encrypted_seed_new, \
-                 encrypted_seed_new = NULL WHERE id = 1",
-                [],
-            )
-            .map_err(map_err)?;
+            // Guard: only update if encrypted_seed_new is non-NULL to prevent
+            // overwriting the seed with NULL on out-of-order calls.
+            let updated = tx
+                .execute(
+                    "UPDATE gateway_identity SET encrypted_seed = encrypted_seed_new, \
+                     encrypted_seed_new = NULL \
+                     WHERE id = 1 AND encrypted_seed_new IS NOT NULL",
+                    [],
+                )
+                .map_err(map_err)?;
+            if updated == 0 {
+                let _ = tx.execute("ROLLBACK", []);
+                return Err(StorageError::Internal(
+                    "commit_rotation: encrypted_seed_new is NULL — \
+                     cannot promote; identity rewrap may not have completed"
+                        .into(),
+                ));
+            }
 
             // Update master_key_id in gateway_config.
             tx.execute(

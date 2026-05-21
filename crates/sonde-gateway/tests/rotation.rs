@@ -476,7 +476,7 @@ async fn test_t2005_crash_safe_rotation() {
         .await
         .unwrap();
     assert!(
-        recovered,
+        recovered.is_some(),
         "crash recovery should detect and resume rotation"
     );
 
@@ -599,7 +599,7 @@ async fn test_t2009_crash_recovery_all_phases() {
         let recovered = RotationEngine::resume_pending_rotation(&store, &identity)
             .await
             .unwrap();
-        assert!(recovered);
+        assert!(recovered.is_some());
 
         // Verify identity is loadable with the new key.
         let loaded = store.load_gateway_identity().await.unwrap();
@@ -642,7 +642,7 @@ async fn test_t2009_crash_recovery_all_phases() {
         let recovered = RotationEngine::resume_pending_rotation(&store, &identity)
             .await
             .unwrap();
-        assert!(recovered);
+        assert!(recovered.is_some());
         assert!(!store.is_rotation_in_progress().await.unwrap());
 
         // Verify identity is loadable.

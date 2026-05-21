@@ -24,6 +24,19 @@ use crate::session::SessionManager;
 use crate::storage::{HandlerRecord, Storage};
 use crate::transient_display::{show_modem_display_message, ActiveDisplayState};
 
+/// JSON-serializable KDF parameters (stored in gateway_config).
+#[derive(serde::Deserialize)]
+struct KdfParamsJson {
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+    kdf_version: u32,
+}
+
+/// Channel type for rotation payload submission with oneshot response.
+pub type RotationSubmitChannel =
+    tokio::sync::mpsc::UnboundedSender<(Vec<u8>, tokio::sync::oneshot::Sender<Result<(), String>>)>;
+
 pub mod pb {
     tonic::include_proto!("sonde.admin");
 }
@@ -43,6 +56,8 @@ pub struct AdminService {
     handler_configs: RwLock<Vec<HandlerConfig>>,
     /// Shared handler router for live reload (GW-1404, GW-1407).
     handler_router: Option<Arc<tokio::sync::RwLock<HandlerRouter>>>,
+    /// Channel for submitting rotation payloads to the gateway engine (GW-2012).
+    rotation_tx: Option<RotationSubmitChannel>,
 }
 
 impl AdminService {
@@ -61,6 +76,7 @@ impl AdminService {
             display_state: None,
             handler_configs: RwLock::new(Vec::new()),
             handler_router: None,
+            rotation_tx: None,
         }
     }
 
@@ -109,6 +125,12 @@ impl AdminService {
     /// Set the shared handler router for live reload (GW-1404, GW-1407).
     pub fn with_handler_router(mut self, router: Arc<tokio::sync::RwLock<HandlerRouter>>) -> Self {
         self.handler_router = Some(router);
+        self
+    }
+
+    /// Set the channel for submitting rotation payloads to the gateway engine.
+    pub fn with_rotation_tx(mut self, tx: RotationSubmitChannel) -> Self {
+        self.rotation_tx = Some(tx);
         self
     }
 
@@ -1213,6 +1235,157 @@ impl GatewayAdmin for AdminService {
             })
             .collect();
         Ok(Response::new(ListHandlersResponse { handlers }))
+    }
+
+    // ── Key management RPCs (GW-2012) ──────────────────────────
+
+    /// Return the gateway's current state for key management operations.
+    ///
+    /// Provides the X25519 public key, BIP-39 fingerprint, master key
+    /// identification, salt, KDF params, and rotation status needed by
+    /// the admin CLI `key rotate`, `key fingerprint`, and `key status`
+    /// commands.
+    async fn get_gateway_state(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<GatewayState>, Status> {
+        let gateway_id = self
+            .storage
+            .get_config("gateway_id_hex")
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found("gateway identity not initialized"))?;
+        let gateway_id_bytes = hex::decode(&gateway_id)
+            .map_err(|e| Status::internal(format!("invalid gateway_id hex: {e}")))?;
+
+        let master_key_id_hex = self
+            .storage
+            .get_config("master_key_id")
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found("master key not initialized"))?;
+        let master_key_id = hex::decode(&master_key_id_hex)
+            .map_err(|e| Status::internal(format!("invalid master_key_id hex: {e}")))?;
+
+        let master_key_epoch: u64 = self
+            .storage
+            .get_config("master_key_epoch")
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found("master key epoch not initialized"))?
+            .parse()
+            .map_err(|e| Status::internal(format!("invalid master_key_epoch: {e}")))?;
+
+        let identity = self
+            .storage
+            .load_gateway_identity()
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found("gateway identity not found"))?;
+
+        let (_, x25519_public) = identity
+            .to_x25519()
+            .map_err(|e| Status::internal(format!("X25519 conversion failed: {e}")))?;
+
+        let sha = crate::crypto::RustCryptoSha256;
+        let fp = sonde_protocol::fingerprint::compute_fingerprint(x25519_public.as_bytes(), &sha);
+
+        let channel_str = self
+            .storage
+            .get_config("espnow_channel")
+            .await
+            .map_err(storage_err)?;
+        let channel: u32 = channel_str.as_deref().unwrap_or("1").parse().unwrap_or(1);
+
+        let salt = self
+            .storage
+            .get_config("kdf_salt")
+            .await
+            .map_err(storage_err)?
+            .and_then(|s| hex::decode(s).ok());
+
+        let kdf_params = match self
+            .storage
+            .get_config("kdf_params_json")
+            .await
+            .map_err(storage_err)?
+        {
+            Some(json) => {
+                serde_json::from_str::<KdfParamsJson>(&json)
+                    .ok()
+                    .map(|p| KdfParameters {
+                        m_cost: p.m_cost,
+                        t_cost: p.t_cost,
+                        p_cost: p.p_cost,
+                        kdf_version: p.kdf_version,
+                    })
+            }
+            None => None,
+        };
+
+        // Check if a rotation is in progress by looking for pending_rotation
+        // config key (set by the rotation engine).
+        let rotation_in_progress = self
+            .storage
+            .get_config("rotation_in_progress")
+            .await
+            .map_err(storage_err)?
+            .map(|v| v == "true")
+            .unwrap_or(false);
+
+        Ok(Response::new(GatewayState {
+            gateway_id: gateway_id_bytes,
+            channel,
+            master_key_id,
+            master_key_epoch,
+            x25519_public_key: x25519_public.as_bytes().to_vec(),
+            fingerprint_words: fp.iter().map(|w| w.to_string()).collect(),
+            rotation_in_progress,
+            salt,
+            kdf_params,
+            gateway_version: env!("CARGO_PKG_VERSION").to_string(),
+            gateway_commit: option_env!("SONDE_BUILD_COMMIT")
+                .unwrap_or("unknown")
+                .to_string(),
+        }))
+    }
+
+    /// Accept a RotationPayloadV1 and forward it to the rotation engine.
+    ///
+    /// Both this gRPC path and the DESIRED_STATE connector path converge
+    /// on the same rotation handler in the gateway engine.
+    async fn submit_rotation(
+        &self,
+        request: Request<SubmitRotationRequest>,
+    ) -> Result<Response<SubmitRotationResponse>, Status> {
+        let tx = self
+            .rotation_tx
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("rotation handler not configured"))?;
+
+        let payload = request.into_inner().rotation_payload;
+        if payload.is_empty() {
+            return Ok(Response::new(SubmitRotationResponse {
+                accepted: false,
+                error: "rotation_payload is empty".to_string(),
+            }));
+        }
+
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        tx.send((payload, resp_tx))
+            .map_err(|_| Status::internal("rotation channel closed"))?;
+
+        match resp_rx.await {
+            Ok(Ok(())) => Ok(Response::new(SubmitRotationResponse {
+                accepted: true,
+                error: String::new(),
+            })),
+            Ok(Err(e)) => Ok(Response::new(SubmitRotationResponse {
+                accepted: false,
+                error: e,
+            })),
+            Err(_) => Err(Status::internal("rotation handler dropped response")),
+        }
     }
 
     /// Get modem status (channel, counters, uptime).

@@ -140,6 +140,459 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+// 8a. Key Management — BIP-39 fingerprint (WEB-1001)
+let BIP39_WORDLIST = null;
+
+async function loadBip39Wordlist() {
+  if (BIP39_WORDLIST) return BIP39_WORDLIST;
+  try {
+    const response = await fetch(
+      'https://cdn.jsdelivr.net/gh/bitcoin/bips@master/bip-0039/english.txt'
+    );
+    if (!response.ok) throw new Error(`Failed to load BIP-39 wordlist: ${response.status}`);
+    const text = await response.text();
+    BIP39_WORDLIST = text.trim().split('\n').map((w) => w.trim()).filter((w) => w.length > 0);
+    if (BIP39_WORDLIST.length !== 2048) {
+      throw new Error(`BIP-39 wordlist has ${BIP39_WORDLIST.length} words, expected 2048`);
+    }
+    return BIP39_WORDLIST;
+  } catch {
+    BIP39_WORDLIST = null;
+    return null;
+  }
+}
+
+async function computeBip39Fingerprint(x25519PublicKeyBytes) {
+  const wordlist = await loadBip39Wordlist();
+  if (!wordlist || !x25519PublicKeyBytes || x25519PublicKeyBytes.length !== 32) {
+    return null;
+  }
+  const hash = await crypto.subtle.digest('SHA-256', x25519PublicKeyBytes);
+  const hashBytes = new Uint8Array(hash);
+  // Extract 66 bits (6 × 11-bit indices) from the hash.
+  const words = [];
+  for (let i = 0; i < 6; i++) {
+    const bitOffset = i * 11;
+    const byteIdx = Math.floor(bitOffset / 8);
+    const bitShift = bitOffset % 8;
+    // Read 16 bits from byteIdx and byteIdx+1, then extract 11 bits.
+    const val = ((hashBytes[byteIdx] << 8) | (hashBytes[byteIdx + 1] || 0)) >> (16 - 11 - bitShift);
+    const idx = val & 0x7ff;
+    words.push(wordlist[idx]);
+  }
+  return words;
+}
+
+function hexToBytes(hex) {
+  if (!hex || hex.length % 2 !== 0) return null;
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return bytes;
+}
+
+function base64ToBytes(b64) {
+  try {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+function bytesToHex(bytes) {
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function isNodePartitionKey(pk) {
+  return pk && pk.startsWith('n:');
+}
+
+function isGatewayPartitionKey(pk) {
+  return pk && pk.startsWith('g:');
+}
+
+function filterNodeRows(rows) {
+  return rows.filter((r) => isNodePartitionKey(r.PartitionKey));
+}
+
+function filterGatewayRows(rows) {
+  return rows.filter((r) => isGatewayPartitionKey(r.PartitionKey));
+}
+
+async function renderGatewayStatusCard(gatewayRows) {
+  if (!gatewayRows || gatewayRows.length === 0) {
+    return '<div class="panel stack"><h2>Gateway Status</h2><p class="muted">No gateway connected.</p></div>';
+  }
+
+  let cardsHtml = '';
+  for (const gw of gatewayRows) {
+    const gwId = gw.PartitionKey?.replace('g:', '') || '—';
+
+    // Compute BIP-39 fingerprint locally from x25519_public_key (WEB-1001).
+    let fingerprintHtml = '<span class="muted">unavailable</span>';
+    const pubKeyRaw = gw.x25519_public_key
+      ? base64ToBytes(gw.x25519_public_key)
+      : null;
+    if (pubKeyRaw && pubKeyRaw.length === 32) {
+      const words = await computeBip39Fingerprint(pubKeyRaw);
+      if (words) {
+        fingerprintHtml = `<code>${words.map(escapeHtml).join(' ')}</code>`;
+      }
+    }
+
+    const epoch = gw.master_key_epoch ?? '—';
+    const mkid = gw.master_key_id
+      ? bytesToHex(base64ToBytes(gw.master_key_id) || [])
+      : '—';
+    const rotInProgress = gw.rotation_in_progress === true ? 'Yes' : 'No';
+    const saltStatus = gw.salt ? 'Present' : 'Absent';
+    const gwVersion = gw.gateway_version || '—';
+    const modemVersion = gw.modem_firmware_version || '—';
+    const channel = gw.channel ?? '—';
+
+    const rotationDisabled = !hasRotationCrypto();
+    const rotateBtn = rotationDisabled
+      ? '<button class="secondary" disabled title="Browser lacks required crypto capabilities (Web Crypto + WebAssembly)">Rotate Key</button>'
+      : `<button class="secondary rotate-key-btn" data-gateway-id="${escapeHtml(gwId)}">Rotate Key</button>`;
+
+    cardsHtml += `
+      <div class="panel stack">
+        <h2>Gateway ${escapeHtml(gwId.slice(0, 8))}…</h2>
+        <div class="kv-grid">
+          <div class="kv"><strong>Fingerprint</strong> ${fingerprintHtml}</div>
+          <div class="kv"><strong>Epoch</strong> ${escapeHtml(epoch)}</div>
+          <div class="kv"><strong>Master Key ID</strong> <code>${escapeHtml(mkid.slice(0, 16))}…</code></div>
+          <div class="kv"><strong>Rotation in progress</strong> ${escapeHtml(rotInProgress)}</div>
+          <div class="kv"><strong>Salt</strong> ${escapeHtml(saltStatus)}</div>
+          <div class="kv"><strong>Gateway version</strong> ${escapeHtml(gwVersion)}</div>
+          <div class="kv"><strong>Modem version</strong> ${escapeHtml(modemVersion)}</div>
+          <div class="kv"><strong>Channel</strong> ${escapeHtml(channel)}</div>
+        </div>
+        ${rotateBtn}
+      </div>
+    `;
+  }
+  return cardsHtml;
+}
+
+function hasRotationCrypto() {
+  try {
+    return typeof crypto !== 'undefined'
+      && typeof crypto.subtle !== 'undefined'
+      && typeof crypto.subtle.importKey === 'function'
+      && typeof crypto.subtle.deriveBits === 'function'
+      && typeof crypto.getRandomValues === 'function'
+      && typeof WebAssembly !== 'undefined';
+  } catch {
+    return false;
+  }
+}
+
+// 8b. Rotation modal (WEB-1002–WEB-1008)
+function showRotationModal(gatewayRow) {
+  const gwId = gatewayRow.PartitionKey?.replace('g:', '') || '';
+  const saltStatus = gatewayRow.salt ? 'Current salt loaded' : 'First rotation (no salt)';
+  const kdfParamsRaw = gatewayRow.kdf_params_json;
+  const epoch = Number(gatewayRow.master_key_epoch) || 0;
+
+  // Compute fingerprint synchronously (already loaded wordlist by now).
+  let fingerprintText = 'Unable to compute fingerprint';
+  const pubKeyRaw = gatewayRow.x25519_public_key
+    ? base64ToBytes(gatewayRow.x25519_public_key)
+    : null;
+
+  const modalHtml = `
+    <div class="overlay" id="rotation-overlay">
+      <div class="modal" style="max-width:480px">
+        <h2>Rotate Master Key</h2>
+        <p><strong>Step 1:</strong> Verify the fingerprint below matches the modem display.</p>
+        <div id="rotation-fingerprint" class="alert" style="word-break:break-all">Computing…</div>
+        <form id="rotation-form" class="form-grid">
+          <label>Rotation Code (from modem)
+            <input name="rotationCode" type="text" maxlength="6" pattern="[A-Za-z0-9]{6}"
+              placeholder="ABC123" autocomplete="off" style="text-transform:uppercase" required>
+          </label>
+          <label>Passphrase (≥20 chars or 6+ words)
+            <input name="passphrase" type="password" minlength="20"
+              placeholder="Enter passphrase…" required>
+          </label>
+          <p class="muted small">${escapeHtml(saltStatus)}</p>
+          <div id="rotation-status"></div>
+          <div style="display:flex;gap:0.5rem">
+            <button type="submit" class="primary" id="rotation-submit-btn">Rotate</button>
+            <button type="button" class="secondary" id="rotation-cancel-btn">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+
+  let overlay = document.getElementById('rotation-overlay');
+  if (overlay) overlay.remove();
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+  // Compute fingerprint async, update display.
+  if (pubKeyRaw && pubKeyRaw.length === 32) {
+    computeBip39Fingerprint(pubKeyRaw).then((words) => {
+      const el = document.getElementById('rotation-fingerprint');
+      if (el && words) {
+        el.innerHTML = `<code>${words.map(escapeHtml).join(' ')}</code>`;
+      } else if (el) {
+        el.textContent = fingerprintText;
+      }
+    });
+  }
+
+  document.getElementById('rotation-cancel-btn')?.addEventListener('click', () => {
+    document.getElementById('rotation-overlay')?.remove();
+  });
+
+  document.getElementById('rotation-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const code = (form.rotationCode?.value || '').toUpperCase().trim();
+    const passphrase = form.passphrase?.value || '';
+    const statusEl = document.getElementById('rotation-status');
+    const submitBtn = document.getElementById('rotation-submit-btn');
+
+    if (!/^[A-Z0-9]{6}$/.test(code)) {
+      if (statusEl) statusEl.innerHTML = '<div class="alert error">Rotation code must be 6 alphanumeric characters.</div>';
+      return;
+    }
+    if (passphrase.length < 20 && passphrase.split(/\s+/).filter((w) => w).length < 6) {
+      if (statusEl) statusEl.innerHTML = '<div class="alert error">Passphrase must be ≥20 characters or 6+ space-separated words.</div>';
+      return;
+    }
+
+    if (submitBtn) submitBtn.disabled = true;
+    if (statusEl) statusEl.innerHTML = '<p class="muted">Deriving key (Argon2id)… this may take a few seconds.</p>';
+
+    try {
+      const payload = await buildRotationPayload(gatewayRow, code, passphrase);
+      if (statusEl) statusEl.innerHTML = '<p class="muted">Submitting rotation…</p>';
+      await submitRotationPayload(gwId, payload);
+      if (statusEl) statusEl.innerHTML = '<p class="muted">Rotation submitted. Polling for confirmation…</p>';
+      const success = await pollRotationResult(gwId, epoch);
+      if (success) {
+        if (statusEl) statusEl.innerHTML = '<div class="alert success">Rotation complete! New epoch active.</div>';
+      } else {
+        if (statusEl) statusEl.innerHTML = '<div class="alert error">Rotation may still be in progress — check gateway status.</div>';
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (statusEl) statusEl.innerHTML = `<div class="alert error">${escapeHtml(msg)}</div>`;
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  });
+}
+
+async function buildRotationPayload(gatewayRow, rotationCode, passphrase) {
+  const gwId = gatewayRow.PartitionKey?.replace('g:', '') || '';
+  const gwIdBytes = hexToBytes(gwId);
+  if (!gwIdBytes || gwIdBytes.length === 0) throw new Error('Invalid gateway_id');
+
+  const pubKeyB64 = gatewayRow.x25519_public_key;
+  if (!pubKeyB64) throw new Error('Gateway has no x25519_public_key');
+  const gwPubKey = base64ToBytes(pubKeyB64);
+  if (!gwPubKey || gwPubKey.length !== 32) throw new Error('Invalid x25519_public_key');
+
+  const epoch = Number(gatewayRow.master_key_epoch) || 0;
+
+  // Parse KDF params
+  let mCost = 65536, tCost = 3, pCost = 1;
+  if (gatewayRow.kdf_params_json) {
+    try {
+      const kdf = JSON.parse(gatewayRow.kdf_params_json);
+      if (kdf.m_cost) mCost = kdf.m_cost;
+      if (kdf.t_cost) tCost = kdf.t_cost;
+      if (kdf.p_cost) pCost = kdf.p_cost;
+    } catch { /* use defaults */ }
+  }
+
+  // Determine salt: use gateway salt if present, otherwise generate for first rotation.
+  let salt;
+  if (gatewayRow.salt) {
+    salt = base64ToBytes(gatewayRow.salt);
+  } else {
+    salt = new Uint8Array(16);
+    crypto.getRandomValues(salt);
+  }
+  if (!salt || salt.length !== 16) throw new Error('Invalid salt');
+
+  // Derive master key via Argon2id (WEB-1003)
+  if (typeof argon2 === 'undefined') {
+    throw new Error('Argon2id WASM library not loaded. Rotation requires argon2-browser.');
+  }
+  const argonResult = await argon2.hash({
+    pass: passphrase,
+    salt,
+    time: tCost,
+    mem: mCost,
+    parallelism: pCost,
+    hashLen: 32,
+    type: argon2.ArgonType.Argon2id,
+  });
+  const newMasterKey = new Uint8Array(argonResult.hash);
+
+  // Generate new master_key_id (16 random bytes)
+  const newMasterKeyId = new Uint8Array(16);
+  crypto.getRandomValues(newMasterKeyId);
+
+  // KDF params to include in plaintext
+  const kdfParams = { m_cost: mCost, t_cost: tCost, p_cost: pCost, kdf_version: 1 };
+
+  // X25519 key exchange (WEB-1004)
+  if (typeof nobleEd25519 === 'undefined' && typeof noble_curves_x25519 === 'undefined') {
+    throw new Error('Noble curves library not loaded. Rotation requires @noble/curves.');
+  }
+  const x25519Lib = typeof noble_curves_x25519 !== 'undefined'
+    ? noble_curves_x25519
+    : nobleEd25519?.x25519;
+  if (!x25519Lib) throw new Error('X25519 not available from noble-curves');
+
+  const ephemeralPrivate = new Uint8Array(32);
+  crypto.getRandomValues(ephemeralPrivate);
+  const ephemeralPublic = x25519Lib.getPublicKey(ephemeralPrivate);
+  const sharedSecret = x25519Lib.getSharedSecret(ephemeralPrivate, gwPubKey);
+
+  // HKDF-SHA-256 (WEB-1004)
+  const epochBe64 = new Uint8Array(8);
+  new DataView(epochBe64.buffer).setBigUint64(0, BigInt(epoch));
+  const hkdfInfo = new Uint8Array(gwIdBytes.length + 8);
+  hkdfInfo.set(gwIdBytes, 0);
+  hkdfInfo.set(epochBe64, gwIdBytes.length);
+
+  const hkdfKey = await crypto.subtle.importKey('raw', sharedSecret, 'HKDF', false, ['deriveBits']);
+  const derivedBits = await crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: new TextEncoder().encode('sonde-rotation-v1'), info: hkdfInfo },
+    hkdfKey,
+    256,
+  );
+  const aesKey = new Uint8Array(derivedBits);
+
+  // CBOR plaintext: {1: new_master_key, 2: rotation_code, 3: new_master_key_id, 4: salt, 5: kdf_params}
+  const plaintext = encodeCborRotationPlaintext(newMasterKey, rotationCode, newMasterKeyId, salt, kdfParams);
+
+  // AES-256-GCM encryption
+  const nonce = new Uint8Array(12);
+  crypto.getRandomValues(nonce);
+  const aad = hkdfInfo; // gateway_id_raw || epoch_be64
+
+  const cryptoKey = await crypto.subtle.importKey('raw', aesKey, { name: 'AES-GCM' }, false, ['encrypt']);
+  const ciphertextAndTag = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: nonce, additionalData: aad },
+    cryptoKey,
+    plaintext,
+  );
+
+  // Build final payload: version(1) || ephemeral_public(32) || nonce(12) || ciphertext_and_tag
+  const ct = new Uint8Array(ciphertextAndTag);
+  const result = new Uint8Array(1 + 32 + 12 + ct.length);
+  result[0] = 0x01; // version
+  result.set(ephemeralPublic, 1);
+  result.set(nonce, 33);
+  result.set(ct, 45);
+
+  // Best-effort key hygiene (WEB-1008)
+  try {
+    newMasterKey.fill(0);
+    aesKey.fill(0);
+    ephemeralPrivate.fill(0);
+    sharedSecret.fill(0);
+  } catch { /* best effort */ }
+
+  return result;
+}
+
+function encodeCborRotationPlaintext(masterKey, rotationCode, masterKeyId, salt, kdfParams) {
+  // Minimal deterministic CBOR encoder for the rotation plaintext map.
+  // Map with 5 entries: {1: bstr, 2: tstr, 3: bstr, 4: bstr, 5: map}
+  const parts = [];
+  // CBOR map header (5 items)
+  parts.push(0xa5);
+  // Key 1: new_master_key (bstr 32)
+  parts.push(0x01);
+  parts.push(0x58, 0x20); // bstr(32)
+  for (let i = 0; i < masterKey.length; i++) parts.push(masterKey[i]);
+  // Key 2: rotation_code (tstr)
+  parts.push(0x02);
+  const codeBytes = new TextEncoder().encode(rotationCode);
+  parts.push(0x60 + codeBytes.length);
+  for (let i = 0; i < codeBytes.length; i++) parts.push(codeBytes[i]);
+  // Key 3: new_master_key_id (bstr 16)
+  parts.push(0x03);
+  parts.push(0x50); // bstr(16)
+  for (let i = 0; i < masterKeyId.length; i++) parts.push(masterKeyId[i]);
+  // Key 4: salt (bstr 16)
+  parts.push(0x04);
+  parts.push(0x50); // bstr(16)
+  for (let i = 0; i < salt.length; i++) parts.push(salt[i]);
+  // Key 5: kdf_params (map with 4 entries)
+  parts.push(0x05);
+  parts.push(0xa4);
+  // {1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}
+  encodeCborUintEntry(parts, 1, kdfParams.m_cost);
+  encodeCborUintEntry(parts, 2, kdfParams.t_cost);
+  encodeCborUintEntry(parts, 3, kdfParams.p_cost);
+  encodeCborUintEntry(parts, 4, kdfParams.kdf_version || 1);
+  return new Uint8Array(parts);
+}
+
+function encodeCborUintEntry(parts, key, value) {
+  parts.push(key); // key (0-23 fits in 1 byte)
+  if (value < 24) {
+    parts.push(value);
+  } else if (value < 256) {
+    parts.push(0x18, value);
+  } else if (value < 65536) {
+    parts.push(0x19, (value >> 8) & 0xff, value & 0xff);
+  } else {
+    parts.push(0x1a, (value >> 24) & 0xff, (value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff);
+  }
+}
+
+async function submitRotationPayload(gwId, payloadBytes) {
+  const partitionKey = `g:${gwId}`;
+  const nowMs = Date.now();
+  const invTs = (BigInt('0xffffffffffffffff') - BigInt(nowMs)).toString(16).padStart(16, '0');
+  const rowKey = `${invTs}:${randomHex(8)}`;
+  const b64Payload = btoa(String.fromCharCode(...payloadBytes));
+
+  const entity = {
+    PartitionKey: partitionKey,
+    RowKey: rowKey,
+    rotation_payload: b64Payload,
+    'rotation_payload@odata.type': 'Edm.Binary',
+    timestamp_ms: String(nowMs),
+    'timestamp_ms@odata.type': 'Edm.Int64',
+  };
+  await insertEntity(CONFIG.desiredStateTable, entity);
+}
+
+async function pollRotationResult(gwId, originalEpoch) {
+  const maxAttempts = 24; // 5s × 24 = 120s
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    try {
+      const filter = `PartitionKey eq 'g:${gwId}' and RowKey eq 'state'`;
+      const rows = await queryTable(CONFIG.actualStateTable, filter);
+      if (rows.length > 0) {
+        const currentEpoch = Number(rows[0].master_key_epoch) || 0;
+        if (currentEpoch > originalEpoch) return true;
+        if (rows[0].rotation_in_progress === false && currentEpoch === originalEpoch && i > 2) {
+          return false; // rotation_in_progress went back to false without epoch change
+        }
+      }
+    } catch { /* retry */ }
+  }
+  return false;
+}
+
 function showViewMessage(kind, text) {
   APP.viewMessage = { kind, text };
 }
@@ -534,8 +987,12 @@ async function renderDashboard() {
       queryTable(CONFIG.desiredStateTable, ''),
     ]);
 
-    const latestActual = latestByPartition(actualRows).sort((left, right) => String(left.node_id || '').localeCompare(String(right.node_id || '')));
-    const desiredByPartition = new Map(latestByPartition(desiredRows).map((row) => [row.PartitionKey, row]));
+    // Separate gateway and node rows (WEB-1001).
+    const gatewayRows = filterGatewayRows(actualRows);
+    const gatewayCardHtml = await renderGatewayStatusCard(gatewayRows);
+
+    const latestActual = latestByPartition(filterNodeRows(actualRows)).sort((left, right) => String(left.node_id || '').localeCompare(String(right.node_id || '')));
+    const desiredByPartition = new Map(latestByPartition(filterNodeRows(desiredRows)).map((row) => [row.PartitionKey, row]));
 
     const rowsHtml = latestActual.map((actual) => {
       const desired = desiredByPartition.get(actual.PartitionKey);
@@ -564,6 +1021,7 @@ async function renderDashboard() {
     }).join('');
 
     renderCard('Dashboard', `
+      ${gatewayCardHtml}
       <div class="table-wrap">
         <table>
           <thead>
@@ -583,6 +1041,17 @@ async function renderDashboard() {
         </table>
       </div>
     `);
+
+    // Attach rotation button click handlers
+    for (const btn of document.querySelectorAll('.rotate-key-btn')) {
+      btn.addEventListener('click', () => {
+        const gwIdForBtn = btn.dataset.gatewayId;
+        const gwRow = gatewayRows.find(
+          (r) => (r.PartitionKey?.replace('g:', '') || '') === gwIdForBtn
+        );
+        if (gwRow) showRotationModal(gwRow);
+      });
+    }
   } catch (error) {
     renderError('Dashboard', error);
   }
@@ -648,12 +1117,12 @@ async function renderDesiredState() {
       queryTable(CONFIG.actualStateTable, ''),
     ]);
 
-    const latestActual = latestByPartition(actualRows)
+    const latestActual = latestByPartition(filterNodeRows(actualRows))
       .filter((node) => node.node_id)
       .sort((left, right) =>
         String(left.node_id || '').localeCompare(String(right.node_id || '')));
     const desiredByPartition = new Map(
-      latestByPartition(desiredRows).map((row) => [row.PartitionKey, row]));
+      latestByPartition(filterNodeRows(desiredRows)).map((row) => [row.PartitionKey, row]));
 
     const nodeOptions = [
       '<option value="" disabled selected>Select a node…</option>',
@@ -1431,7 +1900,7 @@ async function renderSensorData() {
 
   try {
     const actualRows = await queryTable(CONFIG.actualStateTable, '');
-    const latestActual = latestByPartition(actualRows).sort((a, b) =>
+    const latestActual = latestByPartition(filterNodeRows(actualRows)).sort((a, b) =>
       String(a.node_id || '').localeCompare(String(b.node_id || ''))
     );
 

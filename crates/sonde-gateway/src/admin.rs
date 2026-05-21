@@ -1428,7 +1428,7 @@ impl GatewayAdmin for AdminService {
 
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
         tx.send((payload, resp_tx))
-            .map_err(|_| Status::internal("rotation channel closed"))?;
+            .map_err(|_| Status::unavailable("rotation channel closed"))?;
 
         match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx).await {
             Ok(Ok(Ok(()))) => Ok(Response::new(SubmitRotationResponse {

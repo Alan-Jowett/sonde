@@ -24,7 +24,7 @@ use crate::session::SessionManager;
 use crate::storage::{HandlerRecord, Storage};
 use crate::transient_display::{show_modem_display_message, ActiveDisplayState};
 
-/// JSON-serializable KDF parameters (stored in gateway_config).
+/// JSON-deserializable KDF parameters (stored in gateway_config).
 #[derive(serde::Deserialize)]
 struct KdfParamsJson {
     m_cost: u32,
@@ -1249,15 +1249,17 @@ impl GatewayAdmin for AdminService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<GatewayState>, Status> {
-        let gateway_id = self
+        // Load gateway identity (source of truth for gateway_id).
+        let identity = self
             .storage
-            .get_config("gateway_id_hex")
+            .load_gateway_identity()
             .await
             .map_err(storage_err)?
             .ok_or_else(|| Status::not_found("gateway identity not initialized"))?;
-        let gateway_id_bytes = hex::decode(&gateway_id)
-            .map_err(|e| Status::internal(format!("invalid gateway_id hex: {e}")))?;
 
+        let gateway_id_bytes = identity.gateway_id().to_vec();
+
+        // Master key identification.
         let master_key_id_hex = self
             .storage
             .get_config("master_key_id")
@@ -1266,6 +1268,12 @@ impl GatewayAdmin for AdminService {
             .ok_or_else(|| Status::not_found("master key not initialized"))?;
         let master_key_id = hex::decode(&master_key_id_hex)
             .map_err(|e| Status::internal(format!("invalid master_key_id hex: {e}")))?;
+        if master_key_id.len() != 16 {
+            return Err(Status::internal(format!(
+                "master_key_id has wrong length: {} (expected 16)",
+                master_key_id.len()
+            )));
+        }
 
         let master_key_epoch: u64 = self
             .storage
@@ -1276,13 +1284,7 @@ impl GatewayAdmin for AdminService {
             .parse()
             .map_err(|e| Status::internal(format!("invalid master_key_epoch: {e}")))?;
 
-        let identity = self
-            .storage
-            .load_gateway_identity()
-            .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found("gateway identity not found"))?;
-
+        // X25519 public key and fingerprint.
         let (_, x25519_public) = identity
             .to_x25519()
             .map_err(|e| Status::internal(format!("X25519 conversion failed: {e}")))?;
@@ -1290,20 +1292,41 @@ impl GatewayAdmin for AdminService {
         let sha = crate::crypto::RustCryptoSha256;
         let fp = sonde_protocol::fingerprint::compute_fingerprint(x25519_public.as_bytes(), &sha);
 
-        let channel_str = self
+        // Channel — default to 1 if absent, error if stored value is malformed.
+        let channel: u32 = match self
             .storage
             .get_config("espnow_channel")
             .await
-            .map_err(storage_err)?;
-        let channel: u32 = channel_str.as_deref().unwrap_or("1").parse().unwrap_or(1);
+            .map_err(storage_err)?
+        {
+            Some(s) => s
+                .parse()
+                .map_err(|e| Status::internal(format!("invalid espnow_channel: {e}")))?,
+            None => 1,
+        };
 
-        let salt = self
+        // Salt — error if stored but malformed, None if absent.
+        let salt = match self
             .storage
             .get_config("kdf_salt")
             .await
             .map_err(storage_err)?
-            .and_then(|s| hex::decode(s).ok());
+        {
+            Some(s) => {
+                let bytes = hex::decode(&s)
+                    .map_err(|e| Status::internal(format!("invalid kdf_salt hex: {e}")))?;
+                if bytes.len() != 16 {
+                    return Err(Status::internal(format!(
+                        "kdf_salt has wrong length: {} (expected 16)",
+                        bytes.len()
+                    )));
+                }
+                Some(bytes)
+            }
+            None => None,
+        };
 
+        // KDF params — error if stored but malformed, None if absent.
         let kdf_params = match self
             .storage
             .get_config("kdf_params_json")
@@ -1311,27 +1334,25 @@ impl GatewayAdmin for AdminService {
             .map_err(storage_err)?
         {
             Some(json) => {
-                serde_json::from_str::<KdfParamsJson>(&json)
-                    .ok()
-                    .map(|p| KdfParameters {
-                        m_cost: p.m_cost,
-                        t_cost: p.t_cost,
-                        p_cost: p.p_cost,
-                        kdf_version: p.kdf_version,
-                    })
+                let p: KdfParamsJson = serde_json::from_str(&json)
+                    .map_err(|e| Status::internal(format!("invalid kdf_params_json: {e}")))?;
+                Some(KdfParameters {
+                    m_cost: p.m_cost,
+                    t_cost: p.t_cost,
+                    p_cost: p.p_cost,
+                    kdf_version: p.kdf_version,
+                })
             }
             None => None,
         };
 
-        // Check if a rotation is in progress by looking for pending_rotation
-        // config key (set by the rotation engine).
+        // Check pending_rotation table for active rotation.
         let rotation_in_progress = self
             .storage
-            .get_config("rotation_in_progress")
+            .get_config("pending_rotation_phase")
             .await
             .map_err(storage_err)?
-            .map(|v| v == "true")
-            .unwrap_or(false);
+            .is_some();
 
         Ok(Response::new(GatewayState {
             gateway_id: gateway_id_bytes,
@@ -1344,7 +1365,7 @@ impl GatewayAdmin for AdminService {
             salt,
             kdf_params,
             gateway_version: env!("CARGO_PKG_VERSION").to_string(),
-            gateway_commit: option_env!("SONDE_BUILD_COMMIT")
+            gateway_commit: option_env!("SONDE_GIT_COMMIT")
                 .unwrap_or("unknown")
                 .to_string(),
         }))
@@ -1368,6 +1389,16 @@ impl GatewayAdmin for AdminService {
             return Ok(Response::new(SubmitRotationResponse {
                 accepted: false,
                 error: "rotation_payload is empty".to_string(),
+            }));
+        }
+        // Enforce max payload size consistent with rotation.rs MAX_PAYLOAD_LEN.
+        if payload.len() > 1024 {
+            return Ok(Response::new(SubmitRotationResponse {
+                accepted: false,
+                error: format!(
+                    "rotation_payload too large: {} bytes (max 1024)",
+                    payload.len()
+                ),
             }));
         }
 

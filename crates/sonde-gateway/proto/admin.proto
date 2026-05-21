@@ -39,6 +39,10 @@ service GatewayAdmin {
     rpc AddHandler(AddHandlerRequest) returns (Empty);
     rpc RemoveHandler(RemoveHandlerRequest) returns (Empty);
     rpc ListHandlers(Empty) returns (ListHandlersResponse);
+
+    // Key management (GW-2012, evolve-962 §5.1.1).
+    rpc GetGatewayState(Empty) returns (GatewayState);
+    rpc SubmitRotation(SubmitRotationRequest) returns (SubmitRotationResponse);
 }
 
 message Empty {}
@@ -193,3 +197,34 @@ message HandlerInfo {
     optional uint64 reply_timeout_ms = 5;
 }
 message ListHandlersResponse { repeated HandlerInfo handlers = 1; }
+
+// Key management messages (GW-2012, evolve-962 §5.1.1).
+message GatewayState {
+    bytes gateway_id = 1;
+    uint32 channel = 2;
+    bytes master_key_id = 3;          // 16 bytes, opaque
+    uint64 master_key_epoch = 4;
+    bytes x25519_public_key = 5;      // 32 bytes
+    repeated string fingerprint_words = 6; // 6 BIP-39 words
+    bool rotation_in_progress = 7;
+    optional bytes salt = 8;          // 16 bytes or absent
+    optional KdfParameters kdf_params = 9;
+    string gateway_version = 10;
+    string gateway_commit = 11;
+}
+
+message KdfParameters {
+    uint32 m_cost = 1;
+    uint32 t_cost = 2;
+    uint32 p_cost = 3;
+    uint32 kdf_version = 4;
+}
+
+message SubmitRotationRequest {
+    bytes rotation_payload = 1; // RotationPayloadV1 binary (evolve-962 §2.6.1)
+}
+
+message SubmitRotationResponse {
+    bool accepted = 1;
+    string error = 2; // Human-readable error if rejected
+}

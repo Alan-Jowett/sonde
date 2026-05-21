@@ -4771,6 +4771,7 @@ mod tests {
     }
 
     // --- Test helpers for gateway ACTUAL_STATE encoding ---
+    #[allow(clippy::too_many_arguments)]
     fn encode_gateway_actual_state_msg(
         entity_id: &str,
         timestamp_ms: u64,
@@ -4794,6 +4795,7 @@ mod tests {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn encode_gateway_actual_state_msg_with_hints(
         entity_id: &str,
         timestamp_ms: u64,

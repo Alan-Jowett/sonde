@@ -1011,13 +1011,25 @@ impl SqliteStorage {
                 )
                 .optional()
                 .map_err(map_err)?;
-            pending.and_then(|(_, epoch_raw): (Vec<u8>, i64)| {
-                let new_epoch = u64::try_from(epoch_raw).ok()?;
-                Some(RotationKeyState {
-                    new_key: Arc::new(Zeroizing::new(**new_key)),
-                    new_epoch,
+            pending
+                .map(|(id_vec, epoch_raw): (Vec<u8>, i64)| {
+                    let new_epoch = u64::try_from(epoch_raw).map_err(|_| {
+                        StorageError::Internal(format!(
+                            "pending_rotation.new_epoch is negative: {epoch_raw}"
+                        ))
+                    })?;
+                    if id_vec.len() != 16 {
+                        return Err(StorageError::Internal(format!(
+                            "pending_rotation.new_master_key_id has wrong length: {} (expected 16)",
+                            id_vec.len()
+                        )));
+                    }
+                    Ok(RotationKeyState {
+                        new_key: Arc::new(Zeroizing::new(**new_key)),
+                        new_epoch,
+                    })
                 })
-            })
+                .transpose()?
         } else {
             None
         };
@@ -1590,17 +1602,17 @@ impl SqliteStorage {
             )
             .map_err(map_err)?;
 
-            // Store salt if provided.
+            // Store salt if provided (key matches admin GetGatewayState reader).
             if let Some(ref salt_bytes) = salt {
                 tx.execute(
-                    "INSERT INTO gateway_config (key, value) VALUES ('salt', ?1) \
+                    "INSERT INTO gateway_config (key, value) VALUES ('kdf_salt', ?1) \
                      ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     params![hex::encode(salt_bytes)],
                 )
                 .map_err(map_err)?;
             }
 
-            // Store KDF params if provided.
+            // Store KDF params if provided (key matches admin GetGatewayState reader).
             if let Some(ref params) = kdf_params {
                 let kdf_json = serde_json::json!({
                     "m_cost": params.m_cost,
@@ -1609,7 +1621,7 @@ impl SqliteStorage {
                     "kdf_version": params.kdf_version,
                 });
                 tx.execute(
-                    "INSERT INTO gateway_config (key, value) VALUES ('kdf_params', ?1) \
+                    "INSERT INTO gateway_config (key, value) VALUES ('kdf_params_json', ?1) \
                      ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     params![kdf_json.to_string()],
                 )

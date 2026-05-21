@@ -1346,7 +1346,11 @@ struct ActualStateEntity {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     encrypted_psk: Option<String>,
     /// Node PSK escrow: key_hint (AZH-0601).
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "deserialize_optional_u64_flexible"
+    )]
     key_hint: Option<u64>,
     /// Node PSK escrow: base64-encoded master_key_id (AZH-0601).
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1362,11 +1366,19 @@ struct GatewayActualStateEntity {
     row_key: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     x25519_public_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "deserialize_optional_i64_flexible"
+    )]
     channel: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     master_key_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "deserialize_optional_i64_flexible"
+    )]
     master_key_epoch: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     salt: Option<String>,
@@ -1460,6 +1472,100 @@ fn deserialize_u64_flexible<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u6
     }
 
     d.deserialize_any(U64Visitor)
+}
+
+fn deserialize_optional_u64_flexible<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<u64>, D::Error> {
+    use serde::de::{self, Visitor};
+
+    struct OptU64Visitor;
+
+    impl<'de> Visitor<'de> for OptU64Visitor {
+        type Value = Option<u64>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a u64, i64, f64, numeric string, or null")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Option<u64>, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: de::Error>(self) -> Result<Option<u64>, E> {
+            Ok(None)
+        }
+        fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Option<u64>, D2::Error> {
+            deserialize_u64_flexible(d).map(Some)
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Option<u64>, E> {
+            Ok(Some(v))
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Option<u64>, E> {
+            u64::try_from(v)
+                .map(Some)
+                .map_err(|_| E::custom(format!("{v} is not a valid u64")))
+        }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Option<u64>, E> {
+            if !v.is_finite() || v < 0.0 || v >= 2.0_f64.powi(64) || v.fract() != 0.0 {
+                return Err(E::custom(format!("{v} is not a valid u64")));
+            }
+            Ok(Some(v as u64))
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Option<u64>, E> {
+            v.parse::<u64>()
+                .map(Some)
+                .map_err(|_| E::custom(format!("cannot parse \"{v}\" as u64")))
+        }
+    }
+
+    d.deserialize_any(OptU64Visitor)
+}
+
+fn deserialize_optional_i64_flexible<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<i64>, D::Error> {
+    use serde::de::{self, Visitor};
+
+    struct OptI64Visitor;
+
+    impl<'de> Visitor<'de> for OptI64Visitor {
+        type Value = Option<i64>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an i64, u64, f64, numeric string, or null")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Option<i64>, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: de::Error>(self) -> Result<Option<i64>, E> {
+            Ok(None)
+        }
+        fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Option<i64>, D2::Error> {
+            deserialize_optional_i64_flexible(d)
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Option<i64>, E> {
+            Ok(Some(v))
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Option<i64>, E> {
+            i64::try_from(v)
+                .map(Some)
+                .map_err(|_| E::custom(format!("{v} is not a valid i64")))
+        }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Option<i64>, E> {
+            if !v.is_finite() || v.fract() != 0.0 {
+                return Err(E::custom(format!("{v} is not a valid i64")));
+            }
+            Ok(Some(v as i64))
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Option<i64>, E> {
+            v.parse::<i64>()
+                .map(Some)
+                .map_err(|_| E::custom(format!("cannot parse \"{v}\" as i64")))
+        }
+    }
+
+    d.deserialize_any(OptI64Visitor)
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

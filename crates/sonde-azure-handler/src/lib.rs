@@ -100,6 +100,51 @@ pub struct ActualStateRow {
     pub firmware_abi_version: Option<u32>,
     pub firmware_version: Option<String>,
     pub timestamp_ms: u64,
+    /// Node PSK escrow: encrypted PSK blob (AZH-0601, 60 bytes).
+    pub encrypted_psk: Option<Vec<u8>>,
+    /// Node PSK escrow: key_hint for recovery lookup (AZH-0601).
+    pub escrow_key_hint: Option<u64>,
+    /// Node PSK escrow: master_key_id (AZH-0601, 16 bytes).
+    pub master_key_id: Option<Vec<u8>>,
+}
+
+/// Gateway ACTUAL_STATE row stored as a singleton in the `actualstate` table
+/// with `PartitionKey = "g:" + gateway_id_hex` and `RowKey = "state"` (AZH-0600).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayActualStateRow {
+    pub gateway_id: String,
+    pub timestamp_ms: u64,
+    pub channel: Option<u64>,
+    pub master_key_id: Option<Vec<u8>>,
+    pub master_key_epoch: Option<u64>,
+    pub x25519_public_key: Option<Vec<u8>>,
+    pub fingerprint_words: Option<String>,
+    pub missing_key_hints: Option<String>,
+    pub salt: Option<Vec<u8>>,
+    pub kdf_params_json: Option<String>,
+    pub gateway_version: Option<String>,
+    pub gateway_commit: Option<String>,
+    pub modem_firmware_version: Option<String>,
+    pub modem_firmware_commit: Option<String>,
+    pub rotation_in_progress: Option<bool>,
+}
+
+/// A recovered node PSK record for gateway DESIRED_STATE (AZH-0602).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeEscrowRecord {
+    pub entity_id: String,
+    pub key_hint: u64,
+    pub encrypted_psk: Vec<u8>,
+    pub master_key_id: Vec<u8>,
+}
+
+/// Gateway DESIRED_STATE row in the `desiredstate` table (AZH-0605).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayDesiredStateRow {
+    pub gateway_id: String,
+    pub row_key: String,
+    pub rotation_payload: Option<Vec<u8>>,
+    pub timestamp_ms: u64,
 }
 
 impl ActualStateRow {
@@ -116,6 +161,9 @@ impl ActualStateRow {
             firmware_abi_version: message.firmware_abi_version,
             firmware_version: message.firmware_version.clone(),
             timestamp_ms: message.timestamp_ms,
+            encrypted_psk: message.encrypted_psk.clone(),
+            escrow_key_hint: message.escrow_key_hint.map(|v| v as u64),
+            master_key_id: message.node_master_key_id.clone(),
         })
     }
 }
@@ -166,6 +214,38 @@ pub struct ActualStateMessage {
     pub firmware_version: Option<String>,
     pub timestamp_ms: u64,
     pub schedule_interval_s: Option<u32>,
+    /// Node escrow: encrypted PSK blob (CBOR key 12, 60 bytes).
+    pub encrypted_psk: Option<Vec<u8>>,
+    /// Node escrow: key_hint (CBOR key 13, u16).
+    pub escrow_key_hint: Option<u16>,
+    /// Node escrow: master_key_id (CBOR key 14, 16 bytes).
+    pub node_master_key_id: Option<Vec<u8>>,
+    /// Gateway: channel (CBOR key 15).
+    pub channel: Option<u32>,
+    /// Gateway: master_key_id (CBOR key 16, 16 bytes).
+    pub gateway_master_key_id: Option<Vec<u8>>,
+    /// Gateway: master_key_epoch (CBOR key 17).
+    pub master_key_epoch: Option<u64>,
+    /// Gateway: x25519 public key (CBOR key 18, 32 bytes).
+    pub x25519_public_key: Option<Vec<u8>>,
+    /// Gateway: BIP-39 fingerprint words (CBOR key 19).
+    pub fingerprint_words: Option<Vec<String>>,
+    /// Gateway: missing key_hints (CBOR key 20).
+    pub missing_key_hints: Option<Vec<u64>>,
+    /// Gateway: KDF salt (CBOR key 21, 16 bytes).
+    pub salt: Option<Vec<u8>>,
+    /// Gateway: KDF params JSON (CBOR key 22).
+    pub kdf_params: Option<serde_json::Value>,
+    /// Gateway: gateway binary version (CBOR key 23).
+    pub gateway_version: Option<String>,
+    /// Gateway: gateway binary commit (CBOR key 24).
+    pub gateway_commit: Option<String>,
+    /// Gateway: modem firmware version (CBOR key 25).
+    pub modem_firmware_version: Option<String>,
+    /// Gateway: modem firmware commit (CBOR key 26).
+    pub modem_firmware_commit: Option<String>,
+    /// Gateway: rotation in progress (CBOR key 27).
+    pub rotation_in_progress: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,7 +261,7 @@ pub struct AppDataMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectorMessage {
-    ActualState(ActualStateMessage),
+    ActualState(Box<ActualStateMessage>),
     AppData(AppDataMessage),
     Unsupported(u64),
 }
@@ -204,6 +284,38 @@ pub trait HandlerStore: Send + Sync {
     async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError>;
     /// Append a row to the `SensorData` table for a `GW-0813` message (AZH-0500).
     async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError>;
+
+    /// Upsert gateway ACTUAL_STATE singleton row (AZH-0600).
+    async fn upsert_gateway_actual_state(
+        &self,
+        row: &GatewayActualStateRow,
+    ) -> Result<(), HandlerError>;
+
+    /// Load gateway ACTUAL_STATE singleton row (AZH-0600).
+    async fn load_gateway_actual_state(
+        &self,
+        gateway_id: &str,
+    ) -> Result<Option<GatewayActualStateRow>, HandlerError>;
+
+    /// Query node escrow records by key_hint (AZH-0602).
+    /// Returns the latest escrow record per node matching the given key_hint.
+    async fn query_nodes_by_key_hint(
+        &self,
+        key_hint: u64,
+    ) -> Result<Vec<NodeEscrowRecord>, HandlerError>;
+
+    /// Load the latest gateway desired-state row (for rotation_payload relay).
+    async fn load_gateway_desired_state(
+        &self,
+        gateway_id: &str,
+    ) -> Result<Option<GatewayDesiredStateRow>, HandlerError>;
+
+    /// Upsert gateway desired-state row (for clearing rotation_payload after
+    /// epoch increment).
+    async fn upsert_gateway_desired_state(
+        &self,
+        row: &GatewayDesiredStateRow,
+    ) -> Result<(), HandlerError>;
 }
 
 #[async_trait]
@@ -234,7 +346,11 @@ where
         match decode_connector_message(payload)? {
             ConnectorMessage::ActualState(actual_state) => {
                 match actual_state.entity_kind.as_str() {
-                    "node" => self.handle_actual_state(actual_state).await?,
+                    "node" => self.handle_actual_state(*actual_state).await?,
+                    "gateway" => self.handle_gateway_actual_state(*actual_state).await?,
+                    "phone" => {
+                        // AZH-0601: Phones are NOT escrowed — silently ignore.
+                    }
                     other => {
                         warn!(
                             entity_kind = %other,
@@ -346,6 +462,149 @@ where
         self.publisher
             .publish(&self.downstream_queue, desired)
             .await
+    }
+
+    /// Handle gateway-scoped ACTUAL_STATE (AZH-0600–AZH-0605).
+    ///
+    /// 1. Load previous gateway state (for epoch comparison).
+    /// 2. Latch missing_key_hints recovery work before upsert.
+    /// 3. Upsert gateway singleton row.
+    /// 4. If epoch incremented, clear rotation_payload from desired state.
+    /// 5. Construct and publish gateway DESIRED_STATE.
+    async fn handle_gateway_actual_state(
+        &self,
+        msg: ActualStateMessage,
+    ) -> Result<(), HandlerError> {
+        if msg.entity_id.is_empty() {
+            return Err(HandlerError::Decode(
+                "gateway-scoped ACTUAL_STATE requires a non-empty entity_id".to_string(),
+            ));
+        }
+        // Validate entity_id is well-formed hex (gateway_id is hex-encoded).
+        if !msg.entity_id.len().is_multiple_of(2)
+            || !msg.entity_id.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(HandlerError::Decode(format!(
+                "gateway entity_id must be even-length hex, got `{}`",
+                msg.entity_id
+            )));
+        }
+
+        let gateway_id = &msg.entity_id;
+
+        // Load previous gateway state before upsert (for epoch comparison).
+        let previous = self.store.load_gateway_actual_state(gateway_id).await?;
+
+        // Latch missing_key_hints recovery: query matching node escrow records
+        // before upserting (later ACTUAL_STATE may overwrite hints).
+        let mut recovered_psks: Vec<NodeEscrowRecord> = Vec::new();
+        if let Some(ref hints) = msg.missing_key_hints {
+            if !hints.is_empty() {
+                if let Some(ref gw_master_key_id) = msg.gateway_master_key_id {
+                    for &hint in hints {
+                        let records = self.store.query_nodes_by_key_hint(hint).await?;
+                        for record in records {
+                            if record.master_key_id == *gw_master_key_id {
+                                recovered_psks.push(record);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build gateway ACTUAL_STATE row.
+        let fingerprint_words = msg
+            .fingerprint_words
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| HandlerError::Decode(format!("serialize fingerprint_words: {e}")))?;
+        let missing_key_hints_json = msg
+            .missing_key_hints
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| HandlerError::Decode(format!("serialize missing_key_hints: {e}")))?;
+        let kdf_params_json = msg
+            .kdf_params
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| HandlerError::Decode(format!("serialize kdf_params: {e}")))?;
+
+        let gw_row = GatewayActualStateRow {
+            gateway_id: gateway_id.clone(),
+            timestamp_ms: msg.timestamp_ms,
+            channel: msg.channel.map(|c| c as u64),
+            master_key_id: msg.gateway_master_key_id.clone(),
+            master_key_epoch: msg.master_key_epoch,
+            x25519_public_key: msg.x25519_public_key.clone(),
+            fingerprint_words,
+            missing_key_hints: missing_key_hints_json,
+            salt: msg.salt.clone(),
+            kdf_params_json,
+            gateway_version: msg.gateway_version.clone(),
+            gateway_commit: msg.gateway_commit.clone(),
+            modem_firmware_version: msg.modem_firmware_version.clone(),
+            modem_firmware_commit: msg.modem_firmware_commit.clone(),
+            rotation_in_progress: msg.rotation_in_progress,
+        };
+        self.store.upsert_gateway_actual_state(&gw_row).await?;
+
+        // If master_key_epoch incremented, clear rotation_payload (AZH-0603).
+        let prev_epoch = previous
+            .as_ref()
+            .and_then(|p| p.master_key_epoch)
+            .unwrap_or(0);
+        let cur_epoch = msg.master_key_epoch.unwrap_or(0);
+        let epoch_incremented = previous.is_some() && cur_epoch > prev_epoch;
+
+        // Load rotation_payload from SPA-written desired-state row.
+        let gw_desired = self.store.load_gateway_desired_state(gateway_id).await?;
+        let rotation_payload = if epoch_incremented {
+            // Epoch incremented — clear rotation_payload.
+            if let Some(ref existing) = gw_desired {
+                if existing.rotation_payload.is_some() {
+                    let cleared = GatewayDesiredStateRow {
+                        gateway_id: gateway_id.clone(),
+                        row_key: existing.row_key.clone(),
+                        rotation_payload: None,
+                        timestamp_ms: existing.timestamp_ms,
+                    };
+                    self.store.upsert_gateway_desired_state(&cleared).await?;
+                }
+            }
+            None
+        } else {
+            gw_desired.and_then(|d| d.rotation_payload)
+        };
+
+        // Salt management (AZH-0604): include stored salt in DESIRED_STATE only
+        // when gateway reports salt = null.
+        let desired_salt = if msg.salt.is_none() {
+            previous.as_ref().and_then(|p| p.salt.clone())
+        } else {
+            None
+        };
+
+        // Construct gateway DESIRED_STATE if there's anything to send.
+        let has_content =
+            !recovered_psks.is_empty() || rotation_payload.is_some() || desired_salt.is_some();
+
+        if has_content {
+            let desired = encode_gateway_desired_state(
+                gateway_id,
+                desired_salt.as_deref(),
+                rotation_payload.as_deref(),
+                &recovered_psks,
+            )?;
+            self.publisher
+                .publish(&self.downstream_queue, desired)
+                .await?;
+        }
+
+        Ok(())
     }
 
     async fn handle_app_data(&self, app_data: AppDataMessage) -> Result<(), HandlerError> {
@@ -815,6 +1074,197 @@ impl HandlerStore for AzureTablesStore {
             .map_err(|e| HandlerError::Store(format!("append sensor-data row failed: {e}")))?;
         Ok(())
     }
+
+    async fn upsert_gateway_actual_state(
+        &self,
+        row: &GatewayActualStateRow,
+    ) -> Result<(), HandlerError> {
+        let partition_key = format!("g:{}", row.gateway_id);
+        let entity = GatewayActualStateEntity {
+            partition_key: partition_key.clone(),
+            row_key: "state".to_string(),
+            x25519_public_key: row
+                .x25519_public_key
+                .as_ref()
+                .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+            channel: row.channel.map(|c| c as i64),
+            master_key_id: row
+                .master_key_id
+                .as_ref()
+                .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+            master_key_epoch: row.master_key_epoch.map(|e| e as i64),
+            salt: row
+                .salt
+                .as_ref()
+                .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+            kdf_params_json: row.kdf_params_json.clone(),
+            gateway_version: row.gateway_version.clone(),
+            gateway_commit: row.gateway_commit.clone(),
+            modem_firmware_version: row.modem_firmware_version.clone(),
+            modem_firmware_commit: row.modem_firmware_commit.clone(),
+            missing_key_hints: row.missing_key_hints.clone(),
+            fingerprint_words: row.fingerprint_words.clone(),
+            rotation_in_progress: row.rotation_in_progress,
+            timestamp_ms: row.timestamp_ms,
+        };
+        let entity_client = self
+            .actual_state_table
+            .partition_key_client(&partition_key)
+            .entity_client("state");
+        entity_client
+            .insert_or_replace(entity)
+            .map_err(|e| {
+                HandlerError::Store(format!("prepare gateway actual-state upsert failed: {e}"))
+            })?
+            .await
+            .map_err(|e| {
+                HandlerError::Store(format!("upsert gateway actual-state row failed: {e}"))
+            })?;
+        Ok(())
+    }
+
+    async fn load_gateway_actual_state(
+        &self,
+        gateway_id: &str,
+    ) -> Result<Option<GatewayActualStateRow>, HandlerError> {
+        let partition_key = format!("g:{gateway_id}");
+        let entity_client = self
+            .actual_state_table
+            .partition_key_client(&partition_key)
+            .entity_client("state");
+        match entity_client.get::<GatewayActualStateEntity>().await {
+            Ok(response) => {
+                let e = response.entity;
+                Ok(Some(gateway_entity_to_row(gateway_id, e)?))
+            }
+            Err(e) if is_legacy_not_found(&e) => Ok(None),
+            Err(e) => Err(HandlerError::Store(format!(
+                "load gateway actual-state row failed: {e}"
+            ))),
+        }
+    }
+
+    async fn query_nodes_by_key_hint(
+        &self,
+        key_hint: u64,
+    ) -> Result<Vec<NodeEscrowRecord>, HandlerError> {
+        let filter =
+            format!("PartitionKey ge 'n:' and PartitionKey lt 'n;' and key_hint eq {key_hint}L");
+        let mut stream = self
+            .actual_state_table
+            .query()
+            .filter(filter)
+            .into_stream::<ActualStateEntity>();
+
+        let mut seen = std::collections::HashMap::new();
+        while let Some(result) = stream.next().await {
+            let page = result
+                .map_err(|e| HandlerError::Store(format!("query nodes by key_hint failed: {e}")))?;
+            for entity in page.entities {
+                let master_key_id = match entity
+                    .master_key_id
+                    .as_ref()
+                    .map(|s| base64::engine::general_purpose::STANDARD.decode(s))
+                {
+                    Some(Ok(bytes)) => bytes,
+                    _ => continue,
+                };
+                let encrypted_psk = match entity
+                    .encrypted_psk
+                    .as_ref()
+                    .map(|s| base64::engine::general_purpose::STANDARD.decode(s))
+                {
+                    Some(Ok(bytes)) => bytes,
+                    _ => continue,
+                };
+                let record = NodeEscrowRecord {
+                    entity_id: entity.node_id.clone(),
+                    key_hint,
+                    encrypted_psk,
+                    master_key_id,
+                };
+                // Keep latest per node (smallest RowKey = newest).
+                seen.entry(entity.node_id.clone())
+                    .and_modify(|existing: &mut (String, NodeEscrowRecord)| {
+                        if entity.row_key < existing.0 {
+                            *existing = (entity.row_key.clone(), record.clone());
+                        }
+                    })
+                    .or_insert((entity.row_key.clone(), record));
+            }
+        }
+        Ok(seen.into_values().map(|(_, r)| r).collect())
+    }
+
+    async fn load_gateway_desired_state(
+        &self,
+        gateway_id: &str,
+    ) -> Result<Option<GatewayDesiredStateRow>, HandlerError> {
+        let partition_key = format!("g:{gateway_id}");
+        let mut stream = self
+            .desired_state_table
+            .query()
+            .filter(partition_filter(&partition_key))
+            .top(1)
+            .into_stream::<GatewayDesiredStateEntity>();
+        match stream.next().await {
+            Some(Ok(response)) => response
+                .entities
+                .into_iter()
+                .next()
+                .map(|e| {
+                    Ok(GatewayDesiredStateRow {
+                        gateway_id: gateway_id.to_string(),
+                        row_key: e.row_key,
+                        rotation_payload: e
+                            .rotation_payload
+                            .map(|s| base64::engine::general_purpose::STANDARD.decode(s))
+                            .transpose()
+                            .map_err(|e| {
+                                HandlerError::Store(format!(
+                                    "decode gateway rotation_payload base64 failed: {e}"
+                                ))
+                            })?,
+                        timestamp_ms: e.timestamp_ms,
+                    })
+                })
+                .transpose(),
+            Some(Err(e)) => Err(HandlerError::Store(format!(
+                "query gateway desired-state row failed: {e}"
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    async fn upsert_gateway_desired_state(
+        &self,
+        row: &GatewayDesiredStateRow,
+    ) -> Result<(), HandlerError> {
+        let partition_key = format!("g:{}", row.gateway_id);
+        let entity = GatewayDesiredStateEntity {
+            partition_key: partition_key.clone(),
+            row_key: row.row_key.clone(),
+            rotation_payload: row
+                .rotation_payload
+                .as_ref()
+                .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+            timestamp_ms: row.timestamp_ms,
+        };
+        let entity_client = self
+            .desired_state_table
+            .partition_key_client(&partition_key)
+            .entity_client(&row.row_key);
+        entity_client
+            .insert_or_replace(entity)
+            .map_err(|e| {
+                HandlerError::Store(format!("prepare gateway desired-state upsert failed: {e}"))
+            })?
+            .await
+            .map_err(|e| {
+                HandlerError::Store(format!("upsert gateway desired-state row failed: {e}"))
+            })?;
+        Ok(())
+    }
 }
 
 const STORAGE_QUEUE_API_VERSION: &str = "2024-11-04";
@@ -903,6 +1353,87 @@ struct ActualStateEntity {
     firmware_version: Option<String>,
     #[serde(deserialize_with = "deserialize_u64_flexible")]
     timestamp_ms: u64,
+    /// Node PSK escrow: base64-encoded encrypted PSK (AZH-0601).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    encrypted_psk: Option<String>,
+    /// Node PSK escrow: key_hint (AZH-0601).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "deserialize_optional_u64_flexible"
+    )]
+    key_hint: Option<u64>,
+    /// Node PSK escrow: base64-encoded master_key_id (AZH-0601).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    master_key_id: Option<String>,
+}
+
+/// Gateway ACTUAL_STATE entity for Azure Table (AZH-0600).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct GatewayActualStateEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    x25519_public_key: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "deserialize_optional_i64_flexible"
+    )]
+    channel: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    master_key_id: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "deserialize_optional_i64_flexible"
+    )]
+    master_key_epoch: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    salt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    kdf_params_json: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    gateway_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    gateway_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    modem_firmware_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    modem_firmware_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    missing_key_hints: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    fingerprint_words: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    rotation_in_progress: Option<bool>,
+    #[serde(
+        deserialize_with = "deserialize_u64_flexible",
+        default = "default_zero_u64"
+    )]
+    timestamp_ms: u64,
+}
+
+fn default_zero_u64() -> u64 {
+    0
+}
+
+/// Gateway DESIRED_STATE entity for Azure Table (AZH-0605).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct GatewayDesiredStateEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    rotation_payload: Option<String>,
+    #[serde(
+        deserialize_with = "deserialize_u64_flexible",
+        default = "default_zero_u64"
+    )]
+    timestamp_ms: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -954,6 +1485,129 @@ fn deserialize_u64_flexible<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u6
     d.deserialize_any(U64Visitor)
 }
 
+fn deserialize_optional_u64_flexible<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<u64>, D::Error> {
+    use serde::de::{self, Visitor};
+
+    struct OptU64Visitor;
+
+    impl<'de> Visitor<'de> for OptU64Visitor {
+        type Value = Option<u64>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a u64, i64, f64, numeric string, or null")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Option<u64>, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: de::Error>(self) -> Result<Option<u64>, E> {
+            Ok(None)
+        }
+        fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Option<u64>, D2::Error> {
+            deserialize_u64_flexible(d).map(Some)
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Option<u64>, E> {
+            Ok(Some(v))
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Option<u64>, E> {
+            u64::try_from(v)
+                .map(Some)
+                .map_err(|_| E::custom(format!("{v} is not a valid u64")))
+        }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Option<u64>, E> {
+            if !v.is_finite() || v < 0.0 || v >= 2.0_f64.powi(64) || v.fract() != 0.0 {
+                return Err(E::custom(format!("{v} is not a valid u64")));
+            }
+            Ok(Some(v as u64))
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Option<u64>, E> {
+            v.parse::<u64>()
+                .map(Some)
+                .map_err(|_| E::custom(format!("cannot parse \"{v}\" as u64")))
+        }
+    }
+
+    d.deserialize_any(OptU64Visitor)
+}
+
+fn deserialize_optional_i64_flexible<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<i64>, D::Error> {
+    use serde::de::{self, Visitor};
+
+    struct OptI64Visitor;
+
+    impl<'de> Visitor<'de> for OptI64Visitor {
+        type Value = Option<i64>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an i64, u64, f64, numeric string, or null")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Option<i64>, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: de::Error>(self) -> Result<Option<i64>, E> {
+            Ok(None)
+        }
+        fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Option<i64>, D2::Error> {
+            // Use a non-optional inner visitor to avoid infinite recursion.
+            struct I64Visitor;
+            impl<'de> serde::de::Visitor<'de> for I64Visitor {
+                type Value = i64;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("an i64, u64, f64, or numeric string")
+                }
+                fn visit_i64<E: de::Error>(self, v: i64) -> Result<i64, E> {
+                    Ok(v)
+                }
+                fn visit_u64<E: de::Error>(self, v: u64) -> Result<i64, E> {
+                    i64::try_from(v).map_err(|_| E::custom(format!("{v} is not a valid i64")))
+                }
+                fn visit_f64<E: de::Error>(self, v: f64) -> Result<i64, E> {
+                    if !v.is_finite()
+                        || v.fract() != 0.0
+                        || v < (i64::MIN as f64)
+                        || v > (i64::MAX as f64)
+                    {
+                        return Err(E::custom(format!("{v} is not a valid i64")));
+                    }
+                    Ok(v as i64)
+                }
+                fn visit_str<E: de::Error>(self, v: &str) -> Result<i64, E> {
+                    v.parse::<i64>()
+                        .map_err(|_| E::custom(format!("cannot parse \"{v}\" as i64")))
+                }
+            }
+            d.deserialize_any(I64Visitor).map(Some)
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Option<i64>, E> {
+            Ok(Some(v))
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Option<i64>, E> {
+            i64::try_from(v)
+                .map(Some)
+                .map_err(|_| E::custom(format!("{v} is not a valid i64")))
+        }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Option<i64>, E> {
+            if !v.is_finite() || v.fract() != 0.0 || v < (i64::MIN as f64) || v > (i64::MAX as f64)
+            {
+                return Err(E::custom(format!("{v} is not a valid i64")));
+            }
+            Ok(Some(v as i64))
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Option<i64>, E> {
+            v.parse::<i64>()
+                .map(Some)
+                .map_err(|_| E::custom(format!("cannot parse \"{v}\" as i64")))
+        }
+    }
+
+    d.deserialize_any(OptI64Visitor)
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct ProgramImageEntity {
     #[serde(rename = "PartitionKey")]
@@ -1002,6 +1656,9 @@ impl TryFrom<ActualStateEntity> for ActualStateRow {
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
             timestamp_ms: value.timestamp_ms,
+            encrypted_psk: decode_optional_base64(value.encrypted_psk, "encrypted_psk")?,
+            escrow_key_hint: value.key_hint,
+            master_key_id: decode_optional_base64(value.master_key_id, "master_key_id")?,
         })
     }
 }
@@ -1025,6 +1682,13 @@ impl TryFrom<ActualStateRow> for ActualStateEntity {
             firmware_abi_version: value.firmware_abi_version,
             firmware_version: value.firmware_version,
             timestamp_ms: value.timestamp_ms,
+            encrypted_psk: value
+                .encrypted_psk
+                .map(|b| base64::engine::general_purpose::STANDARD.encode(&b)),
+            key_hint: value.escrow_key_hint,
+            master_key_id: value
+                .master_key_id
+                .map(|b| base64::engine::general_purpose::STANDARD.encode(&b)),
         })
     }
 }
@@ -1129,18 +1793,47 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
     let map = decode_map(bytes)?;
     let msg_type = required_u64(&map, 1, "msg_type")?;
     match msg_type {
-        MSG_TYPE_ACTUAL_STATE => Ok(ConnectorMessage::ActualState(ActualStateMessage {
-            entity_kind: required_text(&map, 2, "entity_kind")?,
-            entity_id: required_text(&map, 3, "entity_id")?,
-            current_program_hash: optional_program_hash_field(&map, 4, "current_program_hash")?,
-            assigned_program_hash: optional_program_hash_field(&map, 5, "assigned_program_hash")?,
-            battery_mv: optional_u32_field(&map, 6, "battery_mv")?,
-            wake_rssi_dbm: optional_i8_field(&map, 28, "wake_rssi_dbm")?,
-            firmware_abi_version: optional_u32_field(&map, 7, "firmware_abi_version")?,
-            firmware_version: optional_text_field(&map, 8, "firmware_version")?,
-            timestamp_ms: required_u64(&map, 9, "timestamp_ms")?,
-            schedule_interval_s: optional_u32_field(&map, 11, "schedule_interval_s")?,
-        })),
+        MSG_TYPE_ACTUAL_STATE => Ok(ConnectorMessage::ActualState(Box::new(
+            ActualStateMessage {
+                entity_kind: required_text(&map, 2, "entity_kind")?,
+                entity_id: required_text(&map, 3, "entity_id")?,
+                current_program_hash: optional_program_hash_field(&map, 4, "current_program_hash")?,
+                assigned_program_hash: optional_program_hash_field(
+                    &map,
+                    5,
+                    "assigned_program_hash",
+                )?,
+                battery_mv: optional_u32_field(&map, 6, "battery_mv")?,
+                wake_rssi_dbm: optional_i8_field(&map, 28, "wake_rssi_dbm")?,
+                firmware_abi_version: optional_u32_field(&map, 7, "firmware_abi_version")?,
+                firmware_version: optional_text_field(&map, 8, "firmware_version")?,
+                timestamp_ms: required_u64(&map, 9, "timestamp_ms")?,
+                schedule_interval_s: optional_u32_field(&map, 11, "schedule_interval_s")?,
+                // Node escrow fields (keys 12–14)
+                encrypted_psk: optional_fixed_bytes_field(&map, 12, 60, "encrypted_psk")?,
+                escrow_key_hint: optional_u16_field(&map, 13, "escrow_key_hint")?,
+                node_master_key_id: optional_fixed_bytes_field(&map, 14, 16, "node_master_key_id")?,
+                // Gateway-scoped fields (keys 15–27)
+                channel: optional_u32_field(&map, 15, "channel")?,
+                gateway_master_key_id: optional_fixed_bytes_field(
+                    &map,
+                    16,
+                    16,
+                    "gateway_master_key_id",
+                )?,
+                master_key_epoch: optional_u64_field(&map, 17, "master_key_epoch")?,
+                x25519_public_key: optional_fixed_bytes_field(&map, 18, 32, "x25519_public_key")?,
+                fingerprint_words: decode_optional_string_array(&map, 19)?,
+                missing_key_hints: decode_optional_uint_array(&map, 20)?,
+                salt: optional_fixed_bytes_field(&map, 21, 16, "salt")?,
+                kdf_params: decode_optional_kdf_params(&map, 22)?,
+                gateway_version: optional_text_field(&map, 23, "gateway_version")?,
+                gateway_commit: optional_text_field(&map, 24, "gateway_commit")?,
+                modem_firmware_version: optional_text_field(&map, 25, "modem_firmware_version")?,
+                modem_firmware_commit: optional_text_field(&map, 26, "modem_firmware_commit")?,
+                rotation_in_progress: optional_bool_field(&map, 27, "rotation_in_progress")?,
+            },
+        ))),
         MSG_TYPE_APP_DATA => Ok(ConnectorMessage::AppData(AppDataMessage {
             node_id: required_text(&map, 2, "node_id")?,
             program_hash: required_program_hash(&map, 3, "program_hash")?,
@@ -1186,6 +1879,54 @@ pub(crate) fn encode_desired_state(
     let mut bytes = Vec::new();
     ciborium::into_writer(&value, &mut bytes)
         .map_err(|e| HandlerError::Decode(format!("encode desired state failed: {e}")))?;
+    Ok(bytes)
+}
+
+/// Encode a gateway DESIRED_STATE connector message (AZH-0605).
+fn encode_gateway_desired_state(
+    gateway_id: &str,
+    salt: Option<&[u8]>,
+    rotation_payload: Option<&[u8]>,
+    recovered_psks: &[NodeEscrowRecord],
+) -> Result<Vec<u8>, HandlerError> {
+    let mut desired_state_entries = Vec::new();
+
+    // Salt (CBOR key 21) — only when gateway has no local salt.
+    if let Some(s) = salt {
+        desired_state_entries.push(map_entry(21, Value::Bytes(s.to_vec())));
+    }
+
+    // Rotation payload (CBOR key 28) — opaque relay.
+    if let Some(rp) = rotation_payload {
+        desired_state_entries.push(map_entry(28, Value::Bytes(rp.to_vec())));
+    }
+
+    // Recovered PSKs (CBOR key 29) — array of maps.
+    if !recovered_psks.is_empty() {
+        let records: Vec<Value> = recovered_psks
+            .iter()
+            .map(|r| {
+                Value::Map(vec![
+                    map_entry(1, Value::Text(r.entity_id.clone())),
+                    map_entry(2, Value::Integer((r.key_hint).into())),
+                    map_entry(3, Value::Bytes(r.encrypted_psk.clone())),
+                    map_entry(4, Value::Bytes(r.master_key_id.clone())),
+                ])
+            })
+            .collect();
+        desired_state_entries.push(map_entry(29, Value::Array(records)));
+    }
+
+    let desired_state = Value::Map(desired_state_entries);
+    let value = Value::Map(vec![
+        map_entry(1, Value::Integer(MSG_TYPE_DESIRED_STATE.into())),
+        map_entry(2, Value::Text("gateway".to_string())),
+        map_entry(3, Value::Text(gateway_id.to_string())),
+        map_entry(4, desired_state),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&value, &mut bytes)
+        .map_err(|e| HandlerError::Decode(format!("encode gateway desired state failed: {e}")))?;
     Ok(bytes)
 }
 
@@ -1256,6 +1997,41 @@ impl TryFrom<SensorDataRow> for SensorDataEntity {
 fn encode_node_partition_key(node_id: &str) -> String {
     let digest = Sha256::digest(node_id.as_bytes());
     format!("n:{}", hex::encode(digest))
+}
+
+fn gateway_entity_to_row(
+    gateway_id: &str,
+    e: GatewayActualStateEntity,
+) -> Result<GatewayActualStateRow, HandlerError> {
+    Ok(GatewayActualStateRow {
+        gateway_id: gateway_id.to_string(),
+        timestamp_ms: e.timestamp_ms,
+        channel: e.channel.map(|c| c as u64),
+        master_key_id: e
+            .master_key_id
+            .map(|s| base64::engine::general_purpose::STANDARD.decode(s))
+            .transpose()
+            .map_err(|e| HandlerError::Store(format!("decode gw master_key_id: {e}")))?,
+        master_key_epoch: e.master_key_epoch.map(|e| e as u64),
+        x25519_public_key: e
+            .x25519_public_key
+            .map(|s| base64::engine::general_purpose::STANDARD.decode(s))
+            .transpose()
+            .map_err(|e| HandlerError::Store(format!("decode gw x25519_public_key: {e}")))?,
+        fingerprint_words: e.fingerprint_words,
+        missing_key_hints: e.missing_key_hints,
+        salt: e
+            .salt
+            .map(|s| base64::engine::general_purpose::STANDARD.decode(s))
+            .transpose()
+            .map_err(|e| HandlerError::Store(format!("decode gw salt: {e}")))?,
+        kdf_params_json: e.kdf_params_json,
+        gateway_version: e.gateway_version,
+        gateway_commit: e.gateway_commit,
+        modem_firmware_version: e.modem_firmware_version,
+        modem_firmware_commit: e.modem_firmware_commit,
+        rotation_in_progress: e.rotation_in_progress,
+    })
 }
 
 // Equal-timestamp ordering is only guaranteed within one handler process
@@ -1393,6 +2169,19 @@ fn optional_bytes_field(
     }
 }
 
+fn optional_fixed_bytes_field(
+    map: &[(Value, Value)],
+    key: u64,
+    expected_len: usize,
+    field: &str,
+) -> Result<Option<Vec<u8>>, HandlerError> {
+    let value = optional_bytes_field(map, key, field)?;
+    if let Some(ref bytes) = value {
+        validate_bytes_length(bytes, expected_len, field)?;
+    }
+    Ok(value)
+}
+
 fn optional_u32_field(
     map: &[(Value, Value)],
     key: u64,
@@ -1441,6 +2230,133 @@ fn optional_text_field(
     }
 }
 
+fn optional_u64_field(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Option<u64>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(value) => value
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .map(Some)
+            .ok_or_else(|| HandlerError::Decode(format!("`{field}` must be uint or null"))),
+    }
+}
+
+fn optional_u16_field(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Option<u16>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(value) => value
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .and_then(|v| u16::try_from(v).ok())
+            .map(Some)
+            .ok_or_else(|| HandlerError::Decode(format!("`{field}` must be uint16 or null"))),
+    }
+}
+
+fn optional_bool_field(
+    map: &[(Value, Value)],
+    key: u64,
+    field: &str,
+) -> Result<Option<bool>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(HandlerError::Decode(format!(
+            "`{field}` must be bool or null"
+        ))),
+    }
+}
+
+fn decode_optional_string_array(
+    map: &[(Value, Value)],
+    key: u64,
+) -> Result<Option<Vec<String>>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::Array(arr)) => {
+            let mut result = Vec::with_capacity(arr.len());
+            for v in arr {
+                let text = v.as_text().ok_or_else(|| {
+                    HandlerError::Decode("fingerprint_words array entries must be text".to_string())
+                })?;
+                result.push(text.to_string());
+            }
+            Ok(Some(result))
+        }
+        Some(_) => Err(HandlerError::Decode(
+            "`fingerprint_words` must be an array or null".to_string(),
+        )),
+    }
+}
+
+fn decode_optional_uint_array(
+    map: &[(Value, Value)],
+    key: u64,
+) -> Result<Option<Vec<u64>>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::Array(arr)) => {
+            let mut result = Vec::with_capacity(arr.len());
+            for v in arr {
+                let n = v
+                    .as_integer()
+                    .and_then(|i| u64::try_from(i).ok())
+                    .ok_or_else(|| {
+                        HandlerError::Decode(
+                            "missing_key_hints array entries must be uint".to_string(),
+                        )
+                    })?;
+                result.push(n);
+            }
+            Ok(Some(result))
+        }
+        Some(_) => Err(HandlerError::Decode(
+            "`missing_key_hints` must be an array or null".to_string(),
+        )),
+    }
+}
+
+fn decode_optional_kdf_params(
+    map: &[(Value, Value)],
+    key: u64,
+) -> Result<Option<serde_json::Value>, HandlerError> {
+    match map_get(map, key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::Map(entries)) => {
+            let mut json_map = serde_json::Map::new();
+            for (k, v) in entries {
+                if let Some(ki) = k.as_integer().and_then(|i| u64::try_from(i).ok()) {
+                    let key_name = match ki {
+                        1 => "m_cost",
+                        2 => "t_cost",
+                        3 => "p_cost",
+                        4 => "kdf_version",
+                        _ => continue,
+                    };
+                    if let Some(val) = v.as_integer().and_then(|i| u64::try_from(i).ok()) {
+                        json_map.insert(
+                            key_name.to_string(),
+                            serde_json::Value::Number(serde_json::Number::from(val)),
+                        );
+                    }
+                }
+            }
+            Ok(Some(serde_json::Value::Object(json_map)))
+        }
+        Some(_) => Err(HandlerError::Decode(
+            "`kdf_params` must be a map or null".to_string(),
+        )),
+    }
+}
+
 fn opt_bytes_value(value: Option<&[u8]>) -> Value {
     match value {
         Some(bytes) => Value::Bytes(bytes.to_vec()),
@@ -1468,12 +2384,26 @@ fn decode_base64_field(text: String, field: &str) -> Result<Vec<u8>, HandlerErro
         .map_err(|e| HandlerError::Store(format!("`{field}` must contain valid base64: {e}")))
 }
 
+fn decode_optional_base64(
+    value: Option<String>,
+    field: &str,
+) -> Result<Option<Vec<u8>>, HandlerError> {
+    value
+        .map(|text| decode_base64_field(text, field))
+        .transpose()
+}
+
 fn validate_program_hash_length(bytes: &[u8], field: &str) -> Result<(), HandlerError> {
-    if bytes.len() == 32 {
+    validate_bytes_length(bytes, 32, field)
+}
+
+fn validate_bytes_length(bytes: &[u8], expected: usize, field: &str) -> Result<(), HandlerError> {
+    if bytes.len() == expected {
         return Ok(());
     }
     Err(HandlerError::Decode(format!(
-        "`{field}` must be exactly 32 bytes"
+        "`{field}` must be exactly {expected} bytes, got {}",
+        bytes.len()
     )))
 }
 
@@ -1537,6 +2467,8 @@ mod tests {
         program_images: Mutex<HashMap<String, ProgramImageRow>>,
         stored_program_rows: Mutex<Vec<ProgramImageRow>>,
         sensor_data_rows: Mutex<Vec<SensorDataRow>>,
+        gateway_actual_states: Mutex<HashMap<String, GatewayActualStateRow>>,
+        gateway_desired_states: Mutex<HashMap<String, GatewayDesiredStateRow>>,
     }
 
     impl MemoryStore {
@@ -1649,6 +2581,78 @@ mod tests {
             self.sensor_data_rows.lock().await.push(row.clone());
             Ok(())
         }
+
+        async fn upsert_gateway_actual_state(
+            &self,
+            row: &GatewayActualStateRow,
+        ) -> Result<(), HandlerError> {
+            self.gateway_actual_states
+                .lock()
+                .await
+                .insert(row.gateway_id.clone(), row.clone());
+            Ok(())
+        }
+
+        async fn load_gateway_actual_state(
+            &self,
+            gateway_id: &str,
+        ) -> Result<Option<GatewayActualStateRow>, HandlerError> {
+            Ok(self
+                .gateway_actual_states
+                .lock()
+                .await
+                .get(gateway_id)
+                .cloned())
+        }
+
+        async fn query_nodes_by_key_hint(
+            &self,
+            key_hint: u64,
+        ) -> Result<Vec<NodeEscrowRecord>, HandlerError> {
+            let rows = self.actual_rows.lock().await;
+            let mut seen: HashMap<String, NodeEscrowRecord> = HashMap::new();
+            for node_rows in rows.values() {
+                for row in node_rows {
+                    if row.escrow_key_hint == Some(key_hint) {
+                        if let (Some(ref psk), Some(ref mkid)) =
+                            (&row.encrypted_psk, &row.master_key_id)
+                        {
+                            let record = NodeEscrowRecord {
+                                entity_id: row.node_id.clone(),
+                                key_hint,
+                                encrypted_psk: psk.clone(),
+                                master_key_id: mkid.clone(),
+                            };
+                            seen.insert(row.node_id.clone(), record);
+                        }
+                    }
+                }
+            }
+            Ok(seen.into_values().collect())
+        }
+
+        async fn load_gateway_desired_state(
+            &self,
+            gateway_id: &str,
+        ) -> Result<Option<GatewayDesiredStateRow>, HandlerError> {
+            Ok(self
+                .gateway_desired_states
+                .lock()
+                .await
+                .get(gateway_id)
+                .cloned())
+        }
+
+        async fn upsert_gateway_desired_state(
+            &self,
+            row: &GatewayDesiredStateRow,
+        ) -> Result<(), HandlerError> {
+            self.gateway_desired_states
+                .lock()
+                .await
+                .insert(row.gateway_id.clone(), row.clone());
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -1743,6 +2747,41 @@ mod tests {
         async fn append_sensor_data(&self, _row: &SensorDataRow) -> Result<(), HandlerError> {
             Ok(())
         }
+
+        async fn upsert_gateway_actual_state(
+            &self,
+            _row: &GatewayActualStateRow,
+        ) -> Result<(), HandlerError> {
+            Ok(())
+        }
+
+        async fn load_gateway_actual_state(
+            &self,
+            _gateway_id: &str,
+        ) -> Result<Option<GatewayActualStateRow>, HandlerError> {
+            Ok(None)
+        }
+
+        async fn query_nodes_by_key_hint(
+            &self,
+            _key_hint: u64,
+        ) -> Result<Vec<NodeEscrowRecord>, HandlerError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_gateway_desired_state(
+            &self,
+            _gateway_id: &str,
+        ) -> Result<Option<GatewayDesiredStateRow>, HandlerError> {
+            Ok(None)
+        }
+
+        async fn upsert_gateway_desired_state(
+            &self,
+            _row: &GatewayDesiredStateRow,
+        ) -> Result<(), HandlerError> {
+            Ok(())
+        }
     }
 
     struct SameTimestampDifferentLatestStore {
@@ -1784,6 +2823,41 @@ mod tests {
         }
 
         async fn append_sensor_data(&self, _row: &SensorDataRow) -> Result<(), HandlerError> {
+            Ok(())
+        }
+
+        async fn upsert_gateway_actual_state(
+            &self,
+            _row: &GatewayActualStateRow,
+        ) -> Result<(), HandlerError> {
+            Ok(())
+        }
+
+        async fn load_gateway_actual_state(
+            &self,
+            _gateway_id: &str,
+        ) -> Result<Option<GatewayActualStateRow>, HandlerError> {
+            Ok(None)
+        }
+
+        async fn query_nodes_by_key_hint(
+            &self,
+            _key_hint: u64,
+        ) -> Result<Vec<NodeEscrowRecord>, HandlerError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_gateway_desired_state(
+            &self,
+            _gateway_id: &str,
+        ) -> Result<Option<GatewayDesiredStateRow>, HandlerError> {
+            Ok(None)
+        }
+
+        async fn upsert_gateway_desired_state(
+            &self,
+            _row: &GatewayDesiredStateRow,
+        ) -> Result<(), HandlerError> {
             Ok(())
         }
     }
@@ -1828,6 +2902,41 @@ mod tests {
         }
 
         async fn append_sensor_data(&self, _row: &SensorDataRow) -> Result<(), HandlerError> {
+            Ok(())
+        }
+
+        async fn upsert_gateway_actual_state(
+            &self,
+            _row: &GatewayActualStateRow,
+        ) -> Result<(), HandlerError> {
+            Ok(())
+        }
+
+        async fn load_gateway_actual_state(
+            &self,
+            _gateway_id: &str,
+        ) -> Result<Option<GatewayActualStateRow>, HandlerError> {
+            Ok(None)
+        }
+
+        async fn query_nodes_by_key_hint(
+            &self,
+            _key_hint: u64,
+        ) -> Result<Vec<NodeEscrowRecord>, HandlerError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_gateway_desired_state(
+            &self,
+            _gateway_id: &str,
+        ) -> Result<Option<GatewayDesiredStateRow>, HandlerError> {
+            Ok(None)
+        }
+
+        async fn upsert_gateway_desired_state(
+            &self,
+            _row: &GatewayDesiredStateRow,
+        ) -> Result<(), HandlerError> {
             Ok(())
         }
     }
@@ -2078,6 +3187,9 @@ mod tests {
                 firmware_abi_version: Some(2),
                 firmware_version: Some("2.0.0".to_string()),
                 timestamp_ms: 5000,
+                encrypted_psk: None,
+                escrow_key_hint: None,
+                master_key_id: None,
             })
             .await
             .unwrap();
@@ -2187,6 +3299,9 @@ mod tests {
                 firmware_abi_version: Some(1),
                 firmware_version: Some("1.2.3".to_string()),
                 timestamp_ms: 1234,
+                encrypted_psk: None,
+                escrow_key_hint: None,
+                master_key_id: None,
             },
             desired: desired_row("node-1", Some(vec![0xCC; 32]), Some(60), 100),
             appended_rows: Mutex::new(Vec::new()),
@@ -2373,6 +3488,9 @@ mod tests {
             firmware_abi_version: Some(1),
             firmware_version: Some("1.2.3".to_string()),
             timestamp_ms: 1234,
+            encrypted_psk: None,
+            escrow_key_hint: None,
+            master_key_id: None,
         };
 
         let entity = ActualStateEntity::try_from(row.clone()).unwrap();
@@ -2982,6 +4100,36 @@ mod tests {
             async fn append_sensor_data(&self, _: &SensorDataRow) -> Result<(), HandlerError> {
                 Ok(())
             }
+            async fn upsert_gateway_actual_state(
+                &self,
+                _: &GatewayActualStateRow,
+            ) -> Result<(), HandlerError> {
+                Ok(())
+            }
+            async fn load_gateway_actual_state(
+                &self,
+                _: &str,
+            ) -> Result<Option<GatewayActualStateRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn query_nodes_by_key_hint(
+                &self,
+                _: u64,
+            ) -> Result<Vec<NodeEscrowRecord>, HandlerError> {
+                Ok(Vec::new())
+            }
+            async fn load_gateway_desired_state(
+                &self,
+                _: &str,
+            ) -> Result<Option<GatewayDesiredStateRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn upsert_gateway_desired_state(
+                &self,
+                _: &GatewayDesiredStateRow,
+            ) -> Result<(), HandlerError> {
+                Ok(())
+            }
         }
 
         let store = Arc::new(FailingProgramStore);
@@ -3405,7 +4553,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gateway_actual_state_is_informational_only() {
+    async fn gateway_actual_state_is_stored() {
         let store = Arc::new(MemoryStore::default());
         let publisher = Arc::new(RecordingPublisher::default());
         let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
@@ -3413,15 +4561,31 @@ mod tests {
         let value = Value::Map(vec![
             map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
             map_entry(2, Value::Text("gateway".to_string())),
-            map_entry(3, Value::Text("gateway-1".to_string())),
+            map_entry(3, Value::Text("abcdef01".to_string())),
             map_entry(9, Value::Integer(1234u64.into())),
+            map_entry(15, Value::Integer(6u64.into())),
+            map_entry(16, Value::Bytes(vec![0x42u8; 16])),
+            map_entry(17, Value::Integer(3u64.into())),
+            map_entry(18, Value::Bytes(vec![0x55u8; 32])),
+            map_entry(27, Value::Bool(false)),
         ]);
         let mut payload = Vec::new();
         ciborium::into_writer(&value, &mut payload).unwrap();
 
         handler.handle_payload(&payload).await.unwrap();
+        // Gateway row is stored (not in node actual_rows).
         assert!(store.actual_rows.lock().await.is_empty());
-        assert!(publisher.sends.lock().await.is_empty());
+        let gw = store
+            .gateway_actual_states
+            .lock()
+            .await
+            .get("abcdef01")
+            .cloned();
+        assert!(gw.is_some(), "gateway actual state should be stored");
+        let gw = gw.unwrap();
+        assert_eq!(gw.channel, Some(6));
+        assert_eq!(gw.master_key_epoch, Some(3));
+        assert_eq!(gw.rotation_in_progress, Some(false));
     }
 
     #[test]
@@ -3438,6 +4602,9 @@ mod tests {
             firmware_abi_version: None,
             firmware_version: None,
             timestamp_ms: 1234,
+            encrypted_psk: None,
+            escrow_key_hint: None,
+            master_key_id: None,
         };
         let entity = ActualStateEntity::try_from(row).unwrap();
         assert!(
@@ -3445,6 +4612,441 @@ mod tests {
             "node entity should use 'n:' partition prefix, got: {}",
             entity.partition_key
         );
+    }
+
+    // --- T-AZH-0600: Gateway ACTUAL_STATE storage ---
+    #[tokio::test]
+    async fn t_azh_0600_gateway_actual_state_upsert() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        // First delivery
+        let payload1 = encode_gateway_actual_state_msg(
+            "aabb0011",
+            1000,
+            6,
+            &[0x42u8; 16],
+            1,
+            &[0x55u8; 32],
+            Some(&[0xAA; 16]),
+            false,
+        );
+        handler.handle_payload(&payload1).await.unwrap();
+
+        let gw = store
+            .gateway_actual_states
+            .lock()
+            .await
+            .get("aabb0011")
+            .cloned()
+            .expect("gateway row should exist");
+        assert_eq!(gw.channel, Some(6));
+        assert_eq!(gw.master_key_epoch, Some(1));
+
+        // Second delivery (upsert, not duplicate)
+        let payload2 = encode_gateway_actual_state_msg(
+            "aabb0011",
+            2000,
+            11,
+            &[0x42u8; 16],
+            2,
+            &[0x55u8; 32],
+            Some(&[0xAA; 16]),
+            false,
+        );
+        handler.handle_payload(&payload2).await.unwrap();
+
+        let gw2 = store
+            .gateway_actual_states
+            .lock()
+            .await
+            .get("aabb0011")
+            .cloned()
+            .unwrap();
+        assert_eq!(gw2.channel, Some(11));
+        assert_eq!(gw2.master_key_epoch, Some(2));
+        assert_eq!(gw2.timestamp_ms, 2000);
+    }
+
+    // --- T-AZH-0601: Node PSK escrow storage ---
+    #[tokio::test]
+    async fn t_azh_0601_node_escrow_fields_stored() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        let psk_blob = vec![0xBBu8; 60];
+        let master_key_id = vec![0xCCu8; 16];
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("node".to_string())),
+            map_entry(3, Value::Text("node-42".to_string())),
+            map_entry(9, Value::Integer(5000u64.into())),
+            map_entry(12, Value::Bytes(psk_blob.clone())),
+            map_entry(13, Value::Integer(1234u64.into())),
+            map_entry(14, Value::Bytes(master_key_id.clone())),
+        ]);
+        let mut payload = Vec::new();
+        ciborium::into_writer(&value, &mut payload).unwrap();
+
+        // Need a desired row so reconciliation doesn't error on missing desired
+        store
+            .append_desired(desired_row("node-42", None, None, 1000))
+            .await;
+
+        handler.handle_payload(&payload).await.unwrap();
+
+        let rows = store.actual_rows_for("node-42").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].encrypted_psk, Some(psk_blob));
+        assert_eq!(rows[0].escrow_key_hint, Some(1234));
+        assert_eq!(rows[0].master_key_id, Some(master_key_id));
+    }
+
+    // --- T-AZH-0602: Missing key_hint recovery ---
+    #[tokio::test]
+    async fn t_azh_0602_missing_key_hint_recovery() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        let master_key_id = vec![0xAAu8; 16];
+        let psk_blob = vec![0xBBu8; 60];
+
+        // Store a node with escrow fields
+        store
+            .append_actual_state(&ActualStateRow {
+                row_key: next_history_row_key(1000).unwrap(),
+                entity_kind: "node".to_string(),
+                node_id: "lost-node".to_string(),
+                observed_current_program_hash: None,
+                observed_assigned_program_hash: None,
+                observed_schedule_interval_s: None,
+                battery_mv: None,
+                firmware_abi_version: None,
+                firmware_version: None,
+                timestamp_ms: 1000,
+                encrypted_psk: Some(psk_blob.clone()),
+                escrow_key_hint: Some(42),
+                master_key_id: Some(master_key_id.clone()),
+                wake_rssi_dbm: None,
+            })
+            .await
+            .unwrap();
+
+        // Gateway reports missing_key_hints with matching master_key_id
+        let payload = encode_gateway_actual_state_msg_with_hints(
+            "a1b2c3d4",
+            2000,
+            6,
+            &master_key_id,
+            1,
+            &[0x55u8; 32],
+            None,
+            false,
+            &[42],
+        );
+        handler.handle_payload(&payload).await.unwrap();
+
+        // Should have published a gateway DESIRED_STATE with recovered_psks
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1, "should publish gateway DESIRED_STATE");
+        let desired_bytes = &sends[0].1;
+        let decoded: Value = ciborium::from_reader(&desired_bytes[..]).unwrap();
+        let map = decoded.as_map().unwrap();
+        let entity_kind = required_text(map, 2, "entity_kind").unwrap();
+        assert_eq!(entity_kind, "gateway");
+
+        // Check recovered_psks inside desired_state map (key 4)
+        let desired_state = map_get(map, 4).unwrap().as_map().unwrap();
+        let recovered = map_get(desired_state, 29).unwrap().as_array().unwrap();
+        assert_eq!(recovered.len(), 1);
+    }
+
+    // --- T-AZH-0602: Mismatched master_key_id does NOT produce recovered_psks ---
+    #[tokio::test]
+    async fn t_azh_0602_mismatched_master_key_id_no_recovery() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        let node_mkid = vec![0xAAu8; 16];
+        let gateway_mkid = vec![0xFFu8; 16]; // Different!
+
+        store
+            .append_actual_state(&ActualStateRow {
+                row_key: next_history_row_key(1000).unwrap(),
+                entity_kind: "node".to_string(),
+                node_id: "lost-node".to_string(),
+                observed_current_program_hash: None,
+                observed_assigned_program_hash: None,
+                observed_schedule_interval_s: None,
+                battery_mv: None,
+                firmware_abi_version: None,
+                firmware_version: None,
+                timestamp_ms: 1000,
+                encrypted_psk: Some(vec![0xBBu8; 60]),
+                escrow_key_hint: Some(42),
+                master_key_id: Some(node_mkid),
+                wake_rssi_dbm: None,
+            })
+            .await
+            .unwrap();
+
+        let payload = encode_gateway_actual_state_msg_with_hints(
+            "a1b2c3d4",
+            2000,
+            6,
+            &gateway_mkid,
+            1,
+            &[0x55u8; 32],
+            None,
+            false,
+            &[42],
+        );
+        handler.handle_payload(&payload).await.unwrap();
+
+        // No recovered_psks, so no DESIRED_STATE published
+        let sends = publisher.sends.lock().await;
+        assert!(
+            sends.is_empty(),
+            "no DESIRED_STATE should be published for mismatched master_key_id"
+        );
+    }
+
+    // --- T-AZH-0603: Rotation payload relay + clearing ---
+    #[tokio::test]
+    async fn t_azh_0603_rotation_payload_relay() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        let master_key_id = vec![0xAAu8; 16];
+        let rotation_payload = vec![0x01, 0x02, 0x03, 0x04];
+
+        // Seed gateway desired state with a rotation payload
+        store
+            .upsert_gateway_desired_state(&GatewayDesiredStateRow {
+                gateway_id: "a1b2c3d4".to_string(),
+                row_key: "state".to_string(),
+                rotation_payload: Some(rotation_payload.clone()),
+                timestamp_ms: 1000,
+            })
+            .await
+            .unwrap();
+
+        // First gateway ACTUAL_STATE with epoch=1 (not incremented yet)
+        let payload1 = encode_gateway_actual_state_msg(
+            "a1b2c3d4",
+            2000,
+            6,
+            &master_key_id,
+            1,
+            &[0x55u8; 32],
+            None,
+            false,
+        );
+        handler.handle_payload(&payload1).await.unwrap();
+
+        // Should relay the rotation_payload
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        let desired_bytes = &sends[0].1;
+        let decoded: Value = ciborium::from_reader(&desired_bytes[..]).unwrap();
+        let map = decoded.as_map().unwrap();
+        let desired_state = map_get(map, 4).unwrap().as_map().unwrap();
+        let relayed = map_get(desired_state, 28).unwrap();
+        assert_eq!(relayed.as_bytes().unwrap(), &rotation_payload);
+        drop(sends);
+
+        // Second delivery: epoch incremented to 2
+        let payload2 = encode_gateway_actual_state_msg(
+            "a1b2c3d4",
+            3000,
+            6,
+            &master_key_id,
+            2,
+            &[0x55u8; 32],
+            None,
+            false,
+        );
+        handler.handle_payload(&payload2).await.unwrap();
+
+        // rotation_payload should be cleared from desired state
+        let gw_desired = store.load_gateway_desired_state("a1b2c3d4").await.unwrap();
+        assert!(
+            gw_desired
+                .as_ref()
+                .map(|d| d.rotation_payload.is_none())
+                .unwrap_or(true),
+            "rotation_payload should be cleared after epoch increment"
+        );
+    }
+
+    // --- T-AZH-0604: Salt management ---
+    #[tokio::test]
+    async fn t_azh_0604_salt_included_when_gateway_has_none() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        let master_key_id = vec![0xAAu8; 16];
+        let stored_salt = vec![0xDDu8; 16];
+
+        // First: deliver gateway state WITH salt to store it
+        let payload1 = encode_gateway_actual_state_msg(
+            "a1b2c3d4",
+            1000,
+            6,
+            &master_key_id,
+            1,
+            &[0x55u8; 32],
+            Some(&stored_salt),
+            false,
+        );
+        handler.handle_payload(&payload1).await.unwrap();
+        publisher.sends.lock().await.clear();
+
+        // Second: deliver gateway state WITHOUT salt
+        let payload2 = encode_gateway_actual_state_msg(
+            "a1b2c3d4",
+            2000,
+            6,
+            &master_key_id,
+            1,
+            &[0x55u8; 32],
+            None,
+            false,
+        );
+        handler.handle_payload(&payload2).await.unwrap();
+
+        // DESIRED_STATE should include the stored salt
+        let sends = publisher.sends.lock().await;
+        assert_eq!(sends.len(), 1);
+        let decoded: Value = ciborium::from_reader(&sends[0].1[..]).unwrap();
+        let map = decoded.as_map().unwrap();
+        let desired_state = map_get(map, 4).unwrap().as_map().unwrap();
+        let salt_val = map_get(desired_state, 21).unwrap();
+        assert_eq!(salt_val.as_bytes().unwrap(), &stored_salt);
+    }
+
+    // --- T-AZH-0604: Salt NOT overridden when gateway has salt ---
+    #[tokio::test]
+    async fn t_azh_0604_salt_not_overridden_when_gateway_has_salt() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        let master_key_id = vec![0xAAu8; 16];
+        let salt = vec![0xEEu8; 16];
+
+        let payload = encode_gateway_actual_state_msg(
+            "a1b2c3d4",
+            1000,
+            6,
+            &master_key_id,
+            1,
+            &[0x55u8; 32],
+            Some(&salt),
+            false,
+        );
+        handler.handle_payload(&payload).await.unwrap();
+
+        // No DESIRED_STATE should be published since gateway already has salt
+        let sends = publisher.sends.lock().await;
+        assert!(sends.is_empty(), "no DESIRED_STATE for gateway with salt");
+    }
+
+    // --- T-AZH-0605: No phone escrow rows ---
+    #[tokio::test]
+    async fn t_azh_0605_phone_actual_state_ignored() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        let value = Value::Map(vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("phone".to_string())),
+            map_entry(3, Value::Text("phone-1".to_string())),
+            map_entry(9, Value::Integer(1234u64.into())),
+        ]);
+        let mut payload = Vec::new();
+        ciborium::into_writer(&value, &mut payload).unwrap();
+
+        handler.handle_payload(&payload).await.unwrap();
+        assert!(store.actual_rows.lock().await.is_empty());
+        assert!(store.gateway_actual_states.lock().await.is_empty());
+        assert!(publisher.sends.lock().await.is_empty());
+    }
+
+    // --- Test helpers for gateway ACTUAL_STATE encoding ---
+    #[allow(clippy::too_many_arguments)]
+    fn encode_gateway_actual_state_msg(
+        entity_id: &str,
+        timestamp_ms: u64,
+        channel: u64,
+        master_key_id: &[u8],
+        master_key_epoch: u64,
+        x25519_public_key: &[u8],
+        salt: Option<&[u8]>,
+        rotation_in_progress: bool,
+    ) -> Vec<u8> {
+        encode_gateway_actual_state_msg_with_hints(
+            entity_id,
+            timestamp_ms,
+            channel,
+            master_key_id,
+            master_key_epoch,
+            x25519_public_key,
+            salt,
+            rotation_in_progress,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_gateway_actual_state_msg_with_hints(
+        entity_id: &str,
+        timestamp_ms: u64,
+        channel: u64,
+        master_key_id: &[u8],
+        master_key_epoch: u64,
+        x25519_public_key: &[u8],
+        salt: Option<&[u8]>,
+        rotation_in_progress: bool,
+        missing_key_hints: &[u64],
+    ) -> Vec<u8> {
+        let mut pairs = vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("gateway".to_string())),
+            map_entry(3, Value::Text(entity_id.to_string())),
+            map_entry(9, Value::Integer(timestamp_ms.into())),
+            map_entry(15, Value::Integer(channel.into())),
+            map_entry(16, Value::Bytes(master_key_id.to_vec())),
+            map_entry(17, Value::Integer(master_key_epoch.into())),
+            map_entry(18, Value::Bytes(x25519_public_key.to_vec())),
+        ];
+        if !missing_key_hints.is_empty() {
+            pairs.push(map_entry(
+                20,
+                Value::Array(
+                    missing_key_hints
+                        .iter()
+                        .map(|h| Value::Integer((*h).into()))
+                        .collect(),
+                ),
+            ));
+        }
+        match salt {
+            Some(s) => pairs.push(map_entry(21, Value::Bytes(s.to_vec()))),
+            None => pairs.push(map_entry(21, Value::Null)),
+        }
+        pairs.push(map_entry(27, Value::Bool(rotation_in_progress)));
+        let value = Value::Map(pairs);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        bytes
     }
 
     #[tokio::test]

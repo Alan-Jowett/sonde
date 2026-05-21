@@ -219,3 +219,27 @@ code { font-family: Consolas, "Courier New", monospace; }
   max-width: 420px;
   margin: 1rem;
 }
+.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.5rem 1rem;
+}
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+.modal {
+  background: var(--surface);
+  padding: 1.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  max-height: 90vh;
+  overflow-y: auto;
+  margin: 1rem;
+  width: 100%;
+}

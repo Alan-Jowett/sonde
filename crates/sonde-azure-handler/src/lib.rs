@@ -477,6 +477,13 @@ where
                 "gateway-scoped ACTUAL_STATE requires a non-empty entity_id".to_string(),
             ));
         }
+        // Validate entity_id is well-formed hex (gateway_id is hex-encoded).
+        if !msg.entity_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(HandlerError::Decode(format!(
+                "gateway entity_id must be hex, got `{}`",
+                msg.entity_id
+            )));
+        }
 
         let gateway_id = &msg.entity_id;
 
@@ -4551,7 +4558,7 @@ mod tests {
 
         // Gateway reports missing_key_hints with matching master_key_id
         let payload = encode_gateway_actual_state_msg_with_hints(
-            "gw01",
+            "a1b2c3d4",
             2000,
             6,
             &master_key_id,
@@ -4608,7 +4615,7 @@ mod tests {
             .unwrap();
 
         let payload = encode_gateway_actual_state_msg_with_hints(
-            "gw01",
+            "a1b2c3d4",
             2000,
             6,
             &gateway_mkid,
@@ -4641,7 +4648,7 @@ mod tests {
         // Seed gateway desired state with a rotation payload
         store
             .upsert_gateway_desired_state(&GatewayDesiredStateRow {
-                gateway_id: "gw01".to_string(),
+                gateway_id: "a1b2c3d4".to_string(),
                 row_key: "state".to_string(),
                 rotation_payload: Some(rotation_payload.clone()),
                 timestamp_ms: 1000,
@@ -4651,7 +4658,7 @@ mod tests {
 
         // First gateway ACTUAL_STATE with epoch=1 (not incremented yet)
         let payload1 = encode_gateway_actual_state_msg(
-            "gw01",
+            "a1b2c3d4",
             2000,
             6,
             &master_key_id,
@@ -4675,7 +4682,7 @@ mod tests {
 
         // Second delivery: epoch incremented to 2
         let payload2 = encode_gateway_actual_state_msg(
-            "gw01",
+            "a1b2c3d4",
             3000,
             6,
             &master_key_id,
@@ -4687,7 +4694,7 @@ mod tests {
         handler.handle_payload(&payload2).await.unwrap();
 
         // rotation_payload should be cleared from desired state
-        let gw_desired = store.load_gateway_desired_state("gw01").await.unwrap();
+        let gw_desired = store.load_gateway_desired_state("a1b2c3d4").await.unwrap();
         assert!(
             gw_desired
                 .as_ref()
@@ -4709,7 +4716,7 @@ mod tests {
 
         // First: deliver gateway state WITH salt to store it
         let payload1 = encode_gateway_actual_state_msg(
-            "gw01",
+            "a1b2c3d4",
             1000,
             6,
             &master_key_id,
@@ -4723,7 +4730,7 @@ mod tests {
 
         // Second: deliver gateway state WITHOUT salt
         let payload2 = encode_gateway_actual_state_msg(
-            "gw01",
+            "a1b2c3d4",
             2000,
             6,
             &master_key_id,
@@ -4755,7 +4762,7 @@ mod tests {
         let salt = vec![0xEEu8; 16];
 
         let payload = encode_gateway_actual_state_msg(
-            "gw01",
+            "a1b2c3d4",
             1000,
             6,
             &master_key_id,

@@ -349,6 +349,9 @@ function showRotationModal(gatewayRow) {
         el.textContent = fingerprintText;
       }
     });
+  } else {
+    const el = document.getElementById('rotation-fingerprint');
+    if (el) el.textContent = 'Fingerprint unavailable (missing or invalid public key)';
   }
 
   document.getElementById('rotation-cancel-btn')?.addEventListener('click', () => {
@@ -575,9 +578,13 @@ function encodeCborUintEntry(parts, key, value) {
 async function submitRotationPayload(gwId, payloadBytes) {
   const partitionKey = `g:${gwId}`;
   const nowMs = Date.now();
-  const invTs = (BigInt('0xffffffffffffffff') - BigInt(nowMs)).toString(16).padStart(16, '0');
-  const rowKey = `${invTs}:${randomHex(8)}`;
-  const b64Payload = btoa(String.fromCharCode(...payloadBytes));
+  const rowKey = desiredRowKey(nowMs);
+  const chunkSize = 8192;
+  const chunks = [];
+  for (let i = 0; i < payloadBytes.length; i += chunkSize) {
+    chunks.push(String.fromCharCode.apply(null, payloadBytes.subarray(i, i + chunkSize)));
+  }
+  const b64Payload = btoa(chunks.join(''));
 
   const entity = {
     PartitionKey: partitionKey,

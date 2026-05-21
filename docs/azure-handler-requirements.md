@@ -385,3 +385,121 @@ identity read access to the `SensorData` table (see
 2. The SPA can query `SensorData` rows for a specific program hash within a single node's partition. Cross-node program-hash queries are performed as parallel per-node requests by the SPA.
 3. Query performance is acceptable for time-series visualization (< 2 seconds for 1000 rows).
 4. The provisioning stack grants the SPA read access to the `SensorData` table.
+
+---
+
+## 8  PSK escrow state storage and recovery
+
+### AZH-0600  Gateway ACTUAL_STATE storage
+
+**Priority:** Must
+**Source:** Issue #962, [evolve-962-specification.md](evolve-962-specification.md) §4.1–§4.4
+
+**Description:**
+The handler MUST store gateway `ACTUAL_STATE` in the `actualstate` Azure Table
+with `PartitionKey = "g:" + entity_id` (hex-encoded `gateway_id`) and
+`RowKey = "state"`. The handler MUST upsert that singleton row on each gateway
+state update and MUST store all gateway-specific escrow and recovery fields:
+`x25519_public_key`, `channel`, `master_key_id`, `master_key_epoch`, `salt`,
+`kdf_params_json`, `gateway_version`, `gateway_commit`,
+`modem_firmware_version`, `modem_firmware_commit`,
+`missing_key_hints`, `fingerprint_words`, and `rotation_in_progress`.
+
+**Acceptance criteria:**
+
+1. Gateway `ACTUAL_STATE` creates or updates a single row per gateway.
+2. The gateway row uses the `PartitionKey` prefix `"g:"`, distinct from node rows.
+
+---
+
+### AZH-0601  Node PSK escrow storage
+
+**Priority:** Must
+**Source:** Issue #962, [evolve-962-specification.md](evolve-962-specification.md) §4.1–§4.2
+
+**Description:**
+The handler MUST store node escrow fields `encrypted_psk`, `master_key_id`, and
+`key_hint` alongside other node `ACTUAL_STATE` in the existing node row. Phone
+`ACTUAL_STATE` is NOT stored; phones are not escrowed.
+
+**Acceptance criteria:**
+
+1. Node rows include `encrypted_psk`, `master_key_id`, and `key_hint` columns.
+2. No phone rows are created in the `actualstate` table.
+
+---
+
+### AZH-0602  Missing key_hint recovery
+
+**Priority:** Must
+**Source:** Issue #962, [evolve-962-specification.md](evolve-962-specification.md) §2.8, §4.2
+
+**Description:**
+When a gateway `ACTUAL_STATE` contains non-empty `missing_key_hints`, the
+handler MUST look up matching node rows where `key_hint` matches and
+`master_key_id` matches the gateway's reported `master_key_id`. Matching PSKs
+MUST be included in the next gateway `DESIRED_STATE` as `recovered_psks`
+(CBOR key 29 inside desired-state map key 4). The handler SHOULD latch or
+enqueue this recovery work immediately because subsequent `ACTUAL_STATE`
+messages may overwrite the reported hints.
+
+**Acceptance criteria:**
+
+1. Recovery PSKs are matched by both `key_hint` and `master_key_id`.
+2. PSKs with mismatched `master_key_id` are not included in `recovered_psks`.
+
+---
+
+### AZH-0603  Rotation payload relay
+
+**Priority:** Must
+**Source:** Issue #962, [evolve-962-specification.md](evolve-962-specification.md) §4.4
+
+**Description:**
+The handler MUST relay rotation payloads from the SPA to the gateway via the
+`DESIRED_STATE` field `rotation_payload` (CBOR key 28 inside desired-state map
+key 4). The handler does not originate, inspect, or modify rotation payloads.
+After the gateway reports a new `master_key_epoch` in `ACTUAL_STATE`, the
+handler MUST clear `rotation_payload` from `DESIRED_STATE`.
+
+**Acceptance criteria:**
+
+1. `rotation_payload` is relayed unmodified.
+2. `rotation_payload` is cleared after the gateway reports an incremented epoch.
+
+---
+
+### AZH-0604  Salt management
+
+**Priority:** Must
+**Source:** Issue #962, [evolve-962-specification.md](evolve-962-specification.md) §4.3
+
+**Description:**
+Salt arrives in gateway `ACTUAL_STATE` and is stored in the gateway row. The
+gateway is authoritative for salt. The handler includes the stored salt in
+gateway `DESIRED_STATE` only for gateways that report `salt = null`.
+
+**Acceptance criteria:**
+
+1. Gateway-reported salt is stored.
+2. Salt is included in `DESIRED_STATE` only when the gateway has no local salt.
+
+---
+
+### AZH-0605  Gateway DESIRED_STATE construction
+
+**Priority:** Must
+**Source:** Issue #962, [evolve-962-specification.md](evolve-962-specification.md) §2.5, §4.2–§4.4
+
+**Description:**
+The handler MUST construct gateway `DESIRED_STATE` with
+`entity_kind = "gateway"` and `entity_id = hex(gateway_id)`. Inside the
+`desired_state` map it MUST use CBOR keys 15 for `channel`, 21 for `salt`, 22
+for `kdf_params`, 28 for `rotation_payload`, and 29 for `recovered_psks`.
+Gateway `DESIRED_STATE` is written to the `desiredstate` Azure Table with
+`PartitionKey = "g:" + gateway_id_hex`.
+
+**Acceptance criteria:**
+
+1. Gateway `DESIRED_STATE` uses the correct CBOR key numbers.
+2. The `PartitionKey` uses the `"g:"` prefix.

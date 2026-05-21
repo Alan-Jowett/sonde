@@ -1850,3 +1850,186 @@ The nightly/release orchestrator publishes three sensor-support asset groups in 
 3. the compiled arch-independent BPF test-program `.o` artifacts from `test-programs/`
 
 These assets are staged into the nightly/release GitHub pre-release with collision-free names so operators can download them directly without extracting them from the container image.
+
+---
+
+## 23  PSK key escrow and master key rotation
+
+> **Requirements:** GW-2000–GW-2013
+
+### 23.1  Unified gateway identity (GW-2000)
+
+The separate escrow X25519 keypair (`escrow_keypair` table from evolve-887)
+is removed. The existing `GatewayIdentity` Ed25519 keypair serves both BLE
+pairing challenge-response signing and X25519 key exchange for master key
+rotation via the existing `to_x25519()` conversion.
+
+The `GatewayIdentity` seed is encrypted at rest with the master key
+(AES-256-GCM, AAD = `b"sonde-gateway-identity" || gateway_id`). No
+additional storage is needed.
+
+### 23.2  Master key identification (GW-2001)
+
+Each PSK record carries an opaque `master_key_id` (BLOB, 16 bytes, random)
+and a monotonic `master_key_epoch` (INTEGER):
+
+```sql
+ALTER TABLE nodes ADD COLUMN master_key_id BLOB;
+ALTER TABLE nodes ADD COLUMN master_key_epoch INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE phone_psks ADD COLUMN master_key_id BLOB;
+ALTER TABLE phone_psks ADD COLUMN master_key_epoch INTEGER NOT NULL DEFAULT 0;
+```
+
+`master_key_id` is NOT a hash of the key — it is a random opaque identifier
+to avoid creating an offline passphrase verifier. On first startup, the
+gateway generates a random `master_key_id`, sets `master_key_epoch = 1`,
+backfills all records, and stores in `gateway_config`.
+
+### 23.3  Rotation code authentication (GW-2002)
+
+The gateway generates a random single-use 6-character uppercase alphanumeric
+code (`[A-Z0-9]`, 36^6 ≈ 31 bits) using `getrandom::fill()` with rejection
+sampling. Stored in `gateway_config` as `rotation_code`.
+
+**Lifecycle:** Generated on first startup. Displayed on modem (page 2).
+Admin reads from modem, includes inside encrypted rotation payload. Gateway
+verifies match. On successful rotation, new code generated. Never published
+to cloud or connector.
+
+### 23.4  Gateway ACTUAL_STATE (GW-2003)
+
+The gateway becomes a first-class entity in the ACTUAL_STATE model.
+
+- `entity_kind = "gateway"`, `entity_id = hex(gateway_id)` (lowercase, no prefix).
+- Emitted on startup, connector reconnection, and state changes.
+
+| Field | CBOR key | Type |
+|-------|----------|------|
+| `msg_type` | 1 | uint (0x02) |
+| `entity_kind` | 2 | tstr ("gateway") |
+| `entity_id` | 3 | tstr (hex gateway_id) |
+| `timestamp_ms` | 9 | uint |
+| `channel` | 15 | uint |
+| `master_key_id` | 16 | bstr (16 bytes) |
+| `master_key_epoch` | 17 | uint |
+| `x25519_public_key` | 18 | bstr (32 bytes) |
+| `fingerprint_words` | 19 | array of tstr |
+| `missing_key_hints` | 20 | array of uint |
+| `salt` | 21 | bstr (16 bytes)/null |
+| `kdf_params` | 22 | map/null |
+| `gateway_version` | 23 | tstr |
+| `gateway_commit` | 24 | tstr |
+| `modem_firmware_version` | 25 | tstr/null |
+| `modem_firmware_commit` | 26 | tstr/null |
+| `rotation_in_progress` | 27 | bool |
+
+Node-specific keys 4–8, 10–11 MUST be omitted for gateway entities.
+
+### 23.5  Gateway DESIRED_STATE (GW-2004)
+
+Inside `desired_state` map (CBOR key 4):
+
+| Field | CBOR key | Type |
+|-------|----------|------|
+| `channel` | 15 | uint/null |
+| `salt` | 21 | bstr (16 bytes)/null |
+| `kdf_params` | 22 | map/null |
+| `rotation_payload` | 28 | bstr/null |
+| `recovered_psks` | 29 | array/null |
+
+Shared keys (15, 21, 22) align with ACTUAL_STATE. DESIRED-only fields use
+keys 28–29 to avoid collision with ACTUAL_STATE keys 23–27.
+
+### 23.6  Node ACTUAL_STATE escrow fields (GW-2005)
+
+| Field | CBOR key | Type |
+|-------|----------|------|
+| `encrypted_psk` | 12 | bstr (60 bytes)/null |
+| `escrow_key_hint` | 13 | uint (0–65535)/null |
+| `master_key_id` | 14 | bstr (16 bytes)/null |
+
+`encrypted_psk` format: 12-byte nonce + 32-byte ciphertext + 16-byte GCM tag.
+Encrypted with `AES-256-GCM(master_key, nonce, psk, aad=node_id_utf8)`.
+
+Phone PSKs are NOT escrowed. They are rotated locally but never emitted
+via ACTUAL_STATE.
+
+### 23.7  Master key rotation (GW-2006, GW-2007, GW-2013)
+
+**RotationPayloadV1 format** (binary):
+
+```
+version(1) || sender_ephemeral_public(32) || nonce(12) || ciphertext_and_tag(var)
+```
+
+Plaintext (CBOR): `{1: new_master_key, 2: rotation_code, 3: new_master_key_id, 4: salt, 5: kdf_params}`.
+
+Encryption: X25519(ephemeral, gw_public) → HKDF-SHA-256(shared, salt=b"sonde-rotation-v1",
+info=gateway_id_raw||epoch_be64) → AES-256-GCM(key, nonce, plaintext, aad=gateway_id_raw||epoch_be64).
+
+**Rotation phases** (crash-safe via `pending_rotation` table):
+
+1. **Prepare:** Write `pending_rotation`, purge `pending_recovery` (same transaction).
+2. **Migrate PSKs** (`migrating_psks`): Re-encrypt all `nodes` and `phone_psks` records.
+3. **Rewrap identity** (`rewrapping_identity`): Re-encrypt `GatewayIdentity` seed under new key into `encrypted_seed_new`.
+4. **Commit** (`committing`): Atomic transaction — promote `encrypted_seed_new`, update `master_key_id`/`epoch`, generate new rotation code, delete `pending_rotation`.
+
+**Key invariant:** During all pre-commit phases, original `encrypted_seed` remains usable with the old key. `GatewayIdentity` is always loadable on restart.
+
+**Dual-key frame processing:** During migration, PSK records have mixed epochs. Frame processing uses the master key matching each record's `master_key_epoch`.
+
+**Concurrent rotation rejection:** If `pending_rotation` exists when a new
+rotation payload arrives, the gateway silently discards it (DESIRED_STATE) or
+returns `accepted = false` with error "rotation already in progress" (gRPC).
+This check occurs before decryption — no cryptographic operations are
+performed on the discarded payload.
+
+### 23.8  Declarative node recovery (GW-2009)
+
+**Unknown key_hint handling:**
+- Rate limit: 1 per key_hint per 60s, max 256 entries (LRU).
+- Report in `missing_key_hints` (ACTUAL_STATE key 20), one-shot cleared after reporting.
+- Frame discarded. Node wake cycle provides natural retry.
+
+**Recovery from DESIRED_STATE:**
+- Verify `master_key_id` matches current key. Skip if not.
+- Insert into `pending_recovery` table (key_hint, node_id, encrypted_psk, master_key_id, master_key_epoch, received_at).
+- Trial-decrypt on next frame with matching key_hint.
+- Promote to `nodes` on success. Expire after 24 hours.
+
+### 23.9  Modem display pages (GW-2010)
+
+Two pages rendered by the gateway and sent via display-transfer subprotocol (GW-1101b):
+
+**Page 1 — Key Fingerprint** (128×64 OLED): 6 BIP-39 words in 3 rows of 2.
+**Page 2 — Rotation Code** (128×64 OLED): Label + 6-char code.
+
+### 23.10  Fingerprint computation (GW-2011)
+
+SHA-256 of X25519 public key → extract 66 bits → 6 BIP-39 words. Wordlist
+shared in `sonde-protocol`.
+
+### 23.11  Startup sequence additions
+
+Insert after step 2 (initialize storage):
+
+> 2a. Check `pending_rotation` — resume rotation if exists.
+> 2b. Load `GatewayIdentity`, derive X25519 public key.
+> 2c. Load/generate `master_key_id` and `master_key_epoch`.
+> 2d. Load/generate `rotation_code`.
+
+Insert after step 9 (start connector):
+
+> 9a. Emit gateway ACTUAL_STATE.
+> 9b. Compute BIP-39 fingerprint.
+> 9c. Register fingerprint + rotation code as modem display pages.
+
+### 23.12  gRPC rotation API (GW-2012)
+
+```protobuf
+rpc SubmitRotation(SubmitRotationRequest) returns (SubmitRotationResponse);
+message SubmitRotationRequest { bytes rotation_payload = 1; }
+message SubmitRotationResponse { bool accepted = 1; string error = 2; }
+```
+
+Both gRPC and DESIRED_STATE rotation paths converge on the same handler.

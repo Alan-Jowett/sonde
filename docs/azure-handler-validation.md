@@ -370,3 +370,95 @@ divergence publication instead of treating that redelivery as permanently stale.
 > read-access and query performance tests do not yet have provisioning
 > validation entries — placeholder test cases should be added to
 > `azure-provisioning-validation.md` in a follow-up.
+
+---
+
+### T-AZH-0600  Gateway ACTUAL_STATE storage
+
+**Validates:** AZH-0600
+
+**Procedure:**
+1. Deliver a gateway `ACTUAL_STATE` message with `x25519_public_key`, `channel`,
+   `master_key_id`, `master_key_epoch`, `salt`, `kdf_params`,
+   `gateway_version`, `gateway_commit`, `modem_firmware_version`,
+   `modem_firmware_commit`, and `missing_key_hints` populated.
+2. Assert: one row is created in `actualstate` with `PartitionKey = "g:" + gateway_id_hex`
+   and `RowKey = "state"`.
+3. Assert: all gateway-specific fields are stored in that row.
+4. Deliver an updated gateway `ACTUAL_STATE` for the same gateway.
+5. Assert: the same row is updated by upsert rather than creating a second row.
+
+---
+
+### T-AZH-0601  Node PSK escrow storage
+
+**Validates:** AZH-0601
+
+**Procedure:**
+1. Deliver a node `ACTUAL_STATE` message carrying `encrypted_psk`,
+   `master_key_id`, and `key_hint`.
+2. Assert: the node's `actualstate` row stores those three fields alongside the
+   existing node ACTUAL_STATE fields.
+3. Query node rows by `key_hint`.
+4. Assert: the escrowed node row is returned and remains associated with the
+   original node identity.
+
+---
+
+### T-AZH-0602  Missing key_hint recovery
+
+**Validates:** AZH-0602, AZH-0605
+
+**Procedure:**
+1. Store a node ACTUAL_STATE row with `encrypted_psk`, `master_key_id = X`, and
+   `key_hint = 42`.
+2. Deliver a gateway `ACTUAL_STATE` row with `master_key_id = X` and
+   `missing_key_hints = [42]`.
+3. Assert: the next gateway `DESIRED_STATE` contains `recovered_psks` with the
+   matching node's PSK record.
+4. Deliver a gateway `ACTUAL_STATE` row with `master_key_id = Y` and
+   `missing_key_hints = [42]`.
+5. Assert: no `recovered_psks` entry is emitted for the stored node because the
+   `master_key_id` does not match.
+
+---
+
+### T-AZH-0603  Rotation payload relay
+
+**Validates:** AZH-0603, AZH-0605
+
+**Procedure:**
+1. Submit a gateway rotation payload through the desired-state authoring path.
+2. Assert: the next gateway `DESIRED_STATE` includes that payload unchanged at
+   `rotation_payload`.
+3. Deliver a gateway `ACTUAL_STATE` update whose `master_key_epoch` is greater
+   than the pre-rotation epoch.
+4. Assert: subsequent gateway `DESIRED_STATE` messages omit `rotation_payload`
+   or encode it as cleared/null according to the table representation.
+
+---
+
+### T-AZH-0604  Salt management
+
+**Validates:** AZH-0604, AZH-0605
+
+**Procedure:**
+1. Deliver a gateway `ACTUAL_STATE` message with `salt = null` and a stored
+   cloud-side salt available for that gateway.
+2. Assert: the resulting gateway `DESIRED_STATE` includes the stored salt.
+3. Deliver a gateway `ACTUAL_STATE` message with `salt = X`.
+4. Assert: the handler stores `X` in the gateway row.
+5. Assert: subsequent gateway `DESIRED_STATE` does not override the gateway's
+   non-null salt with the cloud-side value.
+
+---
+
+### T-AZH-0605  No phone escrow rows
+
+**Validates:** AZH-0601
+
+**Procedure:**
+1. Deliver a phone `ACTUAL_STATE` message that would otherwise resemble an
+   escrow-related status update.
+2. Query the `actualstate` table for rows associated with that phone identity.
+3. Assert: no row is created with `entity_kind = "phone"`.

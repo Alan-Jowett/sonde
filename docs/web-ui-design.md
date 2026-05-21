@@ -521,7 +521,90 @@ rendering in the popup:
 
 ---
 
-## 13. Revision History
+## 13. Key Management (WEB-1000)
+
+### 13.1 Gateway Status Card
+
+- Reads the `actualstate` table for rows whose `PartitionKey` starts with `g:`.
+- Renders a dedicated gateway status card above the node table, showing the
+  BIP-39 fingerprint, `master_key_epoch`, `master_key_id`, salt status,
+  `rotation_in_progress`, `gateway_version`, `modem_firmware_version`, and
+  `channel`.
+- **Fingerprint computation is local:** The SPA MUST compute the 6-word BIP-39
+  fingerprint from `x25519_public_key` using SHA-256 + 66-bit extraction +
+  BIP-39 wordlist lookup. The SPA MUST NOT use the `fingerprint_words` field
+  stored in Azure — a compromised Azure could substitute a rogue public key
+  with pre-matched fingerprint words, defeating the verification. The admin
+  compares the SPA-computed fingerprint against the modem display.
+- The BIP-39 English wordlist (2048 words) is embedded in the SPA or loaded
+  from CDN. The fingerprint algorithm: `SHA-256(x25519_public_key)` →
+  take first 66 bits → split into 6 × 11-bit indices → map to BIP-39 words.
+- Uses the same MSAL.js bearer token acquisition path as node `actualstate`
+  queries.
+
+### 13.2 Rotation Modal
+
+- Multi-step modal flow:
+  1. Fingerprint verification against the modem
+  2. Rotation code input (`text`, 6 chars, auto-uppercase)
+  3. Passphrase input (`password` field)
+  4. Final confirmation before submission
+- Displays the current salt from gateway ACTUAL_STATE, or a `first rotation`
+  indicator when no salt exists yet.
+- Shows a progress bar during Argon2id key derivation because the WASM KDF may
+  take ~1–3 seconds.
+
+### 13.3 Crypto Pipeline
+
+- **Argon2id:** `argon2-browser` WASM loaded from CDN, e.g.
+  `https://cdn.jsdelivr.net/npm/argon2-browser@1.18.0/dist/argon2-bundled.min.js`
+- **X25519:** `@noble/curves` loaded from CDN, e.g.
+  `https://cdn.jsdelivr.net/npm/@noble/curves@1.8.1/ed25519.js`, providing the
+  X25519 operations needed for the rotation flow
+- **HKDF-SHA-256:** Web Crypto `importKey` + `deriveBits` with the HKDF algorithm
+- **AES-256-GCM:** Web Crypto `encrypt` with the AES-GCM algorithm
+- **CBOR encoding:** Lightweight inline encoder for the plaintext map with five
+  integer-keyed entries
+- **Random values:** `crypto.getRandomValues()` for the nonce and
+  `master_key_id`
+
+### 13.4 Azure Table Integration
+
+- Gateway ACTUAL_STATE read:
+  `GET /actualstate(PartitionKey='g:XXXX',RowKey='state')`
+- Gateway discovery query:
+  `GET /actualstate?$filter=PartitionKey ge 'g:' and PartitionKey lt 'g;'`
+- DESIRED_STATE write:
+  `POST /desiredstate` with `rotation_payload` serialized as `Edm.Binary`
+- Gateway DESIRED_STATE `PartitionKey` is `"g:" + gateway_id_hex`
+- Gateway DESIRED_STATE `RowKey` uses the same reverse-timestamp format as node
+  desired state rows
+
+### 13.5 Dashboard Filtering
+
+- Existing dashboard node-table queries and node dropdown population MUST filter
+  to node entities only, either by `PartitionKey` starting with `n:` or by an
+  equivalent `entity_kind = "node"` discriminator if present.
+- Gateway entities are read separately for the gateway status card and never
+  rendered in the node table or node dropdown.
+
+### 13.6 Dependencies
+
+- `argon2-browser` WASM loaded from CDN with an SRI hash
+- `@noble/curves` (or an equivalent noble X25519 package) loaded from CDN with
+  an SRI hash
+- No build step; dependencies are referenced directly from HTML `<script>` tags
+
+### 13.7 Browser Compatibility
+
+- Rotation requires Web Crypto support for HKDF and AES-GCM plus WebAssembly
+  support for Argon2id.
+- If the required capabilities are unavailable, the `Rotate Key` button is
+  disabled and a tooltip explains the missing browser requirement.
+
+---
+
+## 14. Revision History
 
 | Date | Author | Description |
 |------|--------|-------------|

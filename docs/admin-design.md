@@ -355,3 +355,84 @@ The clap `#[command]` attribute concatenates the crate version and git SHA:
 `{CARGO_PKG_VERSION} ({SONDE_GIT_COMMIT})`.
 
 ---
+
+## 11  Key management subcommands
+
+### 11.1  CLI structure
+
+The admin CLI adds a `key` top-level subcommand with three nested operations:
+
+```
+sonde-admin key rotate [--gateway-url <url>]
+sonde-admin key fingerprint [--gateway-url <url>]
+sonde-admin key status [--gateway-url <url>]
+```
+
+`key rotate` is interactive. `key fingerprint` and `key status` are read-only.
+The optional `--gateway-url` flag selects the target gateway admin endpoint for
+these subcommands.
+
+### 11.2  gRPC API usage
+
+All three key-management subcommands begin by calling `GetGatewayState` to read
+gateway ACTUAL_STATE from the local gateway admin API.
+
+- `key fingerprint` reads `fingerprint_words` and prints the 6-word BIP-39
+  fingerprint.
+- `key status` reads and displays `master_key_epoch`, `master_key_id`,
+  `rotation_in_progress`, salt status, and `kdf_params`.
+- `key rotate` reads the current gateway ACTUAL_STATE before building the
+  rotation payload, then calls `SubmitRotation` to send the serialized
+  `RotationPayloadV1` binary blob to the gateway.
+
+After `SubmitRotation`, `key rotate` polls `GetGatewayState` until
+`master_key_epoch` increments or the command times out.
+
+### 11.3  Rotation flow
+
+The `key rotate` handler performs the following sequence:
+
+1. Call `GetGatewayState` and extract the gateway fingerprint,
+   `x25519_public_key`, `master_key_epoch`, salt, and `kdf_params`.
+2. Display the BIP-39 fingerprint and prompt the user to confirm that it
+   matches the modem display before continuing.
+3. Prompt for the rotation code on stdin and normalize the input to uppercase
+   `[A-Z0-9]` before payload construction.
+4. Prompt for the passphrase using masked terminal input. Reject any passphrase
+   shorter than 20 characters and fewer than 6 words.
+5. Select Argon2id parameters from gateway ACTUAL_STATE `kdf_params`, or use
+   defaults `m=65536`, `t=3`, `p=1` when the gateway has no stored parameters.
+6. Use the salt from gateway ACTUAL_STATE when present. On first rotation, if
+   the gateway reports no salt, generate a new random salt and include it in
+   the payload.
+7. Derive the new master key with Argon2id.
+8. Generate a random 16-byte `new_master_key_id`.
+9. Build `RotationPayloadV1` and send it with `SubmitRotation`.
+10. Poll `GetGatewayState` until `master_key_epoch` increments, then report
+    success.
+
+### 11.4  `RotationPayloadV1` construction
+
+The CLI constructs the same `RotationPayloadV1` binary envelope used by gateway
+DESIRED_STATE rotation delivery.
+
+1. Generate an ephemeral X25519 keypair.
+2. Compute the shared secret with the gateway's `x25519_public_key`.
+3. Decode the gateway identifier returned by `GetGatewayState` to the raw
+   16-byte `gateway_id_raw` required by the rotation envelope.
+4. Derive the AES-256-GCM content-encryption key with HKDF-SHA-256 using:
+   - `salt = b"sonde-rotation-v1"`
+   - `info = gateway_id_raw || current_master_key_epoch_be64`
+5. Encode the plaintext as `{new_master_key, rotation_code, new_master_key_id,
+   salt, kdf_params}`.
+6. Encrypt the plaintext with AES-256-GCM and serialize the final
+   `RotationPayloadV1` as `version || sender_ephemeral_public || nonce || ciphertext_and_tag`.
+
+### 11.5  Sensitive material handling
+
+All sensitive material used by `key rotate` is kept in `Zeroizing` wrappers,
+including the passphrase, Argon2id output, derived symmetric keys, and the new
+master key. The CLI must avoid logging these values. `key fingerprint` and
+`key status` do not perform key derivation or key-encryption work.
+
+---

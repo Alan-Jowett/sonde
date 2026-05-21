@@ -21,6 +21,16 @@ use crate::storage::{ProgramDisplayRecord, ProgramSummaryRecord, Storage, Storag
 /// Encrypted PSK blob length: 12-byte nonce + 32-byte ciphertext + 16-byte GCM tag = 60 bytes.
 const ENCRYPTED_PSK_LEN: usize = 12 + 32 + 16;
 
+/// A pending recovery record from the `pending_recovery` table (GW-2009).
+#[derive(Clone, Debug)]
+pub struct PendingRecoveryRecord {
+    pub key_hint: u16,
+    pub node_id: String,
+    pub encrypted_psk: Vec<u8>,
+    pub master_key_id: Vec<u8>,
+    pub master_key_epoch: u64,
+}
+
 /// Encrypt a 32-byte PSK using AES-256-GCM with a random nonce.
 ///
 /// The `node_id` is used as Additional Authenticated Data (AAD) to cryptographically
@@ -28,7 +38,7 @@ const ENCRYPTED_PSK_LEN: usize = 12 + 32 + 16;
 /// a ciphertext blob between node rows to cause PSK confusion.
 ///
 /// Returns a blob of the form `nonce (12 B) || ciphertext+tag (48 B)`.
-fn encrypt_psk(
+pub(crate) fn encrypt_psk(
     master_key: &[u8; 32],
     node_id: &str,
     psk: &[u8; 32],
@@ -717,7 +727,107 @@ impl SqliteStorage {
                 ))
             })?;
         }
-        // Migrate any legacy plaintext 32-byte PSK blobs to AES-256-GCM encrypted
+        // Migration: evolve-962 — master_key_id, master_key_epoch, pending_recovery,
+        // and encrypted_seed_new columns. The pending_rotation table migration
+        // (from evolve-887 schema to evolve-962 schema) is deferred to the
+        // rotation execution wiring PR.
+        {
+            // Add master_key_id and master_key_epoch columns to nodes (GW-2001).
+            // Check each column independently to handle partially migrated DBs.
+            let node_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(nodes)")
+                .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration check failed (table: nodes, columns: master_key_id/epoch): {e}"
+                    ))
+                })?;
+            if !node_cols.iter().any(|n| n == "master_key_id") {
+                conn.execute_batch("ALTER TABLE nodes ADD COLUMN master_key_id BLOB")
+                    .map_err(|e| {
+                        StorageError::Internal(format!(
+                            "migration failed: ALTER TABLE nodes ADD COLUMN master_key_id: {e}"
+                        ))
+                    })?;
+            }
+            if !node_cols.iter().any(|n| n == "master_key_epoch") {
+                conn.execute_batch(
+                    "ALTER TABLE nodes ADD COLUMN master_key_epoch INTEGER NOT NULL DEFAULT 0",
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: ALTER TABLE nodes ADD COLUMN master_key_epoch: {e}"
+                    ))
+                })?;
+            }
+
+            // Add master_key_id and master_key_epoch columns to phone_psks (GW-2001).
+            let phone_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(phone_psks)")
+                .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration check failed (table: phone_psks, columns: master_key_id/epoch): {e}"
+                    ))
+                })?;
+            if !phone_cols.iter().any(|n| n == "master_key_id") {
+                conn.execute_batch("ALTER TABLE phone_psks ADD COLUMN master_key_id BLOB")
+                    .map_err(|e| {
+                        StorageError::Internal(format!(
+                            "migration failed: ALTER TABLE phone_psks ADD COLUMN master_key_id: {e}"
+                        ))
+                    })?;
+            }
+            if !phone_cols.iter().any(|n| n == "master_key_epoch") {
+                conn.execute_batch(
+                    "ALTER TABLE phone_psks ADD COLUMN master_key_epoch INTEGER NOT NULL DEFAULT 0",
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: ALTER TABLE phone_psks ADD COLUMN master_key_epoch: {e}"
+                    ))
+                })?;
+            }
+
+            // Create pending_recovery table (GW-2009).
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS pending_recovery (
+                    key_hint         INTEGER NOT NULL,
+                    node_id          TEXT NOT NULL,
+                    encrypted_psk    BLOB NOT NULL,
+                    master_key_id    BLOB NOT NULL,
+                    master_key_epoch INTEGER NOT NULL,
+                    received_at      INTEGER NOT NULL,
+                    PRIMARY KEY (key_hint, node_id)
+                )",
+            )
+            .map_err(|e| {
+                StorageError::Internal(format!(
+                    "migration failed: CREATE TABLE pending_recovery: {e}"
+                ))
+            })?;
+
+            // Add encrypted_seed_new column to gateway_identity for crash-safe
+            // rotation (GW-2007). Permanent column, reused on each rotation.
+            let gi_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(gateway_identity)")
+                .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration check failed (table: gateway_identity, column: encrypted_seed_new): {e}"
+                    ))
+                })?;
+            if !gi_cols.iter().any(|n| n == "encrypted_seed_new") {
+                conn.execute_batch(
+                    "ALTER TABLE gateway_identity ADD COLUMN encrypted_seed_new BLOB",
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: ALTER TABLE gateway_identity ADD COLUMN encrypted_seed_new: {e}"
+                    ))
+                })?;
+            }
+        }
         // form. This must run before `validate_master_key` since validation only
         // checks encrypted blobs.
         migrate_legacy_psks(&mut conn, &master_key)?;
@@ -733,6 +843,301 @@ impl SqliteStorage {
     /// Create an in-memory SQLite database (for testing).
     pub fn in_memory(master_key: Zeroizing<[u8; 32]>) -> Result<Self, StorageError> {
         Self::open(":memory:", master_key)
+    }
+
+    // ── Escrow initialization (GW-2001, GW-2002) §2.9 ─────────
+
+    /// Initialize master key identification on first startup (§2.9 step 2c).
+    ///
+    /// If `master_key_id` and `master_key_epoch` are not yet in `gateway_config`,
+    /// generates a random 16-byte `master_key_id`, sets `master_key_epoch = 1`,
+    /// backfills all existing PSK records, and persists.
+    ///
+    /// Returns `(master_key_id, master_key_epoch)`.
+    pub async fn init_master_key_id(&self) -> Result<([u8; 16], u64), StorageError> {
+        self.with_conn(move |conn| {
+            // Check if already initialized.
+            let existing_id: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM gateway_config WHERE key = 'master_key_id'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(map_err)?;
+
+            if let Some(hex_id) = existing_id {
+                // Already initialized — load existing values.
+                let id_bytes = hex::decode(&hex_id).map_err(|e| {
+                    StorageError::Internal(format!("invalid master_key_id hex: {e}"))
+                })?;
+                if id_bytes.len() != 16 {
+                    return Err(StorageError::Internal(format!(
+                        "master_key_id has wrong length: {} (expected 16)",
+                        id_bytes.len()
+                    )));
+                }
+                let epoch_str: Option<String> = conn
+                    .query_row(
+                        "SELECT value FROM gateway_config WHERE key = 'master_key_epoch'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(map_err)?;
+                let epoch: u64 = match epoch_str {
+                    Some(s) => s.parse().map_err(|e| {
+                        StorageError::Internal(format!("invalid master_key_epoch: {e}"))
+                    })?,
+                    None => {
+                        // Partially initialized DB — id exists but epoch missing.
+                        // Repair: set epoch=1 and backfill any rows still missing.
+                        let tx = conn.unchecked_transaction().map_err(map_err)?;
+                        tx.execute(
+                            "INSERT INTO gateway_config (key, value) VALUES ('master_key_epoch', '1') \
+                             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            [],
+                        )
+                        .map_err(map_err)?;
+                        tx.execute(
+                            "UPDATE nodes SET master_key_id = ?1, master_key_epoch = 1 \
+                             WHERE master_key_id IS NULL OR master_key_epoch < 1",
+                            params![id_bytes.as_slice()],
+                        )
+                        .map_err(map_err)?;
+                        tx.execute(
+                            "UPDATE phone_psks SET master_key_id = ?1, master_key_epoch = 1 \
+                             WHERE master_key_id IS NULL OR master_key_epoch < 1",
+                            params![id_bytes.as_slice()],
+                        )
+                        .map_err(map_err)?;
+                        tx.commit().map_err(map_err)?;
+                        1
+                    }
+                };
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&id_bytes);
+                return Ok((arr, epoch));
+            }
+
+            // First startup — generate and backfill.
+            let mut master_key_id = [0u8; 16];
+            loop {
+                getrandom::fill(&mut master_key_id)
+                    .map_err(|e| StorageError::Internal(format!("master_key_id rng: {e}")))?;
+                if master_key_id != [0u8; 16] {
+                    break;
+                }
+            }
+            let epoch: u64 = 1;
+            let hex_id = hex::encode(master_key_id);
+
+            let tx = conn.unchecked_transaction().map_err(map_err)?;
+
+            // Persist master_key_id and master_key_epoch.
+            tx.execute(
+                "INSERT INTO gateway_config (key, value) VALUES ('master_key_id', ?1) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![hex_id],
+            )
+            .map_err(map_err)?;
+            tx.execute(
+                "INSERT INTO gateway_config (key, value) VALUES ('master_key_epoch', ?1) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![epoch.to_string()],
+            )
+            .map_err(map_err)?;
+
+            // Backfill nodes.
+            tx.execute(
+                "UPDATE nodes SET master_key_id = ?1, master_key_epoch = ?2 \
+                 WHERE master_key_id IS NULL",
+                params![master_key_id.as_slice(), epoch as i64],
+            )
+            .map_err(map_err)?;
+
+            // Backfill phone_psks.
+            tx.execute(
+                "UPDATE phone_psks SET master_key_id = ?1, master_key_epoch = ?2 \
+                 WHERE master_key_id IS NULL",
+                params![master_key_id.as_slice(), epoch as i64],
+            )
+            .map_err(map_err)?;
+
+            tx.commit().map_err(map_err)?;
+
+            Ok((master_key_id, epoch))
+        })
+        .await
+    }
+
+    /// Initialize the rotation code on first startup (§2.9 step 2d).
+    ///
+    /// If `rotation_code` is not yet in `gateway_config`, generates a random
+    /// 6-character uppercase alphanumeric code (`[A-Z0-9]`) using CSPRNG with
+    /// rejection sampling.
+    ///
+    /// Returns the current rotation code.
+    pub async fn init_rotation_code(&self) -> Result<String, StorageError> {
+        self.with_conn(move |conn| {
+            let existing: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM gateway_config WHERE key = 'rotation_code'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(map_err)?;
+
+            if let Some(code) = existing {
+                return Ok(code);
+            }
+
+            let code = generate_rotation_code()?;
+            conn.execute(
+                "INSERT INTO gateway_config (key, value) VALUES ('rotation_code', ?1) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![code],
+            )
+            .map_err(map_err)?;
+
+            Ok(code)
+        })
+        .await
+    }
+
+    // ── Pending recovery (GW-2009) ─────────────────────────────
+
+    /// Insert a recovered PSK record into the pending_recovery table.
+    ///
+    /// If a record with the same (key_hint, node_id) already exists, it is
+    /// replaced (upsert).
+    pub async fn insert_pending_recovery(
+        &self,
+        key_hint: u16,
+        node_id: &str,
+        encrypted_psk: &[u8],
+        master_key_id: &[u8; 16],
+        master_key_epoch: u64,
+    ) -> Result<(), StorageError> {
+        if encrypted_psk.len() != ENCRYPTED_PSK_LEN {
+            return Err(StorageError::Internal(format!(
+                "encrypted_psk must be {} bytes, got {}",
+                ENCRYPTED_PSK_LEN,
+                encrypted_psk.len()
+            )));
+        }
+        if master_key_epoch > i64::MAX as u64 {
+            return Err(StorageError::Internal(format!(
+                "master_key_epoch {master_key_epoch} exceeds SQLite integer range"
+            )));
+        }
+        let node_id = node_id.to_owned();
+        let encrypted_psk = encrypted_psk.to_vec();
+        let master_key_id = *master_key_id;
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO pending_recovery \
+                 (key_hint, node_id, encrypted_psk, master_key_id, master_key_epoch, received_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, strftime('%s', 'now')) \
+                 ON CONFLICT(key_hint, node_id) DO UPDATE SET \
+                 encrypted_psk=excluded.encrypted_psk, \
+                 master_key_id=excluded.master_key_id, \
+                 master_key_epoch=excluded.master_key_epoch, \
+                 received_at=excluded.received_at",
+                params![
+                    key_hint as i64,
+                    node_id,
+                    encrypted_psk,
+                    master_key_id.as_slice(),
+                    master_key_epoch as i64,
+                ],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Look up pending_recovery candidates by key_hint.
+    pub async fn lookup_pending_recovery(
+        &self,
+        key_hint: u16,
+    ) -> Result<Vec<PendingRecoveryRecord>, StorageError> {
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT key_hint, node_id, encrypted_psk, master_key_id, master_key_epoch \
+                     FROM pending_recovery WHERE key_hint = ?1",
+                )
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map(params![key_hint as i64], |row| {
+                    let kh_raw: i64 = row.get(0)?;
+                    let epoch_raw: i64 = row.get(4)?;
+                    Ok(PendingRecoveryRecord {
+                        key_hint: u16::try_from(kh_raw)
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, kh_raw))?,
+                        node_id: row.get(1)?,
+                        encrypted_psk: row.get(2)?,
+                        master_key_id: row.get(3)?,
+                        master_key_epoch: u64::try_from(epoch_raw)
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(4, epoch_raw))?,
+                    })
+                })
+                .map_err(map_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(map_err)
+        })
+        .await
+    }
+
+    /// Delete a specific pending_recovery record (after successful promotion).
+    pub async fn delete_pending_recovery(
+        &self,
+        key_hint: u16,
+        node_id: &str,
+    ) -> Result<(), StorageError> {
+        let node_id = node_id.to_owned();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM pending_recovery WHERE key_hint = ?1 AND node_id = ?2",
+                params![key_hint as i64, node_id],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Purge all pending_recovery records (used during rotation).
+    pub async fn purge_pending_recovery(&self) -> Result<u64, StorageError> {
+        self.with_conn(move |conn| {
+            let deleted = conn
+                .execute("DELETE FROM pending_recovery", [])
+                .map_err(map_err)?;
+            Ok(deleted as u64)
+        })
+        .await
+    }
+
+    /// Expire pending_recovery records older than `max_age_secs`.
+    pub async fn expire_pending_recovery(&self, max_age_secs: u64) -> Result<u64, StorageError> {
+        let max_age = i64::try_from(max_age_secs).map_err(|_| {
+            StorageError::Internal(format!(
+                "max_age_secs {max_age_secs} exceeds SQLite integer range"
+            ))
+        })?;
+        self.with_conn(move |conn| {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM pending_recovery \
+                     WHERE received_at < strftime('%s', 'now') - ?1",
+                    params![max_age],
+                )
+                .map_err(map_err)?;
+            Ok(deleted as u64)
+        })
+        .await
     }
 
     /// Run a synchronous closure on the connection via `spawn_blocking`.
@@ -756,6 +1161,32 @@ impl SqliteStorage {
 /// Convert a `rusqlite::Error` into a `StorageError`.
 fn map_err(e: rusqlite::Error) -> StorageError {
     StorageError::Internal(e.to_string())
+}
+
+/// Generate a random 6-character uppercase alphanumeric rotation code (GW-2002).
+///
+/// Character set: `[A-Z0-9]` (36 symbols, 36^6 ≈ 31 bits of entropy).
+/// Uses `getrandom::fill()` with rejection sampling to avoid modulo bias.
+fn generate_rotation_code() -> Result<String, StorageError> {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const CODE_LEN: usize = 6;
+
+    let mut code = String::with_capacity(CODE_LEN);
+    let mut buf = [0u8; 1];
+
+    for _ in 0..CODE_LEN {
+        loop {
+            getrandom::fill(&mut buf)
+                .map_err(|e| StorageError::Internal(format!("rotation_code rng: {e}")))?;
+            // Rejection sampling: accept only values in [0, 252) to
+            // avoid modulo bias (252 = 36 * 7, largest multiple of 36 ≤ 256).
+            if buf[0] < 252 {
+                code.push(CHARSET[(buf[0] as usize) % 36] as char);
+                break;
+            }
+        }
+    }
+    Ok(code)
 }
 
 /// Convert a `SystemTime` to seconds since the Unix epoch.
@@ -3019,5 +3450,177 @@ mod tests {
             "migrated phone PSK should default to key_version 0"
         );
         assert_eq!(*phones[0].psk, [0xCDu8; 32]);
+    }
+
+    // ── Escrow initialization tests (GW-2001, GW-2002) ─────────
+
+    #[tokio::test]
+    async fn test_init_master_key_id_first_startup() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let (id, epoch) = store.init_master_key_id().await.unwrap();
+        assert_eq!(epoch, 1);
+        assert_ne!(id, [0u8; 16], "master_key_id should be random, not zero");
+    }
+
+    #[tokio::test]
+    async fn test_init_master_key_id_stable_across_calls() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let (id1, epoch1) = store.init_master_key_id().await.unwrap();
+        let (id2, epoch2) = store.init_master_key_id().await.unwrap();
+        assert_eq!(id1, id2, "master_key_id must be stable");
+        assert_eq!(epoch1, epoch2, "master_key_epoch must be stable");
+    }
+
+    #[tokio::test]
+    async fn test_init_rotation_code_first_startup() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let code = store.init_rotation_code().await.unwrap();
+        assert_eq!(code.len(), 6);
+        assert!(
+            code.bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()),
+            "code must be [A-Z0-9]: got {code:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_init_rotation_code_stable_across_calls() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let code1 = store.init_rotation_code().await.unwrap();
+        let code2 = store.init_rotation_code().await.unwrap();
+        assert_eq!(code1, code2, "rotation_code must be stable");
+    }
+
+    // ── Pending recovery tests (GW-2009) ────────────────────────
+
+    #[tokio::test]
+    async fn test_pending_recovery_insert_and_lookup() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let mk_id = [0xAAu8; 16];
+        let psk = [0xBBu8; 60];
+        store
+            .insert_pending_recovery(42, "node-1", &psk, &mk_id, 1)
+            .await
+            .unwrap();
+        let records = store.lookup_pending_recovery(42).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].node_id, "node-1");
+        assert_eq!(records[0].key_hint, 42);
+        assert_eq!(records[0].encrypted_psk, psk);
+        assert_eq!(records[0].master_key_id, mk_id);
+        assert_eq!(records[0].master_key_epoch, 1);
+    }
+
+    #[tokio::test]
+    async fn test_pending_recovery_delete() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        store
+            .insert_pending_recovery(42, "node-1", &[0xBBu8; 60], &[0xAAu8; 16], 1)
+            .await
+            .unwrap();
+        store.delete_pending_recovery(42, "node-1").await.unwrap();
+        let records = store.lookup_pending_recovery(42).await.unwrap();
+        assert!(records.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_pending_recovery_purge() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        store
+            .insert_pending_recovery(1, "n1", &[0xBBu8; 60], &[0xAAu8; 16], 1)
+            .await
+            .unwrap();
+        store
+            .insert_pending_recovery(2, "n2", &[0xCCu8; 60], &[0xAAu8; 16], 1)
+            .await
+            .unwrap();
+        let purged = store.purge_pending_recovery().await.unwrap();
+        assert_eq!(purged, 2);
+        assert!(store.lookup_pending_recovery(1).await.unwrap().is_empty());
+        assert!(store.lookup_pending_recovery(2).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_pending_recovery_rejects_wrong_psk_length() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        let result = store
+            .insert_pending_recovery(42, "node-1", &[0xBBu8; 30], &[0xAAu8; 16], 1)
+            .await;
+        assert!(result.is_err(), "should reject non-60-byte PSK blob");
+    }
+
+    #[tokio::test]
+    async fn test_pending_recovery_expire() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        store
+            .insert_pending_recovery(42, "node-old", &[0xBBu8; 60], &[0xAAu8; 16], 1)
+            .await
+            .unwrap();
+        // Backdate the record by directly updating received_at.
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE pending_recovery SET received_at = strftime('%s', 'now') - 90000 \
+                     WHERE node_id = 'node-old'",
+                    [],
+                )
+                .map_err(map_err)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        // Insert a fresh record.
+        store
+            .insert_pending_recovery(43, "node-new", &[0xCCu8; 60], &[0xAAu8; 16], 1)
+            .await
+            .unwrap();
+        // Expire records older than 24 hours (86400 seconds).
+        let expired = store.expire_pending_recovery(86400).await.unwrap();
+        assert_eq!(expired, 1, "only the backdated record should expire");
+        assert!(store.lookup_pending_recovery(42).await.unwrap().is_empty());
+        assert_eq!(store.lookup_pending_recovery(43).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_init_master_key_id_backfills_existing_nodes() {
+        let store = SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).unwrap();
+        // Insert a node directly via SQL with no master_key_id/epoch.
+        store
+            .with_conn(|conn| {
+                let psk = crate::sqlite_storage::encrypt_psk(
+                    &[0x42u8; 32],
+                    "backfill-test",
+                    &[0x99u8; 32],
+                )?;
+                conn.execute(
+                    "INSERT INTO nodes (node_id, key_hint, psk, schedule_interval_s, key_version) \
+                     VALUES ('backfill-test', 0x1234, ?1, 60, 0)",
+                    params![psk],
+                )
+                .map_err(map_err)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        // Initialize master key ID — should backfill.
+        let (mk_id, epoch) = store.init_master_key_id().await.unwrap();
+        assert_eq!(epoch, 1);
+        // Verify the node was backfilled.
+        store
+            .with_conn(move |conn| {
+                let (db_id, db_epoch): (Vec<u8>, i64) = conn
+                    .query_row(
+                        "SELECT master_key_id, master_key_epoch FROM nodes \
+                         WHERE node_id = 'backfill-test'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(map_err)?;
+                assert_eq!(db_id, mk_id.as_slice());
+                assert_eq!(db_epoch, 1);
+                Ok(())
+            })
+            .await
+            .unwrap();
     }
 }

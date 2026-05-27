@@ -2036,3 +2036,34 @@ message SubmitRotationResponse { bool accepted = 1; string error = 2; }
 ```
 
 Both gRPC and DESIRED_STATE rotation paths converge on the same handler.
+
+### 23.13  Salt and KDF-params convergence (GW-2008)
+
+`RotationEngine::handle_desired_state()` applies adopt-if-absent semantics
+for salt and KDF parameters from gateway DESIRED_STATE, per evolve-962 §2.5.
+
+**Convergence rules:**
+
+1. **Salt adoption:** If DESIRED_STATE contains `salt` (16 bytes),
+   atomically write via `set_config_if_absent("kdf_salt", hex::encode(salt))`
+   (`INSERT ... ON CONFLICT DO NOTHING`). If inserted → log at `info` level.
+2. **Salt immutability:** If `kdf_salt` already exists in `gateway_config` →
+   the atomic insert is a no-op. Log at `info` level that
+   local salt is retained.
+3. **KDF params adoption:** Same adopt-if-absent pattern for `kdf_params`.
+   Read `gateway_config` key `kdf_params_json`. If absent and DESIRED_STATE
+   contains `kdf_params` → serialize as JSON
+   (`{"m_cost":N,"t_cost":N,"p_cost":N,"kdf_version":N}`) and write via
+   `set_config_if_absent("kdf_params_json", json)` (atomic insert).
+4. **KDF params immutability:** If `kdf_params_json` already exists →
+   ignore DESIRED_STATE value.
+5. **ACTUAL_STATE re-emission:** After any successful adoption (salt or KDF
+   params), send a `GatewayStateChanged` notification via a dedicated
+   `state_changed_tx` channel (separate from the rotation-specific
+   `rotation_complete_tx`) to trigger an immediate gateway ACTUAL_STATE
+   re-emission so the cloud sees the adopted values promptly. If a write
+   fails, log the error and do not trigger re-emission for that field;
+   adoption will be retried on the next DESIRED_STATE delivery.
+6. **Rotation-path update:** Salt and KDF params can also be updated via
+   rotation payload delivery — already handled by `commit_rotation()` in
+   §23.7.

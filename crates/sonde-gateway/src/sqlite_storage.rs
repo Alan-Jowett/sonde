@@ -3050,6 +3050,22 @@ impl Storage for SqliteStorage {
         .await
     }
 
+    async fn set_config_if_absent(&self, key: &str, value: &str) -> Result<bool, StorageError> {
+        let key = key.to_owned();
+        let value = value.to_owned();
+        self.with_conn(move |conn| {
+            let changed = conn
+                .execute(
+                    "INSERT INTO gateway_config (key, value) VALUES (?1, ?2) \
+                     ON CONFLICT(key) DO NOTHING",
+                    params![key, value],
+                )
+                .map_err(map_err)?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
     // ── Handler routing (GW-1401) ──────────────────────────────
 
     async fn list_handlers(&self) -> Result<Vec<crate::storage::HandlerRecord>, StorageError> {

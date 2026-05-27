@@ -355,4 +355,22 @@ impl AdminClient {
         let resp = self.inner.list_handlers(Empty {}).await?;
         Ok(resp.into_inner().handlers)
     }
+
+    // -- Key management (ADMIN-0900–0902) --
+
+    pub async fn get_gateway_state(&mut self) -> Result<GatewayState, tonic::Status> {
+        let resp = self.inner.get_gateway_state(Empty {}).await?;
+        Ok(resp.into_inner())
+    }
+
+    pub async fn submit_rotation(
+        &mut self,
+        rotation_payload: Vec<u8>,
+    ) -> Result<SubmitRotationResponse, tonic::Status> {
+        let resp = self
+            .inner
+            .submit_rotation(SubmitRotationRequest { rotation_payload })
+            .await?;
+        Ok(resp.into_inner())
+    }
 }

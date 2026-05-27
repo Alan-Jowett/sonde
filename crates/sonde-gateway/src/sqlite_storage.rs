@@ -38,7 +38,7 @@ pub struct PendingRecoveryRecord {
 /// a ciphertext blob between node rows to cause PSK confusion.
 ///
 /// Returns a blob of the form `nonce (12 B) || ciphertext+tag (48 B)`.
-pub(crate) fn encrypt_psk(
+pub fn encrypt_psk(
     master_key: &[u8; 32],
     node_id: &str,
     psk: &[u8; 32],
@@ -105,6 +105,18 @@ fn decrypt_psk(
         .as_slice()
         .try_into()
         .map_err(|_| StorageError::Internal("decrypted psk is not 32 bytes".into()))
+}
+
+/// Public wrapper for decrypting a PSK blob with a given master key (GW-2009).
+///
+/// Used by the recovery engine to trial-decrypt `pending_recovery` PSKs.
+/// The caller is responsible for zeroizing the returned key material.
+pub fn decrypt_psk_with_master_key(
+    master_key: &[u8; 32],
+    node_id: &str,
+    blob: &[u8],
+) -> Result<[u8; 32], StorageError> {
+    decrypt_psk(master_key, node_id, blob)
 }
 
 /// Encrypt a 32-byte Ed25519 seed using AES-256-GCM.

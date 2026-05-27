@@ -537,7 +537,14 @@ impl Gateway {
             }
         };
 
-        let recovery_candidates = sqlite.lookup_pending_recovery(key_hint).await.ok()?;
+        let recovery_candidates = match sqlite.lookup_pending_recovery(key_hint).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(key_hint, "pending_recovery lookup failed: {e}");
+                self.missing_hint_tracker.write().await.report(key_hint);
+                return None;
+            }
+        };
 
         if recovery_candidates.is_empty() {
             // No recovery candidates — record the hint and discard.

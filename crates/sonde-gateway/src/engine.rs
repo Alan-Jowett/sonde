@@ -43,7 +43,7 @@ const MISSING_HINT_RATE_LIMIT_SECS: u64 = 60;
 /// rate-limited to at most one report per 60 seconds. After draining,
 /// reported hints are cleared — the node's wake cycle provides natural retry.
 pub struct MissingKeyHintTracker {
-    /// Map from key_hint → (last_reported time, insertion order for LRU).
+    /// Map from key_hint → last_reported time (for rate limiting).
     entries: HashMap<u16, Instant>,
     /// Insertion-order queue for LRU eviction.
     order: Vec<u16>,

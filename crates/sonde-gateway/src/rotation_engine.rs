@@ -260,7 +260,6 @@ impl RotationEngine {
                 continue;
             }
 
-            // Convert key_hint to u16 (already validated by connector parser).
             let key_hint = rec.key_hint;
 
             match self

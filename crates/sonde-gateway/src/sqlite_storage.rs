@@ -107,7 +107,7 @@ fn decrypt_psk(
         .map_err(|_| StorageError::Internal("decrypted psk is not 32 bytes".into()))
 }
 
-/// Public wrapper for decrypting a PSK blob with a given master key (GW-2009).
+/// Crate-internal wrapper for decrypting a PSK blob with a given master key (GW-2009).
 ///
 /// Used by the recovery engine to trial-decrypt `pending_recovery` PSKs.
 /// Returns the plaintext PSK wrapped in [`Zeroizing`] so it is automatically

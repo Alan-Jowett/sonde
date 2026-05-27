@@ -67,9 +67,13 @@ impl MissingKeyHintTracker {
 
         if let Some(last) = self.entries.get(&key_hint) {
             if now.duration_since(*last).as_secs() < MISSING_HINT_RATE_LIMIT_SECS {
+                // Rate-limited — but still refresh LRU position so a
+                // frequently-seen hint isn't evicted while suppressed.
+                self.order.retain(|h| *h != key_hint);
+                self.order.push(key_hint);
                 return false;
             }
-            // Update timestamp and move to back of LRU order.
+            // Rate limit expired — update timestamp and move to back of LRU.
             self.entries.insert(key_hint, now);
             self.order.retain(|h| *h != key_hint);
             self.order.push(key_hint);

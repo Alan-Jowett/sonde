@@ -353,3 +353,31 @@ fn missing_hint_tracker_lru_eviction() {
     // The evicted key_hint (0) should now be accepted again.
     assert!(tracker.report(0));
 }
+
+/// Rate-limited hints should refresh their LRU position so they are not
+/// evicted while still actively appearing.
+#[test]
+fn missing_hint_tracker_rate_limited_refreshes_lru() {
+    let mut tracker = MissingKeyHintTracker::new();
+
+    // Insert hint 0, then fill 255 more slots (1..=255).
+    assert!(tracker.report(0));
+    for i in 1..256u16 {
+        assert!(tracker.report(i));
+    }
+    assert_eq!(tracker.len(), 256);
+
+    // Hint 0 is rate-limited (within 60s), but should refresh LRU position.
+    assert!(!tracker.report(0), "should be rate-limited");
+
+    // Now insert a new hint — it should evict hint 1 (the oldest that was
+    // NOT refreshed), not hint 0.
+    assert!(tracker.report(999));
+    assert_eq!(tracker.len(), 256);
+
+    // Hint 1 was evicted, so reporting it should succeed as new.
+    assert!(tracker.report(1), "hint 1 should have been evicted");
+
+    // Hint 0 is still tracked (not evicted), so it should still be rate-limited.
+    assert!(!tracker.report(0), "hint 0 should NOT have been evicted");
+}

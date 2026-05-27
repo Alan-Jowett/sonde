@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Master key rotation execution engine (GW-2006, GW-2007, GW-2013).
+//! Master key rotation execution engine (GW-2006, GW-2007, GW-2008, GW-2013).
 //!
 //! Coordinates the 8-step rotation pipeline and crash recovery, receiving
 //! rotation payloads from both gRPC (`SubmitRotation`) and DESIRED_STATE
 //! ingress channels.
+//!
+//! Also implements salt and KDF-params convergence (GW-2008, §23.13):
+//! adopt-if-absent semantics for values delivered via DESIRED_STATE.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,6 +21,7 @@ use crate::connector::{ConnectorEventHub, GatewayDesiredState};
 use crate::gateway_identity::GatewayIdentity;
 use crate::rotation::{decrypt_rotation_payload, DecryptedRotation, RotationRateLimiter};
 use crate::sqlite_storage::SqliteStorage;
+use crate::storage::Storage;
 
 /// Channel type matching the admin service's rotation submission channel.
 pub type RotationSubmitChannel =
@@ -34,6 +38,12 @@ pub struct RotationCompleteNotification {
     pub new_master_key_id: [u8; 16],
     pub new_epoch: u64,
 }
+
+/// Notification sent when gateway state changes outside of rotation
+/// (e.g., salt/KDF params adoption from DESIRED_STATE). The gateway
+/// binary subscribes to trigger a full ACTUAL_STATE re-emission.
+#[derive(Debug, Clone)]
+pub struct GatewayStateChanged;
 
 /// Rotation execution engine.
 ///
@@ -66,6 +76,9 @@ pub struct RotationEngine {
     /// binary subscribes to trigger a full gateway ACTUAL_STATE re-emission
     /// (which requires runtime state not available to this engine).
     rotation_complete_tx: Option<mpsc::UnboundedSender<RotationCompleteNotification>>,
+    /// Optional notification channel for non-rotation state changes (e.g.,
+    /// salt/KDF params adoption). Triggers gateway ACTUAL_STATE re-emission.
+    state_changed_tx: Option<mpsc::UnboundedSender<GatewayStateChanged>>,
 }
 
 impl RotationEngine {
@@ -85,6 +98,7 @@ impl RotationEngine {
             desired_state_rx,
             rotation_active: Arc::new(AtomicBool::new(false)),
             rotation_complete_tx: None,
+            state_changed_tx: None,
         }
     }
 
@@ -98,6 +112,16 @@ impl RotationEngine {
         tx: mpsc::UnboundedSender<RotationCompleteNotification>,
     ) -> Self {
         self.rotation_complete_tx = Some(tx);
+        self
+    }
+
+    /// Set the notification channel for non-rotation state changes (GW-2008).
+    ///
+    /// When salt or KDF params are adopted from DESIRED_STATE, the engine
+    /// sends a [`GatewayStateChanged`] so the gateway can emit a full
+    /// ACTUAL_STATE reflecting the new values.
+    pub fn with_state_changed_tx(mut self, tx: mpsc::UnboundedSender<GatewayStateChanged>) -> Self {
+        self.state_changed_tx = Some(tx);
         self
     }
 
@@ -124,13 +148,88 @@ impl RotationEngine {
         }
     }
 
-    /// Handle a full DESIRED_STATE message — process rotation_payload if present.
+    /// Handle a full DESIRED_STATE message — process rotation_payload if present,
+    /// then apply salt/KDF-params convergence (GW-2008).
     async fn handle_desired_state(&mut self, state: GatewayDesiredState) {
-        if let Some(payload) = state.rotation_payload {
+        if let Some(ref payload) = state.rotation_payload {
             // Errors from DESIRED_STATE rotation are silently discarded per spec.
-            let _ = self.handle_rotation_payload(&payload, false).await;
+            let _ = self.handle_rotation_payload(payload, false).await;
         }
-        // Future: handle recovered_psks, salt, kdf_params, channel changes here.
+
+        // Salt/KDF-params convergence (GW-2008, §23.13).
+        let adopted = self.converge_salt_and_kdf(&state).await;
+        if adopted {
+            if let Some(ref tx) = self.state_changed_tx {
+                if tx.send(GatewayStateChanged).is_err() {
+                    warn!("state_changed_tx receiver dropped — ACTUAL_STATE re-emission may be missed");
+                }
+            }
+        }
+
+        // Future: handle recovered_psks, channel changes here.
+    }
+
+    /// Apply adopt-if-absent semantics for salt and KDF params (§23.13).
+    ///
+    /// Returns `true` if at least one value was adopted, signalling that
+    /// a gateway ACTUAL_STATE re-emission is warranted.
+    async fn converge_salt_and_kdf(&self, state: &GatewayDesiredState) -> bool {
+        let mut adopted = false;
+
+        // Salt convergence.
+        if let Some(ref desired_salt) = state.salt {
+            if desired_salt.len() != 16 {
+                warn!(
+                    len = desired_salt.len(),
+                    "ignoring DESIRED_STATE salt with invalid length (expected 16)"
+                );
+            } else {
+                match self
+                    .storage
+                    .set_config_if_absent("kdf_salt", &hex::encode(desired_salt))
+                    .await
+                {
+                    Ok(true) => {
+                        info!("adopted salt from DESIRED_STATE");
+                        adopted = true;
+                    }
+                    Ok(false) => {
+                        info!("ignoring DESIRED_STATE salt — local salt already set");
+                    }
+                    Err(e) => {
+                        error!(error = %e, "failed to adopt salt from DESIRED_STATE");
+                    }
+                }
+            }
+        }
+
+        // KDF params convergence.
+        if let Some(ref desired_kdf) = state.kdf_params {
+            let json = serde_json::json!({
+                "m_cost": desired_kdf.m_cost,
+                "t_cost": desired_kdf.t_cost,
+                "p_cost": desired_kdf.p_cost,
+                "kdf_version": desired_kdf.kdf_version,
+            });
+            match self
+                .storage
+                .set_config_if_absent("kdf_params_json", &json.to_string())
+                .await
+            {
+                Ok(true) => {
+                    info!("adopted KDF params from DESIRED_STATE");
+                    adopted = true;
+                }
+                Ok(false) => {
+                    info!("ignoring DESIRED_STATE kdf_params — local params already set");
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to adopt KDF params from DESIRED_STATE");
+                }
+            }
+        }
+
+        adopted
     }
 
     /// Process a raw rotation payload from either gRPC or DESIRED_STATE.
@@ -494,6 +593,7 @@ impl RotationEngine {
             desired_state_rx: mpsc::unbounded_channel().1,
             rotation_active: Arc::new(AtomicBool::new(true)),
             rotation_complete_tx: None,
+            state_changed_tx: None,
         };
 
         // Parse salt/kdf_params from the pending_rotation record for crash recovery.
@@ -568,5 +668,251 @@ mod tests {
             .unwrap();
         let in_progress = store.is_rotation_in_progress().await.unwrap();
         assert!(in_progress);
+    }
+
+    /// T-2007: Salt and KDF-params management (GW-2008).
+    ///
+    /// Steps 1–4, 6–7 from gateway-validation.md. Step 5 (rotation-path
+    /// salt update) is covered by the existing rotation tests.
+    #[tokio::test]
+    async fn test_t2007_salt_and_kdf_convergence() {
+        use crate::connector::KdfParams;
+
+        let master_key = Zeroizing::new([0x42u8; 32]);
+        let store = Arc::new(SqliteStorage::in_memory(master_key).unwrap());
+
+        let (state_tx, mut state_rx) = mpsc::unbounded_channel::<GatewayStateChanged>();
+
+        // Build a minimal engine for testing convergence only.
+        let (_grpc_tx, grpc_rx) = mpsc::unbounded_channel();
+        let (_ds_tx, desired_state_rx) = mpsc::unbounded_channel();
+        let identity = crate::gateway_identity::GatewayIdentity::generate().unwrap();
+        let event_hub = Arc::new(ConnectorEventHub::default());
+
+        let mut engine = RotationEngine::new(
+            Arc::clone(&store),
+            identity,
+            event_hub,
+            grpc_rx,
+            desired_state_rx,
+        )
+        .with_state_changed_tx(state_tx);
+
+        // ── Step 1: No local salt or KDF params ──
+        assert!(store.get_config("kdf_salt").await.unwrap().is_none());
+        assert!(store.get_config("kdf_params_json").await.unwrap().is_none());
+
+        // ── Step 2: Deliver DESIRED_STATE with salt + KDF params → adopted ──
+        let salt_a = vec![0xAAu8; 16];
+        let kdf_a = KdfParams {
+            m_cost: 65536,
+            t_cost: 3,
+            p_cost: 1,
+            kdf_version: 1,
+        };
+        let ds = GatewayDesiredState {
+            entity_id: "aa".repeat(16),
+            channel: None,
+            salt: Some(salt_a.clone()),
+            kdf_params: Some(kdf_a.clone()),
+            rotation_payload: None,
+            recovered_psks: None,
+        };
+        engine.handle_desired_state(ds).await;
+
+        // Verify adoption.
+        let stored_salt = store.get_config("kdf_salt").await.unwrap().unwrap();
+        assert_eq!(stored_salt, hex::encode(&salt_a));
+
+        let stored_kdf = store.get_config("kdf_params_json").await.unwrap().unwrap();
+        let kdf_val: serde_json::Value = serde_json::from_str(&stored_kdf).unwrap();
+        assert_eq!(kdf_val["m_cost"], 65536);
+        assert_eq!(kdf_val["t_cost"], 3);
+        assert_eq!(kdf_val["p_cost"], 1);
+        assert_eq!(kdf_val["kdf_version"], 1);
+
+        // ── Step 3: Verify notification was sent ──
+        let notif = state_rx.try_recv();
+        assert!(notif.is_ok(), "expected GatewayStateChanged after adoption");
+
+        // ── Step 4: Different salt + KDF → local wins ──
+        let salt_b = vec![0xBBu8; 16];
+        let kdf_b = KdfParams {
+            m_cost: 131072,
+            t_cost: 5,
+            p_cost: 2,
+            kdf_version: 2,
+        };
+        let ds2 = GatewayDesiredState {
+            entity_id: "aa".repeat(16),
+            channel: None,
+            salt: Some(salt_b),
+            kdf_params: Some(kdf_b),
+            rotation_payload: None,
+            recovered_psks: None,
+        };
+        engine.handle_desired_state(ds2).await;
+
+        // Verify local values unchanged.
+        let stored_salt2 = store.get_config("kdf_salt").await.unwrap().unwrap();
+        assert_eq!(
+            stored_salt2,
+            hex::encode(&salt_a),
+            "local salt must not change"
+        );
+
+        let stored_kdf2 = store.get_config("kdf_params_json").await.unwrap().unwrap();
+        assert_eq!(stored_kdf2, stored_kdf, "local KDF params must not change");
+
+        // Verify NO notification sent (nothing adopted).
+        assert!(
+            state_rx.try_recv().is_err(),
+            "no GatewayStateChanged expected when local values already set"
+        );
+
+        // ── Step 6: Salt only (no KDF params) → salt evaluated, KDF unchanged ──
+        // Reset DB to test partial delivery with only salt already set.
+        // Salt already set above, so this should be a no-op for salt.
+        let ds3 = GatewayDesiredState {
+            entity_id: "aa".repeat(16),
+            channel: None,
+            salt: Some(vec![0xCCu8; 16]),
+            kdf_params: None,
+            rotation_payload: None,
+            recovered_psks: None,
+        };
+        engine.handle_desired_state(ds3).await;
+
+        // Salt unchanged.
+        let stored_salt3 = store.get_config("kdf_salt").await.unwrap().unwrap();
+        assert_eq!(stored_salt3, hex::encode(&salt_a));
+        // KDF unchanged (not provided, not touched).
+        let stored_kdf3 = store.get_config("kdf_params_json").await.unwrap().unwrap();
+        assert_eq!(stored_kdf3, stored_kdf);
+        // No notification.
+        assert!(state_rx.try_recv().is_err());
+
+        // ── Step 7: KDF only (no salt) → KDF evaluated, salt unchanged ──
+        let ds4 = GatewayDesiredState {
+            entity_id: "aa".repeat(16),
+            channel: None,
+            salt: None,
+            kdf_params: Some(KdfParams {
+                m_cost: 999,
+                t_cost: 999,
+                p_cost: 999,
+                kdf_version: 999,
+            }),
+            rotation_payload: None,
+            recovered_psks: None,
+        };
+        engine.handle_desired_state(ds4).await;
+
+        // Salt unchanged (not provided).
+        let stored_salt4 = store.get_config("kdf_salt").await.unwrap().unwrap();
+        assert_eq!(stored_salt4, hex::encode(&salt_a));
+        // KDF unchanged (local already set, ignore new values).
+        let stored_kdf4 = store.get_config("kdf_params_json").await.unwrap().unwrap();
+        assert_eq!(stored_kdf4, stored_kdf);
+        // No notification.
+        assert!(state_rx.try_recv().is_err());
+    }
+
+    /// Salt with invalid length is rejected before attempting adoption.
+    #[tokio::test]
+    async fn test_salt_invalid_length_rejected() {
+        let master_key = Zeroizing::new([0x42u8; 32]);
+        let store = Arc::new(SqliteStorage::in_memory(master_key).unwrap());
+
+        let (_grpc_tx, grpc_rx) = mpsc::unbounded_channel();
+        let (_ds_tx, desired_state_rx) = mpsc::unbounded_channel();
+        let identity = crate::gateway_identity::GatewayIdentity::generate().unwrap();
+        let event_hub = Arc::new(ConnectorEventHub::default());
+
+        let mut engine = RotationEngine::new(
+            Arc::clone(&store),
+            identity,
+            event_hub,
+            grpc_rx,
+            desired_state_rx,
+        );
+
+        // Deliver salt with wrong length.
+        let ds = GatewayDesiredState {
+            entity_id: "aa".repeat(16),
+            channel: None,
+            salt: Some(vec![0xAAu8; 8]), // 8 bytes, not 16
+            kdf_params: None,
+            rotation_payload: None,
+            recovered_psks: None,
+        };
+        engine.handle_desired_state(ds).await;
+
+        // Salt should not have been stored.
+        assert!(store.get_config("kdf_salt").await.unwrap().is_none());
+    }
+
+    /// Adopt-if-absent: salt adopted only on first DESIRED_STATE, not
+    /// overwritten by subsequent deliveries even from fresh engine instances.
+    #[tokio::test]
+    async fn test_salt_immutability_across_engine_restarts() {
+        let master_key = Zeroizing::new([0x42u8; 32]);
+        let store = Arc::new(SqliteStorage::in_memory(master_key).unwrap());
+
+        let identity = crate::gateway_identity::GatewayIdentity::generate().unwrap();
+
+        // First engine instance: adopt salt.
+        {
+            let (_grpc_tx, grpc_rx) = mpsc::unbounded_channel();
+            let (_ds_tx, desired_state_rx) = mpsc::unbounded_channel();
+            let event_hub = Arc::new(ConnectorEventHub::default());
+            let mut engine = RotationEngine::new(
+                Arc::clone(&store),
+                identity.clone(),
+                event_hub,
+                grpc_rx,
+                desired_state_rx,
+            );
+
+            let ds = GatewayDesiredState {
+                entity_id: "aa".repeat(16),
+                channel: None,
+                salt: Some(vec![0x11u8; 16]),
+                kdf_params: None,
+                rotation_payload: None,
+                recovered_psks: None,
+            };
+            engine.handle_desired_state(ds).await;
+        }
+
+        let original_salt = store.get_config("kdf_salt").await.unwrap().unwrap();
+
+        // Second engine instance (simulates restart): try different salt.
+        {
+            let (_grpc_tx, grpc_rx) = mpsc::unbounded_channel();
+            let (_ds_tx, desired_state_rx) = mpsc::unbounded_channel();
+            let event_hub = Arc::new(ConnectorEventHub::default());
+            let mut engine = RotationEngine::new(
+                Arc::clone(&store),
+                identity,
+                event_hub,
+                grpc_rx,
+                desired_state_rx,
+            );
+
+            let ds = GatewayDesiredState {
+                entity_id: "aa".repeat(16),
+                channel: None,
+                salt: Some(vec![0x22u8; 16]),
+                kdf_params: None,
+                rotation_payload: None,
+                recovered_psks: None,
+            };
+            engine.handle_desired_state(ds).await;
+        }
+
+        // Salt unchanged.
+        let final_salt = store.get_config("kdf_salt").await.unwrap().unwrap();
+        assert_eq!(final_salt, original_salt);
     }
 }

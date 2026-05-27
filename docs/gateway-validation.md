@@ -4396,20 +4396,27 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-2007  Salt management
+### T-2007  Salt and KDF-params management
 
 **Traces to:** GW-2008 (AC-1, AC-2, AC-3, AC-4)
 
 **Steps:**
-1. Start gateway with no local salt — verify `salt = null` in ACTUAL_STATE.
-2. Deliver DESIRED_STATE with salt — verify gateway adopts it.
-3. Verify subsequent ACTUAL_STATE reports the adopted salt.
-4. Deliver DESIRED_STATE with a different salt — verify gateway keeps
-   its existing salt (local wins once set).
+1. Start gateway with no local salt or KDF params — verify `salt = null`
+   and `kdf_params = null` in ACTUAL_STATE.
+2. Deliver DESIRED_STATE with salt and KDF params — verify gateway adopts
+   both.
+3. Verify subsequent ACTUAL_STATE reports the adopted salt and KDF params.
+4. Deliver DESIRED_STATE with a different salt and different KDF params —
+   verify gateway keeps its existing values (local wins once set).
 5. Perform rotation with salt in payload — verify salt updated.
+6. Deliver DESIRED_STATE with salt but no KDF params — verify only salt is
+   evaluated (KDF params unchanged).
+7. Deliver DESIRED_STATE with KDF params but no salt — verify only KDF
+   params is evaluated (salt unchanged).
 
 **Expected:**
-1. Salt adoption and immutability semantics correct.
+1. Salt and KDF-params adoption and immutability semantics correct.
+2. Partial DESIRED_STATE (only salt or only KDF params) handled independently.
 
 ---
 

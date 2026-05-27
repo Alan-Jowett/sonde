@@ -190,6 +190,9 @@ pub trait Storage: Send + Sync {
     async fn get_config(&self, key: &str) -> Result<Option<String>, StorageError>;
     /// Set a gateway configuration value (insert or update).
     async fn set_config(&self, key: &str, value: &str) -> Result<(), StorageError>;
+    /// Atomically set a gateway configuration value only if it does not already exist.
+    /// Returns `true` if the value was inserted, `false` if the key was already present.
+    async fn set_config_if_absent(&self, key: &str, value: &str) -> Result<bool, StorageError>;
 
     /// Atomically replace all phone PSK registrations with the given set.
     ///
@@ -525,6 +528,18 @@ impl Storage for InMemoryStorage {
         let mut config = self.config.write().await;
         config.insert(key.to_owned(), value.to_owned());
         Ok(())
+    }
+
+    async fn set_config_if_absent(&self, key: &str, value: &str) -> Result<bool, StorageError> {
+        let mut config = self.config.write().await;
+        use std::collections::hash_map::Entry;
+        match config.entry(key.to_owned()) {
+            Entry::Vacant(e) => {
+                e.insert(value.to_owned());
+                Ok(true)
+            }
+            Entry::Occupied(_) => Ok(false),
+        }
     }
 
     // ── Handler routing ────────────────────────────────────────

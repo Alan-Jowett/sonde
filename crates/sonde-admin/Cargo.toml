@@ -20,7 +20,7 @@ tokio-stream = "0.1"
 tonic = "0.14"
 tonic-prost = "0.14"
 tower = "0.5"
-rpassword = "7.5.2"
+rpassword = "7.5.3"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 sonde-protocol = { path = "../sonde-protocol", features = ["fingerprint"] }
 sha2 = "0.10"

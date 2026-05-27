@@ -6,6 +6,7 @@ use std::io::IsTerminal;
 use std::process;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use zeroize::Zeroizing;
 
 use sonde_admin::format_epoch_ms;
 use sonde_admin::grpc_client::AdminClient;
@@ -107,6 +108,11 @@ enum Commands {
     Handler {
         #[command(subcommand)]
         action: HandlerAction,
+    },
+    /// Master key management.
+    Key {
+        #[command(subcommand)]
+        action: KeyAction,
     },
 }
 
@@ -264,6 +270,16 @@ enum HandlerAction {
     },
     /// List all configured handlers.
     List,
+}
+
+#[derive(Subcommand)]
+enum KeyAction {
+    /// Perform master key rotation (interactive).
+    Rotate,
+    /// Display the gateway's BIP-39 key fingerprint.
+    Fingerprint,
+    /// Display master key status (epoch, ID, rotation state).
+    Status,
 }
 
 #[tokio::main]
@@ -884,6 +900,64 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
             }
         },
+
+        Commands::Key { action } => match action {
+            KeyAction::Fingerprint => {
+                let state = client.get_gateway_state().await?;
+                if json {
+                    print_json(&serde_json::json!({
+                        "fingerprint_words": state.fingerprint_words,
+                    }))?;
+                } else {
+                    println!("{}", state.fingerprint_words.join(" "));
+                }
+            }
+            KeyAction::Status => {
+                let state = client.get_gateway_state().await?;
+                if json {
+                    let mut obj = serde_json::json!({
+                        "master_key_epoch": state.master_key_epoch,
+                        "master_key_id": hex::encode(&state.master_key_id),
+                        "rotation_in_progress": state.rotation_in_progress,
+                        "salt": state.salt.as_ref().map(hex::encode),
+                    });
+                    if let Some(kdf) = &state.kdf_params {
+                        obj["kdf_params"] = serde_json::json!({
+                            "m_cost": kdf.m_cost,
+                            "t_cost": kdf.t_cost,
+                            "p_cost": kdf.p_cost,
+                            "kdf_version": kdf.kdf_version,
+                        });
+                    } else {
+                        obj["kdf_params"] = serde_json::Value::Null;
+                    }
+                    print_json(&obj)?;
+                } else {
+                    println!("Master key epoch:      {}", state.master_key_epoch);
+                    println!(
+                        "Master key ID:         {}",
+                        hex::encode(&state.master_key_id)
+                    );
+                    println!("Rotation in progress:  {}", state.rotation_in_progress);
+                    match &state.salt {
+                        Some(s) => println!("Salt:                  {}", hex::encode(s)),
+                        None => println!("Salt:                  (not set)"),
+                    }
+                    match &state.kdf_params {
+                        Some(kdf) => {
+                            println!(
+                                "KDF params:            m={}, t={}, p={}, version={}",
+                                kdf.m_cost, kdf.t_cost, kdf.p_cost, kdf.kdf_version,
+                            );
+                        }
+                        None => println!("KDF params:            (not set)"),
+                    }
+                }
+            }
+            KeyAction::Rotate => {
+                key_rotate(client, cli).await?;
+            }
+        },
     }
 
     Ok(())
@@ -892,6 +966,373 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
 fn print_json(value: &impl serde::Serialize) -> Result<(), serde_json::Error> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+/// Default Argon2id parameters used when the gateway has no stored KDF params
+/// (i.e. first rotation). Per `admin-design.md` §11.3.
+const DEFAULT_KDF_M_COST: u32 = 65536;
+const DEFAULT_KDF_T_COST: u32 = 3;
+const DEFAULT_KDF_P_COST: u32 = 1;
+const DEFAULT_KDF_VERSION: u32 = 1;
+
+/// Validate a rotation passphrase per ADMIN-0900.
+///
+/// Rejects passphrases shorter than 20 characters **and** fewer than 6 words.
+/// A passphrase passes if it has >= 20 chars OR >= 6 words.
+fn validate_passphrase(passphrase: &str) -> Result<(), String> {
+    let char_count = passphrase.chars().count();
+    let word_count = passphrase.split_whitespace().count();
+    if char_count < 20 && word_count < 6 {
+        return Err(format!(
+            "passphrase too short: {char_count} characters, {word_count} words \
+             (need at least 20 characters or 6 words)"
+        ));
+    }
+    Ok(())
+}
+
+/// Build a `RotationPayloadV1` binary envelope per `evolve-962-specification.md` §2.6.1.
+///
+/// Returns the serialized payload suitable for `SubmitRotation`.
+#[allow(clippy::too_many_arguments)]
+fn build_rotation_payload(
+    gw_x25519_public: &[u8; 32],
+    gateway_id_raw: &[u8; 16],
+    master_key_epoch: u64,
+    new_master_key: &[u8; 32],
+    rotation_code: &str,
+    new_master_key_id: &[u8; 16],
+    salt: Option<&[u8; 16]>,
+    kdf_params: Option<(u32, u32, u32, u32)>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use aes_gcm::aead::{Aead, OsRng};
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+    use x25519_dalek::{EphemeralSecret, PublicKey};
+
+    // Generate ephemeral X25519 keypair.
+    let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
+    let ephemeral_public = PublicKey::from(&ephemeral_secret);
+
+    // Compute shared secret.
+    let gw_public = PublicKey::from(*gw_x25519_public);
+    let shared_secret = ephemeral_secret.diffie_hellman(&gw_public);
+
+    // Reject non-contributory DH results (low-order public key).
+    if !shared_secret.was_contributory() {
+        return Err("X25519 shared secret is non-contributory (low-order point)".into());
+    }
+
+    // Derive AES-256-GCM key via HKDF-SHA-256.
+    // HKDF salt (protocol constant): b"sonde-rotation-v1"
+    // info: gateway_id_raw || master_key_epoch_be64
+    let hkdf_salt = b"sonde-rotation-v1";
+    let mut info = Vec::with_capacity(24);
+    info.extend_from_slice(gateway_id_raw);
+    info.extend_from_slice(&master_key_epoch.to_be_bytes());
+
+    let hkdf = Hkdf::<Sha256>::new(Some(hkdf_salt), shared_secret.as_bytes());
+    let mut aes_key = Zeroizing::new([0u8; 32]);
+    hkdf.expand(&info, &mut *aes_key)
+        .map_err(|_| "HKDF expand failed")?;
+
+    // Encode CBOR plaintext map with integer keys 1–5, deterministic ordering.
+    // Wrapped in Zeroizing because it contains new_master_key in the clear.
+    let plaintext = Zeroizing::new(encode_rotation_plaintext(
+        new_master_key,
+        rotation_code,
+        new_master_key_id,
+        salt,
+        kdf_params,
+    ));
+
+    // Encrypt with AES-256-GCM.
+    // AAD: gateway_id_raw || master_key_epoch_be64
+    let cipher = Aes256Gcm::new((&*aes_key).into());
+    let mut nonce_bytes = [0u8; 12];
+    getrandom::fill(&mut nonce_bytes).map_err(|e| format!("failed to generate nonce: {e}"))?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext_and_tag = cipher
+        .encrypt(
+            nonce,
+            aes_gcm::aead::Payload {
+                msg: &plaintext,
+                aad: &info,
+            },
+        )
+        .map_err(|e| format!("AES-256-GCM encryption failed: {e}"))?;
+
+    // Serialize: version(1) || ephemeral_public(32) || nonce(12) || ciphertext_and_tag
+    let mut payload = Vec::with_capacity(1 + 32 + 12 + ciphertext_and_tag.len());
+    payload.push(0x01); // version
+    payload.extend_from_slice(ephemeral_public.as_bytes());
+    payload.extend_from_slice(&nonce_bytes);
+    payload.extend_from_slice(&ciphertext_and_tag);
+
+    Ok(payload)
+}
+
+/// Encode the CBOR plaintext map for `RotationPayloadV1`.
+///
+/// Deterministic CBOR encoding per RFC 8949 §4.2: integer keys in ascending
+/// order, minimal-length encoding.
+fn encode_rotation_plaintext(
+    new_master_key: &[u8; 32],
+    rotation_code: &str,
+    new_master_key_id: &[u8; 16],
+    salt: Option<&[u8; 16]>,
+    kdf_params: Option<(u32, u32, u32, u32)>,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(128);
+
+    // CBOR map with 5 entries: A5
+    buf.push(0xA5);
+
+    // Key 1: new_master_key (bstr, 32 bytes)
+    buf.push(0x01);
+    buf.push(0x58); // bytes, 1-byte length
+    buf.push(32);
+    buf.extend_from_slice(new_master_key);
+
+    // Key 2: rotation_code (tstr)
+    buf.push(0x02);
+    cbor_encode_tstr(&mut buf, rotation_code);
+
+    // Key 3: new_master_key_id (bstr, 16 bytes)
+    buf.push(0x03);
+    buf.push(0x50); // bytes(16)
+    buf.extend_from_slice(new_master_key_id);
+
+    // Key 4: salt (bstr 16 bytes or null)
+    buf.push(0x04);
+    match salt {
+        Some(s) => {
+            buf.push(0x50); // bytes(16)
+            buf.extend_from_slice(s);
+        }
+        None => buf.push(0xF6), // null
+    }
+
+    // Key 5: kdf_params (map or null)
+    buf.push(0x05);
+    match kdf_params {
+        Some((m_cost, t_cost, p_cost, kdf_version)) => {
+            buf.push(0xA4); // map(4)
+            buf.push(0x01);
+            cbor_encode_uint(&mut buf, m_cost as u64);
+            buf.push(0x02);
+            cbor_encode_uint(&mut buf, t_cost as u64);
+            buf.push(0x03);
+            cbor_encode_uint(&mut buf, p_cost as u64);
+            buf.push(0x04);
+            cbor_encode_uint(&mut buf, kdf_version as u64);
+        }
+        None => buf.push(0xF6), // null
+    }
+
+    buf
+}
+
+/// Encode a CBOR unsigned integer in minimal form.
+fn cbor_encode_uint(buf: &mut Vec<u8>, value: u64) {
+    if value < 24 {
+        buf.push(value as u8);
+    } else if value <= 0xFF {
+        buf.push(0x18);
+        buf.push(value as u8);
+    } else if value <= 0xFFFF {
+        buf.push(0x19);
+        buf.extend_from_slice(&(value as u16).to_be_bytes());
+    } else if value <= 0xFFFF_FFFF {
+        buf.push(0x1A);
+        buf.extend_from_slice(&(value as u32).to_be_bytes());
+    } else {
+        buf.push(0x1B);
+        buf.extend_from_slice(&value.to_be_bytes());
+    }
+}
+
+/// Encode a CBOR text string.
+fn cbor_encode_tstr(buf: &mut Vec<u8>, s: &str) {
+    let len = s.len() as u64;
+    if len < 24 {
+        buf.push(0x60 + len as u8);
+    } else if len <= 0xFF {
+        buf.push(0x78);
+        buf.push(len as u8);
+    } else if len <= 0xFFFF {
+        buf.push(0x79);
+        buf.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        buf.push(0x7A);
+        buf.extend_from_slice(&(len as u32).to_be_bytes());
+    }
+    buf.extend_from_slice(s.as_bytes());
+}
+
+/// Interactive key rotation flow per ADMIN-0900 and `admin-design.md` §11.3.
+async fn key_rotate(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let json = matches!(cli.format, OutputFormat::Json);
+
+    // Step 1: Fetch gateway ACTUAL_STATE.
+    let state = client.get_gateway_state().await?;
+
+    // Validate field lengths from proto (proto does not enforce byte sizes).
+    if state.gateway_id.len() != 16 {
+        return Err(format!(
+            "gateway_id has unexpected length: {} (expected 16)",
+            state.gateway_id.len()
+        )
+        .into());
+    }
+    if state.x25519_public_key.len() != 32 {
+        return Err(format!(
+            "x25519_public_key has unexpected length: {} (expected 32)",
+            state.x25519_public_key.len()
+        )
+        .into());
+    }
+    if state.master_key_id.len() != 16 {
+        return Err(format!(
+            "master_key_id has unexpected length: {} (expected 16)",
+            state.master_key_id.len()
+        )
+        .into());
+    }
+    if let Some(ref salt) = state.salt {
+        if salt.len() != 16 {
+            return Err(format!("salt has unexpected length: {} (expected 16)", salt.len()).into());
+        }
+    }
+
+    // Step 2: Display fingerprint and prompt for confirmation.
+    let fingerprint = state.fingerprint_words.join(" ");
+    eprintln!("Gateway fingerprint: {fingerprint}");
+    confirm("Verify this matches the modem display. Continue?", cli.yes)?;
+
+    // Step 3: Prompt for rotation code.
+    eprint!("Rotation code: ");
+    std::io::Write::flush(&mut std::io::stderr()).ok();
+    let mut rotation_code = String::new();
+    std::io::stdin()
+        .read_line(&mut rotation_code)
+        .map_err(|e| format!("failed to read rotation code: {e}"))?;
+    let rotation_code = rotation_code.trim().to_uppercase();
+    if rotation_code.is_empty() {
+        return Err("rotation code must not be empty".into());
+    }
+
+    // Step 4: Prompt for passphrase (masked).
+    eprint!("Passphrase: ");
+    std::io::Write::flush(&mut std::io::stderr()).ok();
+    let passphrase = Zeroizing::new(
+        rpassword::read_password().map_err(|e| format!("failed to read passphrase: {e}"))?,
+    );
+    validate_passphrase(&passphrase)?;
+
+    // Step 5: Select KDF parameters.
+    let (m_cost, t_cost, p_cost, kdf_version) = match &state.kdf_params {
+        Some(kdf) => (kdf.m_cost, kdf.t_cost, kdf.p_cost, kdf.kdf_version),
+        None => (
+            DEFAULT_KDF_M_COST,
+            DEFAULT_KDF_T_COST,
+            DEFAULT_KDF_P_COST,
+            DEFAULT_KDF_VERSION,
+        ),
+    };
+
+    // Step 6: Select or generate salt.
+    let (salt_bytes, include_salt_in_payload) = match &state.salt {
+        Some(s) => {
+            let mut arr = [0u8; 16];
+            arr.copy_from_slice(s);
+            (arr, false)
+        }
+        None => {
+            let mut arr = [0u8; 16];
+            getrandom::fill(&mut arr).map_err(|e| format!("failed to generate salt: {e}"))?;
+            (arr, true)
+        }
+    };
+
+    // Step 7: Derive new master key with Argon2id.
+    let argon2_params = argon2::Params::new(m_cost, t_cost, p_cost, Some(32))
+        .map_err(|e| format!("invalid Argon2id params: {e}"))?;
+    let argon2 = argon2::Argon2::new(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        argon2_params,
+    );
+    let mut new_master_key = Zeroizing::new([0u8; 32]);
+    argon2
+        .hash_password_into(passphrase.as_bytes(), &salt_bytes, &mut *new_master_key)
+        .map_err(|e| format!("Argon2id key derivation failed: {e}"))?;
+
+    // Step 8: Generate random new_master_key_id.
+    let mut new_master_key_id = [0u8; 16];
+    getrandom::fill(&mut new_master_key_id)
+        .map_err(|e| format!("failed to generate new_master_key_id: {e}"))?;
+
+    // Step 9: Build RotationPayloadV1.
+    let gateway_id_raw: [u8; 16] = state.gateway_id[..16].try_into().unwrap();
+    let gw_x25519_public: [u8; 32] = state.x25519_public_key[..32].try_into().unwrap();
+
+    let payload_salt = if include_salt_in_payload {
+        Some(&salt_bytes)
+    } else {
+        None
+    };
+    let payload_kdf = if state.kdf_params.is_none() {
+        Some((m_cost, t_cost, p_cost, kdf_version))
+    } else {
+        None
+    };
+
+    let rotation_payload = build_rotation_payload(
+        &gw_x25519_public,
+        &gateway_id_raw,
+        state.master_key_epoch,
+        &new_master_key,
+        &rotation_code,
+        &new_master_key_id,
+        payload_salt,
+        payload_kdf,
+    )?;
+
+    // Step 10: Submit rotation.
+    let resp = client.submit_rotation(rotation_payload).await?;
+    if !resp.accepted {
+        return Err(format!("rotation rejected: {}", resp.error).into());
+    }
+
+    // Step 11: Poll until master_key_epoch increments or timeout.
+    let original_epoch = state.master_key_epoch;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let new_state = client.get_gateway_state().await?;
+        if new_state.master_key_epoch > original_epoch {
+            if json {
+                print_json(&serde_json::json!({
+                    "rotated": true,
+                    "new_master_key_epoch": new_state.master_key_epoch,
+                    "new_master_key_id": hex::encode(&new_state.master_key_id),
+                }))?;
+            } else {
+                eprintln!(
+                    "Rotation complete. New epoch: {}, new key ID: {}",
+                    new_state.master_key_epoch,
+                    hex::encode(&new_state.master_key_id),
+                );
+            }
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("rotation timed out waiting for epoch increment".into());
+        }
+    }
 }
 
 async fn load_program_name_map(
@@ -1006,5 +1447,113 @@ mod tests {
         );
 
         assert!(program_names.is_empty());
+    }
+
+    // ── Passphrase validation (T-0902) ──────────────────────────────────
+
+    #[test]
+    fn passphrase_short_chars_few_words_rejected() {
+        // 10 chars, 2 words → both below threshold → rejected.
+        let result = validate_passphrase("short pass");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn passphrase_long_chars_passes() {
+        // >= 20 chars, 3 words → passes (char threshold met).
+        let result = validate_passphrase("a very long passphrase indeed here");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn passphrase_many_words_passes() {
+        // 19 chars, 6 words → passes (word threshold met).
+        let result = validate_passphrase("a b c d e f");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn passphrase_exactly_20_chars_passes() {
+        // Exactly 20 chars, 1 word → passes (char threshold met).
+        let result = validate_passphrase("12345678901234567890");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn passphrase_19_chars_5_words_rejected() {
+        // 19 chars, 5 words → both below threshold → rejected.
+        let result = validate_passphrase("abc def ghi jkl mno");
+        assert!(result.is_err());
+    }
+
+    // ── CBOR encoding ───────────────────────────────────────────────────
+
+    #[test]
+    fn cbor_plaintext_round_trip_structure() {
+        let master_key = [0x42u8; 32];
+        let key_id = [0xABu8; 16];
+        let salt = [0xCDu8; 16];
+
+        let plaintext = encode_rotation_plaintext(
+            &master_key,
+            "ABC123",
+            &key_id,
+            Some(&salt),
+            Some((65536, 3, 1, 1)),
+        );
+
+        // Must start with A5 (map of 5 entries).
+        assert_eq!(plaintext[0], 0xA5);
+        // Key 1 follows.
+        assert_eq!(plaintext[1], 0x01);
+    }
+
+    #[test]
+    fn cbor_plaintext_null_salt_and_params() {
+        let master_key = [0x42u8; 32];
+        let key_id = [0xABu8; 16];
+
+        let plaintext = encode_rotation_plaintext(&master_key, "XYZ789", &key_id, None, None);
+
+        // Must start with A5 (map of 5 entries).
+        assert_eq!(plaintext[0], 0xA5);
+        // Salt (key 4) and kdf_params (key 5) should be null (0xF6).
+        // Find the null values by scanning for key 4 and key 5.
+        let pos4 = plaintext.windows(2).position(|w| w == [0x04, 0xF6]);
+        assert!(pos4.is_some(), "key 4 should be followed by null");
+        let pos5 = plaintext.windows(2).position(|w| w == [0x05, 0xF6]);
+        assert!(pos5.is_some(), "key 5 should be followed by null");
+    }
+
+    // ── CBOR uint encoding ──────────────────────────────────────────────
+
+    #[test]
+    fn cbor_uint_small() {
+        let mut buf = Vec::new();
+        cbor_encode_uint(&mut buf, 0);
+        assert_eq!(buf, vec![0x00]);
+        buf.clear();
+        cbor_encode_uint(&mut buf, 23);
+        assert_eq!(buf, vec![0x17]);
+    }
+
+    #[test]
+    fn cbor_uint_one_byte() {
+        let mut buf = Vec::new();
+        cbor_encode_uint(&mut buf, 24);
+        assert_eq!(buf, vec![0x18, 24]);
+        buf.clear();
+        cbor_encode_uint(&mut buf, 255);
+        assert_eq!(buf, vec![0x18, 0xFF]);
+    }
+
+    #[test]
+    fn cbor_uint_two_byte() {
+        let mut buf = Vec::new();
+        cbor_encode_uint(&mut buf, 256);
+        assert_eq!(buf, vec![0x19, 0x01, 0x00]);
+        buf.clear();
+        cbor_encode_uint(&mut buf, 65536);
+        assert_eq!(buf, vec![0x1A, 0x00, 0x01, 0x00, 0x00]);
     }
 }

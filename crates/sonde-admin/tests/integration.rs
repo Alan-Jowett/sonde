@@ -17,10 +17,12 @@ use tokio::sync::RwLock;
 use sonde_admin::grpc_client::AdminClient;
 use sonde_gateway::admin::AdminService;
 use sonde_gateway::engine::PendingCommand;
+use sonde_gateway::gateway_identity::GatewayIdentity;
 use sonde_gateway::program::{ProgramRecord, VerificationProfile};
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::storage::{InMemoryStorage, Storage};
+use zeroize::Zeroizing;
 
 // ── Test harness ────────────────────────────────────────────────────────────
 
@@ -840,4 +842,415 @@ async fn cli_node_remove_with_yes_succeeds() {
     );
     let mut client = AdminClient::connect(&endpoint).await.unwrap();
     assert!(client.list_nodes().await.unwrap().is_empty());
+}
+
+// ── Key management integration tests (T-0900 through T-0905) ───────────────
+
+/// Seed a deterministic gateway identity and master key metadata into storage.
+///
+/// Returns the identity so callers can derive expected fingerprint words, etc.
+async fn seed_gateway_identity(storage: &Arc<InMemoryStorage>) -> GatewayIdentity {
+    let seed = Zeroizing::new([0x42u8; 32]);
+    let gateway_id = [0x01u8; 16];
+    let identity = GatewayIdentity::from_parts(seed, gateway_id);
+    storage.store_gateway_identity(&identity).await.unwrap();
+
+    // Master key ID: deterministic 16-byte hex value.
+    storage
+        .set_config("master_key_id", &hex::encode([0xAA; 16]))
+        .await
+        .unwrap();
+    // Master key epoch starts at 1.
+    storage.set_config("master_key_epoch", "1").await.unwrap();
+
+    identity
+}
+
+/// Start an admin gRPC server with a seeded gateway identity and a rotation
+/// channel.  Returns the endpoint, storage, identity, and a receiver that
+/// accepts rotation payloads (for use in T-0900/T-0901).
+async fn start_server_with_rotation(
+    test_name: &str,
+) -> (
+    String,
+    Arc<InMemoryStorage>,
+    GatewayIdentity,
+    tokio::sync::mpsc::UnboundedReceiver<(
+        Vec<u8>,
+        tokio::sync::oneshot::Sender<Result<(), String>>,
+    )>,
+) {
+    let storage = Arc::new(InMemoryStorage::new());
+    let identity = seed_gateway_identity(&storage).await;
+
+    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let admin = AdminService::new(storage.clone(), pending, session_manager).with_rotation_tx(tx);
+
+    let endpoint = unique_endpoint(test_name);
+    let server_endpoint = endpoint.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = sonde_gateway::admin::serve_admin(admin, &server_endpoint).await {
+            eprintln!("admin server ended: {e}");
+        }
+    });
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match AdminClient::connect(&endpoint).await {
+            Ok(_) => return (endpoint, storage, identity, rx),
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(e) => panic!("failed to connect to admin server: {e}"),
+        }
+    }
+}
+
+/// Build a rotation payload for testing. Mirrors the logic in `main.rs`
+/// `build_rotation_payload()` without requiring it to be public.
+#[allow(clippy::too_many_arguments)]
+fn build_test_rotation_payload(
+    gw_x25519_public: &[u8; 32],
+    gateway_id_raw: &[u8; 16],
+    master_key_epoch: u64,
+    new_master_key: &[u8; 32],
+    rotation_code: &str,
+    new_master_key_id: &[u8; 16],
+    salt: Option<&[u8; 16]>,
+    kdf_params: Option<(u32, u32, u32, u32)>,
+) -> Vec<u8> {
+    use aes_gcm::aead::{Aead, OsRng};
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+    use x25519_dalek::{EphemeralSecret, PublicKey};
+
+    let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
+    let ephemeral_public = PublicKey::from(&ephemeral_secret);
+
+    let gw_public = PublicKey::from(*gw_x25519_public);
+    let shared_secret = ephemeral_secret.diffie_hellman(&gw_public);
+
+    let hkdf_salt = b"sonde-rotation-v1";
+    let mut info = Vec::with_capacity(24);
+    info.extend_from_slice(gateway_id_raw);
+    info.extend_from_slice(&master_key_epoch.to_be_bytes());
+
+    let hkdf = Hkdf::<Sha256>::new(Some(hkdf_salt), shared_secret.as_bytes());
+    let mut aes_key = [0u8; 32];
+    hkdf.expand(&info, &mut aes_key).unwrap();
+
+    // Deterministic CBOR: 5-entry map with integer keys 1–5.
+    let mut plaintext = Vec::with_capacity(128);
+    plaintext.push(0xA5); // map(5)
+                          // key 1: new_master_key (bstr 32)
+    plaintext.push(0x01);
+    plaintext.push(0x58);
+    plaintext.push(32);
+    plaintext.extend_from_slice(new_master_key);
+    // key 2: rotation_code (tstr)
+    plaintext.push(0x02);
+    let code_bytes = rotation_code.as_bytes();
+    if code_bytes.len() < 24 {
+        plaintext.push(0x60 | code_bytes.len() as u8);
+    } else {
+        plaintext.push(0x78);
+        plaintext.push(code_bytes.len() as u8);
+    }
+    plaintext.extend_from_slice(code_bytes);
+    // key 3: new_master_key_id (bstr 16)
+    plaintext.push(0x03);
+    plaintext.push(0x50);
+    plaintext.extend_from_slice(new_master_key_id);
+    // key 4: salt or null
+    plaintext.push(0x04);
+    if let Some(s) = salt {
+        plaintext.push(0x50);
+        plaintext.extend_from_slice(s);
+    } else {
+        plaintext.push(0xF6); // null
+    }
+    // key 5: kdf_params or null
+    plaintext.push(0x05);
+    if let Some((m, t, p, v)) = kdf_params {
+        plaintext.push(0xA4); // map(4)
+        for (key, val) in [(1u8, m), (2, t), (3, p), (4, v)] {
+            plaintext.push(key);
+            if val < 24 {
+                plaintext.push(val as u8);
+            } else if val <= 0xFF {
+                plaintext.push(0x18);
+                plaintext.push(val as u8);
+            } else if val <= 0xFFFF {
+                plaintext.push(0x19);
+                plaintext.extend_from_slice(&(val as u16).to_be_bytes());
+            } else {
+                plaintext.push(0x1A);
+                plaintext.extend_from_slice(&val.to_be_bytes());
+            }
+        }
+    } else {
+        plaintext.push(0xF6); // null
+    }
+
+    let cipher = Aes256Gcm::new((&aes_key).into());
+    let mut nonce_bytes = [0u8; 12];
+    getrandom::fill(&mut nonce_bytes).unwrap();
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext_and_tag = cipher
+        .encrypt(
+            nonce,
+            aes_gcm::aead::Payload {
+                msg: &plaintext,
+                aad: &info,
+            },
+        )
+        .unwrap();
+
+    let mut payload = Vec::with_capacity(1 + 32 + 12 + ciphertext_and_tag.len());
+    payload.push(0x01);
+    payload.extend_from_slice(ephemeral_public.as_bytes());
+    payload.extend_from_slice(&nonce_bytes);
+    payload.extend_from_slice(&ciphertext_and_tag);
+    payload
+}
+
+/// T-0903: `key fingerprint` returns the BIP-39 fingerprint words.
+#[tokio::test(flavor = "multi_thread")]
+async fn key_fingerprint_returns_six_words() {
+    let (endpoint, _storage, _identity, _rx) =
+        start_server_with_rotation("key_fingerprint_returns_six_words").await;
+
+    // Fetch state via AdminClient to get expected fingerprint.
+    let mut client = AdminClient::connect(&endpoint).await.unwrap();
+    let state = client.get_gateway_state().await.unwrap();
+    assert_eq!(
+        state.fingerprint_words.len(),
+        6,
+        "BIP-39 fingerprint should be 6 words"
+    );
+
+    drop(client);
+
+    // Verify the CLI binary produces the same words.
+    let output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args(["--socket", &endpoint, "key", "fingerprint"])
+        .output()
+        .expect("failed to run sonde-admin key fingerprint");
+    assert!(
+        output.status.success(),
+        "CLI key fingerprint should succeed"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = state.fingerprint_words.join(" ");
+    assert_eq!(
+        stdout.trim(),
+        expected,
+        "CLI output must match gRPC fingerprint"
+    );
+
+    // JSON format.
+    let json_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args([
+            "--socket",
+            &endpoint,
+            "--format",
+            "json",
+            "key",
+            "fingerprint",
+        ])
+        .output()
+        .expect("failed to run sonde-admin key fingerprint --format json");
+    assert!(json_output.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&json_output.stdout))
+            .expect("stdout must be valid JSON");
+    assert_eq!(parsed["fingerprint_words"].as_array().unwrap().len(), 6);
+}
+
+/// T-0904: `key status` returns epoch, master_key_id, rotation_in_progress, and
+/// optional salt/kdf_params.
+#[tokio::test(flavor = "multi_thread")]
+async fn key_status_shows_all_fields() {
+    let (endpoint, storage, _identity, _rx) =
+        start_server_with_rotation("key_status_shows_all_fields").await;
+
+    // Seed optional KDF fields.
+    storage
+        .set_config("kdf_salt", &hex::encode([0xBB; 16]))
+        .await
+        .unwrap();
+    storage
+        .set_config(
+            "kdf_params_json",
+            r#"{"m_cost":65536,"t_cost":3,"p_cost":1,"kdf_version":1}"#,
+        )
+        .await
+        .unwrap();
+
+    let json_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args(["--socket", &endpoint, "--format", "json", "key", "status"])
+        .output()
+        .expect("failed to run sonde-admin key status");
+    assert!(
+        json_output.status.success(),
+        "CLI key status should succeed"
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&json_output.stdout))
+            .expect("stdout must be valid JSON");
+
+    assert_eq!(parsed["master_key_epoch"], 1);
+    assert_eq!(parsed["master_key_id"], hex::encode([0xAA; 16]));
+    assert_eq!(parsed["rotation_in_progress"], false);
+    assert_eq!(parsed["salt"], hex::encode([0xBB; 16]));
+    assert_eq!(parsed["kdf_params"]["m_cost"], 65536);
+    assert_eq!(parsed["kdf_params"]["t_cost"], 3);
+    assert_eq!(parsed["kdf_params"]["p_cost"], 1);
+    assert_eq!(parsed["kdf_params"]["kdf_version"], 1);
+}
+
+/// T-0904 supplement: `key status` with no salt/kdf_params shows null.
+#[tokio::test(flavor = "multi_thread")]
+async fn key_status_no_salt_shows_null() {
+    let (endpoint, _storage, _identity, _rx) =
+        start_server_with_rotation("key_status_no_salt_shows_null").await;
+
+    let json_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args(["--socket", &endpoint, "--format", "json", "key", "status"])
+        .output()
+        .expect("failed to run sonde-admin key status");
+    assert!(json_output.status.success());
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&json_output.stdout))
+            .expect("stdout must be valid JSON");
+    assert!(parsed["salt"].is_null(), "salt should be null when absent");
+    assert!(
+        parsed["kdf_params"].is_null(),
+        "kdf_params should be null when absent"
+    );
+}
+
+/// T-0900: `key rotate` happy path — submit a valid rotation payload to the
+/// gateway and receive acceptance.
+#[tokio::test(flavor = "multi_thread")]
+async fn key_rotate_submit_accepted() {
+    let (endpoint, storage, _identity, mut rx) =
+        start_server_with_rotation("key_rotate_submit_accepted").await;
+
+    // Spawn a mock rotation handler that accepts the first payload.
+    let storage_clone = storage.clone();
+    let handler = tokio::spawn(async move {
+        let (payload, resp_tx) = rx.recv().await.expect("should receive rotation payload");
+        assert!(!payload.is_empty(), "payload must not be empty");
+        // Simulate successful rotation: bump epoch.
+        storage_clone
+            .set_config("master_key_epoch", "2")
+            .await
+            .unwrap();
+        resp_tx.send(Ok(())).ok();
+    });
+
+    // Build a rotation payload using the AdminClient directly (not the CLI
+    // binary, because the CLI prompts for interactive input).
+    let mut client = AdminClient::connect(&endpoint).await.unwrap();
+    let state = client.get_gateway_state().await.unwrap();
+    assert_eq!(state.master_key_epoch, 1);
+
+    // Construct payload the same way the CLI does.
+    let gw_x25519_pub: [u8; 32] = state.x25519_public_key.try_into().unwrap();
+    let gateway_id_raw: [u8; 16] = state.gateway_id.try_into().unwrap();
+
+    let payload = build_test_rotation_payload(
+        &gw_x25519_pub,
+        &gateway_id_raw,
+        state.master_key_epoch,
+        &[0x42u8; 32],
+        "TESTCODE",
+        &[0xCC; 16],
+        Some(&[0xDD; 16]),
+        Some((65536, 3, 1, 1)),
+    );
+
+    let resp = client.submit_rotation(payload).await.unwrap();
+    assert!(resp.accepted, "rotation should be accepted: {}", resp.error);
+
+    handler.await.unwrap();
+
+    // Verify epoch bumped.
+    let state2 = client.get_gateway_state().await.unwrap();
+    assert_eq!(state2.master_key_epoch, 2, "epoch must have incremented");
+}
+
+/// T-0901: `key rotate` with wrong rotation code — gateway rejects.
+#[tokio::test(flavor = "multi_thread")]
+async fn key_rotate_rejected_by_engine() {
+    let (endpoint, _storage, _identity, mut rx) =
+        start_server_with_rotation("key_rotate_rejected_by_engine").await;
+
+    // Spawn a mock rotation handler that rejects.
+    tokio::spawn(async move {
+        let (_payload, resp_tx) = rx.recv().await.expect("should receive rotation payload");
+        resp_tx.send(Err("invalid rotation code".to_string())).ok();
+    });
+
+    let mut client = AdminClient::connect(&endpoint).await.unwrap();
+    let state = client.get_gateway_state().await.unwrap();
+
+    let gw_x25519_pub: [u8; 32] = state.x25519_public_key.try_into().unwrap();
+    let gateway_id_raw: [u8; 16] = state.gateway_id.try_into().unwrap();
+
+    let payload = build_test_rotation_payload(
+        &gw_x25519_pub,
+        &gateway_id_raw,
+        state.master_key_epoch,
+        &[0x42u8; 32],
+        "WRONGCODE",
+        &[0xCC; 16],
+        Some(&[0xDD; 16]),
+        Some((65536, 3, 1, 1)),
+    );
+
+    let resp = client.submit_rotation(payload).await.unwrap();
+    assert!(!resp.accepted, "rotation should be rejected");
+    assert!(
+        resp.error.contains("invalid rotation code"),
+        "error should mention the reason: {}",
+        resp.error
+    );
+}
+
+/// T-0905: Key material must not appear in CLI output.
+#[tokio::test(flavor = "multi_thread")]
+async fn key_material_not_in_cli_output() {
+    let (endpoint, _storage, _identity, _rx) =
+        start_server_with_rotation("key_material_not_in_cli_output").await;
+
+    // Run fingerprint and status commands, capture all output.
+    for subcmd in &["fingerprint", "status"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+            .args(["--socket", &endpoint, "key", subcmd])
+            .output()
+            .expect("failed to run sonde-admin");
+
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        // The seed [0x42; 32] and master key should never appear in output.
+        let seed_hex = hex::encode([0x42u8; 32]);
+        assert!(
+            !combined.contains(&seed_hex),
+            "key `{subcmd}` output must not contain the Ed25519 seed"
+        );
+    }
 }

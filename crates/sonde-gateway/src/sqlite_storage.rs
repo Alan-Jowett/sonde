@@ -397,7 +397,11 @@ fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(
 ///
 /// If no PSK rows exist yet (new or empty database) the function returns
 /// `Ok(())` since there is nothing to validate against.
-fn validate_master_key(conn: &Connection, master_key: &[u8; 32]) -> Result<(), StorageError> {
+fn validate_master_key(
+    conn: &Connection,
+    master_key: &[u8; 32],
+    pending_new_key: Option<&[u8; 32]>,
+) -> Result<(), StorageError> {
     // Reject any PSK blobs with unexpected lengths.
     let bad_count: i64 = conn
         .query_row(
@@ -415,6 +419,8 @@ fn validate_master_key(conn: &Connection, master_key: &[u8; 32]) -> Result<(), S
     }
 
     // Try to decrypt one encrypted row to verify the master key.
+    // During interrupted rotation, some PSKs may be encrypted with the new
+    // key. We try the current key first, then the pending new key if available.
     let psk_row: Option<(String, Vec<u8>)> = conn
         .query_row(
             "SELECT node_id, psk FROM nodes WHERE LENGTH(psk) = ?1 LIMIT 1",
@@ -425,16 +431,93 @@ fn validate_master_key(conn: &Connection, master_key: &[u8; 32]) -> Result<(), S
         .map_err(map_err)?;
 
     if let Some((node_id, psk_blob)) = psk_row {
-        let _decrypted =
-            Zeroizing::new(decrypt_psk(master_key, &node_id, &psk_blob).map_err(|e| {
-                StorageError::Internal(format!(
-                    "master key validation failed — cannot decrypt PSK for node \
-                     `{node_id}`: {e}; this may indicate a wrong master key or \
-                     corrupt/tampered database data",
-                ))
-            })?);
+        match decrypt_psk(master_key, &node_id, &psk_blob) {
+            Ok(psk) => {
+                // Zeroize the validated PSK immediately.
+                let _z = Zeroizing::new(psk);
+            }
+            Err(decrypt_err) => {
+                // If we have a pending new key (interrupted rotation), try that.
+                if let Some(new_key) = pending_new_key {
+                    let _decrypted = Zeroizing::new(
+                        decrypt_psk(new_key, &node_id, &psk_blob).map_err(|e| {
+                            StorageError::Internal(format!(
+                                "master key validation failed — cannot decrypt PSK for node \
+                                 `{node_id}` with either current or pending rotation key: {e}; \
+                                 this may indicate a wrong master key or corrupt/tampered database data",
+                            ))
+                        })?,
+                    );
+                } else {
+                    return Err(StorageError::Internal(format!(
+                        "master key validation failed — cannot decrypt PSK for node \
+                         `{node_id}`: {decrypt_err}; this may indicate a wrong master key or \
+                         corrupt/tampered database data",
+                    )));
+                }
+            }
+        }
     }
     Ok(())
+}
+
+/// Decrypt the pending new master key from the `pending_rotation` table,
+/// if one exists. Returns `None` if no rotation is pending.
+///
+/// Called during `open()` before `validate_master_key` to support crash
+/// recovery (GW-2007): some PSKs may already be re-encrypted with the
+/// new key.
+fn load_pending_rotation_key(
+    conn: &Connection,
+    current_key: &[u8; 32],
+) -> Result<Option<Zeroizing<[u8; 32]>>, StorageError> {
+    let pending: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT new_master_key_enc FROM pending_rotation WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_err)?;
+
+    let enc_blob = match pending {
+        Some(blob) => blob,
+        None => return Ok(None),
+    };
+
+    if enc_blob.len() != ENCRYPTED_PSK_LEN {
+        return Err(StorageError::Internal(format!(
+            "pending_rotation.new_master_key_enc has wrong length: {} (expected {ENCRYPTED_PSK_LEN})",
+            enc_blob.len()
+        )));
+    }
+
+    let key = Key::<Aes256Gcm>::from_slice(current_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&enc_blob[..12]);
+    let payload = Payload {
+        msg: &enc_blob[12..],
+        aad: PENDING_ROTATION_AAD,
+    };
+
+    let plaintext = Zeroizing::new(cipher.decrypt(nonce, payload).map_err(|_| {
+        StorageError::Internal(
+            "cannot decrypt pending_rotation.new_master_key_enc — wrong master key \
+             or data corruption"
+                .into(),
+        )
+    })?);
+
+    if plaintext.len() != 32 {
+        return Err(StorageError::Internal(format!(
+            "decrypted pending new master key is {} bytes, expected 32",
+            plaintext.len()
+        )));
+    }
+
+    let mut arr = Zeroizing::new([0u8; 32]);
+    arr.copy_from_slice(&plaintext);
+    Ok(Some(arr))
 }
 
 const SCHEMA: &str = "
@@ -504,6 +587,53 @@ CREATE TABLE IF NOT EXISTS handlers (
 );
 ";
 
+/// State for dual-key PSK decryption during master key rotation (GW-2006).
+///
+/// Set via [`SqliteStorage::set_rotation_new_key`] when a rotation begins.
+/// Cleared via [`SqliteStorage::clear_rotation_new_key`] after commit.
+#[derive(Clone)]
+struct RotationKeyState {
+    /// The new master key being rotated to.
+    new_key: Arc<Zeroizing<[u8; 32]>>,
+    /// The epoch assigned to the new key.
+    new_epoch: u64,
+}
+
+/// A pending rotation record from the `pending_rotation` table (GW-2007).
+#[derive(Clone, Debug)]
+pub struct PendingRotationRecord {
+    /// New master key encrypted with the old key (60 bytes: nonce + ciphertext + tag).
+    pub new_master_key_enc: Vec<u8>,
+    /// Random 16-byte ID for the new key.
+    pub new_master_key_id: [u8; 16],
+    /// Epoch for the new key (current_epoch + 1).
+    pub new_epoch: u64,
+    /// Current rotation phase.
+    pub phase: String,
+    /// KDF salt from the rotation payload (persisted for crash recovery).
+    pub salt: Option<Vec<u8>>,
+    /// KDF params from the rotation payload, serialized as JSON.
+    pub kdf_params_json: Option<String>,
+}
+
+/// Node escrow metadata for ACTUAL_STATE re-emission after rotation.
+#[derive(Clone, Debug)]
+pub struct NodeEscrowRecord {
+    pub node_id: String,
+    pub key_hint: u16,
+    pub encrypted_psk: Vec<u8>,
+    pub master_key_id: Vec<u8>,
+    pub schedule_interval_s: u32,
+    pub firmware_abi_version: u32,
+    pub firmware_version: String,
+    pub current_program_hash: Vec<u8>,
+    pub assigned_program_hash: Option<Vec<u8>>,
+    pub last_battery_mv: u32,
+}
+
+/// AAD for encrypting the new master key in the `pending_rotation` table.
+const PENDING_ROTATION_AAD: &[u8] = b"sonde-pending-rotation";
+
 /// SQLite-backed persistent storage for the gateway.
 ///
 /// Uses `Arc<Mutex<Connection>>` so storage operations can be offloaded
@@ -513,10 +643,28 @@ CREATE TABLE IF NOT EXISTS handlers (
 /// (GW-0601a). The master key is never written to the database.
 pub struct SqliteStorage {
     conn: Arc<Mutex<Connection>>,
-    master_key: Arc<Zeroizing<[u8; 32]>>,
+    /// Current master key, wrapped in RwLock to support in-memory swap after
+    /// rotation commit (GW-2006 step 7). Readers clone the inner Arc (cheap)
+    /// and drop the lock immediately.
+    master_key: Arc<std::sync::RwLock<Arc<Zeroizing<[u8; 32]>>>>,
+    /// During rotation, holds the new master key and its epoch for dual-key
+    /// PSK decryption (GW-2006 §2.6.2 step 5).
+    rotation_key_state: Arc<std::sync::RwLock<Option<RotationKeyState>>>,
 }
 
 impl SqliteStorage {
+    /// Return a cloned Arc to the current master key.
+    ///
+    /// The RwLock is held only long enough to clone the inner Arc (not the key
+    /// material itself), so contention is negligible.
+    pub(crate) fn master_key(&self) -> Arc<Zeroizing<[u8; 32]>> {
+        self.master_key.read().unwrap().clone()
+    }
+
+    /// Return the rotation key state if a rotation is in progress.
+    fn rotation_key(&self) -> Option<RotationKeyState> {
+        self.rotation_key_state.read().unwrap().clone()
+    }
     /// Open (or create) a SQLite database at the given path.
     ///
     /// `master_key` is a 32-byte AES-256 key used to encrypt PSK material at
@@ -728,9 +876,7 @@ impl SqliteStorage {
             })?;
         }
         // Migration: evolve-962 — master_key_id, master_key_epoch, pending_recovery,
-        // and encrypted_seed_new columns. The pending_rotation table migration
-        // (from evolve-887 schema to evolve-962 schema) is deferred to the
-        // rotation execution wiring PR.
+        // encrypted_seed_new, and pending_rotation (GW-2006, GW-2007).
         {
             // Add master_key_id and master_key_epoch columns to nodes (GW-2001).
             // Check each column independently to handle partially migrated DBs.
@@ -807,6 +953,25 @@ impl SqliteStorage {
                 ))
             })?;
 
+            // Create pending_rotation table (GW-2007, evolve-962 §2.6.2 step 4).
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS pending_rotation (
+                    id                 INTEGER PRIMARY KEY CHECK (id = 1),
+                    new_master_key_enc BLOB    NOT NULL,
+                    new_master_key_id  BLOB    NOT NULL,
+                    new_epoch          INTEGER NOT NULL,
+                    started_at         INTEGER NOT NULL,
+                    phase              TEXT    NOT NULL DEFAULT 'migrating_psks',
+                    salt               BLOB,
+                    kdf_params_json    TEXT
+                )",
+            )
+            .map_err(|e| {
+                StorageError::Internal(format!(
+                    "migration failed: CREATE TABLE pending_rotation: {e}"
+                ))
+            })?;
+
             // Add encrypted_seed_new column to gateway_identity for crash-safe
             // rotation (GW-2007). Permanent column, reused on each rotation.
             let gi_cols: Vec<String> = conn
@@ -831,12 +996,54 @@ impl SqliteStorage {
         // form. This must run before `validate_master_key` since validation only
         // checks encrypted blobs.
         migrate_legacy_psks(&mut conn, &master_key)?;
+
+        // If a rotation was interrupted, decrypt the pending new key so that
+        // validate_master_key can handle PSKs encrypted with either key.
+        let pending_new_key = load_pending_rotation_key(&conn, &master_key)?;
+
         // Verify that the master key can actually decrypt existing PSK data.
         // Catches a wrong key at startup rather than at first node read.
-        validate_master_key(&conn, &master_key)?;
+        // During interrupted rotation, some PSKs may be encrypted with the
+        // new key — we pass it so validation can try both.
+        validate_master_key(&conn, &master_key, pending_new_key.as_deref())?;
+
+        // Build the initial rotation key state if a rotation is in progress.
+        let rotation_key_state = if let Some(ref new_key) = pending_new_key {
+            let pending: Option<(Vec<u8>, i64)> = conn
+                .query_row(
+                    "SELECT new_master_key_id, new_epoch FROM pending_rotation WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(map_err)?;
+            pending
+                .map(|(id_vec, epoch_raw): (Vec<u8>, i64)| {
+                    let new_epoch = u64::try_from(epoch_raw).map_err(|_| {
+                        StorageError::Internal(format!(
+                            "pending_rotation.new_epoch is negative: {epoch_raw}"
+                        ))
+                    })?;
+                    if id_vec.len() != 16 {
+                        return Err(StorageError::Internal(format!(
+                            "pending_rotation.new_master_key_id has wrong length: {} (expected 16)",
+                            id_vec.len()
+                        )));
+                    }
+                    Ok(RotationKeyState {
+                        new_key: Arc::new(Zeroizing::new(**new_key)),
+                        new_epoch,
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-            master_key: Arc::new(master_key),
+            master_key: Arc::new(std::sync::RwLock::new(Arc::new(master_key))),
+            rotation_key_state: Arc::new(std::sync::RwLock::new(rotation_key_state)),
         })
     }
 
@@ -1002,6 +1209,553 @@ impl SqliteStorage {
             .map_err(map_err)?;
 
             Ok(code)
+        })
+        .await
+    }
+
+    // ── Master key rotation (GW-2006, GW-2007, GW-2013) ───────
+
+    /// Write a pending_rotation record and purge pending_recovery (§2.6.2 step 4).
+    ///
+    /// The new master key is encrypted with the OLD master key for crash safety.
+    /// Salt and KDF params are persisted so crash recovery can apply them.
+    /// This must be called within a single logical operation — the DB transaction
+    /// ensures atomicity of both the insert and the purge.
+    pub async fn write_pending_rotation(
+        &self,
+        new_master_key: &[u8; 32],
+        new_master_key_id: &[u8; 16],
+        new_epoch: u64,
+        salt: Option<&[u8]>,
+        kdf_params: Option<&crate::rotation::KdfParamsPayload>,
+    ) -> Result<(), StorageError> {
+        let mk = self.master_key();
+        let new_key = Zeroizing::new(*new_master_key);
+        let new_id = *new_master_key_id;
+
+        // Encrypt the new master key with the old key (AAD = "sonde-pending-rotation").
+        let key = Key::<Aes256Gcm>::from_slice(mk.as_slice());
+        let cipher = Aes256Gcm::new(key);
+        let mut nonce_bytes = [0u8; 12];
+        getrandom::fill(&mut nonce_bytes)
+            .map_err(|e| StorageError::Internal(format!("pending_rotation nonce rng: {e}")))?;
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let payload = Payload {
+            msg: new_key.as_slice(),
+            aad: PENDING_ROTATION_AAD,
+        };
+        let ciphertext = cipher
+            .encrypt(nonce, payload)
+            .map_err(|e| StorageError::Internal(format!("pending_rotation encrypt: {e}")))?;
+        let mut enc_blob = Vec::with_capacity(ENCRYPTED_PSK_LEN);
+        enc_blob.extend_from_slice(&nonce_bytes);
+        enc_blob.extend_from_slice(&ciphertext);
+
+        let epoch_i64 = i64::try_from(new_epoch).map_err(|_| {
+            StorageError::Internal(format!("new_epoch {new_epoch} exceeds i64::MAX"))
+        })?;
+
+        let salt_blob = salt.map(|s| s.to_vec());
+        let kdf_json = kdf_params.map(|p| {
+            serde_json::json!({
+                "m_cost": p.m_cost,
+                "t_cost": p.t_cost,
+                "p_cost": p.p_cost,
+                "kdf_version": p.kdf_version,
+            })
+            .to_string()
+        });
+
+        self.with_conn(move |conn| {
+            let tx = conn.unchecked_transaction().map_err(map_err)?;
+
+            // Purge pending_recovery — old records encrypted with pre-rotation key (GW-2013).
+            tx.execute("DELETE FROM pending_recovery", [])
+                .map_err(map_err)?;
+
+            // Insert pending_rotation record.
+            tx.execute(
+                "INSERT INTO pending_rotation \
+                 (id, new_master_key_enc, new_master_key_id, new_epoch, started_at, phase, salt, kdf_params_json) \
+                 VALUES (1, ?1, ?2, ?3, strftime('%s', 'now'), 'migrating_psks', ?4, ?5)",
+                params![
+                    enc_blob,
+                    new_id.as_slice(),
+                    epoch_i64,
+                    salt_blob,
+                    kdf_json,
+                ],
+            )
+            .map_err(map_err)?;
+
+            tx.commit().map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Read the pending_rotation record, if one exists.
+    #[allow(clippy::type_complexity)]
+    pub async fn read_pending_rotation(
+        &self,
+    ) -> Result<Option<PendingRotationRecord>, StorageError> {
+        self.with_conn(|conn| {
+            let row: Option<(
+                Vec<u8>,
+                Vec<u8>,
+                i64,
+                String,
+                Option<Vec<u8>>,
+                Option<String>,
+            )> = conn
+                .query_row(
+                    "SELECT new_master_key_enc, new_master_key_id, new_epoch, phase, \
+                     salt, kdf_params_json FROM pending_rotation WHERE id = 1",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(map_err)?;
+            match row {
+                None => Ok(None),
+                Some((enc, id_vec, epoch_raw, phase, salt, kdf_params_json)) => {
+                    if id_vec.len() != 16 {
+                        return Err(StorageError::Internal(format!(
+                            "pending_rotation.new_master_key_id has wrong length: {} (expected 16)",
+                            id_vec.len()
+                        )));
+                    }
+                    let new_epoch = u64::try_from(epoch_raw).map_err(|_| {
+                        StorageError::Internal(format!(
+                            "pending_rotation.new_epoch is negative: {epoch_raw}"
+                        ))
+                    })?;
+                    let mut new_master_key_id = [0u8; 16];
+                    new_master_key_id.copy_from_slice(&id_vec);
+                    Ok(Some(PendingRotationRecord {
+                        new_master_key_enc: enc,
+                        new_master_key_id,
+                        new_epoch,
+                        phase,
+                        salt,
+                        kdf_params_json,
+                    }))
+                }
+            }
+        })
+        .await
+    }
+
+    /// Update the rotation phase in the pending_rotation record.
+    pub async fn update_rotation_phase(&self, phase: &str) -> Result<(), StorageError> {
+        let phase = phase.to_owned();
+        self.with_conn(move |conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE pending_rotation SET phase = ?1 WHERE id = 1",
+                    params![phase],
+                )
+                .map_err(map_err)?;
+            if updated == 0 {
+                return Err(StorageError::Internal(
+                    "no pending_rotation record to update".into(),
+                ));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// List node IDs that have not been migrated to the new epoch.
+    pub async fn list_unmigrated_node_ids(
+        &self,
+        new_epoch: u64,
+    ) -> Result<Vec<String>, StorageError> {
+        let epoch_i64 = i64::try_from(new_epoch).map_err(|_| {
+            StorageError::Internal(format!("new_epoch {new_epoch} exceeds i64::MAX"))
+        })?;
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT node_id FROM nodes WHERE master_key_epoch < ?1")
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map(params![epoch_i64], |row| row.get(0))
+                .map_err(map_err)?;
+            rows.collect::<Result<Vec<String>, _>>().map_err(map_err)
+        })
+        .await
+    }
+
+    /// Re-encrypt a single node's PSK from old_key to new_key (§2.6.2 step 5).
+    pub async fn migrate_node_psk(
+        &self,
+        node_id: &str,
+        old_key: &[u8; 32],
+        new_key: &[u8; 32],
+        new_key_id: &[u8; 16],
+        new_epoch: u64,
+    ) -> Result<(), StorageError> {
+        let node_id = node_id.to_owned();
+        let old_key = Zeroizing::new(*old_key);
+        let new_key = Zeroizing::new(*new_key);
+        let new_key_id = *new_key_id;
+        let epoch_i64 = i64::try_from(new_epoch).map_err(|_| {
+            StorageError::Internal(format!("new_epoch {new_epoch} exceeds i64::MAX"))
+        })?;
+
+        self.with_conn(move |conn| {
+            // Read the current encrypted PSK.
+            let psk_blob: Vec<u8> = conn
+                .query_row(
+                    "SELECT psk FROM nodes WHERE node_id = ?1",
+                    params![node_id],
+                    |row| row.get(0),
+                )
+                .map_err(map_err)?;
+
+            // Decrypt with old key.
+            let psk = Zeroizing::new(decrypt_psk(&old_key, &node_id, &psk_blob).map_err(|e| {
+                StorageError::Internal(format!(
+                    "rotate: cannot decrypt PSK for node `{node_id}`: {e}"
+                ))
+            })?);
+
+            // Re-encrypt with new key.
+            let encrypted = encrypt_psk(&new_key, &node_id, &psk)?;
+
+            // Update the record.
+            conn.execute(
+                "UPDATE nodes SET psk = ?1, master_key_id = ?2, master_key_epoch = ?3 \
+                 WHERE node_id = ?4",
+                params![encrypted, new_key_id.as_slice(), epoch_i64, node_id],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// List phone IDs that have not been migrated to the new epoch.
+    pub async fn list_unmigrated_phone_ids(
+        &self,
+        new_epoch: u64,
+    ) -> Result<Vec<u32>, StorageError> {
+        let epoch_i64 = i64::try_from(new_epoch).map_err(|_| {
+            StorageError::Internal(format!("new_epoch {new_epoch} exceeds i64::MAX"))
+        })?;
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT phone_id FROM phone_psks WHERE master_key_epoch < ?1")
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map(params![epoch_i64], |row| row.get(0))
+                .map_err(map_err)?;
+            rows.collect::<Result<Vec<u32>, _>>().map_err(map_err)
+        })
+        .await
+    }
+
+    /// Re-encrypt a single phone PSK from old_key to new_key (§2.6.2 step 5).
+    pub async fn migrate_phone_psk(
+        &self,
+        phone_id: u32,
+        old_key: &[u8; 32],
+        new_key: &[u8; 32],
+        new_key_id: &[u8; 16],
+        new_epoch: u64,
+    ) -> Result<(), StorageError> {
+        let old_key = Zeroizing::new(*old_key);
+        let new_key = Zeroizing::new(*new_key);
+        let new_key_id = *new_key_id;
+        let epoch_i64 = i64::try_from(new_epoch).map_err(|_| {
+            StorageError::Internal(format!("new_epoch {new_epoch} exceeds i64::MAX"))
+        })?;
+
+        self.with_conn(move |conn| {
+            let psk_blob: Vec<u8> = conn
+                .query_row(
+                    "SELECT psk FROM phone_psks WHERE phone_id = ?1",
+                    params![phone_id],
+                    |row| row.get(0),
+                )
+                .map_err(map_err)?;
+
+            let psk = Zeroizing::new(decrypt_phone_psk(&old_key, phone_id, &psk_blob)?);
+            let encrypted = encrypt_phone_psk(&new_key, phone_id, &psk)?;
+
+            conn.execute(
+                "UPDATE phone_psks SET psk = ?1, master_key_id = ?2, master_key_epoch = ?3 \
+                 WHERE phone_id = ?4",
+                params![encrypted, new_key_id.as_slice(), epoch_i64, phone_id],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Re-encrypt the gateway identity seed under the new key (§2.6.2 step 6).
+    ///
+    /// Writes to `encrypted_seed_new` column, preserving the original
+    /// `encrypted_seed` (encrypted with old key) for crash safety.
+    pub async fn rewrap_identity_seed(
+        &self,
+        old_key: &[u8; 32],
+        new_key: &[u8; 32],
+    ) -> Result<(), StorageError> {
+        let old_key = *old_key;
+        let new_key = *new_key;
+        self.with_conn(move |conn| {
+            let row: Option<(Vec<u8>, Vec<u8>)> = conn
+                .query_row(
+                    "SELECT encrypted_seed, gateway_id FROM gateway_identity WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(map_err)?;
+
+            let (encrypted_seed, gateway_id_vec) = row.ok_or_else(|| {
+                StorageError::Internal("no gateway_identity row to rewrap".into())
+            })?;
+
+            let gateway_id: [u8; 16] = gateway_id_vec
+                .as_slice()
+                .try_into()
+                .map_err(|_| StorageError::Internal("gateway_id is not 16 bytes".into()))?;
+
+            // Decrypt seed with old key.
+            let seed = Zeroizing::new(decrypt_seed(&old_key, &encrypted_seed, &gateway_id)?);
+
+            // Re-encrypt seed with new key.
+            let new_encrypted = encrypt_seed(&new_key, &seed, &gateway_id)?;
+
+            // Write to encrypted_seed_new column.
+            conn.execute(
+                "UPDATE gateway_identity SET encrypted_seed_new = ?1 WHERE id = 1",
+                params![new_encrypted],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Atomic commit of the rotation (§2.6.2 step 7).
+    ///
+    /// In a single transaction:
+    /// - Promote `encrypted_seed_new` → `encrypted_seed`, clear `encrypted_seed_new`
+    /// - Update `master_key_id` and `master_key_epoch` in `gateway_config`
+    /// - Store salt and KDF params if non-null
+    /// - Generate new rotation code
+    /// - Delete `pending_rotation`
+    pub async fn commit_rotation(
+        &self,
+        new_key_id: &[u8; 16],
+        new_epoch: u64,
+        salt: Option<&[u8]>,
+        kdf_params: Option<&crate::rotation::KdfParamsPayload>,
+    ) -> Result<String, StorageError> {
+        let new_key_id = *new_key_id;
+        let salt = salt.map(|s| s.to_vec());
+        let kdf_params = kdf_params.cloned();
+        let hex_id = hex::encode(new_key_id);
+
+        self.with_conn(move |conn| {
+            let tx = conn.unchecked_transaction().map_err(map_err)?;
+
+            // Promote encrypted_seed_new → encrypted_seed.
+            // Guard: only update if encrypted_seed_new is non-NULL to prevent
+            // overwriting the seed with NULL on out-of-order calls.
+            let updated = tx
+                .execute(
+                    "UPDATE gateway_identity SET encrypted_seed = encrypted_seed_new, \
+                     encrypted_seed_new = NULL \
+                     WHERE id = 1 AND encrypted_seed_new IS NOT NULL",
+                    [],
+                )
+                .map_err(map_err)?;
+            if updated == 0 {
+                return Err(StorageError::Internal(
+                    "commit_rotation: encrypted_seed_new is NULL — \
+                     cannot promote; identity rewrap may not have completed"
+                        .into(),
+                ));
+            }
+
+            // Update master_key_id in gateway_config.
+            tx.execute(
+                "INSERT INTO gateway_config (key, value) VALUES ('master_key_id', ?1) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![hex_id],
+            )
+            .map_err(map_err)?;
+
+            // Update master_key_epoch in gateway_config.
+            tx.execute(
+                "INSERT INTO gateway_config (key, value) VALUES ('master_key_epoch', ?1) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![new_epoch.to_string()],
+            )
+            .map_err(map_err)?;
+
+            // Store salt if provided (key matches admin GetGatewayState reader).
+            if let Some(ref salt_bytes) = salt {
+                tx.execute(
+                    "INSERT INTO gateway_config (key, value) VALUES ('kdf_salt', ?1) \
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    params![hex::encode(salt_bytes)],
+                )
+                .map_err(map_err)?;
+            }
+
+            // Store KDF params if provided (key matches admin GetGatewayState reader).
+            if let Some(ref params) = kdf_params {
+                let kdf_json = serde_json::json!({
+                    "m_cost": params.m_cost,
+                    "t_cost": params.t_cost,
+                    "p_cost": params.p_cost,
+                    "kdf_version": params.kdf_version,
+                });
+                tx.execute(
+                    "INSERT INTO gateway_config (key, value) VALUES ('kdf_params_json', ?1) \
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    params![kdf_json.to_string()],
+                )
+                .map_err(map_err)?;
+            }
+
+            // Generate new rotation code.
+            let new_code = generate_rotation_code()?;
+            tx.execute(
+                "INSERT INTO gateway_config (key, value) VALUES ('rotation_code', ?1) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![new_code],
+            )
+            .map_err(map_err)?;
+
+            // Delete pending_rotation.
+            tx.execute("DELETE FROM pending_rotation", [])
+                .map_err(map_err)?;
+
+            tx.commit().map_err(map_err)?;
+            Ok(new_code)
+        })
+        .await
+    }
+
+    /// Swap the in-memory master key to the new key after DB commit (§2.6.2 step 7).
+    ///
+    /// This is NOT part of the DB transaction — it only occurs after commit
+    /// succeeds. If the process crashes after DB commit but before this call,
+    /// the next startup will load the new key from gateway_config.
+    pub fn swap_master_key(&self, new_key: Zeroizing<[u8; 32]>) {
+        *self.master_key.write().unwrap() = Arc::new(new_key);
+    }
+
+    /// Set the rotation new key for dual-key PSK decryption during rotation.
+    pub fn set_rotation_new_key(&self, key: Zeroizing<[u8; 32]>, epoch: u64) {
+        *self.rotation_key_state.write().unwrap() = Some(RotationKeyState {
+            new_key: Arc::new(key),
+            new_epoch: epoch,
+        });
+    }
+
+    /// Clear the rotation new key after rotation completes.
+    pub fn clear_rotation_new_key(&self) {
+        *self.rotation_key_state.write().unwrap() = None;
+    }
+
+    /// Decrypt the pending new master key from the pending_rotation table.
+    ///
+    /// Uses the current in-memory master key. Returns `None` if no rotation
+    /// is pending.
+    pub fn decrypt_pending_new_key(
+        current_key: &[u8; 32],
+        enc_blob: &[u8],
+    ) -> Result<Zeroizing<[u8; 32]>, StorageError> {
+        if enc_blob.len() != ENCRYPTED_PSK_LEN {
+            return Err(StorageError::Internal(format!(
+                "new_master_key_enc has wrong length: {} (expected {ENCRYPTED_PSK_LEN})",
+                enc_blob.len()
+            )));
+        }
+        let key = Key::<Aes256Gcm>::from_slice(current_key);
+        let cipher = Aes256Gcm::new(key);
+        let nonce = Nonce::from_slice(&enc_blob[..12]);
+        let payload = Payload {
+            msg: &enc_blob[12..],
+            aad: PENDING_ROTATION_AAD,
+        };
+        let plaintext = Zeroizing::new(cipher.decrypt(nonce, payload).map_err(|_| {
+            StorageError::Internal(
+                "cannot decrypt new_master_key_enc — wrong key or data corruption".into(),
+            )
+        })?);
+        if plaintext.len() != 32 {
+            return Err(StorageError::Internal(format!(
+                "decrypted new master key is {} bytes, expected 32",
+                plaintext.len()
+            )));
+        }
+        let mut arr = Zeroizing::new([0u8; 32]);
+        arr.copy_from_slice(&plaintext);
+        Ok(arr)
+    }
+
+    /// List node escrow metadata for ACTUAL_STATE re-emission after rotation.
+    pub async fn list_node_escrow_state(&self) -> Result<Vec<NodeEscrowRecord>, StorageError> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT node_id, key_hint, psk, master_key_id, \
+                     schedule_interval_s, firmware_abi_version, firmware_version, \
+                     current_program_hash, assigned_program_hash, last_battery_mv FROM nodes",
+                )
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let kh: u32 = row.get(1)?;
+                    Ok(NodeEscrowRecord {
+                        node_id: row.get(0)?,
+                        key_hint: u16::try_from(kh)
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, kh as i64))?,
+                        encrypted_psk: row.get(2)?,
+                        master_key_id: row.get::<_, Option<Vec<u8>>>(3)?.unwrap_or_default(),
+                        schedule_interval_s: row.get(4)?,
+                        firmware_abi_version: row.get::<_, Option<u32>>(5)?.unwrap_or(0),
+                        firmware_version: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                        current_program_hash: row.get::<_, Option<Vec<u8>>>(7)?.unwrap_or_default(),
+                        assigned_program_hash: row.get(8)?,
+                        last_battery_mv: row.get::<_, Option<u32>>(9)?.unwrap_or(0),
+                    })
+                })
+                .map_err(map_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(map_err)
+        })
+        .await
+    }
+
+    /// Check whether a rotation is currently in progress (pending_rotation exists).
+    pub async fn is_rotation_in_progress(&self) -> Result<bool, StorageError> {
+        self.with_conn(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pending_rotation WHERE id = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(map_err)?;
+            Ok(count > 0)
         })
         .await
     }
@@ -1260,10 +2014,32 @@ fn sensors_from_json(json: &str) -> Vec<SensorDescriptor> {
 ///
 /// The `node_id` column (index 0) is used as AAD for the AES-GCM decryption
 /// so that swapping PSK blobs between rows is detected as an authentication failure.
-fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Result<NodeRecord> {
+fn row_to_node(
+    row: &rusqlite::Row<'_>,
+    master_key: &[u8; 32],
+    rotation_key: Option<(&[u8; 32], u64)>,
+) -> rusqlite::Result<NodeRecord> {
     let node_id: String = row.get(0)?;
     let psk_blob: Vec<u8> = row.get(2)?;
-    let psk = decrypt_psk(master_key, &node_id, &psk_blob).map_err(|e| {
+
+    // Dual-key decryption: check master_key_epoch to select the correct key.
+    // During rotation, migrated records have the new epoch; unmigrated records
+    // have the old epoch.
+    let epoch_raw: i64 = row.get(13)?;
+    let record_epoch = u64::try_from(epoch_raw).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            13,
+            rusqlite::types::Type::Integer,
+            format!("negative master_key_epoch: {epoch_raw}").into(),
+        )
+    })?;
+
+    let decrypt_key = match rotation_key {
+        Some((new_key, new_epoch)) if record_epoch >= new_epoch => new_key,
+        _ => master_key,
+    };
+
+    let psk = decrypt_psk(decrypt_key, &node_id, &psk_blob).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(
             2,
             rusqlite::types::Type::Blob,
@@ -1329,18 +2105,22 @@ impl Storage for SqliteStorage {
     // ── Node registry ──────────────────────────────────────────
 
     async fn list_nodes(&self) -> Result<Vec<NodeRecord>, StorageError> {
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
+        let rk = self.rotation_key();
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
                      firmware_abi_version, rf_channel, sensors_json, registered_by_phone_id, \
-                     firmware_version, key_version FROM nodes",
+                     firmware_version, key_version, master_key_epoch FROM nodes",
                 )
                 .map_err(map_err)?;
+            let rk_ref = rk
+                .as_ref()
+                .map(|s| (&**s.new_key as &[u8; 32], s.new_epoch));
             let rows = stmt
-                .query_map([], |row| row_to_node(row, &mk))
+                .query_map([], |row| row_to_node(row, &mk, rk_ref))
                 .map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
@@ -1353,16 +2133,20 @@ impl Storage for SqliteStorage {
 
     async fn get_node(&self, node_id: &str) -> Result<Option<NodeRecord>, StorageError> {
         let node_id = node_id.to_string();
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
+        let rk = self.rotation_key();
         self.with_conn(move |conn| {
+            let rk_ref = rk
+                .as_ref()
+                .map(|s| (&**s.new_key as &[u8; 32], s.new_epoch));
             let maybe_node = conn
                 .query_row(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
                      firmware_abi_version, rf_channel, sensors_json, registered_by_phone_id, \
-                     firmware_version, key_version FROM nodes WHERE node_id = ?1",
+                     firmware_version, key_version, master_key_epoch FROM nodes WHERE node_id = ?1",
                     params![node_id],
-                    |row| row_to_node(row, &mk),
+                    |row| row_to_node(row, &mk, rk_ref),
                 )
                 .optional()
                 .map_err(map_err)?;
@@ -1372,18 +2156,20 @@ impl Storage for SqliteStorage {
     }
 
     async fn get_nodes_by_key_hint(&self, key_hint: u16) -> Result<Vec<NodeRecord>, StorageError> {
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
+        let rk = self.rotation_key();
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
                      firmware_abi_version, rf_channel, sensors_json, registered_by_phone_id, \
-                     firmware_version, key_version FROM nodes WHERE key_hint = ?1",
+                     firmware_version, key_version, master_key_epoch FROM nodes WHERE key_hint = ?1",
                 )
                 .map_err(map_err)?;
+            let rk_ref = rk.as_ref().map(|s| (&**s.new_key as &[u8; 32], s.new_epoch));
             let rows = stmt
-                .query_map(params![key_hint as u32], |row| row_to_node(row, &mk))
+                .query_map(params![key_hint as u32], |row| row_to_node(row, &mk, rk_ref))
                 .map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
@@ -1396,7 +2182,7 @@ impl Storage for SqliteStorage {
 
     async fn upsert_node(&self, record: &NodeRecord) -> Result<(), StorageError> {
         let record = record.clone();
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
         self.with_conn(move |conn| {
             let encrypted_psk = encrypt_psk(&mk, &record.node_id, &record.psk)?;
             let sensors_json = sensors_to_json(&record.sensors);
@@ -1494,7 +2280,7 @@ impl Storage for SqliteStorage {
 
     async fn insert_node_if_not_exists(&self, record: &NodeRecord) -> Result<bool, StorageError> {
         let record = record.clone();
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
         self.with_conn(move |conn| {
             let encrypted_psk = encrypt_psk(&mk, &record.node_id, &record.psk)?;
             let sensors_json = sensors_to_json(&record.sensors);
@@ -1772,7 +2558,7 @@ impl Storage for SqliteStorage {
     ) -> Result<(), StorageError> {
         let nodes = nodes.to_vec();
         let programs = programs.to_vec();
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
         self.with_conn(move |conn| {
             conn.execute_batch("BEGIN IMMEDIATE").map_err(map_err)?;
 
@@ -1851,7 +2637,7 @@ impl Storage for SqliteStorage {
     // ── Gateway identity (GW-1200, GW-1201) ───────────────────
 
     async fn load_gateway_identity(&self) -> Result<Option<GatewayIdentity>, StorageError> {
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
         self.with_conn(move |conn| {
             let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = conn
                 .query_row(
@@ -1898,7 +2684,7 @@ impl Storage for SqliteStorage {
     }
 
     async fn store_gateway_identity(&self, identity: &GatewayIdentity) -> Result<(), StorageError> {
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
         let seed = Zeroizing::new(*identity.seed());
         let gateway_id_arr = *identity.gateway_id();
         let gateway_id = identity.gateway_id().to_vec();
@@ -1923,12 +2709,13 @@ impl Storage for SqliteStorage {
     // ── Phone trust store (GW-1210) ────────────────────────────
 
     async fn list_phone_psks(&self) -> Result<Vec<PhonePskRecord>, StorageError> {
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
+        let rk = self.rotation_key();
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT phone_id, phone_key_hint, psk, label, issued_at_epoch_s, status, key_version \
-                     FROM phone_psks",
+                    "SELECT phone_id, phone_key_hint, psk, label, issued_at_epoch_s, status, key_version, \
+                     master_key_epoch FROM phone_psks",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -1941,14 +2728,24 @@ impl Storage for SqliteStorage {
                         row.get::<_, i64>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
                     ))
                 })
                 .map_err(map_err)?;
             let mut records = Vec::new();
             for row in rows {
-                let (phone_id, key_hint, psk_blob, label, issued_at, status_str, key_version_raw) =
+                let (phone_id, key_hint, psk_blob, label, issued_at, status_str, key_version_raw, epoch_raw) =
                     row.map_err(map_err)?;
-                let psk = Zeroizing::new(decrypt_phone_psk(&mk, phone_id, &psk_blob)?);
+                let record_epoch = u64::try_from(epoch_raw).map_err(|_| {
+                    StorageError::Internal(format!(
+                        "negative master_key_epoch: {epoch_raw}"
+                    ))
+                })?;
+                let decrypt_key: &[u8; 32] = match rk.as_ref() {
+                    Some(s) if record_epoch >= s.new_epoch => &s.new_key,
+                    _ => &mk,
+                };
+                let psk = Zeroizing::new(decrypt_phone_psk(decrypt_key, phone_id, &psk_blob)?);
                 let status = PhonePskStatus::from_str_value(&status_str).ok_or_else(|| {
                     StorageError::Internal(format!("unknown phone psk status: {status_str}"))
                 })?;
@@ -1979,12 +2776,13 @@ impl Storage for SqliteStorage {
         &self,
         key_hint: u16,
     ) -> Result<Vec<PhonePskRecord>, StorageError> {
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
+        let rk = self.rotation_key();
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT phone_id, phone_key_hint, psk, label, issued_at_epoch_s, status, key_version \
-                     FROM phone_psks WHERE phone_key_hint = ?1",
+                    "SELECT phone_id, phone_key_hint, psk, label, issued_at_epoch_s, status, key_version, \
+                     master_key_epoch FROM phone_psks WHERE phone_key_hint = ?1",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -1997,14 +2795,24 @@ impl Storage for SqliteStorage {
                         row.get::<_, i64>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
                     ))
                 })
                 .map_err(map_err)?;
             let mut records = Vec::new();
             for row in rows {
-                let (phone_id, kh, psk_blob, label, issued_at, status_str, key_version_raw) =
+                let (phone_id, kh, psk_blob, label, issued_at, status_str, key_version_raw, epoch_raw) =
                     row.map_err(map_err)?;
-                let psk = Zeroizing::new(decrypt_phone_psk(&mk, phone_id, &psk_blob)?);
+                let record_epoch = u64::try_from(epoch_raw).map_err(|_| {
+                    StorageError::Internal(format!(
+                        "negative master_key_epoch: {epoch_raw}"
+                    ))
+                })?;
+                let decrypt_key: &[u8; 32] = match rk.as_ref() {
+                    Some(s) if record_epoch >= s.new_epoch => &s.new_key,
+                    _ => &mk,
+                };
+                let psk = Zeroizing::new(decrypt_phone_psk(decrypt_key, phone_id, &psk_blob)?);
                 let status = PhonePskStatus::from_str_value(&status_str).ok_or_else(|| {
                     StorageError::Internal(format!("unknown phone psk status: {status_str}"))
                 })?;
@@ -2041,7 +2849,7 @@ impl Storage for SqliteStorage {
             )));
         }
 
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
         let record = record.clone();
         self.with_conn(move |conn| {
             let issued_at = system_time_to_epoch_s(&record.issued_at);
@@ -2145,7 +2953,7 @@ impl Storage for SqliteStorage {
             }
         }
 
-        let mk = self.master_key.clone();
+        let mk = self.master_key();
         let records = records.to_vec();
         self.with_conn(move |conn| {
             conn.execute_batch("BEGIN IMMEDIATE").map_err(map_err)?;

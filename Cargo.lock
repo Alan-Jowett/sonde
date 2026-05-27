@@ -6508,7 +6508,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sonde-gateway",
- "spki",
  "tar",
  "temp-env",
  "tempfile",

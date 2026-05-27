@@ -1873,6 +1873,7 @@ impl SqliteStorage {
                     "SELECT key_hint, node_id, encrypted_psk, master_key_id, master_key_epoch \
                      FROM pending_recovery \
                      WHERE key_hint = ?1 AND master_key_id = ?2 \
+                     ORDER BY received_at DESC \
                      LIMIT ?3",
                 )
                 .map_err(map_err)?;

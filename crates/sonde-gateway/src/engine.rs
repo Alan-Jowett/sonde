@@ -7,7 +7,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
-use zeroize::Zeroizing;
 
 use sonde_protocol::{
     decode_frame, encode_frame, open_frame, CommandPayload, DecodedFrame, FrameHeader,
@@ -559,7 +558,7 @@ impl Gateway {
                 &candidate.node_id,
                 &candidate.encrypted_psk,
             ) {
-                Ok(psk) => Zeroizing::new(psk),
+                Ok(psk) => psk,
                 Err(e) => {
                     warn!(
                         node_id = %candidate.node_id,

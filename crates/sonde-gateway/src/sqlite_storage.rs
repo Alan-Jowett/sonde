@@ -110,13 +110,14 @@ fn decrypt_psk(
 /// Public wrapper for decrypting a PSK blob with a given master key (GW-2009).
 ///
 /// Used by the recovery engine to trial-decrypt `pending_recovery` PSKs.
-/// The caller is responsible for zeroizing the returned key material.
+/// Returns the plaintext PSK wrapped in [`Zeroizing`] so it is automatically
+/// zeroed on drop.
 pub fn decrypt_psk_with_master_key(
     master_key: &[u8; 32],
     node_id: &str,
     blob: &[u8],
-) -> Result<[u8; 32], StorageError> {
-    decrypt_psk(master_key, node_id, blob)
+) -> Result<Zeroizing<[u8; 32]>, StorageError> {
+    decrypt_psk(master_key, node_id, blob).map(Zeroizing::new)
 }
 
 /// Encrypt a 32-byte Ed25519 seed using AES-256-GCM.

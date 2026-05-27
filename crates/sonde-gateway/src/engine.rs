@@ -537,7 +537,23 @@ impl Gateway {
             }
         };
 
-        let recovery_candidates = match sqlite.lookup_pending_recovery(key_hint).await {
+        // Load current master_key_id for pre-filtering candidates.
+        let current_key_id = match sqlite.init_master_key_id().await {
+            Ok((kid, _)) => kid,
+            Err(e) => {
+                warn!(key_hint, "failed to load master_key_id for recovery: {e}");
+                self.missing_hint_tracker.write().await.report(key_hint);
+                return None;
+            }
+        };
+
+        // Cap candidates per frame to bound AES-GCM work.
+        const MAX_TRIAL_CANDIDATES: u32 = 8;
+
+        let recovery_candidates = match sqlite
+            .lookup_pending_recovery_filtered(key_hint, &current_key_id, MAX_TRIAL_CANDIDATES)
+            .await
+        {
             Ok(c) => c,
             Err(e) => {
                 warn!(key_hint, "pending_recovery lookup failed: {e}");

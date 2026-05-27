@@ -112,7 +112,7 @@ fn decrypt_psk(
 /// Used by the recovery engine to trial-decrypt `pending_recovery` PSKs.
 /// Returns the plaintext PSK wrapped in [`Zeroizing`] so it is automatically
 /// zeroed on drop.
-pub fn decrypt_psk_with_master_key(
+pub(crate) fn decrypt_psk_with_master_key(
     master_key: &[u8; 32],
     node_id: &str,
     blob: &[u8],
@@ -1852,6 +1852,48 @@ impl SqliteStorage {
                             .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(4, epoch_raw))?,
                     })
                 })
+                .map_err(map_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(map_err)
+        })
+        .await
+    }
+
+    /// Look up pending_recovery candidates by key_hint, filtered by master_key_id
+    /// and limited to `max_candidates` rows (GW-2009).
+    pub async fn lookup_pending_recovery_filtered(
+        &self,
+        key_hint: u16,
+        master_key_id: &[u8; 16],
+        max_candidates: u32,
+    ) -> Result<Vec<PendingRecoveryRecord>, StorageError> {
+        let mkid = *master_key_id;
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT key_hint, node_id, encrypted_psk, master_key_id, master_key_epoch \
+                     FROM pending_recovery \
+                     WHERE key_hint = ?1 AND master_key_id = ?2 \
+                     LIMIT ?3",
+                )
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map(
+                    params![key_hint as i64, mkid.as_slice(), max_candidates],
+                    |row| {
+                        let kh_raw: i64 = row.get(0)?;
+                        let epoch_raw: i64 = row.get(4)?;
+                        Ok(PendingRecoveryRecord {
+                            key_hint: u16::try_from(kh_raw)
+                                .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, kh_raw))?,
+                            node_id: row.get(1)?,
+                            encrypted_psk: row.get(2)?,
+                            master_key_id: row.get(3)?,
+                            master_key_epoch: u64::try_from(epoch_raw).map_err(|_| {
+                                rusqlite::Error::IntegralValueOutOfRange(4, epoch_raw)
+                            })?,
+                        })
+                    },
+                )
                 .map_err(map_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(map_err)
         })

@@ -149,7 +149,7 @@ impl RotationEngine {
     }
 
     /// Handle a full DESIRED_STATE message — process rotation_payload if present,
-    /// then apply salt/KDF-params convergence (GW-2008).
+    /// then apply salt/KDF-params convergence (GW-2008) and recovered_psks (GW-2009).
     async fn handle_desired_state(&mut self, state: GatewayDesiredState) {
         if let Some(ref payload) = state.rotation_payload {
             // Errors from DESIRED_STATE rotation are silently discarded per spec.
@@ -166,7 +166,10 @@ impl RotationEngine {
             }
         }
 
-        // Future: handle recovered_psks, channel changes here.
+        // Process recovered_psks (GW-2009).
+        if let Some(records) = state.recovered_psks {
+            self.handle_recovered_psks(records).await;
+        }
     }
 
     /// Apply adopt-if-absent semantics for salt and KDF params (§23.13).
@@ -230,6 +233,62 @@ impl RotationEngine {
         }
 
         adopted
+    }
+
+    /// Process recovered PSK records from DESIRED_STATE (GW-2009).
+    ///
+    /// For each record, validates `master_key_id` against the gateway's current
+    /// key. Records with matching IDs are inserted into `pending_recovery`;
+    /// mismatched records are skipped with a warning.
+    async fn handle_recovered_psks(&self, records: Vec<crate::connector::RecoveredPskRecord>) {
+        let (current_key_id, current_epoch) = match self.storage.init_master_key_id().await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("failed to load master_key_id for recovery PSK processing: {e}");
+                return;
+            }
+        };
+
+        for rec in &records {
+            // Validate master_key_id matches current key (§2.8 step 1a).
+            if rec.master_key_id != current_key_id {
+                warn!(
+                    node_id = %rec.node_id,
+                    key_hint = rec.key_hint,
+                    "skipping recovered_psk: master_key_id mismatch"
+                );
+                continue;
+            }
+
+            let key_hint = rec.key_hint;
+
+            match self
+                .storage
+                .insert_pending_recovery(
+                    key_hint,
+                    &rec.node_id,
+                    &rec.encrypted_psk,
+                    &current_key_id,
+                    current_epoch,
+                )
+                .await
+            {
+                Ok(()) => {
+                    info!(
+                        node_id = %rec.node_id,
+                        key_hint,
+                        "inserted recovered PSK into pending_recovery"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        node_id = %rec.node_id,
+                        key_hint,
+                        "failed to insert pending_recovery: {e}"
+                    );
+                }
+            }
+        }
     }
 
     /// Process a raw rotation payload from either gRPC or DESIRED_STATE.

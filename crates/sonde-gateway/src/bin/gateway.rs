@@ -1012,12 +1012,51 @@ async fn run_gateway(
     )));
 
     // Create gateway engine with the shared handler router (D-485, GW-1407).
-    let gateway = Arc::new(Gateway::new_with_pending(
+    let mut gateway = Gateway::new_with_pending(
         storage.clone(),
         pending_commands.clone(),
         session_manager.clone(),
         handler_router.clone(),
-    ));
+    );
+    // Wire typed SQLite storage for pending_recovery access (GW-2009).
+    gateway.set_sqlite_storage(Arc::clone(&storage)).await;
+
+    // Expire stale pending_recovery records on startup (GW-2009 §2.8).
+    {
+        const RECOVERY_MAX_AGE_SECS: u64 = 86400; // 24 hours
+        match storage.expire_pending_recovery(RECOVERY_MAX_AGE_SECS).await {
+            Ok(0) => {}
+            Ok(n) => info!(
+                expired = n,
+                "purged stale pending_recovery records on startup"
+            ),
+            Err(e) => warn!("failed to expire pending_recovery on startup: {e}"),
+        }
+    }
+
+    let gateway = Arc::new(gateway);
+
+    // Spawn periodic pending_recovery expiry task (GW-2009).
+    {
+        let recovery_storage = Arc::clone(&storage);
+        tokio::spawn(async move {
+            const RECOVERY_MAX_AGE_SECS: u64 = 86400;
+            let mut interval = tokio::time::interval(Duration::from_secs(3600));
+            interval.tick().await; // skip immediate tick (startup expiry already ran)
+            loop {
+                interval.tick().await;
+                match recovery_storage
+                    .expire_pending_recovery(RECOVERY_MAX_AGE_SECS)
+                    .await
+                {
+                    Ok(0) => {}
+                    Ok(n) => info!(expired = n, "purged stale pending_recovery records"),
+                    Err(e) => warn!("periodic pending_recovery expiry failed: {e}"),
+                }
+            }
+        });
+    }
+
     let connector_service = ConnectorService::new(
         storage.clone(),
         pending_commands.clone(),

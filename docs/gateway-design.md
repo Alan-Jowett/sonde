@@ -1994,11 +1994,27 @@ performed on the discarded payload.
 - Report in `missing_key_hints` (ACTUAL_STATE key 20), one-shot cleared after reporting.
 - Frame discarded. Node wake cycle provides natural retry.
 
+**`MissingKeyHintTracker`** — in-memory bounded LRU on `Gateway`.
+- `report(key_hint)` — records a key_hint, returns `true` if accepted (not rate-limited).
+- `drain()` — returns pending hints for ACTUAL_STATE, clears the pending set.
+- Timestamps preserved for rate limiting; only the pending-to-report set is cleared.
+
 **Recovery from DESIRED_STATE:**
+- `RotationEngine::handle_desired_state` processes `recovered_psks` (CBOR key 29).
 - Verify `master_key_id` matches current key. Skip if not.
 - Insert into `pending_recovery` table (key_hint, node_id, encrypted_psk, master_key_id, master_key_epoch, received_at).
-- Trial-decrypt on next frame with matching key_hint.
-- Promote to `nodes` on success. Expire after 24 hours.
+
+**Trial authentication in `process_frame_with_rssi`:**
+- When `get_nodes_by_key_hint` returns empty, call `try_recovery_auth`.
+- Look up `pending_recovery` candidates by key_hint.
+- For each candidate: decrypt `encrypted_psk` with master key into `Zeroizing` memory, trial-decrypt the frame with `open_frame`.
+- On success: promote via `upsert_node`, delete from `pending_recovery`, process frame normally.
+- On failure: leave in `pending_recovery`, record hint in tracker for ACTUAL_STATE reporting.
+- `Gateway` holds `Option<Arc<SqliteStorage>>` for typed access; wired via `set_sqlite_storage`.
+
+**Expiry:**
+- Startup: `expire_pending_recovery(86400)` purges records older than 24 hours.
+- Periodic: hourly tokio interval task runs the same expiry query.
 
 ### 23.9  Modem display pages (GW-2010)
 

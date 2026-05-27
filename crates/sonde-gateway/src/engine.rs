@@ -3,16 +3,16 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use sonde_protocol::{
-    decode_frame, encode_frame, open_frame, CommandPayload, FrameHeader, GatewayMessage,
-    NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_DIAG_REPLY,
-    MSG_DIAG_REQUEST, MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE,
-    PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
+    decode_frame, encode_frame, open_frame, CommandPayload, DecodedFrame, FrameHeader,
+    GatewayMessage, NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND,
+    MSG_DIAG_REPLY, MSG_DIAG_REQUEST, MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST,
+    MSG_PROGRAM_ACK, MSG_WAKE, PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
 };
 
 use std::collections::BTreeMap;
@@ -25,8 +25,104 @@ use crate::phone_trust::PhonePskStatus;
 use crate::program::ProgramLibrary;
 use crate::registry::NodeRecord;
 use crate::session::{SessionManager, SessionState};
+use crate::sqlite_storage::{decrypt_psk_with_master_key, SqliteStorage};
 use crate::storage::Storage;
 use crate::transport::PeerAddress;
+
+// ── Missing key_hint tracker (GW-2009) ──────────────────────────────
+
+/// Maximum number of unique key_hints tracked before LRU eviction.
+const MISSING_HINT_MAX_ENTRIES: usize = 256;
+
+/// Minimum interval between reports for the same key_hint (seconds).
+const MISSING_HINT_RATE_LIMIT_SECS: u64 = 60;
+
+/// Tracks unknown `key_hint` values for reporting in gateway ACTUAL_STATE.
+///
+/// Bounded dedup set (max 256 entries, LRU eviction). Each key_hint is
+/// rate-limited to at most one report per 60 seconds. After draining,
+/// reported hints are cleared — the node's wake cycle provides natural retry.
+pub struct MissingKeyHintTracker {
+    /// Map from key_hint → last_reported time (for rate limiting).
+    entries: HashMap<u16, Instant>,
+    /// Insertion-order queue for LRU eviction.
+    order: Vec<u16>,
+    /// Hints ready to be reported in the next ACTUAL_STATE emission.
+    pending: Vec<u16>,
+}
+
+impl MissingKeyHintTracker {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: Vec::new(),
+            pending: Vec::new(),
+        }
+    }
+
+    /// Record an unknown key_hint. Returns `true` if the hint was accepted
+    /// (not rate-limited), `false` if suppressed.
+    pub fn report(&mut self, key_hint: u16) -> bool {
+        let now = Instant::now();
+
+        if let Some(last) = self.entries.get(&key_hint) {
+            if now.duration_since(*last).as_secs() < MISSING_HINT_RATE_LIMIT_SECS {
+                // Rate-limited — but still refresh LRU position so a
+                // frequently-seen hint isn't evicted while suppressed.
+                self.order.retain(|h| *h != key_hint);
+                self.order.push(key_hint);
+                return false;
+            }
+            // Rate limit expired — update timestamp and move to back of LRU.
+            self.entries.insert(key_hint, now);
+            self.order.retain(|h| *h != key_hint);
+            self.order.push(key_hint);
+            if !self.pending.contains(&key_hint) {
+                self.pending.push(key_hint);
+            }
+            return true;
+        }
+
+        // Evict oldest if at capacity.
+        if self.entries.len() >= MISSING_HINT_MAX_ENTRIES {
+            if let Some(oldest) = self.order.first().copied() {
+                self.entries.remove(&oldest);
+                self.order.remove(0);
+                self.pending.retain(|h| *h != oldest);
+            }
+        }
+
+        self.entries.insert(key_hint, now);
+        self.order.push(key_hint);
+        self.pending.push(key_hint);
+        true
+    }
+
+    /// Drain all pending hints for inclusion in the next ACTUAL_STATE.
+    /// After this call, the pending set is empty. Timestamps are preserved
+    /// for rate limiting.
+    pub fn drain(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// Return the number of tracked key_hints (for diagnostics).
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns true if no key_hints are being tracked.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl Default for MissingKeyHintTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Default chunk size for program transfers (bytes).
 const DEFAULT_CHUNK_SIZE: u32 = 128;
@@ -230,6 +326,14 @@ pub struct Gateway {
     deferred_replies: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     /// Live event publication for connector processes.
     connector_event_hub: Arc<ConnectorEventHub>,
+    /// Tracks unknown key_hints for reporting in ACTUAL_STATE (GW-2009).
+    missing_hint_tracker: Arc<RwLock<MissingKeyHintTracker>>,
+    /// Typed storage reference for pending_recovery access (GW-2009).
+    sqlite_storage: Option<Arc<SqliteStorage>>,
+    /// Cached master_key_id for pending_recovery lookups (GW-2009).
+    /// Loaded once at `set_sqlite_storage` time to avoid calling
+    /// `init_master_key_id` on the per-frame path.
+    cached_master_key_id: Option<[u8; 16]>,
 }
 
 impl Gateway {
@@ -246,6 +350,9 @@ impl Gateway {
             identity_cache: RwLock::new(None),
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
+            missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
+            sqlite_storage: None,
+            cached_master_key_id: None,
         }
     }
 
@@ -273,6 +380,9 @@ impl Gateway {
             identity_cache: RwLock::new(None),
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
+            missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
+            sqlite_storage: None,
+            cached_master_key_id: None,
         }
     }
 
@@ -293,6 +403,9 @@ impl Gateway {
             identity_cache: RwLock::new(None),
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
+            missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
+            sqlite_storage: None,
+            cached_master_key_id: None,
         }
     }
 
@@ -319,6 +432,34 @@ impl Gateway {
     /// Return a clone of the connector event hub.
     pub fn connector_event_hub(&self) -> Arc<ConnectorEventHub> {
         Arc::clone(&self.connector_event_hub)
+    }
+
+    /// Set the typed SQLite storage reference for pending_recovery access (GW-2009).
+    ///
+    /// Loads and caches the current `master_key_id` so `try_recovery_auth` does
+    /// not need to call `init_master_key_id` on the per-frame path.
+    ///
+    /// This must be called before `process_frame` can perform trial authentication
+    /// against `pending_recovery` candidates.
+    pub async fn set_sqlite_storage(&mut self, storage: Arc<SqliteStorage>) {
+        match storage.init_master_key_id().await {
+            Ok((kid, _)) => {
+                self.cached_master_key_id = Some(kid);
+            }
+            Err(e) => {
+                warn!("failed to cache master_key_id during gateway init: {e}");
+                // Recovery will be unavailable until master_key_id is initialized.
+            }
+        }
+        self.sqlite_storage = Some(storage);
+    }
+
+    /// Drain accumulated unknown `key_hint` values for ACTUAL_STATE emission.
+    ///
+    /// Returns the hints collected since the last drain and clears the
+    /// pending set. Rate-limit timestamps are preserved.
+    pub async fn drain_missing_hints(&self) -> Vec<u16> {
+        self.missing_hint_tracker.write().await.drain()
     }
 
     /// Process a raw frame using AES-256-GCM authenticated encryption.
@@ -360,11 +501,8 @@ impl Gateway {
         let key_hint = decoded.header.key_hint;
         let candidates = self.storage.get_nodes_by_key_hint(key_hint).await.ok()?;
         if candidates.is_empty() {
-            warn!(
-                key_hint,
-                "discarding AEAD frame from unknown node (no key_hint match)"
-            );
-            return None;
+            // No known node for this key_hint — attempt trial recovery (GW-2009).
+            return self.try_recovery_auth(&decoded, key_hint, peer, rssi).await;
         }
 
         let aead = GatewayAead;
@@ -380,6 +518,148 @@ impl Gateway {
         let node = matched_node?;
         let payload = plaintext_payload?;
 
+        match decoded.header.msg_type {
+            MSG_WAKE => {
+                self.handle_wake(&node, &decoded.header, &payload, peer, rssi)
+                    .await
+            }
+            MSG_GET_CHUNK | MSG_PROGRAM_ACK | MSG_APP_DATA => {
+                self.handle_post_wake(&node, &decoded.header, &payload)
+                    .await
+            }
+            _ => None,
+        }
+    }
+
+    /// Attempt trial authentication against `pending_recovery` candidates (GW-2009).
+    ///
+    /// Called when no known node matches the frame's `key_hint`. If a pending
+    /// recovery PSK decrypts the frame, the node is promoted to the `nodes` table
+    /// and the frame is processed normally. Otherwise the `key_hint` is recorded
+    /// for reporting in the next gateway ACTUAL_STATE.
+    async fn try_recovery_auth(
+        &self,
+        decoded: &DecodedFrame<'_>,
+        key_hint: u16,
+        peer: PeerAddress,
+        rssi: Option<i8>,
+    ) -> Option<Vec<u8>> {
+        use crate::aead::GatewayAead;
+
+        let sqlite = match &self.sqlite_storage {
+            Some(s) => Arc::clone(s),
+            None => {
+                // No SQLite storage — can't do recovery. Record and discard.
+                self.missing_hint_tracker.write().await.report(key_hint);
+                warn!(
+                    key_hint,
+                    "discarding frame from unknown node (no recovery storage)"
+                );
+                return None;
+            }
+        };
+
+        // Use cached master_key_id for pre-filtering candidates.
+        let current_key_id = match self.cached_master_key_id {
+            Some(kid) => kid,
+            None => {
+                warn!(key_hint, "no cached master_key_id — recovery unavailable");
+                self.missing_hint_tracker.write().await.report(key_hint);
+                return None;
+            }
+        };
+
+        // Cap candidates per frame to bound AES-GCM work.
+        const MAX_TRIAL_CANDIDATES: u32 = 8;
+
+        let recovery_candidates = match sqlite
+            .lookup_pending_recovery_filtered(key_hint, &current_key_id, MAX_TRIAL_CANDIDATES)
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(key_hint, "pending_recovery lookup failed: {e}");
+                self.missing_hint_tracker.write().await.report(key_hint);
+                return None;
+            }
+        };
+
+        if recovery_candidates.is_empty() {
+            // No recovery candidates — record the hint and discard.
+            self.missing_hint_tracker.write().await.report(key_hint);
+            warn!(
+                key_hint,
+                "discarding frame from unknown node (no pending_recovery match)"
+            );
+            return None;
+        }
+
+        let master_key = sqlite.master_key();
+        let aead = GatewayAead;
+        let mut promoted_node: Option<NodeRecord> = None;
+        let mut plaintext: Option<Vec<u8>> = None;
+        let mut promoted_node_id: Option<String> = None;
+
+        for candidate in &recovery_candidates {
+            // Decrypt the escrowed PSK with the master key into zeroized memory.
+            let psk = match decrypt_psk_with_master_key(
+                &master_key,
+                &candidate.node_id,
+                &candidate.encrypted_psk,
+            ) {
+                Ok(psk) => psk,
+                Err(e) => {
+                    warn!(
+                        node_id = %candidate.node_id,
+                        key_hint,
+                        "recovery PSK decryption failed: {e}"
+                    );
+                    continue;
+                }
+            };
+
+            // Trial-decrypt the frame with the recovered PSK.
+            if let Ok(pt) = open_frame(decoded, &psk, &aead, &self.crypto_sha) {
+                info!(
+                    node_id = %candidate.node_id,
+                    key_hint,
+                    "trial authentication succeeded — promoting node"
+                );
+                let node = NodeRecord::new(candidate.node_id.clone(), key_hint, *psk);
+                promoted_node_id = Some(candidate.node_id.clone());
+                promoted_node = Some(node);
+                plaintext = Some(pt);
+                break;
+            }
+        }
+
+        let node = match promoted_node {
+            Some(n) => n,
+            None => {
+                // All candidates failed — record hint for reporting.
+                self.missing_hint_tracker.write().await.report(key_hint);
+                debug!(
+                    key_hint,
+                    candidates = recovery_candidates.len(),
+                    "trial authentication failed for all pending_recovery candidates"
+                );
+                return None;
+            }
+        };
+        let payload = plaintext?;
+        let promoted_id = promoted_node_id?;
+
+        // Promote: upsert into nodes table, delete from pending_recovery.
+        if let Err(e) = self.storage.upsert_node(&node).await {
+            warn!(node_id = %promoted_id, "failed to promote recovered node: {e}");
+            return None;
+        }
+        if let Err(e) = sqlite.delete_pending_recovery(key_hint, &promoted_id).await {
+            warn!(node_id = %promoted_id, "failed to delete pending_recovery after promotion: {e}");
+            // Continue processing — the node is already promoted.
+        }
+
+        // Process the frame normally.
         match decoded.header.msg_type {
             MSG_WAKE => {
                 self.handle_wake(&node, &decoded.header, &payload, peer, rssi)

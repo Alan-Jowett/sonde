@@ -1019,7 +1019,7 @@ async fn run_gateway(
         handler_router.clone(),
     );
     // Wire typed SQLite storage for pending_recovery access (GW-2009).
-    gateway.set_sqlite_storage(Arc::clone(&storage));
+    gateway.set_sqlite_storage(Arc::clone(&storage)).await;
 
     // Expire stale pending_recovery records on startup (GW-2009 §2.8).
     {

@@ -32,9 +32,9 @@ const TEST_MASTER_KEY: [u8; 32] = [0x42u8; 32];
 const TEST_PSK: [u8; 32] = [0xBBu8; 32];
 const TEST_KEY_HINT: u16 = 0x1234;
 
-fn make_gateway_with_sqlite(store: Arc<SqliteStorage>) -> Gateway {
+async fn make_gateway_with_sqlite(store: Arc<SqliteStorage>) -> Gateway {
     let mut gw = Gateway::new(store.clone() as Arc<dyn Storage>, Duration::from_secs(30));
-    gw.set_sqlite_storage(store);
+    gw.set_sqlite_storage(store).await;
     gw
 }
 
@@ -71,7 +71,7 @@ async fn test_t2006_declarative_node_recovery() {
     // Initialize master_key_id so recovered_psks validation works.
     let (current_key_id, _current_epoch) = store.init_master_key_id().await.unwrap();
 
-    let gw = make_gateway_with_sqlite(store.clone());
+    let gw = make_gateway_with_sqlite(store.clone()).await;
 
     // Step 2: Send a valid encrypted WAKE frame with unknown key_hint.
     let frame = build_wake_frame(TEST_KEY_HINT, &TEST_PSK, 42);
@@ -82,14 +82,14 @@ async fn test_t2006_declarative_node_recovery() {
     );
 
     // Step 3: Verify missing_key_hints includes the key_hint.
-    let hints = gw.missing_hint_tracker().write().await.drain();
+    let hints = gw.drain_missing_hints().await;
     assert!(
         hints.contains(&TEST_KEY_HINT),
         "missing_key_hints should contain the unknown key_hint"
     );
 
     // Step 4: Subsequent drain should be empty (cleared after reporting).
-    let hints2 = gw.missing_hint_tracker().write().await.drain();
+    let hints2 = gw.drain_missing_hints().await;
     assert!(
         hints2.is_empty(),
         "missing_key_hints should be cleared after drain"
@@ -98,7 +98,7 @@ async fn test_t2006_declarative_node_recovery() {
     // Step 5: Same key_hint within 60s should NOT be re-reported (rate limit).
     let resp2 = gw.process_frame(&frame, peer_addr()).await;
     assert!(resp2.is_none());
-    let hints3 = gw.missing_hint_tracker().write().await.drain();
+    let hints3 = gw.drain_missing_hints().await;
     assert!(
         hints3.is_empty(),
         "same key_hint should be rate-limited within 60s"
@@ -159,7 +159,7 @@ async fn test_t2006_declarative_node_recovery() {
     // Build a new gateway (the MissingKeyHintTracker rate limit would block
     // reporting on the old instance, but we need to test trial auth, not
     // rate limiting).
-    let gw2 = make_gateway_with_sqlite(store.clone());
+    let gw2 = make_gateway_with_sqlite(store.clone()).await;
     let frame2 = build_wake_frame(TEST_KEY_HINT, &TEST_PSK, 43);
     let resp3 = gw2.process_frame(&frame2, peer_addr()).await;
     assert!(
@@ -212,7 +212,7 @@ async fn test_t2006a_wrong_psk_not_promoted() {
         .await
         .unwrap();
 
-    let gw = make_gateway_with_sqlite(store.clone());
+    let gw = make_gateway_with_sqlite(store.clone()).await;
 
     // Step 2: Send a frame with matching key_hint but different PSK.
     let real_psk = [0xEEu8; 32];

@@ -330,6 +330,10 @@ pub struct Gateway {
     missing_hint_tracker: Arc<RwLock<MissingKeyHintTracker>>,
     /// Typed storage reference for pending_recovery access (GW-2009).
     sqlite_storage: Option<Arc<SqliteStorage>>,
+    /// Cached master_key_id for pending_recovery lookups (GW-2009).
+    /// Loaded once at `set_sqlite_storage` time to avoid calling
+    /// `init_master_key_id` on the per-frame path.
+    cached_master_key_id: Option<[u8; 16]>,
 }
 
 impl Gateway {
@@ -348,6 +352,7 @@ impl Gateway {
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
             missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
             sqlite_storage: None,
+            cached_master_key_id: None,
         }
     }
 
@@ -377,6 +382,7 @@ impl Gateway {
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
             missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
             sqlite_storage: None,
+            cached_master_key_id: None,
         }
     }
 
@@ -399,6 +405,7 @@ impl Gateway {
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
             missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
             sqlite_storage: None,
+            cached_master_key_id: None,
         }
     }
 
@@ -429,15 +436,30 @@ impl Gateway {
 
     /// Set the typed SQLite storage reference for pending_recovery access (GW-2009).
     ///
+    /// Loads and caches the current `master_key_id` so `try_recovery_auth` does
+    /// not need to call `init_master_key_id` on the per-frame path.
+    ///
     /// This must be called before `process_frame` can perform trial authentication
     /// against `pending_recovery` candidates.
-    pub fn set_sqlite_storage(&mut self, storage: Arc<SqliteStorage>) {
+    pub async fn set_sqlite_storage(&mut self, storage: Arc<SqliteStorage>) {
+        match storage.init_master_key_id().await {
+            Ok((kid, _)) => {
+                self.cached_master_key_id = Some(kid);
+            }
+            Err(e) => {
+                warn!("failed to cache master_key_id during gateway init: {e}");
+                // Recovery will be unavailable until master_key_id is initialized.
+            }
+        }
         self.sqlite_storage = Some(storage);
     }
 
-    /// Return a clone of the missing key_hint tracker for ACTUAL_STATE emission.
-    pub fn missing_hint_tracker(&self) -> Arc<RwLock<MissingKeyHintTracker>> {
-        Arc::clone(&self.missing_hint_tracker)
+    /// Drain accumulated unknown `key_hint` values for ACTUAL_STATE emission.
+    ///
+    /// Returns the hints collected since the last drain and clears the
+    /// pending set. Rate-limit timestamps are preserved.
+    pub async fn drain_missing_hints(&self) -> Vec<u16> {
+        self.missing_hint_tracker.write().await.drain()
     }
 
     /// Process a raw frame using AES-256-GCM authenticated encryption.
@@ -537,11 +559,11 @@ impl Gateway {
             }
         };
 
-        // Load current master_key_id for pre-filtering candidates.
-        let current_key_id = match sqlite.init_master_key_id().await {
-            Ok((kid, _)) => kid,
-            Err(e) => {
-                warn!(key_hint, "failed to load master_key_id for recovery: {e}");
+        // Use cached master_key_id for pre-filtering candidates.
+        let current_key_id = match self.cached_master_key_id {
+            Some(kid) => kid,
+            None => {
+                warn!(key_hint, "no cached master_key_id — recovery unavailable");
                 self.missing_hint_tracker.write().await.report(key_hint);
                 return None;
             }

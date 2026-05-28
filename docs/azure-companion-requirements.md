@@ -687,6 +687,7 @@ the state volume.
 3. The `tenant_id`, `client_id`, and `login_endpoint` values are extracted from the Bicep deployment outputs. The `login_endpoint` is sourced from `environment().authentication.loginEndpoint` exposed through the `companionBootstrapValues` output.
 4. The `certificate_path` and `private_key_path` values are relative paths within the state volume pointing to the generated PEM files.
 5. The resulting state satisfies the `check-runtime-ready` validation without manual intervention.
+6. The `storageAccountName` and `functionAppName` values are extracted from the `companionBootstrapValues` Bicep output and available for use by bootstrap artifact creation (see AZC-0413). Verified by T-AZC-0433.
 
 ---
 
@@ -927,3 +928,47 @@ variables; they are passed through for future use.
 2. All three parameters are optional; omitting them does not affect the rest of the bootstrap sequence.
 3. Each custom domain parameter that is set is forwarded to the bootstrap container as its corresponding environment variable, independently of the others.
 4. When none of the three parameters are set, none of the three custom domain environment variables are present in the container environment.
+
+---
+
+### AZC-0413  Web UI environment file from bootstrap
+
+**Priority:** Should
+**Source:** [issue #1074](https://github.com/Alan-Jowett/sonde/issues/1074)
+
+**Description:**
+After successful Bicep deployment, the unified `bootstrap` subcommand SHOULD
+write a `web-ui-environment.json` file to the staging directory alongside
+`service-principal.json` and `storage-queues.json`. The file contains the
+connection details needed to configure a Web UI environment without manual
+transcription.
+
+The file uses a single-object schema with a `version` field for forward
+compatibility:
+
+```json
+{
+  "version": 1,
+  "name": "",
+  "clientId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "storageAccount": "mystorageaccount",
+  "functionAppName": "sonde-handler-xxxx"
+}
+```
+
+The `name` field MUST be an empty string — the Web UI prompts the user for a
+name during import. The `storageAccountName` and `functionAppName` values are
+extracted from the `companionBootstrapValues` Bicep output alongside the
+existing `tenantId` and `clientId` values.
+
+This file is a convenience artifact for Web UI onboarding. It is NOT required
+for bootstrap-complete state or `check-runtime-ready` validation.
+
+**Acceptance criteria:**
+
+1. Bootstrap writes `web-ui-environment.json` to the staging directory after successful Bicep deployment.
+2. The file contains `version` (integer 1), `name` (empty string), `clientId`, `tenantId`, `storageAccount`, and `functionAppName`.
+3. The `clientId`, `tenantId`, `storageAccount`, and `functionAppName` values are extracted from the Bicep deployment outputs.
+4. The file is committed to the state generation directory alongside other bootstrap artifacts.
+5. Absence of `web-ui-environment.json` does not affect `check-runtime-ready` or runtime startup.

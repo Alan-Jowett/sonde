@@ -143,7 +143,9 @@ The current runtime artifact shape is a companion-owned `service-principal.json`
 file containing the Entra tenant ID, client ID, login endpoint, PEM certificate
 path, and PEM private-key path, plus the referenced certificate and key files in
 the state directory. After bootstrap, the state directory also contains
-`storage-queues.json` with the Storage Queue endpoint and queue names. New bootstrap
+`storage-queues.json` with the Storage Queue endpoint and queue names, and
+`web-ui-environment.json` with the Web UI connection details for import into the
+SPA environment manager (see AZC-0413). New bootstrap
 commits are written into a generation directory under the state directory and made
 current by atomically updating a `.current-state` marker file. For backward
 compatibility, startup also accepts the legacy flat-file layout when the marker
@@ -330,11 +332,11 @@ When bootstrap is required, the Azure companion performs this sequence:
 15. Wait for the container to finish. On success, the bootstrap script produces
     JSON deployment outputs on stdout. The Rust companion captures and parses
     the JSON outputs to extract `tenantId`, `clientId`, Storage Queue endpoint,
-    queue names, Function App name, and deployment container values from the
-    `companionBootstrapValues` output object.
-16. Write `service-principal.json` and `storage-queues.json` to the staging
-    directory with the extracted values and relative paths to the certificate
-    and private-key PEM files.
+    queue names, `storageAccountName`, `functionAppName`, and deployment
+    container values from the `companionBootstrapValues` output object.
+16. Write `service-principal.json`, `storage-queues.json`, and
+    `web-ui-environment.json` to the staging directory with the extracted values
+    and relative paths to the certificate and private-key PEM files.
 17. Rename the staging directory into a new generation directory under the state
     volume, then atomically update the `.current-state` marker to point at that
     generation, leaving the previous generation untouched until the new one is
@@ -359,7 +361,7 @@ non-zero status. It does not continue to a console-only fallback.
 ## 5  Rust binary interface
 
 > **Requirements:** AZC-0100, AZC-0102, AZC-0103, AZC-0104, AZC-0105, AZC-0201, AZC-0202, AZC-0205, AZC-0300, AZC-0301, AZC-0302, AZC-0304, AZC-0305,
-> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0410, AZC-0411, AZC-0412
+> AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405, AZC-0406, AZC-0410, AZC-0411, AZC-0412, AZC-0413
 
 The `sonde-azure-companion` binary exposes three cross-platform runtime modes
 plus Windows service-management entrypoints:
@@ -370,7 +372,7 @@ plus Windows service-management entrypoints:
    ECDSA P-256 certificate generation, launching the version-matched
    `sonde-azure-bootstrap` image via the Bollard Docker API, and runtime
    artifact creation (`service-principal.json`, `storage-queues.json`,
-   certificate PEM, private-key PEM). The Rust code monitors the bootstrap
+   `web-ui-environment.json`, certificate PEM, private-key PEM). The Rust code monitors the bootstrap
    container's output to extract the device code and display it on the modem
    via the gateway admin API. If valid bootstrap-complete state already exists
    and `--force` is not passed, the subcommand exits successfully without
@@ -512,7 +514,7 @@ a detected bridge failure.
 ## 8  Provisioning orchestration internals
 
 > **Requirements:** AZC-0400, AZC-0401, AZC-0402, AZC-0403, AZC-0404, AZC-0405,
-> AZC-0406, AZC-0407, AZC-0408, AZC-0409, AZC-0412
+> AZC-0406, AZC-0407, AZC-0408, AZC-0409, AZC-0412, AZC-0413
 
 ### 8.1  Certificate generation
 
@@ -622,6 +624,19 @@ staging directory:
      "downstream_queue": "<from companionBootstrapValues.downstreamQueue>"
    }
    ```
+4. **`web-ui-environment.json`** (AZC-0413) containing:
+   ```json
+   {
+     "version": 1,
+     "name": "",
+     "clientId": "<from companionBootstrapValues.clientId>",
+     "tenantId": "<from companionBootstrapValues.tenantId>",
+     "storageAccount": "<from companionBootstrapValues.storageAccountName>",
+     "functionAppName": "<from companionBootstrapValues.functionAppName>"
+   }
+   ```
+   This file is a convenience artifact for Web UI onboarding. It is NOT
+   required by `check-runtime-ready` or runtime startup.
 
 Only after all staging writes succeed does the bootstrap atomically move the
 staged files into the state volume root, replacing any previous artifacts.

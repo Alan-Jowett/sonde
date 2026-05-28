@@ -510,6 +510,7 @@
 6. Assert: `service-principal.json` has been rewritten.
 7. Assert: the Bicep deployment phase received the newly regenerated certificate material (not the original certificate from step 1).
 8. Assert: `check-runtime-ready` succeeds after re-bootstrap.
+9. Assert: `web-ui-environment.json` exists in the new state generation directory with valid content.
 
 ---
 
@@ -846,3 +847,17 @@
 4. Assert: the bootstrap container environment contains `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP=my-rg` but does not contain `SONDE_AZURE_CUSTOM_DOMAIN_NAME` or `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME`.
 5. Run `sonde-azure-companion bootstrap` with only `--custom-domain-dns-zone-name myzone.com` and with `SONDE_AZURE_CUSTOM_DOMAIN_NAME` and `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP` unset. Use stubbed Docker/admin services.
 6. Assert: the bootstrap container environment contains `SONDE_AZURE_CUSTOM_DOMAIN_DNS_ZONE_NAME=myzone.com` but does not contain `SONDE_AZURE_CUSTOM_DOMAIN_NAME` or `SONDE_AZURE_CUSTOM_DOMAIN_DNS_RESOURCE_GROUP`.
+
+---
+
+### T-AZC-0433  Bootstrap writes web-ui-environment.json
+
+**Validates:** AZC-0413
+
+**Procedure:**
+1. Run the bootstrap subcommand with device-flow stubbed to succeed and Bicep deployment stubbed to return known output values (tenantId, clientId, storageAccountName, functionAppName).
+2. Assert: `web-ui-environment.json` exists in the state volume after bootstrap completes.
+3. Parse `web-ui-environment.json` and assert: it contains `version` (integer 1), `name` (empty string), `clientId`, `tenantId`, `storageAccount`, and `functionAppName`.
+4. Assert: `clientId`, `tenantId`, `storageAccount`, and `functionAppName` match the stubbed Bicep output values.
+5. Assert: `check-runtime-ready` does not depend on the presence of `web-ui-environment.json` (removing the file still passes the check).
+6. Assert: runtime startup (`sonde-azure-companion run`) does not depend on the presence of `web-ui-environment.json` (removing the file still proceeds to the runtime bridge path).

@@ -146,6 +146,7 @@ output companionBootstrapValues object = {
   storageQueueEndpoint: stack.outputs.queueServiceUri
   upstreamQueue: stack.outputs.upstreamQueueName
   downstreamQueue: stack.outputs.downstreamQueueName
+  storageAccountName: stack.outputs.storageAccountName
   functionAppName: stack.outputs.functionAppName
   deploymentContainerName: stack.outputs.deploymentContainerName
   deploymentContainerUrl: stack.outputs.deploymentContainerUrl

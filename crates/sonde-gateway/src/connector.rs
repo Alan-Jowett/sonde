@@ -18,17 +18,6 @@ use crate::engine::PendingCommand;
 use crate::program::{ProgramLibrary, VerificationProfile};
 use crate::storage::Storage;
 
-/// Inbound escrow messages received from the control plane.
-#[derive(Debug)]
-pub enum EscrowInboundMessage {
-    /// KEY_ESCROW_RESPONSE (msg_type 0x12) — raw CBOR bytes.
-    /// RETIRED by evolve-962 — replaced by `recovered_psks` in gateway DESIRED_STATE.
-    KeyEscrowResponse(Vec<u8>),
-    /// MASTER_KEY_INSTALL (msg_type 0x13) — raw CBOR bytes.
-    /// RETIRED by evolve-962 — replaced by `rotation_payload` in gateway DESIRED_STATE.
-    MasterKeyInstall(Vec<u8>),
-}
-
 /// Parsed gateway DESIRED_STATE fields from evolve-962 §2.5.
 #[derive(Clone, Debug, Default)]
 pub struct GatewayDesiredState {
@@ -135,21 +124,6 @@ enum ConnectorOutboundMessage {
         stale_scope: Vec<String>,
         remediation: String,
     },
-    /// Recovery public key publication (GW-2001).
-    /// RETIRED by evolve-962 — replaced by gateway ACTUAL_STATE field
-    /// `x25519_public_key` (key 18). Kept temporarily for compilation
-    /// until all callers are migrated.
-    KeyEscrowPubkey {
-        public_key: [u8; 32],
-        key_epoch: u64,
-        created_at: u64,
-        fingerprint_words: [String; 6],
-    },
-    /// Request escrowed PSK(s) for an unknown key_hint (GW-2009).
-    /// RETIRED by evolve-962 — replaced by gateway ACTUAL_STATE field
-    /// `missing_key_hints` (key 20). Kept temporarily for compilation
-    /// until all callers are migrated.
-    KeyEscrowRequest { key_hint: u16, request_id: [u8; 16] },
     /// Gateway-scoped ACTUAL_STATE with all evolve-962 fields (keys 15–27).
     GatewayActualState(Box<GatewayActualStateData>),
 }
@@ -307,35 +281,6 @@ impl ConnectorOutboundMessage {
                         map_entry(3, Value::Text(remediation.clone())),
                     ]),
                 ),
-            ]),
-            Self::KeyEscrowPubkey {
-                public_key,
-                key_epoch,
-                created_at,
-                fingerprint_words,
-            } => Value::Map(vec![
-                map_entry(
-                    1,
-                    Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY.into()),
-                ),
-                map_entry(2, Value::Bytes(public_key.to_vec())),
-                map_entry(3, Value::Integer((*key_epoch).into())),
-                map_entry(4, Value::Integer((*created_at).into())),
-                map_entry(
-                    5,
-                    Value::Array(fingerprint_words.iter().cloned().map(Value::Text).collect()),
-                ),
-            ]),
-            Self::KeyEscrowRequest {
-                key_hint,
-                request_id,
-            } => Value::Map(vec![
-                map_entry(
-                    1,
-                    Value::Integer(sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST.into()),
-                ),
-                map_entry(2, Value::Integer((*key_hint as u64).into())),
-                map_entry(3, Value::Bytes(request_id.to_vec())),
             ]),
             Self::GatewayActualState(data) => {
                 let mut pairs = vec![
@@ -542,30 +487,6 @@ impl ConnectorEventHub {
         });
     }
 
-    /// Emit KEY_ESCROW_PUBKEY (GW-2001).
-    pub fn emit_key_escrow_pubkey(
-        &self,
-        public_key: &[u8; 32],
-        key_epoch: u64,
-        created_at: u64,
-        fingerprint_words: &[&str; 6],
-    ) {
-        let _ = self.tx.send(ConnectorOutboundMessage::KeyEscrowPubkey {
-            public_key: *public_key,
-            key_epoch,
-            created_at,
-            fingerprint_words: fingerprint_words.map(str::to_string),
-        });
-    }
-
-    /// Emit KEY_ESCROW_REQUEST (GW-2009).
-    pub fn emit_key_escrow_request(&self, key_hint: u16, request_id: [u8; 16]) {
-        let _ = self.tx.send(ConnectorOutboundMessage::KeyEscrowRequest {
-            key_hint,
-            request_id,
-        });
-    }
-
     /// Emit gateway ACTUAL_STATE with all evolve-962 fields (GW-2003).
     ///
     /// Emitted on startup, connector reconnection, and whenever gateway state
@@ -656,8 +577,6 @@ pub struct ConnectorService {
     pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
     event_hub: Arc<ConnectorEventHub>,
     max_message_size: usize,
-    /// Channel for forwarding escrow inbound messages to the gateway engine.
-    escrow_inbound_tx: Option<tokio::sync::mpsc::UnboundedSender<EscrowInboundMessage>>,
     /// Channel for forwarding parsed gateway DESIRED_STATE to the gateway engine.
     gateway_desired_state_tx: Option<tokio::sync::mpsc::UnboundedSender<GatewayDesiredState>>,
 }
@@ -675,17 +594,8 @@ impl ConnectorService {
             pending_commands,
             event_hub,
             max_message_size: max_message_size.max(1),
-            escrow_inbound_tx: None,
             gateway_desired_state_tx: None,
         }
-    }
-
-    /// Set the channel for forwarding escrow inbound messages.
-    pub fn set_escrow_inbound_tx(
-        &mut self,
-        tx: tokio::sync::mpsc::UnboundedSender<EscrowInboundMessage>,
-    ) {
-        self.escrow_inbound_tx = Some(tx);
     }
 
     /// Set the channel for forwarding parsed gateway DESIRED_STATE.
@@ -789,32 +699,6 @@ impl ConnectorService {
                     }
                     other => Err(format!("unknown entity_kind `{other}`")),
                 }
-            }
-            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE => {
-                // Handled by the escrow subsystem via the inbound escrow channel.
-                if let Some(ref tx) = self.escrow_inbound_tx {
-                    tx.send(EscrowInboundMessage::KeyEscrowResponse(bytes.to_vec()))
-                        .map_err(|_| "escrow channel closed".to_string())?;
-                } else {
-                    return Err(
-                        "escrow inbound channel not configured; message cannot be processed"
-                            .to_string(),
-                    );
-                }
-                Ok(())
-            }
-            sonde_protocol::CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL => {
-                // Handled by the escrow subsystem via the inbound escrow channel.
-                if let Some(ref tx) = self.escrow_inbound_tx {
-                    tx.send(EscrowInboundMessage::MasterKeyInstall(bytes.to_vec()))
-                        .map_err(|_| "escrow channel closed".to_string())?;
-                } else {
-                    return Err(
-                        "escrow inbound channel not configured; message cannot be processed"
-                            .to_string(),
-                    );
-                }
-                Ok(())
             }
             _ => Err(format!(
                 "unsupported inbound connector msg_type `{msg_type:#x}`"
@@ -1463,60 +1347,6 @@ mod tests {
     }
 
     #[test]
-    fn key_escrow_pubkey_encoding() {
-        let message = ConnectorOutboundMessage::KeyEscrowPubkey {
-            public_key: [0x42u8; 32],
-            key_epoch: 3,
-            created_at: 1_234_567_890,
-            fingerprint_words: [
-                "abandon".to_string(),
-                "ability".to_string(),
-                "able".to_string(),
-                "about".to_string(),
-                "above".to_string(),
-                "absent".to_string(),
-            ],
-        };
-        let encoded = message.encode().unwrap();
-        let decoded = decode_map(&encoded).unwrap();
-        assert_eq!(
-            required_u64(&decoded, 1, "msg_type").unwrap(),
-            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_PUBKEY
-        );
-        let pk = required_bytes(&decoded, 2, "public_key").unwrap();
-        assert_eq!(pk, vec![0x42u8; 32]);
-        assert_eq!(required_u64(&decoded, 3, "key_epoch").unwrap(), 3);
-        assert_eq!(
-            required_u64(&decoded, 4, "created_at").unwrap(),
-            1_234_567_890
-        );
-        let words = match map_get(&decoded, 5) {
-            Some(Value::Array(words)) => words,
-            other => panic!("expected fingerprint_words array, got {other:?}"),
-        };
-        assert_eq!(words.len(), 6);
-        assert_eq!(words[0].as_text(), Some("abandon"));
-        assert_eq!(words[5].as_text(), Some("absent"));
-    }
-
-    #[test]
-    fn key_escrow_request_encoding() {
-        let message = ConnectorOutboundMessage::KeyEscrowRequest {
-            key_hint: 0x1234,
-            request_id: [0xAB; 16],
-        };
-        let encoded = message.encode().unwrap();
-        let decoded = decode_map(&encoded).unwrap();
-        assert_eq!(
-            required_u64(&decoded, 1, "msg_type").unwrap(),
-            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_REQUEST
-        );
-        assert_eq!(required_u64(&decoded, 2, "key_hint").unwrap(), 0x1234);
-        let rid = required_bytes(&decoded, 3, "request_id").unwrap();
-        assert_eq!(rid, vec![0xAB; 16]);
-    }
-
-    #[test]
     fn actual_state_encoding_drops_inconsistent_escrow_fields() {
         let hub = ConnectorEventHub::new(1);
         let mut rx = hub.subscribe();
@@ -1542,40 +1372,6 @@ mod tests {
         assert!(matches!(map_get(&decoded, 12), Some(Value::Null)));
         assert!(matches!(map_get(&decoded, 13), Some(Value::Null)));
         assert!(matches!(map_get(&decoded, 14), Some(Value::Null)));
-    }
-
-    fn encode_inbound_message(msg_type: u64) -> Vec<u8> {
-        let value = ciborium::Value::Map(vec![(
-            ciborium::Value::Integer(1u64.into()),
-            ciborium::Value::Integer(msg_type.into()),
-        )]);
-        let mut bytes = Vec::new();
-        ciborium::into_writer(&value, &mut bytes).unwrap();
-        bytes
-    }
-
-    #[tokio::test]
-    async fn escrow_messages_require_inbound_channel() {
-        let service = ConnectorService::new(
-            std::sync::Arc::new(crate::storage::InMemoryStorage::new()),
-            std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            std::sync::Arc::new(ConnectorEventHub::new(1)),
-            DEFAULT_CONNECTOR_MAX_MESSAGE_SIZE,
-        );
-
-        for msg_type in [
-            sonde_protocol::CONNECTOR_MSG_TYPE_KEY_ESCROW_RESPONSE,
-            sonde_protocol::CONNECTOR_MSG_TYPE_MASTER_KEY_INSTALL,
-        ] {
-            let err = service
-                .handle_inbound_message(&encode_inbound_message(msg_type))
-                .await
-                .unwrap_err();
-            assert_eq!(
-                err,
-                "escrow inbound channel not configured; message cannot be processed"
-            );
-        }
     }
 
     #[test]

@@ -11,7 +11,6 @@ pub mod board_layout;
 pub mod chunk;
 pub mod constants;
 pub mod error;
-pub mod escrow_blob;
 #[cfg(feature = "fingerprint")]
 pub mod fingerprint;
 pub mod header;
@@ -35,10 +34,6 @@ pub use board_layout::{
 pub use chunk::{chunk_count, get_chunk};
 pub use constants::*;
 pub use error::{DecodeError, EncodeError};
-pub use escrow_blob::{
-    build_escrow_aad, decode_escrow_blob, encode_escrow_blob, open_escrow_blob, seal_escrow_blob,
-    EscrowBlob, SubjectKind,
-};
 #[cfg(feature = "fingerprint")]
 pub use fingerprint::{compute_fingerprint, BIP39_ENGLISH};
 pub use header::FrameHeader;

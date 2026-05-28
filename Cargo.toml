@@ -7,7 +7,6 @@ members = [
     "crates/sonde-node",
     "crates/sonde-admin",
     "crates/sonde-bpf",
-    "crates/sonde-bundle",
     "crates/sonde-e2e",
     "crates/sonde-pair",
     "crates/sonde-pair-ui/src-tauri",
@@ -21,7 +20,6 @@ default-members = [
     "crates/sonde-protocol",
     "crates/sonde-gateway",
     "crates/sonde-admin",
-    "crates/sonde-bundle",
     "crates/sonde-tmp102-handler",
     "crates/sonde-sht40-handler",
 ]

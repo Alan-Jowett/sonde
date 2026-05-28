@@ -67,9 +67,6 @@ workflow, now F-022) remain open and carried forward.
 | `docs/safe-bpf-interpreter.md` | BPF interpreter design (§2.2, §3.2, §6) |
 | `docs/safe-bpf-interpreter-validation.md` | BPF test cases |
 | `docs/bpf-environment.md` | BPF helper/environment spec |
-| `docs/bundle-format.md` | Bundle format spec |
-| `docs/bundle-tool-design.md` | Bundle tool design |
-| `docs/bundle-tool-validation.md` | Bundle test cases |
 | `docs/e2e-validation.md` | E2E test cases |
 
 ### Crates examined
@@ -83,7 +80,6 @@ workflow, now F-022) remain open and carried forward.
 | `sonde-pair` | `crates/sonde-pair/src/` | In-source `#[cfg(test)]` |
 | `sonde-pair-ui` | `crates/sonde-pair-ui/src-tauri/src/` | In-source |
 | `sonde-bpf` | `crates/sonde-bpf/src/` | `crates/sonde-bpf/tests/` |
-| `sonde-bundle` | `crates/sonde-bundle/src/` | In-source |
 | `sonde-e2e` | `crates/sonde-e2e/tests/` | Integration tests |
 
 ### Method

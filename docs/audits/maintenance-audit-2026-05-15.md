@@ -16,10 +16,9 @@ Sonde components. It succeeds the 2026-04-08 audit (27 findings, of which
 | Gateway      | 3        | 0        | 0    | 2      | 1   |
 | Modem        | 2        | 0        | 0    | 2      | 0   |
 | Azure Handler| 2        | 0        | 2    | 0      | 0   |
-| Bundle       | 2        | 0        | 0    | 1      | 1   |
 | Hardware     | 1        | 0        | 0    | 1      | 0   |
 | Modem (residual) | 1   | 0        | 0    | 1      | 0   |
-| **Total**    | **11**   | **0**    | **2**| **7**  | **2**|
+| **Total**    | **9**    | **0**    | **2**| **6**  | **1**|
 
 **Previous audit residual status:** 20 of 27 findings resolved.  5 findings
 remain as accepted/deferred (F-001, F-004, F-010, F-022, F-026).  2 findings
@@ -84,10 +83,6 @@ Focus areas: **full audit** — all components, all drift categories (D1–D13).
 | `docs/azure-companion-requirements.md` | Azure companion REQ-IDs |
 | `docs/azure-companion-design.md` | Azure companion design |
 | `docs/azure-companion-validation.md` | Azure companion test cases |
-| `docs/bundle-tool-requirements.md` | Bundle tool REQ-IDs |
-| `docs/bundle-tool-design.md` | Bundle tool design |
-| `docs/bundle-tool-validation.md` | Bundle test cases |
-| `docs/bundle-format.md` | Bundle format spec |
 | `docs/e2e-validation.md` | E2E test cases |
 | `docs/kicad-export-requirements.md` | KiCad export REQ-IDs |
 | `docs/hw-requirements.md` | Hardware REQ-IDs |
@@ -107,7 +102,6 @@ Focus areas: **full audit** — all components, all drift categories (D1–D13).
 | `sonde-admin` | `crates/sonde-admin/src/` | In-source `#[cfg(test)]` |
 | `sonde-azure-handler` | `crates/sonde-azure-handler/src/` | In-source `#[cfg(test)]` |
 | `sonde-azure-companion` | `crates/sonde-azure-companion/src/` | In-source `#[cfg(test)]` |
-| `sonde-bundle` | `crates/sonde-bundle/src/` | In-source `#[cfg(test)]` |
 | `sonde-e2e` | `crates/sonde-e2e/tests/` | Integration tests |
 | `sonde-kicad` | `crates/sonde-kicad/src/` | In-source `#[cfg(test)]` |
 
@@ -269,27 +263,6 @@ Focus areas: **full audit** — all components, all drift categories (D1–D13).
 
 ---
 
-### F-006 — Bundle `reply_timeout_ms` negative rejection untestable
-
-- **Severity:** Medium
-- **Category:** `D12_UNTESTED_ACCEPTANCE_CRITERION`
-- **Location:** `docs/bundle-tool-requirements.md` SB-0202 AC-5 ↔
-  `crates/sonde-bundle/src/manifest.rs:84-97`
-- **Description:** The spec says `reply_timeout_ms: 0 or negative` must be
-  rejected.  The field is `Option<u32>`, so negative values cannot be
-  represented.  Validation only covers `0`.
-- **Evidence:** `manifest.rs` type definition uses `u32`; validation at
-  `validate.rs:309-315` checks `timeout == 0`.
-- **Root Cause:** The spec was written before the type was finalized.
-  `u32` inherently rejects negatives via deserialization.
-- **Impact:** None — negative values are impossible with the current type.
-  The spec is misleading.
-- **Confidence:** High
-- **Remediation:** Update SB-0202 AC-5 to say "0 must be rejected" (remove
-  "or negative" since the type is unsigned).
-
----
-
 ### F-007 — Hardware CI workflow still missing (residual F-022)
 
 - **Severity:** Medium
@@ -297,7 +270,7 @@ Focus areas: **full audit** — all components, all drift categories (D1–D13).
 - **Location:** `docs/kicad-export-requirements.md` KE-1200+ ↔
   `.github/workflows/`
 - **Description:** No CI workflow exists for `sonde-kicad` or hardware
-  artifact generation.  The CI only builds and uploads `sonde-bundle`.
+  artifact generation.
 - **Evidence:** `.github/workflows/ci.yml` — no `sonde-kicad` job.
 - **Root Cause:** Hardware tool is still maturing; CI deferred.
 - **Impact:** Hardware tool regressions not caught in CI.
@@ -328,30 +301,7 @@ Focus areas: **full audit** — all components, all drift categories (D1–D13).
 
 ---
 
-### F-009 — Bundle handler path-safety checks are undocumented
-
-- **Severity:** Low
-- **Category:** `D9_UNDOCUMENTED_BEHAVIOR`
-- **Location:** `crates/sonde-bundle/src/validate.rs:318-365` ↔
-  `docs/bundle-tool-requirements.md` SB-0202
-- **Description:** The implementation rejects `handler.working_dir` path
-  traversal and non-directory paths, and rejects path traversal in
-  `handler.command` and `handler.args`.  The spec (SB-0202) only requires
-  program reference, catch-all uniqueness, non-empty command, and
-  timeout > 0.
-- **Evidence:** `validate.rs:318-365` implements path traversal checks.
-  SB-0202 acceptance criteria do not mention path safety.
-- **Root Cause:** Path traversal rejection was added as a defense-in-depth
-  measure without updating the spec.
-- **Impact:** Low — the behavior is correct and desirable.  Undocumented
-  in the spec.
-- **Confidence:** High
-- **Remediation:** Add path-safety validation to SB-0202 acceptance
-  criteria (document the existing behavior).
-
----
-
-### F-010 — Modem firmware-version assertion too specific
+### F-009 — Modem firmware-version assertion too specific
 
 - **Severity:** Low
 - **Category:** `D13_ASSERTION_MISMATCH`
@@ -441,11 +391,9 @@ Prioritized by severity:
 | 3 | F-003 (Medium) | Add T-1904f decoder context ABI test | Small (test) |
 | 4 | F-004 (Medium) | Update T-1304 spec or add integration test | Small (spec/test) |
 | 5 | F-005 (Medium) | Add timing assertion or document as manual | Small (test/spec) |
-| 6 | F-006 (Medium) | Update SB-0202 AC-5 to remove "negative" | Small (spec) |
-| 7 | F-007 (Medium) | Add `sonde-kicad` CI job when tool stabilizes | Small (CI) |
-| 8 | F-008 (Low) | Add `bpf_trace_printk` tracing test | Small (test) |
-| 9 | F-009 (Low) | Add path-safety to SB-0202 acceptance criteria | Small (spec) |
-| 10 | F-010 (Low) | Parameterize firmware-version assertion | Small (test) |
+| 6 | F-007 (Medium) | Add `sonde-kicad` CI job when tool stabilizes | Small (CI) |
+| 7 | F-008 (Low) | Add `bpf_trace_printk` tracing test | Small (test) |
+| 8 | F-009 (Low) | Parameterize firmware-version assertion | Small (test) |
 
 ---
 

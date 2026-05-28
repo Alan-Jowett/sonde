@@ -18,12 +18,10 @@ deployment use case.  The installer is typically the same person
 who sets up the entire site:
 
 1. Plug in the gateway modem and install `sonde-gateway` software
-2. Deploy the `.sondeapp` bundle to the gateway
-3. Pair the phone with the gateway
-4. Download the node plan (bundle manifest)
-5. Walk through each node: view setup instructions, connect sensors,
+2. Pair the phone with the gateway
+3. Walk through each node: view setup instructions, connect sensors,
    pair, check signal quality, provision
-6. Track progress across all nodes at the site
+4. Track progress across all nodes at the site
 
 ## Workflow Overview
 
@@ -34,7 +32,7 @@ who sets up the entire site:
 └─────────┬───────────┘
           ▼
 ┌─────────────────────┐
-│  2. Node Plan       │  Overview of all nodes from the bundle.
+│  2. Node Plan       │  Overview of all nodes from the deployment plan.
 │     Overview        │  Shows name, sensors, status (pending/done).
 │                     │  Progress: "3 of 8 nodes provisioned."
 └─────────┬───────────┘
@@ -45,7 +43,7 @@ who sets up the entire site:
     │  3. Setup   │  ← Node-specific setup guide with:
     │     Guide   │     - Required sensors and wiring
     │             │     - Pin configuration (SDA/SCL)
-    │             │     - Setup media (photos/videos from bundle)
+    │             │     - Setup media (photos/videos)
     │             │
     │  4. Pair &  │  ← Scan for node BLE service
     │     RSSI    │     Select physical device
@@ -90,7 +88,7 @@ deployment plan.
 **Backend requirements:**
 - Existing `pair_gateway()` Tauri command
   (internally calls `phase1::pair_with_gateway`)
-- **New:** Download bundle manifest from gateway after pairing
+- **New:** Download deployment plan from gateway after pairing
   (requires new protocol message or admin API endpoint)
 
 ### Step 2 — Node Plan Overview
@@ -98,7 +96,7 @@ deployment plan.
 **Purpose:** Show the full deployment checklist and track progress.
 
 **UI elements:**
-- List/cards showing each node from the bundle manifest:
+- List/cards showing each node from the deployment plan:
   - Node name/ID
   - Sensor types (icons + text)
   - Status badge: ⬜ Pending / ✅ Provisioned / ❌ Failed
@@ -107,12 +105,12 @@ deployment plan.
 - Dropdown/select for quick navigation
 - "All Done" button (enabled when all nodes provisioned)
 
-**Data source:** Bundle manifest `nodes[]` array (current schema):
+**Data source:** Deployment plan `nodes[]` array (schema TBD):
 - `name` — node identifier
 - `hardware.sensors[]` — list of sensor types
 - `hardware.pins` — I²C pin configuration (`i2c0_sda`, `i2c0_scl`)
-- `setup_media[]` — **proposed extension** (not in current schema):
-  optional photos/videos (URLs or embedded in bundle ZIP)
+- `setup_media[]` — **proposed extension**:
+  optional photos/videos (URLs or hosted via SPA)
 
 ### Step 3 — Node Setup Guide
 
@@ -181,7 +179,7 @@ quality before committing to provisioning.
 **Backend requirements:**
 - Existing `provision_node()` Tauri command for Phase 2 provisioning
 - **Extension needed:** `provision_node()` must be extended to accept
-  and forward `PinConfig` from the bundle manifest (the current command
+  and forward `PinConfig` from the deployment plan (the current command
   does not support passing pin config)
 
 ### Step 6 — All Done
@@ -229,58 +227,60 @@ Most backend commands already exist:
 - `get_pairing_status()` — status check
 
 **New commands needed:**
-- `get_node_plan()` — download bundle manifest from gateway
+- `get_node_plan()` — download deployment plan from gateway
   (requires gateway admin API extension or new BLE message)
-- `get_rssi_history()` — return recent RSSI samples for a device
-  (may be derivable from existing scan results)
 
-### Bundle Manifest Integration
+### Deployment Plan Integration
 
-The bundle manifest (`.sondeapp`) already contains node definitions
-with sensor types and pin configurations. The gateway needs to
-expose this data to the pairing tool — either via:
+The pairing tool needs a node deployment plan describing the sensors
+and pin configurations for each node at a site.  The data source for
+this plan is TBD — it may be delivered via the SPA and the Azure
+companion, or via a gateway admin API endpoint.
+
+**Delivery options:**
 
 1. **Admin API (gRPC):** New `GetDeploymentPlan` RPC that returns
-   the active bundle manifest. The pairing tool would need network
+   the active deployment plan. The pairing tool would need network
    access to the gateway's admin socket (not always available).
 
 2. **BLE extension:** New message type in the Gateway Pairing Service
-   that sends the bundle manifest after `PHONE_REGISTERED`. This
+   that sends the deployment plan after `PHONE_REGISTERED`. This
    keeps everything within the existing BLE connection.
 
-3. **Local bundle file:** The installer loads the `.sondeapp` file
-   directly on the phone (e.g., via file picker or QR code URL).
-   Simplest approach — no protocol changes needed.
+3. **SPA / Azure companion:** The deployment plan is managed via
+   the web UI and stored in Azure.  The pairing tool fetches it
+   from the cloud.
 
-**Recommendation:** Start with option 3 (local bundle file) for the
-initial implementation. Options 1 and 2 can be added later for a
-more seamless workflow.
+**Recommendation:** Defer deployment plan integration until the SPA
+and Azure companion are further along.  Start with manual node entry
+(Phase A) and add plan integration later.
 
 ## Phased Implementation
 
-### Phase A — Page routing and basic wizard (no bundle integration)
+### Phase A — Page routing and basic wizard (no deployment plan integration)
 - Implement multi-page navigation with stepper bar; a simple state machine is sufficient for the 7-page flow
 - Move existing functionality into separate pages
 - Add RSSI display on node selection page
-- No bundle manifest — manual node ID entry (current behavior)
+- No deployment plan — manual node ID entry (current behavior)
 
-### Phase B — Bundle manifest integration
-- Add `.sondeapp` file picker
-- Parse bundle manifest for node list, sensors, pins
+### Phase B — Deployment plan integration
+- Add deployment plan data source (via SPA/Azure companion or admin API)
+- Parse plan for node list, sensors, pins
 - Show setup guides and progress tracking
 
 ### Phase C — Setup media support
 - Photo/video viewer in setup guide step
-- Media sourced from bundle or external URLs
+- Media sourced from cloud or external URLs
 
 ### Phase D — Gateway-side plan download
-- Implement BLE or admin API manifest transfer
+- Implement BLE or admin API plan transfer
 - Automatic plan download after gateway pairing
 
 ## Open Questions
 
-1. **Bundle file format for media:** Should setup photos/videos be
-   embedded in the `.sondeapp` ZIP, or referenced by URL?
+1. **Deployment plan format and data source:** How should node
+   deployment plans be delivered to the pairing tool?  Options include
+   the SPA/Azure companion, gateway admin API, or BLE message.
 
 2. **Offline capability:** Should the app work fully offline (all
    media embedded), or is network access acceptable at the site?

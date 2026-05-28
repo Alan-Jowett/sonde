@@ -4,7 +4,7 @@
 
 > **Issue:** #962
 > **Status:** Draft — Phase 2 specification changes
-> **Supersedes:** Escrow sections of evolve-887-specification.md (§§20.1–20.12,
+> **Supersedes:** Escrow sections of the former evolve-887 specification (§§20.1–20.12,
 > §§2.2–2.4, §§3.1, §§4.1, §§5.1, §§6.1, §§7 T-2000–T-2009, §§8).
 > Also supersedes: `gateway-companion-api.md` §3.2 and §3.3 ACTUAL_STATE /
 > DESIRED_STATE `entity_id` rules (empty string for gateway);
@@ -1158,7 +1158,7 @@ state management.
 
 ## 10  Removed Artifacts Summary
 
-The following artifacts from evolve-887-specification.md are superseded:
+The following artifacts from the former evolve-887 specification (deleted) are superseded:
 
 | Artifact | Replacement |
 |----------|-------------|

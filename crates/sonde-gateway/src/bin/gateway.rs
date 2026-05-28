@@ -945,6 +945,35 @@ async fn run_gateway(
         }
     }
 
+    // 2a. Resume pending rotation if exists (§23.11 step 2a).
+    let pending_rotation_notification = {
+        let identity = storage
+            .load_gateway_identity()
+            .await?
+            .ok_or("gateway identity missing after init")?;
+        sonde_gateway::RotationEngine::resume_pending_rotation(&storage, &identity)
+            .await
+            .map_err(|e| format!("resume_pending_rotation: {e}"))?
+    };
+    if pending_rotation_notification.is_some() {
+        info!("pending rotation resumed on startup — will re-emit ACTUAL_STATE after connector starts");
+    }
+
+    // 2c. Load/generate master_key_id and master_key_epoch (§23.11 step 2c).
+    let (master_key_id, master_key_epoch) = storage.init_master_key_id().await?;
+    info!(
+        master_key_id = %hex::encode(master_key_id),
+        master_key_epoch,
+        "master key identification initialized"
+    );
+
+    // 2d. Load/generate rotation_code (§23.11 step 2d).
+    let rotation_code = storage.init_rotation_code().await?;
+    info!(
+        rotation_code_len = rotation_code.len(),
+        "rotation code initialized"
+    );
+
     // 3. Session manager
     let session_manager = Arc::new(SessionManager::new(Duration::from_secs(
         cli.session_timeout,
@@ -1057,12 +1086,34 @@ async fn run_gateway(
         });
     }
 
-    let connector_service = ConnectorService::new(
+    // ── Rotation engine + DESIRED_STATE wiring (GW-2003, GW-2004, §23.11) ──
+
+    // Channel: connector → rotation engine (DESIRED_STATE forwarding).
+    let (desired_state_tx, desired_state_rx) =
+        tokio::sync::mpsc::unbounded_channel::<sonde_gateway::connector::GatewayDesiredState>();
+
+    // Channel: admin gRPC → rotation engine (SubmitRotation RPC).
+    let (rotation_grpc_tx, rotation_grpc_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    // Channel: rotation engine → re-emission task (rotation complete).
+    let (rotation_complete_tx, mut rotation_complete_rx) = tokio::sync::mpsc::unbounded_channel::<
+        sonde_gateway::rotation_engine::RotationCompleteNotification,
+    >();
+
+    // Channel: rotation engine → re-emission task (salt/KDF adoption).
+    let (state_changed_tx, mut state_changed_rx) = tokio::sync::mpsc::unbounded_channel::<
+        sonde_gateway::rotation_engine::GatewayStateChanged,
+    >();
+
+    // Wire DESIRED_STATE forwarding on the connector service.
+    let mut connector_service = ConnectorService::new(
         storage.clone(),
         pending_commands.clone(),
         gateway.connector_event_hub(),
         cli.connector_max_message_size,
     );
+    connector_service.set_gateway_desired_state_tx(desired_state_tx);
+
     let connector_socket = cli.connector_socket.clone();
     let mut connector_handle = tokio::spawn(async move {
         if let Err(e) =
@@ -1071,6 +1122,125 @@ async fn run_gateway(
             error!("connector server error: {}", e);
         }
     });
+
+    // Construct and spawn the rotation engine (§23.11).
+    {
+        let identity = storage
+            .load_gateway_identity()
+            .await?
+            .ok_or("gateway identity missing for rotation engine")?;
+        let engine = sonde_gateway::RotationEngine::new(
+            Arc::clone(&storage),
+            identity,
+            gateway.connector_event_hub(),
+            rotation_grpc_rx,
+            desired_state_rx,
+        )
+        .with_rotation_complete_tx(rotation_complete_tx)
+        .with_state_changed_tx(state_changed_tx);
+
+        tokio::spawn(engine.run());
+        info!("rotation engine started");
+    }
+
+    // 9a. Emit initial gateway ACTUAL_STATE (§23.11 step 9a, GW-2003).
+    {
+        let identity = storage
+            .load_gateway_identity()
+            .await?
+            .ok_or("gateway identity missing for ACTUAL_STATE")?;
+
+        emit_gateway_actual_state_from_storage(
+            &gateway.connector_event_hub(),
+            &storage,
+            &identity,
+            &gateway,
+        )
+        .await?;
+        info!("initial gateway ACTUAL_STATE emitted");
+
+        // If a pending rotation was resumed on startup, re-emit ACTUAL_STATE
+        // with the updated master_key_id / epoch (GW-2003 AC-5).
+        if pending_rotation_notification.is_some() {
+            emit_gateway_actual_state_from_storage(
+                &gateway.connector_event_hub(),
+                &storage,
+                &identity,
+                &gateway,
+            )
+            .await?;
+            info!("re-emitted ACTUAL_STATE after resumed rotation completion");
+        }
+    }
+
+    // Clone rotation_grpc_tx for admin service wiring inside the reconnect loop.
+    let rotation_grpc_tx_for_admin = rotation_grpc_tx;
+
+    // Spawn ACTUAL_STATE re-emission task (§23.14).
+    {
+        let reemit_storage = Arc::clone(&storage);
+        let reemit_event_hub = gateway.connector_event_hub();
+        let reemit_gateway = Arc::clone(&gateway);
+        let missing_hints_notify = gateway.missing_hints_notify();
+
+        tokio::spawn(async move {
+            /// Debounce interval for missing key hint-triggered re-emission.
+            const HINT_DEBOUNCE: Duration = Duration::from_secs(60);
+
+            let mut hint_debounce: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(_notification) = rotation_complete_rx.recv() => {
+                        info!("rotation complete — re-emitting gateway ACTUAL_STATE");
+                        if let Err(e) = reemit_gateway_actual_state(
+                            &reemit_event_hub,
+                            &reemit_storage,
+                            &reemit_gateway,
+                        ).await {
+                            error!("failed to re-emit ACTUAL_STATE on rotation complete: {e}");
+                        }
+                    }
+                    Some(_changed) = state_changed_rx.recv() => {
+                        info!("gateway state changed — re-emitting gateway ACTUAL_STATE");
+                        if let Err(e) = reemit_gateway_actual_state(
+                            &reemit_event_hub,
+                            &reemit_storage,
+                            &reemit_gateway,
+                        ).await {
+                            error!("failed to re-emit ACTUAL_STATE on state change: {e}");
+                        }
+                    }
+                    _ = missing_hints_notify.notified() => {
+                        // Start or reset the debounce timer.
+                        hint_debounce = Some(Box::pin(tokio::time::sleep(HINT_DEBOUNCE)));
+                    }
+                    _ = async {
+                        match hint_debounce.as_mut() {
+                            Some(sleep) => sleep.as_mut().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        hint_debounce = None;
+                        info!("missing hint debounce elapsed — re-emitting gateway ACTUAL_STATE");
+                        if let Err(e) = reemit_gateway_actual_state(
+                            &reemit_event_hub,
+                            &reemit_storage,
+                            &reemit_gateway,
+                        ).await {
+                            error!("failed to re-emit ACTUAL_STATE on missing hints: {e}");
+                        }
+                    }
+                    else => {
+                        info!("ACTUAL_STATE re-emission task: all channels closed, shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+        info!("ACTUAL_STATE re-emission task spawned");
+    }
 
     // 6–9. Modem transport + processing loops with reconnection (GW-1103).
     //
@@ -1191,7 +1361,8 @@ async fn run_gateway(
             Arc::clone(&status_page_scroll_task),
         )
         .with_handler_configs(handler_configs_from_db.clone())
-        .with_handler_router(handler_router.clone());
+        .with_handler_router(handler_router.clone())
+        .with_rotation_tx(rotation_grpc_tx_for_admin.clone());
         let admin_socket = cli.admin_socket.clone();
 
         let mut grpc_handle = tokio::spawn(async move {
@@ -1669,6 +1840,130 @@ async fn run_gateway(
 
     info!("gateway stopped");
     Ok(())
+}
+
+// ── ACTUAL_STATE emission helpers (GW-2003, §23.14) ──────────────────────────
+
+/// Emit a full gateway ACTUAL_STATE by reading all required fields from storage.
+///
+/// Used for the initial startup emission (§23.11 step 9a) where the identity
+/// is already loaded.
+async fn emit_gateway_actual_state_from_storage(
+    event_hub: &sonde_gateway::ConnectorEventHub,
+    storage: &SqliteStorage,
+    identity: &sonde_gateway::GatewayIdentity,
+    gateway: &Gateway,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let entity_id: String = identity
+        .gateway_id()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    let (mk_id, mk_epoch) = storage.init_master_key_id().await?;
+
+    let (_, x25519_public) = identity
+        .to_x25519()
+        .map_err(|e| format!("X25519 conversion failed: {e}"))?;
+
+    let sha = sonde_gateway::RustCryptoSha256;
+    let fp = sonde_protocol::fingerprint::compute_fingerprint(x25519_public.as_bytes(), &sha);
+    let fingerprint_words: [String; 6] = fp.map(|w| w.to_string());
+
+    let channel: u32 = match storage.get_config("espnow_channel").await? {
+        Some(s) => s.parse().unwrap_or(1),
+        None => 1,
+    };
+
+    let salt: Option<Vec<u8>> = match storage.get_config("kdf_salt").await? {
+        Some(s) => {
+            let bytes = hex::decode(&s).map_err(|e| format!("invalid kdf_salt hex: {e}"))?;
+            if bytes.len() == 16 {
+                Some(bytes)
+            } else {
+                warn!(
+                    expected = 16,
+                    actual = bytes.len(),
+                    "kdf_salt in storage has invalid length — treating as absent"
+                );
+                None
+            }
+        }
+        None => None,
+    };
+
+    let kdf_params: Option<sonde_gateway::connector::KdfParams> =
+        match storage.get_config("kdf_params_json").await? {
+            Some(json) => {
+                #[derive(serde::Deserialize)]
+                struct Kdf {
+                    m_cost: u32,
+                    t_cost: u32,
+                    p_cost: u32,
+                    kdf_version: u32,
+                }
+                match serde_json::from_str::<Kdf>(&json) {
+                    Ok(p) => Some(sonde_gateway::connector::KdfParams {
+                        m_cost: p.m_cost,
+                        t_cost: p.t_cost,
+                        p_cost: p.p_cost,
+                        kdf_version: p.kdf_version,
+                    }),
+                    Err(e) => {
+                        warn!("invalid kdf_params_json in storage: {e}");
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
+    let missing_key_hints = gateway.drain_missing_hints().await;
+
+    let rotation_in_progress = storage
+        .get_config("pending_rotation_phase")
+        .await?
+        .is_some();
+
+    let gateway_version = env!("CARGO_PKG_VERSION").to_string();
+    let gateway_commit = option_env!("SONDE_GIT_COMMIT")
+        .unwrap_or("unknown")
+        .to_string();
+
+    event_hub.emit_gateway_actual_state(
+        entity_id,
+        channel,
+        mk_id,
+        mk_epoch,
+        *x25519_public.as_bytes(),
+        fingerprint_words,
+        missing_key_hints,
+        salt,
+        kdf_params,
+        gateway_version,
+        gateway_commit,
+        None, // modem_firmware_version — not yet available at this point
+        None, // modem_firmware_commit
+        rotation_in_progress,
+    );
+
+    Ok(())
+}
+
+/// Re-emit gateway ACTUAL_STATE from the re-emission task context.
+///
+/// Loads identity from storage and delegates to [`emit_gateway_actual_state_from_storage`].
+async fn reemit_gateway_actual_state(
+    event_hub: &sonde_gateway::ConnectorEventHub,
+    storage: &SqliteStorage,
+    gateway: &Gateway,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let identity = storage
+        .load_gateway_identity()
+        .await?
+        .ok_or("gateway identity missing for ACTUAL_STATE re-emission")?;
+
+    emit_gateway_actual_state_from_storage(event_hub, storage, &identity, gateway).await
 }
 
 // ── Windows NT service implementation ────────────────────────────────────────

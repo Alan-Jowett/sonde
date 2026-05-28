@@ -2032,16 +2032,41 @@ shared in `sonde-protocol`.
 
 Insert after step 2 (initialize storage):
 
-> 2a. Check `pending_rotation` — resume rotation if exists.
-> 2b. Load `GatewayIdentity`, derive X25519 public key.
-> 2c. Load/generate `master_key_id` and `master_key_epoch`.
-> 2d. Load/generate `rotation_code`.
+> 2a. Check `pending_rotation` — call
+>     `RotationEngine::resume_pending_rotation(&storage, &identity)`.
+>     If it returns `Some(notification)`, cache the notification for
+>     gateway ACTUAL_STATE re-emission after the connector starts.
+> 2b. Load `GatewayIdentity`, derive X25519 public key (already done
+>     by the existing identity-loading block).
+> 2c. Load/generate `master_key_id` and `master_key_epoch` via
+>     `storage.init_master_key_id()`.
+> 2d. Load/generate `rotation_code` via `storage.init_rotation_code()`.
+
+Insert between connector creation and modem transport setup:
+
+> Wire rotation and DESIRED_STATE channels:
+>
+> 1. Create `mpsc::unbounded_channel::<GatewayDesiredState>()` — pass
+>    sender to `connector_service.set_gateway_desired_state_tx(tx)`,
+>    pass receiver to `RotationEngine::new()`.
+> 2. Create `mpsc::unbounded_channel()` for gRPC rotation submissions —
+>    pass sender to `AdminService::with_rotation_tx(tx)`, pass receiver
+>    to `RotationEngine::new()`.
+> 3. Create `mpsc::unbounded_channel::<RotationCompleteNotification>()`
+>    and `mpsc::unbounded_channel::<GatewayStateChanged>()` — subscribe
+>    via `RotationEngine::with_rotation_complete_tx()` and
+>    `with_state_changed_tx()`.
+> 4. Spawn `RotationEngine::run()` as a tokio task.
+> 5. Spawn the ACTUAL_STATE re-emission task (§23.14).
 
 Insert after step 9 (start connector):
 
-> 9a. Emit gateway ACTUAL_STATE.
-> 9b. Compute BIP-39 fingerprint.
+> 9a. Emit gateway ACTUAL_STATE via
+>     `connector_event_hub.emit_gateway_actual_state()` with all
+>     current state fields.
+> 9b. Compute BIP-39 fingerprint. *(deferred to follow-up issue)*
 > 9c. Register fingerprint + rotation code as modem display pages.
+>     *(deferred to follow-up issue)*
 
 ### 23.12  gRPC rotation API (GW-2012)
 
@@ -2083,3 +2108,41 @@ for salt and KDF parameters from gateway DESIRED_STATE, per evolve-962 §2.5.
 6. **Rotation-path update:** Salt and KDF params can also be updated via
    rotation payload delivery — already handled by `commit_rotation()` in
    §23.7.
+
+### 23.14  ACTUAL_STATE re-emission task (GW-2003)
+
+The gateway binary spawns a single tokio task that listens for state-change
+events and re-emits a full gateway ACTUAL_STATE on each trigger. This task
+is the single owner of re-emission logic; the initial startup emission in
+step 9a is inline.
+
+**Trigger sources (via `tokio::select!`):**
+
+1. `rotation_complete_rx` — receives `RotationCompleteNotification` from
+   `RotationEngine` after a successful rotation. Re-emit immediately.
+2. `state_changed_rx` — receives `GatewayStateChanged` from
+   `RotationEngine` after salt/KDF-params adoption. Re-emit immediately.
+3. `missing_hints_notify` — a `tokio::sync::Notify` signalled by the
+   `Gateway` engine when `MissingKeyHintTracker::report()` accepts a new
+   hint. On notification, start a 60-second debounce timer. If the timer
+   completes without interruption, drain hints and re-emit. Additional
+   notifications during the debounce window reset the timer to coalesce
+   concurrent hint arrivals.
+
+**Re-emission procedure:**
+
+On each trigger, the task:
+1. Loads the current gateway identity from storage.
+2. Derives the X25519 public key and BIP-39 fingerprint.
+3. Reads `master_key_id`, `master_key_epoch`, `espnow_channel`,
+   `kdf_salt`, `kdf_params_json` from `gateway_config`.
+4. Drains `missing_key_hints` from the gateway engine's tracker.
+5. Reads `pending_rotation_phase` to determine `rotation_in_progress`.
+6. Calls `emit_gateway_actual_state()` on the connector event hub.
+
+**Hint notification mechanism:**
+
+`Gateway` exposes `pub fn missing_hints_notify(&self) -> Arc<Notify>`.
+The `MissingKeyHintTracker` integration in `process_frame` calls
+`notify.notify_one()` when `report()` returns `true` (hint accepted).
+The re-emission task awaits `notify.notified()`.

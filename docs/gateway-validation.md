@@ -4473,6 +4473,67 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-2011  Missing key hint triggers debounced ACTUAL_STATE re-emission
+
+**Traces to:** GW-2003 (AC-6)
+
+**Steps:**
+1. Start gateway with identity, master key, and a connector consumer.
+2. Verify initial gateway ACTUAL_STATE received (empty `missing_key_hints`).
+3. Send a frame with an unknown `key_hint` (not matching any registered node).
+4. Verify no immediate ACTUAL_STATE re-emission within 30 seconds.
+5. Wait 60 seconds from the unknown-hint frame.
+6. Verify gateway ACTUAL_STATE re-emitted with `missing_key_hints` containing
+   the unknown hint value.
+7. Send another frame with a different unknown `key_hint` within 10 seconds.
+8. Wait 60 seconds from the second frame.
+9. Verify ACTUAL_STATE re-emitted with both hints (if first not yet drained)
+   or just the new one.
+
+**Expected:**
+1. ACTUAL_STATE re-emission is debounced: no emission during the 60-second
+   window, then a single emission containing all accumulated hints.
+
+---
+
+### T-2012  Rotation complete triggers ACTUAL_STATE re-emission
+
+**Traces to:** GW-2003 (AC-5)
+
+**Steps:**
+1. Start gateway with identity, master key, and a connector consumer.
+2. Verify initial gateway ACTUAL_STATE received.
+3. Record the initial `master_key_id` and `master_key_epoch`.
+4. Submit a valid rotation payload (via gRPC or DESIRED_STATE).
+5. Verify gateway ACTUAL_STATE re-emitted after rotation completes.
+6. Verify `master_key_id` and `master_key_epoch` in the new ACTUAL_STATE
+   differ from the initial values.
+
+**Expected:**
+1. Gateway ACTUAL_STATE re-emitted with updated key material after rotation.
+
+---
+
+### T-2013  Salt/KDF adoption triggers ACTUAL_STATE re-emission
+
+**Traces to:** GW-2003 (AC-7)
+
+**Steps:**
+1. Start gateway with no local salt or KDF params.
+2. Connect a connector consumer and verify initial ACTUAL_STATE
+   (salt = null, kdf_params = null).
+3. Deliver a gateway DESIRED_STATE with `salt` (16 bytes) and `kdf_params`.
+4. Verify gateway ACTUAL_STATE re-emitted with the adopted `salt` and
+   `kdf_params` values.
+5. Deliver another DESIRED_STATE with different salt.
+6. Verify ACTUAL_STATE is NOT re-emitted (local salt is immutable).
+
+**Expected:**
+1. First adoption triggers ACTUAL_STATE re-emission with new values.
+2. Subsequent DESIRED_STATE with different salt does not trigger re-emission.
+
+---
+
 | GW-1306 | T-1306a, T-1306b, T-1306c, T-1306d |
 | GW-1307 | T-1307a, T-1307b, T-1307c, T-1307d, T-1307e, T-1307f, T-1307g, T-1307h, T-1307i |
 | GW-1308 | T-1308 |
@@ -4508,7 +4569,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-2000 | T-2001 |
 | GW-2001 | T-2000 |
 | GW-2002 | T-2003 |
-| GW-2003 | T-2001 |
+| GW-2003 | T-2001, T-2011, T-2012, T-2013 |
 | GW-2004 | T-2002 |
 | GW-2005 | T-2001, T-2006c |
 | GW-2006 | T-2004, T-2004a |

@@ -74,6 +74,8 @@ function loadActiveEnvironment() {
   return env;
 }
 
+const STORAGE_SCOPES = ['https://storage.azure.com/.default'];
+
 // 1b. Environment field validation helpers (shared by manual form and import)
 const ENV_GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ENV_STORAGE_ACCOUNT_PATTERN = /^[a-z0-9]{3,24}$/;

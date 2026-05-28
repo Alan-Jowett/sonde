@@ -2137,7 +2137,7 @@ On each trigger, the task:
 3. Reads `master_key_id`, `master_key_epoch`, `espnow_channel`,
    `kdf_salt`, `kdf_params_json` from `gateway_config`.
 4. Drains `missing_key_hints` from the gateway engine's tracker.
-5. Reads `pending_rotation_phase` to determine `rotation_in_progress`.
+5. Checks `storage.read_pending_rotation()` to determine `rotation_in_progress`.
 6. Calls `emit_gateway_actual_state()` on the connector event hub.
 
 **Hint notification mechanism:**

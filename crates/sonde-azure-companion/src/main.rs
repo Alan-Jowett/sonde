@@ -32,6 +32,7 @@ use time::Duration as TimeDuration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint, Uri};
+use tracing::{debug, error, info, trace, warn};
 use x509_cert::der::{Decode, Encode};
 use x509_cert::Certificate;
 
@@ -463,6 +464,7 @@ async fn connect_admin(pipe_name: &str) -> Result<GatewayAdminClient<Channel>, C
 
 #[cfg(unix)]
 async fn connect_connector(socket_path: &str) -> Result<Box<dyn AsyncIo>, CompanionError> {
+    info!(socket = %socket_path, "connecting to gateway connector (unix socket)");
     Ok(Box::new(
         tokio::net::UnixStream::connect(socket_path).await?,
     ))
@@ -472,6 +474,7 @@ async fn connect_connector(socket_path: &str) -> Result<Box<dyn AsyncIo>, Compan
 async fn connect_connector(pipe_name: &str) -> Result<Box<dyn AsyncIo>, CompanionError> {
     use tokio::net::windows::named_pipe::ClientOptions;
 
+    info!(pipe = %pipe_name, "connecting to gateway connector (named pipe)");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         match ClientOptions::new().open(pipe_name) {
@@ -1148,13 +1151,26 @@ fn check_runtime_ready(
     state_dir: &Path,
 ) -> Result<(RuntimeConfig, RuntimeCredentialState), CompanionError> {
     let runtime_config = load_runtime_config(state_dir)?;
+    info!(
+        queue_endpoint = %runtime_config.queue_endpoint,
+        upstream_queue = %runtime_config.upstream_queue,
+        downstream_queue = %runtime_config.downstream_queue,
+        "loaded queue configuration"
+    );
     let runtime_state = load_runtime_credential_state(state_dir)?;
+    info!(
+        tenant_id = %runtime_state.tenant_id,
+        client_id = %runtime_state.client_id,
+        certificate_path = %runtime_state.certificate_path.display(),
+        "loaded service principal credentials"
+    );
     let _ = load_certificate_thumbprint(&runtime_state.certificate_path)?;
     let _ = load_signing_key(&runtime_state.private_key_path)?;
     validate_certificate_matches_private_key(
         &runtime_state.certificate_path,
         &runtime_state.private_key_path,
     )?;
+    info!("runtime readiness check passed");
     Ok((runtime_config, runtime_state))
 }
 
@@ -1613,7 +1629,10 @@ async fn get_storage_bearer_token(
     let token = credential
         .get_token(&[STORAGE_TOKEN_SCOPE], None)
         .await
-        .map_err(|e| CompanionError::Config(format!("get Storage Queue token failed: {e}")))?;
+        .map_err(|e| {
+            warn!(error = %e, "failed to acquire storage bearer token");
+            CompanionError::Config(format!("get Storage Queue token failed: {e}"))
+        })?;
     Ok(token.token.secret().to_string())
 }
 
@@ -1624,6 +1643,11 @@ fn storage_queue_date_header() -> String {
 #[tonic::async_trait]
 impl UpstreamPublisher for StorageQueuePublisher {
     async fn publish(&mut self, payload: Vec<u8>) -> Result<(), CompanionError> {
+        debug!(
+            queue = %self.queue_name,
+            payload_len = payload.len(),
+            "publishing upstream message to queue"
+        );
         let token = get_storage_bearer_token(&*self.credential).await?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
         let body = format!("<QueueMessage><MessageText>{encoded}</MessageText></QueueMessage>");
@@ -1647,6 +1671,11 @@ impl UpstreamPublisher for StorageQueuePublisher {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<failed to read response>".to_string());
+            warn!(
+                queue = %self.queue_name,
+                %status,
+                "upstream queue POST failed"
+            );
             return Err(CompanionError::Config(format!(
                 "Storage Queue POST message returned {status}: {body}"
             )));
@@ -1701,6 +1730,7 @@ impl DownstreamConsumer for StorageQueueConsumer {
                     .to_string(),
             ));
         }
+        trace!(queue = %self.queue_name, "polling downstream queue");
         let token = get_storage_bearer_token(&*self.credential).await?;
         let url = format!(
             "{}/{}/messages?numofmessages=1&visibilitytimeout={STORAGE_QUEUE_VISIBILITY_TIMEOUT_SECS}",
@@ -1723,6 +1753,12 @@ impl DownstreamConsumer for StorageQueueConsumer {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<failed to read response>".to_string());
+            warn!(
+                queue = %self.queue_name,
+                %status,
+                response_body = %body,
+                "downstream queue GET failed"
+            );
             return Err(CompanionError::Config(format!(
                 "Storage Queue GET messages returned {status}: {body}"
             )));
@@ -1733,6 +1769,12 @@ impl DownstreamConsumer for StorageQueueConsumer {
 
         let message = parse_queue_message_xml(&xml)?;
         if let Some(message) = message {
+            debug!(
+                queue = %self.queue_name,
+                message_id = %message.message_id,
+                body_len = message.body.len(),
+                "received downstream queue message"
+            );
             let payload = downstream_body_to_connector_payload(&message.body);
             match payload {
                 Ok(payload) => {
@@ -1740,13 +1782,20 @@ impl DownstreamConsumer for StorageQueueConsumer {
                     Ok(Some(payload))
                 }
                 Err(err) => {
-                    // Abandon the message on decode error by making it visible again
+                    warn!(
+                        queue = %self.queue_name,
+                        message_id = %message.message_id,
+                        error = %err,
+                        "downstream message body decode failed — abandoning"
+                    );
                     let abandon_result = self
                         .abandon_message_direct(&message.message_id, &message.pop_receipt)
                         .await;
                     if let Err(abandon_err) = abandon_result {
-                        eprintln!(
-                            "failed to abandon downstream Storage Queue message after body decode error: {abandon_err}"
+                        warn!(
+                            queue = %self.queue_name,
+                            error = %abandon_err,
+                            "failed to abandon downstream message after body decode error"
                         );
                     }
                     Err(err)
@@ -1764,6 +1813,11 @@ impl DownstreamConsumer for StorageQueueConsumer {
         let inflight = self.inflight.as_ref().ok_or_else(|| {
             CompanionError::Config("no inflight downstream message to complete".to_string())
         })?;
+        debug!(
+            queue = %self.queue_name,
+            message_id = %inflight.message_id,
+            "completing downstream message"
+        );
         let token = get_storage_bearer_token(&*self.credential).await?;
         let pop_receipt = urlencoding_encode(&inflight.pop_receipt);
         let url = format!(
@@ -1787,6 +1841,11 @@ impl DownstreamConsumer for StorageQueueConsumer {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<failed to read response>".to_string());
+            warn!(
+                queue = %self.queue_name,
+                %status,
+                "downstream message DELETE failed"
+            );
             return Err(CompanionError::Config(format!(
                 "Storage Queue DELETE message returned {status}: {body}"
             )));
@@ -1962,10 +2021,17 @@ where
 {
     match read_framed(reader).await? {
         Some(payload) => {
+            debug!(
+                payload_len = payload.len(),
+                "forwarding upstream message to queue"
+            );
             publisher.publish(payload).await?;
             Ok(true)
         }
-        None => Ok(false),
+        None => {
+            info!("connector stream closed (upstream EOF)");
+            Ok(false)
+        }
     }
 }
 
@@ -1978,18 +2044,22 @@ where
         return Ok(());
     };
 
+    debug!(
+        payload_len = payload.len(),
+        "forwarding downstream message to connector"
+    );
     if let Err(err) = write_framed(writer, &payload).await {
+        warn!(error = %err, "connector write failed — abandoning downstream message");
         if let Err(abandon_err) = consumer.abandon().await {
-            eprintln!("failed to abandon downstream queue message after connector write error: {abandon_err}");
+            warn!(error = %abandon_err, "failed to abandon downstream message after connector write error");
         }
         return Err(err);
     }
 
     if let Err(err) = consumer.complete().await {
+        warn!(error = %err, "downstream message completion failed");
         if let Err(abandon_err) = consumer.abandon().await {
-            eprintln!(
-                "failed to abandon downstream queue message after completion error: {abandon_err}"
-            );
+            warn!(error = %abandon_err, "failed to abandon downstream message after completion error");
         }
         return Err(err);
     }
@@ -2029,22 +2099,25 @@ where
     loop {
         tokio::select! {
             result = &mut upstream => {
+                info!("upstream future completed — bridge shutting down");
                 if let Err(abandon_err) = consumer.abandon_inflight().await {
-                    eprintln!("failed to abandon downstream queue message during bridge shutdown: {abandon_err}");
+                    warn!(error = %abandon_err, "failed to abandon inflight downstream message during bridge shutdown");
                 }
                 return result;
             }
             result = pump_downstream_once(&mut writer, &mut consumer) => {
                 if let Err(err) = result {
+                    error!(error = %err, "downstream pump failed — bridge shutting down");
                     if let Err(abandon_err) = consumer.abandon_inflight().await {
-                        eprintln!("failed to abandon downstream queue message after downstream error: {abandon_err}");
+                        warn!(error = %abandon_err, "failed to abandon inflight downstream message after downstream error");
                     }
                     return Err(err);
                 }
             }
             _ = &mut shutdown => {
+                info!("shutdown signal received — bridge stopping");
                 if let Err(abandon_err) = consumer.abandon_inflight().await {
-                    eprintln!("failed to abandon downstream queue message during service shutdown: {abandon_err}");
+                    warn!(error = %abandon_err, "failed to abandon inflight downstream message during service shutdown");
                 }
                 return Ok(());
             }
@@ -2102,6 +2175,13 @@ where
 {
     let (publisher, consumer) = factory.connect(runtime_config, runtime_state).await?;
     let stream = connect_connector(connector_socket).await?;
+    info!(
+        connector = %connector_socket,
+        queue_endpoint = %runtime_config.queue_endpoint,
+        downstream_queue = %runtime_config.downstream_queue,
+        upstream_queue = %runtime_config.upstream_queue,
+        "bridge connected — entering message loop"
+    );
     eprintln!(
         "connected to gateway connector at {connector_socket} and Azure Storage Queue endpoint {}",
         runtime_config.queue_endpoint
@@ -2760,6 +2840,8 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
             return;
         }
     };
+
+    init_tracing_service_log(&cli.state_dir);
     if let Ok(mut guard) = status_handle_slot.lock() {
         *guard = Some(status_handle);
     }
@@ -2822,6 +2904,7 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
     )) {
         Ok(()) => 0,
         Err(err) => {
+            error!(error = %err, "bridge runtime failed");
             eprintln!("{err}");
             log_service_diagnostic(&cli.state_dir, &err.to_string());
             1
@@ -2836,10 +2919,50 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
     );
 }
 
+/// Initialize tracing subscriber for stderr output (CLI mode).
+fn init_tracing_stderr() {
+    use tracing_subscriber::EnvFilter;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .try_init();
+}
+
+/// Initialize tracing subscriber that writes to a log file (Windows service mode).
+#[cfg(windows)]
+fn init_tracing_service_log(state_dir: &Path) {
+    use tracing_subscriber::EnvFilter;
+    let _ = std::fs::create_dir_all(state_dir);
+    let log_path = state_dir.join("companion.log");
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(file) => {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+                )
+                .with_writer(std::sync::Mutex::new(file))
+                .with_ansi(false)
+                .try_init();
+        }
+        Err(err) => {
+            eprintln!(
+                "{SERVICE_NAME}: failed to open log file {}: {err}",
+                log_path.display()
+            );
+        }
+    }
+}
+
 async fn run_cli() -> Result<(), CompanionError> {
     let cli = Cli::parse();
     match cli.command.clone().unwrap_or(Command::Run) {
-        Command::Run => run(&cli.connector_socket, &cli.state_dir).await?,
+        Command::Run => {
+            init_tracing_stderr();
+            run(&cli.connector_socket, &cli.state_dir).await?
+        }
         Command::Bootstrap(args) => bootstrap(&cli.admin_socket, &cli.state_dir, args).await?,
         Command::DisplayMessage { lines } => {
             display_message(&cli.admin_socket, lines, false).await?
@@ -2853,6 +2976,7 @@ async fn run_cli() -> Result<(), CompanionError> {
         Command::Uninstall => uninstall_service()?,
         #[cfg(windows)]
         Command::Service => {
+            // Do NOT init tracing here — service_entry will init with file writer.
             SERVICE_CLI.set(cli.clone()).map_err(|_| {
                 CompanionError::Config("duplicate Windows service dispatch".to_string())
             })?;

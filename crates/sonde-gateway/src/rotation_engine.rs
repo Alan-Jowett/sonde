@@ -148,17 +148,25 @@ impl RotationEngine {
         }
     }
 
-    /// Handle a full DESIRED_STATE message — process rotation_payload if present,
-    /// then apply salt/KDF-params convergence (GW-2008) and recovered_psks (GW-2009).
+    /// Handle a full DESIRED_STATE message — process channel convergence (GW-2004),
+    /// rotation_payload if present, salt/KDF-params convergence (GW-2008),
+    /// and recovered_psks (GW-2009).
     async fn handle_desired_state(&mut self, state: GatewayDesiredState) {
+        // Channel convergence (GW-2004 AC-1): switch if different from current.
+        let mut state_changed = false;
+        if let Some(desired_channel) = state.channel {
+            state_changed |= self.converge_channel(desired_channel).await;
+        }
+
         if let Some(ref payload) = state.rotation_payload {
             // Errors from DESIRED_STATE rotation are silently discarded per spec.
             let _ = self.handle_rotation_payload(payload, false).await;
         }
 
         // Salt/KDF-params convergence (GW-2008, §23.13).
-        let adopted = self.converge_salt_and_kdf(&state).await;
-        if adopted {
+        state_changed |= self.converge_salt_and_kdf(&state).await;
+
+        if state_changed {
             if let Some(ref tx) = self.state_changed_tx {
                 if tx.send(GatewayStateChanged).is_err() {
                     warn!("state_changed_tx receiver dropped — ACTUAL_STATE re-emission may be missed");
@@ -169,6 +177,57 @@ impl RotationEngine {
         // Process recovered_psks (GW-2009).
         if let Some(records) = state.recovered_psks {
             self.handle_recovered_psks(records).await;
+        }
+    }
+
+    /// Channel convergence (GW-2004 AC-1).
+    ///
+    /// If the desired channel differs from the currently persisted channel,
+    /// update storage. The new channel takes effect on the next modem
+    /// reconnect iteration (the modem transport loop re-reads
+    /// `espnow_channel` from storage on each iteration).
+    ///
+    /// Returns `true` if the channel was changed.
+    async fn converge_channel(&self, desired_channel: u32) -> bool {
+        // Validate range: ESP-NOW channels are 1..=14.
+        if !(1..=14).contains(&desired_channel) {
+            warn!(
+                desired_channel,
+                "ignoring DESIRED_STATE channel outside valid range 1..=14"
+            );
+            return false;
+        }
+
+        let current = match self.storage.get_config("espnow_channel").await {
+            Ok(Some(v)) => v.parse::<u32>().unwrap_or(1),
+            Ok(None) => 1,
+            Err(e) => {
+                warn!("failed to read espnow_channel for convergence: {e}");
+                return false;
+            }
+        };
+
+        if current == desired_channel {
+            return false;
+        }
+
+        match self
+            .storage
+            .set_config("espnow_channel", &desired_channel.to_string())
+            .await
+        {
+            Ok(()) => {
+                info!(
+                    from = current,
+                    to = desired_channel,
+                    "channel converged from DESIRED_STATE — takes effect on next modem reconnect"
+                );
+                true
+            }
+            Err(e) => {
+                error!("failed to persist channel convergence: {e}");
+                false
+            }
         }
     }
 
@@ -973,5 +1032,96 @@ mod tests {
         // Salt unchanged.
         let final_salt = store.get_config("kdf_salt").await.unwrap().unwrap();
         assert_eq!(final_salt, original_salt);
+    }
+
+    /// Channel convergence (GW-2004 AC-1): switch when desired differs,
+    /// no-op when same, reject out-of-range.
+    #[tokio::test]
+    async fn test_channel_convergence() {
+        let master_key = Zeroizing::new([0x42u8; 32]);
+        let store = Arc::new(SqliteStorage::in_memory(master_key).unwrap());
+        store.set_config("espnow_channel", "1").await.unwrap();
+
+        let (_grpc_tx, grpc_rx) = mpsc::unbounded_channel();
+        let (_ds_tx, desired_state_rx) = mpsc::unbounded_channel();
+        let identity = crate::gateway_identity::GatewayIdentity::generate().unwrap();
+        let event_hub = Arc::new(ConnectorEventHub::default());
+
+        let (state_tx, mut state_rx) = mpsc::unbounded_channel::<GatewayStateChanged>();
+        let mut engine = RotationEngine::new(
+            Arc::clone(&store),
+            identity,
+            event_hub,
+            grpc_rx,
+            desired_state_rx,
+        )
+        .with_state_changed_tx(state_tx);
+
+        // Switch from 1 to 5 — should converge and notify.
+        let ds = GatewayDesiredState {
+            entity_id: "aa".repeat(16),
+            channel: Some(5),
+            salt: None,
+            kdf_params: None,
+            rotation_payload: None,
+            recovered_psks: None,
+        };
+        engine.handle_desired_state(ds).await;
+
+        assert_eq!(
+            store.get_config("espnow_channel").await.unwrap().unwrap(),
+            "5"
+        );
+        assert!(
+            state_rx.try_recv().is_ok(),
+            "channel change should trigger state_changed notification"
+        );
+
+        // Same channel (5 → 5) — no change, no notification.
+        let ds_same = GatewayDesiredState {
+            entity_id: "aa".repeat(16),
+            channel: Some(5),
+            salt: None,
+            kdf_params: None,
+            rotation_payload: None,
+            recovered_psks: None,
+        };
+        engine.handle_desired_state(ds_same).await;
+        assert!(
+            state_rx.try_recv().is_err(),
+            "same channel should not trigger notification"
+        );
+
+        // Out-of-range channel (0) — rejected.
+        let ds_bad = GatewayDesiredState {
+            entity_id: "aa".repeat(16),
+            channel: Some(0),
+            salt: None,
+            kdf_params: None,
+            rotation_payload: None,
+            recovered_psks: None,
+        };
+        engine.handle_desired_state(ds_bad).await;
+        assert_eq!(
+            store.get_config("espnow_channel").await.unwrap().unwrap(),
+            "5",
+            "out-of-range channel should be rejected"
+        );
+
+        // Out-of-range channel (15) — rejected.
+        let ds_bad2 = GatewayDesiredState {
+            entity_id: "aa".repeat(16),
+            channel: Some(15),
+            salt: None,
+            kdf_params: None,
+            rotation_payload: None,
+            recovered_psks: None,
+        };
+        engine.handle_desired_state(ds_bad2).await;
+        assert_eq!(
+            store.get_config("espnow_channel").await.unwrap().unwrap(),
+            "5",
+            "channel 15 should be rejected"
+        );
     }
 }

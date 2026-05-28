@@ -411,6 +411,10 @@ impl ConnectorOutboundMessage {
 #[derive(Clone)]
 pub struct ConnectorEventHub {
     tx: broadcast::Sender<ConnectorOutboundMessage>,
+    /// Cached latest gateway ACTUAL_STATE for replay on new subscriber
+    /// connections (GW-2003 AC-4). Protected by a parking_lot Mutex for
+    /// synchronous access from `emit_gateway_actual_state`.
+    cached_gateway_state: Arc<std::sync::Mutex<Option<ConnectorOutboundMessage>>>,
 }
 
 impl Default for ConnectorEventHub {
@@ -423,11 +427,20 @@ impl ConnectorEventHub {
     pub fn new(capacity: usize) -> Self {
         let capacity = capacity.max(1);
         let (tx, _) = broadcast::channel(capacity);
-        Self { tx }
+        Self {
+            tx,
+            cached_gateway_state: Arc::new(std::sync::Mutex::new(None)),
+        }
     }
 
     fn subscribe(&self) -> broadcast::Receiver<ConnectorOutboundMessage> {
         self.tx.subscribe()
+    }
+
+    /// Return the cached latest gateway ACTUAL_STATE for replay to new
+    /// connector subscribers (GW-2003 AC-4).
+    fn cached_gateway_state(&self) -> Option<ConnectorOutboundMessage> {
+        self.cached_gateway_state.lock().ok()?.clone()
     }
 
     /// Number of active connector subscribers (companion processes).
@@ -575,27 +588,28 @@ impl ConnectorEventHub {
         modem_firmware_commit: Option<String>,
         rotation_in_progress: bool,
     ) {
-        let _ = self
-            .tx
-            .send(ConnectorOutboundMessage::GatewayActualState(Box::new(
-                GatewayActualStateData {
-                    entity_id,
-                    timestamp_ms: current_time_ms(),
-                    channel,
-                    master_key_id,
-                    master_key_epoch,
-                    x25519_public_key,
-                    fingerprint_words,
-                    missing_key_hints,
-                    salt,
-                    kdf_params,
-                    gateway_version,
-                    gateway_commit,
-                    modem_firmware_version,
-                    modem_firmware_commit,
-                    rotation_in_progress,
-                },
-            )));
+        let msg = ConnectorOutboundMessage::GatewayActualState(Box::new(GatewayActualStateData {
+            entity_id,
+            timestamp_ms: current_time_ms(),
+            channel,
+            master_key_id,
+            master_key_epoch,
+            x25519_public_key,
+            fingerprint_words,
+            missing_key_hints,
+            salt,
+            kdf_params,
+            gateway_version,
+            gateway_commit,
+            modem_firmware_version,
+            modem_firmware_commit,
+            rotation_in_progress,
+        }));
+        // Cache for replay to new connector subscribers (GW-2003 AC-4).
+        if let Ok(mut cached) = self.cached_gateway_state.lock() {
+            *cached = Some(msg.clone());
+        }
+        let _ = self.tx.send(msg);
     }
 
     pub fn emit_app_data(
@@ -688,6 +702,17 @@ impl ConnectorService {
     {
         let mut framed = Framed::new(stream, connector_codec(self.max_message_size));
         let mut outbound = self.event_hub.subscribe();
+
+        // Replay cached gateway ACTUAL_STATE to new subscriber so it receives
+        // current gateway state without waiting for the next state change
+        // (GW-2003 AC-4 — connector reconnection emission).
+        if let Some(cached) = self.event_hub.cached_gateway_state() {
+            let encoded = cached.encode()?;
+            if let Err(e) = framed.send(Bytes::from(encoded)).await {
+                warn!(error = %e, "failed to send cached gateway ACTUAL_STATE on connect");
+                return Ok(());
+            }
+        }
 
         loop {
             tokio::select! {
@@ -1551,5 +1576,56 @@ mod tests {
                 "escrow inbound channel not configured; message cannot be processed"
             );
         }
+    }
+
+    #[test]
+    fn gateway_actual_state_cached_for_replay() {
+        let hub = ConnectorEventHub::new(4);
+
+        // No cached state initially.
+        assert!(hub.cached_gateway_state().is_none());
+
+        // Emit gateway ACTUAL_STATE.
+        hub.emit_gateway_actual_state(
+            "aabbccdd11223344aabbccdd11223344".to_string(),
+            1,
+            [0x42u8; 16],
+            1,
+            [0x55u8; 32],
+            [
+                "abandon".to_string(),
+                "ability".to_string(),
+                "able".to_string(),
+                "about".to_string(),
+                "above".to_string(),
+                "absent".to_string(),
+            ],
+            vec![],
+            None,
+            None,
+            "0.7.0".to_string(),
+            "abc123".to_string(),
+            None,
+            None,
+            false,
+        );
+
+        // Cached state should now be available.
+        let cached = hub.cached_gateway_state();
+        assert!(cached.is_some());
+
+        // A new subscriber after the emission should still be able to
+        // get the cached state (simulating connector reconnection).
+        let _late_rx = hub.subscribe();
+        let replayed = hub.cached_gateway_state();
+        assert!(replayed.is_some());
+
+        // Verify it encodes correctly.
+        let encoded = replayed.unwrap().encode().unwrap();
+        let decoded = decode_map(&encoded).unwrap();
+        assert_eq!(
+            required_text(&decoded, 3, "entity_id").unwrap(),
+            "aabbccdd11223344aabbccdd11223344"
+        );
     }
 }

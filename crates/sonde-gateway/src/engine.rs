@@ -2135,3 +2135,62 @@ impl Gateway {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn report_missing_hint_fires_notify() {
+        let storage: Arc<dyn Storage> = Arc::new(crate::storage::InMemoryStorage::new());
+        let gw = Gateway::new(storage, Duration::from_secs(300));
+        let notify = gw.missing_hints_notify();
+
+        // Report a new hint — should fire notify.
+        gw.report_missing_hint(0x1234).await;
+
+        // Verify notification is pending (non-blocking check).
+        tokio::time::timeout(Duration::from_millis(50), notify.notified())
+            .await
+            .expect("notify should have been signalled for new hint");
+    }
+
+    #[tokio::test]
+    async fn report_missing_hint_rate_limited_does_not_fire() {
+        let storage: Arc<dyn Storage> = Arc::new(crate::storage::InMemoryStorage::new());
+        let gw = Gateway::new(storage, Duration::from_secs(300));
+        let notify = gw.missing_hints_notify();
+
+        // First report — accepted.
+        gw.report_missing_hint(0xABCD).await;
+        // Consume the notification.
+        tokio::time::timeout(Duration::from_millis(50), notify.notified())
+            .await
+            .expect("first report should fire notify");
+
+        // Second report of same hint — rate-limited.
+        gw.report_missing_hint(0xABCD).await;
+        // Should NOT fire.
+        let result = tokio::time::timeout(Duration::from_millis(50), notify.notified()).await;
+        assert!(result.is_err(), "rate-limited hint should not fire notify");
+    }
+
+    #[tokio::test]
+    async fn drain_missing_hints_returns_reported() {
+        let storage: Arc<dyn Storage> = Arc::new(crate::storage::InMemoryStorage::new());
+        let gw = Gateway::new(storage, Duration::from_secs(300));
+
+        gw.report_missing_hint(0x1111).await;
+        gw.report_missing_hint(0x2222).await;
+
+        let hints = gw.drain_missing_hints().await;
+        assert_eq!(hints.len(), 2);
+        assert!(hints.contains(&0x1111));
+        assert!(hints.contains(&0x2222));
+
+        // Second drain should be empty.
+        let empty = gw.drain_missing_hints().await;
+        assert!(empty.is_empty());
+    }
+}

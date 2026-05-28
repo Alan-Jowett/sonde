@@ -142,10 +142,10 @@ fn main() {
     let mut bridge =
         Bridge::with_ble_button_and_display(usb, espnow, ble, button_scanner, display, counters);
 
-    // Initialize the task watchdog with a 10-second timeout (MD-0302).
+    // Initialize the task watchdog with a 35-second timeout (MD-0302).
     unsafe {
         let wdt_config = esp_idf_sys::esp_task_wdt_config_t {
-            timeout_ms: 10_000,
+            timeout_ms: 35_000,
             idle_core_mask: 0,
             trigger_panic: true,
         };

@@ -28,7 +28,7 @@ who sets up the entire site:
 ```
 ┌─────────────────────┐
 │  1. Connect to      │  One-time per site visit.
-│     Gateway         │  Scan → Select → Pair → Download node plan.
+│     Gateway         │  Scan → Select → Pair.
 └─────────┬───────────┘
           ▼
 ┌─────────────────────┐
@@ -74,10 +74,10 @@ deployment plan.
 - Tap to select a gateway
 - Phone label input field (pre-filled with device name if available)
 - "Pair" button → progress overlay ("Connecting…", "Pairing…",
-  "Registering…", "Downloading plan…")
+  "Registering…")
 - Numeric Comparison confirmation (required; prompt/UX is
   platform-dependent)
-- On success: transition to Step 2 with the downloaded node plan
+- On success: transition to Step 2
 
 **Error handling:**
 - No gateways found → "Make sure the gateway modem is powered on

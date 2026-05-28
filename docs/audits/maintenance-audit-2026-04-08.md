@@ -7,7 +7,7 @@
 
 This audit applies the full D1–D13 drift detection taxonomy across all
 Sonde components: Protocol, Gateway, Node, Modem, BLE Pairing, BPF
-Interpreter, Bundle, and E2E. It succeeds the 2026-03-30 audit (32
+Interpreter, and E2E. It succeeds the 2026-03-30 audit (32
 findings, 27 resolved in PRs #667–#670).
 
 **Key metrics:**
@@ -20,7 +20,7 @@ findings, 27 resolved in PRs #667–#670).
 | Modem        | 9        | 0        | 1    | 5      | 3   |
 | BLE Pairing  | 6        | 0        | 1    | 3      | 2   |
 | BPF          | 2        | 0        | 2    | 0      | 0   |
-| E2E/Bundle   | 0        | 0        | 0    | 0      | 0   |
+| E2E          | 0        | 0        | 0    | 0      | 0   |
 | Hardware     | 1        | 0        | 0    | 0      | 1   |
 | **Total**    | **27**   | **0**    | **7**| **11** | **9**|
 
@@ -67,9 +67,6 @@ workflow, now F-022) remain open and carried forward.
 | `docs/safe-bpf-interpreter.md` | BPF interpreter design (§2.2, §3.2, §6) |
 | `docs/safe-bpf-interpreter-validation.md` | BPF test cases |
 | `docs/bpf-environment.md` | BPF helper/environment spec |
-| `docs/bundle-format.md` | Bundle format spec |
-| `docs/bundle-tool-design.md` | Bundle tool design |
-| `docs/bundle-tool-validation.md` | Bundle test cases |
 | `docs/e2e-validation.md` | E2E test cases |
 
 ### Crates examined
@@ -83,7 +80,6 @@ workflow, now F-022) remain open and carried forward.
 | `sonde-pair` | `crates/sonde-pair/src/` | In-source `#[cfg(test)]` |
 | `sonde-pair-ui` | `crates/sonde-pair-ui/src-tauri/src/` | In-source |
 | `sonde-bpf` | `crates/sonde-bpf/src/` | `crates/sonde-bpf/tests/` |
-| `sonde-bundle` | `crates/sonde-bundle/src/` | In-source |
 | `sonde-e2e` | `crates/sonde-e2e/tests/` | Integration tests |
 
 ### Method

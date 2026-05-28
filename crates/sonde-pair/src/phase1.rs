@@ -321,6 +321,80 @@ mod aead_phase1_tests {
         });
     }
 
+    /// T-PT-803: No implicit retries on protocol failure (validates PT-1003).
+    ///
+    /// Part A — write failure: inject a `GattWriteFailed` error on
+    /// `write_characteristic` and assert the error surfaces immediately
+    /// with exactly one write attempt.
+    ///
+    /// Part B — read failure: inject an `IndicationTimeout` error on
+    /// `read_indication` and assert the error surfaces immediately
+    /// with exactly one read attempt.
+    #[test]
+    fn t_pt_803_no_implicit_retries_on_protocol_failure() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let rng = MockRng::new([0x42u8; 32]);
+            let device_addr = [0xBB; 6];
+
+            // --- Part A: write_characteristic failure ---
+            {
+                let mut transport = MockBleTransport::new(247);
+                transport.write_error = Some(PairingError::GattWriteFailed {
+                    device: Some("BB:BB:BB:BB:BB:BB".into()),
+                    reason: "injected timeout".into(),
+                });
+
+                let result =
+                    pair_with_gateway(&mut transport, &rng, &device_addr, "test", None).await;
+
+                assert!(
+                    matches!(result, Err(PairingError::GattWriteFailed { .. })),
+                    "write failure must surface immediately, got: {result:?}"
+                );
+                assert_eq!(
+                    transport.written.len(),
+                    1,
+                    "write_characteristic must be called exactly once (no retry)"
+                );
+                assert_eq!(
+                    transport.read_call_count, 0,
+                    "read_indication must not be called after write failure"
+                );
+            }
+
+            // --- Part B: read_indication failure ---
+            {
+                let mut transport = MockBleTransport::new(247);
+                // No write error — write succeeds.
+                // Queue a read error for the indication.
+                transport.queue_response(Err(PairingError::IndicationTimeout {
+                    device: Some("BB:BB:BB:BB:BB:BB".into()),
+                }));
+
+                let result =
+                    pair_with_gateway(&mut transport, &rng, &device_addr, "test", None).await;
+
+                assert!(
+                    matches!(result, Err(PairingError::IndicationTimeout { .. })),
+                    "read failure must surface immediately, got: {result:?}"
+                );
+                assert_eq!(
+                    transport.read_call_count, 1,
+                    "read_indication must be called exactly once (no retry)"
+                );
+                assert_eq!(
+                    transport.written.len(),
+                    1,
+                    "write_characteristic must be called exactly once even on read failure"
+                );
+            }
+        });
+    }
+
     /// AEAD Phase 1: `PairingArtifacts` Debug redacts PSK.
     #[test]
     fn aead_artifacts_debug_redacts_psk() {

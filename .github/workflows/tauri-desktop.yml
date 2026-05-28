@@ -28,7 +28,7 @@ on:
   workflow_call:
 
 concurrency:
-  group: tauri-desktop-${{ github.head_ref || github.run_id }}
+  group: tauri-desktop-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:

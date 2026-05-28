@@ -20,7 +20,7 @@ on:
   workflow_call:
 
 concurrency:
-  group: esp32-s3-${{ github.head_ref || github.run_id }}
+  group: esp32-s3-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:

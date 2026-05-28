@@ -398,7 +398,7 @@ devices.
 
 ## 11. Environment Manager (WEB-0800)
 
-> **Requirements:** WEB-0800, WEB-0801, WEB-0802, WEB-0803, WEB-0804, WEB-0805, WEB-0806
+> **Requirements:** WEB-0800, WEB-0801, WEB-0802, WEB-0803, WEB-0804, WEB-0805, WEB-0806, WEB-0807, WEB-0808
 
 ### 11.1 Overview
 
@@ -406,6 +406,8 @@ The environment manager replaces the deploy-time `config.json` with a runtime
 configuration system. Users define named environments (e.g., "production",
 "staging", "dev") with the Azure backend connection details needed by the SPA.
 A single SPA instance can connect to any environment without redeployment.
+Environments can be imported from JSON files (e.g., the `web-ui-environment.json`
+emitted by Azure companion bootstrap) and exported for backup or sharing.
 
 ### 11.2 Data Model
 
@@ -428,6 +430,29 @@ Each environment is a JSON object stored in `localStorage`:
 | `sonde_environments` | JSON array of environment objects |
 | `sonde_active_environment` | Name of the currently active environment |
 
+### 11.2b Import/Export File Schema (WEB-0807, WEB-0808)
+
+The import/export file uses a single-object JSON schema with a `version` field
+for forward compatibility:
+
+```json
+{
+  "version": 1,
+  "name": "production",
+  "clientId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "storageAccount": "mystorageaccount",
+  "functionAppName": "sonde-decoder-xxxx"
+}
+```
+
+The `version` field MUST be integer `1`. Files with any other version value are
+rejected. Extra properties beyond the defined schema are silently ignored to
+allow forward-compatible extensions.
+
+The Azure companion bootstrap emits this file as `web-ui-environment.json` with
+`name` set to empty string — the SPA prompts the user for a name during import.
+
 ### 11.3 Authority Derivation
 
 `msalAuthority` is derived from the tenant ID as:
@@ -440,16 +465,39 @@ This targets Azure public cloud. Sovereign cloud support is out of scope.
 **First load (no environments):** A full-screen modal prompts the user to add
 their first environment. The main app UI (tabs, dashboard) is inaccessible until
 at least one environment is configured. The modal cannot be closed without adding
-an environment.
+an environment. The modal includes both "Add Environment" and "Import" buttons.
 
 **Environment list modal:** A full-screen modal displaying all configured
 environments in a table (Name, Storage Account, Function App), with action
-buttons: Use (switch to this environment), Edit, Delete. The active environment
-is marked with a badge. An "Add Environment" button opens the add/edit form.
+buttons: Use (switch to this environment), Export, Edit, Delete. The active
+environment is marked with a badge. "Add Environment" and "Import" buttons are
+shown below the table.
 
 **Add/edit form:** A stacked form with fields for Name (read-only on edit),
 Client ID, Tenant ID, Storage Account, Function App Name. All fields are
 required. Duplicate names are rejected on add.
+
+**Import flow (WEB-0807):** Clicking Import opens a browser file picker
+accepting `.json` files. After selection:
+
+1. Parse the file as JSON. Reject non-JSON or non-object content with an error.
+2. Validate `version === 1`. Reject other values with "Unsupported environment
+   file version" error.
+3. Validate the four data fields using the same rules as the manual form
+   (WEB-0802).
+4. If `name` is blank/missing, show a name input prompt before saving.
+5. If `name` matches an existing environment, show a conflict dialog offering
+   "Overwrite" or "Rename" options.
+6. If overwriting the active environment, trigger the full re-initialization
+   sequence (WEB-0806): clear MSAL state, re-create MSAL instance, re-render.
+7. Save the environment to `localStorage` and refresh the environment list.
+
+**Export (WEB-0808):** Each row's Export button serializes the environment to a
+JSON file using the import/export schema (§11.2b) and triggers a browser
+download. The filename is derived from the environment name with characters
+unsafe for filesystems (slashes, colons, control characters) replaced by
+hyphens. If the sanitized name is empty, the fallback `sonde-environment.json`
+is used.
 
 **Header indicator:** The active environment name is displayed in the top bar
 next to a ⚙ gear button that opens the environment manager modal.

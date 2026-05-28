@@ -74,7 +74,144 @@ function loadActiveEnvironment() {
   return env;
 }
 
-const STORAGE_SCOPES = ['https://storage.azure.com/.default'];
+// 1b. Environment field validation helpers (shared by manual form and import)
+const ENV_GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ENV_STORAGE_ACCOUNT_PATTERN = /^[a-z0-9]{3,24}$/;
+const ENV_FUNCTION_APP_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$/;
+
+function validateEnvironmentFields(fields) {
+  if (!fields.clientId || typeof fields.clientId !== 'string') return 'Client ID is required.';
+  if (!fields.tenantId || typeof fields.tenantId !== 'string') return 'Tenant ID is required.';
+  if (!fields.storageAccount || typeof fields.storageAccount !== 'string') return 'Storage Account is required.';
+  if (!fields.functionAppName || typeof fields.functionAppName !== 'string') return 'Function App Name is required.';
+  if (!ENV_GUID_PATTERN.test(fields.clientId)) return 'Client ID must be a valid GUID.';
+  if (!ENV_GUID_PATTERN.test(fields.tenantId)) return 'Tenant ID must be a valid GUID.';
+  if (!ENV_STORAGE_ACCOUNT_PATTERN.test(fields.storageAccount)) return 'Storage Account must be 3–24 lowercase alphanumeric characters.';
+  if (!ENV_FUNCTION_APP_PATTERN.test(fields.functionAppName) || fields.functionAppName.length < 2) return 'Function App Name must be 2–60 alphanumeric characters with optional hyphens.';
+  return null;
+}
+
+// 1c. Environment import/export
+function importEnvironmentFromFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.addEventListener('change', () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        handleImportedJson(reader.result);
+      } catch (err) {
+        showViewMessage('error', `Import failed: ${err.message}`);
+      }
+    };
+    reader.onerror = () => {
+      showViewMessage('error', 'Failed to read the selected file.');
+    };
+    reader.readAsText(file);
+  });
+  input.click();
+}
+
+function handleImportedJson(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error('File does not contain valid JSON.');
+  }
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('File must contain a JSON object (not an array or primitive).');
+  }
+  if (data.version !== 1) {
+    throw new Error(`Unsupported environment file version: ${data.version ?? 'missing'}. Expected version 1.`);
+  }
+  const fields = {
+    clientId: typeof data.clientId === 'string' ? data.clientId.trim() : '',
+    tenantId: typeof data.tenantId === 'string' ? data.tenantId.trim() : '',
+    storageAccount: typeof data.storageAccount === 'string' ? data.storageAccount.trim() : '',
+    functionAppName: typeof data.functionAppName === 'string' ? data.functionAppName.trim() : '',
+  };
+  const validationError = validateEnvironmentFields(fields);
+  if (validationError) throw new Error(validationError);
+
+  let name = typeof data.name === 'string' ? data.name.trim() : '';
+  if (!name) {
+    name = window.prompt('Enter a name for this environment:');
+    if (!name || !name.trim()) throw new Error('Import cancelled — no name provided.');
+    name = name.trim();
+  }
+
+  const envs = loadEnvironments();
+  const existing = envs.find((e) => e.name === name);
+  if (existing) {
+    const choice = window.confirm(
+      `An environment named "${name}" already exists.\n\nClick OK to overwrite it, or Cancel to rename.`
+    );
+    if (!choice) {
+      const newName = window.prompt('Enter a different name for this environment:', `${name} (2)`);
+      if (!newName || !newName.trim()) throw new Error('Import cancelled — no name provided.');
+      name = newName.trim();
+      if (envs.some((e) => e.name === name)) {
+        throw new Error(`An environment named "${name}" already exists.`);
+      }
+    }
+  }
+
+  const envData = { name, ...fields };
+  const idx = envs.findIndex((e) => e.name === name);
+  if (idx >= 0) {
+    envs[idx] = envData;
+  } else {
+    envs.push(envData);
+  }
+
+  if (!saveEnvironments(envs)) {
+    throw new Error('Failed to save environment. Browser storage may be disabled or full.');
+  }
+
+  const isFirstEnv = envs.length === 1;
+  const isActiveEnv = getActiveEnvironmentName() === name;
+
+  document.getElementById('env-form-overlay')?.remove();
+  document.getElementById('env-manager-overlay')?.remove();
+
+  if (isFirstEnv || isActiveEnv) {
+    switchEnvironment(name).catch((error) => renderError('Switch failed', error));
+  } else {
+    showEnvironmentManager();
+  }
+}
+
+function exportEnvironment(env) {
+  const data = {
+    version: 1,
+    name: env.name || '',
+    clientId: env.clientId || '',
+    tenantId: env.tenantId || '',
+    storageAccount: env.storageAccount || '',
+    functionAppName: env.functionAppName || '',
+  };
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+
+  const safeName = (env.name || '')
+    .replace(/[/\\:*?"<>|\x00-\x1F\x7F]/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .trim();
+  const filename = safeName ? `${safeName}.json` : 'sonde-environment.json';
+
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
 function functionScopes() {
   return [`api://${CONFIG.msalClientId}/user_impersonation`];
 }
@@ -2211,6 +2348,7 @@ function showEnvironmentManager() {
           <td><code>${escapeHtml(env.functionAppName || '')}</code></td>
           <td style="white-space:nowrap">
             ${env.name !== activeName ? `<button type="button" class="secondary env-use-btn" data-env="${escapeHtml(env.name)}">Use</button> ` : ''}
+            <button type="button" class="secondary env-export-btn" data-env="${escapeHtml(env.name)}">Export</button>
             <button type="button" class="secondary env-edit-btn" data-env="${escapeHtml(env.name)}">Edit</button>
             <button type="button" class="secondary env-delete-btn" data-env="${escapeHtml(env.name)}" style="color:var(--danger)">Delete</button>
           </td>
@@ -2223,6 +2361,7 @@ function showEnvironmentManager() {
       ${envListHtml}
       <div style="margin-top:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
         <button type="button" class="primary" id="env-add-btn">Add Environment</button>
+        <button type="button" class="secondary" id="env-import-btn">Import</button>
         ${envs.length > 0 ? '<button type="button" class="secondary" id="env-close-btn">Close</button>' : ''}
       </div>
     </div>
@@ -2233,6 +2372,7 @@ function showEnvironmentManager() {
   document.body.insertAdjacentHTML('beforeend', overlayHtml);
 
   document.getElementById('env-add-btn')?.addEventListener('click', () => showEnvironmentForm(null));
+  document.getElementById('env-import-btn')?.addEventListener('click', () => importEnvironmentFromFile());
   document.getElementById('env-close-btn')?.addEventListener('click', () => {
     document.getElementById('env-manager-overlay')?.remove();
   });
@@ -2247,6 +2387,12 @@ function showEnvironmentManager() {
     btn.addEventListener('click', () => {
       const env = loadEnvironments().find((e) => e.name === btn.dataset.env);
       if (env) showEnvironmentForm(env);
+    });
+  }
+  for (const btn of document.querySelectorAll('.env-export-btn')) {
+    btn.addEventListener('click', () => {
+      const env = loadEnvironments().find((e) => e.name === btn.dataset.env);
+      if (env) exportEnvironment(env);
     });
   }
   for (const btn of document.querySelectorAll('.env-delete-btn')) {
@@ -2325,21 +2471,9 @@ function showEnvironmentForm(existingEnv) {
       return;
     }
 
-    const guidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!guidPattern.test(clientId)) {
-      if (errorEl) { errorEl.textContent = 'Client ID must be a valid GUID.'; errorEl.style.display = ''; }
-      return;
-    }
-    if (!guidPattern.test(tenantId)) {
-      if (errorEl) { errorEl.textContent = 'Tenant ID must be a valid GUID.'; errorEl.style.display = ''; }
-      return;
-    }
-    if (!/^[a-z0-9]{3,24}$/.test(storageAccount)) {
-      if (errorEl) { errorEl.textContent = 'Storage Account must be 3–24 lowercase alphanumeric characters.'; errorEl.style.display = ''; }
-      return;
-    }
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$/.test(functionAppName)) {
-      if (errorEl) { errorEl.textContent = 'Function App Name must be 2–60 alphanumeric characters with optional hyphens.'; errorEl.style.display = ''; }
+    const fieldError = validateEnvironmentFields({ clientId, tenantId, storageAccount, functionAppName });
+    if (fieldError) {
+      if (errorEl) { errorEl.textContent = fieldError; errorEl.style.display = ''; }
       return;
     }
 

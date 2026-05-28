@@ -95,8 +95,10 @@ and verifies one or more acceptance criteria.
 | WEB-0800 | T-WEB-0801, T-WEB-0802, T-WEB-0803, T-WEB-0804, T-WEB-0805, T-WEB-0806 |
 | WEB-0801 | T-WEB-0802 |
 | WEB-0802 | T-WEB-0806, T-WEB-0807, T-WEB-0808, T-WEB-0809 |
-| WEB-0803 | T-WEB-0801, T-WEB-0801b |
-| WEB-0804 | T-WEB-0805, T-WEB-0805b |
+| WEB-0803 | T-WEB-0801, T-WEB-0801b, T-WEB-0818 |
+| WEB-0804 | T-WEB-0805, T-WEB-0805b, T-WEB-0805c |
+| WEB-0807 | T-WEB-0810, T-WEB-0811, T-WEB-0812, T-WEB-0813, T-WEB-0814, T-WEB-0815, T-WEB-0819, T-WEB-0820, T-WEB-0821, T-WEB-0822 |
+| WEB-0808 | T-WEB-0816, T-WEB-0816b, T-WEB-0816c, T-WEB-0817 |
 | WEB-0805 | T-WEB-0804, T-WEB-0804b |
 | WEB-0806 | T-WEB-0803, T-WEB-0803b, T-WEB-0803c, T-WEB-0803d, T-WEB-0803d2, T-WEB-0803e, T-WEB-0803f, T-WEB-0803g |
 | WEB-0901 | T-WEB-0901, T-WEB-0901b, T-WEB-0901c |
@@ -258,7 +260,28 @@ and verifies one or more acceptance criteria.
 | T-WEB-0804b | WEB-0805 | Environment indicator updates when environment is switched | Manual | Planned |
 | T-WEB-0805 | WEB-0804 | Edit and delete operations on environments work correctly | Manual | Planned |
 | T-WEB-0805b | WEB-0804 | Deleting active environment switches to next available or shows setup modal | Manual | Planned |
+| T-WEB-0805c | WEB-0804 | Each environment row shows Use, Export, Edit, and Delete buttons | Manual | Planned |
 | T-WEB-0806 | WEB-0802 | Environment fields validated (all required, duplicate name rejected) | Manual | Planned |
+
+### 5.8b  Import / Export
+
+| Test ID | Requirement | Description | Method | Status |
+|---|---|---|---|---|
+| T-WEB-0810 | WEB-0807 | Importing a valid `.json` file with all fields adds the environment to the list | Manual | Planned |
+| T-WEB-0811 | WEB-0807 | Importing a file with blank `name` prompts user for a name before saving | Manual | Planned |
+| T-WEB-0812 | WEB-0807 | Importing a file with a name that conflicts with an existing environment offers overwrite or rename | Manual | Planned |
+| T-WEB-0813 | WEB-0807 | Importing a file with `version` other than `1` (missing, zero, greater) is rejected with error | Manual | Planned |
+| T-WEB-0814 | WEB-0807, WEB-0802 | Importing a file with invalid field values (bad GUID, wrong storage account format) is rejected | Manual | Planned |
+| T-WEB-0815 | WEB-0807 | Overwriting the active environment via import triggers MSAL re-initialization | Manual | Planned |
+| T-WEB-0816 | WEB-0808 | Export button downloads a `.json` file with `version: 1` and all five fields | Manual | Planned |
+| T-WEB-0816b | WEB-0808 | Export of an environment with unsafe filename characters (slashes, colons) produces a sanitized filename | Manual | Planned |
+| T-WEB-0816c | WEB-0808 | Export of an environment whose sanitized name is empty uses fallback `sonde-environment.json` | Manual | Planned |
+| T-WEB-0817 | WEB-0807, WEB-0808 | Exported file round-trips through import: export → import into fresh browser → environment is functional | Manual | Planned |
+| T-WEB-0818 | WEB-0803 | First-load setup modal includes Import button and accepts environment file | Manual | Planned |
+| T-WEB-0819 | WEB-0807 | Importing a non-JSON file (e.g., plain text, binary) is rejected with a descriptive error | Manual | Planned |
+| T-WEB-0820 | WEB-0807 | Importing a JSON file with top-level array, null, or string is rejected | Manual | Planned |
+| T-WEB-0821 | WEB-0807 | Importing a JSON file with missing required data fields is rejected | Manual | Planned |
+| T-WEB-0822 | WEB-0807 | Extra JSON properties in the import file are silently ignored | Manual | Planned |
 
 ### 5.9  Deployment
 

@@ -55,6 +55,7 @@ const DEFAULT_BOOTSTRAP_IMAGE_REPOSITORY: &str = "ghcr.io/alan-jowett/sonde-azur
 const CERT_PEM_FILENAME: &str = "cert.pem";
 const KEY_PEM_FILENAME: &str = "key.pem";
 const STORAGE_QUEUES_CONFIG_FILENAME: &str = "storage-queues.json";
+const WEB_UI_ENVIRONMENT_FILENAME: &str = "web-ui-environment.json";
 const STAGING_DIR_NAME: &str = ".staging";
 const ACTIVE_STATE_FILENAME: &str = ".current-state";
 const STATE_GENERATION_PREFIX: &str = ".state-";
@@ -217,6 +218,28 @@ struct StorageQueuesConfigFile {
     downstream_queue: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+struct WebUiEnvironmentFile {
+    version: u8,
+    name: String,
+    #[serde(rename = "clientId")]
+    client_id: String,
+    #[serde(rename = "tenantId")]
+    tenant_id: String,
+    #[serde(rename = "storageAccount")]
+    storage_account: String,
+    #[serde(rename = "functionAppName")]
+    function_app_name: String,
+}
+
+/// Artifacts produced by parsing Bicep deployment outputs.
+#[derive(Debug)]
+struct BootstrapArtifacts {
+    service_principal: ServicePrincipalStateFile,
+    storage_queues: StorageQueuesConfigFile,
+    web_ui_environment: WebUiEnvironmentFile,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RuntimeCredentialState {
     tenant_id: String,
@@ -269,6 +292,16 @@ struct BicepBootstrapValues {
         deserialize_with = "deserialize_bicep_string"
     )]
     downstream_queue: String,
+    #[serde(
+        rename = "storageAccountName",
+        deserialize_with = "deserialize_bicep_string"
+    )]
+    storage_account_name: String,
+    #[serde(
+        rename = "functionAppName",
+        deserialize_with = "deserialize_bicep_string"
+    )]
+    function_app_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1323,9 +1356,7 @@ fn validate_certificate_matches_private_key(
     Ok(())
 }
 
-fn parse_bicep_outputs(
-    json: &str,
-) -> Result<(ServicePrincipalStateFile, StorageQueuesConfigFile), CompanionError> {
+fn parse_bicep_outputs(json: &str) -> Result<BootstrapArtifacts, CompanionError> {
     let outputs: BicepOutputs = serde_json::from_str(json).map_err(|e| {
         CompanionError::Config(format!("failed to parse Bicep deployment outputs: {e}"))
     })?;
@@ -1336,8 +1367,8 @@ fn parse_bicep_outputs(
         })?;
 
     let sp = ServicePrincipalStateFile {
-        tenant_id: bootstrap_values.tenant_id,
-        client_id: bootstrap_values.client_id,
+        tenant_id: bootstrap_values.tenant_id.clone(),
+        client_id: bootstrap_values.client_id.clone(),
         login_endpoint: Some(bootstrap_values.login_endpoint),
         certificate_path: CERT_PEM_FILENAME.to_string(),
         private_key_path: KEY_PEM_FILENAME.to_string(),
@@ -1349,7 +1380,20 @@ fn parse_bicep_outputs(
         downstream_queue: bootstrap_values.downstream_queue,
     };
 
-    Ok((sp, sb))
+    let web_ui = WebUiEnvironmentFile {
+        version: 1,
+        name: String::new(),
+        client_id: bootstrap_values.client_id,
+        tenant_id: bootstrap_values.tenant_id,
+        storage_account: bootstrap_values.storage_account_name,
+        function_app_name: bootstrap_values.function_app_name,
+    };
+
+    Ok(BootstrapArtifacts {
+        service_principal: sp,
+        storage_queues: sb,
+        web_ui_environment: web_ui,
+    })
 }
 
 fn default_bootstrap_image() -> String {
@@ -2160,7 +2204,7 @@ async fn run_bootstrap_deployment(
     admin_socket: &str,
     cert_base64: &str,
     args: &BootstrapArgs,
-) -> Result<(ServicePrincipalStateFile, StorageQueuesConfigFile), CompanionError> {
+) -> Result<BootstrapArtifacts, CompanionError> {
     let docker = Docker::connect_with_local_defaults()
         .map_err(|e| CompanionError::Config(format!("failed to connect to Docker daemon: {e}")))?;
     run_bootstrap_deployment_with_docker(&docker, admin_socket, cert_base64, args).await
@@ -2171,7 +2215,7 @@ async fn run_bootstrap_deployment_with_docker(
     admin_socket: &str,
     cert_base64: &str,
     args: &BootstrapArgs,
-) -> Result<(ServicePrincipalStateFile, StorageQueuesConfigFile), CompanionError> {
+) -> Result<BootstrapArtifacts, CompanionError> {
     let bootstrap_image = resolve_bootstrap_image(args.bootstrap_image.as_deref())?;
     run_bootstrap_deployment_with_docker_and_image(
         docker,
@@ -2189,7 +2233,7 @@ async fn run_bootstrap_deployment_with_docker_and_image(
     cert_base64: &str,
     args: &BootstrapArgs,
     bootstrap_image: &str,
-) -> Result<(ServicePrincipalStateFile, StorageQueuesConfigFile), CompanionError> {
+) -> Result<BootstrapArtifacts, CompanionError> {
     eprintln!("Pulling bootstrap image...");
     let pull_opts = CreateImageOptionsBuilder::default()
         .from_image(bootstrap_image)
@@ -2336,11 +2380,10 @@ async fn bootstrap(
         return Err(err);
     }
     eprintln!("Starting sonde-azure-bootstrap for device-code auth and Bicep deployment");
-    let (sp_state, sb_config) =
-        match run_bootstrap_deployment(admin_socket, &cert_base64, &args).await {
-            Ok(result) => result,
-            Err(e) => return report_bootstrap_failure(admin_socket, &staging_dir, e).await,
-        };
+    let artifacts = match run_bootstrap_deployment(admin_socket, &cert_base64, &args).await {
+        Ok(artifacts) => artifacts,
+        Err(e) => return report_bootstrap_failure(admin_socket, &staging_dir, e).await,
+    };
 
     if let Err(err) = display_progress(admin_socket, "Writing config...").await {
         cleanup_staging(&staging_dir);
@@ -2349,12 +2392,16 @@ async fn bootstrap(
     eprintln!("Writing runtime artifacts to state volume");
 
     let sp_path = staging_dir.join(SERVICE_PRINCIPAL_STATE_FILENAME);
-    let sp_json = serde_json::to_string_pretty(&sp_state)?;
+    let sp_json = serde_json::to_string_pretty(&artifacts.service_principal)?;
     std::fs::write(&sp_path, sp_json.as_bytes())?;
 
     let sb_path = staging_dir.join(STORAGE_QUEUES_CONFIG_FILENAME);
-    let sb_json = serde_json::to_string_pretty(&sb_config)?;
+    let sb_json = serde_json::to_string_pretty(&artifacts.storage_queues)?;
     std::fs::write(&sb_path, sb_json.as_bytes())?;
+
+    let web_ui_path = staging_dir.join(WEB_UI_ENVIRONMENT_FILENAME);
+    let web_ui_json = serde_json::to_string_pretty(&artifacts.web_ui_environment)?;
+    std::fs::write(&web_ui_path, web_ui_json.as_bytes())?;
 
     if let Err(e) = commit_staging(&staging_dir, state_dir) {
         return report_bootstrap_failure(admin_socket, &staging_dir, e).await;
@@ -2850,9 +2897,10 @@ mod tests {
         trim_buffer_to_max_len, urlencoding_encode, validate_display_lines, write_framed,
         ClientAssertionCredential, CompanionError, DownstreamConsumer, RuntimeConfig,
         RuntimeCredentialState, ServicePrincipalStateFile, StorageQueuesConfigFile,
-        UpstreamPublisher, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME, CONNECTOR_MAX_FRAME_LENGTH,
-        DEFAULT_LOGIN_ENDPOINT, KEY_PEM_FILENAME, SERVICE_PRINCIPAL_STATE_FILENAME,
-        STAGING_DIR_NAME, STATE_GENERATION_PREFIX, STORAGE_QUEUES_CONFIG_FILENAME,
+        UpstreamPublisher, WebUiEnvironmentFile, ACTIVE_STATE_FILENAME, CERT_PEM_FILENAME,
+        CONNECTOR_MAX_FRAME_LENGTH, DEFAULT_LOGIN_ENDPOINT, KEY_PEM_FILENAME,
+        SERVICE_PRINCIPAL_STATE_FILENAME, STAGING_DIR_NAME, STATE_GENERATION_PREFIX,
+        STORAGE_QUEUES_CONFIG_FILENAME, WEB_UI_ENVIRONMENT_FILENAME,
     };
     #[cfg(windows)]
     use super::{
@@ -3759,14 +3807,16 @@ mod tests {
                     "loginEndpoint": "https://login.microsoftonline.com/",
                     "storageQueueEndpoint": "https://example.queue.core.windows.net",
                     "upstreamQueue": "upstream",
-                    "downstreamQueue": "downstream"
+                    "downstreamQueue": "downstream",
+                    "storageAccountName": "examplestorage",
+                    "functionAppName": "sonde-decoder-abc123"
                 }
             }
         }"#;
 
-        let (sp, sb) = parse_bicep_outputs(json).unwrap();
+        let artifacts = parse_bicep_outputs(json).unwrap();
         assert_eq!(
-            sp,
+            artifacts.service_principal,
             ServicePrincipalStateFile {
                 tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
                 client_id: "22222222-2222-2222-2222-222222222222".to_string(),
@@ -3776,11 +3826,22 @@ mod tests {
             }
         );
         assert_eq!(
-            sb,
+            artifacts.storage_queues,
             StorageQueuesConfigFile {
                 queue_endpoint: "https://example.queue.core.windows.net".to_string(),
                 upstream_queue: "upstream".to_string(),
                 downstream_queue: "downstream".to_string(),
+            }
+        );
+        assert_eq!(
+            artifacts.web_ui_environment,
+            WebUiEnvironmentFile {
+                version: 1,
+                name: String::new(),
+                client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                storage_account: "examplestorage".to_string(),
+                function_app_name: "sonde-decoder-abc123".to_string(),
             }
         );
     }
@@ -3795,21 +3856,42 @@ mod tests {
                     "loginEndpoint": { "value": "https://login.microsoftonline.com/" },
                     "storageQueueEndpoint": { "value": "https://example.queue.core.windows.net" },
                     "upstreamQueue": { "value": "upstream" },
-                    "downstreamQueue": { "value": "downstream" }
+                    "downstreamQueue": { "value": "downstream" },
+                    "storageAccountName": { "value": "examplestorage" },
+                    "functionAppName": { "value": "sonde-decoder-abc123" }
                 }
             }
         }"#;
 
-        let (sp, sb) = parse_bicep_outputs(json).unwrap();
-        assert_eq!(sp.tenant_id, "11111111-1111-1111-1111-111111111111");
-        assert_eq!(sp.client_id, "22222222-2222-2222-2222-222222222222");
+        let artifacts = parse_bicep_outputs(json).unwrap();
         assert_eq!(
-            sp.login_endpoint.as_deref(),
+            artifacts.service_principal.tenant_id,
+            "11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(
+            artifacts.service_principal.client_id,
+            "22222222-2222-2222-2222-222222222222"
+        );
+        assert_eq!(
+            artifacts.service_principal.login_endpoint.as_deref(),
             Some("https://login.microsoftonline.com/")
         );
-        assert_eq!(sb.queue_endpoint, "https://example.queue.core.windows.net");
-        assert_eq!(sb.upstream_queue, "upstream");
-        assert_eq!(sb.downstream_queue, "downstream");
+        assert_eq!(
+            artifacts.storage_queues.queue_endpoint,
+            "https://example.queue.core.windows.net"
+        );
+        assert_eq!(artifacts.storage_queues.upstream_queue, "upstream");
+        assert_eq!(artifacts.storage_queues.downstream_queue, "downstream");
+        assert_eq!(
+            artifacts.web_ui_environment.storage_account,
+            "examplestorage"
+        );
+        assert_eq!(
+            artifacts.web_ui_environment.function_app_name,
+            "sonde-decoder-abc123"
+        );
+        assert_eq!(artifacts.web_ui_environment.version, 1);
+        assert_eq!(artifacts.web_ui_environment.name, "");
     }
 
     #[test]
@@ -3821,7 +3903,9 @@ mod tests {
                     "clientId": "22222222-2222-2222-2222-222222222222",
                     "storageQueueEndpoint": "https://example.queue.core.windows.net",
                     "upstreamQueue": "upstream",
-                    "downstreamQueue": "downstream"
+                    "downstreamQueue": "downstream",
+                    "storageAccountName": "examplestorage",
+                    "functionAppName": "sonde-decoder-abc123"
                 }
             }
         }"#;
@@ -3830,6 +3914,45 @@ mod tests {
         assert!(err
             .to_string()
             .contains("failed to parse companionBootstrapValues"));
+    }
+
+    #[test]
+    fn test_web_ui_environment_file_round_trip() {
+        let env = WebUiEnvironmentFile {
+            version: 1,
+            name: String::new(),
+            client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            storage_account: "examplestorage".to_string(),
+            function_app_name: "sonde-decoder-abc123".to_string(),
+        };
+        let json = serde_json::to_string_pretty(&env).unwrap();
+        let parsed: WebUiEnvironmentFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(env, parsed);
+        assert!(json.contains(r#""version": 1"#));
+        assert!(json.contains(r#""name": """#));
+        assert!(json.contains(r#""clientId":"#));
+        assert!(json.contains(r#""tenantId":"#));
+        assert!(json.contains(r#""storageAccount":"#));
+        assert!(json.contains(r#""functionAppName":"#));
+    }
+
+    #[test]
+    fn test_check_runtime_ready_ignores_missing_web_ui_environment() {
+        let temp = TempDir::new().unwrap();
+        write_service_principal_state(&temp);
+        write_storage_queues_config(
+            &temp,
+            "https://example.queue.core.windows.net",
+            "upstream",
+            "downstream",
+        );
+        // Deliberately do NOT write web-ui-environment.json.
+        let result = check_runtime_ready(temp.path());
+        assert!(
+            result.is_ok(),
+            "check_runtime_ready must not depend on {WEB_UI_ENVIRONMENT_FILENAME}"
+        );
     }
 
     #[test]

@@ -870,24 +870,25 @@ The environment form MUST validate all fields before saving.
 **Description:**
 On first load with no environments configured, the SPA MUST show a full-screen
 setup modal. The main app UI MUST be inaccessible until at least one environment
-is configured.
+is configured. The modal MUST offer both manual entry and file import.
 
 **Acceptance criteria:**
 
 1. With no environments in `localStorage`, the setup modal is shown.
 2. The modal cannot be closed without adding an environment (no "Close" button).
 3. Tab bar and content area are not interactive.
+4. The setup modal includes an Import button that accepts a `.json` environment file (see WEB-0807).
 
 ---
 
-### WEB-0804  Edit and Delete Environments
+### WEB-0804  Edit, Export, and Delete Environments
 
 **Priority:** Must
 **Source:** web-ui-design.md §11.4, app.js `showEnvironmentManager()`
 **Confidence:** High
 
 **Description:**
-The SPA MUST support editing and deleting existing environments.
+The SPA MUST support editing, exporting, and deleting existing environments.
 
 **Acceptance criteria:**
 
@@ -895,6 +896,55 @@ The SPA MUST support editing and deleting existing environments.
 2. The name field is read-only during edit.
 3. Deleting an environment removes it from `localStorage`.
 4. Deleting the active environment switches to the next available environment or shows the setup modal.
+5. Each environment row shows Use (for non-active), Export, Edit, and Delete buttons.
+
+---
+
+### WEB-0807  Environment Import from JSON File
+
+**Priority:** Should
+**Source:** [issue #1074](https://github.com/Alan-Jowett/sonde/issues/1074)
+**Confidence:** High
+
+**Description:**
+The environment manager and the first-load setup modal MUST offer an Import
+button that reads a JSON environment file and adds the environment to
+`localStorage`. The import flow validates the file schema, prompts for a name
+when the `name` field is blank, and handles conflicts with existing environments.
+
+**Acceptance criteria:**
+
+1. An "Import" button is visible in both the environment manager panel and the first-load setup modal.
+2. Clicking Import opens a file picker accepting `.json` files.
+3. The file MUST contain `version` equal to integer `1`; files with missing, non-numeric, zero, or greater-than-1 version values are rejected with an error message.
+4. The four data fields (`clientId`, `tenantId`, `storageAccount`, `functionAppName`) are validated using the same rules as WEB-0802.
+5. If `name` is blank or missing, a name prompt is shown before saving.
+6. If `name` conflicts with an existing environment, a prompt offers overwrite or rename.
+7. Overwriting the active environment triggers the full re-initialization sequence defined by WEB-0806.
+8. Successfully imported environments appear in the environment list and are persisted to `localStorage`.
+9. Non-JSON files, files with missing required fields, and files with a top-level type other than object are rejected with a descriptive error message.
+10. Extra JSON properties beyond the defined schema are ignored.
+
+---
+
+### WEB-0808  Per-Environment Export to JSON File
+
+**Priority:** Should
+**Source:** [issue #1074](https://github.com/Alan-Jowett/sonde/issues/1074)
+**Confidence:** High
+
+**Description:**
+Each environment row in the environment manager MUST have an Export button that
+downloads a JSON file containing that environment's settings in the
+import-compatible schema.
+
+**Acceptance criteria:**
+
+1. Each environment row has an Export button alongside Use, Edit, and Delete.
+2. Clicking Export triggers a browser download of a `.json` file.
+3. The filename is derived from the environment name with unsafe filesystem characters replaced; if the result is empty, the fallback filename `sonde-environment.json` is used.
+4. The exported file contains `version` (integer 1) and all five fields (`name`, `clientId`, `tenantId`, `storageAccount`, `functionAppName`).
+5. The exported file is valid for re-import via WEB-0807.
 
 ---
 

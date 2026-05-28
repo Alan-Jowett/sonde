@@ -328,6 +328,10 @@ pub struct Gateway {
     connector_event_hub: Arc<ConnectorEventHub>,
     /// Tracks unknown key_hints for reporting in ACTUAL_STATE (GW-2009).
     missing_hint_tracker: Arc<RwLock<MissingKeyHintTracker>>,
+    /// Signalled when `MissingKeyHintTracker::report()` accepts a new hint,
+    /// allowing the ACTUAL_STATE re-emission task to debounce and re-emit
+    /// (GW-2003 AC-6, §23.14).
+    missing_hints_notify: Arc<tokio::sync::Notify>,
     /// Typed storage reference for pending_recovery access (GW-2009).
     sqlite_storage: Option<Arc<SqliteStorage>>,
     /// Cached master_key_id for pending_recovery lookups (GW-2009).
@@ -351,6 +355,7 @@ impl Gateway {
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
             missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
+            missing_hints_notify: Arc::new(tokio::sync::Notify::new()),
             sqlite_storage: None,
             cached_master_key_id: None,
         }
@@ -381,6 +386,7 @@ impl Gateway {
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
             missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
+            missing_hints_notify: Arc::new(tokio::sync::Notify::new()),
             sqlite_storage: None,
             cached_master_key_id: None,
         }
@@ -404,6 +410,7 @@ impl Gateway {
             deferred_replies: Arc::new(RwLock::new(HashMap::new())),
             connector_event_hub: Arc::new(ConnectorEventHub::default()),
             missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
+            missing_hints_notify: Arc::new(tokio::sync::Notify::new()),
             sqlite_storage: None,
             cached_master_key_id: None,
         }
@@ -460,6 +467,20 @@ impl Gateway {
     /// pending set. Rate-limit timestamps are preserved.
     pub async fn drain_missing_hints(&self) -> Vec<u16> {
         self.missing_hint_tracker.write().await.drain()
+    }
+
+    /// Return a clone of the `Notify` used to signal when the
+    /// `MissingKeyHintTracker` accepts a new hint (GW-2003 AC-6, §23.14).
+    pub fn missing_hints_notify(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.missing_hints_notify)
+    }
+
+    /// Record an unknown `key_hint` and notify the ACTUAL_STATE re-emission
+    /// task if the hint was accepted (not rate-limited).
+    async fn report_missing_hint(&self, key_hint: u16) {
+        if self.missing_hint_tracker.write().await.report(key_hint) {
+            self.missing_hints_notify.notify_one();
+        }
     }
 
     /// Process a raw frame using AES-256-GCM authenticated encryption.
@@ -550,7 +571,7 @@ impl Gateway {
             Some(s) => Arc::clone(s),
             None => {
                 // No SQLite storage — can't do recovery. Record and discard.
-                self.missing_hint_tracker.write().await.report(key_hint);
+                self.report_missing_hint(key_hint).await;
                 warn!(
                     key_hint,
                     "discarding frame from unknown node (no recovery storage)"
@@ -564,7 +585,7 @@ impl Gateway {
             Some(kid) => kid,
             None => {
                 warn!(key_hint, "no cached master_key_id — recovery unavailable");
-                self.missing_hint_tracker.write().await.report(key_hint);
+                self.report_missing_hint(key_hint).await;
                 return None;
             }
         };
@@ -579,14 +600,14 @@ impl Gateway {
             Ok(c) => c,
             Err(e) => {
                 warn!(key_hint, "pending_recovery lookup failed: {e}");
-                self.missing_hint_tracker.write().await.report(key_hint);
+                self.report_missing_hint(key_hint).await;
                 return None;
             }
         };
 
         if recovery_candidates.is_empty() {
             // No recovery candidates — record the hint and discard.
-            self.missing_hint_tracker.write().await.report(key_hint);
+            self.report_missing_hint(key_hint).await;
             warn!(
                 key_hint,
                 "discarding frame from unknown node (no pending_recovery match)"
@@ -637,7 +658,7 @@ impl Gateway {
             Some(n) => n,
             None => {
                 // All candidates failed — record hint for reporting.
-                self.missing_hint_tracker.write().await.report(key_hint);
+                self.report_missing_hint(key_hint).await;
                 debug!(
                     key_hint,
                     candidates = recovery_candidates.len(),
@@ -2112,5 +2133,64 @@ impl Gateway {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn report_missing_hint_fires_notify() {
+        let storage: Arc<dyn Storage> = Arc::new(crate::storage::InMemoryStorage::new());
+        let gw = Gateway::new(storage, Duration::from_secs(300));
+        let notify = gw.missing_hints_notify();
+
+        // Report a new hint — should fire notify.
+        gw.report_missing_hint(0x1234).await;
+
+        // Verify notification is pending (non-blocking check).
+        tokio::time::timeout(Duration::from_millis(50), notify.notified())
+            .await
+            .expect("notify should have been signalled for new hint");
+    }
+
+    #[tokio::test]
+    async fn report_missing_hint_rate_limited_does_not_fire() {
+        let storage: Arc<dyn Storage> = Arc::new(crate::storage::InMemoryStorage::new());
+        let gw = Gateway::new(storage, Duration::from_secs(300));
+        let notify = gw.missing_hints_notify();
+
+        // First report — accepted.
+        gw.report_missing_hint(0xABCD).await;
+        // Consume the notification.
+        tokio::time::timeout(Duration::from_millis(50), notify.notified())
+            .await
+            .expect("first report should fire notify");
+
+        // Second report of same hint — rate-limited.
+        gw.report_missing_hint(0xABCD).await;
+        // Should NOT fire.
+        let result = tokio::time::timeout(Duration::from_millis(50), notify.notified()).await;
+        assert!(result.is_err(), "rate-limited hint should not fire notify");
+    }
+
+    #[tokio::test]
+    async fn drain_missing_hints_returns_reported() {
+        let storage: Arc<dyn Storage> = Arc::new(crate::storage::InMemoryStorage::new());
+        let gw = Gateway::new(storage, Duration::from_secs(300));
+
+        gw.report_missing_hint(0x1111).await;
+        gw.report_missing_hint(0x2222).await;
+
+        let hints = gw.drain_missing_hints().await;
+        assert_eq!(hints.len(), 2);
+        assert!(hints.contains(&0x1111));
+        assert!(hints.contains(&0x2222));
+
+        // Second drain should be empty.
+        let empty = gw.drain_missing_hints().await;
+        assert!(empty.is_empty());
     }
 }

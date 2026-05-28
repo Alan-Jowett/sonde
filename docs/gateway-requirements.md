@@ -2621,6 +2621,12 @@ whenever gateway state changes.
 2. `entity_kind = "gateway"`, `entity_id = hex(gateway_id)`.
 3. Node-specific CBOR keys 4–8, 10–11 are absent.
 4. Emitted on startup and connector reconnection.
+5. Re-emitted on rotation completion with updated `master_key_id` and
+   `master_key_epoch`.
+6. Re-emitted within 60 seconds when `MissingKeyHintTracker` accepts a
+   previously-unseen `key_hint`, using a debounce window to coalesce
+   concurrent arrivals.
+7. Re-emitted when salt or KDF params are adopted from DESIRED_STATE.
 
 ---
 

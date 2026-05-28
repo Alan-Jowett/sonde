@@ -125,11 +125,17 @@ async fn test_t2006_declarative_node_recovery() {
             id
         });
 
+    let entity_id: String = identity
+        .gateway_id()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
     let engine = RotationEngine::new(store.clone(), identity, event_hub, grpc_rx, ds_rx);
 
     // Send the DESIRED_STATE with recovered_psks through the channel.
     let desired_state = GatewayDesiredState {
-        entity_id: "gateway-1".to_string(),
+        entity_id,
         channel: None,
         salt: None,
         kdf_params: None,
@@ -274,6 +280,12 @@ async fn test_t2006b_mismatched_master_key_id_skipped() {
         .unwrap()
         .unwrap_or_else(|| GatewayIdentity::generate().unwrap());
 
+    let entity_id: String = identity
+        .gateway_id()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
     let (_, grpc_rx) = tokio::sync::mpsc::unbounded_channel();
     let (ds_tx, ds_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = Arc::new(ConnectorEventHub::default());
@@ -285,7 +297,7 @@ async fn test_t2006b_mismatched_master_key_id_skipped() {
     let encrypted_psk = encrypt_psk(&master_key, "orphan-node", &TEST_PSK).unwrap();
 
     let desired_state = GatewayDesiredState {
-        entity_id: "gateway-1".to_string(),
+        entity_id,
         channel: None,
         salt: None,
         kdf_params: None,

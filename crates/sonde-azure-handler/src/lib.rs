@@ -11,7 +11,7 @@ use azure_core_legacy::auth::TokenCredential as LegacyTokenCredential;
 use azure_core_legacy::error::ErrorKind as LegacyAzureErrorKind;
 use azure_core_legacy::Error as LegacyAzureError;
 use azure_core_legacy::StatusCode as LegacyStatusCode;
-use azure_data_tables::prelude::TableServiceClient;
+use azure_data_tables::clients::TableServiceClientBuilder;
 use azure_identity::ManagedIdentityCredential;
 use azure_identity_legacy::{AppServiceManagedIdentityCredential, TokenCredentialOptions};
 use base64::Engine as _;
@@ -905,6 +905,45 @@ pub fn format_ingest_response(status_code: u16, body: &serde_json::Value) -> ser
     })
 }
 
+/// Workaround for azure-sdk-for-rust#4489: some Azure Table Storage stamps
+/// omit the `Server` HTTP response header, but `azure_storage` 0.21.0
+/// `CommonStorageResponseHeaders` unconditionally requires it, failing with
+/// `"header not found server"`. This policy injects a synthetic header when
+/// one is missing so the SDK's response parsing succeeds.
+#[derive(Debug)]
+struct InjectServerHeaderPolicy;
+
+#[async_trait]
+impl azure_core_legacy::Policy for InjectServerHeaderPolicy {
+    async fn send(
+        &self,
+        ctx: &azure_core_legacy::Context,
+        request: &mut azure_core_legacy::Request,
+        next: &[Arc<dyn azure_core_legacy::Policy>],
+    ) -> azure_core_legacy::PolicyResult {
+        let response = next[0].send(ctx, request, &next[1..]).await?;
+        if response
+            .headers()
+            .get_optional_str(&azure_core_legacy::headers::SERVER)
+            .is_none()
+        {
+            // Deconstruct, inject, reconstruct — Response has no headers_mut().
+            let (status, mut headers, body) = response.deconstruct();
+            headers.insert(
+                azure_core_legacy::headers::SERVER,
+                "Windows-Azure-Table/1.0 Microsoft-HTTPAPI/2.0",
+            );
+            Ok(azure_core_legacy::Response::new(
+                status,
+                headers,
+                Box::pin(body),
+            ))
+        } else {
+            Ok(response)
+        }
+    }
+}
+
 pub struct AzureTablesStore {
     actual_state_table: azure_data_tables::clients::TableClient,
     desired_state_table: azure_data_tables::clients::TableClient,
@@ -920,7 +959,12 @@ impl AzureTablesStore {
                     HandlerError::Config(format!("create Azure Table credential failed: {e}"))
                 })?,
         );
-        let service = TableServiceClient::new(config.storage_account.clone(), credential);
+        let mut opts = azure_core_legacy::ClientOptions::default();
+        opts.per_call_policies_mut()
+            .push(Arc::new(InjectServerHeaderPolicy));
+        let service = TableServiceClientBuilder::new(config.storage_account.clone(), credential)
+            .client_options(opts)
+            .build();
         Ok(Self {
             actual_state_table: service.table_client(config.actual_state_table.clone()),
             desired_state_table: service.table_client(config.desired_state_table.clone()),
@@ -5122,5 +5166,101 @@ mod tests {
 
         let result = decode_connector_message(&bytes);
         assert!(result.is_err(), "string value at key 28 should fail decode");
+    }
+
+    // --- T-AZH-0700: InjectServerHeaderPolicy injects Server when missing ---
+    #[tokio::test]
+    async fn t_azh_0700_inject_server_header_when_missing() {
+        use azure_core_legacy::headers::{Headers, SERVER};
+        use azure_core_legacy::{Context, Policy, Response, StatusCode};
+
+        // Terminal policy that returns a response with no Server header.
+        #[derive(Debug)]
+        struct NoServerHeaderTerminal;
+
+        #[async_trait]
+        impl Policy for NoServerHeaderTerminal {
+            async fn send(
+                &self,
+                _ctx: &Context,
+                _request: &mut azure_core_legacy::Request,
+                _next: &[Arc<dyn Policy>],
+            ) -> azure_core_legacy::PolicyResult {
+                let headers = Headers::new();
+                Ok(Response::new(
+                    StatusCode::Ok,
+                    headers,
+                    Box::pin(azure_core_legacy::BytesStream::new_empty()),
+                ))
+            }
+        }
+
+        let policy = InjectServerHeaderPolicy;
+        let terminal: Arc<dyn Policy> = Arc::new(NoServerHeaderTerminal);
+        let next = vec![terminal];
+
+        let ctx = Context::new();
+        let mut request = azure_core_legacy::Request::new(
+            "https://example.table.core.windows.net/Tables"
+                .parse()
+                .unwrap(),
+            azure_core_legacy::Method::Get,
+        );
+
+        let response = policy.send(&ctx, &mut request, &next).await.unwrap();
+        let server = response.headers().get_optional_str(&SERVER);
+        assert_eq!(
+            server,
+            Some("Windows-Azure-Table/1.0 Microsoft-HTTPAPI/2.0"),
+            "policy must inject Server header when absent"
+        );
+    }
+
+    // --- T-AZH-0701: InjectServerHeaderPolicy preserves existing Server header ---
+    #[tokio::test]
+    async fn t_azh_0701_preserve_existing_server_header() {
+        use azure_core_legacy::headers::{Headers, SERVER};
+        use azure_core_legacy::{Context, Policy, Response, StatusCode};
+
+        #[derive(Debug)]
+        struct HasServerHeaderTerminal;
+
+        #[async_trait]
+        impl Policy for HasServerHeaderTerminal {
+            async fn send(
+                &self,
+                _ctx: &Context,
+                _request: &mut azure_core_legacy::Request,
+                _next: &[Arc<dyn Policy>],
+            ) -> azure_core_legacy::PolicyResult {
+                let mut headers = Headers::new();
+                headers.insert(SERVER, "OriginalServer/1.0");
+                Ok(Response::new(
+                    StatusCode::Ok,
+                    headers,
+                    Box::pin(azure_core_legacy::BytesStream::new_empty()),
+                ))
+            }
+        }
+
+        let policy = InjectServerHeaderPolicy;
+        let terminal: Arc<dyn Policy> = Arc::new(HasServerHeaderTerminal);
+        let next = vec![terminal];
+
+        let ctx = Context::new();
+        let mut request = azure_core_legacy::Request::new(
+            "https://example.table.core.windows.net/Tables"
+                .parse()
+                .unwrap(),
+            azure_core_legacy::Method::Get,
+        );
+
+        let response = policy.send(&ctx, &mut request, &next).await.unwrap();
+        let server = response.headers().get_optional_str(&SERVER);
+        assert_eq!(
+            server,
+            Some("OriginalServer/1.0"),
+            "policy must not overwrite existing Server header"
+        );
     }
 }

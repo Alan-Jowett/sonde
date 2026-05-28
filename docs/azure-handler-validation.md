@@ -462,3 +462,29 @@ divergence publication instead of treating that redelivery as permanently stale.
    escrow-related status update.
 2. Query the `actualstate` table for rows associated with that phone identity.
 3. Assert: no row is created with `entity_kind = "phone"`.
+
+---
+
+### T-AZH-0700  `InjectServerHeaderPolicy` injects `Server` when missing
+
+**Validates:** AZH-0700
+
+**Procedure:**
+1. Create an `InjectServerHeaderPolicy` instance and a terminal policy that
+   returns a response with no `Server` header.
+2. Send a request through the policy chain.
+3. Assert: the returned response contains a `Server` header with value
+   `"Windows-Azure-Table/1.0 Microsoft-HTTPAPI/2.0"`.
+
+---
+
+### T-AZH-0701  `InjectServerHeaderPolicy` preserves existing `Server` header
+
+**Validates:** AZH-0700
+
+**Procedure:**
+1. Create an `InjectServerHeaderPolicy` instance and a terminal policy that
+   returns a response with `Server: OriginalServer/1.0`.
+2. Send a request through the policy chain.
+3. Assert: the returned response contains a `Server` header with value
+   `"OriginalServer/1.0"` (unmodified).

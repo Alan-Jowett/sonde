@@ -503,3 +503,25 @@ Gateway `DESIRED_STATE` is written to the `desiredstate` Azure Table with
 
 1. Gateway `DESIRED_STATE` uses the correct CBOR key numbers.
 2. The `PartitionKey` uses the `"g:"` prefix.
+
+---
+
+### AZH-0700  SDK workaround — missing `Server` response header
+
+**Priority:** Must
+**Source:** Issue #1089, azure-sdk-for-rust#4489
+
+**Description:**
+Some Azure Table Storage stamps omit the `Server` HTTP response header.
+`azure_storage` 0.21.0 `CommonStorageResponseHeaders` unconditionally
+requires this header, causing all table operations to fail with
+`"header not found server"`. The handler MUST inject a synthetic `Server`
+header into Azure Table Storage responses that lack one, using the SDK's
+`Policy` pipeline extension mechanism.
+
+**Acceptance criteria:**
+
+1. When the `Server` header is absent, the policy injects
+   `"Windows-Azure-Table/1.0 Microsoft-HTTPAPI/2.0"`.
+2. When the `Server` header is already present, it is not modified.
+3. The workaround is removable when the upstream SDK fix lands.

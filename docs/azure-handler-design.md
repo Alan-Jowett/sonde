@@ -397,7 +397,7 @@ configuration.
 
 ## 7  Failure handling
 
-> **Requirements:** AZH-0400
+> **Requirements:** AZH-0400, AZH-0700
 
 The handler follows a fail-closed rule for all Azure Table and Storage Queue
 operations that determine externally visible control-plane behavior:
@@ -409,6 +409,22 @@ operations that determine externally visible control-plane behavior:
 This failure model preserves at-least-once retry behavior from the Azure
 Function runtime instead of silently pretending that state was reconciled or
 sensor data was stored.
+
+### 7.1  SDK workaround — missing `Server` response header
+
+> **Requirements:** AZH-0700
+
+Some Azure Table Storage stamps omit the `Server` HTTP response header that
+`azure_storage` 0.21.0 `CommonStorageResponseHeaders` unconditionally
+requires (upstream: azure-sdk-for-rust#4489). Without mitigation, all table
+operations fail with `"header not found server"`.
+
+The handler injects an `InjectServerHeaderPolicy` into the
+`TableServiceClientBuilder` pipeline (via `per_call_policies`) that adds a
+synthetic `Server: Windows-Azure-Table/1.0 Microsoft-HTTPAPI/2.0` header to
+responses when one is missing. The policy is a no-op when the header is
+already present. This uses the SDK's intended extension mechanism and is
+removable when the upstream fix lands.
 
 ---
 

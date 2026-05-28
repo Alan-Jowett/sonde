@@ -2066,9 +2066,9 @@ Insert after step 9 (start connector):
 >     current state fields.
 > 9b. Compute BIP-39 fingerprint from the gateway identity's X25519
 >     public key using `compute_fingerprint()` (§23.10).  Cache the
->     resulting 6 words as `[String; 6]` for the lifetime of the
->     process — the identity is immutable, so the fingerprint never
->     changes during a single run.
+>     resulting 6 words for the lifetime of the process — the
+>     identity is immutable, so the fingerprint never changes during
+>     a single run.
 > 9c. Register fingerprint + rotation code as modem display pages.
 >     Extend `StatusPage` with two new variants (`Fingerprint`,
 >     `RotationCode`) so the idle short-press cycle becomes

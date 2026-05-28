@@ -108,7 +108,7 @@ Focus areas: **full audit** — all components, all drift categories (D1–D13).
 ### Method
 
 - 5 parallel exploration agents for spec-vs-code comparison (protocol/BPF,
-  gateway, node/modem, pair/admin/azure, bundle/E2E/HW)
+  gateway, node/modem, pair/admin/azure, E2E/HW)
 - Manual `grep`/`view` verification of all agent findings and all 27
   previous-audit residuals
 - Targeted deep-read of new decoder BPF, Azure handler, and modem display
@@ -367,13 +367,7 @@ coverage: T-1900a–d, T-1902, T-1903, T-1904a–e.  Two acceptance criteria
 low-risk because Prevail verification covers the context ABI, and the
 logging helper is simple.
 
-### Pattern 3: Spec-type mismatch (F-006)
-
-The bundle spec was written with language-agnostic types ("0 or negative")
-while the implementation uses `u32`.  The mismatch creates a dead-letter
-acceptance criterion.
-
-### Pattern 4: Residual deferrals (F-005, F-007)
+### Pattern 3: Residual deferrals (F-005, F-007)
 
 Two findings from the April 2026 audit remain open: modem timing assertion
 (fragile on real hardware) and hardware CI workflow (tool still maturing).

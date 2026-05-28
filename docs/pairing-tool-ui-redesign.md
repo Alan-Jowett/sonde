@@ -88,8 +88,8 @@ deployment plan.
 **Backend requirements:**
 - Existing `pair_gateway()` Tauri command
   (internally calls `phase1::pair_with_gateway`)
-- **New:** Download deployment plan from gateway after pairing
-  (requires new protocol message or admin API endpoint)
+- **New (Phase B):** Fetch deployment plan (source TBD — see
+  Deployment Plan Integration section below)
 
 ### Step 2 — Node Plan Overview
 
@@ -105,7 +105,8 @@ deployment plan.
 - Dropdown/select for quick navigation
 - "All Done" button (enabled when all nodes provisioned)
 
-**Data source:** Deployment plan `nodes[]` array (schema TBD):
+**Data source:** Deployment plan `nodes[]` array (schema TBD —
+"node plan" in the UI refers to this data):
 - `name` — node identifier
 - `hardware.sensors[]` — list of sensor types
 - `hardware.pins` — I²C pin configuration (`i2c0_sda`, `i2c0_scl`)
@@ -227,8 +228,8 @@ Most backend commands already exist:
 - `get_pairing_status()` — status check
 
 **New commands needed:**
-- `get_node_plan()` — download deployment plan from gateway
-  (requires gateway admin API extension or new BLE message)
+- `get_deployment_plan()` — fetch deployment plan
+  (source TBD — gateway admin API, BLE message, or cloud)
 
 ### Deployment Plan Integration
 

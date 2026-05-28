@@ -7,7 +7,7 @@
 
 This audit applies the full D1–D13 drift detection taxonomy across all
 Sonde components: Protocol, Gateway, Node, Modem, BLE Pairing, BPF
-Interpreter, Bundle, and E2E. It succeeds the 2026-03-30 audit (32
+Interpreter, and E2E. It succeeds the 2026-03-30 audit (32
 findings, 27 resolved in PRs #667–#670).
 
 **Key metrics:**
@@ -20,7 +20,7 @@ findings, 27 resolved in PRs #667–#670).
 | Modem        | 9        | 0        | 1    | 5      | 3   |
 | BLE Pairing  | 6        | 0        | 1    | 3      | 2   |
 | BPF          | 2        | 0        | 2    | 0      | 0   |
-| E2E/Bundle   | 0        | 0        | 0    | 0      | 0   |
+| E2E          | 0        | 0        | 0    | 0      | 0   |
 | Hardware     | 1        | 0        | 0    | 0      | 1   |
 | **Total**    | **27**   | **0**    | **7**| **11** | **9**|
 

@@ -1387,7 +1387,7 @@ The passkey screen has priority over the generic connected state until Numeric C
 
 Outside an active BLE pairing session, `EVENT_BUTTON(BUTTON_SHORT)` advances the modem display through a gateway-owned sequence of status pages. The gateway chooses the sequence contents and renders each page into the same 128×64 framebuffer format used for the default banner and pairing screens.
 
-The default page sequence remains `[Channel, Nodes]`. The `Channel` page uses the existing centered two-line renderer. The `Nodes` page uses a node-status renderer that shows the operational node details most useful on the display: node ID, assigned/current program identifiers, battery, last seen, and schedule, with nodes ordered by `node_id`, `key_hint` intentionally omitted, and `No nodes registered.` shown when the registry is empty. For assigned/current programs, the renderer resolves the default identifier from the stored `source_filename` basename when available and falls back to the hash when the metadata is absent. `last seen` is converted to the host's local timezone and formatted with locale-style date/time output rather than fixed UTC text. On the display, each field is formatted as a left-aligned property line followed by a left-aligned `- value` line so property names and values remain distinguishable on the small screen.
+The default page sequence is `[Channel, Nodes, Fingerprint, RotationCode]` (see §23.11 steps 9b–9c for the Fingerprint and RotationCode additions). The `Channel` page uses the existing centered two-line renderer. The `Nodes` page uses a node-status renderer that shows the operational node details most useful on the display: node ID, assigned/current program identifiers, battery, last seen, and schedule, with nodes ordered by `node_id`, `key_hint` intentionally omitted, and `No nodes registered.` shown when the registry is empty. For assigned/current programs, the renderer resolves the default identifier from the stored `source_filename` basename when available and falls back to the hash when the metadata is absent. `last seen` is converted to the host's local timezone and formatted with locale-style date/time output rather than fixed UTC text. On the display, each field is formatted as a left-aligned property line followed by a left-aligned `- value` line so property names and values remain distinguishable on the small screen. The `Fingerprint` page shows the 6 BIP-39 words computed from the gateway identity's X25519 public key, cached once at startup. The `RotationCode` page reads the current rotation code from storage on each render.
 
 The gateway tracks the status-page cycle as a cursor over the configured page sequence (`StatusPageCycle { next_page_index }` in `bin/gateway.rs`) together with a monotonically increasing `display_generation` used to invalidate older timeout tasks. When the active page is `Nodes`, the gateway also tracks node-page-local scroll state: the current vertical window offset and whether an autonomous 50 ms scroll ticker is active for the current display generation.
 
@@ -2064,9 +2064,18 @@ Insert after step 9 (start connector):
 > 9a. Emit gateway ACTUAL_STATE via
 >     `connector_event_hub.emit_gateway_actual_state()` with all
 >     current state fields.
-> 9b. Compute BIP-39 fingerprint. *(deferred to follow-up issue)*
+> 9b. Compute BIP-39 fingerprint from the gateway identity's X25519
+>     public key using `compute_fingerprint()` (§23.10).  Cache the
+>     resulting 6 words for the lifetime of the process — the
+>     identity is immutable, so the fingerprint never changes during
+>     a single run.
 > 9c. Register fingerprint + rotation code as modem display pages.
->     *(deferred to follow-up issue)*
+>     Extend `StatusPage` with two new variants (`Fingerprint`,
+>     `RotationCode`) so the idle short-press cycle becomes
+>     Channel → Nodes → Fingerprint → Rotation Code → Channel → …
+>     The fingerprint page uses the cached words from step 9b.
+>     The rotation code page reads the current value from storage
+>     on each render (the code may change during a rotation).
 
 ### 23.12  gRPC rotation API (GW-2012)
 

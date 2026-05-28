@@ -17,8 +17,9 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use sonde_gateway::display_banner::{
-    render_display_message, render_status_text_page, send_display_message,
-    send_gateway_version_banner, ScrollableFramebuffer, STATUS_TEXT_COLUMNS,
+    render_display_message, render_fingerprint_page, render_rotation_code_page,
+    render_status_text_page, send_display_message, send_gateway_version_banner,
+    ScrollableFramebuffer, STATUS_TEXT_COLUMNS,
 };
 use sonde_gateway::display_control::{
     cancel_status_page_scroll, claim_display_generation, invalidate_display_restore,
@@ -62,10 +63,17 @@ enum ButtonDisplayState {
 enum StatusPage {
     Channel,
     Nodes,
+    Fingerprint,
+    RotationCode,
 }
 
 impl StatusPage {
-    const ALL: [StatusPage; 2] = [StatusPage::Channel, StatusPage::Nodes];
+    const ALL: [StatusPage; 4] = [
+        StatusPage::Channel,
+        StatusPage::Nodes,
+        StatusPage::Fingerprint,
+        StatusPage::RotationCode,
+    ];
 }
 
 enum RenderedStatusPage {
@@ -260,6 +268,7 @@ async fn render_status_page(
     session_manager: Option<&Arc<SessionManager>>,
     default_channel: u8,
     page: StatusPage,
+    fingerprint_words: &[&'static str; 6],
 ) -> RenderedStatusPage {
     match page {
         StatusPage::Channel => {
@@ -308,6 +317,23 @@ async fn render_status_page(
                 RenderedStatusPage::Static(Box::new(render_display_message(&["Nodes", "Error"])))
             }
         },
+        StatusPage::Fingerprint => {
+            RenderedStatusPage::Static(Box::new(render_fingerprint_page(fingerprint_words)))
+        }
+        StatusPage::RotationCode => {
+            let code = match storage.get_config("rotation_code").await {
+                Ok(Some(code)) => code,
+                Ok(None) => {
+                    warn!("rotation_code not found in storage for status page");
+                    "------".to_string()
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to load rotation_code for status page");
+                    "Error".to_string()
+                }
+            };
+            RenderedStatusPage::Static(Box::new(render_rotation_code_page(&code)))
+        }
     }
 }
 
@@ -601,6 +627,7 @@ async fn handle_idle_button_short_event(
     display_generation: &Arc<AtomicU64>,
     status_page_cycle: &Arc<tokio::sync::Mutex<StatusPageCycle>>,
     scroll_task: &StatusPageScrollTask,
+    fingerprint_words: &[&'static str; 6],
 ) -> bool {
     if controller.session_origin().await.is_some() {
         return false;
@@ -614,8 +641,14 @@ async fn handle_idle_button_short_event(
         cycle.next_page_index = (cycle.next_page_index + 1) % StatusPage::ALL.len();
         page
     };
-    let rendered_page =
-        render_status_page(storage, Some(session_manager), default_channel, page).await;
+    let rendered_page = render_status_page(
+        storage,
+        Some(session_manager),
+        default_channel,
+        page,
+        fingerprint_words,
+    )
+    .await;
     let initial_frame = rendered_page.initial_frame();
     let initial_send_ok = match transport.send_display_frame(initial_frame).await {
         Ok(()) => true,
@@ -1423,6 +1456,19 @@ async fn run_gateway(
                 }
             };
 
+            // Compute BIP-39 fingerprint from the gateway's X25519 public key.
+            // Identity is immutable during a run, so compute once and reuse.
+            let fingerprint_words = match identity.to_x25519() {
+                Ok((_, x25519_public)) => {
+                    let sha = sonde_gateway::crypto::RustCryptoSha256;
+                    sonde_protocol::compute_fingerprint(x25519_public.as_bytes(), &sha)
+                }
+                Err(e) => {
+                    error!("BLE loop: X25519 conversion failed for fingerprint: {e}");
+                    return;
+                }
+            };
+
             // Use the shared registration window via the controller.
             let mut window = sonde_gateway::ble_pairing::RegistrationWindow::new();
             let button_timeout = tokio::time::sleep(Duration::from_secs(24 * 60 * 60));
@@ -1646,6 +1692,7 @@ async fn run_gateway(
                                     &display_generation,
                                     &status_page_cycle,
                                     &status_page_scroll_task,
+                                    &fingerprint_words,
                                 )
                                 .await;
                             }
@@ -2281,6 +2328,13 @@ mod tests {
         DISPLAY_FRAME_BODY_SIZE, DISPLAY_FRAME_CHUNK_COUNT, DISPLAY_FRAME_CHUNK_SIZE,
     };
 
+    /// Compute BIP-39 fingerprint words for tests using the conventional
+    /// non-zero test key `[0x42u8; 32]`.
+    fn test_fingerprint_words() -> [&'static str; 6] {
+        use sonde_gateway::crypto::RustCryptoSha256;
+        sonde_protocol::compute_fingerprint(&[0x42u8; 32], &RustCryptoSha256)
+    }
+
     async fn read_next_message(
         stream: &mut DuplexStream,
         decoder: &mut FrameDecoder,
@@ -2639,8 +2693,14 @@ mod tests {
         seed_runtime_observation(&session_manager, &node.node_id, last_seen, battery_mv).await;
         let storage: Arc<dyn Storage> = storage;
 
-        let rendered =
-            render_status_page(&storage, Some(&session_manager), 6, StatusPage::Nodes).await;
+        let rendered = render_status_page(
+            &storage,
+            Some(&session_manager),
+            6,
+            StatusPage::Nodes,
+            &test_fingerprint_words(),
+        )
+        .await;
         let mut last_seen_by_node = HashMap::new();
         last_seen_by_node.insert(node.node_id.clone(), last_seen);
         let mut battery_mv_by_node = HashMap::new();
@@ -2685,8 +2745,14 @@ mod tests {
             .await;
         session_manager.record_battery_mv("runtime", 3300).await;
 
-        let rendered =
-            render_status_page(&storage, Some(&session_manager), 6, StatusPage::Nodes).await;
+        let rendered = render_status_page(
+            &storage,
+            Some(&session_manager),
+            6,
+            StatusPage::Nodes,
+            &test_fingerprint_words(),
+        )
+        .await;
         let mut last_seen_by_node = HashMap::new();
         last_seen_by_node.insert(node.node_id.clone(), observed_at);
         let mut battery_mv_by_node = HashMap::new();
@@ -3150,6 +3216,7 @@ mod tests {
                     &display_generation,
                     &status_page_cycle,
                     &status_page_scroll_task,
+                    &test_fingerprint_words(),
                 )
                 .await
             }
@@ -3184,6 +3251,7 @@ mod tests {
                     &display_generation,
                     &status_page_cycle,
                     &status_page_scroll_task,
+                    &test_fingerprint_words(),
                 )
                 .await
             }
@@ -3287,6 +3355,7 @@ mod tests {
                         &display_generation,
                         &status_page_cycle,
                         &status_page_scroll_task,
+                        &test_fingerprint_words(),
                     )
                     .await
                 }
@@ -3378,6 +3447,7 @@ mod tests {
                         &display_generation,
                         &status_page_cycle,
                         &status_page_scroll_task,
+                        &test_fingerprint_words(),
                     )
                     .await
                 }
@@ -3392,6 +3462,36 @@ mod tests {
             framebuffer,
             expected_nodes_page.visible_window(NODE_STATUS_SCROLL_STEP_PX)
         );
+
+        // Cycle through the remaining pages (Fingerprint, RotationCode) then
+        // back to Channel and finally Nodes to verify scroll restarts from top.
+        for _ in 0..2 {
+            let press = tokio::spawn({
+                let transport = Arc::clone(&transport);
+                let controller = Arc::clone(&controller);
+                let storage = Arc::clone(&storage);
+                let session_manager = Arc::clone(&session_manager);
+                let display_generation = Arc::clone(&display_generation);
+                let status_page_cycle = Arc::clone(&status_page_cycle);
+                let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
+                async move {
+                    handle_idle_button_short_event(
+                        &transport,
+                        &controller,
+                        &storage,
+                        &session_manager,
+                        6,
+                        &display_generation,
+                        &status_page_cycle,
+                        &status_page_scroll_task,
+                        &test_fingerprint_words(),
+                    )
+                    .await
+                }
+            });
+            let _ = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+            assert!(press.await.unwrap());
+        }
 
         for expected_frame in [
             render_display_message(&["Channel", "11"]),
@@ -3415,6 +3515,7 @@ mod tests {
                         &display_generation,
                         &status_page_cycle,
                         &status_page_scroll_task,
+                        &test_fingerprint_words(),
                     )
                     .await
                 }
@@ -3474,6 +3575,7 @@ mod tests {
                         &display_generation,
                         &status_page_cycle,
                         &status_page_scroll_task,
+                        &test_fingerprint_words(),
                     )
                     .await
                 }
@@ -3526,6 +3628,7 @@ mod tests {
                     &display_generation,
                     &status_page_cycle,
                     &status_page_scroll_task,
+                    &test_fingerprint_words(),
                 )
                 .await
             }
@@ -3595,6 +3698,220 @@ mod tests {
         );
         assert_eq!(status_page_cycle.lock().await.next_page_index, 0);
         dummy_scroll_watcher.join().unwrap();
+    }
+
+    /// T-1103h: Verify all 4 status pages cycle in order
+    /// Channel → Nodes → Fingerprint → RotationCode.
+    #[tokio::test]
+    async fn status_pages_cycle_through_all_four_pages() {
+        use sonde_gateway::display_banner::{render_fingerprint_page, render_rotation_code_page};
+
+        let (transport, mut server) = create_transport_and_server(6).await;
+        let controller = Arc::new(BlePairingController::new());
+        let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
+        let status_page_scroll_task: StatusPageScrollTask = Arc::new(tokio::sync::Mutex::new(None));
+        let storage = Arc::new(InMemoryStorage::new());
+        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(60)));
+        storage.set_config("espnow_channel", "11").await.unwrap();
+        storage.set_config("rotation_code", "ABC123").await.unwrap();
+        let storage: Arc<dyn Storage> = storage;
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 2048];
+
+        let fp_words = test_fingerprint_words();
+        let expected_pages: Vec<_> = vec![
+            render_display_message(&["Channel", "11"]),
+            render_status_text_page(&build_node_status_lines(
+                &[] as &[NodeRecord],
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+            ))
+            .visible_window(0),
+            render_fingerprint_page(&fp_words),
+            render_rotation_code_page("ABC123"),
+        ];
+
+        tokio::time::pause();
+        for (i, expected_frame) in expected_pages.iter().enumerate() {
+            let press = tokio::spawn({
+                let transport = Arc::clone(&transport);
+                let controller = Arc::clone(&controller);
+                let storage = Arc::clone(&storage);
+                let session_manager = Arc::clone(&session_manager);
+                let display_generation = Arc::clone(&display_generation);
+                let status_page_cycle = Arc::clone(&status_page_cycle);
+                let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
+                let fp = fp_words;
+                async move {
+                    handle_idle_button_short_event(
+                        &transport,
+                        &controller,
+                        &storage,
+                        &session_manager,
+                        6,
+                        &display_generation,
+                        &status_page_cycle,
+                        &status_page_scroll_task,
+                        &fp,
+                    )
+                    .await
+                }
+            });
+            let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+            assert_eq!(
+                framebuffer, *expected_frame,
+                "page {i} mismatch (0=Channel, 1=Nodes, 2=Fingerprint, 3=RotationCode)"
+            );
+            assert!(press.await.unwrap());
+        }
+    }
+
+    /// T-1103i: Verify rotation code reads fresh from storage on each render.
+    #[tokio::test]
+    async fn rotation_code_page_reads_fresh_from_storage() {
+        use sonde_gateway::display_banner::render_rotation_code_page;
+
+        let (transport, mut server) = create_transport_and_server(6).await;
+        let controller = Arc::new(BlePairingController::new());
+        let display_generation = Arc::new(AtomicU64::new(0));
+        let status_page_cycle = Arc::new(tokio::sync::Mutex::new(StatusPageCycle::default()));
+        let status_page_scroll_task: StatusPageScrollTask = Arc::new(tokio::sync::Mutex::new(None));
+        let storage = Arc::new(InMemoryStorage::new());
+        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(60)));
+        storage.set_config("espnow_channel", "11").await.unwrap();
+        storage.set_config("rotation_code", "OLD111").await.unwrap();
+        let storage_dyn: Arc<dyn Storage> = storage.clone();
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 2048];
+
+        let fp_words = test_fingerprint_words();
+
+        // Advance cycle to the RotationCode page (page index 3).
+        // Press 3 times: Channel, Nodes, Fingerprint.
+        tokio::time::pause();
+        for _ in 0..3 {
+            let press = tokio::spawn({
+                let transport = Arc::clone(&transport);
+                let controller = Arc::clone(&controller);
+                let storage = Arc::clone(&storage_dyn);
+                let session_manager = Arc::clone(&session_manager);
+                let display_generation = Arc::clone(&display_generation);
+                let status_page_cycle = Arc::clone(&status_page_cycle);
+                let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
+                let fp = fp_words;
+                async move {
+                    handle_idle_button_short_event(
+                        &transport,
+                        &controller,
+                        &storage,
+                        &session_manager,
+                        6,
+                        &display_generation,
+                        &status_page_cycle,
+                        &status_page_scroll_task,
+                        &fp,
+                    )
+                    .await
+                }
+            });
+            let _ = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+            assert!(press.await.unwrap());
+        }
+
+        // Press 4: RotationCode page — should show OLD111.
+        let press = tokio::spawn({
+            let transport = Arc::clone(&transport);
+            let controller = Arc::clone(&controller);
+            let storage = Arc::clone(&storage_dyn);
+            let session_manager = Arc::clone(&session_manager);
+            let display_generation = Arc::clone(&display_generation);
+            let status_page_cycle = Arc::clone(&status_page_cycle);
+            let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
+            let fp = fp_words;
+            async move {
+                handle_idle_button_short_event(
+                    &transport,
+                    &controller,
+                    &storage,
+                    &session_manager,
+                    6,
+                    &display_generation,
+                    &status_page_cycle,
+                    &status_page_scroll_task,
+                    &fp,
+                )
+                .await
+            }
+        });
+        let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+        assert_eq!(framebuffer, render_rotation_code_page("OLD111"));
+        assert!(press.await.unwrap());
+
+        // Change the rotation code in storage between renders.
+        storage.set_config("rotation_code", "NEW222").await.unwrap();
+
+        // Cycle through Channel, Nodes, Fingerprint (3 presses) to reach
+        // RotationCode again.
+        for _ in 0..3 {
+            let press = tokio::spawn({
+                let transport = Arc::clone(&transport);
+                let controller = Arc::clone(&controller);
+                let storage = Arc::clone(&storage_dyn);
+                let session_manager = Arc::clone(&session_manager);
+                let display_generation = Arc::clone(&display_generation);
+                let status_page_cycle = Arc::clone(&status_page_cycle);
+                let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
+                let fp = fp_words;
+                async move {
+                    handle_idle_button_short_event(
+                        &transport,
+                        &controller,
+                        &storage,
+                        &session_manager,
+                        6,
+                        &display_generation,
+                        &status_page_cycle,
+                        &status_page_scroll_task,
+                        &fp,
+                    )
+                    .await
+                }
+            });
+            let _ = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+            assert!(press.await.unwrap());
+        }
+
+        // Press again: RotationCode page — should show NEW222.
+        let press = tokio::spawn({
+            let transport = Arc::clone(&transport);
+            let controller = Arc::clone(&controller);
+            let storage = Arc::clone(&storage_dyn);
+            let session_manager = Arc::clone(&session_manager);
+            let display_generation = Arc::clone(&display_generation);
+            let status_page_cycle = Arc::clone(&status_page_cycle);
+            let status_page_scroll_task = Arc::clone(&status_page_scroll_task);
+            let fp = fp_words;
+            async move {
+                handle_idle_button_short_event(
+                    &transport,
+                    &controller,
+                    &storage,
+                    &session_manager,
+                    6,
+                    &display_generation,
+                    &status_page_cycle,
+                    &status_page_scroll_task,
+                    &fp,
+                )
+                .await
+            }
+        });
+        let framebuffer = receive_display_transfer(&mut server, &mut decoder, &mut buf).await;
+        assert_eq!(framebuffer, render_rotation_code_page("NEW222"));
+        assert!(press.await.unwrap());
     }
 }
 

@@ -2131,6 +2131,40 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1103h  Short press cycles through all four status pages in order
+
+**Validates:** GW-1101b, GW-2010
+
+**Procedure:**
+1. Start a gateway instance with a mock modem, a known gateway identity, and a known rotation code in storage. Complete the startup handshake.
+2. Inject `EVENT_BUTTON(BUTTON_SHORT)` while no BLE pairing session is active.
+3. Reassemble the framebuffer and assert: it renders the `Channel` status page.
+4. Inject a second `EVENT_BUTTON(BUTTON_SHORT)`.
+5. Reassemble the framebuffer and assert: it renders the `Nodes` status page.
+6. Inject a third `EVENT_BUTTON(BUTTON_SHORT)`.
+7. Reassemble the framebuffer and assert: it matches `render_fingerprint_page()` called with the 6 BIP-39 words independently computed from the gateway identity's X25519 public key.
+8. Inject a fourth `EVENT_BUTTON(BUTTON_SHORT)`.
+9. Reassemble the framebuffer and assert: it matches `render_rotation_code_page()` called with the rotation code from storage.
+10. Inject a fifth `EVENT_BUTTON(BUTTON_SHORT)`.
+11. Assert: the cycle wraps and the page shown is `Channel` again.
+
+---
+
+### T-1103i  Rotation Code page reads fresh value from storage on each render
+
+**Validates:** GW-2010
+
+**Procedure:**
+1. Start a gateway instance with a mock modem and a known rotation code `"ABCDEF"` in storage. Complete the startup handshake.
+2. Inject `EVENT_BUTTON(BUTTON_SHORT)` four times to reach the `Rotation Code` page.
+3. Reassemble the framebuffer and assert: it renders `"ABCDEF"`.
+4. Continue pressing to cycle back through Channel, Nodes, Fingerprint.
+5. Update the rotation code in storage to `"ZYXWVU"`.
+6. Inject `EVENT_BUTTON(BUTTON_SHORT)` to reach the `Rotation Code` page again.
+7. Reassemble the framebuffer and assert: it renders `"ZYXWVU"`, not `"ABCDEF"`.
+
+---
+
 ### T-1104a  Serial disconnect — reconnection with backoff
 
 **Validates:** GW-1103 (criteria 3–5)
@@ -4574,7 +4608,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-2007 | T-2005, T-2009 |
 | GW-2008 | T-2007 |
 | GW-2009 | T-2006, T-2006a, T-2006b |
-| GW-2010 | T-2001 |
+| GW-2010 | T-2001, T-1103h, T-1103i |
 | GW-2011 | T-2001 |
 | GW-2012 | T-2008 |
 | GW-2013 | T-2010 |

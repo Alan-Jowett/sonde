@@ -1047,3 +1047,88 @@ async fn connector_wake_blob_delivers_decoder_enriched_readings() {
     drop(client);
     handle.await.unwrap();
 }
+
+// ── T-0819d: Inline ELF without assigned_program_hash is rejected ──
+
+#[tokio::test]
+async fn connector_inline_elf_without_hash_is_rejected() {
+    let harness = ConnectorHarness::new();
+    let node = TestNode::new("alpha-elf-no-hash", 0x1313, [0x55; 32]);
+    let sentinel_node = TestNode::new("beta-sentinel", 0x1414, [0x66; 32]);
+    let program_hash = store_program(&harness.storage, 0x71).await;
+
+    register_node(&harness.storage, &node).await;
+    register_node(&harness.storage, &sentinel_node).await;
+
+    // Pre-populate desired state so we can verify it is NOT overwritten.
+    let mut stored = harness
+        .storage
+        .get_node(&node.node_id)
+        .await
+        .unwrap()
+        .unwrap();
+    stored.assigned_program_hash = Some(program_hash.clone());
+    stored.desired_schedule_interval_s = Some(120);
+    stored.schedule_interval_s = 120;
+    harness.storage.upsert_node(&stored).await.unwrap();
+
+    let (mut client, handle) = spawn_connection(harness.service.clone()).await;
+
+    // Send invalid DESIRED_STATE: key 5 present, key 1 absent.
+    let invalid = Value::Map(vec![
+        map_entry(1, Value::Integer(MSG_TYPE_DESIRED_STATE.into())),
+        map_entry(2, Value::Text("node".to_string())),
+        map_entry(3, Value::Text(node.node_id.clone())),
+        map_entry(
+            4,
+            Value::Map(vec![
+                map_entry(2, Value::Integer(900u64.into())),
+                map_entry(5, Value::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])),
+            ]),
+        ),
+    ]);
+    write_framed(&mut client, &encode_value(&invalid)).await;
+
+    // Send a valid sentinel DESIRED_STATE for a different node.
+    // Because connector messages are processed in FIFO order on the same
+    // connection, observing the sentinel's state change proves the invalid
+    // message was already processed (and rejected).
+    let sentinel_desired = Value::Map(vec![
+        map_entry(1, Value::Integer(MSG_TYPE_DESIRED_STATE.into())),
+        map_entry(2, Value::Text("node".to_string())),
+        map_entry(3, Value::Text(sentinel_node.node_id.clone())),
+        map_entry(
+            4,
+            Value::Map(vec![map_entry(2, Value::Integer(300u64.into()))]),
+        ),
+    ]);
+    write_framed(&mut client, &encode_value(&sentinel_desired)).await;
+
+    // Wait for sentinel to be applied — proves the invalid message was processed.
+    wait_for_desired_state(&harness, &sentinel_node.node_id, None, 300).await;
+
+    // Assert: original node's desired state is unchanged.
+    let stored = harness
+        .storage
+        .get_node(&node.node_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.assigned_program_hash,
+        Some(program_hash),
+        "assigned_program_hash must be preserved after rejection"
+    );
+    assert_eq!(
+        stored.desired_schedule_interval_s,
+        Some(120),
+        "desired_schedule_interval_s must be preserved after rejection"
+    );
+    assert_eq!(
+        stored.schedule_interval_s, 120,
+        "schedule_interval_s must be preserved after rejection"
+    );
+
+    drop(client);
+    handle.await.unwrap();
+}

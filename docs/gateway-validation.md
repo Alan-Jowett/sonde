@@ -1804,6 +1804,16 @@ A configurable stub handler process (or in-process mock) that:
 3. Send a `DESIRED_STATE` message with `assigned_program_hash` (key 1) set to a **different** 32-byte hash, and `assigned_program_elf` (key 5) set to the valid ELF.
 4. Assert: the gateway rejects the message because the ingested program's hash does not match the declared `assigned_program_hash`.
 
+### T-0819d  Inline ELF without `assigned_program_hash` is rejected
+
+**Validates:** GW-0811
+
+**Procedure:**
+1. Start the gateway and register a node with pre-existing desired state (e.g., an assigned program hash and schedule interval).
+2. Send a `DESIRED_STATE` message with `assigned_program_elf` (key 5) set to arbitrary bytes, but `assigned_program_hash` (key 1) absent.
+3. Assert: the gateway rejects the message with an error mentioning the missing `assigned_program_hash`.
+4. Assert: the node's desired state is NOT updated — the pre-existing assigned program hash and schedule interval remain unchanged.
+
 ---
 
 ### T-0820  Upstream actual-state/status update after `WAKE`

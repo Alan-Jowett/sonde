@@ -152,6 +152,22 @@ impl RotationEngine {
     /// rotation_payload if present, salt/KDF-params convergence (GW-2008),
     /// and recovered_psks (GW-2009).
     async fn handle_desired_state(&mut self, state: GatewayDesiredState) {
+        // Verify entity_id matches this gateway (defense-in-depth).
+        let expected_id: String = self
+            .identity
+            .gateway_id()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if state.entity_id != expected_id {
+            warn!(
+                expected = %expected_id,
+                received = %state.entity_id,
+                "ignoring DESIRED_STATE addressed to a different gateway"
+            );
+            return;
+        }
+
         // Channel convergence (GW-2004 AC-1): switch if different from current.
         let mut state_changed = false;
         if let Some(desired_channel) = state.channel {
@@ -770,6 +786,15 @@ mod tests {
     use super::*;
     use crate::sqlite_storage::SqliteStorage;
 
+    /// Derive the hex entity_id from a `GatewayIdentity` for test fixtures.
+    fn entity_id_for(identity: &crate::gateway_identity::GatewayIdentity) -> String {
+        identity
+            .gateway_id()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
     #[tokio::test]
     async fn test_rotation_engine_concurrent_check() {
         let master_key = Zeroizing::new([0x42u8; 32]);
@@ -805,6 +830,7 @@ mod tests {
         let (_grpc_tx, grpc_rx) = mpsc::unbounded_channel();
         let (_ds_tx, desired_state_rx) = mpsc::unbounded_channel();
         let identity = crate::gateway_identity::GatewayIdentity::generate().unwrap();
+        let eid = entity_id_for(&identity);
         let event_hub = Arc::new(ConnectorEventHub::default());
 
         let mut engine = RotationEngine::new(
@@ -829,7 +855,7 @@ mod tests {
             kdf_version: 1,
         };
         let ds = GatewayDesiredState {
-            entity_id: "aa".repeat(16),
+            entity_id: eid.clone(),
             channel: None,
             salt: Some(salt_a.clone()),
             kdf_params: Some(kdf_a.clone()),
@@ -862,7 +888,7 @@ mod tests {
             kdf_version: 2,
         };
         let ds2 = GatewayDesiredState {
-            entity_id: "aa".repeat(16),
+            entity_id: eid.clone(),
             channel: None,
             salt: Some(salt_b),
             kdf_params: Some(kdf_b),
@@ -892,7 +918,7 @@ mod tests {
         // Reset DB to test partial delivery with only salt already set.
         // Salt already set above, so this should be a no-op for salt.
         let ds3 = GatewayDesiredState {
-            entity_id: "aa".repeat(16),
+            entity_id: eid.clone(),
             channel: None,
             salt: Some(vec![0xCCu8; 16]),
             kdf_params: None,
@@ -912,7 +938,7 @@ mod tests {
 
         // ── Step 7: KDF only (no salt) → KDF evaluated, salt unchanged ──
         let ds4 = GatewayDesiredState {
-            entity_id: "aa".repeat(16),
+            entity_id: eid.clone(),
             channel: None,
             salt: None,
             kdf_params: Some(KdfParams {
@@ -945,6 +971,7 @@ mod tests {
         let (_grpc_tx, grpc_rx) = mpsc::unbounded_channel();
         let (_ds_tx, desired_state_rx) = mpsc::unbounded_channel();
         let identity = crate::gateway_identity::GatewayIdentity::generate().unwrap();
+        let eid = entity_id_for(&identity);
         let event_hub = Arc::new(ConnectorEventHub::default());
 
         let mut engine = RotationEngine::new(
@@ -957,7 +984,7 @@ mod tests {
 
         // Deliver salt with wrong length.
         let ds = GatewayDesiredState {
-            entity_id: "aa".repeat(16),
+            entity_id: eid,
             channel: None,
             salt: Some(vec![0xAAu8; 8]), // 8 bytes, not 16
             kdf_params: None,
@@ -978,6 +1005,7 @@ mod tests {
         let store = Arc::new(SqliteStorage::in_memory(master_key).unwrap());
 
         let identity = crate::gateway_identity::GatewayIdentity::generate().unwrap();
+        let eid = entity_id_for(&identity);
 
         // First engine instance: adopt salt.
         {
@@ -993,7 +1021,7 @@ mod tests {
             );
 
             let ds = GatewayDesiredState {
-                entity_id: "aa".repeat(16),
+                entity_id: eid.clone(),
                 channel: None,
                 salt: Some(vec![0x11u8; 16]),
                 kdf_params: None,
@@ -1019,7 +1047,7 @@ mod tests {
             );
 
             let ds = GatewayDesiredState {
-                entity_id: "aa".repeat(16),
+                entity_id: eid.clone(),
                 channel: None,
                 salt: Some(vec![0x22u8; 16]),
                 kdf_params: None,
@@ -1045,6 +1073,7 @@ mod tests {
         let (_grpc_tx, grpc_rx) = mpsc::unbounded_channel();
         let (_ds_tx, desired_state_rx) = mpsc::unbounded_channel();
         let identity = crate::gateway_identity::GatewayIdentity::generate().unwrap();
+        let eid = entity_id_for(&identity);
         let event_hub = Arc::new(ConnectorEventHub::default());
 
         let (state_tx, mut state_rx) = mpsc::unbounded_channel::<GatewayStateChanged>();
@@ -1059,7 +1088,7 @@ mod tests {
 
         // Switch from 1 to 5 — should converge and notify.
         let ds = GatewayDesiredState {
-            entity_id: "aa".repeat(16),
+            entity_id: eid.clone(),
             channel: Some(5),
             salt: None,
             kdf_params: None,
@@ -1079,7 +1108,7 @@ mod tests {
 
         // Same channel (5 → 5) — no change, no notification.
         let ds_same = GatewayDesiredState {
-            entity_id: "aa".repeat(16),
+            entity_id: eid.clone(),
             channel: Some(5),
             salt: None,
             kdf_params: None,
@@ -1094,7 +1123,7 @@ mod tests {
 
         // Out-of-range channel (0) — rejected.
         let ds_bad = GatewayDesiredState {
-            entity_id: "aa".repeat(16),
+            entity_id: eid.clone(),
             channel: Some(0),
             salt: None,
             kdf_params: None,
@@ -1110,7 +1139,7 @@ mod tests {
 
         // Out-of-range channel (15) — rejected.
         let ds_bad2 = GatewayDesiredState {
-            entity_id: "aa".repeat(16),
+            entity_id: eid.clone(),
             channel: Some(15),
             salt: None,
             kdf_params: None,

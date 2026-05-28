@@ -2032,12 +2032,12 @@ shared in `sonde-protocol`.
 
 Insert after step 2 (initialize storage):
 
-> 2a. Check `pending_rotation` — call
+> 2a. Load `GatewayIdentity`, derive X25519 public key (already done
+>     by the existing identity-loading block before these steps).
+> 2b. Check `pending_rotation` — call
 >     `RotationEngine::resume_pending_rotation(&storage, &identity)`.
 >     If it returns `Some(notification)`, cache the notification for
 >     gateway ACTUAL_STATE re-emission after the connector starts.
-> 2b. Load `GatewayIdentity`, derive X25519 public key (already done
->     by the existing identity-loading block).
 > 2c. Load/generate `master_key_id` and `master_key_epoch` via
 >     `storage.init_master_key_id()`.
 > 2d. Load/generate `rotation_code` via `storage.init_rotation_code()`.

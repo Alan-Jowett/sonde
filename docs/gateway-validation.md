@@ -4482,17 +4482,15 @@ A configurable stub handler process (or in-process mock) that:
 2. Verify initial gateway ACTUAL_STATE received (empty `missing_key_hints`).
 3. Send a frame with an unknown `key_hint` (not matching any registered node).
 4. Verify no immediate ACTUAL_STATE re-emission within 30 seconds.
-5. Wait 60 seconds from the unknown-hint frame.
-6. Verify gateway ACTUAL_STATE re-emitted with `missing_key_hints` containing
-   the unknown hint value.
-7. Send another frame with a different unknown `key_hint` within 10 seconds.
-8. Wait 60 seconds from the second frame.
-9. Verify ACTUAL_STATE re-emitted with both hints (if first not yet drained)
-   or just the new one.
+5. Send another frame with a different unknown `key_hint` (within the
+   60-second debounce window of step 3).
+6. Wait 60 seconds from the second frame (debounce timer resets).
+7. Verify gateway ACTUAL_STATE re-emitted with `missing_key_hints` containing
+   both unknown hint values in a single coalesced emission.
 
 **Expected:**
-1. ACTUAL_STATE re-emission is debounced: no emission during the 60-second
-   window, then a single emission containing all accumulated hints.
+1. ACTUAL_STATE re-emission is debounced: a second hint during the window
+   resets the timer, and a single emission contains all accumulated hints.
 
 ---
 

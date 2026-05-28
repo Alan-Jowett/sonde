@@ -1920,11 +1920,13 @@ async fn emit_gateway_actual_state_from_storage(
 
     let missing_key_hints = gateway.drain_missing_hints().await;
 
-    let rotation_in_progress = storage
-        .read_pending_rotation()
-        .await
-        .unwrap_or(None)
-        .is_some();
+    let rotation_in_progress = match storage.read_pending_rotation().await {
+        Ok(pending) => pending.is_some(),
+        Err(e) => {
+            warn!("failed to read pending_rotation for ACTUAL_STATE: {e}");
+            false
+        }
+    };
 
     let gateway_version = env!("CARGO_PKG_VERSION").to_string();
     let gateway_commit = option_env!("SONDE_GIT_COMMIT")

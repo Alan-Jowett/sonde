@@ -1921,8 +1921,9 @@ async fn emit_gateway_actual_state_from_storage(
     let missing_key_hints = gateway.drain_missing_hints().await;
 
     let rotation_in_progress = storage
-        .get_config("pending_rotation_phase")
-        .await?
+        .read_pending_rotation()
+        .await
+        .unwrap_or(None)
         .is_some();
 
     let gateway_version = env!("CARGO_PKG_VERSION").to_string();

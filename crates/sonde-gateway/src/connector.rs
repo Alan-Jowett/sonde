@@ -412,7 +412,7 @@ impl ConnectorOutboundMessage {
 pub struct ConnectorEventHub {
     tx: broadcast::Sender<ConnectorOutboundMessage>,
     /// Cached latest gateway ACTUAL_STATE for replay on new subscriber
-    /// connections (GW-2003 AC-4). Protected by a parking_lot Mutex for
+    /// connections (GW-2003 AC-4). Protected by `std::sync::Mutex` for
     /// synchronous access from `emit_gateway_actual_state`.
     cached_gateway_state: Arc<std::sync::Mutex<Option<ConnectorOutboundMessage>>>,
 }

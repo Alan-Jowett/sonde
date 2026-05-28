@@ -2,8 +2,9 @@
 # Copyright (c) 2026 sonde contributors
 #
 # Tauri Android APK CI: build sonde-pair-ui for Android (aarch64).
-# Produces a debug APK (always) and a signed release APK (when
-# signing secrets are configured). See docs/android-signing.md.
+# Debug and release APKs are built as parallel jobs to minimize
+# wall-clock time. The release job bails early when signing secrets
+# are not configured. See docs/android-signing.md.
 
 name: Tauri Android APK
 
@@ -33,8 +34,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-apk:
-    name: Build Android APK
+  # ── Debug APK (always produced) ──────────────────────────────────
+  build-debug-apk:
+    name: Build Android APK (debug)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -47,19 +49,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # ------------------------------------------------------------------ #
-      # Build cache
-      # ------------------------------------------------------------------ #
-
       - name: Cache Rust build artefacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           workspaces: ". -> target"
-          key: android-aarch64-${{ hashFiles('crates/sonde-pair-ui/src-tauri/Cargo.toml', '.github/docker/Dockerfile.android-dev') }}
-
-      # ------------------------------------------------------------------ #
-      # Build
-      # ------------------------------------------------------------------ #
+          key: android-aarch64-debug-${{ hashFiles('crates/sonde-pair-ui/src-tauri/Cargo.toml', '.github/docker/Dockerfile.android-dev') }}
 
       - name: Initialize Android project
         working-directory: crates/sonde-pair-ui
@@ -68,11 +62,6 @@ jobs:
           cargo tauri android init
 
       - name: Patch Gradle for BLE Java classes
-        # Copy sonde-pair Java sources into the generated Android project,
-        # restore our custom AndroidManifest (with BLE permissions), replace
-        # the stock launcher icons with the Sonde-generated icon set, and add
-        # the security-crypto dependency. This must run after
-        # `tauri android init` regenerates gen/android/.
         working-directory: crates/sonde-pair-ui/src-tauri/gen/android
         run: |
           # Restore custom AndroidManifest.xml with BLE permissions from persistent location.
@@ -105,8 +94,6 @@ jobs:
         working-directory: crates/sonde-pair-ui
         run: cargo tauri android build --debug
 
-      # Upload debug APK immediately so it's available even if the
-      # optional release build fails.
       - name: Upload debug APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -115,10 +102,19 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      # ------------------------------------------------------------------ #
-      # Release build (conditional — requires all 4 signing secrets)
-      # ------------------------------------------------------------------ #
+  # ── Release APK (conditional — requires all 4 signing secrets) ──
+  build-release-apk:
+    name: Build Android APK (release)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
 
+    container:
+      image: ghcr.io/alan-jowett/sonde-android-dev:latest
+
+    steps:
+      # Check signing secrets first to bail early when unconfigured.
       - name: Validate signing secrets
         id: signing
         run: |
@@ -133,6 +129,54 @@ jobs:
           STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Checkout
+        if: steps.signing.outputs.available == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Cache Rust build artefacts
+        if: steps.signing.outputs.available == 'true'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          workspaces: ". -> target"
+          key: android-aarch64-release-${{ hashFiles('crates/sonde-pair-ui/src-tauri/Cargo.toml', '.github/docker/Dockerfile.android-dev') }}
+
+      - name: Initialize Android project
+        if: steps.signing.outputs.available == 'true'
+        working-directory: crates/sonde-pair-ui
+        run: |
+          rm -rf src-tauri/gen/android
+          cargo tauri android init
+
+      - name: Patch Gradle for BLE Java classes
+        if: steps.signing.outputs.available == 'true'
+        working-directory: crates/sonde-pair-ui/src-tauri/gen/android
+        run: |
+          # Restore custom AndroidManifest.xml with BLE permissions from persistent location.
+          cp ../../../../../crates/sonde-pair-ui/android/AndroidManifest.xml app/src/main/AndroidManifest.xml
+
+          # Replace generated stock Android launcher icons with the Sonde-branded set.
+          cp -R ../../../../../crates/sonde-pair-ui/src-tauri/icons/android/* app/src/main/res/
+
+          # Copy Java source files into the standard Android source tree
+          mkdir -p app/src/main/java/io/sonde/pair
+          cp ../../../../../crates/sonde-pair/java/io/sonde/pair/*.java \
+             app/src/main/java/io/sonde/pair/
+          ls -la app/src/main/java/io/sonde/pair/
+
+          # Add security-crypto dependency
+          GRADLE="app/build.gradle.kts"
+          python3 -c "
+          with open('$GRADLE') as f:
+              txt = f.read()
+          txt = txt.replace(
+              'implementation(\"androidx.appcompat:appcompat',
+              'implementation(\"androidx.security:security-crypto:1.1.0-alpha06\")\n    implementation(\"androidx.appcompat:appcompat'
+          )
+          with open('$GRADLE', 'w') as f:
+              f.write(txt)
+          "
+          grep 'security-crypto' "$GRADLE"
 
       - name: Decode release keystore
         if: steps.signing.outputs.available == 'true'

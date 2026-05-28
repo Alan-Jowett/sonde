@@ -945,7 +945,7 @@ async fn run_gateway(
         }
     }
 
-    // 2a. Resume pending rotation if exists (§23.11 step 2a).
+    // 2b. Resume pending rotation if exists (§23.11 step 2b).
     let pending_rotation_notification = {
         let identity = storage
             .load_gateway_identity()

@@ -2121,7 +2121,8 @@ step 9a is inline.
 1. `rotation_complete_rx` — receives `RotationCompleteNotification` from
    `RotationEngine` after a successful rotation. Re-emit immediately.
 2. `state_changed_rx` — receives `GatewayStateChanged` from
-   `RotationEngine` after salt/KDF-params adoption. Re-emit immediately.
+   `RotationEngine` after channel convergence, salt/KDF-params adoption,
+   or other non-rotation state changes. Re-emit immediately.
 3. `missing_hints_notify` — a `tokio::sync::Notify` signalled by the
    `Gateway` engine when `MissingKeyHintTracker::report()` accepts a new
    hint. On notification, start a 60-second debounce timer. If the timer

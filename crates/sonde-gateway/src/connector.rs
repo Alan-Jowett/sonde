@@ -768,9 +768,18 @@ impl ConnectorService {
         let ephemeral_program_hash =
             optional_bytes_field(desired_state, 3, "ephemeral_program_hash")?;
 
-        // Ingest inline ELF (key 5) only when assigned_program_hash (key 1) is present.
+        // Parse inline ELF (key 5) up front so we can reject the entire
+        // DESIRED_STATE when key 5 is present but key 1 is missing (GW-0811).
+        let inline_elf = optional_bytes_field(desired_state, 5, "assigned_program_elf")?;
+        if inline_elf.is_some() && assigned_program_hash.is_none() {
+            return Err(
+                "`assigned_program_elf` (key 5) present but `assigned_program_hash` (key 1) \
+                 missing; the entire DESIRED_STATE is rejected per GW-0811"
+                    .to_string(),
+            );
+        }
+
         if assigned_program_hash.is_some() {
-            let inline_elf = optional_bytes_field(desired_state, 5, "assigned_program_elf")?;
             if let Some(elf_bytes) = inline_elf.as_deref() {
                 // Validate declared hash format before expensive Prevail verification.
                 let declared_hash = assigned_program_hash.as_deref().unwrap();

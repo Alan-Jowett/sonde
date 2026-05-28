@@ -27,6 +27,8 @@ sonde-gateway = { path = "../sonde-gateway", default-features = false }
 time = "0.3"
 tokio = { version = "1", features = ["full"] }
 tonic = "0.14"
+tracing = { version = "0.1", features = ["max_level_trace"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower = "0.5"
 tar = "0.4"
 thiserror = "2"

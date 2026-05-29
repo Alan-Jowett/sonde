@@ -1259,22 +1259,6 @@ async fn run_gateway(
                         // Start or reset the debounce timer.
                         hint_debounce = Some(Box::pin(tokio::time::sleep(HINT_DEBOUNCE)));
                     }
-                    _ = async {
-                        match hint_debounce.as_mut() {
-                            Some(sleep) => sleep.as_mut().await,
-                            None => std::future::pending().await,
-                        }
-                    } => {
-                        hint_debounce = None;
-                        info!("missing hint debounce elapsed — re-emitting gateway ACTUAL_STATE");
-                        if let Err(e) = reemit_gateway_actual_state(
-                            &reemit_event_hub,
-                            &reemit_storage,
-                            &reemit_gateway,
-                        ).await {
-                            error!("failed to re-emit ACTUAL_STATE on missing hints: {e}");
-                        }
-                    }
                     _ = heartbeat.tick() => {
                         // Cancel any active hint debounce — the heartbeat
                         // emission drains pending hints via the shared
@@ -1289,6 +1273,22 @@ async fn run_gateway(
                             &reemit_gateway,
                         ).await {
                             error!("failed to re-emit ACTUAL_STATE on heartbeat: {e}");
+                        }
+                    }
+                    _ = async {
+                        match hint_debounce.as_mut() {
+                            Some(sleep) => sleep.as_mut().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        hint_debounce = None;
+                        info!("missing hint debounce elapsed — re-emitting gateway ACTUAL_STATE");
+                        if let Err(e) = reemit_gateway_actual_state(
+                            &reemit_event_hub,
+                            &reemit_storage,
+                            &reemit_gateway,
+                        ).await {
+                            error!("failed to re-emit ACTUAL_STATE on missing hints: {e}");
                         }
                     }
                     else => {

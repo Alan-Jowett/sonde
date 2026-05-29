@@ -401,7 +401,7 @@ async fn test_t2001_gateway_actual_state_publication() {
         vec![], // missing_key_hints
         None,   // salt
         None,   // kdf_params
-        "0.7.0".to_string(),
+        "0.8.0".to_string(),
         "abc123".to_string(),
         None, // modem_firmware_version
         None, // modem_firmware_commit
@@ -488,7 +488,7 @@ async fn test_t2001_gateway_actual_state_publication() {
         Value::Text(s) => s.clone(),
         other => panic!("expected text gateway_version, got {other:?}"),
     };
-    assert_eq!(gw_version, "0.7.0");
+    assert_eq!(gw_version, "0.8.0");
 
     let gw_commit = match map_get(&map, 24).unwrap() {
         Value::Text(s) => s.clone(),
@@ -821,7 +821,7 @@ async fn emit_gateway_actual_state_from_storage(
         missing_key_hints,
         salt,
         kdf_params,
-        "0.7.0".to_string(),
+        "0.8.0".to_string(),
         "test".to_string(),
         None,
         None,

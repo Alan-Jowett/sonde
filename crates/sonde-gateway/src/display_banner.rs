@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn gateway_banner_renders_visible_pixels() {
-        let framebuffer = render_gateway_version_banner("0.7.0");
+        let framebuffer = render_gateway_version_banner("0.8.0");
         assert!(
             framebuffer.iter().any(|byte| *byte != 0),
             "rendered banner must set at least one pixel"
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn gateway_banner_leaves_outer_margins() {
-        let framebuffer = render_gateway_version_banner("0.7.0");
+        let framebuffer = render_gateway_version_banner("0.8.0");
         let first_nonzero = framebuffer
             .iter()
             .position(|byte| *byte != 0)
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn gateway_banner_renders_across_two_vertical_regions() {
-        let framebuffer = render_gateway_version_banner("0.7.0");
+        let framebuffer = render_gateway_version_banner("0.8.0");
         let half = framebuffer.len() / 2;
         assert!(
             framebuffer[..half].iter().any(|byte| *byte != 0),

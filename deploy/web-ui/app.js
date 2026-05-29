@@ -1096,6 +1096,7 @@ async function queryTable(tableName, filter, { top } = {}) {
     nextPartitionKey = response.headers.get('x-ms-continuation-NextPartitionKey');
     nextRowKey = response.headers.get('x-ms-continuation-NextRowKey');
     if (!nextPartitionKey) break;
+    if (top != null && allEntities.length >= top) break;
   }
 
   return allEntities;

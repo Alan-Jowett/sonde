@@ -553,14 +553,21 @@ where
             modem_firmware_commit: msg.modem_firmware_commit.clone(),
             rotation_in_progress: msg.rotation_in_progress,
         };
+
+        // Pre-append stale guard: if the previous row (which may be a legacy
+        // RowKey="state" singleton) has a newer timestamp, skip the append
+        // entirely to avoid regressing the stored "latest" view.
+        let superseded_by_previous = previous
+            .as_ref()
+            .is_some_and(|p| p.timestamp_ms > gw_row.timestamp_ms);
+        if superseded_by_previous {
+            return Ok(());
+        }
+
         self.store.append_gateway_actual_state(&gw_row).await?;
 
-        // Stale-message guard (mirrors node path): reload the latest row
-        // after append and bail if a newer observation already exists.
-        // Also check against the pre-append `previous` row to handle the
-        // legacy RowKey="state" migration edge case (legacy rows sort after
-        // all reverse-timestamp keys, so the reload may return our just-
-        // appended row even though the legacy row had a newer timestamp).
+        // Post-append stale guard (mirrors node path): reload the latest row
+        // and bail if a concurrently appended newer observation exists.
         let latest = self
             .store
             .load_gateway_actual_state(gateway_id)
@@ -570,11 +577,7 @@ where
                     "gateway actual-state row `{gateway_id}` disappeared after append"
                 ))
             })?;
-        let superseded_by_latest = latest.timestamp_ms > gw_row.timestamp_ms;
-        let superseded_by_previous = previous
-            .as_ref()
-            .is_some_and(|p| p.timestamp_ms > gw_row.timestamp_ms);
-        if superseded_by_latest || superseded_by_previous {
+        if latest.timestamp_ms > gw_row.timestamp_ms {
             return Ok(());
         }
 
@@ -4958,8 +4961,8 @@ mod tests {
         let published_before = publisher.sends.lock().await.len();
 
         // Deliver a stale message (timestamp 1000 < legacy 2000).
-        // Its history row key will sort before "state", so load_gateway_actual_state
-        // returns it — but the previous-timestamp guard should catch the staleness.
+        // The pre-append guard should skip the append entirely, preventing
+        // the stale row from regressing the stored "latest" view.
         let payload_stale = encode_gateway_actual_state_msg(
             "aabb0011",
             1000,
@@ -4971,6 +4974,24 @@ mod tests {
             false,
         );
         handler.handle_payload(&payload_stale).await.unwrap();
+
+        // Stale row must NOT have been appended.
+        let rows = store
+            .gateway_actual_states
+            .lock()
+            .await
+            .get("aabb0011")
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            rows.len(),
+            1,
+            "stale message must not be appended when legacy row is newer"
+        );
+        assert_eq!(
+            rows[0].row_key, "state",
+            "only the legacy row should remain"
+        );
 
         let published_after = publisher.sends.lock().await.len();
         assert_eq!(

@@ -464,6 +464,7 @@ async fn modem_startup(server: &mut DuplexStream, channel: u8) {
     let ready = ModemMessage::ModemReady(ModemReady {
         firmware_version: [1, 0, 0, 0],
         mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        firmware_commit: [0x42u8; 8],
     });
     server
         .write_all(&encode_modem_frame(&ready).unwrap())

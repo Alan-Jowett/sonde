@@ -116,6 +116,11 @@ pub struct UsbEspNowTransport {
     display_send_lock: Mutex<()>,
     next_display_transfer_id: AtomicU8,
     modem_mac: [u8; 6],
+    /// Modem firmware version formatted as "major.minor.patch".
+    modem_firmware_version: String,
+    /// Modem firmware commit as 16-char hex, or `None` if the modem's
+    /// 8-byte commit field was all zeros (commit unavailable at build time).
+    modem_firmware_commit: Option<String>,
     reader_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     warm_reboot_notify: Arc<tokio::sync::Notify>,
     warm_reboot_flag: Arc<std::sync::atomic::AtomicBool>,
@@ -276,18 +281,33 @@ impl UsbEspNowTransport {
         let startup_result = async {
             let modem_ready = Self::reset_and_wait(Arc::clone(&writer), ready_rx).await?;
             let modem_mac = modem_ready.mac_address;
+            let fw = modem_ready.firmware_version;
+            let commit_bytes = modem_ready.firmware_commit;
             info!(
-                firmware = ?modem_ready.firmware_version,
+                firmware = ?fw,
                 mac = ?modem_mac,
+                commit = ?commit_bytes,
                 "modem ready"
             );
             Self::set_channel(Arc::clone(&writer), channel, ack_rx).await?;
-            Ok::<_, TransportError>(modem_mac)
+
+            // Format version as "major.minor.patch" (build byte intentionally omitted).
+            let modem_firmware_version = format!("{}.{}.{}", fw[0], fw[1], fw[2]);
+
+            // All-zero commit means the hash was unavailable at build time → None.
+            let modem_firmware_commit = if commit_bytes == [0u8; 8] {
+                None
+            } else {
+                let hex: String = commit_bytes.iter().map(|b| format!("{b:02x}")).collect();
+                Some(hex)
+            };
+
+            Ok::<_, TransportError>((modem_mac, modem_firmware_version, modem_firmware_commit))
         }
         .await;
 
         match startup_result {
-            Ok(modem_mac) => {
+            Ok((modem_mac, modem_firmware_version, modem_firmware_commit)) => {
                 let reader_handle = guard.0.take().expect("guard still holds handle");
                 Ok(Self {
                     writer,
@@ -300,6 +320,8 @@ impl UsbEspNowTransport {
                     display_send_lock: Mutex::new(()),
                     next_display_transfer_id: AtomicU8::new(0),
                     modem_mac,
+                    modem_firmware_version,
+                    modem_firmware_commit,
                     reader_handle: std::sync::Mutex::new(Some(reader_handle)),
                     warm_reboot_notify,
                     warm_reboot_flag,
@@ -315,6 +337,17 @@ impl UsbEspNowTransport {
     /// Return the modem's MAC address reported during startup.
     pub fn modem_mac(&self) -> &[u8; 6] {
         &self.modem_mac
+    }
+
+    /// Return the modem firmware version as "major.minor.patch".
+    pub fn modem_firmware_version(&self) -> &str {
+        &self.modem_firmware_version
+    }
+
+    /// Return the modem firmware commit as a 16-char hex string, or `None`
+    /// if the modem's commit field was all zeros.
+    pub fn modem_firmware_commit(&self) -> Option<&str> {
+        self.modem_firmware_commit.as_deref()
     }
 
     /// Return a clone of the warm-reboot notification primitive.
@@ -1170,6 +1203,7 @@ mod tests {
         let ready = ModemMessage::ModemReady(ModemReady {
             firmware_version: [1, 2, 3, 4],
             mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+            firmware_commit: [0x42u8; 8],
         });
         let frame = encode_modem_frame(&ready).unwrap();
         server.write_all(&frame).await.unwrap();

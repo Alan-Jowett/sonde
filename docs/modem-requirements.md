@@ -110,6 +110,22 @@ The modem firmware MUST send `MODEM_READY` within 2 seconds of USB enumeration.
 
 ---
 
+### MD-0105  Firmware commit in MODEM_READY
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.3, Issue #1096
+
+**Description:**
+The modem firmware MUST include the first 8 bytes of the build-time git commit SHA-1 hash in the `firmware_commit` field of `MODEM_READY`. The commit hash is captured at compile time via `build.rs` (see §14.0a of modem-design.md). If the commit hash is unavailable (e.g., built outside a git repository), the field MUST be all zeros.
+
+**Acceptance criteria:**
+
+1. `MODEM_READY` body is 18 bytes (4B version + 6B MAC + 8B commit).
+2. `firmware_commit` contains the first 8 bytes of the git commit SHA-1 when built inside a git repository.
+3. `firmware_commit` is all zeros when built outside a git repository or when the commit is otherwise unavailable.
+
+---
+
 ## 4  ESP-NOW interface
 
 ### MD-0200  ESP-NOW initialization

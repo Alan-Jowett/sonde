@@ -67,8 +67,8 @@ The maximum body size of 1024 bytes is retained so protocol extensions can carry
 If the gateway opens a serial port mid-stream (e.g., after a modem reset or hot-plug), it may land in the middle of a frame. Recovery procedure:
 
 1. Gateway sends `RESET` (TYPE = 0x01, empty body).
-2. Modem firmware resets its receive-side framing parser on any `RESET` command and then sends a `MODEM_READY` frame (`LEN` = 0x00 0x0B, `TYPE` = 0x81, 10-byte body).
-3. After sending `RESET`, the gateway MUST discard received bytes until it observes a valid `MODEM_READY` frame: a two-byte big-endian length of 11 (`0x00 0x0B`), followed by `TYPE` = `0x81`, followed by exactly 10 bytes of body (`firmware_version` + `mac_address`). This deterministic framing pattern allows the gateway to resynchronize even if the `RESET` was sent mid-frame.
+2. Modem firmware resets its receive-side framing parser on any `RESET` command and then sends a `MODEM_READY` frame (`LEN` = 0x00 0x13, `TYPE` = 0x81, 18-byte body).
+3. After sending `RESET`, the gateway MUST discard received bytes until it observes a valid `MODEM_READY` frame: a two-byte big-endian length of 19 (`0x00 0x13`), followed by `TYPE` = `0x81`, followed by exactly 18 bytes of body (`firmware_version` + `mac_address` + `firmware_commit`). This deterministic framing pattern allows the gateway to resynchronize even if the `RESET` was sent mid-frame.
 
 ---
 
@@ -152,18 +152,19 @@ The modem MUST respond with `SET_CHANNEL_ACK` (§4.5) after the channel change t
 
 Sent when the modem has completed initialization and is ready to send and receive ESP-NOW frames. The gateway MUST wait for this message before sending any other commands.
 
-The `MODEM_READY` body contains two fields: a 4-byte big-endian `firmware_version` (encoded as major.minor.patch.build, one byte each, derived from the crate's `CARGO_PKG_VERSION` at compile time) followed by the 6-byte `mac_address` (the modem's own WiFi MAC).
+The `MODEM_READY` body contains three fields: a 4-byte big-endian `firmware_version` (encoded as major.minor.patch.build, one byte each, derived from the crate's `CARGO_PKG_VERSION` at compile time), followed by the 6-byte `mac_address` (the modem's own WiFi MAC), followed by an 8-byte `firmware_commit` (the first 8 bytes of the build-time git commit SHA-1 hash, or all zeros if the commit is unavailable).
 
 ```
-┌────────────────────────┬──────────────────┐
-│  firmware_version (4B) │  mac_address (6B)│
-└────────────────────────┴──────────────────┘
+┌────────────────────────┬──────────────────┬──────────────────────┐
+│  firmware_version (4B) │  mac_address (6B)│  firmware_commit (8B)│
+└────────────────────────┴──────────────────┴──────────────────────┘
 ```
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
 | `firmware_version` | Unsigned integer | 4 bytes, big-endian | Modem firmware version (semantic: major.minor.patch.build, one byte each). |
 | `mac_address` | Bytes | 6 bytes | The modem's own WiFi MAC address (the source address for all transmitted ESP-NOW frames). |
+| `firmware_commit` | Bytes | 8 bytes | First 8 bytes of the build-time git commit SHA-1 hash. All zeros if unavailable (e.g., built outside a git repository). The gateway formats this as a 16-character lowercase hex string for ACTUAL_STATE. |
 
 This message is sent:
 - On power-up / USB enumeration (within 2 seconds).
@@ -474,7 +475,7 @@ The `EVENT_BUTTON` body is a single 1-byte `button_type` field.
 
 The gateway MUST always send `RESET` when opening the serial port, regardless of whether the modem was just powered on or was already running. This ensures deterministic state.
 
-The startup sequence is: (1) gateway opens the serial port and immediately sends `RESET`; (2) the modem performs initialization and sends `MODEM_READY` (containing its firmware version and MAC address); (3) the gateway sends `SET_CHANNEL` with the desired WiFi channel; (4) the modem applies the channel and responds with `SET_CHANNEL_ACK`; then normal operation begins.
+The startup sequence is: (1) gateway opens the serial port and immediately sends `RESET`; (2) the modem performs initialization and sends `MODEM_READY` (containing its firmware version, MAC address, and firmware commit); (3) the gateway sends `SET_CHANNEL` with the desired WiFi channel; (4) the modem applies the channel and responds with `SET_CHANNEL_ACK`; then normal operation begins.
 
 ```
 Gateway                          Modem
@@ -698,7 +699,11 @@ However, the reliable display-transfer subprotocol (`DISPLAY_FRAME_BEGIN`, `DISP
 
 ### 8.2  Version detection
 
-The `firmware_version` field in `MODEM_READY` allows the gateway to detect the modem firmware version and adjust behavior if needed (e.g., skip `SCAN_CHANNELS` if the modem predates that feature).
+The `firmware_version` field in `MODEM_READY` allows the gateway to detect the modem firmware version and adjust behavior if needed (e.g., skip `SCAN_CHANNELS` if the modem predates that feature). The `firmware_commit` field provides build-level traceability for diagnostics and the web UI.
+
+### 8.2a  MODEM_READY payload size change (Issue #1096)
+
+The `MODEM_READY` payload was extended from 10 bytes to 18 bytes to include the `firmware_commit` field. The gateway's synchronization recovery (§2.3) expects the new 18-byte body size. **Gateway and modem firmware must be upgraded together** — an older modem sending a 10-byte `MODEM_READY` will fail the gateway's resync pattern. No version negotiation mechanism exists for the serial protocol; both endpoints must agree on the frame layout.
 
 ### 8.3  Reserved type ranges
 

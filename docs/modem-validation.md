@@ -59,14 +59,17 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0101  MODEM_READY on boot
 
-**Validates:** MD-0104
+**Validates:** MD-0104, MD-0105
 
 **Procedure:**
 1. Open the modem's serial port.
 2. Wait up to 2 seconds for a `MODEM_READY` message.
 3. Assert: `MODEM_READY` is received within 2 seconds.
-4. Assert: `firmware_version` is a valid 4-byte value.
-5. Assert: `mac_address` is a valid 6-byte MAC (not all zeros).
+4. Assert: `MODEM_READY` body is exactly 18 bytes.
+5. Assert: `firmware_version` is a valid 4-byte value.
+6. Assert: `mac_address` is a valid 6-byte MAC (not all zeros).
+7. Assert: `firmware_commit` is 8 bytes. When built inside a git repository,
+   at least one byte is non-zero.
 
 > **Implementation note:** The current `device_tests.rs` implementation (`t0101_modem_ready_after_reset`) verifies field values but does not assert the 2-second timing constraint from MD-0104. A future update should record `Instant::now()` before `reset_and_wait()` and assert `elapsed <= Duration::from_secs(2)` on return.
 
@@ -292,14 +295,16 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0303  MODEM_READY after RESET
 
-**Validates:** MD-0300, MD-0104
+**Validates:** MD-0300, MD-0104, MD-0105
 
 **Procedure:**
 1. Send `RESET`.
 2. Assert: `MODEM_READY` is received within 2 seconds.
-3. Send `RESET` again.
-4. Assert: `MODEM_READY` is received within 2 seconds.
-5. Repeat 5 times to confirm stability.
+3. Assert: `MODEM_READY` body is exactly 18 bytes (4B version + 6B MAC + 8B commit).
+4. Send `RESET` again.
+5. Assert: `MODEM_READY` is received within 2 seconds.
+6. Assert: `firmware_commit` is identical across both resets (same build).
+7. Repeat 5 times to confirm stability.
 
 ---
 
@@ -1426,7 +1431,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | ID | Title | Validates |
 |----|-------|-----------|
 | T-0100 | USB-CDC device enumeration | MD-0100 |
-| T-0101 | MODEM_READY on boot | MD-0104 |
+| T-0101 | MODEM_READY on boot | MD-0104, MD-0105 |
 | T-0102 | Serial framing — valid frame and max length | MD-0101, MD-0102 |
 | T-0103 | Serial framing — oversized len | MD-0101, MD-0102 |
 | T-0104 | Unknown message type | MD-0103 |
@@ -1441,7 +1446,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0300 | RESET clears state | MD-0300 |
 | T-0301 | USB-CDC serial link drop and reconnection | MD-0301 |
 | T-0302 | Status counter accuracy | MD-0303 |
-| T-0303 | MODEM_READY after RESET | MD-0300, MD-0104 |
+| T-0303 | MODEM_READY after RESET | MD-0300, MD-0104, MD-0105 |
 | T-0304 | Watchdog triggers on stalled main loop | MD-0302 |
 | T-0400 | SEND_FRAME with body too short | MD-0208 |
 | T-0401 | SET_CHANNEL with invalid channel | MD-0209 |

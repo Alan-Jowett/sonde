@@ -56,6 +56,7 @@ async fn do_startup_handshake(server: &mut DuplexStream) -> u8 {
     let ready = ModemMessage::ModemReady(ModemReady {
         firmware_version: [1, 2, 3, 4],
         mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        firmware_commit: [0x42u8; 8],
     });
     let frame = encode_modem_frame(&ready).unwrap();
     server.write_all(&frame).await.unwrap();

@@ -2646,6 +2646,10 @@ heartbeat interval (default 900 seconds).
    pending desired state. The heartbeat schedule is process-local (resets
    on gateway restart), independent of event-driven emissions, and does
    not require an attached connector subscriber.
+9. Re-emitted after modem handshake completes (`MODEM_READY` received)
+   with `modem_firmware_version` and `modem_firmware_commit` populated
+   from the handshake. The initial startup emission MAY have these
+   fields as null if the modem has not yet connected.
 
 ---
 

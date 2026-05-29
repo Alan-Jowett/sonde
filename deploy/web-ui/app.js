@@ -372,10 +372,16 @@ function computeGatewayDivergence(actual, desired) {
   // consumed it (rotation_in_progress is not true AND epoch has not advanced
   // past submitted_epoch).
   if (desired.rotation_payload) {
-    const actualEpoch = Number(actual.master_key_epoch) || 0;
-    const submittedEpoch = Number(desired.submitted_epoch) || 0;
-    if (actual.rotation_in_progress !== true && actualEpoch <= submittedEpoch) {
-      return true;
+    if (actual.rotation_in_progress === true) {
+      // Gateway is actively processing — not diverged for this condition.
+    } else {
+      const submittedEpoch = Number(desired.submitted_epoch);
+      if (Number.isNaN(submittedEpoch)) {
+        // Legacy row without submitted_epoch — treat as diverged.
+        return true;
+      }
+      const actualEpoch = Number(actual.master_key_epoch) || 0;
+      if (actualEpoch <= submittedEpoch) return true;
     }
   }
 
@@ -509,6 +515,8 @@ function hasRotationCrypto() {
 function toggleRotationForm(gwId) {
   const container = document.querySelector(`.rotation-form-container[data-gateway-form="${gwId}"]`);
   if (!container) return;
+  // Block close while submission is in flight.
+  if (container.dataset.submitting === '1') return;
 
   const isOpen = container.style.display !== 'none';
   if (isOpen) {
@@ -582,7 +590,12 @@ function attachRotationFormHandlers(gatewayRows) {
         return;
       }
 
+      const formContainer = document.querySelector(`.rotation-form-container[data-gateway-form="${gwId}"]`);
+      const cancelBtn = formContainer?.querySelector('.rotation-cancel-btn');
+
       if (submitBtn) submitBtn.disabled = true;
+      if (cancelBtn) cancelBtn.disabled = true;
+      if (formContainer) formContainer.dataset.submitting = '1';
       if (statusEl) statusEl.innerHTML = '<p class="muted">Deriving key (Argon2id)… this may take a few seconds.</p>';
 
       const epoch = Number(gwRow.master_key_epoch) || 0;
@@ -599,6 +612,8 @@ function attachRotationFormHandlers(gatewayRows) {
         if (statusEl) statusEl.innerHTML = `<div class="alert error">${escapeHtml(msg)}</div>`;
       } finally {
         if (submitBtn) submitBtn.disabled = false;
+        if (cancelBtn) cancelBtn.disabled = false;
+        if (formContainer) delete formContainer.dataset.submitting;
       }
     });
   }

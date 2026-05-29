@@ -273,6 +273,34 @@ impl KeyProvider for FileKeyProvider {
 
         {
             use std::io::Write as _;
+
+            #[cfg(unix)]
+            let mut f = {
+                use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&tmp_path)
+                    .map_err(|e| {
+                        KeyProviderError::Io(format!(
+                            "cannot create temp key file {}: {e}",
+                            tmp_path.display()
+                        ))
+                    })?;
+                // Explicitly set permissions to override any umask restriction.
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| {
+                        let _ = std::fs::remove_file(&tmp_path);
+                        KeyProviderError::Io(format!(
+                            "cannot set permissions on temp key file: {e}"
+                        ))
+                    })?;
+                file
+            };
+
+            #[cfg(not(unix))]
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -284,6 +312,7 @@ impl KeyProvider for FileKeyProvider {
                         tmp_path.display()
                     ))
                 })?;
+
             f.write_all(hex.as_bytes()).map_err(|e| {
                 let _ = std::fs::remove_file(&tmp_path);
                 KeyProviderError::Io(format!("cannot write temp key file: {e}"))

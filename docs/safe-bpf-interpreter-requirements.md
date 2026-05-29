@@ -96,7 +96,7 @@ The interpreter MUST implement the complete BPF instruction set as defined by RF
 
 **Acceptance criteria:**
 
-1. All instruction opcodes listed in `ebpf.rs` are handled in the interpreter dispatch loop.
+1. All instruction opcodes listed in `ebpf.rs` — except legacy packet-access opcodes (`LD_ABS_*`, `LD_IND_*`), which are not supported — are handled in the interpreter dispatch loop. Legacy packet-access opcodes are rejected as `BpfError::UnknownOpcode`.
 2. Division by zero returns 0 (not a trap), per RFC 9669 §5.2.
 3. Shift amounts are masked to 5 bits (ALU32) or 6 bits (ALU64).
 4. LD_DW_IMM consumes two instruction slots and charges both to the instruction budget.

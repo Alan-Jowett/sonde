@@ -226,6 +226,7 @@ const APP = {
   refreshToken: 0,
   viewMessage: null,
   sensorChart: null,
+  rotationFormOpen: null, // gateway ID when rotation form is expanded (WEB-1002)
 };
 
 const contentEl = document.getElementById('content');
@@ -362,10 +363,56 @@ function filterGatewayRows(rows) {
   return rows.filter((r) => isGatewayPartitionKey(r.PartitionKey));
 }
 
-async function renderGatewayStatusCard(gatewayRows) {
+// Gateway convergence logic (WEB-1009).
+// Returns true if the gateway's actual state diverges from desired state.
+function computeGatewayDivergence(actual, desired) {
+  if (!desired) return false;
+
+  // Rotation payload pending: desired has rotation_payload AND gateway has not
+  // consumed it (rotation_in_progress is not true AND epoch has not advanced
+  // past submitted_epoch).
+  if (desired.rotation_payload) {
+    if (actual.rotation_in_progress === true) {
+      // Gateway is actively processing — not diverged for this condition.
+    } else {
+      const submittedEpoch = Number(desired.submitted_epoch);
+      if (!Number.isNaN(submittedEpoch)) {
+        // New-style row with submitted_epoch — compare epochs.
+        const actualEpoch = Number(actual.master_key_epoch) || 0;
+        if (actualEpoch <= submittedEpoch) return true;
+      }
+      // Legacy row without submitted_epoch — cannot determine convergence,
+      // skip to avoid permanent false Diverged after gateway consumes it.
+    }
+  }
+
+  // Channel mismatch.
+  if (desired.channel != null) {
+    const desiredCh = Number(desired.channel);
+    const actualCh = Number(actual.channel);
+    if (!Number.isNaN(desiredCh) && desiredCh !== actualCh) return true;
+  }
+
+  // Salt pending adoption (set-if-absent): diverged only when actual has no salt.
+  if (desired.salt != null && !actual.salt) return true;
+
+  // KDF params pending adoption (set-if-absent): diverged only when actual has
+  // no KDF params. Field name in Azure Tables is kdf_params_json.
+  const desiredHasKdf = desired.kdf_params != null || desired.kdf_params_json != null;
+  const actualHasKdf = actual.kdf_params != null || actual.kdf_params_json != null;
+  if (desiredHasKdf && !actualHasKdf) return true;
+
+  return false;
+}
+
+async function renderGatewayStatusCard(gatewayRows, gatewayDesiredRows) {
   if (!gatewayRows || gatewayRows.length === 0) {
     return '<div class="panel stack"><h2>Gateway Status</h2><p class="muted">No gateway connected.</p></div>';
   }
+
+  const desiredByPartition = new Map(
+    (gatewayDesiredRows || []).map((row) => [row.PartitionKey, row])
+  );
 
   let cardsHtml = '';
   for (const gw of gatewayRows) {
@@ -394,14 +441,23 @@ async function renderGatewayStatusCard(gatewayRows) {
     const modemVersion = gw.modem_firmware_version || '—';
     const channel = gw.channel ?? '—';
 
+    // Gateway convergence badge (WEB-1009).
+    const desired = desiredByPartition.get(gw.PartitionKey);
+    const diverged = computeGatewayDivergence(gw, desired);
+    const badgeHtml = `<span class="badge ${diverged ? 'warning' : 'success'}">${diverged ? 'Diverged' : 'Aligned'}</span>`;
+
     const rotationDisabled = !hasRotationCrypto();
     const rotateBtn = rotationDisabled
       ? '<button class="secondary" disabled title="Browser lacks required crypto capabilities (Web Crypto + WebAssembly)">Rotate Key</button>'
       : `<button class="secondary rotate-key-btn" data-gateway-id="${escapeHtml(gwId)}">Rotate Key</button>`;
 
+    const saltStatusText = gw.salt ? 'Current salt loaded' : 'First rotation (no salt)';
+    const formExpanded = APP.rotationFormOpen === gwId;
+    const formStyle = formExpanded ? '' : ' style="display:none"';
+
     cardsHtml += `
-      <div class="panel stack">
-        <h2>Gateway ${escapeHtml(gwId.slice(0, 8))}…</h2>
+      <div class="panel stack" data-gateway-card="${escapeHtml(gwId)}">
+        <h2>Gateway ${escapeHtml(gwId.slice(0, 8))}… ${badgeHtml}</h2>
         <div class="kv-grid">
           <div class="kv"><strong>Fingerprint</strong> ${fingerprintHtml}</div>
           <div class="kv"><strong>Epoch</strong> ${escapeHtml(epoch)}</div>
@@ -413,6 +469,26 @@ async function renderGatewayStatusCard(gatewayRows) {
           <div class="kv"><strong>Channel</strong> ${escapeHtml(channel)}</div>
         </div>
         ${rotateBtn}
+        <div class="rotation-form-container" data-gateway-form="${escapeHtml(gwId)}"${formStyle}>
+          <hr>
+          <p><strong>Step 1:</strong> Verify the fingerprint above matches the modem display.</p>
+          <form class="rotation-form form-grid" data-gateway-id="${escapeHtml(gwId)}">
+            <label>Rotation Code (from modem)
+              <input name="rotationCode" type="text" maxlength="6" pattern="[A-Za-z0-9]{6}"
+                placeholder="ABC123" autocomplete="off" style="text-transform:uppercase" required>
+            </label>
+            <label>Passphrase (≥20 chars or 6+ words)
+              <input name="passphrase" type="password"
+                placeholder="Enter passphrase…" required>
+            </label>
+            <p class="muted small">${escapeHtml(saltStatusText)}</p>
+            <div class="rotation-status" data-gateway-status="${escapeHtml(gwId)}"></div>
+            <div style="display:flex;gap:0.5rem">
+              <button type="submit" class="primary rotation-submit-btn">Rotate</button>
+              <button type="button" class="secondary rotation-cancel-btn" data-gateway-id="${escapeHtml(gwId)}">Cancel</button>
+            </div>
+          </form>
+        </div>
       </div>
     `;
   }
@@ -434,117 +510,126 @@ function hasRotationCrypto() {
   }
 }
 
-// 8b. Rotation modal (WEB-1002–WEB-1008)
-function showRotationModal(gatewayRow) {
-  const gwId = gatewayRow.PartitionKey?.replace('g:', '') || '';
-  const saltStatus = gatewayRow.salt ? 'Current salt loaded' : 'First rotation (no salt)';
-  const epoch = Number(gatewayRow.master_key_epoch) || 0;
+// 8b. Inline rotation form (WEB-1002, WEB-1009)
+// Toggles the inline rotation form within a gateway card and pauses
+// auto-refresh while the form is open to prevent DOM replacement.
+function toggleRotationForm(gwId) {
+  const container = document.querySelector(`.rotation-form-container[data-gateway-form="${gwId}"]`);
+  if (!container) return;
+  // Block any toggle while any form has an in-flight submission.
+  if (document.querySelector('.rotation-form-container[data-submitting="1"]')) return;
 
-  // Compute fingerprint synchronously (already loaded wordlist by now).
-  let fingerprintText = 'Unable to compute fingerprint';
-  const pubKeyRaw = gatewayRow.x25519_public_key
-    ? base64ToBytes(gatewayRow.x25519_public_key)
-    : null;
-
-  const modalHtml = `
-    <div class="overlay" id="rotation-overlay" role="dialog" aria-modal="true" aria-label="Rotate Master Key">
-      <div class="modal" style="max-width:480px">
-        <h2>Rotate Master Key</h2>
-        <p><strong>Step 1:</strong> Verify the fingerprint below matches the modem display.</p>
-        <div id="rotation-fingerprint" class="alert" style="word-break:break-all">Computing…</div>
-        <form id="rotation-form" class="form-grid">
-          <label>Rotation Code (from modem)
-            <input name="rotationCode" type="text" maxlength="6" pattern="[A-Za-z0-9]{6}"
-              placeholder="ABC123" autocomplete="off" style="text-transform:uppercase" required>
-          </label>
-          <label>Passphrase (≥20 chars or 6+ words)
-            <input name="passphrase" type="password"
-              placeholder="Enter passphrase…" required>
-          </label>
-          <p class="muted small">${escapeHtml(saltStatus)}</p>
-          <div id="rotation-status"></div>
-          <div style="display:flex;gap:0.5rem">
-            <button type="submit" class="primary" id="rotation-submit-btn">Rotate</button>
-            <button type="button" class="secondary" id="rotation-cancel-btn">Cancel</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  `;
-
-  let overlay = document.getElementById('rotation-overlay');
-  if (overlay) overlay.remove();
-  document.body.insertAdjacentHTML('beforeend', modalHtml);
-
-  // Compute fingerprint async, update display.
-  if (pubKeyRaw && pubKeyRaw.length === 32) {
-    computeBip39Fingerprint(pubKeyRaw).then((words) => {
-      const el = document.getElementById('rotation-fingerprint');
-      if (el && words) {
-        el.innerHTML = `<code>${words.map(escapeHtml).join(' ')}</code>`;
-      } else if (el) {
-        el.textContent = fingerprintText;
-      }
-    });
+  const isOpen = container.style.display !== 'none';
+  if (isOpen) {
+    closeRotationForm(gwId);
   } else {
-    const el = document.getElementById('rotation-fingerprint');
-    if (el) el.textContent = 'Fingerprint unavailable (missing or invalid public key)';
+    // Close the currently-open form (if any) before opening the new one.
+    if (APP.rotationFormOpen) {
+      const prev = document.querySelector(
+        `.rotation-form-container[data-gateway-form="${APP.rotationFormOpen}"]`
+      );
+      if (prev) resetAndHideFormContainer(prev);
+    }
+    container.style.display = '';
+    APP.rotationFormOpen = gwId;
+    // Pause auto-refresh while form is open.
+    clearRefresh();
+    // Focus the first input.
+    container.querySelector('input')?.focus();
+  }
+}
+
+// Resets form inputs, clears status messages, and hides a form container.
+function resetAndHideFormContainer(container) {
+  const form = container.querySelector('.rotation-form');
+  if (form) form.reset();
+  const status = container.querySelector('.rotation-status');
+  if (status) status.innerHTML = '';
+  container.style.display = 'none';
+}
+
+// Idempotent close — safe to call from timeout even if user already closed.
+function closeRotationForm(gwId) {
+  if (APP.rotationFormOpen !== gwId) return;
+  const container = document.querySelector(`.rotation-form-container[data-gateway-form="${gwId}"]`);
+  if (container) resetAndHideFormContainer(container);
+  APP.rotationFormOpen = null;
+  // Resume auto-refresh only if still on the dashboard tab (WEB-1002 AC#5).
+  if (APP.activeTab === 'dashboard') {
+    setAutoRefresh(async () => {
+      if (APP.activeTab === 'dashboard') await renderDashboard();
+    });
+  }
+}
+
+// Attaches event handlers for rotation forms and buttons after dashboard
+// DOM is inserted. Called from renderDashboard().
+function attachRotationFormHandlers(gatewayRows) {
+  // Rotate Key button toggles inline form.
+  for (const btn of document.querySelectorAll('.rotate-key-btn')) {
+    btn.addEventListener('click', () => {
+      toggleRotationForm(btn.dataset.gatewayId);
+    });
   }
 
-  document.getElementById('rotation-cancel-btn')?.addEventListener('click', () => {
-    document.getElementById('rotation-overlay')?.remove();
-  });
+  // Cancel button collapses the form.
+  for (const btn of document.querySelectorAll('.rotation-cancel-btn')) {
+    btn.addEventListener('click', () => {
+      toggleRotationForm(btn.dataset.gatewayId);
+    });
+  }
 
-  // Escape to close
-  const rotationOverlay = document.getElementById('rotation-overlay');
-  rotationOverlay?.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') rotationOverlay.remove();
-  });
-  // Click outside modal to close
-  rotationOverlay?.addEventListener('click', (e) => {
-    if (e.target === rotationOverlay) rotationOverlay.remove();
-  });
-  // Focus the first input
-  rotationOverlay?.querySelector('input')?.focus();
+  // Submit handler for each rotation form.
+  for (const form of document.querySelectorAll('.rotation-form')) {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const gwId = form.dataset.gatewayId;
+      const gwRow = gatewayRows.find(
+        (r) => (r.PartitionKey?.replace('g:', '') || '') === gwId
+      );
+      if (!gwRow) return;
 
-  document.getElementById('rotation-form')?.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const form = event.target;
-    const code = (form.rotationCode?.value || '').toUpperCase().trim();
-    const passphrase = form.passphrase?.value || '';
-    const statusEl = document.getElementById('rotation-status');
-    const submitBtn = document.getElementById('rotation-submit-btn');
+      const code = (form.rotationCode?.value || '').toUpperCase().trim();
+      const passphrase = form.passphrase?.value || '';
+      const statusEl = document.querySelector(`.rotation-status[data-gateway-status="${gwId}"]`);
+      const submitBtn = form.querySelector('.rotation-submit-btn');
 
-    if (!/^[A-Z0-9]{6}$/.test(code)) {
-      if (statusEl) statusEl.innerHTML = '<div class="alert error">Rotation code must be 6 alphanumeric characters.</div>';
-      return;
-    }
-    if (passphrase.length < 20 && passphrase.split(/\s+/).filter((w) => w).length < 6) {
-      if (statusEl) statusEl.innerHTML = '<div class="alert error">Passphrase must be ≥20 characters or 6+ space-separated words.</div>';
-      return;
-    }
-
-    if (submitBtn) submitBtn.disabled = true;
-    if (statusEl) statusEl.innerHTML = '<p class="muted">Deriving key (Argon2id)… this may take a few seconds.</p>';
-
-    try {
-      const payload = await buildRotationPayload(gatewayRow, code, passphrase);
-      if (statusEl) statusEl.innerHTML = '<p class="muted">Submitting rotation…</p>';
-      await submitRotationPayload(gwId, payload);
-      if (statusEl) statusEl.innerHTML = '<p class="muted">Rotation submitted. Polling for confirmation…</p>';
-      const success = await pollRotationResult(gwId, epoch);
-      if (success) {
-        if (statusEl) statusEl.innerHTML = '<div class="alert success">Rotation complete! New epoch active.</div>';
-      } else {
-        if (statusEl) statusEl.innerHTML = '<div class="alert error">Rotation may still be in progress — check gateway status.</div>';
+      if (!/^[A-Z0-9]{6}$/.test(code)) {
+        if (statusEl) statusEl.innerHTML = '<div class="alert error">Rotation code must be 6 alphanumeric characters.</div>';
+        return;
       }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      if (statusEl) statusEl.innerHTML = `<div class="alert error">${escapeHtml(msg)}</div>`;
-    } finally {
-      if (submitBtn) submitBtn.disabled = false;
-    }
-  });
+      if (passphrase.length < 20 && passphrase.split(/\s+/).filter((w) => w).length < 6) {
+        if (statusEl) statusEl.innerHTML = '<div class="alert error">Passphrase must be ≥20 characters or 6+ space-separated words.</div>';
+        return;
+      }
+
+      const formContainer = document.querySelector(`.rotation-form-container[data-gateway-form="${gwId}"]`);
+      const cancelBtn = formContainer?.querySelector('.rotation-cancel-btn');
+
+      if (submitBtn) submitBtn.disabled = true;
+      if (cancelBtn) cancelBtn.disabled = true;
+      if (formContainer) formContainer.dataset.submitting = '1';
+      if (statusEl) statusEl.innerHTML = '<p class="muted">Deriving key (Argon2id)… this may take a few seconds.</p>';
+
+      const epoch = Number(gwRow.master_key_epoch) || 0;
+
+      try {
+        const payload = await buildRotationPayload(gwRow, code, passphrase);
+        if (statusEl) statusEl.innerHTML = '<p class="muted">Submitting rotation…</p>';
+        await submitRotationPayload(gwId, payload, epoch);
+        if (statusEl) statusEl.innerHTML = '<div class="alert success">Rotation submitted.</div>';
+        // Collapse form after short delay to show success message.
+        setTimeout(() => closeRotationForm(gwId), 1500);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (statusEl) statusEl.innerHTML = `<div class="alert error">${escapeHtml(msg)}</div>`;
+      } finally {
+        if (submitBtn) submitBtn.disabled = false;
+        if (cancelBtn) cancelBtn.disabled = false;
+        if (formContainer) delete formContainer.dataset.submitting;
+      }
+    });
+  }
 }
 
 async function buildRotationPayload(gatewayRow, rotationCode, passphrase) {
@@ -712,7 +797,7 @@ function encodeCborUintEntry(parts, key, value) {
   }
 }
 
-async function submitRotationPayload(gwId, payloadBytes) {
+async function submitRotationPayload(gwId, payloadBytes, epoch) {
   const partitionKey = `g:${gwId}`;
   const nowMs = Date.now();
   const rowKey = desiredRowKey(nowMs);
@@ -728,29 +813,12 @@ async function submitRotationPayload(gwId, payloadBytes) {
     RowKey: rowKey,
     rotation_payload: b64Payload,
     'rotation_payload@odata.type': 'Edm.Binary',
+    submitted_epoch: String(epoch),
+    'submitted_epoch@odata.type': 'Edm.Int64',
     timestamp_ms: String(nowMs),
     'timestamp_ms@odata.type': 'Edm.Int64',
   };
   await insertEntity(CONFIG.desiredStateTable, entity);
-}
-
-async function pollRotationResult(gwId, originalEpoch) {
-  const maxAttempts = 24; // 5s × 24 = 120s
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    try {
-      const filter = `PartitionKey eq 'g:${gwId}'`;
-      const rows = await queryTable(CONFIG.actualStateTable, filter, { top: 1 });
-      if (rows.length > 0) {
-        const currentEpoch = Number(rows[0].master_key_epoch) || 0;
-        if (currentEpoch > originalEpoch) return true;
-        if (rows[0].rotation_in_progress === false && currentEpoch === originalEpoch && i > 2) {
-          return false; // rotation_in_progress went back to false without epoch change
-        }
-      }
-    } catch { /* retry */ }
-  }
-  return false;
 }
 
 function showViewMessage(kind, text) {
@@ -1127,6 +1195,18 @@ async function renderDashboard() {
     return;
   }
 
+  // If rotation form is open and still in the DOM, skip the entire render
+  // to preserve form state (WEB-1002 AC#5). Must run before the loading
+  // renderCard() call which would destroy the form.
+  if (APP.rotationFormOpen) {
+    const formStillPresent = document.querySelector(
+      `.rotation-form-container[data-gateway-form="${APP.rotationFormOpen}"]`
+    );
+    if (formStillPresent) return;
+    // Stale flag — user navigated away and back; clear and continue.
+    APP.rotationFormOpen = null;
+  }
+
   renderCard('Dashboard', '<p class="muted">Loading dashboard…</p>');
 
   try {
@@ -1137,7 +1217,8 @@ async function renderDashboard() {
 
     // Separate gateway and node rows (WEB-1001).
     const gatewayRows = latestByPartition(filterGatewayRows(actualRows));
-    const gatewayCardHtml = await renderGatewayStatusCard(gatewayRows);
+    const gatewayDesiredRows = latestByPartition(filterGatewayRows(desiredRows));
+    const gatewayCardHtml = await renderGatewayStatusCard(gatewayRows, gatewayDesiredRows);
 
     const latestActual = latestByPartition(filterNodeRows(actualRows)).sort((left, right) => String(left.node_id || '').localeCompare(String(right.node_id || '')));
     const desiredByPartition = new Map(latestByPartition(filterNodeRows(desiredRows)).map((row) => [row.PartitionKey, row]));
@@ -1192,25 +1273,20 @@ async function renderDashboard() {
       </div>
     `);
 
-    // Attach rotation button click handlers
-    for (const btn of document.querySelectorAll('.rotate-key-btn')) {
-      btn.addEventListener('click', () => {
-        const gwIdForBtn = btn.dataset.gatewayId;
-        const gwRow = gatewayRows.find(
-          (r) => (r.PartitionKey?.replace('g:', '') || '') === gwIdForBtn
-        );
-        if (gwRow) showRotationModal(gwRow);
-      });
-    }
+    // Attach inline rotation form handlers (WEB-1002, WEB-1009).
+    attachRotationFormHandlers(gatewayRows);
   } catch (error) {
     renderError('Dashboard', error);
   }
 
-  setAutoRefresh(async () => {
-    if (APP.activeTab === 'dashboard') {
-      await renderDashboard();
-    }
-  });
+  // Only set auto-refresh if rotation form is not open (WEB-1002 AC#5).
+  if (!APP.rotationFormOpen) {
+    setAutoRefresh(async () => {
+      if (APP.activeTab === 'dashboard') {
+        await renderDashboard();
+      }
+    });
+  }
 }
 
 // 5. Desired State Tab

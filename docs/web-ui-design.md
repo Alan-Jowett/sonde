@@ -574,10 +574,12 @@ rendering in the popup:
 ### 13.1 Gateway Status Card
 
 - Reads the `actualstate` table for rows whose `PartitionKey` starts with `g:`.
+- Cross-references the `desiredstate` table for gateway rows (`PartitionKey`
+  starting with `g:`) to compute a convergence badge (see §13.1.1).
 - Renders a dedicated gateway status card above the node table, showing the
   BIP-39 fingerprint, `master_key_epoch`, `master_key_id`, salt status,
-  `rotation_in_progress`, `gateway_version`, `modem_firmware_version`, and
-  `channel`.
+  `rotation_in_progress`, `gateway_version`, `modem_firmware_version`,
+  `channel`, and an **Aligned / Diverged** convergence badge.
 - **Fingerprint computation is local:** The SPA MUST compute the 6-word BIP-39
   fingerprint from `x25519_public_key` using SHA-256 + 66-bit extraction +
   BIP-39 wordlist lookup. The SPA MUST NOT use the `fingerprint_words` field
@@ -589,18 +591,63 @@ rendering in the popup:
   take first 66 bits → split into 6 × 11-bit indices → map to BIP-39 words.
 - Uses the same MSAL.js bearer token acquisition path as node `actualstate`
   queries.
+- The `renderGatewayStatusCard` function receives both gateway actual-state
+  rows and gateway desired-state rows (filtered via `filterGatewayRows`).
 
-### 13.2 Rotation Modal
+#### 13.1.1 Gateway Convergence Rules
 
-- Multi-step modal flow:
+Gateway convergence mirrors the node divergence pattern (§4) but uses
+gateway-specific fields. The convergence badge is computed per gateway by
+comparing the latest gateway desired-state row (from `desiredstate`, filtered
+by `PartitionKey` starting with `g:`, deduplicated via `latestByPartition`)
+against the gateway actual-state row.
+
+**Divergence conditions** (any true → "Diverged"):
+
+1. **Rotation payload pending:** The desired row has a non-null
+   `rotation_payload` AND the actual `rotation_in_progress` is not `true`
+   AND `actual.master_key_epoch <= desired.submitted_epoch`.
+   - The `submitted_epoch` field is stored in the desired-state row at
+     submission time (see §13.4). This enables precise comparison without
+     timestamp heuristics.
+   - Once `rotation_in_progress` becomes `true` or
+     `actual.master_key_epoch > desired.submitted_epoch`, the rotation is
+     considered consumed and this condition clears.
+2. **Channel mismatch:** Desired `channel` is non-null and differs from
+   actual `channel`.
+3. **Salt pending adoption:** Desired `salt` is non-null AND actual `salt`
+   is null/absent. Once the gateway has a salt, it is immutable except via
+   rotation payload — a mismatched desired `salt` against an existing
+   actual `salt` is a no-op by gateway design (set-if-absent semantics)
+   and does NOT flag divergence.
+4. **KDF params pending adoption:** Desired `kdf_params`/`kdf_params_json` is
+   non-null AND actual `kdf_params_json` is null/absent. Same set-if-absent
+   semantics as salt.
+
+**No desired row:** If no gateway desired-state row exists, the gateway is
+"Aligned" (no pending changes — same as unmanaged nodes in §4).
+
+### 13.2 Rotation Form
+
+- Inline collapsible form within the gateway status card (replaces the
+  previous modal dialog):
   1. Fingerprint verification against the modem
   2. Rotation code input (`text`, 6 chars, auto-uppercase)
   3. Passphrase input (`password` field)
-  4. Final confirmation before submission
+  4. Submit button
+- The `Rotate Key` button toggles the form's visibility. When expanded, the
+  form appears below the gateway status fields within the same card panel.
 - Displays the current salt from gateway ACTUAL_STATE, or a `first rotation`
   indicator when no salt exists yet.
-- Shows a progress bar during Argon2id key derivation because the WASM KDF may
-  take ~1–3 seconds.
+- Shows a progress indicator during Argon2id key derivation because the WASM
+  KDF may take ~1–3 seconds.
+- After successful submission, the form displays "Rotation submitted" and
+  collapses. No inline polling is performed — the convergence badge
+  (§13.1.1) reflects rotation status via the dashboard auto-refresh cycle.
+- Dashboard auto-refresh (§4, WEB-0103) is paused while the rotation form
+  is expanded or a submission is in progress. This prevents DOM replacement
+  from destroying form state or interrupting Argon2id key derivation.
+  Auto-refresh resumes when the form collapses.
 
 ### 13.3 Crypto Pipeline
 
@@ -628,6 +675,9 @@ rendering in the popup:
   `GET /actualstate?$filter=PartitionKey ge 'g:' and PartitionKey lt 'g;'`
 - DESIRED_STATE write:
   `POST /desiredstate` with `rotation_payload` serialized as `Edm.Binary`
+  and `submitted_epoch` as `Edm.Int64` (set to the gateway's current
+  `master_key_epoch` at submission time, for convergence tracking per
+  §13.1.1)
 - Gateway DESIRED_STATE `PartitionKey` is `"g:" + gateway_id_hex`
 - Gateway DESIRED_STATE `RowKey` uses the same reverse-timestamp format as node
   desired state rows
@@ -660,4 +710,5 @@ rendering in the popup:
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-05-29 | Issue #1092 | Added §13.1.1 gateway convergence rules. Replaced §13.2 rotation modal with inline form. Added convergence badge to §13.1. |
 | 2026-05-19 | Trifecta remediation (#1012) | Added §12 (cross-cutting concerns: HTML escaping, MSAL hash routing, popup detection). Fixed §10.2 downsample cap to 500 points per series. |

@@ -399,6 +399,6 @@ and verifies one or more acceptance criteria.
 
 | Date | Author | Description |
 |------|--------|-------------|
-| 2026-05-29 | Issue #1092 | Added T-WEB-1009 through T-WEB-1009g for gateway convergence. Updated T-WEB-1001/1002 for badge and inline form. Retired T-WEB-1006/1006b. |
+| 2026-05-29 | Issue #1092 | Added T-WEB-1009 through T-WEB-1009k for gateway convergence. Updated T-WEB-1001/1002 for badge and inline form. Retired T-WEB-1006/1006b. |
 | 2026-05-19 | Spec extraction (automated) | Restructured with sections, traceability matrix, risk prioritization. Added references to web-ui-requirements.md. |
 | 2026-05-19 | Trifecta remediation (#1012) | Added ~35 fine-grained test cases to cover all acceptance criteria individually. Updated traceability matrix. |

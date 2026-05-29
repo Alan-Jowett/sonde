@@ -1189,7 +1189,15 @@ async function renderDashboard() {
 
     // If user opened rotation form while we were fetching, skip DOM
     // replacement to preserve form state (WEB-1002 AC#5).
-    if (APP.rotationFormOpen) return;
+    // Only skip if the form container is still in the DOM (not stale from a tab switch).
+    if (APP.rotationFormOpen) {
+      const formStillPresent = document.querySelector(
+        `.rotation-form-container[data-gateway-form="${APP.rotationFormOpen}"]`
+      );
+      if (formStillPresent) return;
+      // Stale flag — user navigated away and back; clear and continue.
+      APP.rotationFormOpen = null;
+    }
 
     // Separate gateway and node rows (WEB-1001).
     const gatewayRows = latestByPartition(filterGatewayRows(actualRows));

@@ -620,9 +620,9 @@ against the gateway actual-state row.
    rotation payload — a mismatched desired `salt` against an existing
    actual `salt` is a no-op by gateway design (set-if-absent semantics)
    and does NOT flag divergence.
-4. **KDF params pending adoption:** Desired `kdf_params` is non-null AND
-   actual `kdf_params` is null/absent. Same set-if-absent semantics as
-   salt.
+4. **KDF params pending adoption:** Desired `kdf_params`/`kdf_params_json` is
+   non-null AND actual `kdf_params_json` is null/absent. Same set-if-absent
+   semantics as salt.
 
 **No desired row:** If no gateway desired-state row exists, the gateway is
 "Aligned" (no pending changes — same as unmanaged nodes in §4).

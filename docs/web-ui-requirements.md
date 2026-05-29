@@ -1349,8 +1349,9 @@ The convergence check compares the following fields:
   mismatched desired `salt` against an existing actual `salt` is a no-op
   by gateway design and does NOT flag divergence.
 - **`kdf_params`:** Diverged only when the gateway has no local KDF params
-  (actual `kdf_params` is null/absent) AND the desired `kdf_params` is
-  non-null. Same set-if-absent semantics as `salt`.
+  (actual `kdf_params_json` is null/absent) AND the desired
+  `kdf_params`/`kdf_params_json` is non-null. Same set-if-absent semantics
+  as `salt`.
 
 `recovered_psks` is excluded from convergence — it is a background queue
 not visible to the operator.

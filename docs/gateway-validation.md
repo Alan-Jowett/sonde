@@ -4604,7 +4604,31 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-2014  Rotation blocked for non-writable key provider
+### T-2014  Periodic gateway ACTUAL_STATE heartbeat
+
+**Traces to:** GW-2003 (AC-8)
+
+**Steps:**
+1. Start gateway with identity and master key, using a short heartbeat
+   interval (e.g., 2 seconds).
+2. Connect a mock connector consumer.
+3. Consume the initial startup ACTUAL_STATE.
+4. Verify no second ACTUAL_STATE arrives before the heartbeat interval.
+5. Wait for the heartbeat interval to elapse.
+6. Verify a second gateway ACTUAL_STATE is received without any state
+   change trigger.
+
+**Expected:**
+1. No ACTUAL_STATE emitted between startup and first heartbeat tick.
+2. Gateway ACTUAL_STATE re-emitted after heartbeat interval elapses.
+
+**Note:** This test validates gateway-level periodic emission. Handler-side
+delivery of DESIRED_STATE in response to heartbeat ACTUAL_STATE is covered
+by existing handler tests.
+
+---
+
+### T-2015  Rotation blocked for non-writable key provider
 
 **Traces to:** GW-2014 (AC-1, AC-2, AC-3, AC-4)
 
@@ -4627,7 +4651,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-2014a  Key provider write_master_key — FileKeyProvider round-trip
+### T-2015a  Key provider write_master_key — FileKeyProvider round-trip
 
 **Traces to:** GW-0601b (AC-7)
 
@@ -4643,7 +4667,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-2014b  Key provider write_master_key — EnvKeyProvider rejected
+### T-2015b  Key provider write_master_key — EnvKeyProvider rejected
 
 **Traces to:** GW-0601b (AC-8)
 
@@ -4693,7 +4717,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-2000 | T-2001 |
 | GW-2001 | T-2000 |
 | GW-2002 | T-2003 |
-| GW-2003 | T-2001, T-2011, T-2012, T-2013 |
+| GW-2003 | T-2001, T-2011, T-2012, T-2013, T-2014 |
 | GW-2004 | T-2002 |
 | GW-2005 | T-2001, T-2006c |
 | GW-2006 | T-2004, T-2004a |
@@ -4704,4 +4728,4 @@ A configurable stub handler process (or in-process mock) that:
 | GW-2011 | T-2001 |
 | GW-2012 | T-2008 |
 | GW-2013 | T-2010 |
-| GW-2014 | T-2014, T-2014a, T-2014b |
+| GW-2014 | T-2015, T-2015a, T-2015b |

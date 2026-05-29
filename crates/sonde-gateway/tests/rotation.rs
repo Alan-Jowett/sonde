@@ -158,7 +158,7 @@ async fn register_test_node(store: &Arc<SqliteStorage>, node_id: &str, key_hint:
 /// The temp file is initialized with the given master key in hex format.
 /// Returns both the provider (as `Arc<dyn KeyProvider>`) and the
 /// `NamedTempFile` handle (must be kept alive for the file to persist).
-#[allow(dead_code)] // useful for post-commit recovery tests (T-2014b)
+#[allow(dead_code)] // useful for post-commit recovery tests (T-2015b)
 fn test_key_provider(
     master_key: &[u8; 32],
 ) -> (

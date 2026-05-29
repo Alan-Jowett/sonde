@@ -1243,7 +1243,17 @@ async fn run_gateway(
             /// Debounce interval for missing key hint-triggered re-emission.
             const HINT_DEBOUNCE: Duration = Duration::from_secs(60);
 
+            /// Periodic heartbeat interval for gateway ACTUAL_STATE
+            /// re-emission (GW-2003 AC-8). Ensures the control-plane
+            /// handler regularly evaluates pending desired state.
+            const GATEWAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(900);
+
             let mut hint_debounce: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+            let mut heartbeat = tokio::time::interval_at(
+                tokio::time::Instant::now() + GATEWAY_HEARTBEAT_INTERVAL,
+                GATEWAY_HEARTBEAT_INTERVAL,
+            );
+            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             loop {
                 tokio::select! {
@@ -1271,6 +1281,22 @@ async fn run_gateway(
                     _ = missing_hints_notify.notified() => {
                         // Start or reset the debounce timer.
                         hint_debounce = Some(Box::pin(tokio::time::sleep(HINT_DEBOUNCE)));
+                    }
+                    _ = heartbeat.tick() => {
+                        // Cancel any active hint debounce — the heartbeat
+                        // emission drains pending hints via the shared
+                        // re-emission procedure.
+                        if hint_debounce.take().is_some() {
+                            info!("heartbeat pre-empted missing hint debounce");
+                        }
+                        info!("periodic heartbeat — re-emitting gateway ACTUAL_STATE");
+                        if let Err(e) = reemit_gateway_actual_state(
+                            &reemit_event_hub,
+                            &reemit_storage,
+                            &reemit_gateway,
+                        ).await {
+                            error!("failed to re-emit ACTUAL_STATE on heartbeat: {e}");
+                        }
                     }
                     _ = async {
                         match hint_debounce.as_mut() {

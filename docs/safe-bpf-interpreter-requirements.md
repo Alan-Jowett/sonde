@@ -655,7 +655,7 @@ The following error variants MUST be supported:
 
 **Acceptance criteria:**
 
-1. Each error variant is reachable via a specific test scenario.
+1. Each error variant — except `ReadOnlyWrite` (reserved for future hard write-rejection) — is reachable via a specific test scenario.
 2. All error variants include the `pc` field identifying the faulting instruction.
 3. `BpfError` implements `Display` for all variants.
 4. `BpfError` implements `std::error::Error` when the `std` feature is enabled.

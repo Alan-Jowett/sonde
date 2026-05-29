@@ -75,8 +75,8 @@ The `sonde-bpf` crate had a design doc and validation plan but no requirements d
 | SBPF-0702 | T-BPF-021 | ✅ |
 | SBPF-0800 | T-BPF-022, T-BPF-023 | ✅ |
 | SBPF-0801 | — | ⚠️ **F-005** |
-| SBPF-0900 | — | ⚠️ **F-006** |
-| SBPF-1000 | — | ⚠️ **F-007** |
+| SBPF-0900 | `interpreter_tests.rs` (3 tests) | ⚠️ **F-006** (no T-BPF entry) |
+| SBPF-1000 | `tagged_register_tests.rs` (4 tests) | ⚠️ **F-007** (no T-BPF entry) |
 | SBPF-1100 | Partial (across many tests) | ✅ |
 | SBPF-1200 | Structural (no_std build) | ✅ N/A |
 | SBPF-1201 | Build-level | ✅ N/A |
@@ -156,31 +156,31 @@ All 33 test cases trace to either an SBPF requirement or a node-level requiremen
 - **Evidence:** `interpreter.rs:1811` checks depth against `MAX_CALL_DEPTH (8)`. No test case.
 - **Remediation:** Add a test with 9 nested BPF-to-BPF calls (e.g., T-BPF-038).
 
-#### F-006  No test for instruction budget exceeded (D1)
+#### F-006  Instruction budget tests exist but lack T-BPF numbering (D1)
 
-- **Classification:** D1 — requirement without test coverage
-- **Severity:** Medium
+- **Classification:** D1 — requirement with Rust test coverage but no numbered validation-plan entry
+- **Severity:** Low
 - **Requirement:** SBPF-0900
-- **Evidence:** `interpreter.rs:602–606, 757–760` implements metering. No test case.
-- **Remediation:** Add test cases for budget=N−1 failure and budget=N success (e.g., T-BPF-039a/b).
+- **Evidence:** `interpreter.rs:602–606, 757–760` implements metering. `crates/sonde-bpf/tests/interpreter_tests.rs` already contains `test_instruction_budget_exceeded`, `test_instruction_budget_exact`, and `test_instruction_budget_ld_dw_imm_counts_two_slots`. However, these are not represented as numbered T-BPF cases in the validation plan.
+- **Remediation:** Add T-BPF-039a/b/c entries to the validation plan referencing the existing tests.
 
-#### F-007  No test for context pointer field tagging (D1)
+#### F-007  Context pointer field tests exist but lack T-BPF numbering (D1)
 
-- **Classification:** D1 — requirement without test coverage
-- **Severity:** Medium
+- **Classification:** D1 — requirement with Rust test coverage but no numbered validation-plan entry
+- **Severity:** Low
 - **Requirement:** SBPF-1000
-- **Evidence:** `interpreter.rs:161–178, 858–884` implements ContextPointerField matching. No test case.
-- **Remediation:** Add a test that loads from a context offset with a matching ContextPointerField descriptor and verifies the pointer tag (e.g., T-BPF-040).
+- **Evidence:** `interpreter.rs:161–178, 858–884` implements ContextPointerField matching. `crates/sonde-bpf/tests/tagged_register_tests.rs` already contains `ctx_pointer_field_load_and_deref`, `ctx_pointer_field_absent_fails`, `ctx_pointer_field_decoder_pattern`, and `ctx_pointer_field_adjusted_base`. However, these are not represented as numbered T-BPF cases in the validation plan.
+- **Remediation:** Add T-BPF-040a/b/c/d entries to the validation plan referencing the existing tests.
 
 ---
 
 ## 5  Root Cause Analysis
 
-All 7 findings are D1 (requirement without test case). They share a common root cause: the validation plan was written against the **design doc sections** (§3–§7), which cover the tagged-register safety model, but does not cover:
+All 7 findings are D1 (requirement without numbered validation-plan entry). They share a common root cause: the validation plan was written against the **design doc sections** (§3–§7), which cover the tagged-register safety model, but does not cover:
 
 1. **Input validation** edge cases (bytecode length, PC bounds, empty context) — these are defense-in-depth checks in the implementation.
-2. **Non-functional behavior** (instruction metering, unaligned access) — these are implicit properties.
-3. **ContextPointerField** — this feature was added during implementation and is not yet in the design doc.
+2. **Non-functional behavior** (instruction metering, unaligned access) — these are implicit properties. Note: instruction metering already has Rust tests in `interpreter_tests.rs` but no numbered T-BPF entries.
+3. **ContextPointerField** — this feature was added during implementation and has Rust tests in `tagged_register_tests.rs` but no numbered T-BPF entries and is not yet in the design doc.
 
 This is expected for a spec-extraction workflow: the requirements doc surfaces contracts that were previously only implicit in the code.
 
@@ -191,8 +191,8 @@ This is expected for a spec-extraction workflow: the requirements doc surfaces c
 | Priority | Action | Effort |
 |---|---|---|
 | 1 | Add T-BPF-038 (call depth exceeded) to validation plan | Small |
-| 2 | Add T-BPF-039a/b (instruction budget) to validation plan | Small |
-| 3 | Add T-BPF-040 (context pointer fields) to validation plan | Small |
+| 2 | Add T-BPF-039a/b/c entries to validation plan for existing instruction budget tests | Trivial |
+| 3 | Add T-BPF-040a/b/c/d entries to validation plan for existing context pointer field tests | Trivial |
 | 4 | Add T-BPF-034 (bytecode length) to validation plan | Trivial |
 | 5 | Add T-BPF-035a/b/c (PC bounds) to validation plan | Small |
 | 6 | Add T-BPF-036 (empty context) to validation plan | Trivial |

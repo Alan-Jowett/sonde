@@ -157,7 +157,7 @@ The design uses four Azure Tables:
 1. **`ActualNodeState`** — append-only actual-state history keyed for latest-per-node queries.
 2. **`DesiredNodeState`** — append-only desired-state history keyed for latest-per-node queries.
 3. **`SensorData`** — append-only sensor data history (§6.1).
-4. **`Programs`** — BPF program image store, upserted by `ProgramIngest` (§8).
+4. **`Programs`** — BPF program image store, append-only, written by `ProgramIngest` (§8).
 
 ### 4.1  `ActualNodeState` schema
 
@@ -249,8 +249,11 @@ Each row uses:
 | `verification_profile` | `String` | `"resident"` or `"ephemeral"`. |
 | `created_at` | `String` | ISO 8601 UTC timestamp of ingestion. |
 
-Programs are upserted (insert-or-replace) keyed by `program_hash`. Re-ingesting
-the same ELF overwrites the existing row.
+Programs are inserted (append-only) keyed by `program_hash`. Re-ingesting the
+same ELF is a no-op — the existing row is preserved unchanged. Since
+`program_hash` is SHA-256 of the CBOR image, identical content always produces
+the same hash. First-writer-wins: the response may echo the new request's
+metadata, but the stored row retains original values.
 
 ---
 
@@ -296,8 +299,9 @@ For each node-scoped `GW-0812`, the handler performs the following sequence:
       at key 7, and `abi_version` at key 8. If the program row exists but
       `elf_image` is absent (legacy row ingested before ELF storage was added),
       omit key 5 and log a warning; the gateway will reject the message if it
-      does not already have the program locally. Programs must be re-ingested
-      through `ProgramIngest` to populate the `elf_image` column.
+      does not already have the program locally. To populate `elf_image`,
+      delete the legacy row from the `Programs` table and re-ingest the
+      program.
 12. Publish that payload to the downstream queue.
 
 `ephemeral_program_hash` is intentionally omitted in v1. The gateway connector
@@ -495,10 +499,13 @@ code embedded in the Azure Functions output binding envelope:
 
 ### 8.5  Storage
 
-On successful verification the handler upserts one row in the `Programs` table
+On successful verification the handler inserts one row in the `Programs` table
 (§4.4) containing both the CBOR-encoded program image and the original ELF
-binary. The ELF is retained so the reconciliation path (§5 step 11) can embed
-it in downstream `GW-0811` messages without requiring a separate ELF store.
+binary. If the row already exists (duplicate `program_hash`), the insert is
+treated as a successful no-op — only an entity-already-exists conflict is
+suppressed; other errors propagate. The ELF is retained so the reconciliation
+path (§5 step 11) can embed it in downstream `GW-0811` messages without
+requiring a separate ELF store.
 
 ---
 

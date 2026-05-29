@@ -492,3 +492,27 @@ divergence publication instead of treating that redelivery as permanently stale.
 2. Send a request through the policy chain.
 3. Assert: the returned response contains a `Server` header with value
    `"OriginalServer/1.0"` (unmodified).
+
+### T-AZH-0800  Program image storage is append-only
+
+**Validates:** AZH-0800 (AC-1, AC-3, AC-4)
+
+**Procedure:**
+1. Create a `MemoryStore` instance.
+2. Ingest a program ELF via `handle_program_ingest`.
+3. Assert: `store_program_image` was called and the row is persisted.
+4. Ingest the same ELF again.
+5. Assert: the operation succeeds (no error).
+6. Assert: the original row's `created_at` timestamp is unchanged.
+
+### T-AZH-0800a  Duplicate program hash returns success without overwrite
+
+**Validates:** AZH-0800 (AC-2)
+
+**Procedure:**
+1. Call `store_program_image` with a valid `ProgramImageRow`.
+2. Call `store_program_image` again with the same `program_hash`
+   but a different `created_at`.
+3. Assert: the second call returns `Ok(())`.
+4. Assert: loading the program by hash returns the original row
+   (first `created_at` preserved).

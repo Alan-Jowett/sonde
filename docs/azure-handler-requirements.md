@@ -544,3 +544,27 @@ header into Azure Table Storage responses that lack one, using the SDK's
    `"Windows-Azure-Table/1.0 Microsoft-HTTPAPI/2.0"`.
 2. When the `Server` header is already present, it is not modified.
 3. The workaround is removable when the upstream SDK fix lands.
+
+### AZH-0800  Append-only program image storage
+
+**Priority:** Must
+**Source:** Issue #1098
+
+**Description:**
+The `Programs` table MUST use insert-only (append) semantics, consistent
+with the audit-trail guarantees of the other Azure Tables
+(`ActualNodeState`, `DesiredNodeState`, `SensorData`). The handler MUST
+NOT use insert-or-replace on the `Programs` table.
+
+**Acceptance criteria:**
+
+1. `store_program_image` uses `insert` (not `insert_or_replace`).
+2. If a row with the same `program_hash` RowKey already exists
+   (Azure Table entity-already-exists conflict), the operation succeeds
+   as a no-op — the original row is preserved unchanged.
+3. The `HandlerStore` trait documents insert-only, first-writer-wins
+   semantics for `store_program_image`.
+4. Test mocks enforce insert-only: existing entries are not overwritten.
+5. Legacy rows missing `elf_image` require manual deletion before
+   re-ingest can populate the column; the re-ingest-to-repair path
+   is removed from the design.

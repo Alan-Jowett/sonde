@@ -118,12 +118,7 @@ async fn test_t2006_declarative_node_recovery() {
         .load_gateway_identity()
         .await
         .unwrap()
-        .unwrap_or_else(|| {
-            // Generate one if none exists.
-            let id = GatewayIdentity::generate().unwrap();
-            // We won't persist it since we only need it for the engine constructor.
-            id
-        });
+        .unwrap_or_else(|| GatewayIdentity::generate().unwrap());
 
     let entity_id: String = identity
         .gateway_id()
@@ -131,7 +126,16 @@ async fn test_t2006_declarative_node_recovery() {
         .map(|b| format!("{b:02x}"))
         .collect();
 
-    let engine = RotationEngine::new(store.clone(), identity, event_hub, grpc_rx, ds_rx);
+    let engine = RotationEngine::new(
+        store.clone(),
+        identity,
+        event_hub,
+        Arc::new(sonde_gateway::key_provider::EnvKeyProvider::new(
+            "__UNUSED__",
+        )),
+        grpc_rx,
+        ds_rx,
+    );
 
     // Send the DESIRED_STATE with recovered_psks through the channel.
     let desired_state = GatewayDesiredState {
@@ -290,7 +294,16 @@ async fn test_t2006b_mismatched_master_key_id_skipped() {
     let (ds_tx, ds_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = Arc::new(ConnectorEventHub::default());
 
-    let engine = RotationEngine::new(store.clone(), identity, event_hub, grpc_rx, ds_rx);
+    let engine = RotationEngine::new(
+        store.clone(),
+        identity,
+        event_hub,
+        Arc::new(sonde_gateway::key_provider::EnvKeyProvider::new(
+            "__UNUSED__",
+        )),
+        grpc_rx,
+        ds_rx,
+    );
 
     // Step 1: Deliver recovered_psks with wrong master_key_id.
     let wrong_key_id = [0xFFu8; 16];

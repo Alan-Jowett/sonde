@@ -922,7 +922,8 @@ async fn run_gateway(
 
     // 1. Load master key for at-rest PSK encryption (GW-0601a).
     //    Build the appropriate KeyProvider from CLI arguments, then invoke it.
-    let provider = build_key_provider(cli)?;
+    let provider: Arc<dyn sonde_gateway::key_provider::KeyProvider> =
+        Arc::from(build_key_provider(cli)?);
     let master_key = Zeroizing::new(if cli.generate_master_key {
         let k = provider.generate_or_load_master_key()?;
         *k
@@ -935,6 +936,51 @@ async fn run_gateway(
     // 2. Open persistent storage
     let storage: Arc<SqliteStorage> = Arc::new(SqliteStorage::open(&cli.db, master_key)?);
     info!("storage opened: {}", cli.db);
+
+    // 2a. Check for post-commit rotation recovery BEFORE loading identity
+    //     (GW-2007).  If pending_rotation exists with epoch == DB epoch, the
+    //     key provider may still have the old key.  Recovery writes the new
+    //     key to the provider and swaps the in-memory key before identity
+    //     decryption (which uses the new key after commit).
+    let pending_rotation_notification = {
+        use sonde_gateway::gateway_identity::GatewayIdentity;
+
+        // Try loading existing identity — may fail for post-commit crash
+        // (seed rewrapped under new key, but old key in memory).  That's OK:
+        // post-commit recovery only needs the pending_rotation record and the
+        // key provider, not the identity.  Pre-commit crashes never hit this
+        // because encrypted_seed hasn't been promoted yet, so load succeeds
+        // with the old key.
+        let identity = match storage.load_gateway_identity().await {
+            Ok(Some(id)) => id,
+            Ok(None) => GatewayIdentity::generate()
+                .map_err(|e| format!("cannot generate dummy identity for recovery: {e}"))?,
+            Err(e) => {
+                // Identity decryption failure during recovery is expected in
+                // the post-commit/pre-provider-write crash window: the seed
+                // was already rewrapped under the new key by commit_rotation(),
+                // but the provider still has the old key.  The post-commit
+                // recovery path does not use identity, so a dummy is safe.
+                warn!(
+                    error = %e,
+                    "cannot decrypt gateway identity — expected during \
+                     post-commit rotation recovery; using placeholder"
+                );
+                GatewayIdentity::generate()
+                    .map_err(|e| format!("cannot generate dummy identity for recovery: {e}"))?
+            }
+        };
+        sonde_gateway::RotationEngine::resume_pending_rotation(
+            &storage,
+            &identity,
+            provider.as_ref(),
+        )
+        .await
+        .map_err(|e| format!("resume_pending_rotation: {e}"))?
+    };
+    if pending_rotation_notification.is_some() {
+        info!("pending rotation resumed on startup — will re-emit ACTUAL_STATE after connector starts");
+    }
 
     // 2b. Seed or load persisted ESP-NOW channel (GW-0808).
     //     If the database already has a channel, use it (ignoring --channel).
@@ -978,21 +1024,10 @@ async fn run_gateway(
         }
     }
 
-    // 2b. Resume pending rotation if exists (§23.11 step 2b).
-    let pending_rotation_notification = {
-        let identity = storage
-            .load_gateway_identity()
-            .await?
-            .ok_or("gateway identity missing after init")?;
-        sonde_gateway::RotationEngine::resume_pending_rotation(&storage, &identity)
-            .await
-            .map_err(|e| format!("resume_pending_rotation: {e}"))?
-    };
-    if pending_rotation_notification.is_some() {
-        info!("pending rotation resumed on startup — will re-emit ACTUAL_STATE after connector starts");
-    }
+    // 2d. Resume pending rotation if needed (already done in 2a — this
+    //     comment retained for section numbering continuity).
 
-    // 2c. Load/generate master_key_id and master_key_epoch (§23.11 step 2c).
+    // 2e. Load/generate master_key_id and master_key_epoch (§23.11 step 2c).
     let (master_key_id, master_key_epoch) = storage.init_master_key_id().await?;
     info!(
         master_key_id = %hex::encode(master_key_id),
@@ -1166,6 +1201,7 @@ async fn run_gateway(
             Arc::clone(&storage),
             identity,
             gateway.connector_event_hub(),
+            Arc::clone(&provider),
             rotation_grpc_rx,
             desired_state_rx,
         )

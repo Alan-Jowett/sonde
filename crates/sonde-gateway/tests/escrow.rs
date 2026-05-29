@@ -35,6 +35,30 @@ use x25519_dalek::PublicKey as X25519PublicKey;
 
 // ── helpers ──────────────────────────────────────────────────────
 
+/// A writable key provider for tests that don't need actual key persistence.
+struct NoopWritableKeyProvider;
+
+impl sonde_gateway::key_provider::KeyProvider for NoopWritableKeyProvider {
+    fn load_master_key(
+        &self,
+    ) -> Result<Zeroizing<[u8; 32]>, sonde_gateway::key_provider::KeyProviderError> {
+        Err(sonde_gateway::key_provider::KeyProviderError::NotFound(
+            "test provider".into(),
+        ))
+    }
+
+    fn write_master_key(
+        &self,
+        _key: &[u8; 32],
+    ) -> Result<(), sonde_gateway::key_provider::KeyProviderError> {
+        Ok(())
+    }
+
+    fn is_writable(&self) -> bool {
+        true
+    }
+}
+
 /// Create a test gateway with identity and storage, but do NOT call
 /// `init_master_key_id()` — the caller must do that after registering nodes
 /// so the backfill picks them up.
@@ -672,6 +696,7 @@ async fn test_t2006c_phone_psks_not_escrowed() {
         store.clone(),
         identity.clone(),
         event_hub.clone(),
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );
@@ -851,6 +876,7 @@ async fn test_t2012_rotation_complete_triggers_reemission() {
         store.clone(),
         identity.clone(),
         event_hub.clone(),
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         ds_rx,
     )
@@ -972,6 +998,7 @@ async fn test_t2013_salt_kdf_adoption_triggers_reemission() {
         store.clone(),
         identity.clone(),
         event_hub.clone(),
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         ds_rx,
     )

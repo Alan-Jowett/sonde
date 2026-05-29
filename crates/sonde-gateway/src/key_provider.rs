@@ -37,8 +37,7 @@ use zeroize::Zeroizing;
 // Error type
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Errors returned by [`KeyProvider::load_master_key`] and
-/// [`KeyProvider::generate_or_load_master_key`].
+/// Errors returned by [`KeyProvider`] methods.
 #[derive(Debug)]
 pub enum KeyProviderError {
     /// An I/O error occurred while reading the key material.
@@ -51,6 +50,8 @@ pub enum KeyProviderError {
     Backend(String),
     /// No key exists in this backend (used to distinguish absence from errors).
     NotFound(String),
+    /// The backend does not support writing (e.g., [`EnvKeyProvider`]).
+    NotWritable(String),
 }
 
 impl fmt::Display for KeyProviderError {
@@ -61,6 +62,7 @@ impl fmt::Display for KeyProviderError {
             Self::NotAvailable(msg) => write!(f, "backend not available: {msg}"),
             Self::Backend(msg) => write!(f, "backend error: {msg}"),
             Self::NotFound(msg) => write!(f, "key not found: {msg}"),
+            Self::NotWritable(msg) => write!(f, "backend not writable: {msg}"),
         }
     }
 }
@@ -71,7 +73,7 @@ impl std::error::Error for KeyProviderError {}
 // KeyProvider trait
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Abstracts how the 32-byte gateway master key is obtained.
+/// Abstracts how the 32-byte gateway master key is obtained and persisted.
 ///
 /// Implementations range from a simple plaintext hex file to OS-native secret
 /// storage that provides hardware-backed or OS-managed encryption at rest.
@@ -83,6 +85,29 @@ pub trait KeyProvider: Send + Sync {
     ///
     /// This method is called once at gateway startup.  Errors are fatal.
     fn load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError>;
+
+    /// Persist a new 32-byte master key, replacing the existing key.
+    ///
+    /// Called by the rotation engine after DB commit to persist the rotated key.
+    /// Implementations SHOULD write atomically (write-to-temp + rename) where
+    /// the backend supports it.
+    ///
+    /// The default implementation returns [`KeyProviderError::NotWritable`].
+    fn write_master_key(&self, _key: &[u8; 32]) -> Result<(), KeyProviderError> {
+        Err(KeyProviderError::NotWritable(
+            "this key provider does not support writing; \
+             use --key-provider file, dpapi, or secret-service for key rotation"
+                .into(),
+        ))
+    }
+
+    /// Returns `true` if this backend supports [`write_master_key`](Self::write_master_key).
+    ///
+    /// The rotation engine checks this before starting a rotation and rejects
+    /// the request if the provider is not writable (GW-2014).
+    fn is_writable(&self) -> bool {
+        false
+    }
 
     /// Generate a random 32-byte master key and write it to the backend if no
     /// key exists, or load the existing key if one is already present.
@@ -224,6 +249,93 @@ impl KeyProvider for FileKeyProvider {
             ))
         })?;
         parse_hex_key(&raw)
+    }
+
+    fn write_master_key(&self, key: &[u8; 32]) -> Result<(), KeyProviderError> {
+        let mut hex = String::with_capacity(64);
+        for b in key.iter() {
+            use std::fmt::Write as _;
+            write!(hex, "{b:02x}").expect("write to String is infallible");
+        }
+
+        // Write to a temporary file in the same directory, then rename atomically.
+        let parent = self
+            .path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let tmp_path = parent.join(format!(
+            ".{}.tmp",
+            self.path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("master-key")
+        ));
+
+        {
+            use std::io::Write as _;
+
+            #[cfg(unix)]
+            let mut f = {
+                use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&tmp_path)
+                    .map_err(|e| {
+                        KeyProviderError::Io(format!(
+                            "cannot create temp key file {}: {e}",
+                            tmp_path.display()
+                        ))
+                    })?;
+                // Explicitly set permissions to override any umask restriction.
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| {
+                        let _ = std::fs::remove_file(&tmp_path);
+                        KeyProviderError::Io(format!(
+                            "cannot set permissions on temp key file: {e}"
+                        ))
+                    })?;
+                file
+            };
+
+            #[cfg(not(unix))]
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .map_err(|e| {
+                    KeyProviderError::Io(format!(
+                        "cannot create temp key file {}: {e}",
+                        tmp_path.display()
+                    ))
+                })?;
+
+            f.write_all(hex.as_bytes()).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp_path);
+                KeyProviderError::Io(format!("cannot write temp key file: {e}"))
+            })?;
+            f.sync_all().map_err(|e| {
+                let _ = std::fs::remove_file(&tmp_path);
+                KeyProviderError::Io(format!("cannot sync temp key file: {e}"))
+            })?;
+        }
+
+        std::fs::rename(&tmp_path, &self.path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp_path);
+            KeyProviderError::Io(format!(
+                "cannot rename temp key file to {}: {e}",
+                self.path.display()
+            ))
+        })?;
+
+        Ok(())
+    }
+
+    fn is_writable(&self) -> bool {
+        true
     }
 
     fn generate_or_load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
@@ -423,6 +535,60 @@ impl KeyProvider for DpapiKeyProvider {
                 self.blob_path.display()
             ))),
         }
+    }
+
+    fn write_master_key(&self, key: &[u8; 32]) -> Result<(), KeyProviderError> {
+        let blob = dpapi::encrypt(key)
+            .map_err(|e| KeyProviderError::Backend(format!("DPAPI encryption failed: {e}")))?;
+
+        let parent = self
+            .blob_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let tmp_path = parent.join(format!(
+            ".{}.tmp",
+            self.blob_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("master-key")
+        ));
+
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .map_err(|e| {
+                    KeyProviderError::Io(format!(
+                        "cannot create temp DPAPI blob {}: {e}",
+                        tmp_path.display()
+                    ))
+                })?;
+            f.write_all(&blob).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp_path);
+                KeyProviderError::Io(format!("cannot write temp DPAPI blob: {e}"))
+            })?;
+            f.sync_all().map_err(|e| {
+                let _ = std::fs::remove_file(&tmp_path);
+                KeyProviderError::Io(format!("cannot sync temp DPAPI blob: {e}"))
+            })?;
+        }
+
+        std::fs::rename(&tmp_path, &self.blob_path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp_path);
+            KeyProviderError::Io(format!(
+                "cannot rename temp DPAPI blob to {}: {e}",
+                self.blob_path.display()
+            ))
+        })?;
+
+        Ok(())
+    }
+
+    fn is_writable(&self) -> bool {
+        true
     }
 }
 
@@ -659,6 +825,14 @@ impl KeyProvider for SecretServiceKeyProvider {
             "master key set in Secret Service for the first time"
         );
         Ok(canonical)
+    }
+
+    fn write_master_key(&self, key: &[u8; 32]) -> Result<(), KeyProviderError> {
+        store_in_secret_service(key, &self.label)
+    }
+
+    fn is_writable(&self) -> bool {
+        true
     }
 }
 
@@ -1012,5 +1186,47 @@ mod tests {
             mode, 0o600,
             "key file should have mode 0o600, got {mode:#o}"
         );
+    }
+
+    // ── write_master_key ───────────────────────────────────────────────────
+
+    /// T-2015a: FileKeyProvider write round-trip.
+    #[test]
+    fn file_provider_write_master_key_round_trip() {
+        // Start with a known key.
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "{HEX_KEY}").unwrap();
+        let provider = FileKeyProvider::new(f.path().to_path_buf());
+
+        // Write a different key.
+        let new_key = [0xAAu8; 32];
+        provider.write_master_key(&new_key).unwrap();
+
+        // Load should return the new key.
+        let loaded = provider.load_master_key().unwrap();
+        assert_eq!(*loaded, new_key);
+    }
+
+    #[test]
+    fn file_provider_is_writable() {
+        let provider = FileKeyProvider::new(PathBuf::from("/tmp/test.key"));
+        assert!(provider.is_writable());
+    }
+
+    /// T-2015b: EnvKeyProvider write is rejected.
+    #[test]
+    fn env_provider_write_rejected() {
+        let provider = EnvKeyProvider::default();
+        let err = provider.write_master_key(&[0xBBu8; 32]).unwrap_err();
+        assert!(
+            matches!(err, KeyProviderError::NotWritable(_)),
+            "EnvKeyProvider must return NotWritable, got: {err}"
+        );
+    }
+
+    #[test]
+    fn env_provider_not_writable() {
+        let provider = EnvKeyProvider::default();
+        assert!(!provider.is_writable());
     }
 }

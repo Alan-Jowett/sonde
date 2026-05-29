@@ -480,21 +480,30 @@ fn validate_master_key(
 /// Called during `open()` before `validate_master_key` to support crash
 /// recovery (GW-2007): some PSKs may already be re-encrypted with the
 /// new key.
+///
+/// **Post-write/pre-delete tolerance (GW-2014):** If the provider already
+/// persisted the new key but `pending_rotation` was not yet deleted, the
+/// current startup key *is* the new key and decrypting `new_master_key_enc`
+/// (which was encrypted under the old key) will fail.  When the DB
+/// `master_key_epoch` already equals `pending_rotation.new_epoch`, this
+/// decryption failure is benign — the record is a stale marker.  We log a
+/// warning and return `None` so that `open()` proceeds; the marker will be
+/// cleaned up by `resume_pending_rotation()`.
 fn load_pending_rotation_key(
     conn: &Connection,
     current_key: &[u8; 32],
 ) -> Result<Option<Zeroizing<[u8; 32]>>, StorageError> {
-    let pending: Option<Vec<u8>> = conn
+    let row: Option<(Vec<u8>, i64)> = conn
         .query_row(
-            "SELECT new_master_key_enc FROM pending_rotation WHERE id = 1",
+            "SELECT new_master_key_enc, new_epoch FROM pending_rotation WHERE id = 1",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(map_err)?;
 
-    let enc_blob = match pending {
-        Some(blob) => blob,
+    let (enc_blob, pending_epoch) = match row {
+        Some(r) => r,
         None => return Ok(None),
     };
 
@@ -513,24 +522,54 @@ fn load_pending_rotation_key(
         aad: PENDING_ROTATION_AAD,
     };
 
-    let plaintext = Zeroizing::new(cipher.decrypt(nonce, payload).map_err(|_| {
-        StorageError::Internal(
-            "cannot decrypt pending_rotation.new_master_key_enc — wrong master key \
-             or data corruption"
-                .into(),
-        )
-    })?);
+    match cipher.decrypt(nonce, payload) {
+        Ok(plaintext) => {
+            let plaintext = Zeroizing::new(plaintext);
+            if plaintext.len() != 32 {
+                return Err(StorageError::Internal(format!(
+                    "decrypted pending new master key is {} bytes, expected 32",
+                    plaintext.len()
+                )));
+            }
+            let mut arr = Zeroizing::new([0u8; 32]);
+            arr.copy_from_slice(&plaintext);
+            Ok(Some(arr))
+        }
+        Err(_) => {
+            // Decryption failed. Check if this is the post-write/pre-delete
+            // state: DB epoch already advanced to pending epoch, meaning the
+            // commit succeeded and the provider key was updated, but the
+            // pending_rotation marker wasn't deleted before shutdown.
+            let db_epoch: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM gateway_config WHERE key = 'master_key_epoch'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(map_err)?;
+            let db_epoch: u64 = db_epoch.as_deref().unwrap_or("0").parse().unwrap_or(0);
 
-    if plaintext.len() != 32 {
-        return Err(StorageError::Internal(format!(
-            "decrypted pending new master key is {} bytes, expected 32",
-            plaintext.len()
-        )));
+            if db_epoch == pending_epoch as u64 {
+                // Post-commit state: the startup key is already the new key,
+                // so the old-key-encrypted blob is expected to fail decryption.
+                // resume_pending_rotation() will delete this stale marker.
+                tracing::warn!(
+                    db_epoch,
+                    "pending_rotation record is a stale post-commit marker \
+                     (cannot decrypt with current key, epoch matches) — \
+                     deferring cleanup to resume_pending_rotation"
+                );
+                Ok(None)
+            } else {
+                Err(StorageError::Internal(
+                    "cannot decrypt pending_rotation.new_master_key_enc — wrong master key \
+                     or data corruption"
+                        .into(),
+                ))
+            }
+        }
     }
-
-    let mut arr = Zeroizing::new([0u8; 32]);
-    arr.copy_from_slice(&plaintext);
-    Ok(Some(arr))
 }
 
 const SCHEMA: &str = "
@@ -1570,7 +1609,11 @@ impl SqliteStorage {
     /// - Update `master_key_id` and `master_key_epoch` in `gateway_config`
     /// - Store salt and KDF params if non-null
     /// - Generate new rotation code
-    /// - Delete `pending_rotation`
+    ///
+    /// **Note (GW-2014):** `pending_rotation` is intentionally **not** deleted
+    /// here.  It is retained as a crash-recovery marker until the new key has
+    /// been persisted to the `KeyProvider` backend.  Call
+    /// [`delete_pending_rotation()`] after `write_master_key()` succeeds.
     pub async fn commit_rotation(
         &self,
         new_key_id: &[u8; 16],
@@ -1656,9 +1699,11 @@ impl SqliteStorage {
             )
             .map_err(map_err)?;
 
-            // Delete pending_rotation.
-            tx.execute("DELETE FROM pending_rotation", [])
-                .map_err(map_err)?;
+            // NOTE: pending_rotation is NOT deleted here.  It is retained as a
+            // crash-recovery marker so that the rotation engine can detect the
+            // post-commit/pre-provider-write state on restart and complete the
+            // key write.  Call `delete_pending_rotation()` after the key
+            // provider has persisted the new key (GW-2006 step 7, GW-2007).
 
             tx.commit().map_err(map_err)?;
             Ok(new_code)
@@ -1673,6 +1718,47 @@ impl SqliteStorage {
     /// the next startup will load the new key from gateway_config.
     pub fn swap_master_key(&self, new_key: Zeroizing<[u8; 32]>) {
         *self.master_key.write().unwrap() = Arc::new(new_key);
+    }
+
+    /// Delete the `pending_rotation` record after the key provider has
+    /// persisted the rotated master key (GW-2006 step 7).
+    ///
+    /// This is called outside the commit transaction so that the record acts
+    /// as a crash-recovery marker: if the process crashes between DB commit
+    /// and provider write, the record survives and startup recovery can
+    /// complete the provider write.
+    pub async fn delete_pending_rotation(&self) -> Result<(), StorageError> {
+        self.with_conn(move |conn| {
+            conn.execute("DELETE FROM pending_rotation", [])
+                .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Return the current `master_key_epoch` from `gateway_config`, or 0 if
+    /// not yet set.
+    ///
+    /// Used at startup to detect post-commit crash state by comparing against
+    /// the epoch stored in `pending_rotation` (GW-2007).
+    pub async fn get_master_key_epoch(&self) -> Result<u64, StorageError> {
+        self.with_conn(move |conn| {
+            let epoch: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM gateway_config WHERE key = 'master_key_epoch'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(map_err)?;
+            match epoch {
+                Some(s) => s.parse::<u64>().map_err(|e| {
+                    StorageError::Internal(format!("invalid master_key_epoch value: {e}"))
+                }),
+                None => Ok(0),
+            }
+        })
+        .await
     }
 
     /// Set the rotation new key for dual-key PSK decryption during rotation.

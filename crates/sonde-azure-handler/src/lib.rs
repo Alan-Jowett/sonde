@@ -557,6 +557,10 @@ where
 
         // Stale-message guard (mirrors node path): reload the latest row
         // after append and bail if a newer observation already exists.
+        // Also check against the pre-append `previous` row to handle the
+        // legacy RowKey="state" migration edge case (legacy rows sort after
+        // all reverse-timestamp keys, so the reload may return our just-
+        // appended row even though the legacy row had a newer timestamp).
         let latest = self
             .store
             .load_gateway_actual_state(gateway_id)
@@ -566,7 +570,11 @@ where
                     "gateway actual-state row `{gateway_id}` disappeared after append"
                 ))
             })?;
-        if latest.timestamp_ms > gw_row.timestamp_ms {
+        let superseded_by_latest = latest.timestamp_ms > gw_row.timestamp_ms;
+        let superseded_by_previous = previous
+            .as_ref()
+            .is_some_and(|p| p.timestamp_ms > gw_row.timestamp_ms);
+        if superseded_by_latest || superseded_by_previous {
             return Ok(());
         }
 
@@ -4899,6 +4907,86 @@ mod tests {
         assert!(
             desired_after.rotation_payload.is_some(),
             "rotation_payload must not be cleared by a stale message"
+        );
+    }
+
+    // A stale message arriving after a legacy RowKey="state" row must not
+    // drive control decisions, even though the history row sorts before
+    // "state" by RowKey.
+    #[tokio::test]
+    async fn t_azh_0600_stale_message_after_legacy_row() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        // Seed a legacy singleton row with timestamp_ms=2000.
+        let legacy_row = GatewayActualStateRow {
+            gateway_id: "aabb0011".to_string(),
+            row_key: "state".to_string(),
+            timestamp_ms: 2000,
+            channel: Some(6),
+            master_key_id: None,
+            master_key_epoch: Some(2),
+            x25519_public_key: None,
+            fingerprint_words: None,
+            missing_key_hints: None,
+            salt: None,
+            kdf_params_json: None,
+            gateway_version: None,
+            gateway_commit: None,
+            modem_firmware_version: None,
+            modem_firmware_commit: None,
+            rotation_in_progress: None,
+        };
+        store
+            .gateway_actual_states
+            .lock()
+            .await
+            .entry("aabb0011".to_string())
+            .or_default()
+            .push(legacy_row);
+
+        // Seed a rotation_payload in desired state.
+        let desired = GatewayDesiredStateRow {
+            gateway_id: "aabb0011".to_string(),
+            row_key: "desired".to_string(),
+            rotation_payload: Some(vec![0xDE, 0xAD]),
+            timestamp_ms: 1500,
+        };
+        store.upsert_gateway_desired_state(&desired).await.unwrap();
+
+        let published_before = publisher.sends.lock().await.len();
+
+        // Deliver a stale message (timestamp 1000 < legacy 2000).
+        // Its history row key will sort before "state", so load_gateway_actual_state
+        // returns it — but the previous-timestamp guard should catch the staleness.
+        let payload_stale = encode_gateway_actual_state_msg(
+            "aabb0011",
+            1000,
+            6,
+            &[0x42u8; 16],
+            1,
+            &[0x55u8; 32],
+            Some(&[0xAA; 16]),
+            false,
+        );
+        handler.handle_payload(&payload_stale).await.unwrap();
+
+        let published_after = publisher.sends.lock().await.len();
+        assert_eq!(
+            published_before, published_after,
+            "stale message after legacy row must not trigger DESIRED_STATE publication"
+        );
+
+        // Rotation payload must not be cleared.
+        let desired_after = store
+            .load_gateway_desired_state("aabb0011")
+            .await
+            .unwrap()
+            .expect("desired state must still exist");
+        assert!(
+            desired_after.rotation_payload.is_some(),
+            "rotation_payload must not be cleared by stale post-legacy message"
         );
     }
 

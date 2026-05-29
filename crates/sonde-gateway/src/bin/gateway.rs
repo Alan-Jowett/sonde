@@ -2008,10 +2008,6 @@ async fn run_gateway(
 
 // ── ACTUAL_STATE emission helpers (GW-2003, §23.14) ──────────────────────────
 
-/// Emit a full gateway ACTUAL_STATE by reading all required fields from storage.
-///
-/// Used for the initial startup emission (§23.11 step 9a) where the identity
-/// is already loaded.
 /// Modem firmware metadata extracted from the MODEM_READY handshake.
 /// Shared between the reconnect loop and the ACTUAL_STATE re-emission task.
 #[derive(Clone, Default)]
@@ -2020,6 +2016,10 @@ struct ModemMetadata {
     firmware_commit: Option<String>,
 }
 
+/// Emit a full gateway ACTUAL_STATE by reading all required fields from storage.
+///
+/// Used for the initial startup emission (§23.11 step 9a) where the identity
+/// is already loaded.
 async fn emit_gateway_actual_state_from_storage(
     event_hub: &sonde_gateway::ConnectorEventHub,
     storage: &SqliteStorage,

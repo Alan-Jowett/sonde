@@ -349,9 +349,9 @@ and verifies one or more acceptance criteria.
 | T-WEB-1003b | WEB-1003 | KDF params from ACTUAL_STATE are used when present | Unit (JS) | Planned |
 | T-WEB-1004 | WEB-1004 | `RotationPayloadV1` construction matches the specified binary format | Unit (JS) | Planned |
 | T-WEB-1005 | WEB-1005 | DESIRED_STATE row is created with the correct gateway `PartitionKey` | Integration | Planned |
-| T-WEB-1006 | WEB-1006 | Successful rotation is detected via `master_key_epoch` polling | Manual/E2E | Planned |
+| T-WEB-1006 | WEB-1006 | Successful rotation is detected via `master_key_epoch` polling using `latestByPartition` | Manual/E2E | Planned |
 | T-WEB-1006b | WEB-1006 | Rotation timeout is handled gracefully | Manual | Planned |
-| T-WEB-1007 | WEB-1007 | Gateway ACTUAL_STATE is read from the Azure Table successfully | Integration | Planned |
+| T-WEB-1007 | WEB-1007 | Gateway ACTUAL_STATE is read from the Azure Table using `latestByPartition` (not `RowKey='state'`) | Integration | Planned |
 | T-WEB-1007b | WEB-1007 | Missing gateway row shows a `No gateway connected` message | Manual | Planned |
 | T-WEB-1008 | WEB-1008 | No key material is written to browser storage | Manual | Planned |
 

@@ -739,12 +739,13 @@ async function pollRotationResult(gwId, originalEpoch) {
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((resolve) => setTimeout(resolve, 5000));
     try {
-      const filter = `PartitionKey eq 'g:${gwId}' and RowKey eq 'state'`;
+      const filter = `PartitionKey eq 'g:${gwId}'`;
       const rows = await queryTable(CONFIG.actualStateTable, filter);
-      if (rows.length > 0) {
-        const currentEpoch = Number(rows[0].master_key_epoch) || 0;
+      const latest = latestByPartition(rows);
+      if (latest.length > 0) {
+        const currentEpoch = Number(latest[0].master_key_epoch) || 0;
         if (currentEpoch > originalEpoch) return true;
-        if (rows[0].rotation_in_progress === false && currentEpoch === originalEpoch && i > 2) {
+        if (latest[0].rotation_in_progress === false && currentEpoch === originalEpoch && i > 2) {
           return false; // rotation_in_progress went back to false without epoch change
         }
       }
@@ -1148,7 +1149,7 @@ async function renderDashboard() {
     ]);
 
     // Separate gateway and node rows (WEB-1001).
-    const gatewayRows = filterGatewayRows(actualRows);
+    const gatewayRows = latestByPartition(filterGatewayRows(actualRows));
     const gatewayCardHtml = await renderGatewayStatusCard(gatewayRows);
 
     const latestActual = latestByPartition(filterNodeRows(actualRows)).sort((left, right) => String(left.node_id || '').localeCompare(String(right.node_id || '')));

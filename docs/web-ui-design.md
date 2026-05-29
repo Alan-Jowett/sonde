@@ -619,7 +619,11 @@ rendering in the popup:
 ### 13.4 Azure Table Integration
 
 - Gateway ACTUAL_STATE read:
-  `GET /actualstate(PartitionKey='g:XXXX',RowKey='state')`
+  `GET /actualstate?$filter=PartitionKey ge 'g:' and PartitionKey lt 'g;'`
+  The SPA uses `latestByPartition` to select the latest row per gateway
+  partition (lexicographically smallest reverse-timestamp `RowKey`).
+  This returns all gateway history rows; `latestByPartition` deduplicates
+  to one row per gateway.
 - Gateway discovery query:
   `GET /actualstate?$filter=PartitionKey ge 'g:' and PartitionKey lt 'g;'`
 - DESIRED_STATE write:

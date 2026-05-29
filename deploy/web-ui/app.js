@@ -376,12 +376,13 @@ function computeGatewayDivergence(actual, desired) {
       // Gateway is actively processing — not diverged for this condition.
     } else {
       const submittedEpoch = Number(desired.submitted_epoch);
-      if (Number.isNaN(submittedEpoch)) {
-        // Legacy row without submitted_epoch — treat as diverged.
-        return true;
+      if (!Number.isNaN(submittedEpoch)) {
+        // New-style row with submitted_epoch — compare epochs.
+        const actualEpoch = Number(actual.master_key_epoch) || 0;
+        if (actualEpoch <= submittedEpoch) return true;
       }
-      const actualEpoch = Number(actual.master_key_epoch) || 0;
-      if (actualEpoch <= submittedEpoch) return true;
+      // Legacy row without submitted_epoch — cannot determine convergence,
+      // skip to avoid permanent false Diverged after gateway consumes it.
     }
   }
 
@@ -542,7 +543,12 @@ function toggleRotationForm(gwId) {
 function closeRotationForm(gwId) {
   if (APP.rotationFormOpen !== gwId) return;
   const container = document.querySelector(`.rotation-form-container[data-gateway-form="${gwId}"]`);
-  if (container) container.style.display = 'none';
+  if (container) {
+    // Clear sensitive fields so passphrase doesn't linger in hidden DOM.
+    const form = container.querySelector('.rotation-form');
+    if (form) form.reset();
+    container.style.display = 'none';
+  }
   APP.rotationFormOpen = null;
   // Resume auto-refresh only if still on the dashboard tab (WEB-1002 AC#5).
   if (APP.activeTab === 'dashboard') {

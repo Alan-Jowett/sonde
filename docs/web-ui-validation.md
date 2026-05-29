@@ -103,14 +103,15 @@ and verifies one or more acceptance criteria.
 | WEB-0806 | T-WEB-0803, T-WEB-0803b, T-WEB-0803c, T-WEB-0803d, T-WEB-0803d2, T-WEB-0803e, T-WEB-0803f, T-WEB-0803g |
 | WEB-0901 | T-WEB-0901, T-WEB-0901b, T-WEB-0901c |
 | WEB-0902 | T-WEB-0902, T-WEB-0902b |
-| WEB-1001 | T-WEB-1001, T-WEB-1001b, T-WEB-1001c |
-| WEB-1002 | T-WEB-1002, T-WEB-1002b, T-WEB-1002c |
+| WEB-1001 | T-WEB-1001, T-WEB-1001b, T-WEB-1001c, T-WEB-1001d |
+| WEB-1002 | T-WEB-1002, T-WEB-1002b, T-WEB-1002c, T-WEB-1002d, T-WEB-1002e |
 | WEB-1003 | T-WEB-1003, T-WEB-1003b |
 | WEB-1004 | T-WEB-1004 |
 | WEB-1005 | T-WEB-1005 |
-| WEB-1006 | T-WEB-1006, T-WEB-1006b |
+| WEB-1006 | ~~T-WEB-1006, T-WEB-1006b~~ (retired — Issue #1092) |
 | WEB-1007 | T-WEB-1007, T-WEB-1007b |
 | WEB-1008 | T-WEB-1008 |
+| WEB-1009 | T-WEB-1009, T-WEB-1009b, T-WEB-1009c, T-WEB-1009d, T-WEB-1009e, T-WEB-1009f, T-WEB-1009g, T-WEB-1009h, T-WEB-1009i, T-WEB-1009j, T-WEB-1009k |
 | WEB-CC-01 | T-WEB-CC-01, T-WEB-CC-01b |
 | WEB-CC-02 | T-WEB-CC-02, T-WEB-CC-02b |
 | WEB-CC-03 | T-WEB-CC-03, T-WEB-CC-03b |
@@ -339,21 +340,35 @@ and verifies one or more acceptance criteria.
 
 | Test ID | Requirement | Description | Method | Status |
 |---|---|---|---|---|
-| T-WEB-1001 | WEB-1001 | Gateway status card displays all required fields | Manual/E2E | Planned |
+| T-WEB-1001 | WEB-1001 | Gateway status card displays all required fields including convergence badge | Manual/E2E | Planned |
 | T-WEB-1001b | WEB-1001 | Gateway row is not shown in the node table | Manual | Planned |
 | T-WEB-1001c | WEB-1001 | Fingerprint computed locally from x25519_public_key, not read from stored fingerprint_words | Unit JS | Planned |
-| T-WEB-1002 | WEB-1002 | Rotation modal opens and validates inputs | Manual | Planned |
+| T-WEB-1001d | WEB-1001 | Gateway status card shows convergence badge (Aligned or Diverged) | Manual/E2E | Planned |
+| T-WEB-1002 | WEB-1002 | Inline rotation form opens within gateway card and validates inputs | Manual | Planned |
 | T-WEB-1002b | WEB-1002 | Rotation code input is normalized to uppercase | Manual | Planned |
 | T-WEB-1002c | WEB-1002 | Rotation is disabled on unsupported browsers | Manual | Planned |
+| T-WEB-1002d | WEB-1002 | After submission, form shows success message and collapses (no inline polling) | Manual | Planned |
+| T-WEB-1002e | WEB-1002 | Dashboard auto-refresh is paused while rotation form is expanded | Manual | Planned |
 | T-WEB-1003 | WEB-1003 | Argon2id key derivation produces the correct output | Unit (JS) | Planned |
 | T-WEB-1003b | WEB-1003 | KDF params from ACTUAL_STATE are used when present | Unit (JS) | Planned |
 | T-WEB-1004 | WEB-1004 | `RotationPayloadV1` construction matches the specified binary format | Unit (JS) | Planned |
-| T-WEB-1005 | WEB-1005 | DESIRED_STATE row is created with the correct gateway `PartitionKey` | Integration | Planned |
-| T-WEB-1006 | WEB-1006 | Successful rotation is detected via `master_key_epoch` polling using a `$top=1` partition query to select the latest row | Manual/E2E | Planned |
-| T-WEB-1006b | WEB-1006 | Rotation timeout is handled gracefully | Manual | Planned |
+| T-WEB-1005 | WEB-1005 | DESIRED_STATE row is created with the correct gateway `PartitionKey` and includes `submitted_epoch` | Integration | Planned |
+| T-WEB-1006 | WEB-1006 | ~~Successful rotation is detected via `master_key_epoch` polling~~ **Retired** (Issue #1092) | — | Retired |
+| T-WEB-1006b | WEB-1006 | ~~Rotation timeout is handled gracefully~~ **Retired** (Issue #1092) | — | Retired |
 | T-WEB-1007 | WEB-1007 | Gateway ACTUAL_STATE is read from the Azure Table using latest-row selection (not `RowKey='state'`) | Integration | Planned |
 | T-WEB-1007b | WEB-1007 | Missing gateway row shows a `No gateway connected` message | Manual | Planned |
 | T-WEB-1008 | WEB-1008 | No key material is written to browser storage | Manual | Planned |
+| T-WEB-1009 | WEB-1009 | Gateway with no desired-state row shows "Aligned" | Manual/E2E | Planned |
+| T-WEB-1009b | WEB-1009 | Gateway with pending `rotation_payload` (`actual.master_key_epoch <= desired.submitted_epoch` and `rotation_in_progress` false) shows "Diverged" | Manual/E2E | Planned |
+| T-WEB-1009c | WEB-1009 | Gateway with `rotation_in_progress` true shows "Aligned" (rotation consumed) | Manual/E2E | Planned |
+| T-WEB-1009d | WEB-1009 | Gateway with desired `channel` differing from actual shows "Diverged" | Manual/E2E | Planned |
+| T-WEB-1009e | WEB-1009 | Gateway with desired `salt` when actual `salt` is absent shows "Diverged" | Manual/E2E | Planned |
+| T-WEB-1009f | WEB-1009 | Gateway with desired `salt` when actual `salt` already exists shows "Aligned" (set-if-absent) | Manual/E2E | Planned |
+| T-WEB-1009g | WEB-1009 | Gateway with desired `kdf_params` when actual is absent shows "Diverged" | Manual/E2E | Planned |
+| T-WEB-1009h | WEB-1009 | Gateway with desired `kdf_params` when actual already exists shows "Aligned" (set-if-absent) | Manual/E2E | Planned |
+| T-WEB-1009i | WEB-1009 | Badge uses same CSS classes as node convergence badge (`badge success`/`badge warning`) | Manual | Planned |
+| T-WEB-1009j | WEB-1009 | Gateway with `master_key_epoch > submitted_epoch` shows "Aligned" (rotation consumed via epoch advance) | Manual/E2E | Planned |
+| T-WEB-1009k | WEB-1009 | Matched channel, salt, kdf_params (desired == actual) shows "Aligned" | Manual/E2E | Planned |
 
 ---
 
@@ -364,6 +379,7 @@ and verifies one or more acceptance criteria.
 | Authentication failure blocks all functionality | High | Medium | P1 | T-WEB-0501–0509 |
 | Program ingest rejects valid ELF or accepts invalid | High | Low | P1 | T-WEB-0301–0308 |
 | Divergence indicator shows wrong status | Medium | Medium | P2 | T-WEB-0104–0108 |
+| Gateway convergence badge shows wrong status | Medium | Medium | P2 | T-WEB-1009–1009k |
 | Environment switching leaves stale tokens | Medium | Medium | P2 | T-WEB-0803 |
 | Rotation key derivation timeout (Argon2id WASM slow on mobile) | Medium | Medium | P2 | T-WEB-1003 |
 | XSS from unescaped user/server data | High | Low | P1 | T-WEB-CC-02 |
@@ -383,5 +399,6 @@ and verifies one or more acceptance criteria.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-05-29 | Issue #1092 | Added T-WEB-1009 through T-WEB-1009g for gateway convergence. Updated T-WEB-1001/1002 for badge and inline form. Retired T-WEB-1006/1006b. |
 | 2026-05-19 | Spec extraction (automated) | Restructured with sections, traceability matrix, risk prioritization. Added references to web-ui-requirements.md. |
 | 2026-05-19 | Trifecta remediation (#1012) | Added ~35 fine-grained test cases to cover all acceptance criteria individually. Updated traceability matrix. |

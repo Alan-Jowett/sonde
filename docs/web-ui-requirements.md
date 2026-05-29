@@ -1101,7 +1101,7 @@ initialization to avoid unnecessary API calls and rendering.
 ### WEB-1001  Gateway Status Display
 
 **Priority:** Must
-**Source:** Issue #962
+**Source:** Issue #962, Issue #1092
 **Confidence:** High
 
 **Description:**
@@ -1112,6 +1112,10 @@ gateway partition using `latestByPartition`. The card MUST
 show the BIP-39 fingerprint (6 words), `master_key_epoch`, `master_key_id`
 (hex), `rotation_in_progress`, salt status (present/absent),
 `gateway_version`, `modem_firmware_version`, and `channel`.
+
+The gateway status card MUST also display a convergence badge (Aligned /
+Diverged) by cross-referencing the `desiredstate` table for gateway rows
+(`PartitionKey` starting with `"g:"`). See WEB-1009 for convergence rules.
 
 **Critical:** The BIP-39 fingerprint MUST be computed locally in the SPA
 from the `x25519_public_key` field — NOT read from the Azure-stored
@@ -1131,31 +1135,44 @@ NOT appear in the node table or node dropdown.
    read from the stored `fingerprint_words` field.
 3. The gateway ACTUAL_STATE row is not shown in the node table.
 4. Node dropdowns exclude gateway entities.
+5. The gateway status card shows an Aligned/Diverged convergence badge.
 
 ---
 
 ### WEB-1002  Key Rotation Initiation
 
 **Priority:** Must
-**Source:** Issue #962
+**Source:** Issue #962, Issue #1092
 **Confidence:** High
 
 **Description:**
-A `Rotate Key` button on the gateway status card MUST open a modal that shows
-(1) the BIP-39 fingerprint with instructions to verify it against the modem,
-(2) a rotation code input limited to 6 characters and normalized to uppercase
-`[A-Z0-9]`, (3) a masked passphrase input that requires either at least 20
-characters or 6 space-separated words, (4) the current salt from the gateway
-ACTUAL_STATE or a `first rotation` indicator if the salt is null, and (5) a
-confirmation action. If the browser lacks the required rotation crypto
-capabilities, the button MUST be disabled with a tooltip explaining the
-requirement.
+A `Rotate Key` button on the gateway status card MUST toggle an inline
+collapsible rotation form within the card. The form shows (1) the BIP-39
+fingerprint with instructions to verify it against the modem, (2) a rotation
+code input limited to 6 characters and normalized to uppercase `[A-Z0-9]`,
+(3) a masked passphrase input that requires either at least 20 characters or
+6 space-separated words, (4) the current salt from the gateway ACTUAL_STATE
+or a `first rotation` indicator if the salt is null, and (5) a confirmation
+action. If the browser lacks the required rotation crypto capabilities, the
+button MUST be disabled with a tooltip explaining the requirement.
+
+After submission the form displays a brief confirmation message (e.g.,
+"Rotation submitted") and collapses. No inline polling is performed — the
+gateway convergence badge (WEB-1009) reflects pending rotation status via
+the normal dashboard auto-refresh cycle.
+
+The dashboard auto-refresh (WEB-0103) MUST be paused while the rotation
+form is expanded or a submission is in progress, to prevent DOM replacement
+from destroying form state or interrupting key derivation. Auto-refresh
+resumes when the form collapses.
 
 **Acceptance criteria:**
 
-1. The modal validates rotation code format as 6 characters from `[A-Z0-9]`.
-2. The modal validates the passphrase length requirement.
+1. The inline form validates rotation code format as 6 characters from `[A-Z0-9]`.
+2. The inline form validates the passphrase length requirement.
 3. Unsupported browsers show the action as disabled with an explanatory message.
+4. After submission the form shows a success message and collapses.
+5. Dashboard auto-refresh is paused while the rotation form is expanded.
 
 ---
 
@@ -1220,35 +1237,40 @@ The SPA MUST write the rotation payload into the gateway's DESIRED_STATE row in
 the `desiredstate` Azure Table. The row MUST use
 `PartitionKey = "g:" + gateway_id_hex`, a reverse-timestamp `RowKey` using the
 same format as node desired state rows, and a `rotation_payload` entity property
-encoded as binary data for the Azure Table REST API.
+encoded as binary data for the Azure Table REST API. The row MUST also include a
+`submitted_epoch` property (Edm.Int64) set to the gateway's current
+`master_key_epoch` at the time of submission, to enable convergence tracking
+(WEB-1009).
 
 **Acceptance criteria:**
 
 1. A DESIRED_STATE row is created in the `desiredstate` table.
 2. The `PartitionKey` uses the `g:` gateway prefix.
+3. The row includes `submitted_epoch` matching the current `master_key_epoch`.
 
 ---
 
 ### WEB-1006  Rotation Status Monitoring
 
-**Priority:** Must
+**Priority:** ~~Must~~ **Retired** (Issue #1092)
 **Source:** Issue #962
 **Confidence:** High
 
 **Description:**
-After submitting a rotation payload, the SPA MUST poll the latest gateway
-ACTUAL_STATE row (the first row returned by a `$top=1` partition query on the
-gateway's partition key) every 5 seconds for up to 120 seconds and watch for
-`master_key_epoch` to increment. On success, the SPA MUST display `Rotation complete` with the new
-epoch. On timeout, it MUST display `Rotation may still be in progress — check gateway status.`
-If `rotation_in_progress` transitions from false to false without an epoch
-change, the SPA MUST display `Rotation failed`.
+~~After submitting a rotation payload, the SPA MUST poll the latest gateway
+ACTUAL_STATE row every 5 seconds for up to 120 seconds and watch for
+`master_key_epoch` to increment.~~
+
+**Retired:** Replaced by WEB-1009 (gateway convergence badge). Rotation
+status is now reflected by the Aligned/Diverged badge on the gateway status
+card, updated via the dashboard auto-refresh cycle (WEB-0103). No dedicated
+inline polling is performed.
 
 **Acceptance criteria:**
 
-1. Success is detected within the 120-second polling window.
-2. Timeout is handled gracefully.
-3. A progress indicator is shown while polling.
+1. ~~Success is detected within the 120-second polling window.~~ Retired.
+2. ~~Timeout is handled gracefully.~~ Retired.
+3. ~~A progress indicator is shown while polling.~~ Retired.
 
 ---
 
@@ -1293,6 +1315,71 @@ zeros on a best-effort basis.
 1. No key material is stored in browser storage.
 2. Only `rotation_payload` is written to Azure.
 3. Key variables are cleared after use on a best-effort basis.
+
+---
+
+### WEB-1009  Gateway Convergence Display
+
+**Priority:** Must
+**Source:** Issue #1092
+**Confidence:** High
+
+**Description:**
+The gateway status card (WEB-1001) MUST display an Aligned / Diverged
+convergence badge by cross-referencing gateway desired-state rows in the
+`desiredstate` Azure Table (`PartitionKey` starting with `"g:"`) against
+the gateway ACTUAL_STATE row.
+
+The convergence check compares the following fields:
+- **`rotation_payload`:** Diverged if the latest desired-state row has a
+  non-null `rotation_payload` AND the actual `rotation_in_progress` is
+  `false` AND `master_key_epoch` has not advanced past the epoch at which
+  the rotation was submitted. The SPA MUST store the current
+  `master_key_epoch` as `submitted_epoch` (Edm.Int64) in the desired-state
+  row when submitting a rotation payload. Divergence condition:
+  `desired.rotation_payload != null AND actual.rotation_in_progress !== true
+  AND actual.master_key_epoch <= desired.submitted_epoch`. Once
+  `rotation_in_progress` is `true` or `master_key_epoch >
+  desired.submitted_epoch`, the rotation is considered consumed.
+- **`channel`:** Diverged if the desired `channel` is non-null and differs
+  from actual `channel`.
+- **`salt`:** Diverged only when the gateway has no local salt (actual
+  `salt` is null/absent) AND the desired `salt` is non-null. Once the
+  gateway has a salt, it is immutable except via rotation payload — a
+  mismatched desired `salt` against an existing actual `salt` is a no-op
+  by gateway design and does NOT flag divergence.
+- **`kdf_params`:** Diverged only when the gateway has no local KDF params
+  (actual `kdf_params` is null/absent) AND the desired `kdf_params` is
+  non-null. Same set-if-absent semantics as `salt`.
+
+`recovered_psks` is excluded from convergence — it is a background queue
+not visible to the operator.
+
+If no gateway desired-state row exists, the gateway is "Aligned" (no
+pending changes).
+
+The badge uses the same CSS classes as the node convergence badge (`badge
+success` for Aligned, `badge warning` for Diverged).
+
+**Acceptance criteria:**
+
+1. Gateway with no desired-state row shows "Aligned."
+2. Gateway with a pending `rotation_payload` (not yet consumed, i.e.,
+   `actual.master_key_epoch <= desired.submitted_epoch` and
+   `rotation_in_progress` is false) shows "Diverged."
+3. Gateway where `rotation_in_progress` is `true` or
+   `master_key_epoch > submitted_epoch` shows "Aligned" (rotation
+   consumed).
+4. Gateway with desired `channel` differing from actual shows "Diverged."
+5. Gateway with desired `salt` when actual `salt` is absent shows
+   "Diverged."
+6. Gateway with desired `salt` when actual `salt` already exists (even if
+   different) shows "Aligned" (set-if-absent semantics).
+7. Gateway with desired `kdf_params` when actual is absent shows
+   "Diverged."
+8. Gateway with desired `kdf_params` when actual already exists shows
+   "Aligned" (set-if-absent semantics).
+9. Badge uses the same CSS styling as the node convergence badge.
 
 ---
 

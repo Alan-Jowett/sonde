@@ -283,6 +283,11 @@ pub trait HandlerStore: Send + Sync {
         &self,
         program_hash: &[u8],
     ) -> Result<Option<ProgramImageRow>, HandlerError>;
+    /// Insert a program image row into the `Programs` table (AZH-0800).
+    ///
+    /// Uses insert-only (append) semantics with first-writer-wins: if a row
+    /// with the same `program_hash` already exists the call succeeds as a
+    /// no-op and the original row is preserved unchanged.
     async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError>;
     /// Append a row to the `SensorData` table for a `GW-0813` message (AZH-0500).
     async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError>;
@@ -444,7 +449,8 @@ where
                                 node_id = %actual_state.entity_id,
                                 "program row has no elf_image (legacy row); \
                                  DESIRED_STATE will omit inline ELF — \
-                                 re-ingest the program to populate elf_image"
+                                 delete the legacy Programs row and re-ingest \
+                                 the program to populate elf_image"
                             );
                         }
                     } else {
@@ -1016,6 +1022,16 @@ fn is_legacy_not_found(e: &LegacyAzureError) -> bool {
     )
 }
 
+fn is_legacy_conflict(e: &LegacyAzureError) -> bool {
+    matches!(
+        e.kind(),
+        LegacyAzureErrorKind::HttpResponse {
+            status: LegacyStatusCode::Conflict,
+            error_code,
+        } if error_code.as_deref() == Some("EntityAlreadyExists")
+    )
+}
+
 #[async_trait]
 impl HandlerStore for AzureTablesStore {
     async fn append_actual_state(&self, row: &ActualStateRow) -> Result<(), HandlerError> {
@@ -1117,10 +1133,9 @@ impl HandlerStore for AzureTablesStore {
     }
 
     async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError> {
-        let row_key = hex::encode(&row.program_hash);
         let entity = ProgramImageEntity {
             partition_key: "program".to_string(),
-            row_key: row_key.clone(),
+            row_key: hex::encode(&row.program_hash),
             cbor_image: base64::engine::general_purpose::STANDARD.encode(&row.cbor_image),
             elf_image: Some(base64::engine::general_purpose::STANDARD.encode(&row.elf_image)),
             source_filename: row.source_filename.clone(),
@@ -1129,16 +1144,19 @@ impl HandlerStore for AzureTablesStore {
             verification_profile: Some(row.verification_profile.clone()),
             created_at: Some(row.created_at.clone()),
         };
-        let entity_client = self
+        match self
             .programs_table
-            .partition_key_client("program")
-            .entity_client(row_key);
-        entity_client
-            .insert_or_replace(entity)
-            .map_err(|e| HandlerError::Store(format!("prepare program-image upsert failed: {e}")))?
+            .insert::<_, ProgramImageEntity>(&entity)
+            .map_err(|e| HandlerError::Store(format!("prepare program-image insert failed: {e}")))?
             .await
-            .map_err(|e| HandlerError::Store(format!("upsert program-image row failed: {e}")))?;
-        Ok(())
+        {
+            Ok(_) => Ok(()),
+            // Entity already exists — treat as no-op (AZH-0800 AC-2).
+            Err(e) if is_legacy_conflict(&e) => Ok(()),
+            Err(e) => Err(HandlerError::Store(format!(
+                "insert program-image row failed: {e}"
+            ))),
+        }
     }
 
     async fn append_sensor_data(&self, row: &SensorDataRow) -> Result<(), HandlerError> {
@@ -2642,10 +2660,10 @@ mod tests {
         }
 
         async fn store_program_image(&self, row: &ProgramImageRow) -> Result<(), HandlerError> {
-            self.program_images
-                .lock()
-                .await
-                .insert(hex::encode(&row.program_hash), row.clone());
+            let key = hex::encode(&row.program_hash);
+            let mut map = self.program_images.lock().await;
+            // Insert-only / first-writer-wins (AZH-0800 AC-4).
+            map.entry(key).or_insert_with(|| row.clone());
             self.stored_program_rows.lock().await.push(row.clone());
             Ok(())
         }
@@ -4130,6 +4148,7 @@ mod tests {
         assert!(err.message.contains("verification_profile"));
     }
 
+    // T-AZH-0800: Program image storage is append-only (first-writer-wins).
     #[tokio::test]
     async fn program_ingest_is_idempotent() {
         let (store, handler) = make_ingest_handler();
@@ -4137,6 +4156,17 @@ mod tests {
         let body = make_ingest_body(&elf, Some("v1.o"), Some(1), None);
 
         let resp1 = handler.handle_program_ingest(&body).await.unwrap();
+
+        // Capture original created_at.
+        let hash_bytes = hex::decode(&resp1.program_hash).unwrap();
+        let original_created_at = store
+            .load_program_image(&hash_bytes)
+            .await
+            .unwrap()
+            .unwrap()
+            .created_at
+            .clone();
+
         let body2 = make_ingest_body(&elf, Some("v2.o"), Some(2), None);
         let resp2 = handler.handle_program_ingest(&body2).await.unwrap();
 
@@ -4144,9 +4174,65 @@ mod tests {
         assert_eq!(resp1.program_hash, resp2.program_hash);
 
         // Stored image is still valid.
-        let hash_bytes = hex::decode(&resp1.program_hash).unwrap();
-        let stored = store.load_program_image(&hash_bytes).await.unwrap();
-        assert!(stored.is_some());
+        let stored = store
+            .load_program_image(&hash_bytes)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // First-writer-wins: the original row's metadata is preserved (AZH-0800).
+        assert_eq!(stored.source_filename.as_deref(), Some("v1.o"));
+        assert_eq!(stored.abi_version, Some(1));
+        assert_eq!(
+            stored.created_at, original_created_at,
+            "original created_at preserved"
+        );
+    }
+
+    // T-AZH-0800a: Duplicate program hash returns success without overwrite.
+    #[tokio::test]
+    async fn store_program_image_duplicate_hash_preserves_original() {
+        let store = MemoryStore::default();
+        let hash = vec![0x42u8; 32];
+        let row1 = ProgramImageRow {
+            program_hash: hash.clone(),
+            cbor_image: vec![1, 2, 3],
+            elf_image: vec![4, 5, 6],
+            source_filename: Some("first.o".to_string()),
+            abi_version: Some(1),
+            size_bytes: 3,
+            verification_profile: "resident".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let row2 = ProgramImageRow {
+            program_hash: hash.clone(),
+            cbor_image: vec![1, 2, 3],
+            elf_image: vec![4, 5, 6],
+            source_filename: Some("second.o".to_string()),
+            abi_version: Some(2),
+            size_bytes: 3,
+            verification_profile: "resident".to_string(),
+            created_at: "2026-06-01T00:00:00Z".to_string(),
+        };
+
+        store.store_program_image(&row1).await.unwrap();
+        store.store_program_image(&row2).await.unwrap();
+
+        let loaded = store.load_program_image(&hash).await.unwrap().unwrap();
+        assert_eq!(
+            loaded.created_at, "2026-01-01T00:00:00Z",
+            "original created_at preserved"
+        );
+        assert_eq!(
+            loaded.source_filename.as_deref(),
+            Some("first.o"),
+            "original metadata preserved"
+        );
+        assert_eq!(
+            loaded.abi_version,
+            Some(1),
+            "original abi_version preserved"
+        );
     }
 
     #[tokio::test]

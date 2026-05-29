@@ -555,6 +555,21 @@ where
         };
         self.store.append_gateway_actual_state(&gw_row).await?;
 
+        // Stale-message guard (mirrors node path): reload the latest row
+        // after append and bail if a newer observation already exists.
+        let latest = self
+            .store
+            .load_gateway_actual_state(gateway_id)
+            .await?
+            .ok_or_else(|| {
+                HandlerError::Store(format!(
+                    "gateway actual-state row `{gateway_id}` disappeared after append"
+                ))
+            })?;
+        if latest.timestamp_ms > gw_row.timestamp_ms {
+            return Ok(());
+        }
+
         // If master_key_epoch incremented, clear rotation_payload (AZH-0603).
         let prev_epoch = previous
             .as_ref()
@@ -4821,6 +4836,70 @@ mod tests {
         assert_ne!(loaded2.row_key, "state", "legacy row should be superseded");
         assert_eq!(loaded2.channel, Some(6));
         assert_eq!(loaded2.master_key_epoch, Some(1));
+    }
+
+    // A stale (out-of-order) gateway ACTUAL_STATE must not drive control
+    // decisions when a newer row already exists in the store.
+    #[tokio::test]
+    async fn t_azh_0600_stale_gateway_message_skips_control() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        // Deliver a newer message first (timestamp 2000, epoch 2).
+        let payload_new = encode_gateway_actual_state_msg(
+            "aabb0011",
+            2000,
+            6,
+            &[0x42u8; 16],
+            2,
+            &[0x55u8; 32],
+            Some(&[0xAA; 16]),
+            false,
+        );
+        handler.handle_payload(&payload_new).await.unwrap();
+
+        // Seed a rotation_payload in desired state so that control logic
+        // would publish DESIRED_STATE if it runs.
+        let desired = GatewayDesiredStateRow {
+            gateway_id: "aabb0011".to_string(),
+            row_key: "desired".to_string(),
+            rotation_payload: Some(vec![0xDE, 0xAD]),
+            timestamp_ms: 1500,
+        };
+        store.upsert_gateway_desired_state(&desired).await.unwrap();
+
+        let published_before = publisher.sends.lock().await.len();
+
+        // Now deliver a stale message (timestamp 1000 < 2000, epoch 1 < 2).
+        let payload_stale = encode_gateway_actual_state_msg(
+            "aabb0011",
+            1000,
+            6,
+            &[0x42u8; 16],
+            1,
+            &[0x55u8; 32],
+            Some(&[0xAA; 16]),
+            false,
+        );
+        handler.handle_payload(&payload_stale).await.unwrap();
+
+        let published_after = publisher.sends.lock().await.len();
+        assert_eq!(
+            published_before, published_after,
+            "stale gateway message must not trigger DESIRED_STATE publication"
+        );
+
+        // Rotation payload must not be cleared by the stale message.
+        let desired_after = store
+            .load_gateway_desired_state("aabb0011")
+            .await
+            .unwrap()
+            .expect("desired state must still exist");
+        assert!(
+            desired_after.rotation_payload.is_some(),
+            "rotation_payload must not be cleared by a stale message"
+        );
     }
 
     // --- T-AZH-0601: Node PSK escrow storage ---

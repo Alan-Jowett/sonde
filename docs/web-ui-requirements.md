@@ -1237,9 +1237,9 @@ encoded as binary data for the Azure Table REST API.
 
 **Description:**
 After submitting a rotation payload, the SPA MUST poll the latest gateway
-ACTUAL_STATE row (selected via `latestByPartition` from the gateway's partition)
-every 5 seconds for up to 120 seconds and watch for `master_key_epoch` to
-increment. On success, the SPA MUST display `Rotation complete` with the new
+ACTUAL_STATE row (the first row returned by a `$top=1` partition query on the
+gateway's partition key) every 5 seconds for up to 120 seconds and watch for
+`master_key_epoch` to increment. On success, the SPA MUST display `Rotation complete` with the new
 epoch. On timeout, it MUST display `Rotation may still be in progress — check gateway status.`
 If `rotation_in_progress` transitions from false to false without an epoch
 change, the SPA MUST display `Rotation failed`.

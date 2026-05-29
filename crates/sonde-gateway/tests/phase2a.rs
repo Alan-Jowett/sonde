@@ -125,14 +125,14 @@ async fn t0703_firmware_abi_version_tracking() {
         "initial ABI version must be None"
     );
 
-    node.update_firmware_metadata(2, "0.7.0".into());
+    node.update_firmware_metadata(2, "0.8.0".into());
     storage.upsert_node(&node).await.unwrap();
 
     let fetched = storage.get_node("node-abi").await.unwrap().unwrap();
     assert_eq!(fetched.firmware_abi_version, Some(2));
 
     // ABI version updated on subsequent WAKE.
-    node.update_firmware_metadata(3, "0.7.0".into());
+    node.update_firmware_metadata(3, "0.8.0".into());
     storage.upsert_node(&node).await.unwrap();
 
     let fetched = storage.get_node("node-abi").await.unwrap().unwrap();

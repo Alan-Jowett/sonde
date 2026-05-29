@@ -1408,7 +1408,7 @@ mod tests {
             vec![],
             None,
             None,
-            "0.7.0".to_string(),
+            "0.8.0".to_string(),
             "abc123".to_string(),
             None,
             None,

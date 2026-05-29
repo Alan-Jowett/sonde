@@ -48,7 +48,7 @@ fn build_wake_frame(key_hint: u16, psk: &[u8; 32], nonce: u64) -> Vec<u8> {
         firmware_abi_version: 1,
         program_hash: vec![0u8; 32],
         battery_mv: 3300,
-        firmware_version: "0.7.0".into(),
+        firmware_version: "0.8.0".into(),
         blob: None,
     };
     let cbor = msg.encode().unwrap();

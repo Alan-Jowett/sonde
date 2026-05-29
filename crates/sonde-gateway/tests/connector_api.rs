@@ -74,7 +74,7 @@ impl TestNode {
             firmware_abi_version,
             program_hash: program_hash.to_vec(),
             battery_mv,
-            firmware_version: "0.7.0".into(),
+            firmware_version: "0.8.0".into(),
             blob,
         };
         let cbor = msg.encode().unwrap();
@@ -767,7 +767,7 @@ async fn connector_emits_actual_state_after_wake() {
     assert_eq!(bytes_field(&message, 4), program_hash);
     assert_eq!(uint_field(&message, 6), 3300);
     assert_eq!(uint_field(&message, 7), 1);
-    assert_eq!(text_field(&message, 8), "0.7.0");
+    assert_eq!(text_field(&message, 8), "0.8.0");
     assert!(uint_field(&message, 9) > 0);
     assert_eq!(uint_field(&message, 11), 60);
 

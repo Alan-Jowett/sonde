@@ -2612,8 +2612,9 @@ x25519_public_key, fingerprint_words, missing_key_hints, salt, kdf_params,
 gateway_version, gateway_commit, modem_firmware_version, modem_firmware_commit,
 rotation_in_progress. Node-specific keys 4–8, 10–11 MUST be omitted.
 
-Gateway ACTUAL_STATE is emitted on startup, connector reconnection, and
-whenever gateway state changes.
+Gateway ACTUAL_STATE is emitted on startup, connector reconnection,
+whenever gateway state changes, and periodically at a compile-time
+heartbeat interval (default 900 seconds).
 
 **Acceptance criteria:**
 
@@ -2627,6 +2628,11 @@ whenever gateway state changes.
    previously-unseen `key_hint`, using a debounce window to coalesce
    concurrent arrivals.
 7. Re-emitted when salt or KDF params are adopted from DESIRED_STATE.
+8. Re-emitted periodically at a compile-time heartbeat interval (default
+   900 seconds) to ensure the control-plane handler regularly evaluates
+   pending desired state. The heartbeat schedule is process-local (resets
+   on gateway restart), independent of event-driven emissions, and does
+   not require an attached connector subscriber.
 
 ---
 

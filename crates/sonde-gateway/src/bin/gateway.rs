@@ -953,8 +953,9 @@ async fn run_gateway(
         // resume call will error out and we'll surface it.
         let identity = match storage.load_gateway_identity().await {
             Ok(Some(id)) => id,
-            _ => GatewayIdentity::generate()
+            Ok(None) => GatewayIdentity::generate()
                 .map_err(|e| format!("cannot generate dummy identity for recovery: {e}"))?,
+            Err(e) => return Err(format!("cannot load gateway identity for recovery: {e}").into()),
         };
         sonde_gateway::RotationEngine::resume_pending_rotation(
             &storage,

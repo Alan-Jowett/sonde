@@ -800,22 +800,23 @@ impl RotationEngine {
                 {
                     Ok(k) => k,
                     Err(_) => {
-                        // The in-memory key (from provider) might already be the new key
-                        // if the crash happened after provider write but before deletion.
-                        // Try decrypting with the provider key as the "old" key.
-                        // This is a no-op if old_key == provider_key.
-                        if *provider_key == *old_key {
-                            return Err("post-commit recovery: cannot decrypt pending new key — \
-                                 the provider key matches the current in-memory key but \
-                                 decryption still failed; possible data corruption"
-                                .into());
-                        }
-                        // Provider already has the new key; pending_rotation is encrypted
-                        // under the old key which we no longer have.  This means the
-                        // provider was already updated — just clean up.
+                        // Decryption failed.  The in-memory key (from provider) is the
+                        // startup key.  Two cases:
+                        //
+                        // 1. provider_key != old_key: the provider was already updated to
+                        //    the new key during a previous run; the in-memory key differs
+                        //    from what was used to encrypt pending_rotation.
+                        //
+                        // 2. provider_key == old_key: the provider was already updated AND
+                        //    the in-memory key IS the new key (post-write/pre-delete crash).
+                        //    Since `SqliteStorage::open()` already validated PSKs with the
+                        //    current key, the DB is consistent — we just need to clean up
+                        //    the stale marker.
+                        //
+                        // In both cases the provider already has the new key.  Clean up.
                         info!(
-                            "provider key differs from in-memory key — provider write \
-                               already completed; cleaning up pending_rotation"
+                            "cannot decrypt pending_rotation with current key — \
+                             provider already holds the rotated key; cleaning up stale marker"
                         );
                         storage.swap_master_key(provider_key);
                         storage

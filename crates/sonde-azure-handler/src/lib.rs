@@ -312,9 +312,10 @@ pub trait HandlerStore: Send + Sync {
         gateway_id: &str,
     ) -> Result<Option<GatewayDesiredStateRow>, HandlerError>;
 
-    /// Append gateway desired-state row (for clearing rotation_payload after
-    /// epoch increment). Appends a new row with a unique RowKey; never
-    /// overwrites existing rows.
+    /// Append gateway desired-state row (for clearing `rotation_payload` after
+    /// epoch increment). The caller must provide a unique `RowKey` (e.g. via
+    /// `next_history_row_key()`). The store inserts the row without overwriting
+    /// or replacing existing rows.
     async fn append_gateway_desired_state(
         &self,
         row: &GatewayDesiredStateRow,

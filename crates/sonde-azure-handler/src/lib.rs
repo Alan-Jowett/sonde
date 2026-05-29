@@ -312,9 +312,10 @@ pub trait HandlerStore: Send + Sync {
         gateway_id: &str,
     ) -> Result<Option<GatewayDesiredStateRow>, HandlerError>;
 
-    /// Upsert gateway desired-state row (for clearing rotation_payload after
-    /// epoch increment).
-    async fn upsert_gateway_desired_state(
+    /// Append gateway desired-state row (for clearing rotation_payload after
+    /// epoch increment). Appends a new row with a unique RowKey; never
+    /// overwrites existing rows.
+    async fn append_gateway_desired_state(
         &self,
         row: &GatewayDesiredStateRow,
     ) -> Result<(), HandlerError>;
@@ -592,16 +593,17 @@ where
         // Load rotation_payload from SPA-written desired-state row.
         let gw_desired = self.store.load_gateway_desired_state(gateway_id).await?;
         let rotation_payload = if epoch_incremented {
-            // Epoch incremented — clear rotation_payload.
+            // Epoch incremented — clear rotation_payload by appending a new
+            // row (append-only; original SPA-written row is preserved).
             if let Some(ref existing) = gw_desired {
                 if existing.rotation_payload.is_some() {
                     let cleared = GatewayDesiredStateRow {
                         gateway_id: gateway_id.clone(),
-                        row_key: existing.row_key.clone(),
+                        row_key: next_history_row_key(msg.timestamp_ms)?,
                         rotation_payload: None,
-                        timestamp_ms: existing.timestamp_ms,
+                        timestamp_ms: msg.timestamp_ms,
                     };
-                    self.store.upsert_gateway_desired_state(&cleared).await?;
+                    self.store.append_gateway_desired_state(&cleared).await?;
                 }
             }
             None
@@ -1309,7 +1311,7 @@ impl HandlerStore for AzureTablesStore {
         }
     }
 
-    async fn upsert_gateway_desired_state(
+    async fn append_gateway_desired_state(
         &self,
         row: &GatewayDesiredStateRow,
     ) -> Result<(), HandlerError> {
@@ -1323,18 +1325,14 @@ impl HandlerStore for AzureTablesStore {
                 .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
             timestamp_ms: row.timestamp_ms,
         };
-        let entity_client = self
-            .desired_state_table
-            .partition_key_client(&partition_key)
-            .entity_client(&row.row_key);
-        entity_client
-            .insert_or_replace(entity)
+        self.desired_state_table
+            .insert::<_, GatewayDesiredStateEntity>(&entity)
             .map_err(|e| {
-                HandlerError::Store(format!("prepare gateway desired-state upsert failed: {e}"))
+                HandlerError::Store(format!("prepare gateway desired-state insert failed: {e}"))
             })?
             .await
             .map_err(|e| {
-                HandlerError::Store(format!("upsert gateway desired-state row failed: {e}"))
+                HandlerError::Store(format!("append gateway desired-state row failed: {e}"))
             })?;
         Ok(())
     }
@@ -2542,7 +2540,7 @@ mod tests {
         stored_program_rows: Mutex<Vec<ProgramImageRow>>,
         sensor_data_rows: Mutex<Vec<SensorDataRow>>,
         gateway_actual_states: Mutex<HashMap<String, Vec<GatewayActualStateRow>>>,
-        gateway_desired_states: Mutex<HashMap<String, GatewayDesiredStateRow>>,
+        gateway_desired_states: Mutex<HashMap<String, Vec<GatewayDesiredStateRow>>>,
     }
 
     impl MemoryStore {
@@ -2720,17 +2718,20 @@ mod tests {
                 .lock()
                 .await
                 .get(gateway_id)
+                .and_then(|rows| rows.iter().min_by_key(|r| &r.row_key))
                 .cloned())
         }
 
-        async fn upsert_gateway_desired_state(
+        async fn append_gateway_desired_state(
             &self,
             row: &GatewayDesiredStateRow,
         ) -> Result<(), HandlerError> {
             self.gateway_desired_states
                 .lock()
                 .await
-                .insert(row.gateway_id.clone(), row.clone());
+                .entry(row.gateway_id.clone())
+                .or_default()
+                .push(row.clone());
             Ok(())
         }
     }
@@ -2856,7 +2857,7 @@ mod tests {
             Ok(None)
         }
 
-        async fn upsert_gateway_desired_state(
+        async fn append_gateway_desired_state(
             &self,
             _row: &GatewayDesiredStateRow,
         ) -> Result<(), HandlerError> {
@@ -2934,7 +2935,7 @@ mod tests {
             Ok(None)
         }
 
-        async fn upsert_gateway_desired_state(
+        async fn append_gateway_desired_state(
             &self,
             _row: &GatewayDesiredStateRow,
         ) -> Result<(), HandlerError> {
@@ -3013,7 +3014,7 @@ mod tests {
             Ok(None)
         }
 
-        async fn upsert_gateway_desired_state(
+        async fn append_gateway_desired_state(
             &self,
             _row: &GatewayDesiredStateRow,
         ) -> Result<(), HandlerError> {
@@ -4204,7 +4205,7 @@ mod tests {
             ) -> Result<Option<GatewayDesiredStateRow>, HandlerError> {
                 Ok(None)
             }
-            async fn upsert_gateway_desired_state(
+            async fn append_gateway_desired_state(
                 &self,
                 _: &GatewayDesiredStateRow,
             ) -> Result<(), HandlerError> {
@@ -4878,7 +4879,7 @@ mod tests {
             rotation_payload: Some(vec![0xDE, 0xAD]),
             timestamp_ms: 1500,
         };
-        store.upsert_gateway_desired_state(&desired).await.unwrap();
+        store.append_gateway_desired_state(&desired).await.unwrap();
 
         let published_before = publisher.sends.lock().await.len();
 
@@ -4956,7 +4957,7 @@ mod tests {
             rotation_payload: Some(vec![0xDE, 0xAD]),
             timestamp_ms: 1500,
         };
-        store.upsert_gateway_desired_state(&desired).await.unwrap();
+        store.append_gateway_desired_state(&desired).await.unwrap();
 
         let published_before = publisher.sends.lock().await.len();
 
@@ -5169,7 +5170,7 @@ mod tests {
 
         // Seed gateway desired state with a rotation payload
         store
-            .upsert_gateway_desired_state(&GatewayDesiredStateRow {
+            .append_gateway_desired_state(&GatewayDesiredStateRow {
                 gateway_id: "a1b2c3d4".to_string(),
                 row_key: "state".to_string(),
                 rotation_payload: Some(rotation_payload.clone()),
@@ -5223,6 +5224,28 @@ mod tests {
                 .map(|d| d.rotation_payload.is_none())
                 .unwrap_or(true),
             "rotation_payload should be cleared after epoch increment"
+        );
+
+        // Append-only: both the original SPA row and the cleared row must exist
+        // with distinct RowKeys (the original is preserved, not overwritten).
+        let all_rows = store.gateway_desired_states.lock().await;
+        let rows = all_rows.get("a1b2c3d4").expect("rows must exist");
+        assert_eq!(
+            rows.len(),
+            2,
+            "append-only: original + cleared row expected"
+        );
+        assert_ne!(
+            rows[0].row_key, rows[1].row_key,
+            "appended row must have a distinct RowKey"
+        );
+        assert!(
+            rows[0].rotation_payload.is_some(),
+            "original SPA row must be preserved with rotation_payload"
+        );
+        assert!(
+            rows[1].rotation_payload.is_none(),
+            "appended cleared row must have rotation_payload = None"
         );
     }
 

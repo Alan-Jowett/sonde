@@ -436,6 +436,9 @@ divergence publication instead of treating that redelivery as permanently stale.
    than the pre-rotation epoch.
 4. Assert: subsequent gateway `DESIRED_STATE` messages omit `rotation_payload`
    or encode it as cleared/null according to the table representation.
+5. Assert: the original SPA-written desired-state row is preserved (not
+   overwritten). The clearing operation appends a new row with a distinct
+   `RowKey`.
 
 ---
 

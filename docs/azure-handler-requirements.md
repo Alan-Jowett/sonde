@@ -472,12 +472,16 @@ The handler MUST relay rotation payloads from the SPA to the gateway via the
 `DESIRED_STATE` field `rotation_payload` (CBOR key 28 inside desired-state map
 key 4). The handler does not originate, inspect, or modify rotation payloads.
 After the gateway reports a new `master_key_epoch` in `ACTUAL_STATE`, the
-handler MUST clear `rotation_payload` from `DESIRED_STATE`.
+handler MUST clear `rotation_payload` by appending a new row to the
+`desiredstate` table with `rotation_payload` set to `None` and a fresh
+history `RowKey`. The handler MUST NOT overwrite or replace the original
+SPA-written row.
 
 **Acceptance criteria:**
 
 1. `rotation_payload` is relayed unmodified.
 2. `rotation_payload` is cleared after the gateway reports an incremented epoch.
+3. Clearing appends a new row; the original SPA-written row is preserved.
 
 ---
 
@@ -509,12 +513,15 @@ The handler MUST construct gateway `DESIRED_STATE` with
 `desired_state` map it MUST use CBOR keys 15 for `channel`, 21 for `salt`, 22
 for `kdf_params`, 28 for `rotation_payload`, and 29 for `recovered_psks`.
 Gateway `DESIRED_STATE` is written to the `desiredstate` Azure Table with
-`PartitionKey = "g:" + gateway_id_hex`.
+`PartitionKey = "g:" + gateway_id_hex`. All handler writes to the
+`desiredstate` table MUST be append-only (new rows with unique history
+`RowKey`s), never upserts or replacements.
 
 **Acceptance criteria:**
 
 1. Gateway `DESIRED_STATE` uses the correct CBOR key numbers.
 2. The `PartitionKey` uses the `"g:"` prefix.
+3. Handler writes to the `desiredstate` table are append-only.
 
 ---
 

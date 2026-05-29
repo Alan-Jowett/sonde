@@ -600,8 +600,13 @@ rewriting the payload.
 
 The handler clears `rotation_payload` after observing a gateway ACTUAL_STATE row
 whose `master_key_epoch` has incremented relative to the previously stored
-gateway row. This makes the DESIRED_STATE relay one-shot while still relying on
-gateway-reported convergence.
+gateway row. Clearing is performed by appending a **new** row to the
+`desiredstate` table (with a fresh `next_history_row_key()` RowKey and
+`rotation_payload: None`) rather than overwriting the original SPA-written row.
+The `load_gateway_desired_state` reader returns `$top=1` from the partition, so
+the newly appended row (which sorts first due to the inverted-timestamp RowKey)
+is picked up as the latest state. This preserves the original SPA-written row
+for audit purposes while making the DESIRED_STATE relay one-shot.
 
 ### 9.5  Salt management and gateway DESIRED_STATE construction
 

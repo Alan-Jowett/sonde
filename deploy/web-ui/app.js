@@ -533,10 +533,12 @@ function closeRotationForm(gwId) {
   const container = document.querySelector(`.rotation-form-container[data-gateway-form="${gwId}"]`);
   if (container) container.style.display = 'none';
   APP.rotationFormOpen = null;
-  // Resume auto-refresh (WEB-1002 AC#5).
-  setAutoRefresh(async () => {
-    if (APP.activeTab === 'dashboard') await renderDashboard();
-  });
+  // Resume auto-refresh only if still on the dashboard tab (WEB-1002 AC#5).
+  if (APP.activeTab === 'dashboard') {
+    setAutoRefresh(async () => {
+      if (APP.activeTab === 'dashboard') await renderDashboard();
+    });
+  }
 }
 
 // Attaches event handlers for rotation forms and buttons after dashboard
@@ -1179,6 +1181,18 @@ async function renderDashboard() {
     return;
   }
 
+  // If rotation form is open and still in the DOM, skip the entire render
+  // to preserve form state (WEB-1002 AC#5). Must run before the loading
+  // renderCard() call which would destroy the form.
+  if (APP.rotationFormOpen) {
+    const formStillPresent = document.querySelector(
+      `.rotation-form-container[data-gateway-form="${APP.rotationFormOpen}"]`
+    );
+    if (formStillPresent) return;
+    // Stale flag — user navigated away and back; clear and continue.
+    APP.rotationFormOpen = null;
+  }
+
   renderCard('Dashboard', '<p class="muted">Loading dashboard…</p>');
 
   try {
@@ -1186,18 +1200,6 @@ async function renderDashboard() {
       queryTable(CONFIG.actualStateTable, ''),
       queryTable(CONFIG.desiredStateTable, ''),
     ]);
-
-    // If user opened rotation form while we were fetching, skip DOM
-    // replacement to preserve form state (WEB-1002 AC#5).
-    // Only skip if the form container is still in the DOM (not stale from a tab switch).
-    if (APP.rotationFormOpen) {
-      const formStillPresent = document.querySelector(
-        `.rotation-form-container[data-gateway-form="${APP.rotationFormOpen}"]`
-      );
-      if (formStillPresent) return;
-      // Stale flag — user navigated away and back; clear and continue.
-      APP.rotationFormOpen = null;
-    }
 
     // Separate gateway and node rows (WEB-1001).
     const gatewayRows = latestByPartition(filterGatewayRows(actualRows));

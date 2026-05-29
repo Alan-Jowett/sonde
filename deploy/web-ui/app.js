@@ -528,7 +528,7 @@ function toggleRotationForm(gwId) {
       const prev = document.querySelector(
         `.rotation-form-container[data-gateway-form="${APP.rotationFormOpen}"]`
       );
-      if (prev) prev.style.display = 'none';
+      if (prev) resetAndHideFormContainer(prev);
     }
     container.style.display = '';
     APP.rotationFormOpen = gwId;
@@ -539,16 +539,20 @@ function toggleRotationForm(gwId) {
   }
 }
 
+// Resets form inputs, clears status messages, and hides a form container.
+function resetAndHideFormContainer(container) {
+  const form = container.querySelector('.rotation-form');
+  if (form) form.reset();
+  const status = container.querySelector('.rotation-status');
+  if (status) status.innerHTML = '';
+  container.style.display = 'none';
+}
+
 // Idempotent close — safe to call from timeout even if user already closed.
 function closeRotationForm(gwId) {
   if (APP.rotationFormOpen !== gwId) return;
   const container = document.querySelector(`.rotation-form-container[data-gateway-form="${gwId}"]`);
-  if (container) {
-    // Clear sensitive fields so passphrase doesn't linger in hidden DOM.
-    const form = container.querySelector('.rotation-form');
-    if (form) form.reset();
-    container.style.display = 'none';
-  }
+  if (container) resetAndHideFormContainer(container);
   APP.rotationFormOpen = null;
   // Resume auto-refresh only if still on the dashboard tab (WEB-1002 AC#5).
   if (APP.activeTab === 'dashboard') {

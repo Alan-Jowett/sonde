@@ -2663,9 +2663,7 @@ mod tests {
             let key = hex::encode(&row.program_hash);
             let mut map = self.program_images.lock().await;
             // Insert-only / first-writer-wins (AZH-0800 AC-4).
-            if !map.contains_key(&key) {
-                map.insert(key, row.clone());
-            }
+            map.entry(key).or_insert_with(|| row.clone());
             self.stored_program_rows.lock().await.push(row.clone());
             Ok(())
         }

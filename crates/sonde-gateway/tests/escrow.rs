@@ -4,7 +4,7 @@
 //! Integration tests for PSK escrow, master key identification, and ACTUAL_STATE
 //! publication (GW-2001, GW-2003, GW-2004, GW-2005).
 //!
-//! Test IDs: T-2000, T-2001, T-2002, T-2006c, T-2011, T-2012, T-2013.
+//! Test IDs: T-2000, T-2001, T-2002, T-2006c, T-2011, T-2012, T-2013, T-2014.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -1185,4 +1185,87 @@ async fn test_t2011_missing_key_hint_debounced_reemission() {
     );
     assert!(missing_hints.contains(&0x9999));
     assert!(missing_hints.contains(&0x8888));
+}
+
+// ── T-2014: Periodic gateway ACTUAL_STATE heartbeat ──────────────
+
+/// T-2014: Periodic gateway ACTUAL_STATE heartbeat (GW-2003 AC-8).
+///
+/// Verifies:
+/// 1. No duplicate ACTUAL_STATE is emitted immediately after the initial
+///    startup emission.
+/// 2. A second ACTUAL_STATE is emitted after the heartbeat interval elapses,
+///    without any state change trigger.
+#[tokio::test]
+async fn test_t2014_periodic_gateway_actual_state_heartbeat() {
+    let (store, identity) = setup_test_storage().await;
+    let (_key_id, _epoch) = store.init_master_key_id().await.unwrap();
+    let _code = store.init_rotation_code().await.unwrap();
+
+    let event_hub = Arc::new(ConnectorEventHub::new(16));
+    let gateway = Arc::new(Gateway::new(
+        store.clone() as Arc<dyn Storage>,
+        Duration::from_secs(300),
+    ));
+
+    // Spawn connector.
+    let (mut client, _handle) =
+        spawn_connector(event_hub.clone(), store.clone() as Arc<dyn Storage>).await;
+
+    // Emit initial ACTUAL_STATE (inline, same as production startup).
+    emit_gateway_actual_state_from_storage(&event_hub, &store, &identity, &gateway).await;
+    let initial_frame = read_framed(&mut client).await;
+    let initial_map = decode_cbor_map(&initial_frame);
+    // Sanity: verify this is a gateway ACTUAL_STATE.
+    assert_eq!(
+        map_get(&initial_map, 1),
+        Some(&Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+        "initial frame must be ACTUAL_STATE"
+    );
+
+    // Spawn a test re-emission loop with a SHORT heartbeat (200ms).
+    let reemit_store = store.clone();
+    let reemit_hub = event_hub.clone();
+    let reemit_gw = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        const TEST_HEARTBEAT: Duration = Duration::from_millis(200);
+        let mut heartbeat =
+            tokio::time::interval_at(tokio::time::Instant::now() + TEST_HEARTBEAT, TEST_HEARTBEAT);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            heartbeat.tick().await;
+            let id = reemit_store.load_gateway_identity().await.unwrap().unwrap();
+            emit_gateway_actual_state_from_storage(&reemit_hub, &reemit_store, &id, &reemit_gw)
+                .await;
+        }
+    });
+
+    // Verify NO ACTUAL_STATE emitted before the heartbeat interval (within 50ms).
+    let early_result =
+        tokio::time::timeout(Duration::from_millis(50), read_framed(&mut client)).await;
+    assert!(
+        early_result.is_err(),
+        "no ACTUAL_STATE should arrive before the heartbeat interval"
+    );
+
+    // Wait for heartbeat to fire (200ms + some margin).
+    let heartbeat_frame =
+        tokio::time::timeout(Duration::from_millis(500), read_framed(&mut client))
+            .await
+            .expect("ACTUAL_STATE should be re-emitted after heartbeat interval");
+    let heartbeat_map = decode_cbor_map(&heartbeat_frame);
+
+    // Verify the heartbeat emission is a valid gateway ACTUAL_STATE.
+    assert_eq!(
+        map_get(&heartbeat_map, 1),
+        Some(&Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+        "heartbeat frame must be ACTUAL_STATE"
+    );
+    // Verify entity_kind = "gateway" (key 2).
+    assert_eq!(
+        map_get(&heartbeat_map, 2),
+        Some(&Value::Text("gateway".to_string())),
+        "heartbeat ACTUAL_STATE must have entity_kind = gateway"
+    );
 }

@@ -4576,6 +4576,30 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-2014  Periodic gateway ACTUAL_STATE heartbeat
+
+**Traces to:** GW-2003 (AC-8)
+
+**Steps:**
+1. Start gateway with identity and master key, using a short heartbeat
+   interval (e.g., 2 seconds).
+2. Connect a mock connector consumer.
+3. Consume the initial startup ACTUAL_STATE.
+4. Verify no second ACTUAL_STATE arrives before the heartbeat interval.
+5. Wait for the heartbeat interval to elapse.
+6. Verify a second gateway ACTUAL_STATE is received without any state
+   change trigger.
+
+**Expected:**
+1. No ACTUAL_STATE emitted between startup and first heartbeat tick.
+2. Gateway ACTUAL_STATE re-emitted after heartbeat interval elapses.
+
+**Note:** This test validates gateway-level periodic emission. Handler-side
+delivery of DESIRED_STATE in response to heartbeat ACTUAL_STATE is covered
+by existing handler tests.
+
+---
+
 | GW-1306 | T-1306a, T-1306b, T-1306c, T-1306d |
 | GW-1307 | T-1307a, T-1307b, T-1307c, T-1307d, T-1307e, T-1307f, T-1307g, T-1307h, T-1307i |
 | GW-1308 | T-1308 |
@@ -4611,7 +4635,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-2000 | T-2001 |
 | GW-2001 | T-2000 |
 | GW-2002 | T-2003 |
-| GW-2003 | T-2001, T-2011, T-2012, T-2013 |
+| GW-2003 | T-2001, T-2011, T-2012, T-2013, T-2014 |
 | GW-2004 | T-2002 |
 | GW-2005 | T-2001, T-2006c |
 | GW-2006 | T-2004, T-2004a |

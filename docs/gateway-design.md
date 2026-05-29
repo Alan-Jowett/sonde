@@ -2156,3 +2156,17 @@ On each trigger, the task:
 The `MissingKeyHintTracker` integration in `process_frame` calls
 `notify.notify_one()` when `report()` returns `true` (hint accepted).
 The re-emission task awaits `notify.notified()`.
+
+4. `heartbeat_interval` — a
+   `tokio::time::interval_at(Instant::now() + GATEWAY_HEARTBEAT_INTERVAL, GATEWAY_HEARTBEAT_INTERVAL)`
+   with `MissedTickBehavior::Delay`. On tick, re-emit gateway ACTUAL_STATE
+   using the same re-emission procedure (including draining any pending
+   `missing_key_hints`). The heartbeat runs independently of event-driven
+   emissions — rotation, state-change, and missing-hint triggers do not
+   reset the heartbeat schedule. If a heartbeat fires during the
+   missing-hint debounce window, pending hints are drained and emitted
+   with the heartbeat; the debounce timer is then cancelled.
+   `GATEWAY_HEARTBEAT_INTERVAL` is a compile-time constant (default:
+   `Duration::from_secs(900)`). Tests may duplicate the re-emission loop
+   with a shorter interval constant, following the existing test pattern
+   for `HINT_DEBOUNCE`.

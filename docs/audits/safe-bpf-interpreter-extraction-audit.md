@@ -38,7 +38,7 @@ The `sonde-bpf` crate had a design doc and validation plan but no requirements d
 | Validation | `docs/safe-bpf-interpreter-validation.md` |
 | Implementation | `crates/sonde-bpf/src/interpreter.rs` |
 | Opcodes | `crates/sonde-bpf/src/ebpf.rs` |
-| Tests | `crates/sonde-bpf/tests/tagged_register_tests.rs`, `crates/sonde-bpf/tests/helper_trust_boundary_tests.rs` |
+| Tests | `crates/sonde-bpf/tests/tagged_register_tests.rs`, `crates/sonde-bpf/tests/helper_trust_boundary_tests.rs`, `crates/sonde-bpf/tests/interpreter_tests.rs` |
 | Node reqs | `docs/node-requirements.md` (ND-0504, ND-0505) |
 | BPF env | `docs/bpf-environment.md` |
 

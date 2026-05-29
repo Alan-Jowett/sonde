@@ -649,11 +649,14 @@ The gateway SHOULD support pluggable key-provider backends so that the master
 key itself can benefit from OS-native protection (hardware-backed or
 OS-managed encryption) rather than relying solely on file-system permissions.
 
-A `KeyProvider` trait abstracts how the 32-byte master key is obtained:
+A `KeyProvider` trait abstracts how the 32-byte master key is obtained and
+persisted:
 
 ```rust
 pub trait KeyProvider: Send + Sync {
     fn load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError>;
+    fn write_master_key(&self, key: &[u8; 32]) -> Result<(), KeyProviderError>;
+    fn is_writable(&self) -> bool;
 }
 ```
 
@@ -662,14 +665,22 @@ pub trait KeyProvider: Send + Sync {
 type implements the `Zeroize` trait so the guard can clear it when the value
 goes out of scope.
 
+`write_master_key` atomically persists a new 32-byte master key to the
+backend, replacing the existing key.  Implementations MUST write to a
+temporary location and rename/swap atomically where the backend supports it
+(file, DPAPI) to avoid leaving a partial key on crash.
+
+`is_writable` returns `true` if the backend supports `write_master_key`.
+Backends that cannot persist (e.g., `EnvKeyProvider`) return `false`.
+
 The following backends MUST be provided:
 
 | Backend | `--key-provider` value | Platform | Mechanism |
 |---------|------------------------|----------|-----------|
-| `FileKeyProvider` | `file` *(default)* | All | Read 64 hex chars from `--master-key-file`. Preserves existing `--master-key-file` workflow unchanged. |
-| `EnvKeyProvider` | `env` | All | Read 64 hex chars from `SONDE_MASTER_KEY` env var. Preserves existing env-var workflow unchanged. |
-| `DpapiKeyProvider` | `dpapi` | Windows | Decrypt a DPAPI blob at `--master-key-file` using `CryptProtectData` / `CryptUnprotectData`. The blob is tied to the Windows user or machine account. |
-| `SecretServiceKeyProvider` | `secret-service` | Linux | Retrieve the key from the D-Bus Secret Service (GNOME Keyring / KWallet) via `--key-label`. |
+| `FileKeyProvider` | `file` *(default)* | All | Read 64 hex chars from `--master-key-file`. Preserves existing `--master-key-file` workflow unchanged. `write_master_key` writes to a `.tmp` file and renames atomically. `is_writable` returns `true`. |
+| `EnvKeyProvider` | `env` | All | Read 64 hex chars from `SONDE_MASTER_KEY` env var. Preserves existing env-var workflow unchanged. `write_master_key` returns `KeyProviderError::NotWritable`. `is_writable` returns `false`. |
+| `DpapiKeyProvider` | `dpapi` | Windows | Decrypt a DPAPI blob at `--master-key-file` using `CryptProtectData` / `CryptUnprotectData`. The blob is tied to the Windows user or machine account. `write_master_key` re-encrypts with `CryptProtectData` and writes atomically. `is_writable` returns `true`. |
+| `SecretServiceKeyProvider` | `secret-service` | Linux | Retrieve the key from the D-Bus Secret Service (GNOME Keyring / KWallet) via `--key-label`. `write_master_key` calls `store_in_secret_service()` with `replace=true`. `is_writable` returns `true`. |
 
 The trait is designed to be extensible for future backends (macOS Keychain,
 HSM/PKCS#11, cloud KMS) without changes to the gateway startup code.
@@ -680,8 +691,10 @@ HSM/PKCS#11, cloud KMS) without changes to the gateway startup code.
 2. On Windows, `--key-provider dpapi` reads a DPAPI-protected blob and decrypts it using `CryptUnprotectData`, returning the raw 32-byte key.
 3. On Linux, `--key-provider secret-service` retrieves a 32-byte binary secret from the system keyring under the specified `--key-label`.
 4. Requesting a platform-specific backend on an unsupported platform (e.g., `--key-provider dpapi` on Linux) returns a clear error at startup, before the database is opened.
-5. `KeyProviderError` variants distinguish I/O errors, format errors, platform availability errors, and backend errors.
+5. `KeyProviderError` variants distinguish I/O errors, format errors, platform availability errors, backend errors, and not-writable errors.
 6. The `KeyProvider` trait is publicly exported from the `sonde-gateway` library crate so external backends can be implemented downstream.
+7. `write_master_key` persists a new 32-byte key to the backend, replacing the existing key. Backends that support writing (`is_writable() == true`) MUST perform the write atomically where the platform supports it.
+8. `EnvKeyProvider::is_writable()` returns `false`; calling `write_master_key` on `EnvKeyProvider` returns `Err(KeyProviderError::NotWritable(_))`.
 
 ---
 
@@ -2693,7 +2706,18 @@ The gateway MUST: (1) decrypt using GatewayIdentity X25519 private key,
 (2) verify rotation code, (3) verify master_key_epoch via AAD,
 (4) prepare pending_rotation record and purge pending_recovery,
 (5) migrate all PSK records (nodes and phone_psks) to new key,
-(6) rewrap identity seed, (7) atomic commit.
+(6) rewrap identity seed, (7) atomic commit (but retain `pending_rotation`),
+(8) persist new master key to the `KeyProvider` backend via `write_master_key`,
+(9) delete `pending_rotation`.
+
+The `pending_rotation` record MUST NOT be deleted in the atomic commit
+transaction (step 7).  It serves as a crash-recovery marker: if the
+gateway crashes between step 7 and step 9, the `pending_rotation` record
+allows the new key to be recovered on restart (see GW-2007).
+
+Before starting rotation, the gateway MUST check `KeyProvider::is_writable()`.
+If the provider is not writable, rotation MUST be rejected with a clear
+error before any cryptographic work (see GW-2014).
 
 A rotation payload received while a rotation is already in progress
 MUST be silently discarded.
@@ -2705,28 +2729,69 @@ MUST be silently discarded.
 3. Wrong rotation code rejected with warning.
 4. Replay (same epoch) rejected.
 5. Concurrent rotation payload silently discarded.
+6. New master key persisted to `KeyProvider` backend after DB commit.
+7. `pending_rotation` deleted only after successful key provider write.
+8. After rotation + gateway restart, the gateway starts successfully using the new key.
 
 ---
 
 ### GW-2007  Crash-safe key rotation
 
 **Priority:** Must
-**Source:** Issue #962 (supersedes evolve-887 GW-2007)
+**Source:** Issue #962, Issue #1091
 
 **Description:**
 Key rotation MUST be crash-safe via a `pending_rotation` table with
 three phases: `migrating_psks`, `rewrapping_identity`, `committing`.
-On startup, if `pending_rotation` exists, the gateway MUST resume from
-the recorded phase. During all pre-commit phases, the original
-`encrypted_seed` remains encrypted with the old key, ensuring
-`GatewayIdentity` is always loadable on restart.
+On startup, if `pending_rotation` exists, the gateway MUST determine
+which recovery path to take based on the current `master_key_epoch`:
+
+- **Pre-commit crash** (`master_key_epoch` < pending epoch): The DB
+  commit has not occurred.  Resume from the recorded phase using the
+  old master key (existing behavior).  During all pre-commit phases,
+  the original `encrypted_seed` remains encrypted with the old key,
+  ensuring `GatewayIdentity` is always loadable on restart.
+
+- **Post-commit, pre-provider-write crash** (`master_key_epoch` =
+  pending epoch AND provider key ≠ pending new key): The DB commit
+  completed but the new key was not persisted to the `KeyProvider`
+  backend.  Decrypt `new_master_key_enc` from `pending_rotation`
+  using the old key (still in the provider), write the new key to
+  the provider via `write_master_key`, then delete `pending_rotation`.
+
+- **Post-provider-write, pre-delete crash** (`master_key_epoch` =
+  pending epoch AND provider key = new key): The provider write
+  succeeded but `pending_rotation` was not deleted.  Simply delete
+  `pending_rotation`.  Recovery MUST attempt to load identity and
+  validate PSKs with the provider key first; if successful, the
+  provider already has the correct key.
+
+- **Stale `pending_rotation`** (`master_key_epoch` > pending epoch):
+  An impossible state under normal operation.  Log a warning, delete
+  the stale `pending_rotation` record, and proceed with the current
+  provider key.
+
+Post-commit recovery MUST run before `GatewayIdentity` loading to
+avoid fatal decryption errors when the identity seed has been
+rewrapped under the new key but the provider still holds the old key.
+
+In all cases, `pending_rotation` is deleted only after the key
+provider write succeeds (or is determined unnecessary).
 
 **Acceptance criteria:**
 
-1. Crash during any phase resumes correctly on restart.
-2. GatewayIdentity is loadable after crash at any phase.
+1. Crash during any pre-commit phase resumes correctly on restart.
+2. GatewayIdentity is loadable after crash at any pre-commit phase.
 3. All PSKs fully migrated after recovery.
-4. `pending_rotation` deleted after successful commit.
+4. `pending_rotation` deleted after successful commit and key provider write.
+5. Crash after DB commit but before key provider write: on restart, new key
+   is recovered from `pending_rotation`, written to the provider, and
+   `pending_rotation` is deleted.  The gateway starts successfully.
+6. Crash after key provider write but before `pending_rotation` delete: on
+   restart, gateway detects provider already has the correct key, deletes
+   `pending_rotation`, and starts successfully.
+7. Post-commit recovery runs before `GatewayIdentity` loading to prevent
+   fatal decryption errors.
 
 ---
 
@@ -2851,6 +2916,33 @@ reprovisioning.
 
 1. `pending_recovery` purged atomically with `pending_rotation` creation.
 2. Known nodes re-emitted with new `master_key_id` after rotation.
+
+---
+
+### GW-2014  Rotation blocked for non-writable key providers
+
+**Priority:** Must
+**Source:** Issue #1091
+
+**Description:**
+Before initiating a key rotation (either via DESIRED_STATE or gRPC
+`SubmitRotation`), the gateway MUST check `KeyProvider::is_writable()`.
+If the provider returns `false`, the gateway MUST reject the rotation
+with a clear error message indicating that the key provider backend
+does not support key persistence, and that rotation requires a writable
+key provider.  No cryptographic operations or database mutations are
+performed on the rejected rotation.
+
+For the gRPC path, `SubmitRotation` returns `accepted = false` with an
+error string.  For the DESIRED_STATE path, a warning-level log is
+emitted and the payload is discarded.
+
+**Acceptance criteria:**
+
+1. Rotation via gRPC is rejected with `accepted = false` and an error message mentioning the key provider when `is_writable()` returns `false`.
+2. Rotation via DESIRED_STATE is discarded with a warning log when `is_writable()` returns `false`.
+3. No database mutations or cryptographic operations occur before the rejection.
+4. Writable providers (`file`, `dpapi`, `secret-service`) are not affected.
 
 ---
 
@@ -3001,3 +3093,4 @@ reprovisioning.
 | GW-2011 | Fingerprint computation | Must |
 | GW-2012 | gRPC rotation API | Must |
 | GW-2013 | Pending recovery purge on rotation | Must |
+| GW-2014 | Rotation blocked for non-writable key providers | Must |

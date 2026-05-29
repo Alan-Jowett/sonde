@@ -153,6 +153,53 @@ async fn register_test_node(store: &Arc<SqliteStorage>, node_id: &str, key_hint:
     store.upsert_node(&record).await.unwrap();
 }
 
+/// Create a writable test key provider backed by a temp file.
+///
+/// The temp file is initialized with the given master key in hex format.
+/// Returns both the provider (as `Arc<dyn KeyProvider>`) and the
+/// `NamedTempFile` handle (must be kept alive for the file to persist).
+#[allow(dead_code)] // useful for post-commit recovery tests (T-2014b)
+fn test_key_provider(
+    master_key: &[u8; 32],
+) -> (
+    Arc<dyn sonde_gateway::key_provider::KeyProvider>,
+    tempfile::NamedTempFile,
+) {
+    use sonde_gateway::key_provider::FileKeyProvider;
+    use std::io::Write as _;
+
+    let mut f = tempfile::NamedTempFile::new().unwrap();
+    let hex: String = master_key.iter().map(|b| format!("{b:02x}")).collect();
+    writeln!(f, "{hex}").unwrap();
+    let provider = FileKeyProvider::new(f.path().to_path_buf());
+    (Arc::new(provider), f)
+}
+
+/// A writable key provider for tests that don't need actual key persistence.
+/// Implements `is_writable() → true` and `write_master_key` as a no-op success.
+struct NoopWritableKeyProvider;
+
+impl sonde_gateway::key_provider::KeyProvider for NoopWritableKeyProvider {
+    fn load_master_key(
+        &self,
+    ) -> Result<Zeroizing<[u8; 32]>, sonde_gateway::key_provider::KeyProviderError> {
+        Err(sonde_gateway::key_provider::KeyProviderError::NotFound(
+            "test provider".into(),
+        ))
+    }
+
+    fn write_master_key(
+        &self,
+        _key: &[u8; 32],
+    ) -> Result<(), sonde_gateway::key_provider::KeyProviderError> {
+        Ok(())
+    }
+
+    fn is_writable(&self) -> bool {
+        true
+    }
+}
+
 /// T-2003: Rotation code authentication.
 #[tokio::test]
 async fn test_t2003_rotation_code_authentication() {
@@ -181,6 +228,7 @@ async fn test_t2003_rotation_code_authentication() {
         store.clone(),
         identity.clone(),
         event_hub,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );
@@ -199,6 +247,7 @@ async fn test_t2003_rotation_code_authentication() {
         store.clone(),
         identity.clone(),
         event_hub2,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx2,
         desired_state_rx2,
     );
@@ -251,6 +300,7 @@ async fn test_t2004_rotation_happy_path() {
         store.clone(),
         identity.clone(),
         event_hub,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );
@@ -300,6 +350,7 @@ async fn test_t2004a_rotation_validation_failures() {
         store.clone(),
         identity.clone(),
         event_hub,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );
@@ -318,6 +369,7 @@ async fn test_t2004a_rotation_validation_failures() {
         store.clone(),
         identity.clone(),
         event_hub,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );
@@ -338,6 +390,7 @@ async fn test_t2004a_rotation_validation_failures() {
         store.clone(),
         identity.clone(),
         event_hub,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );
@@ -353,6 +406,7 @@ async fn test_t2004a_rotation_validation_failures() {
         store.clone(),
         identity.clone(),
         event_hub,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );
@@ -367,6 +421,7 @@ async fn test_t2004a_rotation_validation_failures() {
         store.clone(),
         identity.clone(),
         event_hub,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );
@@ -404,6 +459,7 @@ async fn test_t2004b_concurrent_rotation_discard() {
         store.clone(),
         identity.clone(),
         event_hub,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );
@@ -422,6 +478,7 @@ async fn test_t2004b_concurrent_rotation_discard() {
         store.clone(),
         identity.clone(),
         event_hub,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );
@@ -472,9 +529,10 @@ async fn test_t2005_crash_safe_rotation() {
     assert_eq!(still_unmigrated.len(), 5);
 
     // Simulate crash recovery.
-    let recovered = RotationEngine::resume_pending_rotation(&store, &identity)
-        .await
-        .unwrap();
+    let recovered =
+        RotationEngine::resume_pending_rotation(&store, &identity, &NoopWritableKeyProvider)
+            .await
+            .unwrap();
     assert!(
         recovered.is_some(),
         "crash recovery should detect and resume rotation"
@@ -520,6 +578,7 @@ async fn test_t2008_grpc_rotation_path() {
         store.clone(),
         identity.clone(),
         event_hub,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );
@@ -596,9 +655,10 @@ async fn test_t2009_crash_recovery_all_phases() {
             .unwrap();
 
         // Crash recovery.
-        let recovered = RotationEngine::resume_pending_rotation(&store, &identity)
-            .await
-            .unwrap();
+        let recovered =
+            RotationEngine::resume_pending_rotation(&store, &identity, &NoopWritableKeyProvider)
+                .await
+                .unwrap();
         assert!(recovered.is_some());
 
         // Verify identity is loadable with the new key.
@@ -639,9 +699,10 @@ async fn test_t2009_crash_recovery_all_phases() {
         store.update_rotation_phase("committing").await.unwrap();
 
         // Crash recovery.
-        let recovered = RotationEngine::resume_pending_rotation(&store, &identity)
-            .await
-            .unwrap();
+        let recovered =
+            RotationEngine::resume_pending_rotation(&store, &identity, &NoopWritableKeyProvider)
+                .await
+                .unwrap();
         assert!(recovered.is_some());
         assert!(!store.is_rotation_in_progress().await.unwrap());
 
@@ -683,6 +744,7 @@ async fn test_t2010_pending_recovery_purge() {
         store.clone(),
         identity.clone(),
         event_hub,
+        Arc::new(NoopWritableKeyProvider),
         grpc_rx,
         desired_state_rx,
     );

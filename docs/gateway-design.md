@@ -756,16 +756,27 @@ implementation selected by the `--key-provider` CLI flag (GW-0601b).
 ### 10a.1  Trait
 
 ```rust
-/// Abstracts how the 32-byte gateway master key is obtained.
+/// Abstracts how the 32-byte gateway master key is obtained and persisted.
 pub trait KeyProvider: Send + Sync {
     fn load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError>;
+    fn write_master_key(&self, key: &[u8; 32]) -> Result<(), KeyProviderError>;
+    fn is_writable(&self) -> bool;
 }
 ```
 
-The trait is intentionally synchronous; key loading is a one-time startup
-operation.  For async backends (e.g. Secret Service over D-Bus), the
-implementation uses `tokio::task::block_in_place` when called from within a
-tokio runtime, or a temporary `current_thread` runtime otherwise.
+The trait is intentionally synchronous; key loading and writing are
+startup/rotation operations, not hot-path.  For async backends (e.g.
+Secret Service over D-Bus), the implementation uses
+`tokio::task::block_in_place` when called from within a tokio runtime,
+or a temporary `current_thread` runtime otherwise.
+
+`write_master_key` replaces the stored key with the given 32-byte key.
+Implementations SHOULD write atomically (write-to-temp + rename) where
+the backend supports it.  `EnvKeyProvider` returns
+`Err(KeyProviderError::NotWritable(_))`.
+
+`is_writable` returns whether `write_master_key` is supported.  The
+rotation engine checks this before starting a rotation.
 
 ### 10a.2  Backends
 
@@ -805,7 +816,7 @@ keyring during initial deployment.
 
 ### 10a.6  Error type
 
-`KeyProviderError` has four variants:
+`KeyProviderError` has five variants:
 
 | Variant | Meaning |
 |---------|---------|
@@ -813,6 +824,7 @@ keyring during initial deployment.
 | `Format(String)` | Key material is present but malformed (wrong length, non-hex characters, wrong byte count) |
 | `NotAvailable(String)` | The requested backend is not supported on this platform |
 | `Backend(String)` | The backend itself returned an error (DPAPI failure, D-Bus error, keyring locked) |
+| `NotWritable(String)` | The backend does not support `write_master_key` (e.g., `EnvKeyProvider`) |
 
 ---
 
@@ -1975,9 +1987,35 @@ info=gateway_id_raw||epoch_be64) → AES-256-GCM(key, nonce, plaintext, aad=gate
 1. **Prepare:** Write `pending_rotation`, purge `pending_recovery` (same transaction).
 2. **Migrate PSKs** (`migrating_psks`): Re-encrypt all `nodes` and `phone_psks` records.
 3. **Rewrap identity** (`rewrapping_identity`): Re-encrypt `GatewayIdentity` seed under new key into `encrypted_seed_new`.
-4. **Commit** (`committing`): Atomic transaction — promote `encrypted_seed_new`, update `master_key_id`/`epoch`, generate new rotation code, delete `pending_rotation`.
+4. **Commit** (`committing`): Atomic transaction — promote `encrypted_seed_new`, update `master_key_id`/`epoch`, generate new rotation code. `pending_rotation` is **NOT** deleted in this transaction.
+5. **Persist key** (`persisting_key`): Write new master key to `KeyProvider` backend via `write_master_key`. On success, delete `pending_rotation`.
 
 **Key invariant:** During all pre-commit phases, original `encrypted_seed` remains usable with the old key. `GatewayIdentity` is always loadable on restart.
+
+**Post-commit crash recovery:** If `pending_rotation` exists and
+`master_key_epoch` equals the pending epoch, the startup sequence must
+determine whether the provider write completed:
+
+- Try loading identity with the provider key.  If successful, the provider
+  already has the new key (post-write/pre-delete crash) — delete
+  `pending_rotation` and proceed.
+- If identity loading fails, the provider still has the old key
+  (post-commit/pre-write crash) — decrypt `new_master_key_enc` using the
+  old provider key, write the new key to the provider, reload the master
+  key, and delete `pending_rotation`.
+- If `master_key_epoch` > pending epoch (stale record), log a warning and
+  delete `pending_rotation`.
+
+Post-commit recovery MUST run before `GatewayIdentity` loading to avoid
+fatal startup errors.
+
+**Provider writability gate:** Before phase 1, the rotation engine checks `KeyProvider::is_writable()`. Non-writable providers (e.g., `EnvKeyProvider`) block rotation with a clear error (GW-2014).
+
+**Note:** `persisting_key` (phase 5) is not stored as a `phase` value in the
+`pending_rotation` table.  The post-commit state is inferred from
+`master_key_epoch` matching the pending epoch with `pending_rotation` still
+present.  The three stored phase values remain `migrating_psks`,
+`rewrapping_identity`, and `committing`.
 
 **Dual-key frame processing:** During migration, PSK records have mixed epochs. Frame processing uses the master key matching each record's `master_key_epoch`.
 
@@ -2032,15 +2070,22 @@ shared in `sonde-protocol`.
 
 Insert after step 2 (initialize storage):
 
-> 2a. Load `GatewayIdentity`, derive X25519 public key (already done
->     by the existing identity-loading block before these steps).
-> 2b. Check `pending_rotation` — call
->     `RotationEngine::resume_pending_rotation(&storage, &identity)`.
+> 2a. Check `pending_rotation` with post-commit detection:
+>     - If `pending_rotation` exists AND `master_key_epoch` = pending epoch,
+>       run post-commit recovery (try provider key for identity; if fail,
+>       decrypt new key from `pending_rotation`, write to provider, reload).
+>     - If `pending_rotation` exists AND `master_key_epoch` > pending epoch,
+>       delete stale record and log warning.
+>     - If `pending_rotation` exists AND `master_key_epoch` < pending epoch,
+>       defer to pre-commit resume (step 2b).
+> 2b. Load `GatewayIdentity`, derive X25519 public key.
+> 2c. If `pending_rotation` exists (pre-commit), call
+>     `RotationEngine::resume_pending_rotation(&storage, &identity, &key_provider)`.
 >     If it returns `Some(notification)`, cache the notification for
 >     gateway ACTUAL_STATE re-emission after the connector starts.
-> 2c. Load/generate `master_key_id` and `master_key_epoch` via
+> 2d. Load/generate `master_key_id` and `master_key_epoch` via
 >     `storage.init_master_key_id()`.
-> 2d. Load/generate `rotation_code` via `storage.init_rotation_code()`.
+> 2e. Load/generate `rotation_code` via `storage.init_rotation_code()`.
 
 Insert between connector creation and modem transport setup:
 

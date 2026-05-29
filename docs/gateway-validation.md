@@ -4293,10 +4293,11 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-2004  Master key rotation — happy path
 
-**Traces to:** GW-2006 (AC-1, AC-2)
+**Traces to:** GW-2006 (AC-1, AC-2, AC-6, AC-7, AC-8)
 
 **Steps:**
-1. Start gateway with 3 registered nodes and 1 phone PSK.
+1. Start gateway with 3 registered nodes, 1 phone PSK, and a writable
+   `FileKeyProvider` (using a temp key file).
 2. Record old `master_key_id` and `master_key_epoch`.
 3. Submit valid rotation payload via DESIRED_STATE.
 4. Verify all PSK records (nodes and phone_psks) updated with new
@@ -4307,6 +4308,11 @@ A configurable stub handler process (or in-process mock) that:
    `rotation_in_progress = false`.
 8. Verify node ACTUAL_STATE re-emitted with new `encrypted_psk`
    and `master_key_id`.
+9. Verify the key file on disk contains the new master key (hex-encoded).
+10. Verify `pending_rotation` table is empty.
+11. Stop the gateway.  Reload the key from the key file and re-open the
+    database — verify all PSKs decrypt successfully with the reloaded key
+    (simulates restart).
 
 **Expected:**
 1. All PSKs migrated; old key unusable; state updated.
@@ -4351,18 +4357,31 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-2005  Crash-safe key rotation
 
-**Traces to:** GW-2007 (AC-1, AC-2, AC-3, AC-4)
+**Traces to:** GW-2007 (AC-1, AC-2, AC-3, AC-4, AC-5, AC-6, AC-7)
 
 **Steps:**
-1. Start gateway with 10 registered nodes.
-2. Begin key rotation, simulate crash after 5 nodes migrated.
+1. Start gateway with 10 registered nodes and a writable `FileKeyProvider`.
+2. Begin key rotation, simulate crash after 5 nodes migrated (pre-commit).
 3. Restart gateway — verify `pending_rotation` detected during storage
    initialization (step 2a of startup sequence).
 4. Verify auto-resume migrates remaining 5 nodes before ACTUAL_STATE emission.
 5. Verify all 10 nodes have new `master_key_id` and `master_key_epoch`.
 6. Verify `pending_rotation` deleted.
-7. Verify first ACTUAL_STATE after restart reports `rotation_in_progress = false`
+7. Verify key file on disk contains the new master key.
+8. Verify first ACTUAL_STATE after restart reports `rotation_in_progress = false`
    (rotation completed during startup before ACTUAL_STATE emission).
+9. Simulate crash after DB commit but before key provider write:
+   leave `pending_rotation` in DB with epoch already incremented,
+   key file still has old key.
+10. Restart gateway — verify gateway recovers new key from
+    `pending_rotation`, writes it to key file, deletes
+    `pending_rotation`, and starts successfully.
+11. Simulate crash after key provider write but before `pending_rotation`
+    delete: key file has new key, `pending_rotation` still in DB.
+12. Restart gateway — verify gateway detects provider already has
+    correct key, deletes `pending_rotation`, and starts successfully.
+13. Verify post-commit recovery runs before `GatewayIdentity` loading
+    (no fatal decryption error on startup).
 
 **Expected:**
 1. Partial rotation is resumed and completed after crash.
@@ -4485,7 +4504,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-2009  Crash recovery — all rotation phases
 
-**Traces to:** GW-2007 (AC-1, AC-2)
+**Traces to:** GW-2007 (AC-1, AC-2, AC-5, AC-6)
 
 **Steps:**
 1. Crash during `migrating_psks` phase — verify PSK migration resumes.
@@ -4493,8 +4512,17 @@ A configurable stub handler process (or in-process mock) that:
    resumes and identity is loadable with old key on restart.
 3. Crash during `committing` phase — verify recovery completes the
    atomic commit and identity is loadable after recovery.
-4. For each phase, verify the gateway identity is always loadable on
+4. Crash after `committing` but before key provider write — verify
+   gateway decrypts new key from `pending_rotation` using old key
+   (still in provider), writes to provider, deletes `pending_rotation`,
+   and starts successfully with new key.
+5. Crash after key provider write but before `pending_rotation` delete —
+   verify gateway detects provider already has correct key, deletes
+   `pending_rotation`, and starts successfully.
+6. For each phase, verify the gateway identity is always loadable on
    restart (no key/identity mismatch).
+7. Verify recovery is idempotent: restart twice after post-commit crash
+   produces the same correct result.
 
 **Expected:**
 1. Crash at any phase boundary recovers correctly.
@@ -4576,6 +4604,60 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-2014  Rotation blocked for non-writable key provider
+
+**Traces to:** GW-2014 (AC-1, AC-2, AC-3, AC-4)
+
+**Steps:**
+1. Start gateway with a non-writable key provider (e.g., `EnvKeyProvider`)
+   and at least one registered node.
+2. Submit a valid rotation payload via gRPC `SubmitRotation`.
+3. Verify gRPC returns `accepted = false` with an error message mentioning
+   the key provider not supporting key persistence.
+4. Verify no database mutations occurred (no `pending_rotation`, PSKs
+   unchanged, epoch unchanged).
+5. Submit a valid rotation payload via DESIRED_STATE.
+6. Verify warning log emitted mentioning non-writable key provider.
+7. Verify payload is discarded (no `pending_rotation`, PSKs unchanged).
+8. Repeat steps 1–4 with a writable `FileKeyProvider` — verify rotation
+   is accepted and completes successfully.
+
+**Expected:**
+1. Non-writable providers block rotation; writable providers work normally.
+
+---
+
+### T-2014a  Key provider write_master_key — FileKeyProvider round-trip
+
+**Traces to:** GW-0601b (AC-7)
+
+**Steps:**
+1. Create a `FileKeyProvider` with a temp key file containing key A.
+2. Call `write_master_key(&key_B)`.
+3. Call `load_master_key()` — verify returns key B.
+4. Read the key file directly — verify it contains key B hex-encoded.
+5. Verify no `.tmp` file remains after write.
+
+**Expected:**
+1. Key file updated atomically; round-trips correctly.
+
+---
+
+### T-2014b  Key provider write_master_key — EnvKeyProvider rejected
+
+**Traces to:** GW-0601b (AC-8)
+
+**Steps:**
+1. Create an `EnvKeyProvider`.
+2. Verify `is_writable()` returns `false`.
+3. Call `write_master_key(&key)` — verify returns
+   `Err(KeyProviderError::NotWritable(_))`.
+
+**Expected:**
+1. `EnvKeyProvider` rejects writes with the correct error variant.
+
+---
+
 | GW-1306 | T-1306a, T-1306b, T-1306c, T-1306d |
 | GW-1307 | T-1307a, T-1307b, T-1307c, T-1307d, T-1307e, T-1307f, T-1307g, T-1307h, T-1307i |
 | GW-1308 | T-1308 |
@@ -4622,3 +4704,4 @@ A configurable stub handler process (or in-process mock) that:
 | GW-2011 | T-2001 |
 | GW-2012 | T-2008 |
 | GW-2013 | T-2010 |
+| GW-2014 | T-2014, T-2014a, T-2014b |

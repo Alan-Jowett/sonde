@@ -66,6 +66,8 @@ pub struct RotationEngine {
     identity: GatewayIdentity,
     event_hub: Arc<ConnectorEventHub>,
     rate_limiter: RotationRateLimiter,
+    /// Reference to the key provider backend for persisting rotated keys (GW-2006).
+    key_provider: Arc<dyn crate::key_provider::KeyProvider>,
     /// Receives rotation payloads from the gRPC `SubmitRotation` RPC.
     grpc_rx: RotationSubmitReceiver,
     /// Receives parsed DESIRED_STATE from the connector.
@@ -86,6 +88,7 @@ impl RotationEngine {
         storage: Arc<SqliteStorage>,
         identity: GatewayIdentity,
         event_hub: Arc<ConnectorEventHub>,
+        key_provider: Arc<dyn crate::key_provider::KeyProvider>,
         grpc_rx: RotationSubmitReceiver,
         desired_state_rx: mpsc::UnboundedReceiver<GatewayDesiredState>,
     ) -> Self {
@@ -94,6 +97,7 @@ impl RotationEngine {
             identity,
             event_hub,
             rate_limiter: RotationRateLimiter::default(),
+            key_provider,
             grpc_rx,
             desired_state_rx,
             rotation_active: Arc::new(AtomicBool::new(false)),
@@ -375,6 +379,17 @@ impl RotationEngine {
         payload: &[u8],
         is_grpc: bool,
     ) -> Result<(), String> {
+        // GW-2014: reject rotation if the key provider cannot persist the new key.
+        if !self.key_provider.is_writable() {
+            let msg = "rotation rejected: key provider is not writable; \
+                       use --key-provider file, dpapi, or secret-service";
+            if is_grpc {
+                return Err(msg.into());
+            }
+            warn!("{msg} — discarding incoming rotation payload");
+            return Err(msg.into());
+        }
+
         // Check for concurrent rotation — reject before any crypto work.
         if self.rotation_active.load(Ordering::SeqCst) {
             let msg = "rotation already in progress";
@@ -507,7 +522,27 @@ impl RotationEngine {
             return result;
         }
 
-        // Step 7 post: swap in-memory master key.
+        // Step 7a: Persist rotated key to the key provider backend (GW-2006 step 6).
+        // pending_rotation is retained as a crash-recovery marker until this succeeds.
+        if let Err(e) = self
+            .key_provider
+            .write_master_key(&decrypted.new_master_key)
+        {
+            error!(error = %e, "failed to persist rotated key to key provider — \
+                   rotation committed to DB but key not persisted; \
+                   pending_rotation retained for crash recovery");
+            return Err(format!("key provider write failed: {e}"));
+        }
+        info!("rotated master key persisted to key provider");
+
+        // Step 7b: Delete pending_rotation now that the provider has the new key.
+        if let Err(e) = self.storage.delete_pending_rotation().await {
+            // Non-fatal: the record is stale and will be cleaned up on next restart.
+            warn!(error = %e, "failed to delete pending_rotation after key write — \
+                  will be cleaned up on next restart");
+        }
+
+        // Step 7c: Swap in-memory master key.
         self.storage
             .swap_master_key(Zeroizing::new(*decrypted.new_master_key));
         self.storage.clear_rotation_new_key();
@@ -677,17 +712,25 @@ impl RotationEngine {
 
     /// Resume a pending rotation from crash recovery (GW-2007).
     ///
-    /// Called at startup before the main event loop. If `pending_rotation`
-    /// exists in the database, decrypts the new key and resumes from the
-    /// recorded phase.
+    /// Called at startup **before** gateway identity loading.  If
+    /// `pending_rotation` exists in the database, the current DB epoch is
+    /// compared to the pending epoch to determine the crash point:
+    ///
+    /// - `epoch < pending_epoch` — pre-commit crash: resume migration
+    ///   (existing phase-based logic).
+    /// - `epoch == pending_epoch` — post-commit crash: DB is committed but
+    ///   the key provider may not have the new key yet.  Decrypt the new key
+    ///   from `pending_rotation`, write it to the provider if needed, delete
+    ///   the record, and swap in-memory key.
+    /// - `epoch > pending_epoch` — stale record from a completed rotation
+    ///   whose cleanup was interrupted.  Delete the record.
     ///
     /// Returns `Ok(Some(notification))` if a rotation was resumed and committed,
-    /// `Ok(None)` if no pending rotation existed. The caller should use the
-    /// returned notification to trigger gateway ACTUAL_STATE re-emission
-    /// and node escrow re-emission once the connector is ready.
+    /// `Ok(None)` if no pending rotation existed.
     pub async fn resume_pending_rotation(
         storage: &Arc<SqliteStorage>,
         identity: &GatewayIdentity,
+        key_provider: &dyn crate::key_provider::KeyProvider,
     ) -> Result<Option<RotationCompleteNotification>, String> {
         let pending = storage
             .read_pending_rotation()
@@ -705,6 +748,115 @@ impl RotationEngine {
             "detected pending rotation — resuming crash recovery"
         );
 
+        let db_epoch = storage
+            .get_master_key_epoch()
+            .await
+            .map_err(|e| format!("get_master_key_epoch: {e}"))?;
+
+        if db_epoch > pending.new_epoch {
+            // Stale record — a later rotation already completed.
+            warn!(
+                db_epoch,
+                pending_epoch = pending.new_epoch,
+                "stale pending_rotation record (epoch surpassed) — deleting"
+            );
+            storage
+                .delete_pending_rotation()
+                .await
+                .map_err(|e| format!("delete stale pending_rotation: {e}"))?;
+            return Ok(None);
+        }
+
+        if db_epoch == pending.new_epoch {
+            // Post-commit crash: DB committed but key provider / pending_rotation
+            // cleanup may not have completed.
+            info!(
+                db_epoch,
+                "post-commit crash detected — completing key provider write"
+            );
+
+            // Decrypt the pending new key using the CURRENT (old, pre-rotation)
+            // in-memory key to extract the new key from pending_rotation.  But
+            // since the DB is already committed to the new epoch, the in-memory
+            // key at startup is the OLD key from the provider (which may or may
+            // not have been updated).
+            //
+            // We try the current provider key first: if it matches the new key,
+            // the provider write already completed and we just need cleanup.
+            let provider_key = key_provider
+                .load_master_key()
+                .map_err(|e| format!("load provider key for recovery: {e}"))?;
+
+            // Decrypt pending key using old (pre-rotation) key.
+            // The in-memory key is what was loaded from the provider, which is the
+            // old key if the crash happened before provider write.
+            let old_key = {
+                let mk = storage.master_key();
+                Zeroizing::new(**mk)
+            };
+
+            let new_key =
+                match SqliteStorage::decrypt_pending_new_key(&old_key, &pending.new_master_key_enc)
+                {
+                    Ok(k) => k,
+                    Err(_) => {
+                        // The in-memory key (from provider) might already be the new key
+                        // if the crash happened after provider write but before deletion.
+                        // Try decrypting with the provider key as the "old" key.
+                        // This is a no-op if old_key == provider_key.
+                        if *provider_key == *old_key {
+                            return Err("post-commit recovery: cannot decrypt pending new key — \
+                                 the provider key matches the current in-memory key but \
+                                 decryption still failed; possible data corruption"
+                                .into());
+                        }
+                        // Provider already has the new key; pending_rotation is encrypted
+                        // under the old key which we no longer have.  This means the
+                        // provider was already updated — just clean up.
+                        info!(
+                            "provider key differs from in-memory key — provider write \
+                               already completed; cleaning up pending_rotation"
+                        );
+                        storage.swap_master_key(provider_key);
+                        storage
+                            .delete_pending_rotation()
+                            .await
+                            .map_err(|e| format!("delete pending_rotation: {e}"))?;
+                        return Ok(Some(RotationCompleteNotification {
+                            new_master_key_id: pending.new_master_key_id,
+                            new_epoch: pending.new_epoch,
+                        }));
+                    }
+                };
+
+            // Check if provider already has the new key.
+            if *provider_key == *new_key {
+                // Post-write/pre-delete crash — just clean up.
+                info!("provider already has the rotated key — deleting pending_rotation");
+            } else {
+                // Post-commit/pre-write crash — persist to provider.
+                key_provider
+                    .write_master_key(&new_key)
+                    .map_err(|e| format!("post-commit recovery: key provider write: {e}"))?;
+                info!("rotated master key persisted to key provider during recovery");
+            }
+
+            // Delete pending_rotation.
+            storage
+                .delete_pending_rotation()
+                .await
+                .map_err(|e| format!("delete pending_rotation: {e}"))?;
+
+            // Swap in-memory key to the new key.
+            storage.swap_master_key(Zeroizing::new(*new_key));
+
+            return Ok(Some(RotationCompleteNotification {
+                new_master_key_id: pending.new_master_key_id,
+                new_epoch: pending.new_epoch,
+            }));
+        }
+
+        // Pre-commit crash (db_epoch < pending.new_epoch): resume migration.
         // Decrypt the pending new key using the current (old) master key.
         let old_key = {
             let mk = storage.master_key();
@@ -718,11 +870,15 @@ impl RotationEngine {
         storage.set_rotation_new_key(Zeroizing::new(*new_key), pending.new_epoch);
 
         // Create a temporary engine for executing the phases.
+        let dummy_kp: Arc<dyn crate::key_provider::KeyProvider> = Arc::new(
+            crate::key_provider::EnvKeyProvider::new("__SONDE_DUMMY_RECOVERY__"),
+        );
         let engine = RotationEngine {
             storage: Arc::clone(storage),
             identity: identity.clone(),
             event_hub: Arc::new(ConnectorEventHub::default()),
             rate_limiter: RotationRateLimiter::default(),
+            key_provider: dummy_kp,
             grpc_rx: mpsc::unbounded_channel().1,
             desired_state_rx: mpsc::unbounded_channel().1,
             rotation_active: Arc::new(AtomicBool::new(true)),
@@ -756,6 +912,18 @@ impl RotationEngine {
             error!(error = %e, "crash recovery rotation failed");
             // Keep dual-key state — some PSKs may be partially migrated.
             return Err(format!("crash recovery failed: {e}"));
+        }
+
+        // Persist the new key to the key provider.
+        key_provider
+            .write_master_key(&new_key)
+            .map_err(|e| format!("crash recovery: key provider write: {e}"))?;
+        info!("rotated master key persisted to key provider during pre-commit recovery");
+
+        // Delete pending_rotation.
+        if let Err(e) = storage.delete_pending_rotation().await {
+            warn!(error = %e, "failed to delete pending_rotation after recovery — \
+                  will be cleaned up on next restart");
         }
 
         // Swap in-memory master key.
@@ -837,6 +1005,9 @@ mod tests {
             Arc::clone(&store),
             identity,
             event_hub,
+            Arc::new(crate::key_provider::EnvKeyProvider::new(
+                "__SONDE_TEST_UNUSED__",
+            )),
             grpc_rx,
             desired_state_rx,
         )
@@ -978,6 +1149,9 @@ mod tests {
             Arc::clone(&store),
             identity,
             event_hub,
+            Arc::new(crate::key_provider::EnvKeyProvider::new(
+                "__SONDE_TEST_UNUSED__",
+            )),
             grpc_rx,
             desired_state_rx,
         );
@@ -1016,6 +1190,9 @@ mod tests {
                 Arc::clone(&store),
                 identity.clone(),
                 event_hub,
+                Arc::new(crate::key_provider::EnvKeyProvider::new(
+                    "__SONDE_TEST_UNUSED__",
+                )),
                 grpc_rx,
                 desired_state_rx,
             );
@@ -1042,6 +1219,9 @@ mod tests {
                 Arc::clone(&store),
                 identity,
                 event_hub,
+                Arc::new(crate::key_provider::EnvKeyProvider::new(
+                    "__SONDE_TEST_UNUSED__",
+                )),
                 grpc_rx,
                 desired_state_rx,
             );
@@ -1081,6 +1261,9 @@ mod tests {
             Arc::clone(&store),
             identity,
             event_hub,
+            Arc::new(crate::key_provider::EnvKeyProvider::new(
+                "__SONDE_TEST_UNUSED__",
+            )),
             grpc_rx,
             desired_state_rx,
         )

@@ -1212,6 +1212,10 @@ async fn run_gateway(
         info!("rotation engine started");
     }
 
+    // Shared modem firmware metadata — updated after each successful modem
+    // handshake and cleared on disconnect (Issue #1096).
+    let modem_metadata = Arc::new(std::sync::Mutex::new(ModemMetadata::default()));
+
     // 9a. Emit initial gateway ACTUAL_STATE (§23.11 step 9a, GW-2003).
     {
         let identity = storage
@@ -1224,6 +1228,7 @@ async fn run_gateway(
             &storage,
             &identity,
             &gateway,
+            &modem_metadata,
         )
         .await?;
         info!("initial gateway ACTUAL_STATE emitted");
@@ -1236,6 +1241,7 @@ async fn run_gateway(
                 &storage,
                 &identity,
                 &gateway,
+                &modem_metadata,
             )
             .await?;
             info!("re-emitted ACTUAL_STATE after resumed rotation completion");
@@ -1251,6 +1257,7 @@ async fn run_gateway(
         let reemit_event_hub = gateway.connector_event_hub();
         let reemit_gateway = Arc::clone(&gateway);
         let missing_hints_notify = gateway.missing_hints_notify();
+        let reemit_modem_metadata = Arc::clone(&modem_metadata);
 
         tokio::spawn(async move {
             /// Debounce interval for missing key hint-triggered re-emission.
@@ -1277,6 +1284,7 @@ async fn run_gateway(
                             &reemit_event_hub,
                             &reemit_storage,
                             &reemit_gateway,
+                            &reemit_modem_metadata,
                         ).await {
                             error!("failed to re-emit ACTUAL_STATE on rotation complete: {e}");
                         }
@@ -1287,6 +1295,7 @@ async fn run_gateway(
                             &reemit_event_hub,
                             &reemit_storage,
                             &reemit_gateway,
+                            &reemit_modem_metadata,
                         ).await {
                             error!("failed to re-emit ACTUAL_STATE on state change: {e}");
                         }
@@ -1307,6 +1316,7 @@ async fn run_gateway(
                             &reemit_event_hub,
                             &reemit_storage,
                             &reemit_gateway,
+                            &reemit_modem_metadata,
                         ).await {
                             error!("failed to re-emit ACTUAL_STATE on heartbeat: {e}");
                         }
@@ -1323,6 +1333,7 @@ async fn run_gateway(
                             &reemit_event_hub,
                             &reemit_storage,
                             &reemit_gateway,
+                            &reemit_modem_metadata,
                         ).await {
                             error!("failed to re-emit ACTUAL_STATE on missing hints: {e}");
                         }
@@ -1406,6 +1417,9 @@ async fn run_gateway(
                                 the gateway will retry automatically",
                     "modem startup failed"
                 );
+                // Clear stale modem metadata on handshake failure.
+                *modem_metadata.lock().unwrap_or_else(|e| e.into_inner()) =
+                    ModemMetadata::default();
                 info!("retrying in {}s…", backoff.as_secs());
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -1413,6 +1427,16 @@ async fn run_gateway(
             }
         };
         info!(channel = channel_for_transport, "modem transport ready");
+
+        // Update shared modem metadata after successful handshake (Issue #1096).
+        {
+            let mut meta = modem_metadata.lock().unwrap_or_else(|e| e.into_inner());
+            *meta = ModemMetadata {
+                firmware_version: Some(transport.modem_firmware_version().to_string()),
+                firmware_commit: transport.modem_firmware_commit().map(|s| s.to_string()),
+            };
+        }
+
         let warm_reboot_notify = transport.warm_reboot_notify();
         let warm_reboot_flag = transport.warm_reboot_flag();
         if let Err(e) = send_gateway_version_banner(&transport).await {
@@ -1425,6 +1449,8 @@ async fn run_gateway(
             let immediate_reconnect = warm_reboot_flag.load(std::sync::atomic::Ordering::Acquire);
             transport.abort_reader_and_wait().await;
             drop(transport);
+            // Clear modem metadata on transport failure.
+            *modem_metadata.lock().unwrap_or_else(|e| e.into_inner()) = ModemMetadata::default();
             if immediate_reconnect {
                 info!(
                     "modem warm reboot detected during banner transfer — reconnecting immediately"
@@ -1437,6 +1463,21 @@ async fn run_gateway(
             continue;
         }
         backoff = Duration::from_secs(1); // reset on success
+
+        // Re-emit ACTUAL_STATE with populated modem metadata after
+        // successful modem handshake (GW-2003 AC-9, Issue #1096).
+        if let Err(e) = reemit_gateway_actual_state(
+            &gateway.connector_event_hub(),
+            &storage,
+            &gateway,
+            &modem_metadata,
+        )
+        .await
+        {
+            error!("failed to re-emit ACTUAL_STATE after modem handshake: {e}");
+        } else {
+            info!("re-emitted ACTUAL_STATE after modem handshake");
+        }
 
         // Re-create the admin service and spawn a fresh gRPC server on each
         // reconnect iteration to bind to the new transport reference.
@@ -1938,6 +1979,20 @@ async fn run_gateway(
         // GW-1301: log modem disconnecting before reconnect attempt.
         info!("modem disconnecting");
 
+        // Clear stale modem metadata on disconnect and re-emit ACTUAL_STATE
+        // so the connector cache reflects the absence of a modem.
+        *modem_metadata.lock().unwrap_or_else(|e| e.into_inner()) = ModemMetadata::default();
+        if let Err(e) = reemit_gateway_actual_state(
+            &gateway.connector_event_hub(),
+            &storage,
+            &gateway,
+            &modem_metadata,
+        )
+        .await
+        {
+            error!("failed to re-emit ACTUAL_STATE after modem disconnect: {e}");
+        }
+
         // Transport disconnected — retry after backoff (GW-1103, GW-1301).
         info!(
             backoff_s = backoff.as_secs(),
@@ -1953,6 +2008,14 @@ async fn run_gateway(
 
 // ── ACTUAL_STATE emission helpers (GW-2003, §23.14) ──────────────────────────
 
+/// Modem firmware metadata extracted from the MODEM_READY handshake.
+/// Shared between the reconnect loop and the ACTUAL_STATE re-emission task.
+#[derive(Clone, Default)]
+struct ModemMetadata {
+    firmware_version: Option<String>,
+    firmware_commit: Option<String>,
+}
+
 /// Emit a full gateway ACTUAL_STATE by reading all required fields from storage.
 ///
 /// Used for the initial startup emission (§23.11 step 9a) where the identity
@@ -1962,6 +2025,7 @@ async fn emit_gateway_actual_state_from_storage(
     storage: &SqliteStorage,
     identity: &sonde_gateway::GatewayIdentity,
     gateway: &Gateway,
+    modem_metadata: &std::sync::Mutex<ModemMetadata>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let entity_id: String = identity
         .gateway_id()
@@ -2042,6 +2106,11 @@ async fn emit_gateway_actual_state_from_storage(
         .unwrap_or("unknown")
         .to_string();
 
+    let modem_meta = modem_metadata
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+
     event_hub.emit_gateway_actual_state(
         entity_id,
         channel,
@@ -2054,8 +2123,8 @@ async fn emit_gateway_actual_state_from_storage(
         kdf_params,
         gateway_version,
         gateway_commit,
-        None, // modem_firmware_version — not yet available at this point
-        None, // modem_firmware_commit
+        modem_meta.firmware_version,
+        modem_meta.firmware_commit,
         rotation_in_progress,
     );
 
@@ -2069,13 +2138,15 @@ async fn reemit_gateway_actual_state(
     event_hub: &sonde_gateway::ConnectorEventHub,
     storage: &SqliteStorage,
     gateway: &Gateway,
+    modem_metadata: &std::sync::Mutex<ModemMetadata>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let identity = storage
         .load_gateway_identity()
         .await?
         .ok_or("gateway identity missing for ACTUAL_STATE re-emission")?;
 
-    emit_gateway_actual_state_from_storage(event_hub, storage, &identity, gateway).await
+    emit_gateway_actual_state_from_storage(event_hub, storage, &identity, gateway, modem_metadata)
+        .await
 }
 
 // ── Windows NT service implementation ────────────────────────────────────────
@@ -2426,6 +2497,7 @@ mod tests {
                 &encode_modem_frame(&ModemMessage::ModemReady(ModemReady {
                     firmware_version: [1, 0, 0, 0],
                     mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+                    firmware_commit: [0x42u8; 8],
                 }))
                 .unwrap(),
             )

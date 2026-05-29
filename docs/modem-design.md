@@ -395,15 +395,15 @@ This separation is critical: the USB-CDC port (GPIO19/20) carries the binary mod
 
 ### 14.0a  Build-time commit SHA injection
 
-The build script (`build.rs`) captures the current git commit SHA at compile time and injects it as the `SONDE_GIT_COMMIT` environment variable via `cargo:rustc-env`. The firmware logs the short SHA (first 7 characters) in the boot banner and in the diagnostic log line emitted when `MODEM_READY` is sent. The `MODEM_READY` protocol payload itself is unchanged (`firmware_version` + `mac_address`).
+The build script (`build.rs`) captures the current git commit SHA at compile time and injects it as the `SONDE_GIT_COMMIT` environment variable via `cargo:rustc-env`. The firmware logs the short SHA (first 7 characters) in the boot banner and in the diagnostic log line emitted when `MODEM_READY` is sent. The `MODEM_READY` protocol payload includes the first 8 bytes of the full commit SHA-1 in the `firmware_commit` field, enabling the gateway to plumb it through ACTUAL_STATE to the web UI and companion (see modem-protocol.md §4.3 and Issue #1096).
 
 **Resolution order:**
 
 1. If the `SONDE_GIT_COMMIT` environment variable is set (CI sets this from `github.sha`), use that value.
-2. Otherwise, run `git rev-parse --short HEAD` to obtain the local commit.
+2. Otherwise, run `git rev-parse HEAD` to obtain the full local commit hash.
 3. If neither is available (e.g., building outside a git repository), fall back to the string `"unknown"`.
 
-Empty values are ignored, and the selected value is normalized to the first 7 characters before injection. The short SHA provides firmware traceability with negligible binary size impact and no runtime overhead — the value is baked into the binary at compile time via `env!()` and requires no runtime git access.
+Empty values are ignored. For the `MODEM_READY` `firmware_commit` field, the first 8 bytes (16 hex characters) of the full SHA-1 are decoded to binary and included in the payload. When the commit is `"unknown"` or otherwise non-hex, all 8 bytes are set to zero. For diagnostic logging, the selected value is normalized to the first 7 characters for the short SHA display. The commit hash provides firmware traceability with negligible binary size impact and no runtime overhead — the value is baked into the binary at compile time via `env!()` and requires no runtime git access.
 
 ### 14.1  Dual-port setup
 

@@ -49,6 +49,7 @@ async fn do_startup_handshake(server: &mut DuplexStream, channel: u8) {
     let ready = ModemMessage::ModemReady(ModemReady {
         firmware_version: [1, 0, 0, 0],
         mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        firmware_commit: [0x42u8; 8],
     });
     server
         .write_all(&encode_modem_frame(&ready).unwrap())
@@ -243,6 +244,7 @@ async fn t1103_startup_sequence() {
     let ready = ModemMessage::ModemReady(ModemReady {
         firmware_version: [2, 0, 0, 1],
         mac_address: [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01],
+        firmware_commit: [0x42u8; 8],
     });
     server
         .write_all(&encode_modem_frame(&ready).unwrap())
@@ -589,6 +591,7 @@ async fn gw1101_set_channel_ack_timeout() {
     let ready = ModemMessage::ModemReady(ModemReady {
         firmware_version: [1, 0, 0, 0],
         mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        firmware_commit: [0x42u8; 8],
     });
     server
         .write_all(&encode_modem_frame(&ready).unwrap())
@@ -671,6 +674,7 @@ async fn gw1103_error_recovery_full_restart() {
     let ready = ModemMessage::ModemReady(ModemReady {
         firmware_version: [1, 0, 0, 0],
         mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        firmware_commit: [0x42u8; 8],
     });
     server2
         .write_all(&encode_modem_frame(&ready).unwrap())
@@ -799,6 +803,7 @@ async fn t1104d_unexpected_modem_ready_fires_warm_reboot_notify() {
     let ready = ModemMessage::ModemReady(ModemReady {
         firmware_version: [1, 0, 0, 0],
         mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        firmware_commit: [0x42u8; 8],
     });
     server
         .write_all(&encode_modem_frame(&ready).unwrap())
@@ -863,6 +868,7 @@ async fn t1104e_warm_reboot_recovery_uses_persisted_channel() {
         let ready = ModemMessage::ModemReady(ModemReady {
             firmware_version: [1, 0, 0, 0],
             mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+            firmware_commit: [0x42u8; 8],
         });
         server1
             .write_all(&encode_modem_frame(&ready).unwrap())
@@ -889,6 +895,7 @@ async fn t1104e_warm_reboot_recovery_uses_persisted_channel() {
     let ready = ModemMessage::ModemReady(ModemReady {
         firmware_version: [1, 0, 0, 0],
         mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        firmware_commit: [0x42u8; 8],
     });
     server1
         .write_all(&encode_modem_frame(&ready).unwrap())
@@ -934,6 +941,7 @@ async fn t1104e_warm_reboot_recovery_uses_persisted_channel() {
     let ready = ModemMessage::ModemReady(ModemReady {
         firmware_version: [1, 0, 0, 0],
         mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        firmware_commit: [0x42u8; 8],
     });
     server2
         .write_all(&encode_modem_frame(&ready).unwrap())
@@ -958,4 +966,89 @@ async fn t1104e_warm_reboot_recovery_uses_persisted_channel() {
     }
 
     let _transport2 = transport2_handle.await.unwrap();
+}
+
+// ─── T-2016 / T-2016a: Modem firmware metadata in transport ─────────
+
+/// T-2016: After a successful handshake with a non-zero firmware_commit,
+/// the transport exposes the version as "major.minor.patch" and the commit
+/// as a 16-char lowercase hex string.
+#[tokio::test]
+#[traced_test]
+async fn modem_firmware_metadata_nonzero_commit() {
+    let (client, mut server) = duplex(4096);
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 4096];
+
+    let transport_handle = tokio::spawn(async move { UsbEspNowTransport::new(client, 1).await });
+
+    // 1. RESET
+    let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+    assert!(matches!(msg, ModemMessage::Reset));
+
+    // 2. MODEM_READY with specific version and commit
+    let ready = ModemMessage::ModemReady(ModemReady {
+        firmware_version: [0, 1, 2, 0],
+        mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        firmware_commit: [0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23, 0x45, 0x67],
+    });
+    server
+        .write_all(&encode_modem_frame(&ready).unwrap())
+        .await
+        .unwrap();
+
+    // 3. SET_CHANNEL → ACK
+    let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+    let ch = match msg {
+        ModemMessage::SetChannel(ch) => ch,
+        other => panic!("expected SetChannel, got {other:?}"),
+    };
+    server
+        .write_all(&encode_modem_frame(&ModemMessage::SetChannelAck(ch)).unwrap())
+        .await
+        .unwrap();
+
+    let transport = transport_handle.await.unwrap().unwrap();
+
+    assert_eq!(transport.modem_firmware_version(), "0.1.2");
+    assert_eq!(transport.modem_firmware_commit(), Some("deadbeef01234567"));
+}
+
+/// T-2016a: All-zero firmware_commit in MODEM_READY yields None.
+#[tokio::test]
+#[traced_test]
+async fn modem_firmware_metadata_zero_commit() {
+    let (client, mut server) = duplex(4096);
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 4096];
+
+    let transport_handle = tokio::spawn(async move { UsbEspNowTransport::new(client, 1).await });
+
+    let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+    assert!(matches!(msg, ModemMessage::Reset));
+
+    let ready = ModemMessage::ModemReady(ModemReady {
+        firmware_version: [3, 5, 7, 0],
+        mac_address: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
+        firmware_commit: [0u8; 8],
+    });
+    server
+        .write_all(&encode_modem_frame(&ready).unwrap())
+        .await
+        .unwrap();
+
+    let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+    let ch = match msg {
+        ModemMessage::SetChannel(ch) => ch,
+        other => panic!("expected SetChannel, got {other:?}"),
+    };
+    server
+        .write_all(&encode_modem_frame(&ModemMessage::SetChannelAck(ch)).unwrap())
+        .await
+        .unwrap();
+
+    let transport = transport_handle.await.unwrap().unwrap();
+
+    assert_eq!(transport.modem_firmware_version(), "3.5.7");
+    assert_eq!(transport.modem_firmware_commit(), None);
 }

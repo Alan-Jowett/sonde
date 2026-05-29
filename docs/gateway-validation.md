@@ -4259,6 +4259,49 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-2016  Modem handshake triggers ACTUAL_STATE re-emission with version/commit
+
+**Traces to:** GW-2003 (AC-1, AC-9), Issue #1096
+
+**Steps:**
+1. Start gateway with identity and master key (no modem connected yet).
+2. Connect a mock connector consumer.
+3. Consume the initial startup ACTUAL_STATE.
+4. Verify `modem_firmware_version` (CBOR key 25) is null in the initial emission.
+5. Verify `modem_firmware_commit` (CBOR key 26) is null in the initial emission.
+6. Connect a modem (or inject a `MODEM_READY` with `firmware_version` = `[0, 1, 2, 0]`,
+   `mac_address` = 6 non-zero bytes, `firmware_commit` = 8 non-zero bytes).
+7. Verify gateway re-emits ACTUAL_STATE after the modem handshake completes.
+8. Verify `modem_firmware_version` (key 25) is the formatted semver string
+   (e.g., `"0.1.2"`).
+9. Verify `modem_firmware_commit` (key 26) is the 16-character lowercase hex
+   string of the 8-byte `firmware_commit` from the modem.
+
+**Expected:**
+1. Initial ACTUAL_STATE has null modem fields.
+2. After modem handshake, ACTUAL_STATE is re-emitted with populated modem fields.
+
+---
+
+### T-2016a  All-zero firmware_commit yields null modem_firmware_commit
+
+**Traces to:** GW-2003 (AC-1, AC-9), Issue #1096
+
+**Steps:**
+1. Start gateway with identity and master key.
+2. Connect a mock connector consumer.
+3. Consume the initial startup ACTUAL_STATE.
+4. Inject a `MODEM_READY` with `firmware_version` = `[0, 1, 2, 0]`,
+   `mac_address` = 6 non-zero bytes, `firmware_commit` = 8 zero bytes.
+5. Verify gateway re-emits ACTUAL_STATE after the modem handshake.
+6. Verify `modem_firmware_version` (key 25) is `"0.1.2"`.
+7. Verify `modem_firmware_commit` (key 26) is null (not `"0000000000000000"`).
+
+**Expected:**
+1. All-zero firmware commit from modem yields null `modem_firmware_commit`.
+
+---
+
 ### T-2002  Gateway DESIRED_STATE channel change
 
 **Traces to:** GW-2004 (AC-1)
@@ -4717,7 +4760,7 @@ by existing handler tests.
 | GW-2000 | T-2001 |
 | GW-2001 | T-2000 |
 | GW-2002 | T-2003 |
-| GW-2003 | T-2001, T-2011, T-2012, T-2013, T-2014 |
+| GW-2003 | T-2001, T-2011, T-2012, T-2013, T-2014, T-2016, T-2016a |
 | GW-2004 | T-2002 |
 | GW-2005 | T-2001, T-2006c |
 | GW-2006 | T-2004, T-2004a |

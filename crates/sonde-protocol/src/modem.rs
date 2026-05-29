@@ -126,7 +126,10 @@ pub const MODEM_ERR_UNKNOWN: u8 = 0xFF;
 // -- Body sizes for fixed-layout messages --
 
 /// MODEM_READY body: firmware_version (4B) + mac_address (6B).
-pub const MODEM_READY_BODY_SIZE: usize = 4 + MAC_SIZE; // 10
+pub const MODEM_READY_BODY_SIZE: usize = 4 + MAC_SIZE + FIRMWARE_COMMIT_SIZE; // 18
+
+/// Size of the firmware commit hash field in MODEM_READY (first 8 bytes of SHA-1).
+pub const FIRMWARE_COMMIT_SIZE: usize = 8;
 
 /// STATUS body: channel (1B) + uptime_s (4B) + tx_count (4B) + rx_count (4B) + tx_fail_count (4B).
 pub const STATUS_BODY_SIZE: usize = 1 + 4 + 4 + 4 + 4; // 17
@@ -347,6 +350,9 @@ pub struct SendFrame {
 pub struct ModemReady {
     pub firmware_version: [u8; 4],
     pub mac_address: [u8; MAC_SIZE],
+    /// First 8 bytes of the firmware build's git commit SHA-1.
+    /// All zeros if the commit hash was unavailable at build time.
+    pub firmware_commit: [u8; FIRMWARE_COMMIT_SIZE],
 }
 
 /// RECV_FRAME (Modem → Gateway): an inbound ESP-NOW frame.
@@ -544,6 +550,7 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             let mut body = Vec::with_capacity(MODEM_READY_BODY_SIZE);
             body.extend_from_slice(&mr.firmware_version);
             body.extend_from_slice(&mr.mac_address);
+            body.extend_from_slice(&mr.firmware_commit);
             Ok((MODEM_MSG_MODEM_READY, body))
         }
         ModemMessage::RecvFrame(rf) => {
@@ -838,9 +845,13 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
             firmware_version.copy_from_slice(&body[..4]);
             let mut mac_address = [0u8; MAC_SIZE];
             mac_address.copy_from_slice(&body[4..4 + MAC_SIZE]);
+            let mut firmware_commit = [0u8; FIRMWARE_COMMIT_SIZE];
+            firmware_commit
+                .copy_from_slice(&body[4 + MAC_SIZE..4 + MAC_SIZE + FIRMWARE_COMMIT_SIZE]);
             Ok(ModemMessage::ModemReady(ModemReady {
                 firmware_version,
                 mac_address,
+                firmware_commit,
             }))
         }
 
@@ -1228,6 +1239,7 @@ mod tests {
         let msg = ModemMessage::ModemReady(ModemReady {
             firmware_version: [1, 0, 3, 7],
             mac_address: [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC],
+            firmware_commit: [0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23, 0x45, 0x67],
         });
         let frame = encode_modem_frame(&msg).unwrap();
         let (decoded, _) = decode_modem_frame(&frame).unwrap();
@@ -1348,13 +1360,14 @@ mod tests {
         let msg = ModemMessage::ModemReady(ModemReady {
             firmware_version: [1, 2, 3, 4],
             mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+            firmware_commit: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
         });
         let frame = encode_modem_frame(&msg).unwrap();
-        // LEN = 11 (TYPE + 10 bytes body) → 0x00 0x0B
+        // LEN = 19 (TYPE + 18 bytes body) → 0x00 0x13
         assert_eq!(frame[0], 0x00);
-        assert_eq!(frame[1], 0x0B);
+        assert_eq!(frame[1], 0x13);
         assert_eq!(frame[2], MODEM_MSG_MODEM_READY);
-        assert_eq!(frame.len(), 2 + 11); // LEN field + len value
+        assert_eq!(frame.len(), 2 + 19); // LEN field + len value
     }
 
     // -- Error handling tests --

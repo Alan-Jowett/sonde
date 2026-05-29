@@ -135,6 +135,10 @@ pub struct UsbEspNowTransport {
     recv_rx: mpsc::Receiver<(Vec<u8>, PeerAddress)>,
     /// Modem's MAC address (from MODEM_READY).
     modem_mac: [u8; 6],
+    /// Modem firmware version (from MODEM_READY), formatted as "major.minor.patch".
+    modem_firmware_version: Option<String>,
+    /// Modem firmware commit (from MODEM_READY), 16-char lowercase hex, or None if all-zero.
+    modem_firmware_commit: Option<String>,
 }
 ```
 
@@ -144,7 +148,7 @@ pub struct UsbEspNowTransport {
 2. Start the serial reader task (it demultiplexes all incoming frames, including `MODEM_READY` and `SET_CHANNEL_ACK`, and routes them to the appropriate pending futures).
 3. Send `RESET`.
 4. Wait for `MODEM_READY` (timeout: 5 seconds, up to 3 retries).
-5. Extract `firmware_version` and `mac_address` from `MODEM_READY`; log both.
+5. Extract `firmware_version`, `mac_address`, and `firmware_commit` from `MODEM_READY`; log all three. Format `firmware_version` as `"major.minor.patch"` (omitting the build byte) and store as `modem_firmware_version`. Decode the 8-byte `firmware_commit` as lowercase hex; if all-zero, store `None`; otherwise store `Some(hex_string)` as `modem_firmware_commit`.
 6. Send `SET_CHANNEL` with the persisted channel from the database (GW-0808). If no channel is persisted yet, seed the database with the CLI `--channel` value and use that.
 7. Wait for `SET_CHANNEL_ACK` (timeout: 2 seconds).
 8. Start the health monitor task.
@@ -2184,6 +2188,14 @@ step 9a is inline.
    notifications during the debounce window reset the timer to coalesce
    concurrent hint arrivals.
 
+5. `modem_ready_rx` — receives modem metadata (`modem_firmware_version`,
+   `modem_firmware_commit`) from the modem handshake task after
+   `MODEM_READY` is successfully parsed. Re-emit immediately with
+   populated modem fields. The gateway's `emit_gateway_actual_state()`
+   reads `modem_firmware_version` and `modem_firmware_commit` from the
+   transport (or a shared state holder) so re-emissions after the modem
+   handshake always include the modem fields.
+
 **Re-emission procedure:**
 
 On each trigger, the task:
@@ -2193,7 +2205,11 @@ On each trigger, the task:
    `kdf_salt`, `kdf_params_json` from `gateway_config`.
 4. Drains `missing_key_hints` from the gateway engine's tracker.
 5. Checks `storage.read_pending_rotation()` to determine `rotation_in_progress`.
-6. Calls `emit_gateway_actual_state()` on the connector event hub.
+6. Reads `modem_firmware_version` and `modem_firmware_commit` from the
+   transport or shared modem state. These are `None` before the modem
+   handshake completes, and `Some(...)` afterwards (with `modem_firmware_commit`
+   being `None` if the modem's 8-byte commit field was all-zero).
+7. Calls `emit_gateway_actual_state()` on the connector event hub.
 
 **Hint notification mechanism:**
 

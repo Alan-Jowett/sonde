@@ -15,18 +15,29 @@ fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             std::process::Command::new("git")
-                .args(["rev-parse", "--short", "HEAD"])
+                .args(["rev-parse", "HEAD"])
                 .output()
                 .ok()
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         });
-    // Normalise to a short hash (7 chars) for readable log output and
-    // consistency between CI (full SHA from github.sha) and local builds
-    // (short SHA from `git rev-parse --short`).  Also guards against
-    // newlines corrupting the `cargo:rustc-env` directive.
-    let commit: String = raw.chars().take(7).collect();
+    // Keep the full hex hash so the firmware can extract the first 8 raw
+    // bytes (16 hex chars) for the MODEM_READY `firmware_commit` field.
+    // Validate that every character is hex-safe; replace with "unknown"
+    // otherwise to avoid corrupting the `cargo:rustc-env` directive.
+    let commit: String = if raw.chars().all(|c| c.is_ascii_hexdigit()) {
+        if raw.len() < 16 {
+            println!(
+                "cargo:warning=SONDE_GIT_COMMIT is only {} hex chars; \
+                 firmware_commit will be all-zero (need >= 16 for 8-byte field)",
+                raw.len()
+            );
+        }
+        raw
+    } else {
+        "unknown".to_string()
+    };
     println!("cargo:rustc-env=SONDE_GIT_COMMIT={commit}");
     println!("cargo:rerun-if-env-changed=SONDE_GIT_COMMIT");
 

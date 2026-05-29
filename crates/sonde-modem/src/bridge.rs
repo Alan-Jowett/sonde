@@ -60,6 +60,40 @@ const FIRMWARE_VERSION: [u8; 4] = [
     0,
 ];
 
+/// Decode the first 8 bytes (16 hex chars) of a hex commit string into raw bytes.
+/// Returns all zeros if the input is too short, not valid hex, or "unknown".
+const fn decode_firmware_commit(hex: &[u8]) -> [u8; 8] {
+    if hex.len() < 16 {
+        return [0u8; 8];
+    }
+    let mut out = [0u8; 8];
+    let mut i = 0;
+    while i < 8 {
+        let hi = hex_nibble(hex[i * 2]);
+        let lo = hex_nibble(hex[i * 2 + 1]);
+        if hi == 0xFF || lo == 0xFF {
+            return [0u8; 8];
+        }
+        out[i] = (hi << 4) | lo;
+        i += 1;
+    }
+    out
+}
+
+/// Convert a single ASCII hex char to its 4-bit value, or 0xFF on invalid input.
+const fn hex_nibble(c: u8) -> u8 {
+    match c {
+        b'0'..=b'9' => c - b'0',
+        b'a'..=b'f' => c - b'a' + 10,
+        b'A'..=b'F' => c - b'A' + 10,
+        _ => 0xFF,
+    }
+}
+
+/// First 8 bytes of the build's git commit SHA, decoded from
+/// `SONDE_GIT_COMMIT`. All zeros if the commit hash is unavailable.
+const FIRMWARE_COMMIT: [u8; 8] = decode_firmware_commit(env!("SONDE_GIT_COMMIT").as_bytes());
+
 /// Maximum number of received radio frames forwarded per `poll()` call.
 /// Prevents starvation of serial decode and other poll() work under
 /// sustained RX burst traffic.
@@ -536,15 +570,22 @@ impl<S: SerialPort, R: Radio, B: Ble, Btn: ButtonPoll, D: Display> Bridge<S, R, 
         let msg = ModemMessage::ModemReady(ModemReady {
             firmware_version: FIRMWARE_VERSION,
             mac_address: mac,
+            firmware_commit: FIRMWARE_COMMIT,
         });
         self.send_msg(&msg);
+        let commit_hex = env!("SONDE_GIT_COMMIT");
+        let short_commit = if commit_hex.len() >= 7 {
+            &commit_hex[..7]
+        } else {
+            commit_hex
+        };
         info!(
             "sent MODEM_READY (fw={}.{}.{}.{}, commit={}, mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
             FIRMWARE_VERSION[0],
             FIRMWARE_VERSION[1],
             FIRMWARE_VERSION[2],
             FIRMWARE_VERSION[3],
-            env!("SONDE_GIT_COMMIT"),
+            short_commit,
             mac[0],
             mac[1],
             mac[2],
@@ -1098,6 +1139,7 @@ mod tests {
             ModemMessage::ModemReady(mr) => {
                 assert_eq!(mr.firmware_version, FIRMWARE_VERSION);
                 assert_eq!(mr.mac_address, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+                assert_eq!(mr.firmware_commit, FIRMWARE_COMMIT);
             }
             _ => panic!("expected ModemReady"),
         }

@@ -739,8 +739,8 @@ async function pollRotationResult(gwId, originalEpoch) {
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((resolve) => setTimeout(resolve, 5000));
     try {
-      const filter = `PartitionKey eq 'g:${gwId}' and RowKey eq 'state'`;
-      const rows = await queryTable(CONFIG.actualStateTable, filter);
+      const filter = `PartitionKey eq 'g:${gwId}'`;
+      const rows = await queryTable(CONFIG.actualStateTable, filter, { top: 1 });
       if (rows.length > 0) {
         const currentEpoch = Number(rows[0].master_key_epoch) || 0;
         if (currentEpoch > originalEpoch) return true;
@@ -1058,7 +1058,7 @@ async function fetchJson(url, options) {
   return payload;
 }
 
-async function queryTable(tableName, filter) {
+async function queryTable(tableName, filter, { top } = {}) {
   const token = await getToken();
   let allEntities = [];
   let nextPartitionKey = null;
@@ -1068,6 +1068,7 @@ async function queryTable(tableName, filter) {
   for (let page = 0; page < maxPages; page++) {
     const url = new URL(tableQueryUrl(tableName));
     if (filter) url.searchParams.set('$filter', filter);
+    if (top != null) url.searchParams.set('$top', String(top));
     if (nextPartitionKey) {
       url.searchParams.set('NextPartitionKey', nextPartitionKey);
       if (nextRowKey) url.searchParams.set('NextRowKey', nextRowKey);
@@ -1095,6 +1096,7 @@ async function queryTable(tableName, filter) {
     nextPartitionKey = response.headers.get('x-ms-continuation-NextPartitionKey');
     nextRowKey = response.headers.get('x-ms-continuation-NextRowKey');
     if (!nextPartitionKey) break;
+    if (top != null && allEntities.length >= top) break;
   }
 
   return allEntities;
@@ -1148,7 +1150,7 @@ async function renderDashboard() {
     ]);
 
     // Separate gateway and node rows (WEB-1001).
-    const gatewayRows = filterGatewayRows(actualRows);
+    const gatewayRows = latestByPartition(filterGatewayRows(actualRows));
     const gatewayCardHtml = await renderGatewayStatusCard(gatewayRows);
 
     const latestActual = latestByPartition(filterNodeRows(actualRows)).sort((left, right) => String(left.node_id || '').localeCompare(String(right.node_id || '')));

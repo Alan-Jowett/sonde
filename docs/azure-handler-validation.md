@@ -383,10 +383,11 @@ divergence publication instead of treating that redelivery as permanently stale.
    `gateway_version`, `gateway_commit`, `modem_firmware_version`,
    `modem_firmware_commit`, and `missing_key_hints` populated.
 2. Assert: one row is created in `actualstate` with `PartitionKey = "g:" + gateway_id_hex`
-   and `RowKey = "state"`.
+   and a reverse-timestamp history `RowKey`.
 3. Assert: all gateway-specific fields are stored in that row.
 4. Deliver an updated gateway `ACTUAL_STATE` for the same gateway.
-5. Assert: the same row is updated by upsert rather than creating a second row.
+5. Assert: a second history row is created (not an upsert of the first row).
+6. Assert: `load_gateway_actual_state` returns the second (latest) row.
 
 ---
 

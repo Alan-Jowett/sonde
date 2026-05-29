@@ -57,7 +57,7 @@ program ingestion.
 | **Desired state** | An operator-specified target configuration for a node, stored in the `desiredstate` Azure Table. |
 | **Divergence** | A mismatch between a node's actual state and its desired state (program hash or schedule interval). |
 | **Environment** | A named set of Azure backend connection details (client ID, tenant ID, storage account, function app) stored in `localStorage`. |
-| **Gateway status** | The gateway ACTUAL_STATE summary shown in a dedicated dashboard card, read from the `actualstate` Azure Table with `PartitionKey = "g:" + gateway_id_hex` and `RowKey = "state"`. |
+| **Gateway status** | The gateway ACTUAL_STATE summary shown in a dedicated dashboard card, read from the `actualstate` Azure Table with `PartitionKey` starting with `"g:"`. The SPA selects the latest row per gateway partition using `latestByPartition` (lexicographically smallest reverse-timestamp `RowKey`). |
 | **ProgramIngest** | An HTTP-triggered Azure Function that accepts ELF uploads, runs Prevail verification, and stores verified program images. |
 | **Reverse-timestamp RowKey** | `{(u64::MAX - timestamp_ms):016x}:{(u64::MAX - sequence):016x}:{random_nonce:016x}` — ensures newest rows sort first in Azure Tables. |
 | **Rotation code** | A six-character operator-entered confirmation code normalized to uppercase `[A-Z0-9]` and included in the encrypted rotation payload. |
@@ -1107,7 +1107,8 @@ initialization to avoid unnecessary API calls and rendering.
 **Description:**
 The dashboard MUST display a gateway status card showing information from the
 gateway's ACTUAL_STATE row in the `actualstate` Azure Table
-(`PartitionKey = "g:" + gateway_id_hex`, `RowKey = "state"`). The card MUST
+(`PartitionKey` starting with `"g:"`). The SPA selects the latest row per
+gateway partition using `latestByPartition`. The card MUST
 show the BIP-39 fingerprint (6 words), `master_key_epoch`, `master_key_id`
 (hex), `rotation_in_progress`, salt status (present/absent),
 `gateway_version`, `modem_firmware_version`, and `channel`.
@@ -1235,9 +1236,10 @@ encoded as binary data for the Azure Table REST API.
 **Confidence:** High
 
 **Description:**
-After submitting a rotation payload, the SPA MUST poll the gateway ACTUAL_STATE
-row every 5 seconds for up to 120 seconds and watch for `master_key_epoch` to
-increment. On success, the SPA MUST display `Rotation complete` with the new
+After submitting a rotation payload, the SPA MUST poll the latest gateway
+ACTUAL_STATE row (the first row returned by a `$top=1` partition query on the
+gateway's partition key) every 5 seconds for up to 120 seconds and watch for
+`master_key_epoch` to increment. On success, the SPA MUST display `Rotation complete` with the new
 epoch. On timeout, it MUST display `Rotation may still be in progress — check gateway status.`
 If `rotation_in_progress` transitions from false to false without an epoch
 change, the SPA MUST display `Rotation failed`.
@@ -1258,7 +1260,9 @@ change, the SPA MUST display `Rotation failed`.
 
 **Description:**
 The SPA MUST read the gateway ACTUAL_STATE from the `actualstate` Azure Table
-using `PartitionKey = "g:" + gateway_id_hex` and `RowKey = "state"`. The
+by querying for rows with `PartitionKey` values that start with `g:` and
+selecting the latest row per gateway partition using `latestByPartition`
+(lexicographically smallest reverse-timestamp `RowKey`). The
 `gateway_id` is discovered by querying for rows with `PartitionKey` values that
 start with `g:`. If multiple gateways exist, the SPA MUST display all of them
 and let the operator select one.

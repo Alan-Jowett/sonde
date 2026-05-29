@@ -515,16 +515,19 @@ function hasRotationCrypto() {
 function toggleRotationForm(gwId) {
   const container = document.querySelector(`.rotation-form-container[data-gateway-form="${gwId}"]`);
   if (!container) return;
-  // Block close while submission is in flight.
-  if (container.dataset.submitting === '1') return;
+  // Block any toggle while any form has an in-flight submission.
+  if (document.querySelector('.rotation-form-container[data-submitting="1"]')) return;
 
   const isOpen = container.style.display !== 'none';
   if (isOpen) {
     closeRotationForm(gwId);
   } else {
-    // Close any other open rotation form first.
-    for (const el of document.querySelectorAll('.rotation-form-container')) {
-      el.style.display = 'none';
+    // Close the currently-open form (if any) before opening the new one.
+    if (APP.rotationFormOpen) {
+      const prev = document.querySelector(
+        `.rotation-form-container[data-gateway-form="${APP.rotationFormOpen}"]`
+      );
+      if (prev) prev.style.display = 'none';
     }
     container.style.display = '';
     APP.rotationFormOpen = gwId;

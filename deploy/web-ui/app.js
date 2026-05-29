@@ -1116,20 +1116,6 @@ async function insertEntity(tableName, entity) {
   });
 }
 
-async function upsertEntity(tableName, partitionKey, rowKey, entity) {
-  const token = await getToken();
-  return fetchJson(entityUrl(tableName, partitionKey, rowKey), {
-    method: 'PUT',
-    headers: {
-      Accept: 'application/json;odata=nometadata',
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      'x-ms-version': '2019-02-02',
-    },
-    body: JSON.stringify(entity),
-  });
-}
-
 async function listPrograms() {
   return sortByDateDesc(await queryTable(CONFIG.programsTable, "PartitionKey eq 'program'"), 'created_at');
 }

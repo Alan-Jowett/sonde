@@ -948,14 +948,27 @@ async fn run_gateway(
         // Try loading existing identity — may fail for post-commit crash
         // (seed rewrapped under new key, but old key in memory).  That's OK:
         // post-commit recovery only needs the pending_rotation record and the
-        // key provider, not the identity.  Pre-commit recovery needs identity
-        // for migration phases; if identity load fails for pre-commit, the
-        // resume call will error out and we'll surface it.
+        // key provider, not the identity.  Pre-commit crashes never hit this
+        // because encrypted_seed hasn't been promoted yet, so load succeeds
+        // with the old key.
         let identity = match storage.load_gateway_identity().await {
             Ok(Some(id)) => id,
             Ok(None) => GatewayIdentity::generate()
                 .map_err(|e| format!("cannot generate dummy identity for recovery: {e}"))?,
-            Err(e) => return Err(format!("cannot load gateway identity for recovery: {e}").into()),
+            Err(e) => {
+                // Identity decryption failure during recovery is expected in
+                // the post-commit/pre-provider-write crash window: the seed
+                // was already rewrapped under the new key by commit_rotation(),
+                // but the provider still has the old key.  The post-commit
+                // recovery path does not use identity, so a dummy is safe.
+                warn!(
+                    error = %e,
+                    "cannot decrypt gateway identity — expected during \
+                     post-commit rotation recovery; using placeholder"
+                );
+                GatewayIdentity::generate()
+                    .map_err(|e| format!("cannot generate dummy identity for recovery: {e}"))?
+            }
         };
         sonde_gateway::RotationEngine::resume_pending_rotation(
             &storage,

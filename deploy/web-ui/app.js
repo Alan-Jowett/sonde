@@ -740,12 +740,11 @@ async function pollRotationResult(gwId, originalEpoch) {
     await new Promise((resolve) => setTimeout(resolve, 5000));
     try {
       const filter = `PartitionKey eq 'g:${gwId}'`;
-      const rows = await queryTable(CONFIG.actualStateTable, filter);
-      const latest = latestByPartition(rows);
-      if (latest.length > 0) {
-        const currentEpoch = Number(latest[0].master_key_epoch) || 0;
+      const rows = await queryTable(CONFIG.actualStateTable, filter, { top: 1 });
+      if (rows.length > 0) {
+        const currentEpoch = Number(rows[0].master_key_epoch) || 0;
         if (currentEpoch > originalEpoch) return true;
-        if (latest[0].rotation_in_progress === false && currentEpoch === originalEpoch && i > 2) {
+        if (rows[0].rotation_in_progress === false && currentEpoch === originalEpoch && i > 2) {
           return false; // rotation_in_progress went back to false without epoch change
         }
       }
@@ -1059,7 +1058,7 @@ async function fetchJson(url, options) {
   return payload;
 }
 
-async function queryTable(tableName, filter) {
+async function queryTable(tableName, filter, { top } = {}) {
   const token = await getToken();
   let allEntities = [];
   let nextPartitionKey = null;
@@ -1069,6 +1068,7 @@ async function queryTable(tableName, filter) {
   for (let page = 0; page < maxPages; page++) {
     const url = new URL(tableQueryUrl(tableName));
     if (filter) url.searchParams.set('$filter', filter);
+    if (top != null) url.searchParams.set('$top', String(top));
     if (nextPartitionKey) {
       url.searchParams.set('NextPartitionKey', nextPartitionKey);
       if (nextRowKey) url.searchParams.set('NextRowKey', nextRowKey);

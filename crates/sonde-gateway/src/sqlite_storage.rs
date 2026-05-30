@@ -1178,16 +1178,19 @@ impl SqliteStorage {
                 // Backfill/repair node rows. When master_key_id differs, the
                 // epoch is reset because it is scoped to the key identity —
                 // an epoch from a previous key has no meaning for the current one.
+                let epoch_i64 = i64::try_from(epoch).map_err(|_| {
+                    StorageError::Internal(format!("master_key_epoch {epoch} exceeds i64::MAX"))
+                })?;
                 tx.execute(
                     "UPDATE nodes SET master_key_id = ?1, master_key_epoch = ?2 \
                      WHERE master_key_id IS NULL OR master_key_id != ?1 OR master_key_epoch < ?2",
-                    params![master_key_id.as_slice(), epoch as i64],
+                    params![master_key_id.as_slice(), epoch_i64],
                 )
                 .map_err(map_err)?;
                 tx.execute(
                     "UPDATE phone_psks SET master_key_id = ?1, master_key_epoch = ?2 \
                      WHERE master_key_id IS NULL OR master_key_id != ?1 OR master_key_epoch < ?2",
-                    params![master_key_id.as_slice(), epoch as i64],
+                    params![master_key_id.as_slice(), epoch_i64],
                 )
                 .map_err(map_err)?;
                 tx.commit().map_err(map_err)?;

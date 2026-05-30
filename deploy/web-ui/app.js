@@ -609,7 +609,11 @@ function attachRotationFormHandlers(gatewayRows) {
       if (formContainer) formContainer.dataset.submitting = '1';
       if (statusEl) statusEl.innerHTML = '<p class="muted">Deriving key (Argon2id)… this may take a few seconds.</p>';
 
-      const epoch = Number(gwRow.master_key_epoch) || 0;
+      const epoch = Number(gwRow.master_key_epoch);
+      if (!Number.isSafeInteger(epoch) || epoch < 0) {
+        if (statusEl) statusEl.innerHTML = '<div class="alert error">Invalid or missing master_key_epoch in gateway row.</div>';
+        return;
+      }
 
       try {
         const payload = await buildRotationPayload(gwRow, code, passphrase, deploymentLabel);
@@ -643,7 +647,8 @@ async function buildRotationPayload(gatewayRow, rotationCode, passphrase, deploy
   const gwPubKey = base64ToBytes(pubKeyB64);
   if (!gwPubKey || gwPubKey.length !== 32) throw new Error('Invalid x25519_public_key');
 
-  const epoch = Number(gatewayRow.master_key_epoch) || 0;
+  const epoch = Number(gatewayRow.master_key_epoch);
+  if (!Number.isSafeInteger(epoch) || epoch < 0) throw new Error('Invalid master_key_epoch');
 
   // KDF v1: hardcoded Argon2id params (GW-2020)
   const mCost = 65536, tCost = 3, pCost = 1;

@@ -21,8 +21,9 @@
 >   Salt and KDF parameters are now client-side concerns only.
 > - §2.6.1 rotation payload keys 3 (`new_master_key_id`), 4 (`salt`),
 >   5 (`kdf_params`) → RESERVED. Payload plaintext is now `{1: new_master_key, 2: rotation_code}`.
-> - `master_key_id` throughout → Changed from random 16 bytes to
+> - `master_key_id` contract changed throughout → From random 16 bytes to
 >   `SHA-256(master_key)` (32 bytes), derived locally by gateway.
+>   (Body text below still shows old 16-byte format.)
 > - GW-2008 (salt management) → RETIRED.
 > **Traceability:** Redesigns GW-2000–GW-2013, AZH-0600–AZH-0605,
 > ADMIN-0900–ADMIN-0902.

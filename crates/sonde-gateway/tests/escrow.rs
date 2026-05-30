@@ -276,7 +276,7 @@ fn map_get(map: &[(i128, Value)], key: i128) -> Option<&Value> {
 ///
 /// Verifies:
 /// 1. No `master_key_id` or `master_key_epoch` on fresh DB.
-/// 2. After `init_master_key_id(&[0x42u8; 32])`, `SHA-256(master_key)` and epoch=1 are set.
+/// 2. After `init_master_key_id()`, `SHA-256(master_key)` and epoch=1 are set.
 /// 3. All existing PSK records are backfilled.
 /// 4. On restart (re-call), the same values are returned.
 #[tokio::test]

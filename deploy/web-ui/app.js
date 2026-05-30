@@ -622,6 +622,9 @@ function attachRotationFormHandlers(gatewayRows) {
         const msg = error instanceof Error ? error.message : String(error);
         if (statusEl) statusEl.innerHTML = `<div class="alert error">${escapeHtml(msg)}</div>`;
       } finally {
+        // Best-effort: clear passphrase and deployment label from DOM inputs.
+        if (form.passphrase) form.passphrase.value = '';
+        if (form.deploymentLabel) form.deploymentLabel.value = '';
         if (submitBtn) submitBtn.disabled = false;
         if (cancelBtn) cancelBtn.disabled = false;
         if (formContainer) delete formContainer.dataset.submitting;
@@ -633,7 +636,7 @@ function attachRotationFormHandlers(gatewayRows) {
 async function buildRotationPayload(gatewayRow, rotationCode, passphrase, deploymentLabel) {
   const gwId = gatewayRow.PartitionKey?.replace('g:', '') || '';
   const gwIdBytes = hexToBytes(gwId);
-  if (!gwIdBytes || gwIdBytes.length === 0) throw new Error('Invalid gateway_id');
+  if (!gwIdBytes || gwIdBytes.length !== 16) throw new Error('Invalid gateway_id (expected 16 bytes)');
 
   const pubKeyB64 = gatewayRow.x25519_public_key;
   if (!pubKeyB64) throw new Error('Gateway has no x25519_public_key');

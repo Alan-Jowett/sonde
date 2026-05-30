@@ -2990,8 +2990,8 @@ Salt is derived from a deployment label chosen by the admin:
 (first 16 bytes of the SHA-256 digest).
 
 The deployment label is a human-readable UTF-8 string (e.g.,
-"Alan's production deployment"). It is stored only in client-side
-configuration (SPA environment settings). Neither the gateway, Azure
+"Alan's production deployment"). It is provided by the operator at
+rotation time in both the CLI and SPA. Neither the gateway, Azure
 handler, nor companion stores or transmits the deployment label.
 
 Label encoding: UTF-8 bytes with leading/trailing whitespace trimmed.

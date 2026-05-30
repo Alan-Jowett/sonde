@@ -1137,19 +1137,19 @@ impl SqliteStorage {
                 .map_err(map_err)?;
 
             let epoch_missing = epoch_str.is_none();
-            let epoch: u64 = match epoch_str {
+            let (epoch, stored_epoch_zero): (u64, bool) = match epoch_str {
                 Some(ref s) => {
                     let v: u64 = s.parse().map_err(|e| {
                         StorageError::Internal(format!("invalid master_key_epoch: {e}"))
                     })?;
                     // Epoch must be ≥ 1; treat 0 as invalid and repair.
                     if v == 0 {
-                        1
+                        (1, true)
                     } else {
-                        v
+                        (v, false)
                     }
                 }
-                None => 1,
+                None => (1, false),
             };
 
             let stored_matches = existing_id
@@ -1157,8 +1157,6 @@ impl SqliteStorage {
                 .and_then(|hex_id| hex::decode(hex_id).ok())
                 .as_deref()
                 == Some(master_key_id.as_slice());
-            // Also repair if epoch was 0 (parsed as stored_epoch=0 → epoch=1).
-            let stored_epoch_zero = epoch_str.as_deref() == Some("0");
             let needs_update = !stored_matches || epoch_missing || stored_epoch_zero;
 
             if needs_update {
@@ -1175,9 +1173,10 @@ impl SqliteStorage {
                     params![epoch.to_string()],
                 )
                 .map_err(map_err)?;
-                // Backfill/repair node rows. When master_key_id differs, the
-                // epoch is reset because it is scoped to the key identity —
-                // an epoch from a previous key has no meaning for the current one.
+                // Backfill/repair node rows. When master_key_id changes,
+                // epoch is set to the current key's epoch because epoch is
+                // scoped to key identity — a previous key's epoch value has
+                // no meaning for the current key.
                 let epoch_i64 = i64::try_from(epoch).map_err(|_| {
                     StorageError::Internal(format!("master_key_epoch {epoch} exceeds i64::MAX"))
                 })?;

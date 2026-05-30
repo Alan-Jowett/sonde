@@ -1281,7 +1281,8 @@ async fn run_gateway(
                 tokio::select! {
                     biased;
                     Some(_notification) = rotation_complete_rx.recv() => {
-                        info!("rotation complete — re-emitting gateway ACTUAL_STATE");
+                        info!("rotation complete — refreshing cached master_key_id and re-emitting gateway ACTUAL_STATE");
+                        reemit_gateway.refresh_cached_master_key_id().await;
                         if let Err(e) = reemit_gateway_actual_state(
                             &reemit_event_hub,
                             &reemit_storage,

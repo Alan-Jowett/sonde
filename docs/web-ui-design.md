@@ -637,8 +637,9 @@ against the gateway actual-state row.
   4. Submit button
 - The `Rotate Key` button toggles the form's visibility. When expanded, the
   form appears below the gateway status fields within the same card panel.
-- Displays the current salt from gateway ACTUAL_STATE, or a `first rotation`
-  indicator when no salt exists yet.
+- Displays the current fleet salt from the latest fleet KDF row in the
+  `desiredstate` table (`PartitionKey = "fleet"`, `$top=1`), or a `first
+  rotation` indicator when no fleet KDF row exists yet.
 - Shows a progress indicator during Argon2id key derivation because the WASM
   KDF may take ~1–3 seconds.
 - After successful submission, the form displays "Rotation submitted" and
@@ -681,6 +682,11 @@ against the gateway actual-state row.
 - Gateway DESIRED_STATE `PartitionKey` is `"g:" + gateway_id_hex`
 - Gateway DESIRED_STATE `RowKey` uses the same reverse-timestamp format as node
   desired state rows
+- Fleet KDF read (for key rotation):
+  `GET /desiredstate?$filter=PartitionKey eq 'fleet'&$top=1`
+  Returns the latest fleet KDF row carrying `salt` and `kdf_params_json`.
+  Used only during key rotation to obtain the authoritative salt and KDF
+  parameters for master key derivation.
 
 ### 13.5 Dashboard Filtering
 

@@ -149,6 +149,19 @@ pub struct GatewayDesiredStateRow {
     pub timestamp_ms: u64,
 }
 
+/// Fleet-scoped KDF row in the `desiredstate` table (§4.3.1).
+///
+/// Stores the authoritative salt and KDF params for master key derivation.
+/// Read by the SPA during key rotation; written by the handler whenever a
+/// gateway reports a non-null salt that differs from the current fleet salt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetKdfRow {
+    pub row_key: String,
+    pub salt: Vec<u8>,
+    pub kdf_params_json: Option<String>,
+    pub timestamp_ms: u64,
+}
+
 impl ActualStateRow {
     fn from_message(message: &ActualStateMessage) -> Result<Self, HandlerError> {
         Ok(Self {
@@ -325,6 +338,12 @@ pub trait HandlerStore: Send + Sync {
         &self,
         row: &GatewayDesiredStateRow,
     ) -> Result<(), HandlerError>;
+
+    /// Load the latest fleet-scoped KDF row (§4.3.1).
+    async fn load_fleet_kdf(&self) -> Result<Option<FleetKdfRow>, HandlerError>;
+
+    /// Append a fleet-scoped KDF row (§4.3.1).
+    async fn append_fleet_kdf(&self, row: &FleetKdfRow) -> Result<(), HandlerError>;
 }
 
 #[async_trait]
@@ -625,6 +644,36 @@ where
         } else {
             None
         };
+
+        // Fleet KDF update (§4.3.1): append fleet-scoped KDF row when
+        // gateway reports a non-null salt that differs from the current fleet
+        // salt or KDF params. This survives gateway identity changes during
+        // disaster recovery.
+        if let Some(ref gw_salt) = msg.salt {
+            let fleet_kdf = self.store.load_fleet_kdf().await?;
+            let should_append = match fleet_kdf.as_ref() {
+                Some(current) => {
+                    // Skip if this message is older than the current fleet row.
+                    if current.timestamp_ms > msg.timestamp_ms {
+                        false
+                    } else {
+                        // Append if salt or kdf_params changed.
+                        current.salt != *gw_salt
+                            || current.kdf_params_json != gw_row.kdf_params_json
+                    }
+                }
+                None => true, // No fleet row exists yet.
+            };
+            if should_append {
+                let fleet_row = FleetKdfRow {
+                    row_key: next_history_row_key(msg.timestamp_ms)?,
+                    salt: gw_salt.clone(),
+                    kdf_params_json: gw_row.kdf_params_json.clone(),
+                    timestamp_ms: msg.timestamp_ms,
+                };
+                self.store.append_fleet_kdf(&fleet_row).await?;
+            }
+        }
 
         // Construct gateway DESIRED_STATE if there's anything to send.
         let has_content =
@@ -1355,6 +1404,55 @@ impl HandlerStore for AzureTablesStore {
             })?;
         Ok(())
     }
+
+    async fn load_fleet_kdf(&self) -> Result<Option<FleetKdfRow>, HandlerError> {
+        let mut stream = self
+            .desired_state_table
+            .query()
+            .filter(partition_filter("fleet"))
+            .top(1)
+            .into_stream::<FleetKdfEntity>();
+        match stream.next().await {
+            Some(Ok(response)) => response
+                .entities
+                .into_iter()
+                .next()
+                .map(|e| {
+                    let salt = base64::engine::general_purpose::STANDARD
+                        .decode(&e.salt)
+                        .map_err(|err| {
+                            HandlerError::Store(format!("decode fleet salt base64 failed: {err}"))
+                        })?;
+                    Ok(FleetKdfRow {
+                        row_key: e.row_key,
+                        salt,
+                        kdf_params_json: e.kdf_params_json,
+                        timestamp_ms: e.timestamp_ms,
+                    })
+                })
+                .transpose(),
+            Some(Err(e)) => Err(HandlerError::Store(format!(
+                "query fleet KDF row failed: {e}"
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    async fn append_fleet_kdf(&self, row: &FleetKdfRow) -> Result<(), HandlerError> {
+        let entity = FleetKdfEntity {
+            partition_key: "fleet".to_string(),
+            row_key: row.row_key.clone(),
+            salt: base64::engine::general_purpose::STANDARD.encode(&row.salt),
+            kdf_params_json: row.kdf_params_json.clone(),
+            timestamp_ms: row.timestamp_ms,
+        };
+        self.desired_state_table
+            .insert::<_, FleetKdfEntity>(&entity)
+            .map_err(|e| HandlerError::Store(format!("prepare fleet KDF insert failed: {e}")))?
+            .await
+            .map_err(|e| HandlerError::Store(format!("append fleet KDF row failed: {e}")))?;
+        Ok(())
+    }
 }
 
 const STORAGE_QUEUE_API_VERSION: &str = "2024-11-04";
@@ -1519,6 +1617,23 @@ struct GatewayDesiredStateEntity {
     row_key: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     rotation_payload: Option<String>,
+    #[serde(
+        deserialize_with = "deserialize_u64_flexible",
+        default = "default_zero_u64"
+    )]
+    timestamp_ms: u64,
+}
+
+/// Fleet-scoped KDF entity for Azure Table (§4.3.1).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct FleetKdfEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    salt: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    kdf_params_json: Option<String>,
     #[serde(
         deserialize_with = "deserialize_u64_flexible",
         default = "default_zero_u64"
@@ -2560,6 +2675,7 @@ mod tests {
         sensor_data_rows: Mutex<Vec<SensorDataRow>>,
         gateway_actual_states: Mutex<HashMap<String, Vec<GatewayActualStateRow>>>,
         gateway_desired_states: Mutex<HashMap<String, Vec<GatewayDesiredStateRow>>>,
+        fleet_kdf_rows: Mutex<Vec<FleetKdfRow>>,
     }
 
     impl MemoryStore {
@@ -2753,6 +2869,21 @@ mod tests {
                 .push(row.clone());
             Ok(())
         }
+
+        async fn load_fleet_kdf(&self) -> Result<Option<FleetKdfRow>, HandlerError> {
+            Ok(self
+                .fleet_kdf_rows
+                .lock()
+                .await
+                .iter()
+                .min_by_key(|r| &r.row_key)
+                .cloned())
+        }
+
+        async fn append_fleet_kdf(&self, row: &FleetKdfRow) -> Result<(), HandlerError> {
+            self.fleet_kdf_rows.lock().await.push(row.clone());
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -2882,6 +3013,14 @@ mod tests {
         ) -> Result<(), HandlerError> {
             Ok(())
         }
+
+        async fn load_fleet_kdf(&self) -> Result<Option<FleetKdfRow>, HandlerError> {
+            Ok(None)
+        }
+
+        async fn append_fleet_kdf(&self, _row: &FleetKdfRow) -> Result<(), HandlerError> {
+            Ok(())
+        }
     }
 
     struct SameTimestampDifferentLatestStore {
@@ -2958,6 +3097,14 @@ mod tests {
             &self,
             _row: &GatewayDesiredStateRow,
         ) -> Result<(), HandlerError> {
+            Ok(())
+        }
+
+        async fn load_fleet_kdf(&self) -> Result<Option<FleetKdfRow>, HandlerError> {
+            Ok(None)
+        }
+
+        async fn append_fleet_kdf(&self, _row: &FleetKdfRow) -> Result<(), HandlerError> {
             Ok(())
         }
     }
@@ -3037,6 +3184,14 @@ mod tests {
             &self,
             _row: &GatewayDesiredStateRow,
         ) -> Result<(), HandlerError> {
+            Ok(())
+        }
+
+        async fn load_fleet_kdf(&self) -> Result<Option<FleetKdfRow>, HandlerError> {
+            Ok(None)
+        }
+
+        async fn append_fleet_kdf(&self, _row: &FleetKdfRow) -> Result<(), HandlerError> {
             Ok(())
         }
     }
@@ -4298,6 +4453,12 @@ mod tests {
             ) -> Result<(), HandlerError> {
                 Ok(())
             }
+            async fn load_fleet_kdf(&self) -> Result<Option<FleetKdfRow>, HandlerError> {
+                Ok(None)
+            }
+            async fn append_fleet_kdf(&self, _: &FleetKdfRow) -> Result<(), HandlerError> {
+                Ok(())
+            }
         }
 
         let store = Arc::new(FailingProgramStore);
@@ -5410,6 +5571,182 @@ mod tests {
         assert!(sends.is_empty(), "no DESIRED_STATE for gateway with salt");
     }
 
+    // --- T-AZH-2004: Fleet-scoped KDF storage (disaster recovery) ---
+    #[tokio::test]
+    async fn t_azh_2004_fleet_kdf_storage() {
+        let store = Arc::new(MemoryStore::default());
+        let publisher = Arc::new(RecordingPublisher::default());
+        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
+
+        let master_key_id = vec![0xAAu8; 16];
+        let salt_a = vec![0xAAu8; 16];
+        let kdf_a = (131072, 4, 2); // m_cost, t_cost, p_cost
+
+        // Step 1: Gateway A reports salt + kdf_params — fleet KDF row created.
+        let payload1 = encode_gateway_actual_state_msg_with_kdf(
+            "aa110011",
+            1000,
+            6,
+            &master_key_id,
+            1,
+            &[0x55u8; 32],
+            Some(&salt_a),
+            Some(kdf_a),
+            false,
+        );
+        handler.handle_payload(&payload1).await.unwrap();
+
+        // Step 2: Verify fleet KDF row exists with salt_a and kdf_params.
+        let fleet = store.load_fleet_kdf().await.unwrap();
+        assert!(fleet.is_some(), "fleet KDF row should exist");
+        let fleet = fleet.unwrap();
+        assert_eq!(fleet.salt, salt_a);
+        assert!(
+            fleet.kdf_params_json.is_some(),
+            "fleet KDF row should have kdf_params"
+        );
+        let params: serde_json::Value =
+            serde_json::from_str(fleet.kdf_params_json.as_ref().unwrap()).unwrap();
+        assert_eq!(params["m_cost"], 131072);
+        assert_eq!(params["t_cost"], 4);
+        assert_eq!(params["p_cost"], 2);
+
+        // Step 3: Gateway A reports same salt + params again — no duplicate row.
+        let payload2 = encode_gateway_actual_state_msg_with_kdf(
+            "aa110011",
+            2000,
+            6,
+            &master_key_id,
+            1,
+            &[0x55u8; 32],
+            Some(&salt_a),
+            Some(kdf_a),
+            false,
+        );
+        handler.handle_payload(&payload2).await.unwrap();
+        let fleet_rows_count = store.fleet_kdf_rows.lock().await.len();
+        assert_eq!(
+            fleet_rows_count, 1,
+            "same salt+params should not create duplicate fleet row"
+        );
+
+        // Step 4-5: Gateway B reports different salt + params — new fleet row appended.
+        let salt_b = vec![0xBBu8; 16];
+        let kdf_b = (65536, 3, 1);
+        let payload3 = encode_gateway_actual_state_msg_with_kdf(
+            "bb220022",
+            3000,
+            6,
+            &master_key_id,
+            1,
+            &[0x55u8; 32],
+            Some(&salt_b),
+            Some(kdf_b),
+            false,
+        );
+        handler.handle_payload(&payload3).await.unwrap();
+        let fleet_rows_count = store.fleet_kdf_rows.lock().await.len();
+        assert_eq!(
+            fleet_rows_count, 2,
+            "different salt should create new fleet row"
+        );
+
+        // Step 6: Latest fleet salt is salt_b with kdf_b params (latest-wins).
+        let fleet = store.load_fleet_kdf().await.unwrap().unwrap();
+        assert_eq!(fleet.salt, salt_b, "latest fleet salt should be salt_b");
+        let params: serde_json::Value =
+            serde_json::from_str(fleet.kdf_params_json.as_ref().unwrap()).unwrap();
+        assert_eq!(params["m_cost"], 65536);
+        assert_eq!(params["t_cost"], 3);
+        assert_eq!(params["p_cost"], 1);
+
+        // Step 7-8: Gateway C reports null salt — no fleet update.
+        let payload4 = encode_gateway_actual_state_msg(
+            "cc330033",
+            4000,
+            6,
+            &master_key_id,
+            1,
+            &[0x55u8; 32],
+            None,
+            false,
+        );
+        handler.handle_payload(&payload4).await.unwrap();
+        let fleet_rows_count = store.fleet_kdf_rows.lock().await.len();
+        assert_eq!(fleet_rows_count, 2, "null salt should not create fleet row");
+
+        // Step 9: DESIRED_STATE relay unchanged — fleet salt NOT injected.
+        // Gateway C has null salt and no previous ACTUAL_STATE for this gateway_id.
+        // No per-gateway desired state row exists, so no DESIRED_STATE is published
+        // (fleet KDF row does NOT inject into DESIRED_STATE per §4.3.1).
+        // The only send should have been from step 7-8's AZH-0604 logic using
+        // the previous row (none for gw-c), so no desired_salt.
+        // Check that fleet salt was NOT injected into any DESIRED_STATE.
+        let sends = publisher.sends.lock().await;
+        for (_, payload) in sends.iter() {
+            let decoded: Value = ciborium::from_reader(&payload[..]).unwrap();
+            let map = decoded.as_map().unwrap();
+            if let Some(desired_state_val) = map_get(map, 4) {
+                let desired_map = desired_state_val.as_map().unwrap();
+                // If salt is present in DESIRED_STATE, it must come from per-gateway
+                // previous row, not fleet salt.
+                if let Some(salt_val) = map_get(desired_map, 21) {
+                    assert_ne!(
+                        salt_val.as_bytes().unwrap(),
+                        &salt_b,
+                        "fleet salt should NOT appear in DESIRED_STATE"
+                    );
+                }
+            }
+        }
+        drop(sends);
+
+        // Step 10: Stale message does not update fleet KDF.
+        let salt_c = vec![0xCCu8; 16];
+        let stale_payload = encode_gateway_actual_state_msg(
+            "dd440044",
+            500, // timestamp older than fleet row (3000)
+            6,
+            &master_key_id,
+            1,
+            &[0x55u8; 32],
+            Some(&salt_c),
+            false,
+        );
+        handler.handle_payload(&stale_payload).await.unwrap();
+        let fleet = store.load_fleet_kdf().await.unwrap().unwrap();
+        assert_eq!(
+            fleet.salt, salt_b,
+            "stale message should not update fleet salt"
+        );
+
+        // Bonus: same salt but different kdf_params triggers update.
+        let kdf_c = (262144, 5, 4);
+        let payload5 = encode_gateway_actual_state_msg_with_kdf(
+            "ee550055",
+            5000,
+            6,
+            &master_key_id,
+            1,
+            &[0x55u8; 32],
+            Some(&salt_b), // same salt as fleet
+            Some(kdf_c),   // different params
+            false,
+        );
+        handler.handle_payload(&payload5).await.unwrap();
+        let fleet_rows_count = store.fleet_kdf_rows.lock().await.len();
+        assert_eq!(
+            fleet_rows_count, 3,
+            "same salt but different params should create new fleet row"
+        );
+        let fleet = store.load_fleet_kdf().await.unwrap().unwrap();
+        let params: serde_json::Value =
+            serde_json::from_str(fleet.kdf_params_json.as_ref().unwrap()).unwrap();
+        assert_eq!(params["m_cost"], 262144);
+        assert_eq!(params["t_cost"], 5);
+        assert_eq!(params["p_cost"], 4);
+    }
+
     // --- T-AZH-0605: No phone escrow rows ---
     #[tokio::test]
     async fn t_azh_0605_phone_actual_state_ignored() {
@@ -5493,6 +5830,50 @@ mod tests {
         match salt {
             Some(s) => pairs.push(map_entry(21, Value::Bytes(s.to_vec()))),
             None => pairs.push(map_entry(21, Value::Null)),
+        }
+        pairs.push(map_entry(27, Value::Bool(rotation_in_progress)));
+        let value = Value::Map(pairs);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        bytes
+    }
+
+    /// Encode gateway ACTUAL_STATE with KDF params (CBOR key 22).
+    #[allow(clippy::too_many_arguments)]
+    fn encode_gateway_actual_state_msg_with_kdf(
+        entity_id: &str,
+        timestamp_ms: u64,
+        channel: u64,
+        master_key_id: &[u8],
+        master_key_epoch: u64,
+        x25519_public_key: &[u8],
+        salt: Option<&[u8]>,
+        kdf_params: Option<(u64, u64, u64)>, // (m_cost, t_cost, p_cost)
+        rotation_in_progress: bool,
+    ) -> Vec<u8> {
+        let mut pairs = vec![
+            map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
+            map_entry(2, Value::Text("gateway".to_string())),
+            map_entry(3, Value::Text(entity_id.to_string())),
+            map_entry(9, Value::Integer(timestamp_ms.into())),
+            map_entry(15, Value::Integer(channel.into())),
+            map_entry(16, Value::Bytes(master_key_id.to_vec())),
+            map_entry(17, Value::Integer(master_key_epoch.into())),
+            map_entry(18, Value::Bytes(x25519_public_key.to_vec())),
+        ];
+        match salt {
+            Some(s) => pairs.push(map_entry(21, Value::Bytes(s.to_vec()))),
+            None => pairs.push(map_entry(21, Value::Null)),
+        }
+        if let Some((m, t, p)) = kdf_params {
+            pairs.push(map_entry(
+                22,
+                Value::Map(vec![
+                    map_entry(1, Value::Integer(m.into())),
+                    map_entry(2, Value::Integer(t.into())),
+                    map_entry(3, Value::Integer(p.into())),
+                ]),
+            ));
         }
         pairs.push(map_entry(27, Value::Bool(rotation_in_progress)));
         let value = Value::Map(pairs);

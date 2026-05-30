@@ -648,6 +648,50 @@ Salt conflict resolution: the handler stores whatever the gateway reports
 (gateway is authoritative for its own salt). The handler includes its
 stored salt in DESIRED_STATE only for gateways that report `salt = null`.
 
+#### 4.3.1  Fleet-scoped salt and KDF params (disaster recovery)
+
+To survive gateway identity changes during disaster recovery, the handler
+maintains a **fleet-scoped KDF row** in the `desiredstate` table:
+
+- `PartitionKey = "fleet"`, `RowKey` = reverse-timestamp via
+  `next_history_row_key()` (same append-only scheme as other desired state
+  rows).
+- The row carries both `salt` (base64-encoded binary) and `kdf_params_json`
+  (JSON string) — both are required for correct `Argon2id` master key
+  re-derivation.
+- When a gateway reports a non-null salt in ACTUAL_STATE, the handler
+  appends a fleet KDF row **only if** the reported salt differs from the
+  current fleet salt (or no fleet row exists yet). This prevents unbounded
+  row accumulation from repeated identical reports. The stale-message
+  guards (pre-append and post-append timestamp checks) that protect
+  gateway ACTUAL_STATE rows also apply: a stale gateway report that
+  fails stale checks does not update the fleet row.
+- Loading uses the same `$top=1` latest-row query as other desired state
+  lookups.
+
+The fleet KDF row does **not** affect gateway DESIRED_STATE construction.
+DESIRED_STATE relay continues to use the gateway's own desired state
+record (unchanged). The fleet KDF row is consumed exclusively by the SPA
+during key rotation (see §9): the SPA reads the latest fleet salt and
+KDF params from the `desiredstate` table and uses them for
+`Argon2id(passphrase, salt, kdf_params)` master key derivation. This
+ensures a replacement gateway (new `gateway_id` after DB loss) can
+receive a correctly derived master key via the rotation payload, even
+though the handler has no per-gateway salt history for the new identity.
+
+Fleet-scoped `desiredstate` rows (`PartitionKey = "fleet"`) are
+handler-internal. The SPA reads them for rotation but MUST NOT treat
+them as gateway desired-state rows (SPA filters gateway rows by
+`PartitionKey` starting with `"g:"`).
+
+**Limitation — concurrent rotation race:** If two gateways both have
+`salt = null` and an admin rotates both simultaneously, each generates a
+different salt. Both rotations succeed (the master key is delivered
+directly in the rotation payload). Both gateways append fleet KDF rows;
+the latest writer's salt becomes the fleet salt. The admin must
+re-rotate one gateway to converge on the fleet salt. No automated
+indication of this condition is provided.
+
 ### 4.4  Rotation payload relay
 
 The handler does not originate or modify rotation payloads. The SPA
@@ -1124,6 +1168,38 @@ identity loading failure.
 
 ---
 
+### T-AZH-2004  Fleet-scoped KDF storage (disaster recovery)
+
+**Covers:** §4.3.1
+**Method:** Integration test
+
+**Steps:**
+1. Send gateway ACTUAL_STATE from gateway A with `salt = [0xAA; 16]`
+   and `kdf_params = {m: 131072, t: 4, p: 2}`.
+2. Verify a fleet KDF row is appended in the `desiredstate` table
+   (`PartitionKey = "fleet"`) carrying both salt and kdf_params.
+3. Verify that gateway A reporting the same salt again does **not** append
+   a duplicate fleet KDF row (deduplication check).
+4. Send gateway ACTUAL_STATE from gateway B (different `gateway_id`)
+   with `salt = [0xBB; 16]` and `kdf_params = {m: 65536, t: 3, p: 1}`.
+5. Verify a new fleet KDF row is appended with the updated values.
+6. Load the latest fleet KDF row — verify it returns `[0xBB; 16]` and the
+   updated kdf_params (latest-wins, not `[0xAA; 16]`).
+7. Send gateway ACTUAL_STATE from gateway C with `salt = null`.
+8. Verify no fleet KDF row is appended (null salt does not update fleet).
+9. Verify the existing DESIRED_STATE relay for gateway C is **unchanged**:
+   the handler uses the per-gateway desired state record (not fleet salt)
+   for DESIRED_STATE construction.
+10. Send a stale gateway ACTUAL_STATE (older timestamp than the latest
+    fleet KDF row) from gateway D with a different salt `[0xCC; 16]`.
+    Verify no fleet KDF row is appended (stale-message guard).
+
+**Pass criteria:** Fleet KDF rows are append-only, latest-wins,
+deduplicated, and stale-guarded; null salt does not update fleet;
+DESIRED_STATE relay behavior is unchanged.
+
+---
+
 ## 9  Design Changes — Web UI (SPA)
 
 The SPA rotation flow is fully specified in the web-ui spec trifecta:
@@ -1144,8 +1220,12 @@ The SPA performs master key rotation via the following flow:
    the locally-computed fingerprint and prompt operator to verify against
    the modem display.
 3. Prompt for rotation code (from modem display) and passphrase.
-4. Derive new master key: `Argon2id(passphrase, salt, kdf_params)` using
-   a WASM Argon2id implementation.
+4. Read the **fleet salt and KDF params** from the latest fleet KDF row
+   in the `desiredstate` table (`PartitionKey = "fleet"`, `$top=1`).
+   If no fleet KDF row exists (first rotation), generate a new random
+   16-byte salt and use default KDF params (`m=65536, t=3, p=1`).
+   Derive new master key: `Argon2id(passphrase, fleet_salt, kdf_params)`
+   using a WASM Argon2id implementation.
 5. Construct `RotationPayloadV1` (§2.6.1) using browser-side cryptography:
    X25519 key exchange via `noble-curves`, HKDF-SHA-256 and AES-256-GCM
    via Web Crypto API.

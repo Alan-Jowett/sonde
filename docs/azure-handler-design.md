@@ -623,6 +623,33 @@ handler includes the stored salt only if the gateway reports `salt = null`.
 If the gateway reports a non-null salt, the handler preserves that value in the
 gateway row and does not override it via DESIRED_STATE.
 
+#### 9.5.1  Fleet-scoped KDF state (disaster recovery)
+
+To survive gateway identity changes, the handler maintains a fleet-scoped
+KDF row in the `desiredstate` table:
+
+- `PartitionKey = "fleet"`, `RowKey` = reverse-timestamp via
+  `next_history_row_key()`.
+- The row carries both `salt` (base64-encoded binary) and `kdf_params_json`
+  (JSON string).
+- When a gateway reports a non-null salt in ACTUAL_STATE, the handler appends
+  a fleet KDF row **only if** the reported salt differs from the current fleet
+  salt (or no fleet row exists yet). This prevents unbounded row accumulation.
+  The existing stale-message guards (pre-append and post-append timestamp
+  checks) apply: a stale gateway report does not update the fleet row.
+- Loading uses the same `$top=1` latest-row query as
+  `load_gateway_desired_state`.
+
+The fleet KDF row does **not** affect gateway DESIRED_STATE construction.
+DESIRED_STATE relay continues to use the gateway's own desired state record
+(unchanged). The fleet KDF row is consumed exclusively by the SPA during key
+rotation: the SPA reads the latest fleet salt and KDF params for
+`Argon2id(passphrase, salt, kdf_params)` master key derivation.
+
+Fleet-scoped `desiredstate` rows (`PartitionKey = "fleet"`) are
+handler-internal. The SPA reads them for rotation but filters gateway
+desired-state rows by `PartitionKey` starting with `"g:"`.
+
 Gateway DESIRED_STATE uses:
 
 - `entity_kind = "gateway"`

@@ -1151,8 +1151,9 @@ collapsible rotation form within the card. The form shows (1) the BIP-39
 fingerprint with instructions to verify it against the modem, (2) a rotation
 code input limited to 6 characters and normalized to uppercase `[A-Z0-9]`,
 (3) a masked passphrase input that requires either at least 20 characters or
-6 space-separated words, (4) the current salt from the gateway ACTUAL_STATE
-or a `first rotation` indicator if the salt is null, and (5) a confirmation
+6 space-separated words, (4) the current fleet salt from the latest fleet KDF
+row in the `desiredstate` table (`PartitionKey = "fleet"`)
+or a `first rotation` indicator if no fleet KDF row exists, and (5) a confirmation
 action. If the browser lacks the required rotation crypto capabilities, the
 button MUST be disabled with a tooltip explaining the requirement.
 
@@ -1173,6 +1174,8 @@ resumes when the form collapses.
 3. Unsupported browsers show the action as disabled with an explanatory message.
 4. After submission the form shows a success message and collapses.
 5. Dashboard auto-refresh is paused while the rotation form is expanded.
+6. When a fleet KDF row exists, the form displays the fleet salt; when no fleet
+   KDF row exists, the form shows a `first rotation` indicator.
 
 ---
 
@@ -1185,17 +1188,19 @@ resumes when the form collapses.
 **Description:**
 The SPA MUST derive the new master key using
 `Argon2id(passphrase, salt, kdf_params)` via a WASM Argon2id implementation
-(e.g., `argon2-browser`). The default KDF parameters for the first rotation are
-`m_cost=65536`, `t_cost=3`, and `p_cost=1`. If the gateway ACTUAL_STATE
-includes `kdf_params`, the SPA MUST use those parameters instead. Passphrase and
-derived key material MUST be cleared from JavaScript variables after use on a
-best-effort basis.
+(e.g., `argon2-browser`). The SPA reads the salt and KDF params from the latest
+fleet KDF row in the `desiredstate` table (`PartitionKey = "fleet"`, `$top=1`).
+If no fleet KDF row exists (first rotation), the SPA generates a new random
+16-byte salt and uses default KDF parameters (`m_cost=65536`, `t_cost=3`,
+`p_cost=1`). Passphrase and derived key material MUST be cleared from JavaScript
+variables after use on a best-effort basis.
 
 **Acceptance criteria:**
 
 1. The derived key matches the gateway's expected output for the same inputs.
-2. `kdf_params` from ACTUAL_STATE are used when present.
-3. Key material is cleared after use on a best-effort basis.
+2. `salt` and `kdf_params` from the latest fleet KDF row are used when present.
+3. When no fleet KDF row exists, a new random salt and default KDF params are used.
+4. Key material is cleared after use on a best-effort basis.
 
 ---
 

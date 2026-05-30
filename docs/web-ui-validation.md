@@ -104,8 +104,8 @@ and verifies one or more acceptance criteria.
 | WEB-0901 | T-WEB-0901, T-WEB-0901b, T-WEB-0901c |
 | WEB-0902 | T-WEB-0902, T-WEB-0902b |
 | WEB-1001 | T-WEB-1001, T-WEB-1001b, T-WEB-1001c, T-WEB-1001d |
-| WEB-1002 | T-WEB-1002, T-WEB-1002b, T-WEB-1002c, T-WEB-1002d, T-WEB-1002e |
-| WEB-1003 | T-WEB-1003, T-WEB-1003b |
+| WEB-1002 | T-WEB-1002, T-WEB-1002b, T-WEB-1002c, T-WEB-1002d, T-WEB-1002e, T-WEB-1002f |
+| WEB-1003 | T-WEB-1003, T-WEB-1003b, T-WEB-1003c |
 | WEB-1004 | T-WEB-1004 |
 | WEB-1005 | T-WEB-1005 |
 | WEB-1006 | ~~T-WEB-1006, T-WEB-1006b~~ (retired — Issue #1092) |
@@ -349,8 +349,10 @@ and verifies one or more acceptance criteria.
 | T-WEB-1002c | WEB-1002 | Rotation is disabled on unsupported browsers | Manual | Planned |
 | T-WEB-1002d | WEB-1002 | After submission, form shows success message and collapses (no inline polling) | Manual | Planned |
 | T-WEB-1002e | WEB-1002 | Dashboard auto-refresh is paused while rotation form is expanded | Manual | Planned |
+| T-WEB-1002f | WEB-1002 | Rotation form displays fleet salt from fleet KDF row, or `first rotation` indicator when no fleet row exists | Manual | Planned |
 | T-WEB-1003 | WEB-1003 | Argon2id key derivation produces the correct output | Unit (JS) | Planned |
-| T-WEB-1003b | WEB-1003 | KDF params from ACTUAL_STATE are used when present | Unit (JS) | Planned |
+| T-WEB-1003b | WEB-1003 | Salt and KDF params from fleet KDF row are used when present | Unit (JS) | Planned |
+| T-WEB-1003c | WEB-1003 | First rotation fallback: when no fleet KDF row exists, a new random salt and default KDF params are used | Unit (JS) | Planned |
 | T-WEB-1004 | WEB-1004 | `RotationPayloadV1` construction matches the specified binary format | Unit (JS) | Planned |
 | T-WEB-1005 | WEB-1005 | DESIRED_STATE row is created with the correct gateway `PartitionKey` and includes `submitted_epoch` | Integration | Planned |
 | T-WEB-1006 | WEB-1006 | ~~Successful rotation is detected via `master_key_epoch` polling~~ **Retired** (Issue #1092) | — | Retired |

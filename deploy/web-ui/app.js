@@ -393,14 +393,7 @@ function computeGatewayDivergence(actual, desired) {
     if (!Number.isNaN(desiredCh) && desiredCh !== actualCh) return true;
   }
 
-  // Salt pending adoption (set-if-absent): diverged only when actual has no salt.
-  if (desired.salt != null && !actual.salt) return true;
-
-  // KDF params pending adoption (set-if-absent): diverged only when actual has
-  // no KDF params. Field name in Azure Tables is kdf_params_json.
-  const desiredHasKdf = desired.kdf_params != null || desired.kdf_params_json != null;
-  const actualHasKdf = actual.kdf_params != null || actual.kdf_params_json != null;
-  if (desiredHasKdf && !actualHasKdf) return true;
+  // Salt and KDF convergence retired (GW-2020, GW-2021).
 
   return false;
 }
@@ -436,7 +429,6 @@ async function renderGatewayStatusCard(gatewayRows, gatewayDesiredRows) {
       ? bytesToHex(mkidBytes)
       : '—';
     const rotInProgress = gw.rotation_in_progress === true ? 'Yes' : 'No';
-    const saltStatus = gw.salt ? 'Present' : 'Absent';
     const gwVersion = gw.gateway_version || '—';
     const modemVersion = gw.modem_firmware_version || '—';
     const channel = gw.channel ?? '—';
@@ -451,7 +443,6 @@ async function renderGatewayStatusCard(gatewayRows, gatewayDesiredRows) {
       ? '<button class="secondary" disabled title="Browser lacks required crypto capabilities (Web Crypto + WebAssembly)">Rotate Key</button>'
       : `<button class="secondary rotate-key-btn" data-gateway-id="${escapeHtml(gwId)}">Rotate Key</button>`;
 
-    const saltStatusText = gw.salt ? 'Current salt loaded' : 'First rotation (no salt)';
     const formExpanded = APP.rotationFormOpen === gwId;
     const formStyle = formExpanded ? '' : ' style="display:none"';
 
@@ -463,7 +454,6 @@ async function renderGatewayStatusCard(gatewayRows, gatewayDesiredRows) {
           <div class="kv"><strong>Epoch</strong> ${escapeHtml(epoch)}</div>
           <div class="kv"><strong>Master Key ID</strong> <code>${mkid === '—' ? '—' : escapeHtml(mkid.slice(0, 16)) + '…'}</code></div>
           <div class="kv"><strong>Rotation in progress</strong> ${escapeHtml(rotInProgress)}</div>
-          <div class="kv"><strong>Salt</strong> ${escapeHtml(saltStatus)}</div>
           <div class="kv"><strong>Gateway version</strong> ${escapeHtml(gwVersion)}</div>
           <div class="kv"><strong>Modem version</strong> ${escapeHtml(modemVersion)}</div>
           <div class="kv"><strong>Channel</strong> ${escapeHtml(channel)}</div>
@@ -481,7 +471,10 @@ async function renderGatewayStatusCard(gatewayRows, gatewayDesiredRows) {
               <input name="passphrase" type="password"
                 placeholder="Enter passphrase…" required>
             </label>
-            <p class="muted small">${escapeHtml(saltStatusText)}</p>
+            <label>Deployment Label
+              <input name="deploymentLabel" type="text"
+                placeholder="e.g. Alan's production deployment" required>
+            </label>
             <div class="rotation-status" data-gateway-status="${escapeHtml(gwId)}"></div>
             <div style="display:flex;gap:0.5rem">
               <button type="submit" class="primary rotation-submit-btn">Rotate</button>
@@ -591,6 +584,7 @@ function attachRotationFormHandlers(gatewayRows) {
 
       const code = (form.rotationCode?.value || '').toUpperCase().trim();
       const passphrase = form.passphrase?.value || '';
+      const deploymentLabel = (form.deploymentLabel?.value || '').trim();
       const statusEl = document.querySelector(`.rotation-status[data-gateway-status="${gwId}"]`);
       const submitBtn = form.querySelector('.rotation-submit-btn');
 
@@ -600,6 +594,10 @@ function attachRotationFormHandlers(gatewayRows) {
       }
       if (passphrase.length < 20 && passphrase.split(/\s+/).filter((w) => w).length < 6) {
         if (statusEl) statusEl.innerHTML = '<div class="alert error">Passphrase must be ≥20 characters or 6+ space-separated words.</div>';
+        return;
+      }
+      if (!deploymentLabel) {
+        if (statusEl) statusEl.innerHTML = '<div class="alert error">Deployment label must not be empty.</div>';
         return;
       }
 
@@ -614,7 +612,7 @@ function attachRotationFormHandlers(gatewayRows) {
       const epoch = Number(gwRow.master_key_epoch) || 0;
 
       try {
-        const payload = await buildRotationPayload(gwRow, code, passphrase);
+        const payload = await buildRotationPayload(gwRow, code, passphrase, deploymentLabel);
         if (statusEl) statusEl.innerHTML = '<p class="muted">Submitting rotation…</p>';
         await submitRotationPayload(gwId, payload, epoch);
         if (statusEl) statusEl.innerHTML = '<div class="alert success">Rotation submitted.</div>';
@@ -632,7 +630,7 @@ function attachRotationFormHandlers(gatewayRows) {
   }
 }
 
-async function buildRotationPayload(gatewayRow, rotationCode, passphrase) {
+async function buildRotationPayload(gatewayRow, rotationCode, passphrase, deploymentLabel) {
   const gwId = gatewayRow.PartitionKey?.replace('g:', '') || '';
   const gwIdBytes = hexToBytes(gwId);
   if (!gwIdBytes || gwIdBytes.length === 0) throw new Error('Invalid gateway_id');
@@ -644,26 +642,14 @@ async function buildRotationPayload(gatewayRow, rotationCode, passphrase) {
 
   const epoch = Number(gatewayRow.master_key_epoch) || 0;
 
-  // Parse KDF params
-  let mCost = 65536, tCost = 3, pCost = 1;
-  if (gatewayRow.kdf_params_json) {
-    try {
-      const kdf = JSON.parse(gatewayRow.kdf_params_json);
-      if (kdf.m_cost) mCost = kdf.m_cost;
-      if (kdf.t_cost) tCost = kdf.t_cost;
-      if (kdf.p_cost) pCost = kdf.p_cost;
-    } catch { /* use defaults */ }
-  }
+  // KDF v1: hardcoded Argon2id params (GW-2020)
+  const mCost = 65536, tCost = 3, pCost = 1;
 
-  // Determine salt: use gateway salt if present, otherwise generate for first rotation.
-  let salt;
-  if (gatewayRow.salt) {
-    salt = base64ToBytes(gatewayRow.salt);
-  } else {
-    salt = new Uint8Array(16);
-    crypto.getRandomValues(salt);
-  }
-  if (!salt || salt.length !== 16) throw new Error('Invalid salt');
+  // Derive salt from deployment label (GW-2021)
+  if (!deploymentLabel) throw new Error('Deployment label must not be empty');
+  const saltInput = new TextEncoder().encode('sonde-kdf-v1:' + deploymentLabel);
+  const saltHashBuf = await crypto.subtle.digest('SHA-256', saltInput);
+  const salt = new Uint8Array(saltHashBuf).slice(0, 16);
 
   // Derive master key via Argon2id (WEB-1003)
   if (typeof argon2 === 'undefined') {
@@ -680,12 +666,7 @@ async function buildRotationPayload(gatewayRow, rotationCode, passphrase) {
   });
   const newMasterKey = new Uint8Array(argonResult.hash);
 
-  // Generate new master_key_id (16 random bytes)
-  const newMasterKeyId = new Uint8Array(16);
-  crypto.getRandomValues(newMasterKeyId);
-
-  // KDF params to include in plaintext
-  const kdfParams = { m_cost: mCost, t_cost: tCost, p_cost: pCost, kdf_version: 1 };
+  // master_key_id is derived by gateway as SHA-256(master_key) — not included in payload.
 
   // X25519 key exchange (WEB-1004)
   if (typeof nobleEd25519 === 'undefined' && typeof noble_curves_x25519 === 'undefined') {
@@ -716,8 +697,9 @@ async function buildRotationPayload(gatewayRow, rotationCode, passphrase) {
   );
   const aesKey = new Uint8Array(derivedBits);
 
-  // CBOR plaintext: {1: new_master_key, 2: rotation_code, 3: new_master_key_id, 4: salt, 5: kdf_params}
-  const plaintext = encodeCborRotationPlaintext(newMasterKey, rotationCode, newMasterKeyId, salt, kdfParams);
+  // CBOR plaintext: {1: new_master_key, 2: rotation_code}
+  // Keys 3-5 are RESERVED (previously new_master_key_id, salt, kdf_params).
+  const plaintext = encodeCborRotationPlaintext(newMasterKey, rotationCode);
 
   // AES-256-GCM encryption
   const nonce = new Uint8Array(12);
@@ -750,12 +732,13 @@ async function buildRotationPayload(gatewayRow, rotationCode, passphrase) {
   return result;
 }
 
-function encodeCborRotationPlaintext(masterKey, rotationCode, masterKeyId, salt, kdfParams) {
+function encodeCborRotationPlaintext(masterKey, rotationCode) {
   // Minimal deterministic CBOR encoder for the rotation plaintext map.
-  // Map with 5 entries: {1: bstr, 2: tstr, 3: bstr, 4: bstr, 5: map}
+  // Map with 2 entries: {1: bstr, 2: tstr}
+  // Keys 3-5 are RESERVED (previously new_master_key_id, salt, kdf_params).
   const parts = [];
-  // CBOR map header (5 items)
-  parts.push(0xa5);
+  // CBOR map header (2 items)
+  parts.push(0xa2);
   // Key 1: new_master_key (bstr 32)
   parts.push(0x01);
   parts.push(0x58, 0x20); // bstr(32)
@@ -765,36 +748,7 @@ function encodeCborRotationPlaintext(masterKey, rotationCode, masterKeyId, salt,
   const codeBytes = new TextEncoder().encode(rotationCode);
   parts.push(0x60 + codeBytes.length);
   for (let i = 0; i < codeBytes.length; i++) parts.push(codeBytes[i]);
-  // Key 3: new_master_key_id (bstr 16)
-  parts.push(0x03);
-  parts.push(0x50); // bstr(16)
-  for (let i = 0; i < masterKeyId.length; i++) parts.push(masterKeyId[i]);
-  // Key 4: salt (bstr 16)
-  parts.push(0x04);
-  parts.push(0x50); // bstr(16)
-  for (let i = 0; i < salt.length; i++) parts.push(salt[i]);
-  // Key 5: kdf_params (map with 4 entries)
-  parts.push(0x05);
-  parts.push(0xa4);
-  // {1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}
-  encodeCborUintEntry(parts, 1, kdfParams.m_cost);
-  encodeCborUintEntry(parts, 2, kdfParams.t_cost);
-  encodeCborUintEntry(parts, 3, kdfParams.p_cost);
-  encodeCborUintEntry(parts, 4, kdfParams.kdf_version || 1);
   return new Uint8Array(parts);
-}
-
-function encodeCborUintEntry(parts, key, value) {
-  parts.push(key); // key (0-23 fits in 1 byte)
-  if (value < 24) {
-    parts.push(value);
-  } else if (value < 256) {
-    parts.push(0x18, value);
-  } else if (value < 65536) {
-    parts.push(0x19, (value >>> 8) & 0xff, value & 0xff);
-  } else {
-    parts.push(0x1a, (value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff);
-  }
 }
 
 async function submitRotationPayload(gwId, payloadBytes, epoch) {

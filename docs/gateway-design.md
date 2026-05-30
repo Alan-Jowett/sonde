@@ -1889,8 +1889,8 @@ additional storage is needed.
 
 ### 23.2  Master key identification (GW-2001)
 
-Each PSK record carries an opaque `master_key_id` (BLOB, 16 bytes, random)
-and a monotonic `master_key_epoch` (INTEGER):
+Each PSK record carries `master_key_id` (BLOB, 32 bytes) and a monotonic
+`master_key_epoch` (INTEGER):
 
 ```sql
 ALTER TABLE nodes ADD COLUMN master_key_id BLOB;
@@ -1899,10 +1899,14 @@ ALTER TABLE phone_psks ADD COLUMN master_key_id BLOB;
 ALTER TABLE phone_psks ADD COLUMN master_key_epoch INTEGER NOT NULL DEFAULT 0;
 ```
 
-`master_key_id` is NOT a hash of the key — it is a random opaque identifier
-to avoid creating an offline passphrase verifier. On first startup, the
-gateway generates a random `master_key_id`, sets `master_key_epoch = 1`,
-backfills all records, and stores in `gateway_config`.
+`master_key_id = SHA-256(master_key)` (32 bytes). The gateway derives it
+deterministically from the loaded master key. On first startup, the gateway
+computes `master_key_id` from the `KeyProvider`-loaded key, sets
+`master_key_epoch = 1`, and backfills all records. After rotation,
+`master_key_id` is recomputed from the new key.
+
+SQL schema: `master_key_id BLOB` columns in `nodes` and `phone_psks` are
+32 bytes (SHA-256 digest).
 
 ### 23.3  Rotation code authentication (GW-2002)
 
@@ -1922,25 +1926,25 @@ The gateway becomes a first-class entity in the ACTUAL_STATE model.
 - `entity_kind = "gateway"`, `entity_id = hex(gateway_id)` (lowercase, no prefix).
 - Emitted on startup, connector reconnection, and state changes.
 
-| Field | CBOR key | Type |
-|-------|----------|------|
-| `msg_type` | 1 | uint (0x02) |
-| `entity_kind` | 2 | tstr ("gateway") |
-| `entity_id` | 3 | tstr (hex gateway_id) |
-| `timestamp_ms` | 9 | uint |
-| `channel` | 15 | uint |
-| `master_key_id` | 16 | bstr (16 bytes) |
-| `master_key_epoch` | 17 | uint |
-| `x25519_public_key` | 18 | bstr (32 bytes) |
-| `fingerprint_words` | 19 | array of tstr |
-| `missing_key_hints` | 20 | array of uint |
-| `salt` | 21 | bstr (16 bytes)/null |
-| `kdf_params` | 22 | map/null |
-| `gateway_version` | 23 | tstr |
-| `gateway_commit` | 24 | tstr |
-| `modem_firmware_version` | 25 | tstr/null |
-| `modem_firmware_commit` | 26 | tstr/null |
-| `rotation_in_progress` | 27 | bool |
+| Field | CBOR key | Type | Notes |
+|-------|----------|------|-------|
+| `msg_type` | 1 | uint (0x02) | |
+| `entity_kind` | 2 | tstr ("gateway") | |
+| `entity_id` | 3 | tstr (hex gateway_id) | |
+| `timestamp_ms` | 9 | uint | |
+| `channel` | 15 | uint | |
+| `master_key_id` | 16 | bstr (32 bytes) | |
+| `master_key_epoch` | 17 | uint | |
+| `x25519_public_key` | 18 | bstr (32 bytes) | |
+| `fingerprint_words` | 19 | array of tstr | |
+| `missing_key_hints` | 20 | array of uint | |
+| *(reserved)* | 21 | — | RETIRED — previously KDF salt |
+| *(reserved)* | 22 | — | RETIRED — previously KDF params |
+| `gateway_version` | 23 | tstr | |
+| `gateway_commit` | 24 | tstr | |
+| `modem_firmware_version` | 25 | tstr/null | |
+| `modem_firmware_commit` | 26 | tstr/null | |
+| `rotation_in_progress` | 27 | bool | |
 
 Node-specific keys 4–8, 10–11 MUST be omitted for gateway entities.
 
@@ -1948,16 +1952,16 @@ Node-specific keys 4–8, 10–11 MUST be omitted for gateway entities.
 
 Inside `desired_state` map (CBOR key 4):
 
-| Field | CBOR key | Type |
-|-------|----------|------|
-| `channel` | 15 | uint/null |
-| `salt` | 21 | bstr (16 bytes)/null |
-| `kdf_params` | 22 | map/null |
-| `rotation_payload` | 28 | bstr/null |
-| `recovered_psks` | 29 | array/null |
+| Field | CBOR key | Type | Notes |
+|-------|----------|------|-------|
+| `channel` | 15 | uint/null | |
+| *(reserved)* | 21 | — | RETIRED — previously KDF salt |
+| *(reserved)* | 22 | — | RETIRED — previously KDF params |
+| `rotation_payload` | 28 | bstr/null | |
+| `recovered_psks` | 29 | array/null | |
 
-Shared keys (15, 21, 22) align with ACTUAL_STATE. DESIRED-only fields use
-keys 28–29 to avoid collision with ACTUAL_STATE keys 23–27.
+Shared keys (15) align with ACTUAL_STATE. DESIRED-only fields use keys 28–29
+to avoid collision with ACTUAL_STATE keys 23–27.
 
 ### 23.6  Node ACTUAL_STATE escrow fields (GW-2005)
 
@@ -1965,7 +1969,7 @@ keys 28–29 to avoid collision with ACTUAL_STATE keys 23–27.
 |-------|----------|------|
 | `encrypted_psk` | 12 | bstr (60 bytes)/null |
 | `escrow_key_hint` | 13 | uint (0–65535)/null |
-| `master_key_id` | 14 | bstr (16 bytes)/null |
+| `master_key_id` | 14 | bstr (32 bytes)/null |
 
 `encrypted_psk` format: 12-byte nonce + 32-byte ciphertext + 16-byte GCM tag.
 Encrypted with `AES-256-GCM(master_key, nonce, psk, aad=node_id_utf8)`.
@@ -1981,7 +1985,7 @@ via ACTUAL_STATE.
 version(1) || sender_ephemeral_public(32) || nonce(12) || ciphertext_and_tag(var)
 ```
 
-Plaintext (CBOR): `{1: new_master_key, 2: rotation_code, 3: new_master_key_id, 4: salt, 5: kdf_params}`.
+Plaintext (CBOR): `{1: new_master_key, 2: rotation_code}`. Keys 3 (`new_master_key_id`), 4 (`salt`), 5 (`kdf_params`) are RESERVED. The gateway derives `master_key_id = SHA-256(new_master_key)` locally after decryption.
 
 Encryption: X25519(ephemeral, gw_public) → HKDF-SHA-256(shared, salt=b"sonde-rotation-v1",
 info=gateway_id_raw||epoch_be64) → AES-256-GCM(key, nonce, plaintext, aad=gateway_id_raw||epoch_be64).
@@ -1991,7 +1995,7 @@ info=gateway_id_raw||epoch_be64) → AES-256-GCM(key, nonce, plaintext, aad=gate
 1. **Prepare:** Write `pending_rotation`, purge `pending_recovery` (same transaction).
 2. **Migrate PSKs** (`migrating_psks`): Re-encrypt all `nodes` and `phone_psks` records.
 3. **Rewrap identity** (`rewrapping_identity`): Re-encrypt `GatewayIdentity` seed under new key into `encrypted_seed_new`.
-4. **Commit** (`committing`): Atomic transaction — promote `encrypted_seed_new`, update `master_key_id`/`epoch`, generate new rotation code. `pending_rotation` is **NOT** deleted in this transaction.
+4. **Commit** (`committing`): Atomic transaction — promote `encrypted_seed_new`, derive the new `master_key_id = SHA-256(new_master_key)`, update `master_key_id`/`epoch`, and generate a new rotation code. `pending_rotation` is **NOT** deleted in this transaction.
 5. **Persist key** (`persisting_key`): Write new master key to `KeyProvider` backend via `write_master_key`. On success, delete `pending_rotation`.
 
 **Key invariant:** During all pre-commit phases, original `encrypted_seed` remains usable with the old key. `GatewayIdentity` is always loadable on restart.
@@ -2136,36 +2140,20 @@ message SubmitRotationResponse { bool accepted = 1; string error = 2; }
 
 Both gRPC and DESIRED_STATE rotation paths converge on the same handler.
 
-### 23.13  Salt and KDF-params convergence (GW-2008)
+### 23.13  KDF and salt — client-side only (GW-2020, GW-2021)
 
-`RotationEngine::handle_desired_state()` applies adopt-if-absent semantics
-for salt and KDF parameters from gateway DESIRED_STATE, per evolve-962 §2.5.
+KDF parameters and salt are client-side concerns. The gateway does not
+store, adopt, or emit KDF-related state.
 
-**Convergence rules:**
+- **KDF v1:** Argon2id (m_cost=65536, t_cost=3, p_cost=1, output_len=32).
+  Hardcoded in admin CLI and SPA.
+- **Salt derivation:** `SHA-256("sonde-kdf-v1:" || utf8(deployment_label))[0..16]`.
+  Computed by client tools from a deployment label stored in client-side
+  configuration only.
 
-1. **Salt adoption:** If DESIRED_STATE contains `salt` (16 bytes),
-   atomically write via `set_config_if_absent("kdf_salt", hex::encode(salt))`
-   (`INSERT ... ON CONFLICT DO NOTHING`). If inserted → log at `info` level.
-2. **Salt immutability:** If `kdf_salt` already exists in `gateway_config` →
-   the atomic insert is a no-op. Log at `info` level that
-   local salt is retained.
-3. **KDF params adoption:** Same adopt-if-absent pattern for `kdf_params`.
-   Read `gateway_config` key `kdf_params_json`. If absent and DESIRED_STATE
-   contains `kdf_params` → serialize as JSON
-   (`{"m_cost":N,"t_cost":N,"p_cost":N,"kdf_version":N}`) and write via
-   `set_config_if_absent("kdf_params_json", json)` (atomic insert).
-4. **KDF params immutability:** If `kdf_params_json` already exists →
-   ignore DESIRED_STATE value.
-5. **ACTUAL_STATE re-emission:** After any successful adoption (salt or KDF
-   params), send a `GatewayStateChanged` notification via a dedicated
-   `state_changed_tx` channel (separate from the rotation-specific
-   `rotation_complete_tx`) to trigger an immediate gateway ACTUAL_STATE
-   re-emission so the cloud sees the adopted values promptly. If a write
-   fails, log the error and do not trigger re-emission for that field;
-   adoption will be retried on the next DESIRED_STATE delivery.
-6. **Rotation-path update:** Salt and KDF params can also be updated via
-   rotation payload delivery — already handled by `commit_rotation()` in
-   §23.7.
+The previous adopt-if-absent convergence for salt and KDF params
+(evolve-962 §2.5) is retired. Gateway DESIRED_STATE keys 21 and 22 are
+RESERVED and ignored if received.
 
 ### 23.14  ACTUAL_STATE re-emission task (GW-2003)
 
@@ -2179,8 +2167,8 @@ step 9a is inline.
 1. `rotation_complete_rx` — receives `RotationCompleteNotification` from
    `RotationEngine` after a successful rotation. Re-emit immediately.
 2. `state_changed_rx` — receives `GatewayStateChanged` from
-   `RotationEngine` after channel convergence, salt/KDF-params adoption,
-   or other non-rotation state changes. Re-emit immediately.
+   `RotationEngine` after channel convergence or other non-rotation state
+   changes. Re-emit immediately.
 3. `missing_hints_notify` — a `tokio::sync::Notify` signalled by the
    `Gateway` engine when `MissingKeyHintTracker::report()` accepts a new
    hint. On notification, start a 60-second debounce timer. If the timer
@@ -2201,8 +2189,8 @@ step 9a is inline.
 On each trigger, the task:
 1. Loads the current gateway identity from storage.
 2. Derives the X25519 public key and BIP-39 fingerprint.
-3. Reads `master_key_id`, `master_key_epoch`, `espnow_channel`,
-   `kdf_salt`, `kdf_params_json` from `gateway_config`.
+3. Reads `master_key_id`, `master_key_epoch`, `espnow_channel` from
+   `gateway_config`.
 4. Drains `missing_key_hints` from the gateway engine's tracker.
 5. Checks `storage.read_pending_rotation()` to determine `rotation_in_progress`.
 6. Reads `modem_firmware_version` and `modem_firmware_commit` from the

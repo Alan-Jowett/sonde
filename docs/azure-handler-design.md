@@ -526,13 +526,11 @@ columns:
 | Column | Type | Applicable entity_kind | Description |
 |--------|------|------------------------|-------------|
 | `encrypted_psk` | `Binary`/null | node | Raw encrypted PSK blob stored with node ACTUAL_STATE. |
-| `master_key_id` | `Binary`/null | node, gateway | Opaque master key identifier used for escrow matching. |
+| `master_key_id` | `Binary`/null | node, gateway | 32-byte `SHA-256(master_key)` identifier used for escrow matching. |
 | `key_hint` | `Edm.Int64`/null | node | Recovery lookup hint for node PSKs. |
 | `x25519_public_key` | `Binary`/null | gateway | Gateway X25519 public key. |
 | `channel` | `Edm.Int64`/null | gateway | Current ESP-NOW channel. |
 | `master_key_epoch` | `Edm.Int64`/null | gateway | Current gateway master-key epoch. |
-| `salt` | `Binary`/null | gateway | Gateway-reported KDF salt. |
-| `kdf_params_json` | `String`/null | gateway | JSON encoding of KDF parameters. |
 | `gateway_version` | `String`/null | gateway | Gateway binary semver. |
 | `gateway_commit` | `String`/null | gateway | Gateway binary git commit. |
 | `modem_firmware_version` | `String`/null | gateway | Modem firmware semver. |
@@ -615,13 +613,10 @@ the newly appended row (which sorts first due to the inverted-timestamp RowKey)
 is picked up as the latest state. This preserves the original SPA-written row
 for audit purposes while making the DESIRED_STATE relay one-shot.
 
-### 9.5  Salt management and gateway DESIRED_STATE construction
+### 9.5  Gateway DESIRED_STATE construction — KDF fields retired
 
-The gateway is authoritative for salt. The handler stores whatever salt the
-gateway reports in ACTUAL_STATE. When constructing gateway DESIRED_STATE, the
-handler includes the stored salt only if the gateway reports `salt = null`.
-If the gateway reports a non-null salt, the handler preserves that value in the
-gateway row and does not override it via DESIRED_STATE.
+KDF parameters and salt are client-side concerns only (GW-2020, GW-2021).
+The handler does not store or relay salt or KDF parameters.
 
 Gateway DESIRED_STATE uses:
 
@@ -629,11 +624,7 @@ Gateway DESIRED_STATE uses:
 - `entity_id = hex(gateway_id)`
 - `PartitionKey = "g:" + gateway_id_hex` in the `desiredstate` table
 - CBOR key 15 for `channel`
-- CBOR key 21 for `salt`
-- CBOR key 22 for `kdf_params`
 - CBOR key 28 for `rotation_payload`
 - CBOR key 29 for `recovered_psks`
 
-These keys align the shared channel and salt/KDF fields with gateway
-ACTUAL_STATE while reserving keys 28 and 29 for DESIRED_STATE-only escrow
-payloads.
+Keys 21 (`salt`) and 22 (`kdf_params`) are RESERVED and not emitted.

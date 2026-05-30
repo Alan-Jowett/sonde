@@ -404,10 +404,10 @@ singleton), unless the incoming message's `timestamp_ms` is older than the
 previously stored latest row, in which case the handler MUST silently discard
 the stale message without appending. The handler MUST store all gateway-specific
 escrow and recovery fields:
-`x25519_public_key`, `channel`, `master_key_id`, `master_key_epoch`, `salt`,
-`kdf_params_json`, `gateway_version`, `gateway_commit`,
-`modem_firmware_version`, `modem_firmware_commit`,
-`missing_key_hints`, `fingerprint_words`, and `rotation_in_progress`.
+`x25519_public_key`, `channel`, `master_key_id`, `master_key_epoch`,
+`gateway_version`, `gateway_commit`, `modem_firmware_version`,
+`modem_firmware_commit`, `missing_key_hints`, `fingerprint_words`, and
+`rotation_in_progress`.
 
 The `load_gateway_actual_state` operation MUST return only the latest row per
 gateway (the row with the lexicographically smallest `RowKey` within the
@@ -485,20 +485,11 @@ SPA-written row.
 
 ---
 
-### AZH-0604  Salt management
+### AZH-0604  Salt management — RETIRED
 
-**Priority:** Must
-**Source:** Issue #962, [evolve-962-specification.md](evolve-962-specification.md) §4.3
-
-**Description:**
-Salt arrives in gateway `ACTUAL_STATE` and is stored in the gateway row. The
-gateway is authoritative for salt. The handler includes the stored salt in
-gateway `DESIRED_STATE` only for gateways that report `salt = null`.
-
-**Acceptance criteria:**
-
-1. Gateway-reported salt is stored.
-2. Salt is included in `DESIRED_STATE` only when the gateway has no local salt.
+**Status:** RETIRED
+**Reason:** KDF parameters and salt are client-side concerns only (GW-2020, GW-2021).
+The handler no longer stores or relays salt or KDF parameters.
 
 ---
 
@@ -510,9 +501,10 @@ gateway `DESIRED_STATE` only for gateways that report `salt = null`.
 **Description:**
 The handler MUST construct gateway `DESIRED_STATE` with
 `entity_kind = "gateway"` and `entity_id = hex(gateway_id)`. Inside the
-`desired_state` map it MUST use CBOR keys 15 for `channel`, 21 for `salt`, 22
-for `kdf_params`, 28 for `rotation_payload`, and 29 for `recovered_psks`.
-Gateway `DESIRED_STATE` is written to the `desiredstate` Azure Table with
+`desired_state` map it MUST use CBOR keys 15 for `channel`, 28 for
+`rotation_payload`, and 29 for `recovered_psks`. Keys 21 and 22 are RESERVED
+and MUST NOT be emitted. Gateway `DESIRED_STATE` is written to the
+`desiredstate` Azure Table with
 `PartitionKey = "g:" + gateway_id_hex`. All handler writes to the
 `desiredstate` table MUST be append-only (new rows with unique history
 `RowKey`s), never upserts or replacements.

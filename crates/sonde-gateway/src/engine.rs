@@ -337,7 +337,7 @@ pub struct Gateway {
     /// Cached master_key_id for pending_recovery lookups (GW-2009).
     /// Loaded once at `set_sqlite_storage` time to avoid calling
     /// `init_master_key_id` on the per-frame path.
-    cached_master_key_id: Option<[u8; 16]>,
+    cached_master_key_id: Option<[u8; 32]>,
 }
 
 impl Gateway {

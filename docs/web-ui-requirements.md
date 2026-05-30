@@ -1110,7 +1110,7 @@ gateway's ACTUAL_STATE row in the `actualstate` Azure Table
 (`PartitionKey` starting with `"g:"`). The SPA selects the latest row per
 gateway partition using `latestByPartition`. The card MUST
 show the BIP-39 fingerprint (6 words), `master_key_epoch`, `master_key_id`
-(hex), `rotation_in_progress`, salt status (present/absent),
+(32-byte SHA-256 hex), `rotation_in_progress`,
 `gateway_version`, `modem_firmware_version`, and `channel`.
 
 The gateway status card MUST also display a convergence badge (Aligned /
@@ -1151,8 +1151,8 @@ collapsible rotation form within the card. The form shows (1) the BIP-39
 fingerprint with instructions to verify it against the modem, (2) a rotation
 code input limited to 6 characters and normalized to uppercase `[A-Z0-9]`,
 (3) a masked passphrase input that requires either at least 20 characters or
-6 space-separated words, (4) the current salt from the gateway ACTUAL_STATE
-or a `first rotation` indicator if the salt is null, and (5) a confirmation
+6 space-separated words, (4) a deployment label input field where the admin
+enters the label used to derive salt deterministically, and (5) a confirmation
 action. If the browser lacks the required rotation crypto capabilities, the
 button MUST be disabled with a tooltip explaining the requirement.
 
@@ -1183,18 +1183,18 @@ resumes when the form collapses.
 **Confidence:** High
 
 **Description:**
-The SPA MUST derive the new master key using
-`Argon2id(passphrase, salt, kdf_params)` via a WASM Argon2id implementation
-(e.g., `argon2-browser`). The default KDF parameters for the first rotation are
-`m_cost=65536`, `t_cost=3`, and `p_cost=1`. If the gateway ACTUAL_STATE
-includes `kdf_params`, the SPA MUST use those parameters instead. Passphrase and
-derived key material MUST be cleared from JavaScript variables after use on a
-best-effort basis.
+The SPA MUST derive the new master key using Argon2id with hardcoded KDF v1
+parameters (`m_cost=65536`, `t_cost=3`, `p_cost=1`, `output_len=32`) via a
+WASM Argon2id implementation (e.g., `argon2-browser`). Salt is derived from
+the deployment label: `SHA-256("sonde-kdf-v1:" || utf8(deployment_label))[0..16]`.
+The SPA MUST NOT read KDF parameters or salt from gateway ACTUAL_STATE.
+Passphrase and derived key material MUST be cleared from JavaScript variables
+after use on a best-effort basis.
 
 **Acceptance criteria:**
 
 1. The derived key matches the gateway's expected output for the same inputs.
-2. `kdf_params` from ACTUAL_STATE are used when present.
+2. Hardcoded KDF v1 parameters are always used.
 3. Key material is cleared after use on a best-effort basis.
 
 ---
@@ -1213,8 +1213,8 @@ CDN-loaded `noble-curves` implementation; shared secret
 using `shared_secret`, `hkdf_salt = b"sonde-rotation-v1"`, and
 `info = gateway_id_raw || current_master_key_epoch_be64`; a random 12-byte nonce
 from `crypto.getRandomValues()`; CBOR plaintext map
-`{1: new_master_key, 2: rotation_code, 3: new_master_key_id, 4: salt, 5: kdf_params}`;
-AES-256-GCM ciphertext using the derived key, nonce, and
+`{1: new_master_key, 2: rotation_code}`. CBOR keys 3–5 are RESERVED and MUST
+NOT be included; AES-256-GCM ciphertext using the derived key, nonce, and
 `aad = gateway_id_raw || current_master_key_epoch_be64`; and final output
 `version || ephemeral_public || nonce || ciphertext_and_tag`.
 
@@ -1343,15 +1343,8 @@ The convergence check compares the following fields:
   desired.submitted_epoch`, the rotation is considered consumed.
 - **`channel`:** Diverged if the desired `channel` is non-null and differs
   from actual `channel`.
-- **`salt`:** Diverged only when the gateway has no local salt (actual
-  `salt` is null/absent) AND the desired `salt` is non-null. Once the
-  gateway has a salt, it is immutable except via rotation payload — a
-  mismatched desired `salt` against an existing actual `salt` is a no-op
-  by gateway design and does NOT flag divergence.
-- **`kdf_params`:** Diverged only when the gateway has no local KDF params
-  (actual `kdf_params_json` is null/absent) AND the desired
-  `kdf_params`/`kdf_params_json` is non-null. Same set-if-absent semantics
-  as `salt`.
+- **`salt`:** *(Retired — no longer tracked for convergence.)*
+- **`kdf_params`:** *(Retired — no longer tracked for convergence.)*
 
 `recovered_psks` is excluded from convergence — it is a background queue
 not visible to the operator.
@@ -1372,14 +1365,10 @@ success` for Aligned, `badge warning` for Diverged).
    `master_key_epoch > submitted_epoch` shows "Aligned" (rotation
    consumed).
 4. Gateway with desired `channel` differing from actual shows "Diverged."
-5. Gateway with desired `salt` when actual `salt` is absent shows
-   "Diverged."
-6. Gateway with desired `salt` when actual `salt` already exists (even if
-   different) shows "Aligned" (set-if-absent semantics).
-7. Gateway with desired `kdf_params` when actual is absent shows
-   "Diverged."
-8. Gateway with desired `kdf_params` when actual already exists shows
-   "Aligned" (set-if-absent semantics).
+5. *(Reserved — previously salt divergence, now retired.)*
+6. *(Reserved — previously salt alignment, now retired.)*
+7. *(Reserved — previously KDF params divergence, now retired.)*
+8. *(Reserved — previously KDF params alignment, now retired.)*
 9. Badge uses the same CSS styling as the node convergence badge.
 
 ---

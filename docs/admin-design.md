@@ -379,8 +379,8 @@ gateway ACTUAL_STATE from the local gateway admin API.
 
 - `key fingerprint` reads `fingerprint_words` and prints the 6-word BIP-39
   fingerprint.
-- `key status` reads and displays `master_key_epoch`, `master_key_id`,
-  `rotation_in_progress`, salt status, and `kdf_params`.
+- `key status` reads and displays `master_key_epoch`, `master_key_id`
+  (32-byte SHA-256 hex), and `rotation_in_progress`.
 - `key rotate` reads the current gateway ACTUAL_STATE before building the
   rotation payload, then calls `SubmitRotation` to send the serialized
   `RotationPayloadV1` binary blob to the gateway.
@@ -393,23 +393,20 @@ After `SubmitRotation`, `key rotate` polls `GetGatewayState` until
 The `key rotate` handler performs the following sequence:
 
 1. Call `GetGatewayState` and extract the gateway fingerprint,
-   `x25519_public_key`, `master_key_epoch`, salt, and `kdf_params`.
+   `x25519_public_key`, and `master_key_epoch`.
 2. Display the BIP-39 fingerprint and prompt the user to confirm that it
    matches the modem display before continuing.
 3. Prompt for the rotation code on stdin and normalize the input to uppercase
    `[A-Z0-9]` before payload construction.
 4. Prompt for the passphrase using masked terminal input. Reject any passphrase
    shorter than 20 characters and fewer than 6 words.
-5. Select Argon2id parameters from gateway ACTUAL_STATE `kdf_params`, or use
-   defaults `m=65536`, `t=3`, `p=1` when the gateway has no stored parameters.
-6. Use the salt from gateway ACTUAL_STATE when present. On first rotation, if
-   the gateway reports no salt, generate a new random salt and include it in
-   the payload.
-7. Derive the new master key with Argon2id.
-8. Generate a random 16-byte `new_master_key_id`.
-9. Build `RotationPayloadV1` and send it with `SubmitRotation`.
-10. Poll `GetGatewayState` until `master_key_epoch` increments, then report
-    success.
+5. Prompt for the deployment label. Reject empty labels.
+6. Derive salt = `SHA-256("sonde-kdf-v1:" || utf8(deployment_label))[0..16]`.
+7. Derive the new master key with Argon2id v1 (m_cost=65536, t_cost=3,
+   p_cost=1, output_len=32) using the passphrase and derived salt.
+8. Build `RotationPayloadV1` and send it with `SubmitRotation`.
+9. Poll `GetGatewayState` until `master_key_epoch` increments, then report
+   success.
 
 ### 11.4  `RotationPayloadV1` construction
 
@@ -423,8 +420,8 @@ DESIRED_STATE rotation delivery.
 4. Derive the AES-256-GCM content-encryption key with HKDF-SHA-256 using:
    - `salt = b"sonde-rotation-v1"`
    - `info = gateway_id_raw || current_master_key_epoch_be64`
-5. Encode the plaintext as `{new_master_key, rotation_code, new_master_key_id,
-   salt, kdf_params}`.
+5. Encode the plaintext as `{1: new_master_key, 2: rotation_code}`. Keys 3–5
+   are RESERVED.
 6. Encrypt the plaintext with AES-256-GCM and serialize the final
    `RotationPayloadV1` as `version || sender_ephemeral_public || nonce || ciphertext_and_tag`.
 

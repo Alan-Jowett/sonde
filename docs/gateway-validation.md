@@ -4223,19 +4223,19 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-2000  Master key identification — first startup
 
-**Traces to:** GW-2001 (AC-1, AC-2, AC-3, AC-4)
+**Traces to:** GW-2001 (AC-1, AC-2, AC-3, AC-4, AC-5)
 
 **Steps:**
 1. Create `SqliteStorage` with a master key.
 2. Verify no `master_key_id` or `master_key_epoch` in `gateway_config`.
 3. Run startup initialization.
-4. Verify `master_key_id` is a random 16-byte value (non-zero).
+4. Verify `master_key_id` = `SHA-256(master_key)` (32 bytes).
 5. Verify `master_key_epoch = 1`.
 6. Verify all existing PSK records have `master_key_id` and `master_key_epoch` backfilled.
 7. Restart — verify same values are loaded (not regenerated).
 
 **Expected:**
-1. Stable `master_key_id` across restarts; epoch = 1; all records backfilled.
+1. Stable `master_key_id` = SHA-256(master_key) across restarts; epoch = 1; all records backfilled.
 
 ---
 
@@ -4342,15 +4342,18 @@ A configurable stub handler process (or in-process mock) that:
 1. Start gateway with 3 registered nodes, 1 phone PSK, and a writable
    `FileKeyProvider` (using a temp key file).
 2. Record old `master_key_id` and `master_key_epoch`.
-3. Submit valid rotation payload via DESIRED_STATE.
+3. Submit valid rotation payload via DESIRED_STATE (payload contains only
+   `{1: new_master_key, 2: rotation_code}` — no master_key_id, salt, or
+   KDF params in payload).
 4. Verify all PSK records (nodes and phone_psks) updated with new
-   `master_key_id` and `master_key_epoch = old_epoch + 1`.
+   `master_key_id = SHA-256(new_master_key)` (32 bytes) and
+   `master_key_epoch = old_epoch + 1`.
 5. Verify old master key no longer decrypts any PSK record.
 6. Verify new master key decrypts all PSK records.
-7. Verify updated gateway ACTUAL_STATE: new epoch, new id,
-   `rotation_in_progress = false`.
+7. Verify updated gateway ACTUAL_STATE: new epoch, new id =
+   SHA-256(new_key), `rotation_in_progress = false`.
 8. Verify node ACTUAL_STATE re-emitted with new `encrypted_psk`
-   and `master_key_id`.
+   and `master_key_id` (32 bytes).
 9. Verify the key file on disk contains the new master key (hex-encoded).
 10. Verify `pending_rotation` table is empty.
 11. Stop the gateway.  Reload the key from the key file and re-open the
@@ -4502,27 +4505,12 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-2007  Salt and KDF-params management
+### T-2007  Salt and KDF-params management — RETIRED
 
-**Traces to:** GW-2008 (AC-1, AC-2, AC-3, AC-4)
-
-**Steps:**
-1. Start gateway with no local salt or KDF params — verify `salt = null`
-   and `kdf_params = null` in ACTUAL_STATE.
-2. Deliver DESIRED_STATE with salt and KDF params — verify gateway adopts
-   both.
-3. Verify subsequent ACTUAL_STATE reports the adopted salt and KDF params.
-4. Deliver DESIRED_STATE with a different salt and different KDF params —
-   verify gateway keeps its existing values (local wins once set).
-5. Perform rotation with salt in payload — verify salt updated.
-6. Deliver DESIRED_STATE with salt but no KDF params — verify only salt is
-   evaluated (KDF params unchanged).
-7. Deliver DESIRED_STATE with KDF params but no salt — verify only KDF
-   params is evaluated (salt unchanged).
-
-**Expected:**
-1. Salt and KDF-params adoption and immutability semantics correct.
-2. Partial DESIRED_STATE (only salt or only KDF params) handled independently.
+**Status:** RETIRED
+**Reason:** Salt and KDF parameters are client-side concerns only
+(GW-2008 RETIRED, GW-2020, GW-2021). The gateway does not store, adopt,
+or emit KDF-related state.
 
 ---
 
@@ -4627,23 +4615,11 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-2013  Salt/KDF adoption triggers ACTUAL_STATE re-emission
+### T-2013  Salt/KDF adoption triggers ACTUAL_STATE re-emission — RETIRED
 
-**Traces to:** GW-2003 (AC-7)
-
-**Steps:**
-1. Start gateway with no local salt or KDF params.
-2. Connect a connector consumer and verify initial ACTUAL_STATE
-   (salt = null, kdf_params = null).
-3. Deliver a gateway DESIRED_STATE with `salt` (16 bytes) and `kdf_params`.
-4. Verify gateway ACTUAL_STATE re-emitted with the adopted `salt` and
-   `kdf_params` values.
-5. Deliver another DESIRED_STATE with different salt.
-6. Verify ACTUAL_STATE is NOT re-emitted (local salt is immutable).
-
-**Expected:**
-1. First adoption triggers ACTUAL_STATE re-emission with new values.
-2. Subsequent DESIRED_STATE with different salt does not trigger re-emission.
+**Status:** RETIRED
+**Reason:** Salt and KDF adoption is retired (GW-2008 RETIRED, GW-2020,
+GW-2021). No salt/KDF-related state changes trigger re-emission.
 
 ---
 

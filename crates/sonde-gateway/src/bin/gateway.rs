@@ -1028,6 +1028,8 @@ async fn run_gateway(
     //     comment retained for section numbering continuity).
 
     // 2e. Load/generate master_key_id and master_key_epoch (§23.11 step 2c).
+    // init_master_key_id() uses the storage-internal master key, which
+    // reflects any swap performed by crash recovery in step 2a.
     let (master_key_id, master_key_epoch) = storage.init_master_key_id().await?;
     info!(
         master_key_id = %hex::encode(master_key_id),
@@ -2033,7 +2035,19 @@ async fn emit_gateway_actual_state_from_storage(
         .map(|b| format!("{b:02x}"))
         .collect();
 
-    let (mk_id, mk_epoch) = storage.init_master_key_id().await?;
+    let mk_id_hex = storage
+        .get_config("master_key_id")
+        .await?
+        .ok_or("master key not initialized")?;
+    let mk_id_vec =
+        hex::decode(&mk_id_hex).map_err(|e| format!("invalid master_key_id hex: {e}"))?;
+    let mk_id: [u8; 32] = mk_id_vec.as_slice().try_into().map_err(|_| {
+        format!(
+            "master_key_id has wrong length: {} (expected 32)",
+            mk_id_vec.len()
+        )
+    })?;
+    let mk_epoch = storage.get_master_key_epoch().await?;
 
     let (_, x25519_public) = identity
         .to_x25519()
@@ -2047,49 +2061,6 @@ async fn emit_gateway_actual_state_from_storage(
         Some(s) => s.parse().unwrap_or(1),
         None => 1,
     };
-
-    let salt: Option<Vec<u8>> = match storage.get_config("kdf_salt").await? {
-        Some(s) => {
-            let bytes = hex::decode(&s).map_err(|e| format!("invalid kdf_salt hex: {e}"))?;
-            if bytes.len() == 16 {
-                Some(bytes)
-            } else {
-                warn!(
-                    expected = 16,
-                    actual = bytes.len(),
-                    "kdf_salt in storage has invalid length — treating as absent"
-                );
-                None
-            }
-        }
-        None => None,
-    };
-
-    let kdf_params: Option<sonde_gateway::connector::KdfParams> =
-        match storage.get_config("kdf_params_json").await? {
-            Some(json) => {
-                #[derive(serde::Deserialize)]
-                struct Kdf {
-                    m_cost: u32,
-                    t_cost: u32,
-                    p_cost: u32,
-                    kdf_version: u32,
-                }
-                match serde_json::from_str::<Kdf>(&json) {
-                    Ok(p) => Some(sonde_gateway::connector::KdfParams {
-                        m_cost: p.m_cost,
-                        t_cost: p.t_cost,
-                        p_cost: p.p_cost,
-                        kdf_version: p.kdf_version,
-                    }),
-                    Err(e) => {
-                        warn!("invalid kdf_params_json in storage: {e}");
-                        None
-                    }
-                }
-            }
-            None => None,
-        };
 
     let missing_key_hints = gateway.drain_missing_hints().await;
 
@@ -2119,8 +2090,6 @@ async fn emit_gateway_actual_state_from_storage(
         *x25519_public.as_bytes(),
         fingerprint_words,
         missing_key_hints,
-        salt,
-        kdf_params,
         gateway_version,
         gateway_commit,
         modem_meta.firmware_version,

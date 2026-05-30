@@ -512,18 +512,24 @@ Direct ESP-NOW pairing (without BLE intermediary) was considered and rejected �
 
 ```
 passphrase + salt ──► Argon2id ──► master_key (32 bytes)
-                                      │
-                              ┌───────┴────────┐
-                              ▼                ▼
-                    Encrypt(PSK_node1)  Encrypt(PSK_node2) ...
-                              │                │
-                              ▼                ▼
-                       Azure ACTUAL_STATE   (encrypted blobs)
+   (client-side only)                    │
+                                 ┌───────┼────────┐
+                                 │       │        │
+                                 ▼       ▼        ▼
+                      SHA-256 ──► master_key_id (32 bytes)
+                               Encrypt(PSK_node1)  Encrypt(PSK_node2) ...
+
+salt = SHA-256("sonde-kdf-v1:" || deployment_label)[0..16]
+KDF v1: Argon2id(m=65536, t=3, p=1, output=32)
 ```
 
 The master key encrypts all PSK records (nodes and phone_psks) at rest.
-The master key itself is derived from a passphrase via Argon2id and is
-never stored in Azure — only opaque encrypted PSK blobs transit the cloud.
+The master key is derived from a passphrase via Argon2id entirely on the
+client side (admin CLI or SPA). Neither salt, KDF parameters, nor the
+deployment label are transmitted to or stored by the gateway or Azure — only
+the derived master key reaches the gateway via the encrypted rotation payload,
+and only opaque encrypted PSK blobs transit the cloud. `master_key_id =
+SHA-256(master_key)` is derived locally by the gateway.
 
 ### 10.2  Master key delivery
 
@@ -536,7 +542,7 @@ Admin ──► Argon2id(passphrase, salt) ──► new_master_key
                                                 │
                                    ┌────────────┘
                                    ▼
-                    {new_key, rotation_code, new_key_id, salt, kdf}
+                    {new_key, rotation_code}
                                    │
                         ──► DESIRED_STATE ──► Gateway
                                                 │
@@ -558,7 +564,8 @@ Admin ──► Argon2id(passphrase, salt) ──► new_master_key
 | Azure compromise → PSK disclosure | PSKs encrypted with master key; key never in Azure | None (AES-256-GCM) |
 | Azure compromise → forced key rotation | Rotation requires rotation_code from modem display; attacker cannot read physical display | Requires physical access to modem |
 | Azure MITM on public key | BIP-39 fingerprint computed locally by SPA from `x25519_public_key`, NOT read from Azure-stored `fingerprint_words`. Admin verifies SPA-computed fingerprint against modem display (66-bit work factor). A compromised Azure cannot substitute a rogue key with pre-matched words. | Targeted collision requires ~2^66 operations |
-| Offline passphrase brute-force | Argon2id (64 MiB memory-hard); `master_key_id` is opaque random (NOT a hash of key) — no offline verifier in cloud | Computationally infeasible without direct gateway access |
+| Offline passphrase brute-force | Argon2id (64 MiB memory-hard); `master_key_id = SHA-256(master_key)` is a public verifier but encrypted PSK blobs already provide a faster AEAD trial-decryption oracle. Argon2id dominates the cost of passphrase guessing. KDF parameters and deployment label not stored in Azure. | Computationally infeasible without direct gateway access |
+| Cross-gateway key linkability | `master_key_id = SHA-256(master_key)` is deterministic — same passphrase + label → same ID visible to Azure | Accepted; shared label implies single deployment by design |
 | `key_hint` amplification (radio→cloud) | Rate limiting: 1 hint per `key_hint` per 60 seconds; max 256 dedup entries (LRU) | Bounded amplification factor |
 | Fake recovered PSKs from cloud | Provisional `pending_recovery` table; promoted only after successful frame authentication | Bogus records expire after 24h |
 | Rotation crash → split-brain keys | Two-key window + `pending_rotation` record + per-record `master_key_epoch` | Auto-recoverable on restart |
@@ -578,6 +585,6 @@ The rotation code provides physical-presence authentication:
 ### 10.5  Escrow trust model
 
 - **PSK blobs are opaque to the cloud.** The Azure handler stores and returns encrypted blobs without inspection.
-- **No offline passphrase verifier.** `master_key_id` is a random opaque identifier, not a hash of the key material.
+- **No additional offline passphrase verifier beyond existing AEAD oracle.** `master_key_id = SHA-256(master_key)` is technically a verifier, but encrypted PSK blobs already provide a strictly faster trial-decryption oracle. The incremental risk is zero. KDF parameters and salt are not stored in Azure.
 - **Recovery is trial-based.** Recovered PSKs are placed in `pending_recovery` and only promoted after successful frame authentication.
 - **Phone PSKs are not escrowed.** This is a scoping decision; the protocol supports phone escrow without modification.

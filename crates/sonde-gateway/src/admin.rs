@@ -24,16 +24,6 @@ use crate::session::SessionManager;
 use crate::storage::{HandlerRecord, Storage};
 use crate::transient_display::{show_modem_display_message, ActiveDisplayState};
 
-/// JSON-deserializable KDF parameters (stored in gateway_config).
-#[derive(serde::Deserialize)]
-struct KdfParamsJson {
-    m_cost: u32,
-    t_cost: u32,
-    p_cost: u32,
-    #[serde(alias = "version")]
-    kdf_version: u32,
-}
-
 /// Channel type for rotation payload submission with oneshot response.
 pub type RotationSubmitChannel =
     tokio::sync::mpsc::UnboundedSender<(Vec<u8>, tokio::sync::oneshot::Sender<Result<(), String>>)>;
@@ -1260,9 +1250,8 @@ impl GatewayAdmin for AdminService {
     /// Return the gateway's current state for key management operations.
     ///
     /// Provides the X25519 public key, BIP-39 fingerprint, master key
-    /// identification, salt, KDF params, and rotation status needed by
-    /// the admin CLI `key rotate`, `key fingerprint`, and `key status`
-    /// commands.
+    /// identification, and rotation status needed by the admin CLI
+    /// `key rotate`, `key fingerprint`, and `key status` commands.
     async fn get_gateway_state(
         &self,
         _request: Request<Empty>,
@@ -1286,9 +1275,9 @@ impl GatewayAdmin for AdminService {
             .ok_or_else(|| Status::not_found("master key not initialized"))?;
         let master_key_id = hex::decode(&master_key_id_hex)
             .map_err(|e| Status::internal(format!("invalid master_key_id hex: {e}")))?;
-        if master_key_id.len() != 16 {
+        if master_key_id.len() != 32 {
             return Err(Status::internal(format!(
-                "master_key_id has wrong length: {} (expected 16)",
+                "master_key_id has wrong length: {} (expected 32)",
                 master_key_id.len()
             )));
         }
@@ -1326,47 +1315,6 @@ impl GatewayAdmin for AdminService {
             None => 1,
         };
 
-        // Salt — error if stored but malformed, None if absent.
-        let salt = match self
-            .storage
-            .get_config("kdf_salt")
-            .await
-            .map_err(storage_err)?
-        {
-            Some(s) => {
-                let bytes = hex::decode(&s)
-                    .map_err(|e| Status::internal(format!("invalid kdf_salt hex: {e}")))?;
-                if bytes.len() != 16 {
-                    return Err(Status::internal(format!(
-                        "kdf_salt has wrong length: {} (expected 16)",
-                        bytes.len()
-                    )));
-                }
-                Some(bytes)
-            }
-            None => None,
-        };
-
-        // KDF params — error if stored but malformed, None if absent.
-        let kdf_params = match self
-            .storage
-            .get_config("kdf_params_json")
-            .await
-            .map_err(storage_err)?
-        {
-            Some(json) => {
-                let p: KdfParamsJson = serde_json::from_str(&json)
-                    .map_err(|e| Status::internal(format!("invalid kdf_params_json: {e}")))?;
-                Some(KdfParameters {
-                    m_cost: p.m_cost,
-                    t_cost: p.t_cost,
-                    p_cost: p.p_cost,
-                    kdf_version: p.kdf_version,
-                })
-            }
-            None => None,
-        };
-
         // Check for active rotation via the `pending_rotation_phase` config key.
         // This key is set by the rotation engine when a rotation begins and
         // cleared on commit. When the engine wiring lands, this will reflect
@@ -1386,8 +1334,8 @@ impl GatewayAdmin for AdminService {
             x25519_public_key: x25519_public.as_bytes().to_vec(),
             fingerprint_words: fp.iter().map(|w| w.to_string()).collect(),
             rotation_in_progress,
-            salt,
-            kdf_params,
+            salt: None,
+            kdf_params: None,
             gateway_version: env!("CARGO_PKG_VERSION").to_string(),
             gateway_commit: option_env!("SONDE_GIT_COMMIT")
                 .unwrap_or("unknown")

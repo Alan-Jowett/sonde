@@ -10,7 +10,7 @@ use std::sync::Arc;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use hkdf::Hkdf;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 use x25519_dalek::PublicKey as X25519PublicKey;
 use zeroize::Zeroizing;
@@ -30,8 +30,6 @@ fn build_rotation_payload(
     current_epoch: u64,
     new_master_key: &[u8; 32],
     rotation_code: &str,
-    new_master_key_id: &[u8; 16],
-    salt: Option<&[u8; 16]>,
 ) -> Vec<u8> {
     // Generate ephemeral X25519 keypair.
     let mut rng_bytes = [0u8; 32];
@@ -56,8 +54,8 @@ fn build_rotation_payload(
     let mut derived_key = [0u8; 32];
     hk.expand(&info, &mut derived_key).unwrap();
 
-    // Build CBOR plaintext: {1: new_master_key, 2: rotation_code, 3: new_master_key_id, 4: salt, 5: null}
-    let mut cbor_pairs: Vec<(ciborium::Value, ciborium::Value)> = vec![
+    // Build CBOR plaintext: {1: new_master_key, 2: rotation_code}
+    let cbor_map = ciborium::Value::Map(vec![
         (
             ciborium::Value::Integer(1.into()),
             ciborium::Value::Bytes(new_master_key.to_vec()),
@@ -66,21 +64,7 @@ fn build_rotation_payload(
             ciborium::Value::Integer(2.into()),
             ciborium::Value::Text(rotation_code.to_string()),
         ),
-        (
-            ciborium::Value::Integer(3.into()),
-            ciborium::Value::Bytes(new_master_key_id.to_vec()),
-        ),
-    ];
-    if let Some(s) = salt {
-        cbor_pairs.push((
-            ciborium::Value::Integer(4.into()),
-            ciborium::Value::Bytes(s.to_vec()),
-        ));
-    } else {
-        cbor_pairs.push((ciborium::Value::Integer(4.into()), ciborium::Value::Null));
-    }
-    cbor_pairs.push((ciborium::Value::Integer(5.into()), ciborium::Value::Null));
-    let cbor_map = ciborium::Value::Map(cbor_pairs);
+    ]);
     let mut plaintext = Vec::new();
     ciborium::into_writer(&cbor_map, &mut plaintext).unwrap();
 
@@ -111,7 +95,7 @@ fn build_rotation_payload(
 async fn setup_test_gateway() -> (
     Arc<SqliteStorage>,
     GatewayIdentity,
-    [u8; 16], // master_key_id
+    [u8; 32], // master_key_id
     u64,      // epoch
     String,   // rotation_code
 ) {
@@ -213,11 +197,10 @@ async fn test_t2003_rotation_code_authentication() {
 
     // Build a payload with the WRONG rotation code.
     let new_key = [0xAAu8; 32];
-    let new_id = [0xBBu8; 16];
     let wrong_code = "ZZZZZZ";
     assert_ne!(wrong_code, code);
 
-    let payload = build_rotation_payload(&identity, epoch, &new_key, wrong_code, &new_id, None);
+    let payload = build_rotation_payload(&identity, epoch, &new_key, wrong_code);
 
     // Submit via the engine — should be rejected.
     let (_grpc_tx, grpc_rx) = mpsc::unbounded_channel();
@@ -238,7 +221,7 @@ async fn test_t2003_rotation_code_authentication() {
     assert!(result.unwrap_err().contains("rotation code does not match"));
 
     // Submit with the CORRECT rotation code — should succeed.
-    let payload = build_rotation_payload(&identity, epoch, &new_key, &code, &new_id, None);
+    let payload = build_rotation_payload(&identity, epoch, &new_key, &code);
 
     let (_grpc_tx2, grpc_rx2) = mpsc::unbounded_channel();
     let (_, desired_state_rx2) = mpsc::unbounded_channel();
@@ -290,8 +273,8 @@ async fn test_t2004_rotation_happy_path() {
 
     // Build and submit rotation.
     let new_key = [0xAAu8; 32];
-    let new_id = [0xBBu8; 16];
-    let payload = build_rotation_payload(&identity, old_epoch, &new_key, &code, &new_id, None);
+    let new_id: [u8; 32] = Sha256::digest(new_key).into();
+    let payload = build_rotation_payload(&identity, old_epoch, &new_key, &code);
 
     let (_, grpc_rx) = mpsc::unbounded_channel();
     let (_, desired_state_rx) = mpsc::unbounded_channel();
@@ -338,11 +321,9 @@ async fn test_t2004a_rotation_validation_failures() {
     let (store, identity, _, epoch, code) = setup_test_gateway().await;
 
     let new_key = [0xAAu8; 32];
-    let new_id = [0xBBu8; 16];
 
     // 1. Wrong epoch (build with epoch+1 — AAD won't match).
-    let wrong_epoch_payload =
-        build_rotation_payload(&identity, epoch + 1, &new_key, &code, &new_id, None);
+    let wrong_epoch_payload = build_rotation_payload(&identity, epoch + 1, &new_key, &code);
     let (_, grpc_rx) = mpsc::unbounded_channel();
     let (_, desired_state_rx) = mpsc::unbounded_channel();
     let event_hub = Arc::new(ConnectorEventHub::default());
@@ -360,8 +341,7 @@ async fn test_t2004a_rotation_validation_failures() {
     assert!(result.is_err(), "wrong epoch should be rejected");
 
     // 2. Wrong rotation code.
-    let wrong_code_payload =
-        build_rotation_payload(&identity, epoch, &new_key, "BADCOD", &new_id, None);
+    let wrong_code_payload = build_rotation_payload(&identity, epoch, &new_key, "BADCOD");
     let (_, grpc_rx) = mpsc::unbounded_channel();
     let (_, desired_state_rx) = mpsc::unbounded_channel();
     let event_hub = Arc::new(ConnectorEventHub::default());
@@ -379,7 +359,7 @@ async fn test_t2004a_rotation_validation_failures() {
     assert!(result.is_err(), "wrong code should be rejected");
 
     // 3. Corrupted ciphertext.
-    let mut corrupted = build_rotation_payload(&identity, epoch, &new_key, &code, &new_id, None);
+    let mut corrupted = build_rotation_payload(&identity, epoch, &new_key, &code);
     // Flip a byte in the ciphertext region.
     let last = corrupted.len() - 1;
     corrupted[last] ^= 0xFF;
@@ -398,7 +378,7 @@ async fn test_t2004a_rotation_validation_failures() {
     assert!(result.is_err(), "corrupted ciphertext should be rejected");
 
     // 4. Replay (submit valid, then replay — epoch already incremented).
-    let valid_payload = build_rotation_payload(&identity, epoch, &new_key, &code, &new_id, None);
+    let valid_payload = build_rotation_payload(&identity, epoch, &new_key, &code);
     let (_, grpc_rx) = mpsc::unbounded_channel();
     let (_, desired_state_rx) = mpsc::unbounded_channel();
     let event_hub = Arc::new(ConnectorEventHub::default());
@@ -439,18 +419,17 @@ async fn test_t2004b_concurrent_rotation_discard() {
     register_test_node(&store, "node-a", 100).await;
 
     let new_key = [0xAAu8; 32];
-    let new_id = [0xBBu8; 16];
+    let new_id: [u8; 32] = Sha256::digest(new_key).into();
 
     // Manually create a pending_rotation to simulate an in-progress rotation.
     store
-        .write_pending_rotation(&new_key, &new_id, epoch + 1, None, None)
+        .write_pending_rotation(&new_key, &new_id, epoch + 1)
         .await
         .unwrap();
     assert!(store.is_rotation_in_progress().await.unwrap());
 
     // Submit a second rotation payload — should be rejected.
-    let payload =
-        build_rotation_payload(&identity, epoch, &[0xCCu8; 32], &code, &[0xDDu8; 16], None);
+    let payload = build_rotation_payload(&identity, epoch, &[0xCCu8; 32], &code);
 
     let (_, grpc_rx) = mpsc::unbounded_channel();
     let (_, desired_state_rx) = mpsc::unbounded_channel();
@@ -505,12 +484,12 @@ async fn test_t2005_crash_safe_rotation() {
     // Build and submit rotation — manually execute only partial migration to
     // simulate a crash.
     let new_key = [0xAAu8; 32];
-    let new_id = [0xBBu8; 16];
+    let new_id: [u8; 32] = Sha256::digest(new_key).into();
     let new_epoch = epoch + 1;
 
     // Step 4: Prepare.
     store
-        .write_pending_rotation(&new_key, &new_id, new_epoch, None, None)
+        .write_pending_rotation(&new_key, &new_id, new_epoch)
         .await
         .unwrap();
 
@@ -566,8 +545,7 @@ async fn test_t2008_grpc_rotation_path() {
     register_test_node(&store, "node-a", 100).await;
 
     let new_key = [0xAAu8; 32];
-    let new_id = [0xBBu8; 16];
-    let payload = build_rotation_payload(&identity, epoch, &new_key, &code, &new_id, None);
+    let payload = build_rotation_payload(&identity, epoch, &new_key, &code);
 
     // Submit via gRPC channel.
     let (grpc_tx, grpc_rx) = mpsc::unbounded_channel();
@@ -623,7 +601,7 @@ async fn test_t2008_grpc_rotation_path() {
 async fn test_t2009_crash_recovery_all_phases() {
     let master_key = Zeroizing::new([0x42u8; 32]);
     let new_key = [0xAAu8; 32];
-    let new_id = [0xBBu8; 16];
+    let new_id: [u8; 32] = Sha256::digest(new_key).into();
 
     // Phase 1: Crash during migrating_psks (tested in T-2005).
 
@@ -639,7 +617,7 @@ async fn test_t2009_crash_recovery_all_phases() {
 
         // Prepare + migrate all PSKs + set phase to rewrapping_identity.
         store
-            .write_pending_rotation(&new_key, &new_id, new_epoch, None, None)
+            .write_pending_rotation(&new_key, &new_id, new_epoch)
             .await
             .unwrap();
         let nodes = store.list_unmigrated_node_ids(new_epoch).await.unwrap();
@@ -682,7 +660,7 @@ async fn test_t2009_crash_recovery_all_phases() {
 
         // Prepare + migrate + rewrap + set phase to committing.
         store
-            .write_pending_rotation(&new_key, &new_id, new_epoch, None, None)
+            .write_pending_rotation(&new_key, &new_id, new_epoch)
             .await
             .unwrap();
         let nodes = store.list_unmigrated_node_ids(new_epoch).await.unwrap();
@@ -722,7 +700,7 @@ async fn test_t2010_pending_recovery_purge() {
     register_test_node(&store, "node-a", 100).await;
 
     // Insert records into pending_recovery.
-    let fake_key_id = [0x11u8; 16];
+    let fake_key_id = [0x11u8; 32];
     store
         .insert_pending_recovery(500, "recovered-node", &[0xEEu8; 60], &fake_key_id, epoch)
         .await
@@ -734,8 +712,8 @@ async fn test_t2010_pending_recovery_purge() {
 
     // Initiate rotation.
     let new_key = [0xAAu8; 32];
-    let new_id = [0xBBu8; 16];
-    let payload = build_rotation_payload(&identity, epoch, &new_key, &code, &new_id, None);
+    let new_id: [u8; 32] = Sha256::digest(new_key).into();
+    let payload = build_rotation_payload(&identity, epoch, &new_key, &code);
 
     let (_, grpc_rx) = mpsc::unbounded_channel();
     let (_, desired_state_rx) = mpsc::unbounded_channel();

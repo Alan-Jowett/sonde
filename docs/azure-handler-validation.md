@@ -379,9 +379,9 @@ divergence publication instead of treating that redelivery as permanently stale.
 
 **Procedure:**
 1. Deliver a gateway `ACTUAL_STATE` message with `x25519_public_key`, `channel`,
-   `master_key_id`, `master_key_epoch`, `salt`, `kdf_params`,
-   `gateway_version`, `gateway_commit`, `modem_firmware_version`,
-   `modem_firmware_commit`, and `missing_key_hints` populated.
+   `master_key_id`, `master_key_epoch`, `gateway_version`,
+   `gateway_commit`, `modem_firmware_version`, `modem_firmware_commit`, and
+   `missing_key_hints` populated.
 2. Assert: one row is created in `actualstate` with `PartitionKey = "g:" + gateway_id_hex`
    and a reverse-timestamp history `RowKey`.
 3. Assert: all gateway-specific fields are stored in that row.
@@ -442,18 +442,10 @@ divergence publication instead of treating that redelivery as permanently stale.
 
 ---
 
-### T-AZH-0604  Salt management
+### T-AZH-0604  Salt management — RETIRED
 
-**Validates:** AZH-0604, AZH-0605
-
-**Procedure:**
-1. Deliver a gateway `ACTUAL_STATE` message with `salt = null` and a stored
-   cloud-side salt available for that gateway.
-2. Assert: the resulting gateway `DESIRED_STATE` includes the stored salt.
-3. Deliver a gateway `ACTUAL_STATE` message with `salt = X`.
-4. Assert: the handler stores `X` in the gateway row.
-5. Assert: subsequent gateway `DESIRED_STATE` does not override the gateway's
-   non-null salt with the cloud-side value.
+**Status:** RETIRED
+**Reason:** Salt management is retired (AZH-0604 RETIRED, GW-2020, GW-2021).
 
 ---
 

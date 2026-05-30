@@ -4,7 +4,7 @@
 //! Integration tests for PSK escrow, master key identification, and ACTUAL_STATE
 //! publication (GW-2001, GW-2003, GW-2004, GW-2005).
 //!
-//! Test IDs: T-2000, T-2001, T-2002, T-2006c, T-2011, T-2012, T-2013, T-2014.
+//! Test IDs: T-2000, T-2001, T-2002, T-2006c, T-2011, T-2012, T-2014.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
 use sonde_gateway::connector::{
-    ConnectorEventHub, ConnectorService, GatewayDesiredState, KdfParams, MSG_TYPE_ACTUAL_STATE,
+    ConnectorEventHub, ConnectorService, GatewayDesiredState, MSG_TYPE_ACTUAL_STATE,
     MSG_TYPE_DESIRED_STATE,
 };
 use sonde_gateway::engine::Gateway;
@@ -30,7 +30,7 @@ use sonde_gateway::RustCryptoSha256;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use hkdf::Hkdf;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use x25519_dalek::PublicKey as X25519PublicKey;
 
 // ── helpers ──────────────────────────────────────────────────────
@@ -59,9 +59,9 @@ impl sonde_gateway::key_provider::KeyProvider for NoopWritableKeyProvider {
     }
 }
 
-/// Create a test gateway with identity and storage, but do NOT call
-/// `init_master_key_id()` — the caller must do that after registering nodes
-/// so the backfill picks them up.
+/// Create a test gateway with identity and storage, but do NOT initialize the
+/// master key ID yet — the caller must do that after registering nodes so the
+/// backfill picks them up.
 async fn setup_test_storage() -> (Arc<SqliteStorage>, GatewayIdentity) {
     let master_key = Zeroizing::new([0x42u8; 32]);
     let store = Arc::new(SqliteStorage::in_memory(master_key).unwrap());
@@ -77,7 +77,7 @@ async fn setup_test_storage() -> (Arc<SqliteStorage>, GatewayIdentity) {
 async fn setup_test_gateway() -> (
     Arc<SqliteStorage>,
     GatewayIdentity,
-    [u8; 16], // master_key_id
+    [u8; 32], // master_key_id
     u64,      // epoch
     String,   // rotation_code
 ) {
@@ -131,8 +131,6 @@ fn build_rotation_payload(
     current_epoch: u64,
     new_master_key: &[u8; 32],
     rotation_code: &str,
-    new_master_key_id: &[u8; 16],
-    salt: Option<&[u8; 16]>,
 ) -> Vec<u8> {
     let mut rng_bytes = [0u8; 32];
     getrandom::fill(&mut rng_bytes).unwrap();
@@ -151,7 +149,7 @@ fn build_rotation_payload(
     let mut derived_key = [0u8; 32];
     hk.expand(&info, &mut derived_key).unwrap();
 
-    let mut cbor_pairs: Vec<(Value, Value)> = vec![
+    let cbor_map = Value::Map(vec![
         (
             Value::Integer(1.into()),
             Value::Bytes(new_master_key.to_vec()),
@@ -160,18 +158,7 @@ fn build_rotation_payload(
             Value::Integer(2.into()),
             Value::Text(rotation_code.to_string()),
         ),
-        (
-            Value::Integer(3.into()),
-            Value::Bytes(new_master_key_id.to_vec()),
-        ),
-    ];
-    if let Some(s) = salt {
-        cbor_pairs.push((Value::Integer(4.into()), Value::Bytes(s.to_vec())));
-    } else {
-        cbor_pairs.push((Value::Integer(4.into()), Value::Null));
-    }
-    cbor_pairs.push((Value::Integer(5.into()), Value::Null));
-    let cbor_map = Value::Map(cbor_pairs);
+    ]);
     let mut plaintext = Vec::new();
     ciborium::into_writer(&cbor_map, &mut plaintext).unwrap();
 
@@ -289,7 +276,7 @@ fn map_get(map: &[(i128, Value)], key: i128) -> Option<&Value> {
 ///
 /// Verifies:
 /// 1. No `master_key_id` or `master_key_epoch` on fresh DB.
-/// 2. After `init_master_key_id()`, a random 16-byte ID and epoch=1 are set.
+/// 2. After `init_master_key_id(&[0x42u8; 32])`, `SHA-256(master_key)` and epoch=1 are set.
 /// 3. All existing PSK records are backfilled.
 /// 4. On restart (re-call), the same values are returned.
 #[tokio::test]
@@ -317,9 +304,10 @@ async fn test_t2000_master_key_identification() {
     // Step 3: Run init_master_key_id.
     let (key_id, epoch) = store.init_master_key_id().await.unwrap();
 
-    // Step 4: Verify master_key_id is 16 bytes, non-zero.
-    assert_eq!(key_id.len(), 16);
-    assert_ne!(key_id, [0u8; 16], "master_key_id must be non-zero");
+    // Step 4: Verify master_key_id is SHA-256(master_key).
+    let expected_key_id: [u8; 32] = Sha256::digest([0x42u8; 32]).into();
+    assert_eq!(key_id, expected_key_id);
+    assert_ne!(key_id, [0u8; 32], "master_key_id must be non-zero");
 
     // Step 5: Verify epoch = 1.
     assert_eq!(epoch, 1);
@@ -399,8 +387,6 @@ async fn test_t2001_gateway_actual_state_publication() {
         *x25519_public.as_bytes(),
         expected_fp.map(|s| s.to_string()),
         vec![], // missing_key_hints
-        None,   // salt
-        None,   // kdf_params
         "0.8.0".to_string(),
         "abc123".to_string(),
         None, // modem_firmware_version
@@ -686,8 +672,8 @@ async fn test_t2006c_phone_psks_not_escrowed() {
 
     // Step 3: Perform key rotation.
     let new_key = [0xAAu8; 32];
-    let new_id = [0xBBu8; 16];
-    let payload = build_rotation_payload(&identity, epoch, &new_key, &code, &new_id, None);
+    let new_id: [u8; 32] = Sha256::digest(new_key).into();
+    let payload = build_rotation_payload(&identity, epoch, &new_key, &code);
 
     let (_, grpc_rx) = mpsc::unbounded_channel();
     let (_, desired_state_rx) = mpsc::unbounded_channel();
@@ -771,43 +757,29 @@ async fn emit_gateway_actual_state_from_storage(
         .map(|b| format!("{b:02x}"))
         .collect();
 
-    let (mk_id, mk_epoch) = storage.init_master_key_id().await.unwrap();
+    let mk_id_hex = storage
+        .get_config("master_key_id")
+        .await
+        .unwrap()
+        .expect("master_key_id must exist before ACTUAL_STATE emission");
+    let mk_id_vec = hex::decode(&mk_id_hex).expect("master_key_id must be valid hex");
+    let mk_id: [u8; 32] = mk_id_vec
+        .as_slice()
+        .try_into()
+        .expect("master_key_id must be 32 bytes");
+    let mk_epoch = storage
+        .get_config("master_key_epoch")
+        .await
+        .unwrap()
+        .expect("master_key_epoch must exist before ACTUAL_STATE emission")
+        .parse::<u64>()
+        .expect("master_key_epoch must be a valid u64");
 
     let (_, x25519_public) = identity.to_x25519().unwrap();
 
     let sha = RustCryptoSha256;
     let fp = sonde_protocol::fingerprint::compute_fingerprint(x25519_public.as_bytes(), &sha);
     let fingerprint_words: [String; 6] = fp.map(|w| w.to_string());
-
-    let salt: Option<Vec<u8>> = storage.get_config("kdf_salt").await.unwrap().and_then(|s| {
-        let bytes = hex::decode(&s).ok()?;
-        if bytes.len() == 16 {
-            Some(bytes)
-        } else {
-            None
-        }
-    });
-
-    let kdf_params: Option<KdfParams> = storage
-        .get_config("kdf_params_json")
-        .await
-        .unwrap()
-        .and_then(|json| {
-            #[derive(serde::Deserialize)]
-            struct Kdf {
-                m_cost: u32,
-                t_cost: u32,
-                p_cost: u32,
-                kdf_version: u32,
-            }
-            let p: Kdf = serde_json::from_str(&json).ok()?;
-            Some(KdfParams {
-                m_cost: p.m_cost,
-                t_cost: p.t_cost,
-                p_cost: p.p_cost,
-                kdf_version: p.kdf_version,
-            })
-        });
 
     let missing_key_hints = gateway.drain_missing_hints().await;
 
@@ -819,8 +791,6 @@ async fn emit_gateway_actual_state_from_storage(
         *x25519_public.as_bytes(),
         fingerprint_words,
         missing_key_hints,
-        salt,
-        kdf_params,
         "0.8.0".to_string(),
         "test".to_string(),
         None,
@@ -899,15 +869,8 @@ async fn test_t2012_rotation_complete_triggers_reemission() {
 
     // Submit a valid rotation payload via gRPC channel.
     let new_master_key = [0x99u8; 32];
-    let new_master_key_id = [0xBBu8; 16];
-    let payload = build_rotation_payload(
-        &identity,
-        initial_epoch,
-        &new_master_key,
-        &rotation_code,
-        &new_master_key_id,
-        None,
-    );
+    let new_master_key_id: [u8; 32] = Sha256::digest(new_master_key).into();
+    let payload = build_rotation_payload(&identity, initial_epoch, &new_master_key, &rotation_code);
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     grpc_tx.send((payload, reply_tx)).unwrap();
@@ -944,156 +907,6 @@ async fn test_t2012_rotation_complete_triggers_reemission() {
         new_mk_epoch,
         (initial_epoch + 1) as i128,
         "master_key_epoch should increment after rotation"
-    );
-}
-
-// ── T-2013: Salt/KDF adoption triggers ACTUAL_STATE re-emission ──
-
-/// T-2013: Salt/KDF adoption triggers ACTUAL_STATE re-emission (GW-2003 AC-7).
-///
-/// Verifies:
-/// 1. Delivering a gateway DESIRED_STATE with salt and kdf_params triggers
-///    ACTUAL_STATE re-emission with the adopted values.
-/// 2. Delivering a second DESIRED_STATE with a different salt does NOT trigger
-///    another re-emission (salt is immutable once set).
-#[tokio::test]
-async fn test_t2013_salt_kdf_adoption_triggers_reemission() {
-    let (store, identity) = setup_test_storage().await;
-    let (_key_id, _epoch) = store.init_master_key_id().await.unwrap();
-    let _code = store.init_rotation_code().await.unwrap();
-
-    let event_hub = Arc::new(ConnectorEventHub::new(16));
-    let gateway = Arc::new(Gateway::new(
-        store.clone() as Arc<dyn Storage>,
-        Duration::from_secs(300),
-    ));
-
-    // Spawn connector.
-    let (mut client, _handle) =
-        spawn_connector(event_hub.clone(), store.clone() as Arc<dyn Storage>).await;
-
-    // Emit initial ACTUAL_STATE (salt = null).
-    emit_gateway_actual_state_from_storage(&event_hub, &store, &identity, &gateway).await;
-    let initial_frame = read_framed(&mut client).await;
-    let initial_map = decode_cbor_map(&initial_frame);
-    // Salt (key 21) should be null or absent.
-    let initial_salt = map_get(&initial_map, 21);
-    assert!(
-        initial_salt.is_none() || matches!(initial_salt, Some(Value::Null)),
-        "initial salt should be absent or null"
-    );
-    // KDF params (key 22) should be null or absent.
-    let initial_kdf = map_get(&initial_map, 22);
-    assert!(
-        initial_kdf.is_none() || matches!(initial_kdf, Some(Value::Null)),
-        "initial kdf_params should be absent or null"
-    );
-
-    // Set up rotation engine with state_changed_tx.
-    let (state_changed_tx, mut state_changed_rx) = mpsc::unbounded_channel();
-    let (_grpc_tx, grpc_rx) = mpsc::unbounded_channel();
-    let (ds_tx, ds_rx) = mpsc::unbounded_channel::<GatewayDesiredState>();
-
-    let engine = RotationEngine::new(
-        store.clone(),
-        identity.clone(),
-        event_hub.clone(),
-        Arc::new(NoopWritableKeyProvider),
-        grpc_rx,
-        ds_rx,
-    )
-    .with_state_changed_tx(state_changed_tx);
-
-    // Spawn the rotation engine.
-    tokio::spawn(engine.run());
-
-    // Spawn re-emission loop for state_changed notifications.
-    let reemit_store = store.clone();
-    let reemit_hub = event_hub.clone();
-    let reemit_gw = Arc::clone(&gateway);
-    tokio::spawn(async move {
-        while let Some(_changed) = state_changed_rx.recv().await {
-            let id = reemit_store.load_gateway_identity().await.unwrap().unwrap();
-            emit_gateway_actual_state_from_storage(&reemit_hub, &reemit_store, &id, &reemit_gw)
-                .await;
-        }
-    });
-
-    // Deliver a DESIRED_STATE with salt and kdf_params via the ds channel.
-    let gateway_id_hex: String = identity
-        .gateway_id()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let test_salt = [0xAA; 16];
-    ds_tx
-        .send(GatewayDesiredState {
-            entity_id: gateway_id_hex.clone(),
-            channel: None,
-            rotation_payload: None,
-            recovered_psks: None,
-            salt: Some(test_salt.to_vec()),
-            kdf_params: Some(KdfParams {
-                m_cost: 65536,
-                t_cost: 3,
-                p_cost: 1,
-                kdf_version: 0x13,
-            }),
-        })
-        .unwrap();
-
-    // Read the re-emitted ACTUAL_STATE.
-    let reemitted_frame = tokio::time::timeout(Duration::from_secs(2), read_framed(&mut client))
-        .await
-        .expect("ACTUAL_STATE should be re-emitted after salt adoption");
-    let reemitted_map = decode_cbor_map(&reemitted_frame);
-
-    // Verify salt (key 21) matches the adopted value.
-    let adopted_salt = match map_get(&reemitted_map, 21).unwrap() {
-        Value::Bytes(b) => b.clone(),
-        other => panic!("expected bytes salt, got {other:?}"),
-    };
-    assert_eq!(adopted_salt, test_salt.to_vec());
-
-    // Verify kdf_params (key 22) matches the adopted values.
-    let kdf_map = match map_get(&reemitted_map, 22).unwrap() {
-        Value::Map(pairs) => pairs.clone(),
-        other => panic!("expected map kdf_params, got {other:?}"),
-    };
-    let kdf_get = |key: i128| -> i128 {
-        kdf_map
-            .iter()
-            .find(|(k, _)| matches!(k, Value::Integer(i) if i128::from(*i) == key))
-            .map(|(_, v)| match v {
-                Value::Integer(i) => (*i).into(),
-                other => panic!("expected integer in kdf_params, got {other:?}"),
-            })
-            .unwrap()
-    };
-    assert_eq!(kdf_get(1), 65536, "m_cost");
-    assert_eq!(kdf_get(2), 3, "t_cost");
-    assert_eq!(kdf_get(3), 1, "p_cost");
-    assert_eq!(kdf_get(4), 0x13, "kdf_version");
-
-    // Step 5: Deliver another DESIRED_STATE with different salt.
-    let different_salt = [0xBB; 16];
-    ds_tx
-        .send(GatewayDesiredState {
-            entity_id: gateway_id_hex.clone(),
-            channel: None,
-            rotation_payload: None,
-            recovered_psks: None,
-            salt: Some(different_salt.to_vec()),
-            kdf_params: None,
-        })
-        .unwrap();
-
-    // Step 6: Verify ACTUAL_STATE is NOT re-emitted (salt is immutable).
-    let timeout_result =
-        tokio::time::timeout(Duration::from_millis(500), read_framed(&mut client)).await;
-    assert!(
-        timeout_result.is_err(),
-        "ACTUAL_STATE should NOT be re-emitted when salt is already set"
     );
 }
 

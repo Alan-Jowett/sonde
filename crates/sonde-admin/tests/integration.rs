@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use tokio::sync::RwLock;
 
+use sha2::Digest;
 use sonde_admin::grpc_client::AdminClient;
 use sonde_gateway::admin::AdminService;
 use sonde_gateway::engine::PendingCommand;
@@ -855,12 +856,12 @@ async fn seed_gateway_identity(storage: &Arc<InMemoryStorage>) -> GatewayIdentit
     let identity = GatewayIdentity::from_parts(seed, gateway_id);
     storage.store_gateway_identity(&identity).await.unwrap();
 
-    // Master key ID: deterministic 16-byte hex value.
+    let master_key = [0x42u8; 32];
+    let master_key_id = sha2::Sha256::digest(master_key);
     storage
-        .set_config("master_key_id", &hex::encode([0xAA; 16]))
+        .set_config("master_key_id", &hex::encode(master_key_id))
         .await
         .unwrap();
-    // Master key epoch starts at 1.
     storage.set_config("master_key_epoch", "1").await.unwrap();
 
     identity
@@ -912,16 +913,12 @@ async fn start_server_with_rotation(
 
 /// Build a rotation payload for testing. Mirrors the logic in `main.rs`
 /// `build_rotation_payload()` without requiring it to be public.
-#[allow(clippy::too_many_arguments)]
 fn build_test_rotation_payload(
     gw_x25519_public: &[u8; 32],
     gateway_id_raw: &[u8; 16],
     master_key_epoch: u64,
     new_master_key: &[u8; 32],
     rotation_code: &str,
-    new_master_key_id: &[u8; 16],
-    salt: Option<&[u8; 16]>,
-    kdf_params: Option<(u32, u32, u32, u32)>,
 ) -> Vec<u8> {
     use aes_gcm::aead::{Aead, OsRng};
     use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -944,9 +941,9 @@ fn build_test_rotation_payload(
     let mut aes_key = [0u8; 32];
     hkdf.expand(&info, &mut aes_key).unwrap();
 
-    // Deterministic CBOR: 5-entry map with integer keys 1–5.
-    let mut plaintext = Vec::with_capacity(128);
-    plaintext.push(0xA5); // map(5)
+    // Deterministic CBOR: 2-entry map with integer keys 1–2.
+    let mut plaintext = Vec::with_capacity(64);
+    plaintext.push(0xA2); // map(2)
                           // key 1: new_master_key (bstr 32)
     plaintext.push(0x01);
     plaintext.push(0x58);
@@ -962,40 +959,6 @@ fn build_test_rotation_payload(
         plaintext.push(code_bytes.len() as u8);
     }
     plaintext.extend_from_slice(code_bytes);
-    // key 3: new_master_key_id (bstr 16)
-    plaintext.push(0x03);
-    plaintext.push(0x50);
-    plaintext.extend_from_slice(new_master_key_id);
-    // key 4: salt or null
-    plaintext.push(0x04);
-    if let Some(s) = salt {
-        plaintext.push(0x50);
-        plaintext.extend_from_slice(s);
-    } else {
-        plaintext.push(0xF6); // null
-    }
-    // key 5: kdf_params or null
-    plaintext.push(0x05);
-    if let Some((m, t, p, v)) = kdf_params {
-        plaintext.push(0xA4); // map(4)
-        for (key, val) in [(1u8, m), (2, t), (3, p), (4, v)] {
-            plaintext.push(key);
-            if val < 24 {
-                plaintext.push(val as u8);
-            } else if val <= 0xFF {
-                plaintext.push(0x18);
-                plaintext.push(val as u8);
-            } else if val <= 0xFFFF {
-                plaintext.push(0x19);
-                plaintext.extend_from_slice(&(val as u16).to_be_bytes());
-            } else {
-                plaintext.push(0x1A);
-                plaintext.extend_from_slice(&val.to_be_bytes());
-            }
-        }
-    } else {
-        plaintext.push(0xF6); // null
-    }
 
     let cipher = Aes256Gcm::new((&aes_key).into());
     let mut nonce_bytes = [0u8; 12];
@@ -1074,25 +1037,22 @@ async fn key_fingerprint_returns_six_words() {
     assert_eq!(parsed["fingerprint_words"].as_array().unwrap().len(), 6);
 }
 
-/// T-0904: `key status` returns epoch, master_key_id, rotation_in_progress, and
-/// optional salt/kdf_params.
+/// T-0904: `key status` returns epoch, master_key_id, and rotation_in_progress.
 #[tokio::test(flavor = "multi_thread")]
 async fn key_status_shows_all_fields() {
-    let (endpoint, storage, _identity, _rx) =
+    let (endpoint, _storage, _identity, _rx) =
         start_server_with_rotation("key_status_shows_all_fields").await;
+    let expected_master_key_id = hex::encode(sha2::Sha256::digest([0x42u8; 32]));
 
-    // Seed optional KDF fields.
-    storage
-        .set_config("kdf_salt", &hex::encode([0xBB; 16]))
-        .await
-        .unwrap();
-    storage
-        .set_config(
-            "kdf_params_json",
-            r#"{"m_cost":65536,"t_cost":3,"p_cost":1,"kdf_version":1}"#,
-        )
-        .await
-        .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args(["--socket", &endpoint, "key", "status"])
+        .output()
+        .expect("failed to run sonde-admin key status");
+    assert!(output.status.success(), "CLI key status should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Master key epoch:      1"));
+    assert!(stdout.contains(&expected_master_key_id));
+    assert!(stdout.contains("Rotation in progress:  false"));
 
     let json_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
         .args(["--socket", &endpoint, "--format", "json", "key", "status"])
@@ -1100,7 +1060,7 @@ async fn key_status_shows_all_fields() {
         .expect("failed to run sonde-admin key status");
     assert!(
         json_output.status.success(),
-        "CLI key status should succeed"
+        "CLI key status JSON should succeed"
     );
 
     let parsed: serde_json::Value =
@@ -1108,20 +1068,15 @@ async fn key_status_shows_all_fields() {
             .expect("stdout must be valid JSON");
 
     assert_eq!(parsed["master_key_epoch"], 1);
-    assert_eq!(parsed["master_key_id"], hex::encode([0xAA; 16]));
+    assert_eq!(parsed["master_key_id"], expected_master_key_id);
     assert_eq!(parsed["rotation_in_progress"], false);
-    assert_eq!(parsed["salt"], hex::encode([0xBB; 16]));
-    assert_eq!(parsed["kdf_params"]["m_cost"], 65536);
-    assert_eq!(parsed["kdf_params"]["t_cost"], 3);
-    assert_eq!(parsed["kdf_params"]["p_cost"], 1);
-    assert_eq!(parsed["kdf_params"]["kdf_version"], 1);
 }
 
-/// T-0904 supplement: `key status` with no salt/kdf_params shows null.
+/// T-0904 supplement: `key status` exposes only current key metadata fields.
 #[tokio::test(flavor = "multi_thread")]
-async fn key_status_no_salt_shows_null() {
+async fn key_status_omits_legacy_fields() {
     let (endpoint, _storage, _identity, _rx) =
-        start_server_with_rotation("key_status_no_salt_shows_null").await;
+        start_server_with_rotation("key_status_omits_legacy_fields").await;
 
     let json_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
         .args(["--socket", &endpoint, "--format", "json", "key", "status"])
@@ -1132,11 +1087,15 @@ async fn key_status_no_salt_shows_null() {
     let parsed: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&json_output.stdout))
             .expect("stdout must be valid JSON");
-    assert!(parsed["salt"].is_null(), "salt should be null when absent");
-    assert!(
-        parsed["kdf_params"].is_null(),
-        "kdf_params should be null when absent"
+    let object = parsed.as_object().expect("status JSON must be an object");
+    assert_eq!(
+        object.len(),
+        3,
+        "status JSON should expose only current fields"
     );
+    assert!(object.contains_key("master_key_epoch"));
+    assert!(object.contains_key("master_key_id"));
+    assert!(object.contains_key("rotation_in_progress"));
 }
 
 /// T-0900: `key rotate` happy path — submit a valid rotation payload to the
@@ -1175,9 +1134,6 @@ async fn key_rotate_submit_accepted() {
         state.master_key_epoch,
         &[0x42u8; 32],
         "TESTCODE",
-        &[0xCC; 16],
-        Some(&[0xDD; 16]),
-        Some((65536, 3, 1, 1)),
     );
 
     let resp = client.submit_rotation(payload).await.unwrap();
@@ -1214,9 +1170,6 @@ async fn key_rotate_rejected_by_engine() {
         state.master_key_epoch,
         &[0x42u8; 32],
         "WRONGCODE",
-        &[0xCC; 16],
-        Some(&[0xDD; 16]),
-        Some((65536, 3, 1, 1)),
     );
 
     let resp = client.submit_rotation(payload).await.unwrap();

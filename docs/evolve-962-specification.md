@@ -13,6 +13,17 @@
 > **Scope:** Simplify escrow architecture — eliminate imperative connector
 > messages, unify gateway identity, add rotation-code authentication, treat
 > gateway as first-class ACTUAL_STATE/DESIRED_STATE entity.
+>
+> **Partially superseded:** The following sections of this document are
+> superseded by the KDF simplification change:
+> - §2.5 (salt/KDF convergence) → Replaced by GW-2020 (versioned KDF
+>   parameter sets) and GW-2021 (deployment-label salt derivation).
+>   Salt and KDF parameters are now client-side concerns only.
+> - §2.6.1 rotation payload keys 3 (`new_master_key_id`), 4 (`salt`),
+>   5 (`kdf_params`) → RESERVED. Payload plaintext is now `{1: new_master_key, 2: rotation_code}`.
+> - `master_key_id` throughout → Changed from random 16 bytes to
+>   `SHA-256(master_key)` (32 bytes), derived locally by gateway.
+> - GW-2008 (salt management) → RETIRED.
 > **Traceability:** Redesigns GW-2000–GW-2013, AZH-0600–AZH-0605,
 > ADMIN-0900–ADMIN-0902.
 

@@ -3,7 +3,7 @@
 
 //! Integration tests for master key rotation (GW-2006, GW-2007, GW-2013).
 //!
-//! Test IDs: T-2003, T-2004, T-2004a, T-2004b, T-2005, T-2008, T-2009, T-2010.
+//! Test IDs: T-2003, T-2004, T-2004a, T-2004b, T-2005, T-2008, T-2009, T-2010, T-2015.
 
 use std::sync::Arc;
 
@@ -142,7 +142,6 @@ async fn register_test_node(store: &Arc<SqliteStorage>, node_id: &str, key_hint:
 /// The temp file is initialized with the given master key in hex format.
 /// Returns both the provider (as `Arc<dyn KeyProvider>`) and the
 /// `NamedTempFile` handle (must be kept alive for the file to persist).
-#[allow(dead_code)] // useful for post-commit recovery tests (T-2015b)
 fn test_key_provider(
     master_key: &[u8; 32],
 ) -> (
@@ -741,4 +740,163 @@ async fn test_t2010_pending_recovery_purge() {
     let escrow = store.list_node_escrow_state().await.unwrap();
     assert_eq!(escrow.len(), 1);
     assert_eq!(escrow[0].master_key_id, new_id.to_vec());
+}
+
+// ── T-2015: Rotation blocked for non-writable key provider ──────────
+
+/// A non-writable key provider for testing the GW-2014 writability gate.
+struct NonWritableKeyProvider {
+    key: Zeroizing<[u8; 32]>,
+}
+
+impl sonde_gateway::key_provider::KeyProvider for NonWritableKeyProvider {
+    fn load_master_key(
+        &self,
+    ) -> Result<Zeroizing<[u8; 32]>, sonde_gateway::key_provider::KeyProviderError> {
+        Ok(self.key.clone())
+    }
+
+    fn write_master_key(
+        &self,
+        _key: &[u8; 32],
+    ) -> Result<(), sonde_gateway::key_provider::KeyProviderError> {
+        Err(sonde_gateway::key_provider::KeyProviderError::NotWritable(
+            "test non-writable provider".into(),
+        ))
+    }
+
+    fn is_writable(&self) -> bool {
+        false
+    }
+}
+
+/// T-2015: Rotation blocked for non-writable key provider (GW-2014).
+///
+/// Verifies that both gRPC and DESIRED_STATE rotation paths reject when the
+/// key provider is not writable, and that no database mutations occur.
+#[tokio::test]
+#[tracing_test::traced_test]
+async fn test_t2015_rotation_blocked_non_writable() {
+    let (store, identity, old_key_id, epoch, code) = setup_test_gateway().await;
+    register_test_node(&store, "node-a", 100).await;
+
+    // Snapshot node PSK before rotation attempt.
+    let nodes_before = store.list_nodes().await.unwrap();
+    assert_eq!(nodes_before.len(), 1);
+    let psk_before = nodes_before[0].psk;
+
+    let new_key = [0xAAu8; 32];
+    let payload = build_rotation_payload(&identity, epoch, &new_key, &code);
+
+    let non_writable = Arc::new(NonWritableKeyProvider {
+        key: Zeroizing::new([0x42u8; 32]),
+    });
+
+    // ── Step 2–4: gRPC path — should return error ──
+
+    let (_, grpc_rx) = mpsc::unbounded_channel();
+    let (_, desired_state_rx) = mpsc::unbounded_channel();
+    let event_hub = Arc::new(ConnectorEventHub::default());
+    let mut engine = RotationEngine::new(
+        store.clone(),
+        identity.clone(),
+        event_hub,
+        non_writable.clone(),
+        grpc_rx,
+        desired_state_rx,
+    );
+
+    let result = engine.handle_rotation_payload(&payload, true).await;
+    assert!(
+        result.is_err(),
+        "non-writable provider must reject gRPC rotation"
+    );
+    let err_msg = result.unwrap_err();
+    assert!(
+        err_msg.contains("not writable"),
+        "error should mention writability: {err_msg}"
+    );
+
+    // Verify no DB mutations.
+    assert!(
+        !store.is_rotation_in_progress().await.unwrap(),
+        "no pending_rotation should exist after rejection"
+    );
+    let (stored_id, stored_epoch) = store.init_master_key_id().await.unwrap();
+    assert_eq!(stored_epoch, epoch, "epoch must not change");
+    assert_eq!(stored_id, old_key_id, "master_key_id must not change");
+    let nodes_after = store.list_nodes().await.unwrap();
+    assert_eq!(nodes_after[0].psk, psk_before, "node PSK must not change");
+
+    // ── Step 5–7: DESIRED_STATE path — should silently discard ──
+
+    let (_, grpc_rx2) = mpsc::unbounded_channel();
+    let (_, desired_state_rx2) = mpsc::unbounded_channel();
+    let event_hub2 = Arc::new(ConnectorEventHub::default());
+    let mut engine2 = RotationEngine::new(
+        store.clone(),
+        identity.clone(),
+        event_hub2,
+        non_writable.clone(),
+        grpc_rx2,
+        desired_state_rx2,
+    );
+
+    let result2 = engine2.handle_rotation_payload(&payload, false).await;
+    assert!(
+        result2.is_err(),
+        "non-writable provider must reject DESIRED_STATE rotation"
+    );
+
+    // Verify warning log was emitted (DESIRED_STATE path).
+    assert!(
+        logs_contain("not writable"),
+        "DESIRED_STATE rejection must emit a warning log"
+    );
+
+    // Verify no DB mutations after DESIRED_STATE attempt.
+    assert!(
+        !store.is_rotation_in_progress().await.unwrap(),
+        "no pending_rotation after DESIRED_STATE rejection"
+    );
+    let (stored_id2, stored_epoch2) = store.init_master_key_id().await.unwrap();
+    assert_eq!(
+        stored_epoch2, epoch,
+        "epoch must not change after DESIRED_STATE"
+    );
+    assert_eq!(
+        stored_id2, old_key_id,
+        "master_key_id must not change after DESIRED_STATE"
+    );
+
+    // ── Step 8: Writable provider — verify rotation succeeds ──
+
+    let (writable_provider, _tmpfile) = test_key_provider(&[0x42u8; 32]);
+
+    let (_, grpc_rx3) = mpsc::unbounded_channel();
+    let (_, desired_state_rx3) = mpsc::unbounded_channel();
+    let event_hub3 = Arc::new(ConnectorEventHub::default());
+    let mut engine3 = RotationEngine::new(
+        store.clone(),
+        identity.clone(),
+        event_hub3,
+        writable_provider,
+        grpc_rx3,
+        desired_state_rx3,
+    );
+
+    let result3 = engine3.handle_rotation_payload(&payload, true).await;
+    assert!(
+        result3.is_ok(),
+        "writable provider must accept rotation: {:?}",
+        result3
+    );
+
+    // Verify epoch incremented.
+    let (_, final_epoch) = store.init_master_key_id().await.unwrap();
+    assert_eq!(
+        final_epoch,
+        epoch + 1,
+        "epoch must increment after successful rotation"
+    );
 }

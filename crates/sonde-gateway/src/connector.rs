@@ -25,10 +25,6 @@ pub struct GatewayDesiredState {
     pub entity_id: String,
     /// Desired ESP-NOW channel (CBOR key 15).
     pub channel: Option<u32>,
-    /// KDF salt from cloud (CBOR key 21, 16 bytes).
-    pub salt: Option<Vec<u8>>,
-    /// KDF parameters from cloud (CBOR key 22).
-    pub kdf_params: Option<KdfParams>,
     /// X25519-encrypted rotation payload (CBOR key 28).
     pub rotation_payload: Option<Vec<u8>>,
     /// Recovered PSK records for missing nodes (CBOR key 29).
@@ -44,7 +40,7 @@ pub struct RecoveredPskRecord {
     pub key_hint: u16,
     /// Encrypted PSK blob (60 bytes).
     pub encrypted_psk: Vec<u8>,
-    /// Opaque master key ID (16 bytes).
+    /// `SHA-256(master_key)` identifier (32 bytes).
     pub master_key_id: Vec<u8>,
 }
 
@@ -103,7 +99,7 @@ enum ConnectorOutboundMessage {
         encrypted_psk_escrow: Option<Vec<u8>>,
         /// Key hint (u16) for Azure recovery lookup, CBOR key 13.
         escrow_key_hint: Option<u16>,
-        /// Opaque master key ID (16 bytes) that encrypted this PSK, CBOR key 14.
+        /// `SHA-256(master_key)` identifier (32 bytes) that encrypted this PSK, CBOR key 14.
         master_key_id: Option<Vec<u8>>,
         /// Modem-measured RSSI (dBm) of the node's WAKE frame, CBOR key 28.
         wake_rssi_dbm: Option<i8>,
@@ -134,27 +130,16 @@ pub struct GatewayActualStateData {
     pub entity_id: String,
     pub timestamp_ms: u64,
     pub channel: u32,
-    pub master_key_id: [u8; 16],
+    pub master_key_id: [u8; 32],
     pub master_key_epoch: u64,
     pub x25519_public_key: [u8; 32],
     pub fingerprint_words: [String; 6],
     pub missing_key_hints: Vec<u16>,
-    pub salt: Option<Vec<u8>>,
-    pub kdf_params: Option<KdfParams>,
     pub gateway_version: String,
     pub gateway_commit: String,
     pub modem_firmware_version: Option<String>,
     pub modem_firmware_commit: Option<String>,
     pub rotation_in_progress: bool,
-}
-
-/// KDF parameters for Argon2id.
-#[derive(Clone, Debug)]
-pub struct KdfParams {
-    pub m_cost: u32,
-    pub t_cost: u32,
-    pub p_cost: u32,
-    pub kdf_version: u32,
 }
 
 impl ConnectorOutboundMessage {
@@ -312,25 +297,6 @@ impl ConnectorOutboundMessage {
                         ),
                     ),
                 ];
-                pairs.push(map_entry(
-                    21,
-                    match data.salt {
-                        Some(ref s) => Value::Bytes(s.clone()),
-                        None => Value::Null,
-                    },
-                ));
-                pairs.push(map_entry(
-                    22,
-                    match data.kdf_params {
-                        Some(ref kdf) => Value::Map(vec![
-                            map_entry(1, Value::Integer((kdf.m_cost as u64).into())),
-                            map_entry(2, Value::Integer((kdf.t_cost as u64).into())),
-                            map_entry(3, Value::Integer((kdf.p_cost as u64).into())),
-                            map_entry(4, Value::Integer((kdf.kdf_version as u64).into())),
-                        ]),
-                        None => Value::Null,
-                    },
-                ));
                 pairs.push(map_entry(23, Value::Text(data.gateway_version.clone())));
                 pairs.push(map_entry(24, Value::Text(data.gateway_commit.clone())));
                 pairs.push(map_entry(
@@ -450,11 +416,11 @@ impl ConnectorEventHub {
                     );
                     (None, None, None)
                 } else if let (Some(key_hint), Some(key_id)) = (escrow_key_hint, master_key_id) {
-                    if key_id.len() != 16 {
+                    if key_id.len() != 32 {
                         error!(
                             node_id = %node_id,
                             len = key_id.len(),
-                            "dropping escrow: master_key_id must be 16 bytes"
+                            "dropping escrow: master_key_id must be 32 bytes"
                         );
                         (None, None, None)
                     } else {
@@ -496,13 +462,11 @@ impl ConnectorEventHub {
         &self,
         entity_id: String,
         channel: u32,
-        master_key_id: [u8; 16],
+        master_key_id: [u8; 32],
         master_key_epoch: u64,
         x25519_public_key: [u8; 32],
         fingerprint_words: [String; 6],
         missing_key_hints: Vec<u16>,
-        salt: Option<Vec<u8>>,
-        kdf_params: Option<KdfParams>,
         gateway_version: String,
         gateway_commit: String,
         modem_firmware_version: Option<String>,
@@ -518,8 +482,6 @@ impl ConnectorEventHub {
             x25519_public_key,
             fingerprint_words,
             missing_key_hints,
-            salt,
-            kdf_params,
             gateway_version,
             gateway_commit,
             modem_firmware_version,
@@ -725,24 +687,12 @@ impl ConnectorService {
             ));
         }
         let channel = optional_u32_field(desired_state, 15, "channel")?;
-        let salt = optional_bytes_field(desired_state, 21, "salt")?;
-        if let Some(ref s) = salt {
-            if s.len() != 16 {
-                return Err(format!(
-                    "gateway DESIRED_STATE salt must be 16 bytes, got {}",
-                    s.len()
-                ));
-            }
-        }
-        let kdf_params = parse_optional_kdf_params(desired_state, 22)?;
         let rotation_payload = optional_bytes_field(desired_state, 28, "rotation_payload")?;
         let recovered_psks = parse_optional_recovered_psks(desired_state, 29)?;
 
         let gw_ds = GatewayDesiredState {
             entity_id: entity_id.to_owned(),
             channel,
-            salt,
-            kdf_params,
             rotation_payload,
             recovered_psks,
         };
@@ -1124,11 +1074,6 @@ fn required_u64(map: &[(Value, Value)], key: u64, field: &str) -> Result<u64, St
         })
 }
 
-fn required_u32(map: &[(Value, Value)], key: u64, field: &str) -> Result<u32, String> {
-    let v = required_u64(map, key, field)?;
-    u32::try_from(v).map_err(|_| format!("`{field}` exceeds u32::MAX ({v})"))
-}
-
 fn required_text(map: &[(Value, Value)], key: u64, field: &str) -> Result<String, String> {
     map_get(map, key)
         .ok_or_else(|| format!("missing `{field}`"))
@@ -1204,29 +1149,6 @@ fn optional_text_field(
     }
 }
 
-/// Parse optional KDF params from a CBOR map field.
-fn parse_optional_kdf_params(
-    map: &[(Value, Value)],
-    key: u64,
-) -> Result<Option<KdfParams>, String> {
-    match map_get(map, key) {
-        Some(Value::Map(kdf_map)) => {
-            let m_cost = required_u32(kdf_map, 1, "m_cost")?;
-            let t_cost = required_u32(kdf_map, 2, "t_cost")?;
-            let p_cost = required_u32(kdf_map, 3, "p_cost")?;
-            let kdf_version = required_u32(kdf_map, 4, "kdf_version")?;
-            Ok(Some(KdfParams {
-                m_cost,
-                t_cost,
-                p_cost,
-                kdf_version,
-            }))
-        }
-        Some(Value::Null) | None => Ok(None),
-        Some(_) => Err("kdf_params must be a map or null".to_string()),
-    }
-}
-
 /// Parse optional recovered PSK records from a CBOR array field.
 fn parse_optional_recovered_psks(
     map: &[(Value, Value)],
@@ -1263,9 +1185,9 @@ fn parse_optional_recovered_psks(
                             4,
                             &format!("recovered_psks[{i}].master_key_id"),
                         )?;
-                        if master_key_id.len() != 16 {
+                        if master_key_id.len() != 32 {
                             return Err(format!(
-                                "recovered_psks[{i}].master_key_id must be 16 bytes, got {}",
+                                "recovered_psks[{i}].master_key_id must be 32 bytes, got {}",
                                 master_key_id.len()
                             ));
                         }
@@ -1394,7 +1316,7 @@ mod tests {
         hub.emit_gateway_actual_state(
             "aabbccdd11223344aabbccdd11223344".to_string(),
             1,
-            [0x42u8; 16],
+            [0x42u8; 32],
             1,
             [0x55u8; 32],
             [
@@ -1406,8 +1328,6 @@ mod tests {
                 "absent".to_string(),
             ],
             vec![],
-            None,
-            None,
             "0.8.0".to_string(),
             "abc123".to_string(),
             None,

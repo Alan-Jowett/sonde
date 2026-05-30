@@ -141,8 +141,6 @@ async fn test_t2006_declarative_node_recovery() {
     let desired_state = GatewayDesiredState {
         entity_id,
         channel: None,
-        salt: None,
-        kdf_params: None,
         rotation_payload: None,
         recovered_psks: Some(vec![RecoveredPskRecord {
             node_id: "recovered-node".to_string(),
@@ -312,8 +310,6 @@ async fn test_t2006b_mismatched_master_key_id_skipped() {
     let desired_state = GatewayDesiredState {
         entity_id,
         channel: None,
-        salt: None,
-        kdf_params: None,
         rotation_payload: None,
         recovered_psks: Some(vec![RecoveredPskRecord {
             node_id: "orphan-node".to_string(),

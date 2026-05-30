@@ -43,8 +43,6 @@ pub enum RotationError {
     RateLimited,
     /// New master key has wrong length.
     InvalidKeyLength(usize),
-    /// New master key ID has wrong length.
-    InvalidKeyIdLength(usize),
     /// CBOR plaintext parse error.
     PlaintextParse(String),
     /// Internal error.
@@ -68,9 +66,6 @@ impl std::fmt::Display for RotationError {
             Self::InvalidKeyLength(len) => {
                 write!(f, "new_master_key must be 32 bytes, got {len}")
             }
-            Self::InvalidKeyIdLength(len) => {
-                write!(f, "new_master_key_id must be 16 bytes, got {len}")
-            }
             Self::PlaintextParse(msg) => write!(f, "rotation plaintext parse error: {msg}"),
             Self::Internal(msg) => write!(f, "rotation internal error: {msg}"),
         }
@@ -85,21 +80,6 @@ pub struct DecryptedRotation {
     pub new_master_key: Zeroizing<[u8; 32]>,
     /// 6-character rotation code from modem display.
     pub rotation_code: String,
-    /// Random 16-byte ID for the new key.
-    pub new_master_key_id: [u8; 16],
-    /// KDF salt (included on first rotation).
-    pub salt: Option<Vec<u8>>,
-    /// KDF parameters.
-    pub kdf_params: Option<KdfParamsPayload>,
-}
-
-/// KDF parameters from the rotation payload.
-#[derive(Clone, Debug)]
-pub struct KdfParamsPayload {
-    pub m_cost: u32,
-    pub t_cost: u32,
-    pub p_cost: u32,
-    pub kdf_version: u32,
 }
 
 /// Decrypt and validate a RotationPayloadV1 (evolve-962 §2.6.1).
@@ -176,7 +156,8 @@ pub fn decrypt_rotation_payload(
             .map_err(|_| RotationError::DecryptionFailed)?,
     );
 
-    // Parse CBOR plaintext: {1: new_master_key, 2: rotation_code, 3: new_master_key_id, 4: salt, 5: kdf_params}
+    // Parse CBOR plaintext: {1: new_master_key, 2: rotation_code}
+    // Keys 3-5 are RESERVED (previously new_master_key_id, salt, kdf_params).
     parse_rotation_plaintext(&plaintext)
 }
 
@@ -215,26 +196,11 @@ fn parse_rotation_plaintext(plaintext: &[u8]) -> Result<DecryptedRotation, Rotat
         )));
     }
 
-    // Key 3: new_master_key_id (bstr, 16 bytes)
-    let new_id_bytes = get_bytes(&map, 3, "new_master_key_id")?;
-    if new_id_bytes.len() != 16 {
-        return Err(RotationError::InvalidKeyIdLength(new_id_bytes.len()));
-    }
-    let mut new_master_key_id = [0u8; 16];
-    new_master_key_id.copy_from_slice(&new_id_bytes);
-
-    // Key 4: salt (bstr/null, optional — 16 bytes when present)
-    let salt = get_optional_bytes_strict(&map, 4, "salt", Some(16))?;
-
-    // Key 5: kdf_params (map/null, optional)
-    let kdf_params = get_optional_kdf_params(&map, 5)?;
+    // Keys 3-5 (new_master_key_id, salt, kdf_params) are RESERVED and ignored.
 
     Ok(DecryptedRotation {
         new_master_key,
         rotation_code,
-        new_master_key_id,
-        salt,
-        kdf_params,
     })
 }
 
@@ -272,80 +238,6 @@ fn get_text(
         ))),
         None => Err(RotationError::PlaintextParse(format!("missing `{field}`"))),
     }
-}
-
-fn get_optional_bytes_strict(
-    map: &[(ciborium::Value, ciborium::Value)],
-    key: u64,
-    field: &str,
-    expected_len: Option<usize>,
-) -> Result<Option<Vec<u8>>, RotationError> {
-    match get_value(map, key) {
-        Some(ciborium::Value::Bytes(b)) => {
-            if let Some(len) = expected_len {
-                if b.len() != len {
-                    return Err(RotationError::PlaintextParse(format!(
-                        "`{field}` must be {len} bytes, got {}",
-                        b.len()
-                    )));
-                }
-            }
-            Ok(Some(b.clone()))
-        }
-        Some(ciborium::Value::Null) | None => Ok(None),
-        Some(_) => Err(RotationError::PlaintextParse(format!(
-            "`{field}` must be bstr or null"
-        ))),
-    }
-}
-
-fn get_optional_kdf_params(
-    map: &[(ciborium::Value, ciborium::Value)],
-    key: u64,
-) -> Result<Option<KdfParamsPayload>, RotationError> {
-    match get_value(map, key) {
-        Some(ciborium::Value::Map(kdf_map)) => {
-            let m_cost = get_u32(kdf_map, 1, "m_cost")?;
-            let t_cost = get_u32(kdf_map, 2, "t_cost")?;
-            let p_cost = get_u32(kdf_map, 3, "p_cost")?;
-            let kdf_version = get_u32(kdf_map, 4, "kdf_version")?;
-            Ok(Some(KdfParamsPayload {
-                m_cost,
-                t_cost,
-                p_cost,
-                kdf_version,
-            }))
-        }
-        Some(ciborium::Value::Null) | None => Ok(None),
-        Some(_) => Err(RotationError::PlaintextParse(
-            "kdf_params must be a map or null".into(),
-        )),
-    }
-}
-
-fn get_u64(
-    map: &[(ciborium::Value, ciborium::Value)],
-    key: u64,
-    field: &str,
-) -> Result<u64, RotationError> {
-    match get_value(map, key) {
-        Some(ciborium::Value::Integer(i)) => u64::try_from(*i)
-            .map_err(|_| RotationError::PlaintextParse(format!("`{field}` out of range"))),
-        Some(_) => Err(RotationError::PlaintextParse(format!(
-            "`{field}` must be uint"
-        ))),
-        None => Err(RotationError::PlaintextParse(format!("missing `{field}`"))),
-    }
-}
-
-fn get_u32(
-    map: &[(ciborium::Value, ciborium::Value)],
-    key: u64,
-    field: &str,
-) -> Result<u32, RotationError> {
-    let v = get_u64(map, key, field)?;
-    u32::try_from(v)
-        .map_err(|_| RotationError::PlaintextParse(format!("`{field}` exceeds u32::MAX ({v})")))
 }
 
 /// Rate limiter for failed rotation attempts (GW-2006 validation rule 8).

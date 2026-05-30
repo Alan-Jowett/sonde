@@ -1184,14 +1184,14 @@ registers a phone, revokes it with `--yes`, and asserts on stdout.
 
 **Procedure:**
 1. Start a gateway test harness with known values for `master_key_epoch`,
-   `master_key_id`, `rotation_in_progress`, salt, and `kdf_params`.
+   `master_key_id` (32-byte SHA-256), and `rotation_in_progress`.
 2. Invoke `sonde-admin key status --gateway-url <url>`.
 3. Assert: exit code is 0.
-4. Assert: stdout displays `master_key_epoch`, `master_key_id`,
-   `rotation_in_progress`, salt status, and `kdf_params`.
+4. Assert: stdout displays `master_key_epoch`, `master_key_id` (32-byte hex),
+   and `rotation_in_progress`. Salt and KDF params are NOT displayed.
 5. Assert: `rotation_in_progress` is rendered as `true` or `false`.
 
-**Expected:** The CLI shows `master_key_epoch`, `master_key_id`, `rotation_in_progress`, salt, and `kdf_params`.
+**Expected:** The CLI shows `master_key_epoch`, `master_key_id` (32-byte hex), and `rotation_in_progress`. Salt and KDF params are not shown.
 
 ---
 

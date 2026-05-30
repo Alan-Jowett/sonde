@@ -2573,18 +2573,22 @@ generated or stored.
 **Source:** Issue #962 (supersedes evolve-887 GW-2005)
 
 **Description:**
-Each PSK record in `nodes` and `phone_psks` MUST carry an opaque
-`master_key_id` (BLOB, 16 bytes, random) and a monotonic
-`master_key_epoch` (INTEGER). On first startup, the gateway MUST generate
-a random 16-byte `master_key_id`, set `master_key_epoch = 1`, and
-backfill all existing PSK records.
+Each PSK record in `nodes` and `phone_psks` MUST carry a deterministic
+`master_key_id` (BLOB, 32 bytes) = `SHA-256(master_key)` and a monotonic
+`master_key_epoch` (INTEGER). The gateway MUST derive `master_key_id`
+locally from the loaded master key — it is never transmitted in rotation
+payloads or received from external sources. On first startup, the gateway
+MUST compute `master_key_id` from the `KeyProvider`-loaded key, set
+`master_key_epoch = 1`, and backfill all existing PSK records.
 
 **Acceptance criteria:**
 
-1. `master_key_id` is a random 16-byte value, NOT a hash of the key.
+1. `master_key_id` = `SHA-256(master_key)` (32 bytes), derived locally.
 2. `master_key_epoch` starts at 1 and is monotonically incremented.
-3. Existing PSK records are backfilled on first startup.
-4. Values are stable across restarts (not regenerated).
+3. On first startup AND after rotation, gateway recomputes `master_key_id`
+   from the current master key.
+4. Existing PSK records are backfilled on first startup.
+5. Values are stable across restarts (not regenerated).
 
 ---
 
@@ -2621,9 +2625,11 @@ connector.
 The gateway MUST emit its own ACTUAL_STATE with `entity_kind = "gateway"`
 and `entity_id = hex(gateway_id)` (lowercase hex, no `0x` prefix). Gateway
 ACTUAL_STATE MUST include: channel, master_key_id, master_key_epoch,
-x25519_public_key, fingerprint_words, missing_key_hints, salt, kdf_params,
+x25519_public_key, fingerprint_words, missing_key_hints,
 gateway_version, gateway_commit, modem_firmware_version, modem_firmware_commit,
 rotation_in_progress. Node-specific keys 4–8, 10–11 MUST be omitted.
+CBOR keys 21 (`salt`) and 22 (`kdf_params`) are RESERVED and MUST NOT
+be emitted.
 
 Gateway ACTUAL_STATE is emitted on startup, connector reconnection,
 whenever gateway state changes, and periodically at a compile-time
@@ -2640,7 +2646,7 @@ heartbeat interval (default 900 seconds).
 6. Re-emitted within 60 seconds when `MissingKeyHintTracker` accepts a
    previously-unseen `key_hint`, using a debounce window to coalesce
    concurrent arrivals.
-7. Re-emitted when salt or KDF params are adopted from DESIRED_STATE.
+7. *(Reserved — previously salt/KDF adoption trigger, now retired.)*
 8. Re-emitted periodically at a compile-time heartbeat interval (default
    900 seconds) to ensure the control-plane handler regularly evaluates
    pending desired state. The heartbeat schedule is process-local (resets
@@ -2661,21 +2667,20 @@ heartbeat interval (default 900 seconds).
 **Description:**
 The gateway MUST accept DESIRED_STATE with `entity_kind = "gateway"` and
 process the following fields from the `desired_state` map: `channel`
-(CBOR key 15), `salt` (key 21), `kdf_params` (key 22),
-`rotation_payload` (key 28), `recovered_psks` (key 29).
+(CBOR key 15), `rotation_payload` (key 28), `recovered_psks` (key 29).
+CBOR keys 21 (`salt`) and 22 (`kdf_params`) are RESERVED and MUST be
+ignored if received.
 
 **Convergence behavior:**
 - Channel: switch if different from current.
-- Salt/KDF params: adopt from DESIRED_STATE if no local salt; once set
-  locally, salt is immutable except via rotation payload.
 - Rotation payload: process if valid (see GW-2006).
 - Recovered PSKs: process each record (see GW-2009).
 
 **Acceptance criteria:**
 
 1. Gateway switches channel when DESIRED_STATE channel differs.
-2. Salt adopted when gateway has no local salt.
-3. Local salt not overwritten by DESIRED_STATE after first set.
+2. *(Reserved — previously salt adoption, now retired.)*
+3. *(Reserved — previously salt immutability, now retired.)*
 4. All DESIRED_STATE fields processed.
 
 ---
@@ -2688,7 +2693,7 @@ process the following fields from the `desired_state` map: `channel`
 **Description:**
 Node ACTUAL_STATE MUST include three escrow fields: `encrypted_psk`
 (CBOR key 12, bstr 60 bytes), `escrow_key_hint` (key 13, uint 0–65535),
-and `master_key_id` (key 14, bstr 16 bytes). Phone PSKs are NOT escrowed
+and `master_key_id` (key 14, bstr 32 bytes). Phone PSKs are NOT escrowed
 (phone ACTUAL_STATE is never emitted).
 
 Escrow fields are emitted on node registration, after key rotation, and
@@ -2709,8 +2714,11 @@ on connector reconnection.
 
 **Description:**
 The gateway MUST accept a `RotationPayloadV1` (via DESIRED_STATE key 28
-or gRPC `SubmitRotation`) containing a new master key, rotation code,
-and new master_key_id encrypted with X25519 + HKDF-SHA-256 + AES-256-GCM.
+or gRPC `SubmitRotation`) containing a new master key and rotation code,
+encrypted with X25519 + HKDF-SHA-256 + AES-256-GCM. The gateway MUST
+derive `master_key_id = SHA-256(new_master_key)` locally after
+decryption. CBOR plaintext keys 3 (`new_master_key_id`), 4 (`salt`),
+and 5 (`kdf_params`) are RESERVED and MUST be ignored if present.
 
 The gateway MUST: (1) decrypt using GatewayIdentity X25519 private key,
 (2) verify rotation code, (3) verify master_key_epoch via AAD,
@@ -2805,22 +2813,13 @@ provider write succeeds (or is determined unnecessary).
 
 ---
 
-### GW-2008  Salt management
+### GW-2008  Salt management — RETIRED
 
-**Priority:** Must
-**Source:** Issue #962 (supersedes evolve-887 GW-2008)
-
-**Description:**
-The gateway MUST adopt salt from DESIRED_STATE if it has no local salt.
-Once set, local salt is immutable except via rotation payload delivery.
-Salt MUST be included in gateway ACTUAL_STATE.
-
-**Acceptance criteria:**
-
-1. Salt adopted from DESIRED_STATE when gateway has no local salt.
-2. Existing local salt not overwritten by DESIRED_STATE.
-3. Salt updated via rotation payload.
-4. Salt reported in ACTUAL_STATE.
+**Status:** RETIRED
+**Reason:** KDF parameters and salt are now client-side concerns only.
+The gateway does not store, adopt, or emit KDF-related state.
+See GW-2020 (versioned KDF parameter sets) and GW-2021 (deployment-label
+salt derivation).
 
 ---
 
@@ -2953,6 +2952,60 @@ emitted and the payload is discarded.
 2. Rotation via DESIRED_STATE is discarded with a warning log when `is_writable()` returns `false`.
 3. No database mutations or cryptographic operations occur before the rejection.
 4. Writable providers (`file`, `dpapi`, `secret-service`) are not affected.
+
+---
+
+### GW-2020  Versioned KDF parameter sets
+
+**Priority:** Must
+**Source:** KDF simplification (supersedes evolve-962 §2.5 salt/KDF convergence)
+
+**Description:**
+KDF parameters are hardcoded, versioned constants known only to
+client-side tools (admin CLI, SPA). The gateway MUST NOT store or
+process KDF parameters.
+
+Version 1: `Argon2id(m_cost=65536, t_cost=3, p_cost=1, output_len=32)`.
+
+Version selection is implicit (v1 only for now). Future versions may
+add a selector in client tools without gateway changes.
+
+**Acceptance criteria:**
+
+1. No KDF parameters in gateway storage, ACTUAL_STATE, or DESIRED_STATE.
+2. Admin CLI and SPA use v1 parameters for key derivation.
+3. KDF version is not transmitted to the gateway.
+4. Argon2id output length is 32 bytes.
+
+---
+
+### GW-2021  Deployment-label salt derivation
+
+**Priority:** Must
+**Source:** KDF simplification (supersedes evolve-962 §2.5 salt/KDF convergence)
+
+**Description:**
+Salt is derived from a deployment label chosen by the admin:
+`salt = SHA-256("sonde-kdf-v1:" || utf8(deployment_label))[0..16]`
+(first 16 bytes of the SHA-256 digest).
+
+The deployment label is a human-readable UTF-8 string (e.g.,
+"Alan's production deployment"). It is provided by the operator at
+rotation time in both the CLI and SPA. Neither the gateway, Azure
+handler, nor companion stores or transmits the deployment label.
+
+Label encoding: UTF-8 bytes with leading/trailing whitespace trimmed.
+No other normalization (no case-folding, no Unicode normalization).
+Empty labels (after trimming) MUST be rejected by client tools.
+
+**Acceptance criteria:**
+
+1. Salt is deterministically derived from the deployment label.
+2. No salt stored in gateway, Azure, or transmitted in any protocol message.
+3. Deployment label is a client-side-only concept.
+4. Different deployment labels produce different salts.
+5. Empty deployment labels are rejected by both CLI and SPA.
+6. Label bytes are UTF-8 with leading/trailing whitespace trimmed; no other normalization.
 
 ---
 
@@ -3097,10 +3150,12 @@ emitted and the payload is discarded.
 | GW-2005 | Node ACTUAL_STATE escrow fields | Must |
 | GW-2006 | Master key rotation | Must |
 | GW-2007 | Crash-safe key rotation | Must |
-| GW-2008 | Salt management | Must |
+| GW-2008 | Salt management | RETIRED |
 | GW-2009 | Declarative node recovery | Must |
 | GW-2010 | Rotation code display on modem | Must |
 | GW-2011 | Fingerprint computation | Must |
 | GW-2012 | gRPC rotation API | Must |
 | GW-2013 | Pending recovery purge on rotation | Must |
 | GW-2014 | Rotation blocked for non-writable key providers | Must |
+| GW-2020 | Versioned KDF parameter sets | Must |
+| GW-2021 | Deployment-label salt derivation | Must |

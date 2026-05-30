@@ -167,10 +167,10 @@ deployment (e.g., during gateway replacement failover).
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
 | `channel` | 15 | uint/null | Desired ESP-NOW channel. `null` means no channel change requested. |
-| `salt` | 21 | bstr (16 bytes)/null | KDF salt from cloud. Adopted by gateway only if it has no local salt. `null` means no salt provided. |
-| `kdf_params` | 22 | map/null | KDF parameters `{1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}`. `null` means no params provided. |
+| *(reserved)* | 21 | — | RETIRED — previously KDF salt. |
+| *(reserved)* | 22 | — | RETIRED — previously KDF params. |
 | `rotation_payload` | 28 | bstr/null | X25519-encrypted `RotationPayloadV1` for master key rotation. `null` means no rotation requested. See `evolve-962-specification.md` §2.6.1 for format. |
-| `recovered_psks` | 29 | array/null | Array of recovered PSK records for missing nodes. Each record is a CBOR map: `{1: node_id (tstr), 2: key_hint (uint), 3: encrypted_psk (bstr), 4: master_key_id (bstr)}`. `null` means no recovery records. |
+| `recovered_psks` | 29 | array/null | Array of recovered PSK records for missing nodes. Each record is a CBOR map: `{1: node_id (tstr), 2: key_hint (uint), 3: encrypted_psk (bstr), 4: master_key_id (bstr, 32 bytes)}`. `null` means no recovery records. |
 
 #### 3.2.2  `desired_state` payload for `entity_kind = "node"`
 
@@ -218,15 +218,15 @@ state.
 | `schedule_interval_s` | 11 | uint/null | Latest node wake interval in seconds when applicable. |
 | `encrypted_psk` | 12 | bstr (60 bytes)/null | Encrypted PSK blob for node escrow. Node-scoped only; omit for gateway. |
 | `escrow_key_hint` | 13 | uint (0–65535)/null | `key_hint` (u16) for Azure recovery lookup. Node-scoped only. |
-| `master_key_id` | 14 | bstr (16 bytes)/null | Opaque master key ID that encrypted this node's PSK. Node-scoped only. |
+| `master_key_id` | 14 | bstr (32 bytes)/null | SHA-256(master_key) identifying which master key encrypted this node's PSK. Node-scoped only. |
 | `channel` | 15 | uint/null | ESP-NOW channel. Gateway-scoped only. |
-| `master_key_id` | 16 | bstr (16 bytes)/null | Gateway's current master key ID. Gateway-scoped only. |
+| `master_key_id` | 16 | bstr (32 bytes)/null | Gateway's current master key identifier = SHA-256(master_key). Gateway-scoped only. |
 | `master_key_epoch` | 17 | uint/null | Monotonic master key epoch. Gateway-scoped only. |
 | `x25519_public_key` | 18 | bstr (32 bytes)/null | X25519 public key derived from GatewayIdentity. Gateway-scoped only. |
 | `fingerprint_words` | 19 | array of tstr/null | 6-word BIP-39 fingerprint. Gateway-scoped only. |
 | `missing_key_hints` | 20 | array of uint/null | Unknown key_hints (one-shot, cleared after reporting). Gateway-scoped only. |
-| `salt` | 21 | bstr (16 bytes)/null | KDF salt. Gateway-scoped only. |
-| `kdf_params` | 22 | map/null | `{1: m_cost, 2: t_cost, 3: p_cost, 4: kdf_version}`. Gateway-scoped only. |
+| *(reserved)* | 21 | — | RETIRED — previously KDF salt. |
+| *(reserved)* | 22 | — | RETIRED — previously KDF params. |
 | `gateway_version` | 23 | tstr/null | Gateway binary semver. Gateway-scoped only. |
 | `gateway_commit` | 24 | tstr/null | Gateway binary git commit. Gateway-scoped only. |
 | `modem_firmware_version` | 25 | tstr/null | Modem firmware semver. Gateway-scoped only. |
@@ -235,8 +235,9 @@ state.
 | `wake_rssi_dbm` | 28 | int/null | Modem-measured receive RSSI (dBm) of the node's WAKE frame. Node-scoped only; null when the transport does not supply RSSI metadata. |
 
 **Key scoping:** Keys 4–8, 10–11, 28 are node-specific and MUST be omitted for
-`entity_kind = "gateway"`. Keys 12–14 are node escrow fields. Keys 15–27
-are gateway-specific and MUST be omitted for `entity_kind = "node"`. Key 9
+`entity_kind = "gateway"`. Keys 12–14 are node escrow fields. Keys 15–20,
+23–27 are gateway-specific and MUST be omitted for `entity_kind = "node"`.
+Keys 21–22 are RESERVED (retired) and MUST NOT be emitted. Key 9
 (`timestamp_ms`) is shared and required for all entity kinds. Decoders
 dispatch on `entity_kind` to interpret the correct keys.
 

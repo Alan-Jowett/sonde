@@ -335,9 +335,10 @@ pub struct Gateway {
     /// Typed storage reference for pending_recovery access (GW-2009).
     sqlite_storage: Option<Arc<SqliteStorage>>,
     /// Cached master_key_id for pending_recovery lookups (GW-2009).
-    /// Loaded once at `set_sqlite_storage` time to avoid calling
-    /// `init_master_key_id` on the per-frame path.
-    cached_master_key_id: Option<[u8; 16]>,
+    /// Initialised at `set_sqlite_storage` time and refreshed after rotation
+    /// completes, so `try_recovery_auth` does not call `init_master_key_id`
+    /// on the per-frame path.
+    cached_master_key_id: RwLock<Option<[u8; 32]>>,
 }
 
 impl Gateway {
@@ -357,7 +358,7 @@ impl Gateway {
             missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
             missing_hints_notify: Arc::new(tokio::sync::Notify::new()),
             sqlite_storage: None,
-            cached_master_key_id: None,
+            cached_master_key_id: RwLock::new(None),
         }
     }
 
@@ -388,7 +389,7 @@ impl Gateway {
             missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
             missing_hints_notify: Arc::new(tokio::sync::Notify::new()),
             sqlite_storage: None,
-            cached_master_key_id: None,
+            cached_master_key_id: RwLock::new(None),
         }
     }
 
@@ -412,7 +413,7 @@ impl Gateway {
             missing_hint_tracker: Arc::new(RwLock::new(MissingKeyHintTracker::new())),
             missing_hints_notify: Arc::new(tokio::sync::Notify::new()),
             sqlite_storage: None,
-            cached_master_key_id: None,
+            cached_master_key_id: RwLock::new(None),
         }
     }
 
@@ -451,7 +452,7 @@ impl Gateway {
     pub async fn set_sqlite_storage(&mut self, storage: Arc<SqliteStorage>) {
         match storage.init_master_key_id().await {
             Ok((kid, _)) => {
-                self.cached_master_key_id = Some(kid);
+                *self.cached_master_key_id.write().await = Some(kid);
             }
             Err(e) => {
                 warn!("failed to cache master_key_id during gateway init: {e}");
@@ -459,6 +460,25 @@ impl Gateway {
             }
         }
         self.sqlite_storage = Some(storage);
+    }
+
+    /// Refresh the cached `master_key_id` from storage.
+    ///
+    /// Must be called after rotation completes so that `try_recovery_auth`
+    /// filters `pending_recovery` candidates against the new key identity.
+    pub async fn refresh_cached_master_key_id(&self) {
+        let sqlite = match &self.sqlite_storage {
+            Some(s) => s,
+            None => return,
+        };
+        match sqlite.init_master_key_id().await {
+            Ok((kid, _)) => {
+                *self.cached_master_key_id.write().await = Some(kid);
+            }
+            Err(e) => {
+                warn!("failed to refresh cached master_key_id after rotation: {e}");
+            }
+        }
     }
 
     /// Drain accumulated unknown `key_hint` values for ACTUAL_STATE emission.
@@ -581,7 +601,7 @@ impl Gateway {
         };
 
         // Use cached master_key_id for pre-filtering candidates.
-        let current_key_id = match self.cached_master_key_id {
+        let current_key_id = match *self.cached_master_key_id.read().await {
             Some(kid) => kid,
             None => {
                 warn!(key_hint, "no cached master_key_id — recovery unavailable");

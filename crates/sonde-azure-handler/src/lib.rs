@@ -104,7 +104,7 @@ pub struct ActualStateRow {
     pub encrypted_psk: Option<Vec<u8>>,
     /// Node PSK escrow: key_hint for recovery lookup (AZH-0601).
     pub escrow_key_hint: Option<u64>,
-    /// Node PSK escrow: master_key_id (AZH-0601, 16 bytes).
+    /// Node PSK escrow: master_key_id (AZH-0601, 32 bytes).
     pub master_key_id: Option<Vec<u8>>,
 }
 
@@ -122,8 +122,6 @@ pub struct GatewayActualStateRow {
     pub x25519_public_key: Option<Vec<u8>>,
     pub fingerprint_words: Option<String>,
     pub missing_key_hints: Option<String>,
-    pub salt: Option<Vec<u8>>,
-    pub kdf_params_json: Option<String>,
     pub gateway_version: Option<String>,
     pub gateway_commit: Option<String>,
     pub modem_firmware_version: Option<String>,
@@ -220,11 +218,11 @@ pub struct ActualStateMessage {
     pub encrypted_psk: Option<Vec<u8>>,
     /// Node escrow: key_hint (CBOR key 13, u16).
     pub escrow_key_hint: Option<u16>,
-    /// Node escrow: master_key_id (CBOR key 14, 16 bytes).
+    /// Node escrow: master_key_id (CBOR key 14, 32 bytes).
     pub node_master_key_id: Option<Vec<u8>>,
     /// Gateway: channel (CBOR key 15).
     pub channel: Option<u32>,
-    /// Gateway: master_key_id (CBOR key 16, 16 bytes).
+    /// Gateway: master_key_id (CBOR key 16, 32 bytes).
     pub gateway_master_key_id: Option<Vec<u8>>,
     /// Gateway: master_key_epoch (CBOR key 17).
     pub master_key_epoch: Option<u64>,
@@ -234,10 +232,6 @@ pub struct ActualStateMessage {
     pub fingerprint_words: Option<Vec<String>>,
     /// Gateway: missing key_hints (CBOR key 20).
     pub missing_key_hints: Option<Vec<u64>>,
-    /// Gateway: KDF salt (CBOR key 21, 16 bytes).
-    pub salt: Option<Vec<u8>>,
-    /// Gateway: KDF params JSON (CBOR key 22).
-    pub kdf_params: Option<serde_json::Value>,
     /// Gateway: gateway binary version (CBOR key 23).
     pub gateway_version: Option<String>,
     /// Gateway: gateway binary commit (CBOR key 24).
@@ -536,13 +530,6 @@ where
             .map(serde_json::to_string)
             .transpose()
             .map_err(|e| HandlerError::Decode(format!("serialize missing_key_hints: {e}")))?;
-        let kdf_params_json = msg
-            .kdf_params
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| HandlerError::Decode(format!("serialize kdf_params: {e}")))?;
-
         let gw_row = GatewayActualStateRow {
             gateway_id: gateway_id.clone(),
             row_key: next_history_row_key(msg.timestamp_ms)?,
@@ -553,8 +540,6 @@ where
             x25519_public_key: msg.x25519_public_key.clone(),
             fingerprint_words,
             missing_key_hints: missing_key_hints_json,
-            salt: msg.salt.clone(),
-            kdf_params_json,
             gateway_version: msg.gateway_version.clone(),
             gateway_commit: msg.gateway_commit.clone(),
             modem_firmware_version: msg.modem_firmware_version.clone(),
@@ -618,22 +603,12 @@ where
             gw_desired.and_then(|d| d.rotation_payload)
         };
 
-        // Salt management (AZH-0604): include stored salt in DESIRED_STATE only
-        // when gateway reports salt = null.
-        let desired_salt = if msg.salt.is_none() {
-            previous.as_ref().and_then(|p| p.salt.clone())
-        } else {
-            None
-        };
-
         // Construct gateway DESIRED_STATE if there's anything to send.
-        let has_content =
-            !recovered_psks.is_empty() || rotation_payload.is_some() || desired_salt.is_some();
+        let has_content = !recovered_psks.is_empty() || rotation_payload.is_some();
 
         if has_content {
             let desired = encode_gateway_desired_state(
                 gateway_id,
-                desired_salt.as_deref(),
                 rotation_payload.as_deref(),
                 &recovered_psks,
             )?;
@@ -1187,11 +1162,6 @@ impl HandlerStore for AzureTablesStore {
                 .as_ref()
                 .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
             master_key_epoch: row.master_key_epoch.map(|e| e as i64),
-            salt: row
-                .salt
-                .as_ref()
-                .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
-            kdf_params_json: row.kdf_params_json.clone(),
             gateway_version: row.gateway_version.clone(),
             gateway_commit: row.gateway_commit.clone(),
             modem_firmware_version: row.modem_firmware_version.clone(),
@@ -1453,7 +1423,7 @@ struct ActualStateEntity {
         deserialize_with = "deserialize_optional_u64_flexible"
     )]
     key_hint: Option<u64>,
-    /// Node PSK escrow: base64-encoded master_key_id (AZH-0601).
+    /// Node PSK escrow: base64-encoded 32-byte master_key_id (AZH-0601).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     master_key_id: Option<String>,
 }
@@ -1473,6 +1443,7 @@ struct GatewayActualStateEntity {
         deserialize_with = "deserialize_optional_i64_flexible"
     )]
     channel: Option<i64>,
+    /// Gateway: base64-encoded 32-byte master_key_id.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     master_key_id: Option<String>,
     #[serde(
@@ -1481,10 +1452,6 @@ struct GatewayActualStateEntity {
         deserialize_with = "deserialize_optional_i64_flexible"
     )]
     master_key_epoch: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    salt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    kdf_params_json: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     gateway_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1902,21 +1869,19 @@ fn decode_connector_message(bytes: &[u8]) -> Result<ConnectorMessage, HandlerErr
                 // Node escrow fields (keys 12–14)
                 encrypted_psk: optional_fixed_bytes_field(&map, 12, 60, "encrypted_psk")?,
                 escrow_key_hint: optional_u16_field(&map, 13, "escrow_key_hint")?,
-                node_master_key_id: optional_fixed_bytes_field(&map, 14, 16, "node_master_key_id")?,
+                node_master_key_id: optional_fixed_bytes_field(&map, 14, 32, "node_master_key_id")?,
                 // Gateway-scoped fields (keys 15–27)
                 channel: optional_u32_field(&map, 15, "channel")?,
                 gateway_master_key_id: optional_fixed_bytes_field(
                     &map,
                     16,
-                    16,
+                    32,
                     "gateway_master_key_id",
                 )?,
                 master_key_epoch: optional_u64_field(&map, 17, "master_key_epoch")?,
                 x25519_public_key: optional_fixed_bytes_field(&map, 18, 32, "x25519_public_key")?,
                 fingerprint_words: decode_optional_string_array(&map, 19)?,
                 missing_key_hints: decode_optional_uint_array(&map, 20)?,
-                salt: optional_fixed_bytes_field(&map, 21, 16, "salt")?,
-                kdf_params: decode_optional_kdf_params(&map, 22)?,
                 gateway_version: optional_text_field(&map, 23, "gateway_version")?,
                 gateway_commit: optional_text_field(&map, 24, "gateway_commit")?,
                 modem_firmware_version: optional_text_field(&map, 25, "modem_firmware_version")?,
@@ -1975,16 +1940,10 @@ pub(crate) fn encode_desired_state(
 /// Encode a gateway DESIRED_STATE connector message (AZH-0605).
 fn encode_gateway_desired_state(
     gateway_id: &str,
-    salt: Option<&[u8]>,
     rotation_payload: Option<&[u8]>,
     recovered_psks: &[NodeEscrowRecord],
 ) -> Result<Vec<u8>, HandlerError> {
     let mut desired_state_entries = Vec::new();
-
-    // Salt (CBOR key 21) — only when gateway has no local salt.
-    if let Some(s) = salt {
-        desired_state_entries.push(map_entry(21, Value::Bytes(s.to_vec())));
-    }
 
     // Rotation payload (CBOR key 28) — opaque relay.
     if let Some(rp) = rotation_payload {
@@ -2111,12 +2070,6 @@ fn gateway_entity_to_row(
             .map_err(|e| HandlerError::Store(format!("decode gw x25519_public_key: {e}")))?,
         fingerprint_words: e.fingerprint_words,
         missing_key_hints: e.missing_key_hints,
-        salt: e
-            .salt
-            .map(|s| base64::engine::general_purpose::STANDARD.decode(s))
-            .transpose()
-            .map_err(|e| HandlerError::Store(format!("decode gw salt: {e}")))?,
-        kdf_params_json: e.kdf_params_json,
         gateway_version: e.gateway_version,
         gateway_commit: e.gateway_commit,
         modem_firmware_version: e.modem_firmware_version,
@@ -2411,39 +2364,6 @@ fn decode_optional_uint_array(
         }
         Some(_) => Err(HandlerError::Decode(
             "`missing_key_hints` must be an array or null".to_string(),
-        )),
-    }
-}
-
-fn decode_optional_kdf_params(
-    map: &[(Value, Value)],
-    key: u64,
-) -> Result<Option<serde_json::Value>, HandlerError> {
-    match map_get(map, key) {
-        Some(Value::Null) | None => Ok(None),
-        Some(Value::Map(entries)) => {
-            let mut json_map = serde_json::Map::new();
-            for (k, v) in entries {
-                if let Some(ki) = k.as_integer().and_then(|i| u64::try_from(i).ok()) {
-                    let key_name = match ki {
-                        1 => "m_cost",
-                        2 => "t_cost",
-                        3 => "p_cost",
-                        4 => "kdf_version",
-                        _ => continue,
-                    };
-                    if let Some(val) = v.as_integer().and_then(|i| u64::try_from(i).ok()) {
-                        json_map.insert(
-                            key_name.to_string(),
-                            serde_json::Value::Number(serde_json::Number::from(val)),
-                        );
-                    }
-                }
-            }
-            Ok(Some(serde_json::Value::Object(json_map)))
-        }
-        Some(_) => Err(HandlerError::Decode(
-            "`kdf_params` must be a map or null".to_string(),
         )),
     }
 }
@@ -4732,7 +4652,7 @@ mod tests {
             map_entry(3, Value::Text("abcdef01".to_string())),
             map_entry(9, Value::Integer(1234u64.into())),
             map_entry(15, Value::Integer(6u64.into())),
-            map_entry(16, Value::Bytes(vec![0x42u8; 16])),
+            map_entry(16, Value::Bytes(vec![0x42u8; 32])),
             map_entry(17, Value::Integer(3u64.into())),
             map_entry(18, Value::Bytes(vec![0x55u8; 32])),
             map_entry(27, Value::Bool(false)),
@@ -4800,10 +4720,9 @@ mod tests {
             "aabb0011",
             1000,
             6,
-            &[0x42u8; 16],
+            &[0x42u8; 32],
             1,
             &[0x55u8; 32],
-            Some(&[0xAA; 16]),
             false,
         );
         handler.handle_payload(&payload1).await.unwrap();
@@ -4824,10 +4743,9 @@ mod tests {
             "aabb0011",
             2000,
             11,
-            &[0x42u8; 16],
+            &[0x42u8; 32],
             2,
             &[0x55u8; 32],
-            Some(&[0xAA; 16]),
             false,
         );
         handler.handle_payload(&payload2).await.unwrap();
@@ -4877,8 +4795,6 @@ mod tests {
             x25519_public_key: None,
             fingerprint_words: None,
             missing_key_hints: None,
-            salt: None,
-            kdf_params_json: None,
             gateway_version: None,
             gateway_commit: None,
             modem_firmware_version: None,
@@ -4913,8 +4829,6 @@ mod tests {
             x25519_public_key: None,
             fingerprint_words: None,
             missing_key_hints: None,
-            salt: None,
-            kdf_params_json: None,
             gateway_version: None,
             gateway_commit: None,
             modem_firmware_version: None,
@@ -4950,10 +4864,9 @@ mod tests {
             "aabb0011",
             2000,
             6,
-            &[0x42u8; 16],
+            &[0x42u8; 32],
             2,
             &[0x55u8; 32],
-            Some(&[0xAA; 16]),
             false,
         );
         handler.handle_payload(&payload_new).await.unwrap();
@@ -4975,10 +4888,9 @@ mod tests {
             "aabb0011",
             1000,
             6,
-            &[0x42u8; 16],
+            &[0x42u8; 32],
             1,
             &[0x55u8; 32],
-            Some(&[0xAA; 16]),
             false,
         );
         handler.handle_payload(&payload_stale).await.unwrap();
@@ -5021,8 +4933,6 @@ mod tests {
             x25519_public_key: None,
             fingerprint_words: None,
             missing_key_hints: None,
-            salt: None,
-            kdf_params_json: None,
             gateway_version: None,
             gateway_commit: None,
             modem_firmware_version: None,
@@ -5055,10 +4965,9 @@ mod tests {
             "aabb0011",
             1000,
             6,
-            &[0x42u8; 16],
+            &[0x42u8; 32],
             1,
             &[0x55u8; 32],
-            Some(&[0xAA; 16]),
             false,
         );
         handler.handle_payload(&payload_stale).await.unwrap();
@@ -5107,7 +5016,7 @@ mod tests {
         let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
 
         let psk_blob = vec![0xBBu8; 60];
-        let master_key_id = vec![0xCCu8; 16];
+        let master_key_id = vec![0xCCu8; 32];
         let value = Value::Map(vec![
             map_entry(1, Value::Integer(MSG_TYPE_ACTUAL_STATE.into())),
             map_entry(2, Value::Text("node".to_string())),
@@ -5141,7 +5050,7 @@ mod tests {
         let publisher = Arc::new(RecordingPublisher::default());
         let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
 
-        let master_key_id = vec![0xAAu8; 16];
+        let master_key_id = vec![0xAAu8; 32];
         let psk_blob = vec![0xBBu8; 60];
 
         // Store a node with escrow fields
@@ -5173,7 +5082,6 @@ mod tests {
             &master_key_id,
             1,
             &[0x55u8; 32],
-            None,
             false,
             &[42],
         );
@@ -5201,8 +5109,8 @@ mod tests {
         let publisher = Arc::new(RecordingPublisher::default());
         let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
 
-        let node_mkid = vec![0xAAu8; 16];
-        let gateway_mkid = vec![0xFFu8; 16]; // Different!
+        let node_mkid = vec![0xAAu8; 32];
+        let gateway_mkid = vec![0xFFu8; 32]; // Different!
 
         store
             .append_actual_state(&ActualStateRow {
@@ -5231,7 +5139,6 @@ mod tests {
             &gateway_mkid,
             1,
             &[0x55u8; 32],
-            None,
             false,
             &[42],
         );
@@ -5252,7 +5159,7 @@ mod tests {
         let publisher = Arc::new(RecordingPublisher::default());
         let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
 
-        let master_key_id = vec![0xAAu8; 16];
+        let master_key_id = vec![0xAAu8; 32];
         let rotation_payload = vec![0x01, 0x02, 0x03, 0x04];
 
         // Seed gateway desired state with a rotation payload
@@ -5274,7 +5181,6 @@ mod tests {
             &master_key_id,
             1,
             &[0x55u8; 32],
-            None,
             false,
         );
         handler.handle_payload(&payload1).await.unwrap();
@@ -5298,7 +5204,6 @@ mod tests {
             &master_key_id,
             2,
             &[0x55u8; 32],
-            None,
             false,
         );
         handler.handle_payload(&payload2).await.unwrap();
@@ -5336,80 +5241,6 @@ mod tests {
         );
     }
 
-    // --- T-AZH-0604: Salt management ---
-    #[tokio::test]
-    async fn t_azh_0604_salt_included_when_gateway_has_none() {
-        let store = Arc::new(MemoryStore::default());
-        let publisher = Arc::new(RecordingPublisher::default());
-        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
-
-        let master_key_id = vec![0xAAu8; 16];
-        let stored_salt = vec![0xDDu8; 16];
-
-        // First: deliver gateway state WITH salt to store it
-        let payload1 = encode_gateway_actual_state_msg(
-            "a1b2c3d4",
-            1000,
-            6,
-            &master_key_id,
-            1,
-            &[0x55u8; 32],
-            Some(&stored_salt),
-            false,
-        );
-        handler.handle_payload(&payload1).await.unwrap();
-        publisher.sends.lock().await.clear();
-
-        // Second: deliver gateway state WITHOUT salt
-        let payload2 = encode_gateway_actual_state_msg(
-            "a1b2c3d4",
-            2000,
-            6,
-            &master_key_id,
-            1,
-            &[0x55u8; 32],
-            None,
-            false,
-        );
-        handler.handle_payload(&payload2).await.unwrap();
-
-        // DESIRED_STATE should include the stored salt
-        let sends = publisher.sends.lock().await;
-        assert_eq!(sends.len(), 1);
-        let decoded: Value = ciborium::from_reader(&sends[0].1[..]).unwrap();
-        let map = decoded.as_map().unwrap();
-        let desired_state = map_get(map, 4).unwrap().as_map().unwrap();
-        let salt_val = map_get(desired_state, 21).unwrap();
-        assert_eq!(salt_val.as_bytes().unwrap(), &stored_salt);
-    }
-
-    // --- T-AZH-0604: Salt NOT overridden when gateway has salt ---
-    #[tokio::test]
-    async fn t_azh_0604_salt_not_overridden_when_gateway_has_salt() {
-        let store = Arc::new(MemoryStore::default());
-        let publisher = Arc::new(RecordingPublisher::default());
-        let handler = AzureHandler::new(Arc::clone(&store), Arc::clone(&publisher), "downstream");
-
-        let master_key_id = vec![0xAAu8; 16];
-        let salt = vec![0xEEu8; 16];
-
-        let payload = encode_gateway_actual_state_msg(
-            "a1b2c3d4",
-            1000,
-            6,
-            &master_key_id,
-            1,
-            &[0x55u8; 32],
-            Some(&salt),
-            false,
-        );
-        handler.handle_payload(&payload).await.unwrap();
-
-        // No DESIRED_STATE should be published since gateway already has salt
-        let sends = publisher.sends.lock().await;
-        assert!(sends.is_empty(), "no DESIRED_STATE for gateway with salt");
-    }
-
     // --- T-AZH-0605: No phone escrow rows ---
     #[tokio::test]
     async fn t_azh_0605_phone_actual_state_ignored() {
@@ -5441,7 +5272,6 @@ mod tests {
         master_key_id: &[u8],
         master_key_epoch: u64,
         x25519_public_key: &[u8],
-        salt: Option<&[u8]>,
         rotation_in_progress: bool,
     ) -> Vec<u8> {
         encode_gateway_actual_state_msg_with_hints(
@@ -5451,7 +5281,6 @@ mod tests {
             master_key_id,
             master_key_epoch,
             x25519_public_key,
-            salt,
             rotation_in_progress,
             &[],
         )
@@ -5465,7 +5294,6 @@ mod tests {
         master_key_id: &[u8],
         master_key_epoch: u64,
         x25519_public_key: &[u8],
-        salt: Option<&[u8]>,
         rotation_in_progress: bool,
         missing_key_hints: &[u64],
     ) -> Vec<u8> {
@@ -5489,10 +5317,6 @@ mod tests {
                         .collect(),
                 ),
             ));
-        }
-        match salt {
-            Some(s) => pairs.push(map_entry(21, Value::Bytes(s.to_vec()))),
-            None => pairs.push(map_entry(21, Value::Null)),
         }
         pairs.push(map_entry(27, Value::Bool(rotation_in_progress)));
         let value = Value::Map(pairs);

@@ -1021,6 +1021,7 @@ origins and SPA redirect URIs.
 1. CORS origins include `https://alan-jowett.github.io` and `https://sondeplatform.com`.
 2. SPA redirect URIs include `https://alan-jowett.github.io/sonde/` and `https://sondeplatform.com/`.
 3. Origins are parameterized via Bicep parameters.
+4. The bootstrap script defaults `SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN` to `https://sondeplatform.com`, matching the Bicep `customDomainOrigin` default. An operator may opt out by setting it to the empty string.
 
 ---
 

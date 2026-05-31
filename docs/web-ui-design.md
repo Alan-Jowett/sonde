@@ -298,7 +298,9 @@ Both CORS origins are parameterized via `githubPagesOrigin` and
 `customDomainOrigin` parameters in `main.bicep`, with Sonde-specific defaults.
 SPA redirect URIs are configured via CLI using `SONDE_AZURE_GITHUB_PAGES_ORIGIN`,
 `SONDE_AZURE_GITHUB_PAGES_PATH`, and `SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN`
-environment variables.
+environment variables. `SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN` defaults to
+`https://sondeplatform.com` (matching the Bicep `customDomainOrigin` parameter
+default); set to the empty string to omit the custom domain redirect URI.
 
 ---
 

@@ -248,9 +248,12 @@ github_pages_path="${SONDE_AZURE_GITHUB_PAGES_PATH:-/sonde/}"
 github_pages_path="/$(printf '%s' "$github_pages_path" | sed 's|^/||;s|/$||')/"
 # shellcheck disable=SC2016 — $cert/$uris are jq variable refs, not shell.
 redirect_uris="$(printf '%s' "${github_pages_origin}${github_pages_path}")"
-if [ "${SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN+set}" = "set" ] && [ -n "$SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN" ]; then
+# Default to sondeplatform.com to match Bicep's customDomainOrigin default.
+# Set SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN="" to opt out.
+custom_domain_origin="${SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN-https://sondeplatform.com}"
+if [ -n "$custom_domain_origin" ]; then
     # Strip trailing slash then append exactly one
-    custom_origin="$(printf '%s' "$SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN" | sed 's|/$||')"
+    custom_origin="$(printf '%s' "$custom_domain_origin" | sed 's|/$||')"
     spa_body="$(jq -n -c \
         --arg cert "$COMPANION_CERT_BASE64" \
         --arg certName "sonde-azure-companion" \

@@ -293,6 +293,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-0901c | WEB-0901 | Manual trigger (`workflow_dispatch`) is supported | Infrastructure | Planned |
 | T-WEB-0902 | WEB-0902 | Bicep includes GitHub Pages and `sondeplatform.com` in CORS origins and SPA redirect URIs | Infrastructure | Planned |
 | T-WEB-0902b | WEB-0902 | CORS origins parameterized via Bicep parameters | Infrastructure | Planned |
+| T-WEB-0902c | WEB-0902 | Bootstrap script defaults custom domain origin to `https://sondeplatform.com` when `SONDE_AZURE_CUSTOM_DOMAIN_ORIGIN` is unset | Inspection | Planned |
 
 ### 5.10  Cross-Cutting
 

@@ -359,7 +359,6 @@ impl ConnectorEventHub {
         self.tx.receiver_count()
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// Emit ACTUAL_STATE for a node with escrow fields (GW-2005).
     #[allow(clippy::too_many_arguments)]
     pub fn emit_actual_state_for_node_with_escrow(

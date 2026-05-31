@@ -1209,7 +1209,7 @@ impl Gateway {
             }
         }
 
-        // 4b. Emit node ACTUAL_STATE with escrow fields (GW-2005).
+        // 4a. Emit node ACTUAL_STATE with escrow fields (GW-2005).
         let (encrypted_psk_escrow, escrow_key_hint, escrow_master_key_id) =
             match &self.sqlite_storage {
                 Some(sqlite) => match sqlite.get_node_escrow_by_id(&node.node_id).await {
@@ -1269,7 +1269,7 @@ impl Gateway {
                 rssi,
             );
 
-        // 4a. Emit node_online EVENT to handlers (GW-0507)
+        // 4b. Emit node_online EVENT to handlers (GW-0507)
         {
             let process_refs = self.handler_router.read().await.clone_all_process_refs();
             // Lock released — broadcast events without holding router lock.

@@ -4,7 +4,7 @@
 //! Integration tests for PSK escrow, master key identification, and ACTUAL_STATE
 //! publication (GW-2001, GW-2003, GW-2004, GW-2005).
 //!
-//! Test IDs: T-2000, T-2001, T-2002, T-2006c, T-2011, T-2012, T-2014.
+//! Test IDs: T-2000, T-2001, T-2002, T-2005a, T-2006c, T-2011, T-2012, T-2014.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,17 +20,21 @@ use sonde_gateway::connector::{
 };
 use sonde_gateway::engine::Gateway;
 use sonde_gateway::gateway_identity::GatewayIdentity;
+use sonde_gateway::handler::HandlerRouter;
 use sonde_gateway::phone_trust::{PhonePskRecord, PhonePskStatus};
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::rotation_engine::RotationEngine;
+use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::storage::Storage;
-use sonde_gateway::RustCryptoSha256;
+use sonde_gateway::transport::PeerAddress;
+use sonde_gateway::{GatewayAead, RustCryptoSha256};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
+use sonde_protocol::{encode_frame, FrameHeader, NodeMessage, MSG_WAKE};
 use x25519_dalek::PublicKey as X25519PublicKey;
 
 // ── helpers ──────────────────────────────────────────────────────
@@ -1107,5 +1111,131 @@ async fn test_t2014_periodic_gateway_actual_state_heartbeat() {
         map_get(&heartbeat_map, 2),
         Some(&Value::Text("gateway".to_string())),
         "heartbeat ACTUAL_STATE must have entity_kind = gateway"
+    );
+}
+
+// ── T-2005a: WAKE ACTUAL_STATE includes escrow fields ────────
+
+/// T-2005a: WAKE ACTUAL_STATE includes escrow fields (GW-2005 AC-4).
+///
+/// Verifies that a valid WAKE from a registered node produces a node
+/// ACTUAL_STATE that includes `encrypted_psk` (key 12, 60 bytes),
+/// `escrow_key_hint` (key 13), and `master_key_id` (key 14, 32 bytes).
+#[tokio::test]
+async fn test_t2005a_wake_actual_state_includes_escrow_fields() {
+    let (store, _identity) = setup_test_storage().await;
+
+    // Register the node BEFORE init_master_key_id so the backfill sets master_key_id.
+    let key_hint: u16 = 0x4242;
+    let psk = [0x42u8; 32];
+    let node_id = "escrow-wake-node";
+    let record = NodeRecord {
+        node_id: node_id.to_string(),
+        key_hint,
+        psk,
+        assigned_program_hash: None,
+        current_program_hash: None,
+        desired_schedule_interval_s: Some(60),
+        schedule_interval_s: 60,
+        firmware_abi_version: Some(1),
+        firmware_version: Some("0.1.0".to_string()),
+        rf_channel: Some(1),
+        sensors: vec![],
+        registered_by_phone_id: None,
+        key_version: 0,
+    };
+    store.upsert_node(&record).await.unwrap();
+
+    let (key_id, _epoch) = store.init_master_key_id().await.unwrap();
+
+    // Build a Gateway that uses SqliteStorage for both Storage trait and escrow lookups.
+    let pending_commands = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    let handler_router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(Vec::new())));
+    let mut gateway = Gateway::new_with_pending(
+        store.clone() as Arc<dyn Storage>,
+        pending_commands,
+        session_manager,
+        handler_router,
+    );
+    gateway.set_sqlite_storage(store.clone()).await;
+
+    let event_hub = gateway.connector_event_hub();
+    let (mut client, _handle) =
+        spawn_connector(event_hub.clone(), store.clone() as Arc<dyn Storage>).await;
+
+    // Build and send a valid WAKE frame.
+    let program_hash = vec![0x00; 32];
+    let header = FrameHeader {
+        key_hint,
+        msg_type: MSG_WAKE,
+        nonce: 1,
+    };
+    let wake_msg = NodeMessage::Wake {
+        firmware_abi_version: 1,
+        program_hash: program_hash.clone(),
+        battery_mv: 3300,
+        firmware_version: "0.1.0".into(),
+        blob: None,
+    };
+    let cbor = wake_msg.encode().unwrap();
+    let frame = encode_frame(&header, &cbor, &psk, &GatewayAead, &RustCryptoSha256).unwrap();
+
+    let peer: PeerAddress = b"escrow-wake-peer".to_vec();
+    let _response = gateway.process_frame(&frame, peer).await;
+
+    // Read the node ACTUAL_STATE from the connector.
+    let node_frame = read_framed(&mut client).await;
+    let node_map = decode_cbor_map(&node_frame);
+
+    // Verify msg_type = ACTUAL_STATE.
+    let msg_type: i128 = match map_get(&node_map, 1).unwrap() {
+        Value::Integer(i) => (*i).into(),
+        other => panic!("expected integer msg_type, got {other:?}"),
+    };
+    assert_eq!(msg_type, MSG_TYPE_ACTUAL_STATE as i128);
+
+    // Verify entity_kind = "node".
+    let entity_kind = match map_get(&node_map, 2).unwrap() {
+        Value::Text(s) => s.clone(),
+        other => panic!("expected text entity_kind, got {other:?}"),
+    };
+    assert_eq!(entity_kind, "node");
+
+    // Verify entity_id matches the node_id.
+    let entity_id = match map_get(&node_map, 3).unwrap() {
+        Value::Text(s) => s.clone(),
+        other => panic!("expected text entity_id, got {other:?}"),
+    };
+    assert_eq!(entity_id, node_id);
+
+    // Verify encrypted_psk (key 12) is present and 60 bytes.
+    let encrypted_psk = match map_get(&node_map, 12).unwrap() {
+        Value::Bytes(b) => b.clone(),
+        other => panic!("expected bytes encrypted_psk (key 12), got {other:?}"),
+    };
+    assert_eq!(
+        encrypted_psk.len(),
+        60,
+        "encrypted_psk must be 60 bytes (12B nonce + 32B ciphertext + 16B tag)"
+    );
+
+    // Verify escrow_key_hint (key 13) matches the node's key_hint.
+    let escrow_kh: i128 = match map_get(&node_map, 13).unwrap() {
+        Value::Integer(i) => (*i).into(),
+        other => panic!("expected integer escrow_key_hint (key 13), got {other:?}"),
+    };
+    assert_eq!(escrow_kh, key_hint as i128);
+
+    // Verify master_key_id (key 14) is 32 bytes and matches the current key ID.
+    let mk_id = match map_get(&node_map, 14).unwrap() {
+        Value::Bytes(b) => b.clone(),
+        other => panic!("expected bytes master_key_id (key 14), got {other:?}"),
+    };
+    assert_eq!(mk_id.len(), 32, "master_key_id must be 32 bytes");
+    assert_eq!(
+        mk_id,
+        key_id.to_vec(),
+        "master_key_id must match current key"
     );
 }

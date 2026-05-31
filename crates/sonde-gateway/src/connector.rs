@@ -359,37 +359,7 @@ impl ConnectorEventHub {
         self.tx.receiver_count()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn emit_actual_state_for_node(
-        &self,
-        node_id: String,
-        current_program_hash: Vec<u8>,
-        assigned_program_hash: Option<Vec<u8>>,
-        schedule_interval_s: u32,
-        battery_mv: u32,
-        firmware_abi_version: u32,
-        firmware_version: String,
-        timestamp_ms: u64,
-        wake_rssi_dbm: Option<i8>,
-    ) {
-        let _ = self.tx.send(ConnectorOutboundMessage::ActualState {
-            entity_kind: "node",
-            entity_id: node_id,
-            current_program_hash: Some(current_program_hash),
-            assigned_program_hash,
-            schedule_interval_s: Some(schedule_interval_s),
-            battery_mv: Some(battery_mv),
-            firmware_abi_version: Some(firmware_abi_version),
-            firmware_version: Some(firmware_version),
-            timestamp_ms,
-            encrypted_psk_escrow: None,
-            escrow_key_hint: None,
-            master_key_id: None,
-            wake_rssi_dbm,
-        });
-    }
-
-    /// Emit ACTUAL_STATE for a node with escrow blob (GW-2003).
+    /// Emit ACTUAL_STATE for a node with escrow fields (GW-2005).
     #[allow(clippy::too_many_arguments)]
     pub fn emit_actual_state_for_node_with_escrow(
         &self,

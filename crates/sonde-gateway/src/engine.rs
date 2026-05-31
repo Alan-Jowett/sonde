@@ -1209,19 +1209,67 @@ impl Gateway {
             }
         }
 
-        self.connector_event_hub.emit_actual_state_for_node(
-            node.node_id.clone(),
-            program_hash.clone(),
-            updated_node.assigned_program_hash.clone(),
-            updated_node.schedule_interval_s,
-            battery_mv,
-            firmware_abi_version,
-            updated_node.firmware_version.clone().unwrap_or_default(),
-            timestamp_ms,
-            rssi,
-        );
+        // 4a. Emit node ACTUAL_STATE with escrow fields (GW-2005).
+        let (encrypted_psk_escrow, escrow_key_hint, escrow_master_key_id) =
+            match &self.sqlite_storage {
+                Some(sqlite) => match sqlite.get_node_escrow_by_id(&node.node_id).await {
+                    Ok(Some(escrow)) => {
+                        if escrow.master_key_id.is_empty() {
+                            warn!(
+                                node_id = %node.node_id,
+                                "node escrow state unavailable (master_key_id is NULL)"
+                            );
+                            (None, None, None)
+                        } else {
+                            (
+                                Some(escrow.encrypted_psk),
+                                Some(escrow.key_hint),
+                                Some(escrow.master_key_id),
+                            )
+                        }
+                    }
+                    Ok(None) => {
+                        warn!(
+                            node_id = %node.node_id,
+                            "node not found in storage for escrow lookup"
+                        );
+                        (None, None, None)
+                    }
+                    Err(e) => {
+                        warn!(
+                            node_id = %node.node_id,
+                            error = %e,
+                            "failed to query node escrow state for ACTUAL_STATE"
+                        );
+                        (None, None, None)
+                    }
+                },
+                None => {
+                    warn!(
+                        node_id = %node.node_id,
+                        "sqlite storage unavailable for ACTUAL_STATE escrow lookup"
+                    );
+                    (None, None, None)
+                }
+            };
 
-        // 4a. Emit node_online EVENT to handlers (GW-0507)
+        self.connector_event_hub
+            .emit_actual_state_for_node_with_escrow(
+                node.node_id.clone(),
+                program_hash.clone(),
+                updated_node.assigned_program_hash.clone(),
+                updated_node.schedule_interval_s,
+                battery_mv,
+                firmware_abi_version,
+                updated_node.firmware_version.clone().unwrap_or_default(),
+                timestamp_ms,
+                encrypted_psk_escrow,
+                escrow_key_hint,
+                escrow_master_key_id,
+                rssi,
+            );
+
+        // 4b. Emit node_online EVENT to handlers (GW-0507)
         {
             let process_refs = self.handler_router.read().await.clone_all_process_refs();
             // Lock released — broadcast events without holding router lock.

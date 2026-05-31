@@ -1230,6 +1230,13 @@ written to durable gateway storage.
 The payload also includes `wake_rssi_dbm` (CBOR key 28) when the modem supplies
 RSSI metadata; the field is null when the transport does not provide RSSI.
 
+The node actual-state payload also includes the PSK escrow fields
+(`encrypted_psk`, `escrow_key_hint`, `master_key_id`) as defined in §23.6.
+The gateway queries the node's escrow data from storage on each WAKE to
+populate these fields. When `sqlite_storage` is unavailable or the node's
+`master_key_id` is NULL, the engine emits ACTUAL_STATE with null escrow
+fields and logs a warning.
+
 ### 13A.4  External transport boundary and loss signaling
 
 The gateway does not know whether the external control-plane transport is Azure
@@ -1976,6 +1983,16 @@ Encrypted with `AES-256-GCM(master_key, nonce, psk, aad=node_id_utf8)`.
 
 Phone PSKs are NOT escrowed. They are rotated locally but never emitted
 via ACTUAL_STATE.
+
+The `ConnectorEventHub` provides a single emission method
+(`emit_actual_state_for_node_with_escrow`) that always accepts escrow
+fields. There is no separate "no-escrow" convenience method — all
+ACTUAL_STATE emissions (WAKE, registration, rotation, reconnection)
+use the same path. The WAKE path queries per-node escrow data from
+`SqliteStorage::get_node_escrow_by_id()`; the post-rotation path uses
+the bulk `list_node_escrow_state()` to re-emit all nodes efficiently.
+When `sqlite_storage` is unavailable or the node's `master_key_id`
+is NULL, escrow fields are emitted as `null`.
 
 ### 23.7  Master key rotation (GW-2006, GW-2007, GW-2013)
 

@@ -1745,6 +1745,51 @@ impl SqliteStorage {
         .await
     }
 
+    /// Look up escrow metadata for a single node by ID (GW-2005).
+    ///
+    /// Returns `None` if the node does not exist. Used by the engine to
+    /// populate escrow fields in every node ACTUAL_STATE emission.
+    pub async fn get_node_escrow_by_id(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<NodeEscrowRecord>, StorageError> {
+        let node_id = node_id.to_string();
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT node_id, key_hint, psk, master_key_id, \
+                     schedule_interval_s, firmware_abi_version, firmware_version, \
+                     current_program_hash, assigned_program_hash, last_battery_mv \
+                     FROM nodes WHERE node_id = ?1 LIMIT 1",
+                )
+                .map_err(map_err)?;
+            let mut rows = stmt
+                .query_map(params![node_id], |row| {
+                    let kh: u32 = row.get(1)?;
+                    Ok(NodeEscrowRecord {
+                        node_id: row.get(0)?,
+                        key_hint: u16::try_from(kh)
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, kh as i64))?,
+                        encrypted_psk: row.get(2)?,
+                        master_key_id: row.get::<_, Option<Vec<u8>>>(3)?.unwrap_or_default(),
+                        schedule_interval_s: row.get(4)?,
+                        firmware_abi_version: row.get::<_, Option<u32>>(5)?.unwrap_or(0),
+                        firmware_version: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                        current_program_hash: row.get::<_, Option<Vec<u8>>>(7)?.unwrap_or_default(),
+                        assigned_program_hash: row.get(8)?,
+                        last_battery_mv: row.get::<_, Option<u32>>(9)?.unwrap_or(0),
+                    })
+                })
+                .map_err(map_err)?;
+            match rows.next() {
+                Some(Ok(record)) => Ok(Some(record)),
+                Some(Err(e)) => Err(map_err(e)),
+                None => Ok(None),
+            }
+        })
+        .await
+    }
+
     /// Check whether a rotation is currently in progress (pending_rotation exists).
     pub async fn is_rotation_in_progress(&self) -> Result<bool, StorageError> {
         self.with_conn(|conn| {

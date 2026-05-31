@@ -1988,8 +1988,9 @@ The `ConnectorEventHub` provides a single emission method
 (`emit_actual_state_for_node_with_escrow`) that always accepts escrow
 fields. There is no separate "no-escrow" convenience method — all
 ACTUAL_STATE emissions (WAKE, registration, rotation, reconnection)
-use the same path. The engine queries per-node escrow data from
-`SqliteStorage::get_node_escrow_by_id()` at each emission point.
+use the same path. The WAKE path queries per-node escrow data from
+`SqliteStorage::get_node_escrow_by_id()`; the post-rotation path uses
+the bulk `list_node_escrow_state()` to re-emit all nodes efficiently.
 When `sqlite_storage` is unavailable or the node's `master_key_id`
 is NULL, escrow fields are emitted as `null`.
 

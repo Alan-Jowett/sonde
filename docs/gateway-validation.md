@@ -4434,6 +4434,25 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-2005a  WAKE ACTUAL_STATE includes escrow fields
+
+**Traces to:** GW-2005 (AC-4)
+
+**Steps:**
+1. Start gateway with identity, master key, and one registered node.
+2. Connect a mock connector consumer.
+3. Send a valid WAKE from the registered node.
+4. Consume the node ACTUAL_STATE emitted in response to the WAKE.
+5. Verify `encrypted_psk` (key 12) is a 60-byte bstr.
+6. Verify `escrow_key_hint` (key 13) matches the node's `key_hint`.
+7. Verify `master_key_id` (key 14) is a 32-byte bstr matching the
+   current master key ID.
+
+**Expected:**
+1. Node ACTUAL_STATE from a WAKE includes all three escrow fields.
+
+---
+
 ### T-2006  Declarative node recovery
 
 **Traces to:** GW-2009 (AC-1, AC-2, AC-4, AC-5)
@@ -4483,25 +4502,6 @@ A configurable stub handler process (or in-process mock) that:
 
 **Expected:**
 1. PSKs from a different key era are rejected.
-
----
-
-### T-2005a  WAKE ACTUAL_STATE includes escrow fields
-
-**Traces to:** GW-2005 (AC-4)
-
-**Steps:**
-1. Start gateway with identity, master key, and one registered node.
-2. Connect a mock connector consumer.
-3. Send a valid WAKE from the registered node.
-4. Consume the node ACTUAL_STATE emitted in response to the WAKE.
-5. Verify `encrypted_psk` (key 12) is a 60-byte bstr.
-6. Verify `escrow_key_hint` (key 13) matches the node's `key_hint`.
-7. Verify `master_key_id` (key 14) is a 32-byte bstr matching the
-   current master key ID.
-
-**Expected:**
-1. Node ACTUAL_STATE from a WAKE includes all three escrow fields.
 
 ---
 

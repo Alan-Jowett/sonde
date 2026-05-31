@@ -4486,6 +4486,25 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-2005a  WAKE ACTUAL_STATE includes escrow fields
+
+**Traces to:** GW-2005 (AC-4)
+
+**Steps:**
+1. Start gateway with identity, master key, and one registered node.
+2. Connect a mock connector consumer.
+3. Send a valid WAKE from the registered node.
+4. Consume the node ACTUAL_STATE emitted in response to the WAKE.
+5. Verify `encrypted_psk` (key 12) is a 60-byte bstr.
+6. Verify `escrow_key_hint` (key 13) matches the node's `key_hint`.
+7. Verify `master_key_id` (key 14) is a 32-byte bstr matching the
+   current master key ID.
+
+**Expected:**
+1. Node ACTUAL_STATE from a WAKE includes all three escrow fields.
+
+---
+
 ### T-2006c  Phone PSKs not escrowed
 
 **Traces to:** GW-2005 (AC-2)
@@ -4738,7 +4757,7 @@ by existing handler tests.
 | GW-2002 | T-2003 |
 | GW-2003 | T-2001, T-2011, T-2012, T-2013, T-2014, T-2016, T-2016a |
 | GW-2004 | T-2002 |
-| GW-2005 | T-2001, T-2006c |
+| GW-2005 | T-2001, T-2005a, T-2006c |
 | GW-2006 | T-2004, T-2004a |
 | GW-2007 | T-2005, T-2009 |
 | GW-2008 | T-2007 |

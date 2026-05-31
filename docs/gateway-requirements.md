@@ -2696,14 +2696,20 @@ Node ACTUAL_STATE MUST include three escrow fields: `encrypted_psk`
 and `master_key_id` (key 14, bstr 32 bytes). Phone PSKs are NOT escrowed
 (phone ACTUAL_STATE is never emitted).
 
-Escrow fields are emitted on node registration, after key rotation, and
-on connector reconnection.
+Every node ACTUAL_STATE emission MUST include keys 12, 13, and 14 with
+valid non-null escrow values when the node's escrow state is available in
+storage. When escrow data is unavailable (e.g. `master_key_id` is NULL
+in storage for a pre-migration node), the fields are emitted as `null`.
 
 **Acceptance criteria:**
 
 1. Node ACTUAL_STATE includes keys 12, 13, 14.
 2. Phone ACTUAL_STATE is never emitted.
 3. After rotation, all node escrow fields re-emitted with new master_key_id.
+4. Every node WAKE produces an ACTUAL_STATE that includes non-null escrow
+   fields when node escrow state is available.
+5. When node escrow state is unavailable, ACTUAL_STATE is still emitted
+   with null escrow fields (WAKE handling is not aborted).
 
 ---
 

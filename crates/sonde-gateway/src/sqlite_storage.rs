@@ -1760,7 +1760,7 @@ impl SqliteStorage {
                     "SELECT node_id, key_hint, psk, master_key_id, \
                      schedule_interval_s, firmware_abi_version, firmware_version, \
                      current_program_hash, assigned_program_hash, last_battery_mv \
-                     FROM nodes WHERE node_id = ?1",
+                     FROM nodes WHERE node_id = ?1 LIMIT 1",
                 )
                 .map_err(map_err)?;
             let mut rows = stmt

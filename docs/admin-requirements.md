@@ -782,11 +782,11 @@ The command MUST perform no key derivation, encryption, or rotation submission.
 **Description:**
 `sonde-admin key status [--gateway-url <url>]` MUST fetch gateway ACTUAL_STATE
 and display `master_key_epoch`, `master_key_id` (hex),
-`rotation_in_progress`, salt status, and KDF parameters.
+and `rotation_in_progress`.
 
 **Acceptance criteria:**
 
-1. All fields from gateway ACTUAL_STATE are displayed.
+1. `master_key_epoch`, `master_key_id` (hex), and `rotation_in_progress` from gateway ACTUAL_STATE are displayed.
 2. `rotation_in_progress` is shown as a boolean.
 
 ---

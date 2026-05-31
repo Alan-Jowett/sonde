@@ -175,7 +175,10 @@ impl RotationEngine {
 
         if let Some(ref payload) = state.rotation_payload {
             // Errors from DESIRED_STATE rotation are silently discarded per spec.
-            let _ = self.handle_rotation_payload(payload, false).await;
+            match self.handle_rotation_payload(payload, false).await {
+                Ok(()) => info!("DESIRED_STATE rotation payload applied successfully"),
+                Err(e) => warn!(reason = %e, "DESIRED_STATE rotation payload rejected"),
+            }
         }
 
         if state_changed {

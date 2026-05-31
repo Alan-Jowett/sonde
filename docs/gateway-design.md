@@ -2139,6 +2139,10 @@ message SubmitRotationResponse { bool accepted = 1; string error = 2; }
 ```
 
 Both gRPC and DESIRED_STATE rotation paths converge on the same handler.
+DESIRED_STATE rotation failures are logged at `warn` level with the
+rejection reason (e.g., `"rotation payload error: DecryptionFailed"`,
+`"rate-limited"`, `"rotation already in progress"`).  Successes are
+logged at `info` level.
 
 ### 23.13  KDF and salt — client-side only (GW-2020, GW-2021)
 

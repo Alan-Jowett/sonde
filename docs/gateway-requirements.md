@@ -2589,6 +2589,14 @@ MUST compute `master_key_id` from the `KeyProvider`-loaded key, set
    from the current master key.
 4. Existing PSK records are backfilled on first startup.
 5. Values are stable across restarts (not regenerated).
+6. Every `INSERT` into `nodes` or `phone_psks` MUST include the current
+   `master_key_id` and `master_key_epoch` read from `gateway_config`
+   within the same transaction. `INSERT … ON CONFLICT DO UPDATE` MUST
+   also repair `master_key_id` and `master_key_epoch` to current values.
+   If `gateway_config` does not yet contain `master_key_id` (i.e.
+   `init_master_key_id` has not run), the INSERT MUST return an error.
+   Nodes and phone PSKs MUST never be persisted with a NULL
+   `master_key_id`.
 
 ---
 

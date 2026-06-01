@@ -281,17 +281,16 @@ fn map_get(map: &[(i128, Value)], key: i128) -> Option<&Value> {
 /// Verifies:
 /// 1. No `master_key_id` or `master_key_epoch` on fresh DB.
 /// 2. After `init_master_key_id()`, `SHA-256(master_key)` and epoch=1 are set.
-/// 3. All existing PSK records are backfilled.
+/// 3. PSK records inserted after init carry the current master_key_id.
 /// 4. On restart (re-call), the same values are returned.
+///
+/// Note: backfill of legacy PSK records (inserted without master_key_id via raw
+/// SQL) is covered by `test_init_master_key_id_backfills_existing_nodes` in
+/// sqlite_storage unit tests.
 #[tokio::test]
 async fn test_t2000_master_key_identification() {
     let master_key = Zeroizing::new([0x42u8; 32]);
     let store = Arc::new(SqliteStorage::in_memory(master_key).unwrap());
-
-    // Pre-populate with nodes before init_master_key_id.
-    register_test_node(&store, "node-alpha", 100).await;
-    register_test_node(&store, "node-beta", 200).await;
-    register_phone_psk(&store, 0, 300).await;
 
     // Step 1-2: Verify no master_key_id/epoch before init.
     let config_id = store.get_config("master_key_id").await.unwrap();
@@ -316,26 +315,30 @@ async fn test_t2000_master_key_identification() {
     // Step 5: Verify epoch = 1.
     assert_eq!(epoch, 1);
 
-    // Step 6: Verify all existing node PSK records are backfilled.
+    // Step 6 (GW-2001 AC-6): Nodes/phones inserted AFTER init carry master_key_id.
+    register_test_node(&store, "node-alpha", 100).await;
+    register_test_node(&store, "node-beta", 200).await;
+    register_phone_psk(&store, 0, 300).await;
+
     let escrow = store.list_node_escrow_state().await.unwrap();
     assert_eq!(escrow.len(), 2);
     for node in &escrow {
         assert_eq!(
             node.master_key_id,
             key_id.to_vec(),
-            "node {} should have master_key_id backfilled",
+            "node {} should have master_key_id set by INSERT",
             node.node_id
         );
     }
 
-    // Step 6b: Verify phone PSK records are also backfilled (loadable after init).
+    // Step 6b: Verify phone PSK records also carry master_key_id.
     let phones = store.list_phone_psks().await.unwrap();
-    assert_eq!(phones.len(), 1, "phone PSK should be backfilled");
+    assert_eq!(phones.len(), 1, "phone PSK should be present");
     // Phone PSK must be loadable (decrypt succeeds with current master key).
     assert_ne!(
         phones[0].psk.as_ref(),
         &[0u8; 32],
-        "phone PSK must be non-zero after backfill"
+        "phone PSK must be non-zero"
     );
 
     // Step 7: Restart — verify same values are returned.
@@ -363,12 +366,12 @@ async fn test_t2000_master_key_identification() {
 async fn test_t2001_gateway_actual_state_publication() {
     let (store, identity) = setup_test_storage().await;
 
-    // Register nodes BEFORE init_master_key_id so the backfill sets master_key_id.
-    register_test_node(&store, "node-1", 101).await;
-    register_test_node(&store, "node-2", 202).await;
-
+    // GW-2001 AC-6: init_master_key_id BEFORE registering nodes.
     let (key_id, epoch) = store.init_master_key_id().await.unwrap();
     let _code = store.init_rotation_code().await.unwrap();
+
+    register_test_node(&store, "node-1", 101).await;
+    register_test_node(&store, "node-2", 202).await;
 
     let event_hub = Arc::new(ConnectorEventHub::default());
     let (mut client, _handle) =
@@ -605,13 +608,13 @@ async fn test_t2002_desired_state_channel_change() {
 async fn test_t2006c_phone_psks_not_escrowed() {
     let (store, identity) = setup_test_storage().await;
 
-    // Register nodes and phone PSK BEFORE init_master_key_id for backfill.
+    // GW-2001 AC-6: init_master_key_id BEFORE registering nodes/phones.
+    let (_key_id, epoch) = store.init_master_key_id().await.unwrap();
+    let code = store.init_rotation_code().await.unwrap();
+
     register_test_node(&store, "node-x", 100).await;
     register_test_node(&store, "node-y", 200).await;
     register_phone_psk(&store, 0, 400).await;
-
-    let (_key_id, epoch) = store.init_master_key_id().await.unwrap();
-    let code = store.init_rotation_code().await.unwrap();
 
     let event_hub = Arc::new(ConnectorEventHub::default());
     let (mut client, _handle) =
@@ -1125,7 +1128,9 @@ async fn test_t2014_periodic_gateway_actual_state_heartbeat() {
 async fn test_t2005a_wake_actual_state_includes_escrow_fields() {
     let (store, _identity) = setup_test_storage().await;
 
-    // Register the node BEFORE init_master_key_id so the backfill sets master_key_id.
+    // GW-2001 AC-6: init_master_key_id BEFORE registering nodes.
+    let (key_id, _epoch) = store.init_master_key_id().await.unwrap();
+
     let key_hint: u16 = 0x4242;
     let psk = [0x42u8; 32];
     let node_id = "escrow-wake-node";
@@ -1145,8 +1150,6 @@ async fn test_t2005a_wake_actual_state_includes_escrow_fields() {
         key_version: 0,
     };
     store.upsert_node(&record).await.unwrap();
-
-    let (key_id, _epoch) = store.init_master_key_id().await.unwrap();
 
     // Build a Gateway that uses SqliteStorage for both Storage trait and escrow lookups.
     let pending_commands = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
@@ -1237,5 +1240,136 @@ async fn test_t2005a_wake_actual_state_includes_escrow_fields() {
         mk_id,
         key_id.to_vec(),
         "master_key_id must match current key"
+    );
+}
+
+// ── T-2005b: Node added after init has escrow in ACTUAL_STATE ────────
+
+/// T-2005b: Node added after `init_master_key_id` has escrow in ACTUAL_STATE
+/// (GW-2001 AC-6, GW-2005 AC-4).
+///
+/// Verifies that a node registered AFTER `init_master_key_id` (simulating
+/// post-startup pairing) has:
+/// 1. Non-NULL `master_key_id` in the persisted DB row.
+/// 2. Non-null escrow fields in the ACTUAL_STATE emitted on WAKE.
+#[tokio::test]
+async fn test_t2005b_post_init_node_has_escrow_in_actual_state() {
+    let (store, _identity) = setup_test_storage().await;
+
+    // Step 1: init_master_key_id FIRST (simulating normal gateway startup).
+    let (key_id, _epoch) = store.init_master_key_id().await.unwrap();
+
+    // Step 2: Register a node AFTER init (simulating post-startup pairing).
+    let key_hint: u16 = 0xBEEF;
+    let psk = [0x42u8; 32];
+    let node_id = "post-init-node";
+    let record = NodeRecord {
+        node_id: node_id.to_string(),
+        key_hint,
+        psk,
+        assigned_program_hash: None,
+        current_program_hash: None,
+        desired_schedule_interval_s: Some(60),
+        schedule_interval_s: 60,
+        firmware_abi_version: Some(1),
+        firmware_version: Some("0.1.0".to_string()),
+        rf_channel: Some(1),
+        sensors: vec![],
+        registered_by_phone_id: None,
+        key_version: 0,
+    };
+    store.upsert_node(&record).await.unwrap();
+
+    // Step 3: Verify the persisted DB row has non-NULL master_key_id.
+    let escrow = store.get_node_escrow_by_id(node_id).await.unwrap().unwrap();
+    assert_eq!(
+        escrow.master_key_id,
+        key_id.to_vec(),
+        "post-init node must have master_key_id stamped by INSERT"
+    );
+    assert!(
+        !escrow.master_key_id.is_empty(),
+        "master_key_id must be non-empty"
+    );
+
+    // Step 4: Build a Gateway and send a valid WAKE.
+    let pending_commands = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    let handler_router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(Vec::new())));
+    let mut gateway = Gateway::new_with_pending(
+        store.clone() as Arc<dyn Storage>,
+        pending_commands,
+        session_manager,
+        handler_router,
+    );
+    gateway.set_sqlite_storage(store.clone()).await;
+
+    let event_hub = gateway.connector_event_hub();
+    let (mut client, _handle) =
+        spawn_connector(event_hub.clone(), store.clone() as Arc<dyn Storage>).await;
+
+    let program_hash = vec![0x00; 32];
+    let header = FrameHeader {
+        key_hint,
+        msg_type: MSG_WAKE,
+        nonce: 1,
+    };
+    let wake_msg = NodeMessage::Wake {
+        firmware_abi_version: 1,
+        program_hash: program_hash.clone(),
+        battery_mv: 3300,
+        firmware_version: "0.1.0".into(),
+        blob: None,
+    };
+    let cbor = wake_msg.encode().unwrap();
+    let frame = encode_frame(&header, &cbor, &psk, &GatewayAead, &RustCryptoSha256).unwrap();
+
+    let peer: PeerAddress = b"post-init-peer".to_vec();
+    let _response = gateway.process_frame(&frame, peer).await;
+
+    // Step 5: Read the ACTUAL_STATE and verify escrow fields.
+    let node_frame = read_framed(&mut client).await;
+    let node_map = decode_cbor_map(&node_frame);
+
+    let msg_type: i128 = match map_get(&node_map, 1).unwrap() {
+        Value::Integer(i) => (*i).into(),
+        other => panic!("expected integer msg_type, got {other:?}"),
+    };
+    assert_eq!(msg_type, MSG_TYPE_ACTUAL_STATE as i128);
+
+    let entity_kind = match map_get(&node_map, 2).unwrap() {
+        Value::Text(s) => s.clone(),
+        other => panic!("expected text entity_kind, got {other:?}"),
+    };
+    assert_eq!(entity_kind, "node");
+
+    // Verify encrypted_psk (key 12) is present and 60 bytes.
+    let encrypted_psk = match map_get(&node_map, 12).unwrap() {
+        Value::Bytes(b) => b.clone(),
+        other => panic!("expected bytes encrypted_psk (key 12), got {other:?}"),
+    };
+    assert_eq!(
+        encrypted_psk.len(),
+        60,
+        "encrypted_psk must be 60 bytes for post-init node"
+    );
+
+    // Verify escrow_key_hint (key 13) matches the node's key_hint.
+    let escrow_kh: i128 = match map_get(&node_map, 13).unwrap() {
+        Value::Integer(i) => (*i).into(),
+        other => panic!("expected integer escrow_key_hint (key 13), got {other:?}"),
+    };
+    assert_eq!(escrow_kh, key_hint as i128);
+
+    // Verify master_key_id (key 14) is 32 bytes and matches.
+    let mk_id = match map_get(&node_map, 14).unwrap() {
+        Value::Bytes(b) => b.clone(),
+        other => panic!("expected bytes master_key_id (key 14), got {other:?}"),
+    };
+    assert_eq!(mk_id.len(), 32, "master_key_id must be 32 bytes");
+    assert_eq!(
+        mk_id,
+        key_id.to_vec(),
+        "master_key_id must match current key for post-init node"
     );
 }

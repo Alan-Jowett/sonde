@@ -76,7 +76,7 @@ use sonde_pair::validation::compute_key_hint;
 /// storage after a simulated restart.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_060_gateway_identity_persistence() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
 
     // Reload from storage — simulates restart.
@@ -103,7 +103,7 @@ async fn t_e2e_061_phone_registration() {
     use sonde_pair::types;
     use std::sync::Arc;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
 
@@ -162,7 +162,7 @@ async fn t_e2e_061_phone_registration() {
 async fn t_e2e_062_node_ble_provisioning() {
     use sonde_node::ble_pairing::{handle_node_provision, NodeProvision, NODE_ACK_SUCCESS};
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -218,7 +218,7 @@ async fn t_e2e_062_node_ble_provisioning() {
 /// Covers: T-N909, T-N912, T-N915
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_063_peer_request_ack() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -289,7 +289,7 @@ async fn t_e2e_063_peer_request_ack() {
 /// Covers: T-N915, T-N916
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_064_onboarding_to_wake() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -353,7 +353,7 @@ async fn t_e2e_064_onboarding_to_wake() {
 /// Covers: T-N913, T-N916
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_065_deferred_erasure() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -409,7 +409,7 @@ async fn t_e2e_065_deferred_erasure() {
 /// Covers: T-N917
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_066_self_healing() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -479,7 +479,7 @@ async fn t_e2e_066_self_healing() {
 /// Covers: T-N911
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_067_agent_revocation() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -547,7 +547,7 @@ async fn t_e2e_067_agent_revocation() {
 async fn t_e2e_068_factory_reset_reprovision() {
     use sonde_node::key_store::KeyStore;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -644,7 +644,7 @@ async fn t_e2e_068_factory_reset_reprovision() {
 /// Covers: T-N200
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_069_multi_node() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -747,7 +747,7 @@ async fn t_e2e_069_multi_node() {
 async fn t_e2e_070_full_use_case() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
 
     // 1. Gateway identity.
     let identity = setup_gateway_identity(&env.storage).await;
@@ -819,7 +819,7 @@ async fn t_e2e_070_full_use_case() {
 /// Covers: GW-1215
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_063a_stale_timestamp_discarded() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -905,7 +905,7 @@ async fn t_e2e_063b_key_hint_mismatch_discarded() {
     use sonde_pair::rng::{OsRng, RngProvider};
     use sonde_protocol::{encode_frame, FrameHeader, MSG_PEER_REQUEST};
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -998,7 +998,7 @@ async fn t_e2e_063b_key_hint_mismatch_discarded() {
 /// Covers: GW-1216
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_063c_duplicate_node_id_discarded() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -1106,7 +1106,7 @@ async fn t_e2e_063d_wrong_peer_ack_nonce_rejected() {
     use sonde_node::peer_request::verify_peer_ack;
     use sonde_protocol::decode_frame;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
     let (phone_psk, phone_key_hint) =
@@ -1184,7 +1184,7 @@ async fn t_e2e_063e_sonde_pair_gateway_integration() {
     use sonde_pair::rng::OsRng;
     use std::sync::Arc;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let identity = setup_gateway_identity(&env.storage).await;
     let rf_channel = 6u8;
 
@@ -1274,7 +1274,7 @@ async fn t_e2e_063e_sonde_pair_gateway_integration() {
 async fn t_e2e_083_instruction_budget_enforcement() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x83; 32];
     env.register_node("budget-node", 1, psk).await;
 
@@ -1342,7 +1342,7 @@ async fn t_e2e_081_ephemeral_restrictions() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
     use sonde_protocol::MapDef;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x80; 32];
     env.register_node("ephemeral-restrict-node", 1, psk).await;
 
@@ -1487,7 +1487,7 @@ async fn t_e2e_080_map_access_through_full_stack() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
     use sonde_protocol::MapDef;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x88; 32];
     env.register_node("map-node", 1, psk).await;
 

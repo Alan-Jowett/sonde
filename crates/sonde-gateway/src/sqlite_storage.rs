@@ -267,6 +267,64 @@ fn decrypt_phone_psk(
         .map_err(|_| StorageError::Internal("decrypted phone psk is not 32 bytes".into()))
 }
 
+/// Read the current `master_key_id` (BLOB) and `master_key_epoch` (i64) from
+/// `gateway_config`.  Returns an error if either value is absent — callers
+/// MUST NOT insert PSK records before `init_master_key_id` has run (GW-2001 AC-6).
+fn read_current_key_metadata(conn: &Connection) -> Result<(Vec<u8>, i64), StorageError> {
+    let id_hex: String = conn
+        .query_row(
+            "SELECT value FROM gateway_config WHERE key = 'master_key_id'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_err)?
+        .ok_or_else(|| {
+            StorageError::Internal(
+                "master_key_id not initialised in gateway_config; \
+                 init_master_key_id must be called before inserting PSK records"
+                    .into(),
+            )
+        })?;
+    let epoch_str: String = conn
+        .query_row(
+            "SELECT value FROM gateway_config WHERE key = 'master_key_epoch'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_err)?
+        .ok_or_else(|| {
+            StorageError::Internal(
+                "master_key_epoch not initialised in gateway_config; \
+                 init_master_key_id must be called before inserting PSK records"
+                    .into(),
+            )
+        })?;
+    let id_bytes = hex::decode(&id_hex).map_err(|e| {
+        StorageError::Internal(format!(
+            "gateway_config master_key_id is not valid hex: {e}"
+        ))
+    })?;
+    if id_bytes.len() != 32 {
+        return Err(StorageError::Internal(format!(
+            "gateway_config master_key_id must be 32 bytes, got {}",
+            id_bytes.len()
+        )));
+    }
+    let epoch: i64 = epoch_str.parse().map_err(|e| {
+        StorageError::Internal(format!(
+            "gateway_config master_key_epoch is not a valid i64: {e}"
+        ))
+    })?;
+    if epoch < 1 {
+        return Err(StorageError::Internal(format!(
+            "gateway_config master_key_epoch must be >= 1, got {epoch}"
+        )));
+    }
+    Ok((id_bytes, epoch))
+}
+
 fn migrate_program_source_filenames(conn: &mut Connection) -> Result<(), StorageError> {
     let needs_migration: bool = conn
         .query_row(
@@ -2281,12 +2339,15 @@ impl Storage for SqliteStorage {
                 ))
             })?;
             let tx = conn.unchecked_transaction().map_err(map_err)?;
+            // GW-2001 AC-6: stamp current master_key_id/epoch on every INSERT.
+            let (mk_id, mk_epoch) = read_current_key_metadata(&tx)?;
             tx.execute(
                 "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                  current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
                  firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
-                 sensors_json, registered_by_phone_id, firmware_version, key_version) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+                 sensors_json, registered_by_phone_id, firmware_version, key_version, \
+                 master_key_id, master_key_epoch) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
                  ON CONFLICT(node_id) DO UPDATE SET \
                  key_hint = excluded.key_hint, \
                  psk = excluded.psk, \
@@ -2301,7 +2362,9 @@ impl Storage for SqliteStorage {
                  sensors_json = excluded.sensors_json, \
                  registered_by_phone_id = excluded.registered_by_phone_id, \
                  firmware_version = excluded.firmware_version, \
-                 key_version = excluded.key_version",
+                 key_version = excluded.key_version, \
+                 master_key_id = excluded.master_key_id, \
+                 master_key_epoch = excluded.master_key_epoch",
                 params![
                     record.node_id,
                     record.key_hint as u32,
@@ -2318,6 +2381,8 @@ impl Storage for SqliteStorage {
                     record.registered_by_phone_id,
                     record.firmware_version,
                     key_version_i64,
+                    mk_id,
+                    mk_epoch,
                 ],
             )
             .map_err(map_err)?;
@@ -2378,13 +2443,16 @@ impl Storage for SqliteStorage {
                     record.key_version
                 ))
             })?;
+            // GW-2001 AC-6: stamp current master_key_id/epoch on every INSERT.
+            let (mk_id, mk_epoch) = read_current_key_metadata(conn)?;
             let rows = conn
                 .execute(
                     "INSERT OR IGNORE INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
                      firmware_abi_version, last_battery_mv, last_seen_epoch_s, rf_channel, \
-                     sensors_json, registered_by_phone_id, firmware_version, key_version) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                     sensors_json, registered_by_phone_id, firmware_version, key_version, \
+                     master_key_id, master_key_epoch) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                     params![
                         record.node_id,
                         record.key_hint as u32,
@@ -2401,6 +2469,8 @@ impl Storage for SqliteStorage {
                         record.registered_by_phone_id,
                         record.firmware_version,
                         key_version_i64,
+                        mk_id,
+                        mk_epoch,
                     ],
                 )
                 .map_err(map_err)?;
@@ -2651,6 +2721,9 @@ impl Storage for SqliteStorage {
             conn.execute_batch("BEGIN IMMEDIATE").map_err(map_err)?;
 
             let result = (|| -> Result<(), StorageError> {
+                // GW-2001 AC-6: read key metadata once per transaction.
+                let (mk_id, mk_epoch) = read_current_key_metadata(conn)?;
+
                 conn.execute("DELETE FROM nodes", []).map_err(map_err)?;
                 conn.execute("DELETE FROM programs", []).map_err(map_err)?;
 
@@ -2683,8 +2756,9 @@ impl Storage for SqliteStorage {
                     conn.execute(
                         "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                          current_program_hash, desired_schedule_interval_s, schedule_interval_s, \
-                         firmware_abi_version, last_battery_mv, last_seen_epoch_s, firmware_version, key_version) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                         firmware_abi_version, last_battery_mv, last_seen_epoch_s, firmware_version, key_version, \
+                         master_key_id, master_key_epoch) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                         params![
                             &record.node_id,
                             record.key_hint,
@@ -2698,6 +2772,8 @@ impl Storage for SqliteStorage {
                             Option::<i64>::None,
                             record.firmware_version,
                             key_version_i64,
+                            &mk_id,
+                            mk_epoch,
                         ],
                     )
                     .map_err(map_err)?;
@@ -2953,17 +3029,23 @@ impl Storage for SqliteStorage {
             conn.execute_batch("BEGIN IMMEDIATE").map_err(map_err)?;
 
             let result = (|| -> Result<u32, StorageError> {
+                // GW-2001 AC-6: stamp current master_key_id/epoch on every INSERT.
+                let (mk_id, mk_epoch) = read_current_key_metadata(conn)?;
+
                 // Insert with a placeholder PSK to get the auto-increment id.
                 conn.execute(
                     "INSERT INTO phone_psks \
-                     (phone_key_hint, psk, label, issued_at_epoch_s, status, key_version) \
-                     VALUES (?1, X'00', ?2, ?3, ?4, ?5)",
+                     (phone_key_hint, psk, label, issued_at_epoch_s, status, key_version, \
+                     master_key_id, master_key_epoch) \
+                     VALUES (?1, X'00', ?2, ?3, ?4, ?5, ?6, ?7)",
                     params![
                         record.phone_key_hint as u32,
                         &record.label,
                         issued_at,
                         record.status.to_string(),
                         key_version_i64,
+                        mk_id,
+                        mk_epoch,
                     ],
                 )
                 .map_err(map_err)?;
@@ -3047,6 +3129,9 @@ impl Storage for SqliteStorage {
             conn.execute_batch("BEGIN IMMEDIATE").map_err(map_err)?;
 
             let result = (|| -> Result<(), StorageError> {
+                // GW-2001 AC-6: read key metadata once per transaction.
+                let (mk_id, mk_epoch) = read_current_key_metadata(conn)?;
+
                 conn.execute("DELETE FROM phone_psks", [])
                     .map_err(map_err)?;
 
@@ -3062,14 +3147,17 @@ impl Storage for SqliteStorage {
                     // Insert with a placeholder PSK to get the auto-increment id.
                     conn.execute(
                         "INSERT INTO phone_psks \
-                         (phone_key_hint, psk, label, issued_at_epoch_s, status, key_version) \
-                         VALUES (?1, X'00', ?2, ?3, ?4, ?5)",
+                         (phone_key_hint, psk, label, issued_at_epoch_s, status, key_version, \
+                         master_key_id, master_key_epoch) \
+                         VALUES (?1, X'00', ?2, ?3, ?4, ?5, ?6, ?7)",
                         params![
                             record.phone_key_hint as u32,
                             &record.label,
                             issued_at,
                             record.status.to_string(),
                             key_version_i64,
+                            &mk_id,
+                            mk_epoch,
                         ],
                     )
                     .map_err(map_err)?;
@@ -3366,6 +3454,7 @@ mod tests {
     #[tokio::test]
     async fn test_node_crud() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
 
         // Initially empty.
         assert!(store.list_nodes().await.unwrap().is_empty());
@@ -3514,6 +3603,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_nodes_by_key_hint() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
 
         store.upsert_node(&make_node("a", 10)).await.unwrap();
         store.upsert_node(&make_node("b", 10)).await.unwrap();
@@ -3541,6 +3631,7 @@ mod tests {
         // First open: write data.
         {
             let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            store.init_master_key_id().await.unwrap();
             store.upsert_node(&make_node("p1", 5)).await.unwrap();
             store.store_program(&make_program(0xAA)).await.unwrap();
         }
@@ -3556,6 +3647,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_overwrites() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
 
         let mut node = make_node("u1", 1);
         node.desired_schedule_interval_s = Some(30);
@@ -3787,6 +3879,7 @@ mod tests {
         // Create a database with a node encrypted under the test key.
         {
             let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            store.init_master_key_id().await.unwrap();
             store.upsert_node(&make_node("node-a", 1)).await.unwrap();
         }
 
@@ -3804,6 +3897,7 @@ mod tests {
     #[tokio::test]
     async fn test_replace_state_encrypts_psks() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
 
         // Seed with an existing node that will be replaced.
         store.upsert_node(&make_node("old", 1)).await.unwrap();
@@ -3948,6 +4042,7 @@ mod tests {
     #[tokio::test]
     async fn test_phone_psk_store_and_list() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
 
         // No PSKs initially.
         assert!(store.list_phone_psks().await.unwrap().is_empty());
@@ -3970,6 +4065,7 @@ mod tests {
     #[tokio::test]
     async fn test_phone_psk_lookup_by_key_hint() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
 
         // Store two PSKs with different hints and one with colliding hint.
         store
@@ -4002,6 +4098,7 @@ mod tests {
     #[tokio::test]
     async fn test_phone_psk_revocation() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
 
         let phone_id = store
             .store_phone_psk(&make_phone_psk(42, "Revokable"))
@@ -4023,6 +4120,7 @@ mod tests {
     #[tokio::test]
     async fn test_phone_psk_delete() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
 
         let phone_id = store
             .store_phone_psk(&make_phone_psk(42, "Deletable"))
@@ -4048,6 +4146,7 @@ mod tests {
         let phone_id;
         {
             let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            store.init_master_key_id().await.unwrap();
             phone_id = store.store_phone_psk(&record).await.unwrap();
         }
 
@@ -4069,6 +4168,7 @@ mod tests {
     #[tokio::test]
     async fn test_negative_node_key_version_is_rejected() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
         store.upsert_node(&make_node("n1", 42)).await.unwrap();
         store
             .with_conn(|conn| {
@@ -4086,6 +4186,7 @@ mod tests {
     #[tokio::test]
     async fn test_negative_phone_key_version_is_rejected_in_list() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
         let phone_id = store
             .store_phone_psk(&make_phone_psk(42, "Corrupt list"))
             .await
@@ -4109,6 +4210,7 @@ mod tests {
     #[tokio::test]
     async fn test_negative_phone_key_version_is_rejected_by_key_hint_lookup() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
         let phone_id = store
             .store_phone_psk(&make_phone_psk(77, "Corrupt lookup"))
             .await
@@ -4132,6 +4234,7 @@ mod tests {
     #[tokio::test]
     async fn test_legacy_battery_storage_is_ignored_and_preserved() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
         let node = make_node("batt1", 0xBB);
         store.upsert_node(&node).await.unwrap();
 
@@ -4186,6 +4289,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_node_wake_metadata_preserves_psk_ciphertext() {
         let store = SqliteStorage::in_memory(test_key()).unwrap();
+        store.init_master_key_id().await.unwrap();
         let node = make_node("wake-meta", 0xBC);
         store.upsert_node(&node).await.unwrap();
 

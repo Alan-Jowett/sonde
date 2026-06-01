@@ -4453,6 +4453,28 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-2005b  Node added after `init_master_key_id` has escrow in ACTUAL_STATE
+
+**Traces to:** GW-2001 (AC-6), GW-2005 (AC-4)
+
+**Steps:**
+1. Start gateway, call `init_master_key_id` (simulating normal startup).
+2. Register a new node via `upsert_node` AFTER `init_master_key_id`.
+3. Verify the persisted node row has non-NULL `master_key_id` (32 bytes)
+   and `master_key_epoch` ≥ 1 matching `gateway_config`.
+4. Send a valid WAKE from the newly registered node.
+5. Consume the node ACTUAL_STATE emitted in response.
+6. Verify `encrypted_psk` (key 12) is a 60-byte bstr.
+7. Verify `escrow_key_hint` (key 13) matches the node's `key_hint`.
+8. Verify `master_key_id` (key 14) is a 32-byte bstr matching the
+   current master key ID.
+
+**Expected:**
+1. Node registered after startup has non-NULL `master_key_id` in storage.
+2. Node ACTUAL_STATE from a WAKE includes all three non-null escrow fields.
+
+---
+
 ### T-2006  Declarative node recovery
 
 **Traces to:** GW-2009 (AC-1, AC-2, AC-4, AC-5)
@@ -4753,11 +4775,11 @@ by existing handler tests.
 | GW-1905 | T-1900a, T-1903a |
 | GW-1906 | T-1906 |
 | GW-2000 | T-2001 |
-| GW-2001 | T-2000 |
+| GW-2001 | T-2000, T-2005b |
 | GW-2002 | T-2003 |
 | GW-2003 | T-2001, T-2011, T-2012, T-2013, T-2014, T-2016, T-2016a |
 | GW-2004 | T-2002 |
-| GW-2005 | T-2001, T-2005a, T-2006c |
+| GW-2005 | T-2001, T-2005a, T-2005b, T-2006c |
 | GW-2006 | T-2004, T-2004a |
 | GW-2007 | T-2005, T-2009 |
 | GW-2008 | T-2007 |

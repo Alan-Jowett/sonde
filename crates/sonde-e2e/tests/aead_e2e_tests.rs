@@ -77,7 +77,7 @@ fn make_program_from_bytecode(bytecode: &[u8]) -> (ProgramRecord, Vec<u8>) {
 /// - Gateway updates node telemetry after a successful AEAD exchange.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_001_nop_wake_cycle() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x50; 32];
     env.register_node("aead-nop", 1, psk).await;
 
@@ -125,7 +125,7 @@ async fn t_e2e_001_nop_wake_cycle() {
 /// second WAKE even though no resident BPF program executes.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_002b_consecutive_wake_cycles() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x55; 32];
     env.register_node("aead-multi", 1, psk).await;
 
@@ -173,7 +173,7 @@ async fn t_e2e_002b_consecutive_wake_cycles() {
 async fn t_e2e_002c_app_data_fire_and_forget() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x51; 32];
     env.register_node("aead-appdata", 1, psk).await;
 
@@ -208,7 +208,7 @@ async fn t_e2e_002c_app_data_fire_and_forget() {
 /// exhausts its retries and sleeps.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_003_wrong_psk_rejected() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     env.register_node("aead-wrong", 1, [0xAA; 32]).await;
 
     // Node has a different PSK.
@@ -247,7 +247,7 @@ async fn t_e2e_003_wrong_psk_rejected() {
 /// no response, eventually exhausting retries.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_004_tampered_frame_discarded() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x53; 32];
     env.register_node("aead-tamper", 1, psk).await;
 
@@ -389,7 +389,7 @@ async fn t_e2e_030_app_data_round_trip_with_handler() {
     let receipt_dir = tempfile::tempdir().unwrap();
     let stub = env!("CARGO_BIN_EXE_stub_handler");
     let receipt_path = receipt_dir.path().to_str().unwrap();
-    let env = E2eTestEnv::new_with_handler(stub, &["--receipt-dir", receipt_path]);
+    let env = E2eTestEnv::new_with_handler(stub, &["--receipt-dir", receipt_path]).await;
 
     let psk = [0x30; 32];
     let (program, hash) = make_send_recv_program();
@@ -446,7 +446,8 @@ async fn t_e2e_031_app_data_fire_and_forget_with_handler() {
     let receipt_dir = tempfile::tempdir().unwrap();
     let stub = env!("CARGO_BIN_EXE_stub_handler");
     let receipt_path = receipt_dir.path().to_str().unwrap();
-    let env = E2eTestEnv::new_with_handler(stub, &["--no-reply", "--receipt-dir", receipt_path]);
+    let env =
+        E2eTestEnv::new_with_handler(stub, &["--no-reply", "--receipt-dir", receipt_path]).await;
 
     let psk = [0x31; 32];
     let (program, hash) = make_send_program_0102();
@@ -505,7 +506,7 @@ async fn t_e2e_032_app_data_aead_end_to_end() {
     let receipt_dir = tempfile::tempdir().unwrap();
     let stub = env!("CARGO_BIN_EXE_stub_handler");
     let receipt_path = receipt_dir.path().to_str().unwrap();
-    let env = E2eTestEnv::new_with_handler(stub, &["--receipt-dir", receipt_path]);
+    let env = E2eTestEnv::new_with_handler(stub, &["--receipt-dir", receipt_path]).await;
 
     let psk = [0x32; 32];
     let (program, hash) = make_send_program_dead();
@@ -577,7 +578,7 @@ async fn t_e2e_033_live_reload_handler_add() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
     // Start with no handlers.
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
 
     let psk = [0x33; 32];
     let (program, hash) = make_send_program();
@@ -661,7 +662,7 @@ async fn t_e2e_034_live_reload_handler_remove() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
     let stub = env!("CARGO_BIN_EXE_stub_handler");
-    let env = E2eTestEnv::new_with_handler(stub, &[]);
+    let env = E2eTestEnv::new_with_handler(stub, &[]).await;
 
     let psk = [0x34; 32];
     let (program, hash) = make_send_program();
@@ -737,7 +738,7 @@ async fn t_e2e_034_live_reload_handler_remove() {
 /// gateway (RustCryptoAead) and node (NodeAead) for a single wake cycle.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_002_aead_authentication_round_trip() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0xAA; 32];
     env.register_node("aead-002", 1, psk).await;
 
@@ -768,7 +769,7 @@ async fn t_e2e_002_aead_authentication_round_trip() {
 async fn t_e2e_010_full_program_update_cycle() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x10; 32];
     env.register_node("prog-update", 1, psk).await;
 
@@ -812,7 +813,7 @@ async fn t_e2e_010_full_program_update_cycle() {
 async fn t_e2e_011_program_already_current_nop() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x11; 32];
     env.register_node("prog-current", 1, psk).await;
 
@@ -856,7 +857,7 @@ async fn t_e2e_011_program_already_current_nop() {
 async fn t_e2e_020_update_schedule_via_admin() {
     use sonde_gateway::engine::PendingCommand;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x20; 32];
     env.register_node("sched-node", 1, psk).await;
 
@@ -882,7 +883,7 @@ async fn t_e2e_020_update_schedule_via_admin() {
 async fn t_e2e_021_reboot_via_admin() {
     use sonde_gateway::engine::PendingCommand;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x21; 32];
     env.register_node("reboot-node", 1, psk).await;
 
@@ -906,7 +907,7 @@ async fn t_e2e_022_run_ephemeral_via_admin() {
     use sonde_gateway::engine::PendingCommand;
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x22; 32];
     env.register_node("eph-node", 1, psk).await;
 
@@ -981,7 +982,7 @@ async fn t_e2e_022_run_ephemeral_via_admin() {
 /// T-E2E-040 — Unknown node silent discard.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_040_unknown_node_silent_discard() {
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x40; 32];
     let mut node = NodeProxy::new(99, psk);
     let stats = node.run_wake_cycle(&env);
@@ -999,7 +1000,7 @@ async fn t_e2e_040_unknown_node_silent_discard() {
 async fn t_e2e_041_sequence_number_enforcement() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
-    let env = E2eTestEnv::new();
+    let env = E2eTestEnv::new().await;
     let psk = [0x41; 32];
     env.register_node("seq-node", 1, psk).await;
 

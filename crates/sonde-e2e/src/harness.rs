@@ -50,19 +50,15 @@ pub struct E2eTestEnv {
     pub pending_commands: Option<PendingCommandMap>,
 }
 
-impl Default for E2eTestEnv {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl E2eTestEnv {
     /// Create a fresh in-memory test environment.
-    pub fn new() -> Self {
+    pub async fn new() -> Self {
         let storage = Arc::new(
             SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32]))
                 .expect("failed to create in-memory SQLite storage"),
         );
+        // Initialise master key metadata so that INSERT paths can stamp rows.
+        storage.init_master_key_id().await.unwrap();
         let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
         let pending_commands: PendingCommandMap = Arc::new(RwLock::new(HashMap::new()));
         let gateway = Arc::new(Gateway::new_with_pending(
@@ -87,11 +83,13 @@ impl E2eTestEnv {
     /// Create an environment with a handler router for APP_DATA tests.
     ///
     /// `handler_cmd` is the path to the handler binary and its arguments.
-    pub fn new_with_handler(handler_cmd: &str, handler_args: &[&str]) -> Self {
+    pub async fn new_with_handler(handler_cmd: &str, handler_args: &[&str]) -> Self {
         let storage = Arc::new(
             SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32]))
                 .expect("failed to create in-memory SQLite storage"),
         );
+        // Initialise master key metadata so that INSERT paths can stamp rows.
+        storage.init_master_key_id().await.unwrap();
         let config = HandlerConfig {
             matchers: vec![ProgramMatcher::Any],
             command: handler_cmd.to_string(),

@@ -224,6 +224,7 @@ async fn t0603k_wrong_master_key_detected_at_startup() {
     // Open with key A and register a node so there's encrypted data.
     {
         let storage = SqliteStorage::open(db_str, key_a).unwrap();
+        storage.init_master_key_id().await.unwrap();
         let node = sonde_gateway::registry::NodeRecord::new("test-node".into(), 0x1234, [0xAA; 32]);
         storage.upsert_node(&node).await.unwrap();
     }

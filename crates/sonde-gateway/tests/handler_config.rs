@@ -62,8 +62,11 @@ struct AdminHarness {
 }
 
 impl AdminHarness {
-    fn new_sqlite() -> Self {
-        let storage: Arc<dyn Storage> = Arc::new(SqliteStorage::in_memory(test_key()).unwrap());
+    async fn new_sqlite() -> Self {
+        let sqlite = SqliteStorage::in_memory(test_key()).unwrap();
+        // GW-2001 AC-6: init_master_key_id before any PSK inserts.
+        sqlite.init_master_key_id().await.unwrap();
+        let storage: Arc<dyn Storage> = Arc::new(sqlite);
         let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
@@ -527,7 +530,7 @@ async fn t1400_handler_working_dir_round_trip() {
 
 #[tokio::test]
 async fn t1401_handler_crud_via_admin_api() {
-    let h = AdminHarness::new_sqlite();
+    let h = AdminHarness::new_sqlite().await;
 
     // 1. ListHandlers returns empty.
     let list = h
@@ -734,7 +737,7 @@ handlers:
 
 #[tokio::test]
 async fn t1406_state_export_import_with_handlers() {
-    let h = AdminHarness::new_sqlite();
+    let h = AdminHarness::new_sqlite().await;
 
     // Add two handlers with distinct reply_timeout_ms.
     h.admin
@@ -771,7 +774,7 @@ async fn t1406_state_export_import_with_handlers() {
         .data;
 
     // Create a second gateway with different handlers.
-    let h2 = AdminHarness::new_sqlite();
+    let h2 = AdminHarness::new_sqlite().await;
     h2.admin
         .add_handler(Request::new(AddHandlerRequest {
             program_hash: HASH_B.to_string(),
@@ -831,7 +834,7 @@ async fn t1406_state_export_import_with_handlers() {
 
 #[tokio::test]
 async fn t1406a_state_import_backwards_compatibility() {
-    let h = AdminHarness::new_sqlite();
+    let h = AdminHarness::new_sqlite().await;
 
     // Add two handlers to the target gateway.
     h.admin
@@ -856,7 +859,7 @@ async fn t1406a_state_import_backwards_compatibility() {
         .unwrap();
 
     // Export state from a "legacy" gateway with no handlers.
-    let legacy = AdminHarness::new_sqlite();
+    let legacy = AdminHarness::new_sqlite().await;
     let exported = legacy
         .admin
         .export_state(Request::new(ExportStateRequest {
@@ -892,7 +895,7 @@ async fn t1406a_state_import_backwards_compatibility() {
 
 #[tokio::test]
 async fn t1407_handler_add_program_hash_validation() {
-    let h = AdminHarness::new_sqlite();
+    let h = AdminHarness::new_sqlite().await;
 
     // 1. Invalid string.
     let err = h
@@ -967,7 +970,7 @@ async fn t1407_handler_add_program_hash_validation() {
 
 #[tokio::test]
 async fn t1407_program_hash_case_normalization() {
-    let h = AdminHarness::new_sqlite();
+    let h = AdminHarness::new_sqlite().await;
 
     // Add with uppercase hex.
     let upper = HASH_A.to_uppercase();

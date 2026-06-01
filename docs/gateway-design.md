@@ -1992,7 +1992,23 @@ use the same path. The WAKE path queries per-node escrow data from
 `SqliteStorage::get_node_escrow_by_id()`; the post-rotation path uses
 the bulk `list_node_escrow_state()` to re-emit all nodes efficiently.
 When `sqlite_storage` is unavailable or the node's `master_key_id`
-is NULL, escrow fields are emitted as `null`.
+is NULL, escrow fields are emitted as `null`.  NULL `master_key_id`
+is a defensive fallback for unavailable storage or pre-existing
+legacy rows — normal INSERT/UPDATE paths MUST NOT produce NULL
+`master_key_id` (GW-2001 AC-6).
+
+**INSERT-time stamping (GW-2001 AC-6):**  `upsert_node`,
+`insert_node_if_not_exists`, and `replace_state` read the current
+`master_key_id` and `master_key_epoch` from `gateway_config` inside
+the same transaction and include them in every `INSERT INTO nodes`.
+`upsert_node` uses `INSERT … ON CONFLICT DO UPDATE` and MUST also
+repair `master_key_id`/`master_key_epoch` in the conflict branch.
+`replace_state` reads key metadata once after `BEGIN IMMEDIATE` and
+applies the same values to every inserted row.  Phone PSK paths
+(`insert_phone_psk`, bulk replacement in `replace_state`) follow the
+same rule.  If `gateway_config` does not contain `master_key_id`
+(i.e. `init_master_key_id` has not been called), all INSERT paths
+MUST return an error.
 
 ### 23.7  Master key rotation (GW-2006, GW-2007, GW-2013)
 

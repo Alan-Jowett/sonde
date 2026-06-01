@@ -302,7 +302,7 @@ struct ModemBridgeEnv {
 
 impl ModemBridgeEnv {
     async fn new() -> Self {
-        let e2e = E2eTestEnv::new();
+        let e2e = E2eTestEnv::new().await;
         let (gateway_client, gateway_server) = duplex(4096);
         let pipe_serial = PipeSerial::new(gateway_server);
 

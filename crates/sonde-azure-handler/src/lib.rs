@@ -1212,8 +1212,7 @@ impl HandlerStore for AzureTablesStore {
         &self,
         key_hint: u64,
     ) -> Result<Vec<NodeEscrowRecord>, HandlerError> {
-        let filter =
-            format!("PartitionKey ge 'n:' and PartitionKey lt 'n;' and key_hint eq {key_hint}L");
+        let filter = node_key_hint_filter(key_hint);
         let mut stream = self
             .actual_state_table
             .query()
@@ -2112,6 +2111,10 @@ fn history_row_process_nonce() -> Result<u64, HandlerError> {
 
 fn partition_filter(partition_key: &str) -> String {
     format!("PartitionKey eq '{partition_key}'")
+}
+
+fn node_key_hint_filter(key_hint: u64) -> String {
+    format!("PartitionKey ge 'n:' and PartitionKey lt 'n;' and key_hint eq {key_hint}")
 }
 
 fn decode_optional_program_hash(
@@ -5041,6 +5044,14 @@ mod tests {
         assert_eq!(rows[0].encrypted_psk, Some(psk_blob));
         assert_eq!(rows[0].escrow_key_hint, Some(1234));
         assert_eq!(rows[0].master_key_id, Some(master_key_id));
+    }
+
+    #[test]
+    fn node_key_hint_filter_uses_untyped_numeric_literal() {
+        assert_eq!(
+            node_key_hint_filter(24564),
+            "PartitionKey ge 'n:' and PartitionKey lt 'n;' and key_hint eq 24564"
+        );
     }
 
     // --- T-AZH-0602: Missing key_hint recovery ---

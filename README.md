@@ -16,13 +16,13 @@
 [![Coverage Status](https://coveralls.io/repos/github/Alan-Jowett/sonde/badge.svg?branch=main)](https://coveralls.io/github/Alan-Jowett/sonde?branch=main)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**A programmable, verifiable runtime for distributed sensor nodes.**
+**A programmable sensor platform with desired-state convergence from cloud to node.**
 
-Each node acts as a programmable sonde: a constrained probe that autonomously samples its environment and reports observations upstream.
+Sonde turns battery-powered sensor nodes into programmable probes that keep static firmware but execute dynamic behavior defined by verified BPF programs ([RFC 9669](https://www.rfc-editor.org/rfc/rfc9669.html)). The gateway owns radio-facing orchestration; an external control plane owns fleet intent. Together they converge node state by flowing **desired state** down to the gateway and **actual state / application data** back upstream.
 
-Nodes run uniform firmware and execute behavior defined by BPF programs ([RFC 9669](https://www.rfc-editor.org/rfc/rfc9669.html)) verified with [Prevail](https://github.com/vbpf/ebpf-verifier). A gateway distributes programs, schedules, and configuration over the air — no firmware updates required. The architecture is hardware-agnostic; the reference implementation targets ESP32-C3/S3.
+Nodes never need feature-driven firmware updates for normal application changes. New sampling logic, thresholds, diagnostics, and routing behavior ship as verified BPF plus gateway-managed state changes. The reference implementation targets ESP32-C3/S3 nodes and modems, with a cloud-agnostic connector model and an Azure reference deployment in this repository.
 
-> **Status:** Active development — protocol, gateway, modem, and node crates are implemented and tested. See [Project status](#project-status) below.
+> **Status:** Active development, pre-1.0. The workspace includes the core protocol/gateway/node/modem stack, admin tooling, pairing surfaces, example handlers, and Azure companion/handler components. See [Project status](#project-status) below.
 
 > ⚠️ **Spec-first project** — edit the [specification documents](docs/) before changing code. Code modules may be regenerated from specs. See [Contributing](docs/contributing.md#spec-first-development-model).
 
@@ -34,58 +34,87 @@ Nodes run uniform firmware and execute behavior defined by BPF programs ([RFC 96
 
 **Maintenance:** The project is actively maintained. Bug reports, pull requests, and feature discussions are welcome. See [Contributing](docs/contributing.md) for guidelines.
 
-**Versioning:** The project has not yet reached v1.0. Breaking changes to the wire protocol or crate APIs will be noted in commit messages and PR descriptions. A stable v1.0 release is planned after the full system (gateway + modem + node + admin) has been validated end-to-end.
+**Versioning:** The project has not yet reached v1.0. Breaking changes to the wire protocol, connector schema, or crate APIs may still occur.
 
-**Roadmap:** Core protocol, gateway, modem, and node crates are complete. Remaining work includes the BLE pairing tool (`sonde-pair`), end-to-end validation, and hardening for production deployments. See [implementation-guide.md](docs/implementation-guide.md) for the phased build plan.
+**Current repository shape:** the workspace already spans the device runtime, the gateway runtime, local admin/pairing tools, and cloud-facing integration surfaces.
 
-| Crate | Purpose | Status |
-|---|---|---|
-| [`sonde-protocol`](crates/sonde-protocol) | `no_std` wire format: frame codec, CBOR messages, program images | ✅ Complete — 41 validation tests, 4 fuzz targets |
-| [`sonde-gateway`](crates/sonde-gateway) | Async gateway service (tokio): sessions, program distribution, handler routing, gRPC admin | ✅ Core complete — handler routing and admin stubs in place |
-| [`sonde-modem`](crates/sonde-modem) | ESP32-S3 USB-to-ESP-NOW bridge firmware | ✅ Functional — bridge logic and ESP-IDF drivers working |
-| [`sonde-node`](crates/sonde-node) | ESP32-C3/S3 node firmware: wake cycle, BPF dispatch, program store | ✅ Core complete — wake cycle engine, 16 BPF helpers, A/B program store |
-| [`sonde-pair`](crates/sonde-pair) | BLE pairing tool — Tauri v2 (Android / Windows / Linux) | 🚧 In progress — see [issue #163](https://github.com/Alan-Jowett/sonde/issues/163) |
+| Component | Purpose |
+|---|---|
+| [`sonde-protocol`](crates/sonde-protocol) | Shared `no_std` wire format, CBOR message types, program-image encoding, and crypto abstractions |
+| [`sonde-gateway`](crates/sonde-gateway) | Async gateway service: node sessions, program distribution, reconciliation hooks, connector I/O, and gRPC admin |
+| [`sonde-node`](crates/sonde-node) | ESP32-C3/S3 firmware: wake cycle, BPF execution, persistent state, and radio protocol |
+| [`sonde-modem`](crates/sonde-modem) | ESP32-S3 bridge between ESP-NOW radio and the gateway |
+| [`sonde-admin`](crates/sonde-admin) | CLI for gateway administration and pairing flows |
+| [`sonde-bpf`](crates/sonde-bpf) | Safe BPF interpreter used by the node runtime |
+| [`sonde-pair`](crates/sonde-pair) + [`sonde-pair-ui`](crates/sonde-pair-ui/src-tauri) | BLE pairing core plus Tauri desktop/Android UI |
+| [`sonde-azure-companion`](crates/sonde-azure-companion) | Reference connector/runtime bridge for Azure-backed control-plane sync |
+| [`sonde-azure-handler`](crates/sonde-azure-handler) | Azure cloud-side reconciliation and data-ingest component |
+| [`sonde-tmp102-handler`](crates/sonde-tmp102-handler) / [`sonde-sht40-handler`](crates/sonde-sht40-handler) | Example application handlers |
+| [`sonde-e2e`](crates/sonde-e2e) | End-to-end validation harness |
 
-CI runs on every push and PR: formatting, clippy, build, workspace tests, fuzz (protocol), and an ESP32 QEMU smoke test.
+CI runs on every push and PR and covers workspace build/test flows plus target-specific firmware and UI pipelines.
 
 ---
 
 ## How it works
 
 ```
-┌──────────┐              ┌──────────┐              ┌──────────┐
-│   Node   │   ESP-NOW    │  Modem   │     USB      │ Gateway  │
-│          │──────────────│          │──────────────│          │
-│  ┌────┐  │  WAKE ─────► │          │              │  ┌────┐  │
-│  │ BPF│  │ ◄── COMMAND  │  bridge  │  serial ◄──► │  │ App│  │
-│  └────┘  │  APP_DATA ─► │          │              │  └────┘  │
-│          │              │          │              │          │
-│  sleep   │              │ ESP32-S3 │              │  verify  │
-└──────────┘              └──────────┘              └──────────┘
+┌───────────────────────────┐
+│   Control plane / cloud   │
+│ desired state, analytics, │
+│ fleet policy, app ingest  │
+└─────────────┬─────────────┘
+              │ DESIRED_STATE / ACTUAL_STATE / APP_DATA
+┌─────────────▼─────────────┐     local IPC      ┌──────────┐     USB      ┌──────────┐   ESP-NOW   ┌──────────┐
+│ Connector / companion     │◄──────────────────►│ Gateway  │◄────────────►│  Modem   │◄───────────►│   Node   │
+│ transport adapter         │                    │          │               │          │              │  BPF VM  │
+└───────────────────────────┘                    └──────────┘               └──────────┘              └──────────┘
 ```
 
-1. **Node wakes** and sends a `WAKE` message containing its program hash over ESP-NOW.
-2. **Modem bridges** the radio frame to the gateway over USB (protocol-unaware, forwards opaque frames in both directions).
-3. **Gateway responds** with a command: proceed, update program, run a diagnostic, change schedule, or reboot.
-4. **Node executes** its resident BPF program, which can read sensors, update persistent maps, and send application data.
-5. **Node sleeps** until the next scheduled interval (or earlier if the BPF program requests it).
+1. **The control plane declares intent** as complete desired state for one gateway or node at a time.
+2. **A connector/companion transports that intent** to the gateway over the local connector API. The connector is cloud-agnostic; it adapts some external store-and-forward transport to Sonde's framed connector messages.
+3. **Nodes wake on their own schedule** and send `WAKE` over ESP-NOW. Communication is always node-initiated.
+4. **The gateway reconciles actual vs. desired state** at wake time, then responds with the next action: continue, update resident program, queue an ephemeral diagnostic, change schedule, rotate state, or reboot.
+5. **The node executes its resident BPF program**, updates persistent maps, and emits application data when needed.
+6. **The gateway publishes upstream actual state and app data** so the control plane can observe convergence and decide the next desired state.
 
-The firmware never interprets application data — it just transports opaque blobs between the BPF program and the gateway.
+The firmware never embeds application-specific policy. It provides the execution and transport substrate; BPF plus desired-state convergence define behavior.
 
 ---
 
 ## Architecture
 
-The design cleanly separates four concerns:
+The design separates five concerns:
 
 | Layer | Lifetime | Location |
 |---|---|---|
 | **Firmware** | Static, uniform across all nodes | Flash |
 | **Program logic** | Dynamic, delivered as BPF bytecode | Flash (resident) or RAM (ephemeral) |
 | **Persistent state** | Survives deep sleep | Sleep-persistent memory |
-| **Control plane** | Gateway-driven | Gateway |
+| **Gateway runtime** | Always-on edge service | Gateway host |
+| **Control plane** | External desired-state authority | Cloud or other upstream system |
 
-This gives you OTA-like flexibility without OTA complexity. New sensors, new logic, new thresholds — all delivered as BPF programs.
+This gives Sonde OTA-like flexibility without turning firmware rollout into the main application-delivery mechanism. New sensors, thresholds, schedules, diagnostics, and cloud-side routing changes are expressed as BPF programs plus desired state.
+
+### Desired-state convergence
+
+The connector protocol is organized around four message families:
+
+- **`DESIRED_STATE`** — control plane to gateway, carrying complete desired state for one gateway or node.
+- **`ACTUAL_STATE`** — gateway to control plane, carrying the latest observed gateway or node state.
+- **`APP_DATA`** — gateway to control plane, carrying node-originated application payloads.
+- **`CONNECTOR_HEALTH`** — gateway to control plane, carrying connector session health.
+
+This makes the gateway the convergence engine at the edge: it accepts desired state from upstream, waits for node-initiated contact, applies the necessary changes, and reports the resulting actual state back upstream.
+
+### Reference cloud deployment
+
+This repository's reference cloud path is Azure-based:
+
+- `sonde-azure-companion` bridges the gateway's local admin/connector surfaces to Azure runtime services.
+- `sonde-azure-handler` consumes upstream connector traffic, stores actual state and sensor data, and emits downstream desired state.
+
+The connector model itself is not Azure-specific, so other control-plane transports can implement the same gateway-facing contract.
 
 ---
 
@@ -100,25 +129,25 @@ Programs are compiled to BPF ELF, verified by [Prevail](https://github.com/vbpf/
 
 ---
 
-## Node-gateway protocol
+## Radio protocol and security
 
-Communication is always **node-initiated**. The gateway never wakes a node. Messages use a fixed binary header, CBOR-encoded payload, and HMAC-SHA256 authentication. See [protocol.md](docs/protocol.md) for the full wire specification.
+Communication is always **node-initiated**. The gateway never wakes a node. Each radio frame uses:
 
-The basic cycle: node sends `WAKE` → gateway responds with a `COMMAND` (proceed, update program, change schedule, reboot) → node executes BPF → node sleeps. Programs are distributed via a node-driven chunked transfer. Application data is sent as `APP_DATA`; for request/response flows, the gateway replies with `APP_DATA_REPLY` when using `send_recv()`, while `send()` is fire-and-forget.
+- a fixed **11-byte binary header** (`key_hint`, `msg_type`, `nonce`),
+- a CBOR payload encrypted with **AES-256-GCM**, and
+- a 16-byte GCM authentication tag.
 
----
+The header is authenticated as AEAD additional data; the payload is both encrypted and authenticated. Nodes and gateways use unique per-node 256-bit pre-shared keys. `WAKE` uses a random nonce; follow-on traffic uses gateway-assigned sequence numbers for replay protection.
 
-## Authentication
+The basic edge loop is still: node sends `WAKE` → gateway responds with `COMMAND` → node executes BPF → node sleeps. Programs are distributed via a node-driven chunked transfer. Application data flows as `APP_DATA`, with `APP_DATA_REPLY` used for request/response helper calls.
 
-Data is **authenticated but not encrypted** (integrity, not confidentiality). All messages use HMAC-SHA256 with per-node pre-shared keys. Replay protection uses session-scoped sequence numbers — no persistent replay state is required on either the node or the gateway. See [protocol.md § Authentication](docs/protocol.md#7--authentication) for details.
+See [protocol.md](docs/protocol.md) for the full wire format and [security.md](docs/security.md) for the trust model.
 
----
-
-## Security Model
+### Security model
 
 - Each node has a unique 256-bit pre-shared key stored in a dedicated flash partition.
 - Keys are provisioned via USB-mediated pairing; no over-the-air key exchange.
-- The gateway stores the key database and authenticates all messages with HMAC-SHA256.
+- The gateway stores the key database and authenticates/decrypts all radio traffic with AES-256-GCM.
 - Nonces provide replay protection for WAKE; gateway-assigned sequence numbers protect all subsequent messages.
 - BPF programs are integrity-checked by content hash at every transfer.
 - Nodes can be factory-reset (erasing key, maps, and program) and re-paired with a fresh identity.
@@ -194,12 +223,13 @@ Contributor-facing hardware docs and bring-up notes should assume these baseline
 ## Building
 
 ```sh
-# Build and test all host crates
-cargo build --workspace
-cargo test --workspace
-
-# Test protocol crate only (fast, no deps)
+# Fast protocol-only test
 cargo test -p sonde-protocol
+
+# Validate the workspace
+cargo build --workspace
+cargo clippy --workspace -- -D warnings
+cargo test --workspace
 ```
 
 Building the modem firmware requires the ESP-IDF Xtensa toolchain:
@@ -230,10 +260,13 @@ See [Getting Started](docs/getting-started.md) for full toolchain setup.
 - [Why BPF?](docs/why-bpf.md) — rationale for using BPF + Prevail as the execution model
 - [BPF Environment](docs/bpf-environment.md) — program API, memory model, verification, and development workflow
 - [Application API](docs/gateway-api.md) — data-plane API for building applications on the Sonde platform
+- [Connector API](docs/gateway-companion-api.md) — desired-state / actual-state integration API for external control planes
 - [Protocol](docs/protocol.md) — node-gateway wire protocol specification
 - [Gateway Requirements](docs/gateway-requirements.md) — formal gateway requirements
 - [Node Requirements](docs/node-requirements.md) — formal node firmware requirements
 - [Security Model](docs/security.md) — threat model, key provisioning, authentication, replay protection, and failure modes
+- [Azure Companion Requirements](docs/azure-companion-requirements.md) — Azure reference deployment for control-plane sync
+- [Azure Provisioning Requirements](docs/azure-provisioning-requirements.md) — Bicep/bootstrap contract for the Azure deployment
 
 ---
 

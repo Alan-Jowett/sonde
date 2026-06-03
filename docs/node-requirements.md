@@ -855,7 +855,7 @@ During chunked transfer, if the node receives a CHUNK response with a `chunk_ind
 **Source:** ble-pairing-protocol.md §8.1
 
 **Description:**  
-On boot the node MUST check, in order: (1) pairing button held ≥ 500 ms AND PSK present → perform factory reset (ND-0402), then enter BLE pairing mode as an unpaired node, (2) a pending pre-provisioning test command is staged in RTC-retained state → enter pre-provisioning test mode, (3) no PSK in NVS → enter BLE pairing mode, (4) PSK stored and `reg_complete` flag NOT set → send PEER_REQUEST, (5) PSK stored and `reg_complete` flag set → normal WAKE cycle. The pre-provisioning test-mode path is only used for unpaired nodes and is entered before BLE pairing mode so the node never attempts to keep BLE and ESP-NOW active concurrently. (The `reg_complete` NVS key is defined in ND-0916.)
+On boot the node MUST check, in order: (1) pairing button held ≥ 500 ms AND PSK present → perform factory reset (ND-0402), then enter BLE pairing mode as an unpaired node, (2) a pending pre-provisioning test command is staged in RTC-retained state → enter pre-provisioning test mode, (3) no PSK in NVS → enter BLE pairing mode, (4) PSK stored and `reg_complete` flag NOT set → send PEER_REQUEST, (5) PSK stored and `reg_complete` flag set → normal WAKE cycle. If the reset reason is brownout and the selected path would otherwise be (4) or (5), the node MUST take the brownout recovery path defined in ND-0900a instead of starting ESP-NOW activity. The pre-provisioning test-mode path is only used for unpaired nodes and is entered before BLE pairing mode so the node never attempts to keep BLE and ESP-NOW active concurrently. (The `reg_complete` NVS key is defined in ND-0916.)
 
 **Acceptance criteria:**
 
@@ -864,6 +864,26 @@ On boot the node MUST check, in order: (1) pairing button held ≥ 500 ms AND PS
 3. BLE pairing mode is entered when no PSK exists (including after a button-triggered factory reset) and no pending pre-provisioning test command is present.
 4. PEER_REQUEST path is taken when PSK is stored but registration is incomplete and no pending pre-provisioning test command is present.
 5. Normal WAKE cycle is entered only when PSK is stored, registration is complete, and no pending pre-provisioning test command is present.
+6. If the reset reason is brownout and the node would otherwise take the PEER_REQUEST path, the node enters the brownout recovery sleep path (ND-0900a) without sending PEER_REQUEST.
+7. If the reset reason is brownout and the node would otherwise enter the normal WAKE cycle, the node enters the brownout recovery sleep path (ND-0900a) without sending WAKE.
+
+---
+
+### ND-0900a  Brownout recovery sleep
+
+**Priority:** Must  
+**Source:** issue #1118
+
+**Description:**  
+If `esp_reset_reason()` reports `ESP_RST_BROWNOUT` and the boot path selected by ND-0900 would otherwise start ESP-NOW activity (`PEER_REQUEST` or the normal WAKE cycle), the node MUST skip that cycle entirely and enter deep sleep for the persisted base schedule interval. The node MUST read the persisted schedule from storage, MUST ignore any RTC-retained one-shot early-wake override for this recovery sleep, and MUST apply the ND-0203 minimum 1-second clamp before entering deep sleep. Brownout recovery is a battery-protection behavior: the node MUST perform no radio transmission before the recovery sleep completes.
+
+**Acceptance criteria:**
+
+1. On a brownout reset that would otherwise enter the PEER_REQUEST path, the node does not transmit PEER_REQUEST and enters deep sleep using the persisted base interval.
+2. On a brownout reset that would otherwise enter the normal WAKE cycle, the node does not transmit WAKE and enters deep sleep using the persisted base interval.
+3. Any RTC-retained one-shot early-wake override is ignored for the brownout recovery sleep; only the persisted base interval is used.
+4. The brownout recovery sleep duration is clamped to at least 1 second per ND-0203.
+5. The node performs no ESP-NOW transmission before entering brownout recovery sleep.
 
 ---
 
@@ -1188,12 +1208,13 @@ During long-running modes that exceed the watchdog timeout (e.g., BLE pairing mo
 **Source:** issue #459
 
 **Description:**  
-The node MUST log the boot reason at INFO level during startup, distinguishing between power-on reset and deep-sleep wake.
+The node MUST log the boot reason at INFO level during startup, distinguishing between power-on reset, deep-sleep wake, and brownout reset.
 
 **Acceptance criteria:**
 
 1. On power-on reset the node emits an INFO log containing "boot_reason=power_on".
 2. On deep-sleep wake the node emits an INFO log containing "boot_reason=deep_sleep_wake".
+3. On brownout reset the node emits an INFO log containing "boot_reason=brownout".
 
 ---
 
@@ -1293,11 +1314,11 @@ The node MUST log at INFO level when a BPF program is executed, including the pr
 **Source:** issue #459
 
 **Description:**  
-The node MUST log at INFO level when entering deep sleep, including the sleep duration and the reason.
+The node MUST log at INFO level when entering deep sleep, including the sleep duration and the reason. This requirement applies both to the normal wake-cycle sleep path and to the brownout recovery sleep path (ND-0900a).
 
 **Acceptance criteria:**
 
-1. An INFO log is emitted before deep sleep containing `duration_seconds` and `reason` (scheduled, early_wake, program_update).
+1. An INFO log is emitted before deep sleep containing `duration_seconds` and `reason` (`scheduled`, `early_wake`, `program_update`, or `brownout_recovery`).
 
 ---
 
@@ -1637,6 +1658,7 @@ The BLE pre-provisioning test framework MUST support adding new test types witho
 | ND-0801 | Unexpected message type handling | Must |
 | ND-0802 | Chunk index validation | Must |
 | ND-0900 | Boot priority and mode selection | Must |
+| ND-0900a | Brownout recovery sleep | Must |
 | ND-0901 | Pairing button detection | Must |
 | ND-0902 | BLE GATT service registration | Must |
 | ND-0903 | BLE advertising name | Must |

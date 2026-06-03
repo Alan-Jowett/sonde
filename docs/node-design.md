@@ -88,7 +88,7 @@ The wake cycle engine is the central state machine. It runs once per wake and th
 
 ### 4.1  State machine
 
-The state machine has five main states plus three alternate boot paths. Starting from BOOT, the node samples the pairing button GPIO for 500 ms (ND-0901). If the button is held and a PSK is present, the node performs an immediate factory reset (ND-0402, ND-0917) — erasing all credentials, programs, maps, schedule, and BLE artifacts — then enters BLE pairing mode as an unpaired node. Otherwise, the node checks RTC-retained pre-provisioning test state, then reads credentials from NVS (§6.1) and the `reg_complete` flag (§6.1a) to determine the boot path (ND-0900): (1) staged pre-provisioning test command present → enter pre-provisioning test mode (§15.8); (2) no PSK in NVS → enter BLE pairing mode (§15); (3) PSK present but `reg_complete` not set → enter PEER_REQUEST registration (§15.7); (4) PSK present and `reg_complete` set → enter WAKE SEND. WAKE SEND transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
+The state machine has five main states plus four alternate boot paths. Starting from BOOT, the node samples the pairing button GPIO for 500 ms (ND-0901). If the button is held and a PSK is present, the node performs an immediate factory reset (ND-0402, ND-0917) — erasing all credentials, programs, maps, schedule, and BLE artifacts — then enters BLE pairing mode as an unpaired node. Otherwise, the node checks RTC-retained pre-provisioning test state, then reads credentials from NVS (§6.1) and the `reg_complete` flag (§6.1a) to determine the boot path (ND-0900): (1) staged pre-provisioning test command present → enter pre-provisioning test mode (§15.8); (2) no PSK in NVS → enter BLE pairing mode (§15); (3) PSK present but `reg_complete` not set → enter PEER_REQUEST registration (§15.7); (4) PSK present and `reg_complete` set → enter WAKE SEND. If `esp_reset_reason()` reports `ESP_RST_BROWNOUT` and the selected path would otherwise be (3) or (4), the firmware diverts to brownout recovery sleep (ND-0900a): it reads the persisted base interval, ignores any RTC early-wake override, and enters SLEEP without initializing ESP-NOW or transmitting any frame. WAKE SEND transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
 
 ```
 ┌─────────┐
@@ -99,7 +99,9 @@ The state machine has five main states plus three alternate boot paths. Starting
      ├── button held + PSK → factory reset (ND-0917) → BLE pairing mode (§15)
      ├── staged test command  → pre-provisioning test mode (§15.8)
      ├── no PSK              → BLE pairing mode (§15)
+     ├── PSK + no reg_complete + ESP_RST_BROWNOUT → brownout recovery sleep (ND-0900a)
      ├── PSK + no reg_complete → PEER_REQUEST (§15.7)
+     ├── PSK + reg_complete + ESP_RST_BROWNOUT → brownout recovery sleep (ND-0900a)
      │
      ▼ PSK + reg_complete
 ┌─────────┐     no response     ┌─────────┐
@@ -131,7 +133,7 @@ The state machine has five main states plus three alternate boot paths. Starting
 
 ### 4.2  Wake sequence (detailed)
 
-1. **Boot/wake**: Initialize hardware. Sample pairing button GPIO for 500 ms (ND-0901). Determine boot path per ND-0900: (1) button held + PSK present → factory reset (ND-0917), then BLE pairing mode as unpaired, (2) staged test command → pre-provisioning test mode, (3) no PSK → BLE pairing mode, (4) PSK + no `reg_complete` → PEER_REQUEST registration, (5) PSK + `reg_complete` → proceed to step 2.
+1. **Boot/wake**: Initialize hardware. Sample pairing button GPIO for 500 ms (ND-0901). Determine boot path per ND-0900: (1) button held + PSK present → factory reset (ND-0917), then BLE pairing mode as unpaired, (2) staged test command → pre-provisioning test mode, (3) no PSK → BLE pairing mode, (4) PSK + no `reg_complete` → PEER_REQUEST registration, (5) PSK + `reg_complete` → proceed to step 2. If `esp_reset_reason()` reports `ESP_RST_BROWNOUT` and the selected path would otherwise be (4) or (5), read the persisted schedule, compute the ND-0203-clamped base interval, and enter deep sleep immediately without starting the radio.
 2. **Generate nonce**: Hardware RNG produces a 64-bit random nonce.
 3. **Drain async queue**: Check the async queue (§8.6) from the previous cycle. If exactly 1 message is queued and it fits in the WAKE payload budget, include it as `blob` (CBOR key 10) in the WAKE message. Otherwise, `blob` is omitted and the queue is left intact for overflow drain in step 7 (NOP only).
 4. **Send WAKE**: Construct WAKE frame (`firmware_abi_version`, `program_hash`, `battery_mv`, `firmware_version`, and optionally `blob`). The `firmware_version` string is derived from `CARGO_PKG_VERSION` at compile time. `battery_mv` comes from the RTC-retained reading captured on the previous wake; if no value has been captured yet, it is `0`. AEAD-encrypt with PSK. Transmit via ESP-NOW.
@@ -663,9 +665,9 @@ The `sonde-node` crate contains a library (`src/lib.rs`) plus a firmware binary 
    a. Pairing button held ≥ 500 ms AND valid PSK in NVS → perform factory reset (§6.2, ND-0917), then enter BLE pairing mode (§15) as unpaired. Does not return.
    b. Staged pre-provisioning test command in RTC state (unpaired only) → enter pre-provisioning test mode (§15.8). Does not return (reboots after test).
    c. No valid PSK in NVS → enter BLE pairing mode (§15). Does not return.
-   d. PSK present in NVS, `reg_complete` NOT set → enter PEER_REQUEST registration (§15.7). Does not return (sleeps after listen window).
-   e. PSK present in NVS, `reg_complete` set → continue to step 6 (normal WAKE cycle).
-6. Read schedule partition: load base interval and active program partition flag.
+   d. PSK present in NVS, `reg_complete` NOT set → if the reset reason is `ESP_RST_BROWNOUT`, continue to step 6 and then enter brownout recovery sleep (ND-0900a); otherwise enter PEER_REQUEST registration (§15.7). Does not return (sleeps after listen window).
+   e. PSK present in NVS, `reg_complete` set → if the reset reason is `ESP_RST_BROWNOUT`, continue to step 6 and then enter brownout recovery sleep (ND-0900a); otherwise continue to step 6 for the normal WAKE cycle.
+6. Read schedule partition: load base interval and active program partition flag. If step 5 selected brownout recovery, use this persisted base interval together with the existing minimum-sleep clamp, ignore RTC one-shot early-wake state as a mandatory battery-protection policy even if the hardware preserved it, log `reason=brownout_recovery`, and enter deep sleep without initializing ESP-NOW.
 7. Read active program partition: decode CBOR image header, extract program hash.
    - No program → set `program_hash` to zero-length.
 8. Initialize HAL (I2C buses, SPI buses, GPIO, ADC).
@@ -884,7 +886,7 @@ The following events are logged per the ND-10xx requirements:
 
 | Event | Level | Module | Key fields | Requirement |
 |---|---|---|---|---|
-| Boot reason | INFO | `bin/node.rs` | `boot_reason` (power_on / deep_sleep_wake) | ND-1000 |
+| Boot reason | INFO | `bin/node.rs` | `boot_reason` (power_on / deep_sleep_wake / brownout) | ND-1000 |
 | Wake cycle started | INFO | `wake_cycle.rs` | `key_hint`, `wake_reason` | ND-1001 |
 | WAKE frame sent | INFO | `wake_cycle.rs` | `key_hint`, `nonce` | ND-1002 |
 | COMMAND received | INFO | `wake_cycle.rs` | `command_type`, `interval_s` (if applicable) | ND-1003 |

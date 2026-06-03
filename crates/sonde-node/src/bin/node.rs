@@ -23,6 +23,25 @@ enum BootMode {
 }
 
 #[cfg(any(feature = "esp", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootResetReason {
+    DeepSleepWake,
+    SoftwareReset,
+    PowerOn,
+    Brownout,
+    Other,
+}
+
+#[cfg(any(feature = "esp", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootAction {
+    PreProvisioningTest,
+    BlePairing,
+    WakeCycle,
+    BrownoutRecoverySleep { seconds: u32 },
+}
+
+#[cfg(any(feature = "esp", test))]
 fn select_boot_mode(has_staged_test: bool, has_psk: bool) -> BootMode {
     if has_staged_test && !has_psk {
         BootMode::PreProvisioningTest
@@ -33,17 +52,91 @@ fn select_boot_mode(has_staged_test: bool, has_psk: bool) -> BootMode {
     }
 }
 
-#[cfg(feature = "esp")]
-fn boot_reason_label(reset_reason: esp_idf_svc::sys::esp_reset_reason_t) -> &'static str {
-    if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP {
+#[cfg(any(feature = "esp", test))]
+fn boot_reason_label(reset_reason: BootResetReason) -> &'static str {
+    if reset_reason == BootResetReason::DeepSleepWake {
         "deep_sleep_wake"
-    } else if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_SW {
+    } else if reset_reason == BootResetReason::SoftwareReset {
         "software_reset"
-    } else if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_POWERON {
+    } else if reset_reason == BootResetReason::PowerOn {
         "power_on"
+    } else if reset_reason == BootResetReason::Brownout {
+        "brownout"
     } else {
         "other_reset"
     }
+}
+
+#[cfg(feature = "esp")]
+fn boot_reset_reason_from_esp(
+    reset_reason: esp_idf_svc::sys::esp_reset_reason_t,
+) -> BootResetReason {
+    if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP {
+        BootResetReason::DeepSleepWake
+    } else if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_SW {
+        BootResetReason::SoftwareReset
+    } else if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_POWERON {
+        BootResetReason::PowerOn
+    } else if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_BROWNOUT {
+        BootResetReason::Brownout
+    } else {
+        BootResetReason::Other
+    }
+}
+
+#[cfg(any(feature = "esp", test))]
+fn should_enter_brownout_recovery(reset_reason: BootResetReason, boot_mode: BootMode) -> bool {
+    reset_reason == BootResetReason::Brownout && boot_mode == BootMode::WakeCycle
+}
+
+#[cfg(any(feature = "esp", test))]
+fn brownout_recovery_sleep_s(base_interval_s: u32) -> u32 {
+    use sonde_node::sleep::{SleepManager, WakeReason};
+
+    SleepManager::new(base_interval_s, WakeReason::Scheduled).effective_sleep_s()
+}
+
+#[cfg(any(feature = "esp", test))]
+fn brownout_recovery_sleep_s_from_storage<S: sonde_node::traits::PlatformStorage>(
+    storage: &mut S,
+) -> u32 {
+    let _ = storage.take_early_wake_flag();
+    let (base_interval_s, _active_partition) = storage.read_schedule();
+    brownout_recovery_sleep_s(base_interval_s)
+}
+
+#[cfg(any(feature = "esp", test))]
+fn select_boot_action<S: sonde_node::traits::PlatformStorage>(
+    reset_reason: BootResetReason,
+    has_staged_test: bool,
+    has_psk: bool,
+    storage: &mut S,
+) -> BootAction {
+    let boot_mode = select_boot_mode(has_staged_test, has_psk);
+    if should_enter_brownout_recovery(reset_reason, boot_mode) {
+        BootAction::BrownoutRecoverySleep {
+            seconds: brownout_recovery_sleep_s_from_storage(storage),
+        }
+    } else {
+        match boot_mode {
+            BootMode::PreProvisioningTest => BootAction::PreProvisioningTest,
+            BootMode::BlePairing => BootAction::BlePairing,
+            BootMode::WakeCycle => BootAction::WakeCycle,
+        }
+    }
+}
+
+#[cfg(any(feature = "esp", all(test, debug_assertions)))]
+fn log_boot_reason(reset_reason: BootResetReason) {
+    log::info!("boot_reason={} (ND-1000)", boot_reason_label(reset_reason));
+}
+
+#[cfg(any(feature = "esp", all(test, debug_assertions)))]
+fn log_brownout_recovery_sleep(seconds: u32) {
+    log::info!(
+        "entering deep sleep duration_seconds={} reason=brownout_recovery (ND-1007)",
+        seconds,
+    );
 }
 
 #[cfg(feature = "esp")]
@@ -85,9 +178,8 @@ fn main() {
     warn!("firmware ABI version: {}", sonde_node::FIRMWARE_ABI_VERSION);
 
     // Log boot reason (ND-1000).
-    let reset_reason = unsafe { esp_idf_svc::sys::esp_reset_reason() };
-    let boot_reason = boot_reason_label(reset_reason);
-    info!("boot_reason={} (ND-1000)", boot_reason);
+    let reset_reason = boot_reset_reason_from_esp(unsafe { esp_idf_svc::sys::esp_reset_reason() });
+    log_boot_reason(reset_reason);
 
     // Register the main task with the ESP-IDF task watchdog (ND-0919).
     // The watchdog timeout (CONFIG_ESP_TASK_WDT_TIMEOUT_S=20) covers the
@@ -137,8 +229,9 @@ fn main() {
     //   1. Pairing button held ≥ 500 ms AND PSK present → factory reset + BLE
     //   2. Staged pre-provisioning test command (unpaired only) → test mode
     //   3. No PSK → BLE pairing mode
-    //   4. PSK stored, reg_complete NOT set → PEER_REQUEST mode (WAKE cycle variant)
-    //   5. PSK stored, reg_complete set → normal WAKE cycle
+    //   4. Brownout on a paired boot → recovery sleep without ESP-NOW activity
+    //   5. PSK stored, reg_complete NOT set → PEER_REQUEST mode (WAKE cycle variant)
+    //   6. PSK stored, reg_complete set → normal WAKE cycle
     // ---------------------------------------------------------------------------
 
     // Pairing button is GPIO 9 on the ESP32-C3 DevKitM-1 (active LOW).
@@ -209,8 +302,15 @@ fn main() {
         }
     }
 
-    match select_boot_mode(has_staged_test, has_psk) {
-        BootMode::PreProvisioningTest => {
+    match select_boot_action(reset_reason, has_staged_test, has_psk, &mut storage) {
+        BootAction::BrownoutRecoverySleep { seconds } => {
+            warn!(
+                "brownout reset detected — skipping ESP-NOW activity for recovery sleep (ND-0900a)"
+            );
+            log_brownout_recovery_sleep(seconds);
+            sleep_ctrl.enter_deep_sleep(seconds);
+        }
+        BootAction::PreProvisioningTest => {
             let staged_command = storage
                 .read_staged_test_command()
                 .expect("boot mode selected pre-provisioning test without staged command");
@@ -262,7 +362,7 @@ fn main() {
             info!("pre-provisioning test mode finished — rebooting to BLE pairing mode");
             sleep_ctrl.reboot();
         }
-        BootMode::BlePairing => {
+        BootAction::BlePairing => {
             info!("entering BLE pairing mode (no PSK={})", !has_psk);
 
             let pairing_board_layout = storage
@@ -286,7 +386,7 @@ fn main() {
                 }
             }
         }
-        BootMode::WakeCycle => {}
+        BootAction::WakeCycle => {}
     }
 
     // (3) + (4) PSK is present. reg_complete flag determines whether we
@@ -360,7 +460,135 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{select_boot_mode, BootMode};
+    use super::{
+        boot_reason_label, brownout_recovery_sleep_s, select_boot_action, select_boot_mode,
+        should_enter_brownout_recovery, BootAction, BootMode, BootResetReason,
+    };
+    #[cfg(debug_assertions)]
+    use super::{log_boot_reason, log_brownout_recovery_sleep};
+    #[cfg(debug_assertions)]
+    use log::{Level, Log, Metadata, Record};
+    use sonde_node::error::NodeResult;
+    use sonde_node::traits::PlatformStorage;
+    #[cfg(debug_assertions)]
+    use std::collections::HashMap;
+    #[cfg(debug_assertions)]
+    use std::sync::{Mutex, Once};
+    #[cfg(debug_assertions)]
+    use std::thread::{self, ThreadId};
+
+    #[cfg(debug_assertions)]
+    struct TestLogger;
+
+    #[cfg(debug_assertions)]
+    type LogMap = HashMap<ThreadId, Vec<(Level, String)>>;
+    #[cfg(debug_assertions)]
+    static TEST_LOG_RECORDS: Mutex<Option<LogMap>> = Mutex::new(None);
+
+    #[cfg(debug_assertions)]
+    impl Log for TestLogger {
+        fn enabled(&self, _metadata: &Metadata) -> bool {
+            true
+        }
+
+        fn log(&self, record: &Record) {
+            let thread_id = thread::current().id();
+            let mut guard = TEST_LOG_RECORDS.lock().unwrap();
+            let map = guard.get_or_insert_with(HashMap::new);
+            map.entry(thread_id)
+                .or_default()
+                .push((record.level(), format!("{}", record.args())));
+        }
+
+        fn flush(&self) {}
+    }
+
+    #[cfg(debug_assertions)]
+    static TEST_LOGGER: TestLogger = TestLogger;
+
+    #[cfg(debug_assertions)]
+    fn init_test_logger() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = log::set_logger(&TEST_LOGGER);
+            log::set_max_level(log::LevelFilter::Trace);
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    fn drain_log_records() -> Vec<(Level, String)> {
+        let thread_id = thread::current().id();
+        TEST_LOG_RECORDS
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .remove(&thread_id)
+            .unwrap_or_default()
+    }
+
+    #[derive(Default)]
+    struct TestStorage {
+        base_interval_s: u32,
+        active_partition: u8,
+        early_wake_flag: bool,
+    }
+
+    impl PlatformStorage for TestStorage {
+        fn read_key(&self) -> Option<(u16, [u8; 32])> {
+            None
+        }
+
+        fn write_key(&mut self, _key_hint: u16, _psk: &[u8; 32]) -> NodeResult<()> {
+            Ok(())
+        }
+
+        fn erase_key(&mut self) -> NodeResult<()> {
+            Ok(())
+        }
+
+        fn read_schedule(&self) -> (u32, u8) {
+            (self.base_interval_s, self.active_partition)
+        }
+
+        fn write_schedule_interval(&mut self, interval_s: u32) -> NodeResult<()> {
+            self.base_interval_s = interval_s;
+            Ok(())
+        }
+
+        fn write_active_partition(&mut self, partition: u8) -> NodeResult<()> {
+            self.active_partition = partition;
+            Ok(())
+        }
+
+        fn reset_schedule(&mut self) -> NodeResult<()> {
+            self.base_interval_s = 0;
+            self.active_partition = 0;
+            Ok(())
+        }
+
+        fn read_program(&self, _partition: u8) -> Option<Vec<u8>> {
+            None
+        }
+
+        fn write_program(&mut self, _partition: u8, _image: &[u8]) -> NodeResult<()> {
+            Ok(())
+        }
+
+        fn erase_program(&mut self, _partition: u8) -> NodeResult<()> {
+            Ok(())
+        }
+
+        fn take_early_wake_flag(&mut self) -> bool {
+            let flag = self.early_wake_flag;
+            self.early_wake_flag = false;
+            flag
+        }
+
+        fn set_early_wake_flag(&mut self) -> NodeResult<()> {
+            self.early_wake_flag = true;
+            Ok(())
+        }
+    }
 
     #[test]
     fn staged_test_takes_priority_when_unpaired() {
@@ -385,6 +613,103 @@ mod tests {
     fn wake_cycle_selected_for_paired_node() {
         // PSK present, no staged test → normal WAKE cycle
         assert_eq!(select_boot_mode(false, true), BootMode::WakeCycle);
+    }
+
+    #[test]
+    fn boot_reason_logs_brownout_label() {
+        assert_eq!(boot_reason_label(BootResetReason::Brownout), "brownout");
+        assert_eq!(boot_reason_label(BootResetReason::Other), "other_reset");
+    }
+
+    #[test]
+    fn brownout_recovery_only_applies_to_paired_wake_cycle_boots() {
+        assert!(should_enter_brownout_recovery(
+            BootResetReason::Brownout,
+            BootMode::WakeCycle,
+        ));
+        assert!(!should_enter_brownout_recovery(
+            BootResetReason::Brownout,
+            BootMode::BlePairing,
+        ));
+        assert!(!should_enter_brownout_recovery(
+            BootResetReason::Brownout,
+            BootMode::PreProvisioningTest,
+        ));
+        assert!(!should_enter_brownout_recovery(
+            BootResetReason::PowerOn,
+            BootMode::WakeCycle,
+        ));
+    }
+
+    #[test]
+    fn brownout_recovery_uses_base_interval() {
+        assert_eq!(brownout_recovery_sleep_s(300), 300);
+    }
+
+    #[test]
+    fn brownout_recovery_clamps_to_minimum_sleep_interval() {
+        assert_eq!(brownout_recovery_sleep_s(0), 1);
+    }
+
+    #[test]
+    fn brownout_boot_action_skips_paired_wake_cycle_boots_and_uses_base_interval() {
+        let mut storage = TestStorage {
+            base_interval_s: 300,
+            active_partition: 1,
+            early_wake_flag: true,
+        };
+
+        assert_eq!(
+            select_boot_action(BootResetReason::Brownout, false, true, &mut storage),
+            BootAction::BrownoutRecoverySleep { seconds: 300 }
+        );
+        assert!(!storage.early_wake_flag);
+    }
+
+    #[test]
+    fn brownout_boot_action_clamps_to_minimum_sleep_interval() {
+        let mut storage = TestStorage {
+            base_interval_s: 0,
+            active_partition: 1,
+            early_wake_flag: true,
+        };
+
+        assert_eq!(
+            select_boot_action(BootResetReason::Brownout, false, true, &mut storage),
+            BootAction::BrownoutRecoverySleep { seconds: 1 }
+        );
+        assert!(!storage.early_wake_flag);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn brownout_boot_reason_log_is_emitted() {
+        init_test_logger();
+        drain_log_records();
+
+        log_boot_reason(BootResetReason::Brownout);
+
+        let records = drain_log_records();
+        assert!(records.iter().any(|(level, msg)| {
+            *level == log::Level::Info && msg.contains("boot_reason=brownout")
+        }));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn brownout_recovery_sleep_log_is_emitted() {
+        init_test_logger();
+        drain_log_records();
+
+        log_brownout_recovery_sleep(300);
+
+        let records = drain_log_records();
+        assert!(records.iter().any(|(level, msg)| {
+            *level == log::Level::Info
+                && msg.contains("entering deep sleep")
+                && msg.contains("duration_seconds=300")
+                && msg.contains("reason=brownout_recovery")
+        }));
     }
 
     // Note: button_held + PSK → factory reset is handled in the boot path

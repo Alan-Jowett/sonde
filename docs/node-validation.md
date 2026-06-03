@@ -1226,6 +1226,33 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N900a  Brownout reset on ESP-NOW boot paths enters recovery sleep
+
+**Validates:** ND-0900, ND-0900a
+
+**Procedure:**
+1. Configure node with PSK stored, `reg_complete` not set, pairing button not held, and persisted base interval = 300 s.
+2. Seed RTC-retained wake state with a one-shot early-wake override shorter than 300 s.
+3. Simulate a boot with reset reason `ESP_RST_BROWNOUT`.
+4. Assert: the boot-action selection diverts to brownout recovery sleep before normal ESP-NOW activity is entered, and the selected sleep duration is 300 s.
+5. Assert: the selection is based on the brownout reset plus the paired boot state, so `reg_complete` does not alter the chosen brownout recovery action.
+
+---
+
+### T-N900b  Brownout recovery sleep enforces minimum 1-second clamp
+
+**Validates:** ND-0203, ND-0900a
+
+**Procedure:**
+1. Configure node with PSK stored, `reg_complete` set, pairing button not held, and persisted base interval = 0 s.
+2. Simulate a boot with reset reason `ESP_RST_BROWNOUT`.
+3. Assert: the node enters deep sleep for 1 s.
+4. Reconfigure the same node with `reg_complete` not set and the same persisted base interval.
+5. Simulate a boot with reset reason `ESP_RST_BROWNOUT`.
+6. Assert: the node enters deep sleep for 1 s.
+
+---
+
 ### T-N901  Pairing button detection
 
 **Validates:** ND-0901
@@ -1502,6 +1529,17 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N1001a  Boot reason log — brownout
+
+**Validates:** ND-1000
+
+**Procedure:**
+1. Boot the node with reset reason `ESP_RST_BROWNOUT`.
+2. Capture serial output.
+3. Assert: an INFO log line contains "boot_reason=brownout".
+
+---
+
 ### T-N1002  Wake cycle started log
 
 **Validates:** ND-1001
@@ -1641,6 +1679,18 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Run a wake cycle to completion.
 2. Assert: an INFO log is emitted containing "entering deep sleep" with `duration_seconds` and `reason`.
+
+---
+
+### T-N1008a  Brownout recovery deep sleep log
+
+**Validates:** ND-0900a, ND-1007
+
+**Procedure:**
+1. Configure node with PSK stored, `reg_complete` set, and persisted base interval = 300 s.
+2. Simulate a boot with reset reason `ESP_RST_BROWNOUT`.
+3. Assert: an INFO log is emitted containing "entering deep sleep" with `duration_seconds=300` and `reason=brownout_recovery`.
+4. Assert: `reg_complete` does not affect the log format for this brownout recovery path.
 
 ---
 
@@ -2604,7 +2654,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0200 | T-N200, T-N201, T-N921 |
 | ND-0201 | T-N202, T-N202a, T-N202b, T-N203 |
 | ND-0202 | T-N204, T-N205, T-N206, T-N207, T-N922 |
-| ND-0203 | T-N205, T-N208, T-N209, T-N210, T-N923 |
+| ND-0203 | T-N205, T-N208, T-N209, T-N210, T-N900b, T-N923 |
 | ND-0300 | T-N102a, T-N606a, T-N606b (AEAD path) |
 | ND-0301 | T-N301, T-N924 |
 | ND-0302 | T-N302, T-N303, T-N304, T-N925 |
@@ -2635,7 +2685,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0800 | T-N800 |
 | ND-0801 | T-N801, T-N803, T-N938 |
 | ND-0802 | T-N802 |
-| ND-0900 | T-N900 |
+| ND-0900 | T-N900, T-N900a |
+| ND-0900a | T-N900a, T-N900b, T-N1008a |
 | ND-0901 | T-N901 |
 | ND-0902 | T-N902 |
 | ND-0903 | T-N902 |
@@ -2664,14 +2715,14 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0612 | T-N628, T-N629, T-N629a |
 | ND-0613 | T-N625, T-N625a |
 | ND-0614 | T-N630, T-N631 |
-| ND-1000 | T-N1000, T-N1001 |
+| ND-1000 | T-N1000, T-N1001, T-N1001a |
 | ND-1001 | T-N1002 |
 | ND-1002 | T-N1003 |
 | ND-1003 | T-N1004, T-N1004a |
 | ND-1004 | T-N1005 |
 | ND-1005 | T-N1006 |
 | ND-1006 | T-N1007, T-N1014 |
-| ND-1007 | T-N1008 |
+| ND-1007 | T-N1008, T-N1008a |
 | ND-1008 | T-N1012, T-N1013, T-N1013a |
 | ND-1009 | T-N1009, T-N1010, T-N1011, T-N1011a, T-N1011b |
 | ND-1010 | T-N1015, T-N1015a |
@@ -2765,6 +2816,8 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N802 | `test_chunked_transfer_wrong_chunk_index` | wake_cycle.rs |
 | T-N803 | `test_stale_command_before_chunk_recovery` | wake_cycle.rs |
 | T-N900 | *(hardware — validated on target: boot priority and BLE stack init)* | — |
+| T-N900a | `brownout_recovery_only_applies_to_paired_wake_cycle_boots`, `brownout_boot_action_skips_paired_wake_cycle_boots_and_uses_base_interval` | node.rs |
+| T-N900b | `brownout_boot_action_clamps_to_minimum_sleep_interval` | node.rs |
 | T-N901 | *(hardware — validated on target: pairing button detection)* | — |
 | T-N902 | *(hardware — validated on target: BLE GATT service registration)* | — |
 | T-N903 | *(hardware — validated on target: MTU negotiation and LESC pairing)* | — |
@@ -2786,6 +2839,8 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N929 | `t_n929_write_to_read_only_context_silently_ignored` | sonde_bpf_adapter.rs |
 | T-N940 | `t_n940_payload_len_exceeds_remaining_data`, `t_n940_payload_len_max_u16_rejected` | ble_pairing.rs |
 | T-N941 | `verify_peer_ack_valid`, `verify_peer_ack_wrong_nonce`, `verify_peer_ack_wrong_key` | peer_request.rs |
+| T-N1001a | `brownout_boot_reason_log_is_emitted` | node.rs |
+| T-N1008a | `brownout_recovery_sleep_log_is_emitted` | node.rs |
 | T-N1016 | *(hardware — validated on target: GPIO state after sleep preparation)* | — |
 
 > **Note:** Spec cases marked *(hardware — validated on target)* require the

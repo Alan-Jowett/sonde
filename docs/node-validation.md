@@ -1234,11 +1234,11 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Configure node with PSK stored, `reg_complete` not set, pairing button not held, and persisted base interval = 300 s.
 2. Seed RTC-retained wake state with a one-shot early-wake override shorter than 300 s.
 3. Simulate a boot with reset reason `ESP_RST_BROWNOUT`.
-4. Assert: the node does not transmit PEER_REQUEST, does not transmit WAKE, and enters deep sleep for 300 s.
+4. Assert: the boot-action selection diverts to brownout recovery sleep before the PEER_REQUEST path is entered, and the selected sleep duration is 300 s.
 5. Reconfigure the same node with `reg_complete` set and the same persisted base interval.
 6. Re-seed RTC-retained wake state with a one-shot early-wake override shorter than 300 s.
 7. Simulate a boot with reset reason `ESP_RST_BROWNOUT`.
-8. Assert: the node does not transmit WAKE and enters deep sleep for 300 s.
+8. Assert: the boot-action selection diverts to brownout recovery sleep before the normal WAKE path is entered, and the selected sleep duration is 300 s.
 
 ---
 

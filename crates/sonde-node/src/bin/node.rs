@@ -126,12 +126,12 @@ fn select_boot_action<S: sonde_node::traits::PlatformStorage>(
     }
 }
 
-#[cfg(any(feature = "esp", test))]
+#[cfg(any(feature = "esp", all(test, debug_assertions)))]
 fn log_boot_reason(reset_reason: BootResetReason) {
     log::info!("boot_reason={} (ND-1000)", boot_reason_label(reset_reason));
 }
 
-#[cfg(any(feature = "esp", test))]
+#[cfg(any(feature = "esp", all(test, debug_assertions)))]
 fn log_brownout_recovery_sleep(seconds: u32) {
     log::info!(
         "entering deep sleep duration_seconds={} reason=brownout_recovery (ND-1007)",
@@ -461,22 +461,30 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        boot_reason_label, brownout_recovery_sleep_s, log_boot_reason, log_brownout_recovery_sleep,
-        select_boot_action, select_boot_mode, should_enter_brownout_recovery, BootAction, BootMode,
-        BootResetReason,
+        boot_reason_label, brownout_recovery_sleep_s, select_boot_action, select_boot_mode,
+        should_enter_brownout_recovery, BootAction, BootMode, BootResetReason,
     };
+    #[cfg(debug_assertions)]
+    use super::{log_boot_reason, log_brownout_recovery_sleep};
     #[cfg(debug_assertions)]
     use log::{Level, Log, Metadata, Record};
     use sonde_node::error::NodeResult;
     use sonde_node::traits::PlatformStorage;
     #[cfg(debug_assertions)]
+    use std::collections::HashMap;
+    #[cfg(debug_assertions)]
     use std::sync::{Mutex, Once};
+    #[cfg(debug_assertions)]
+    use std::thread::{self, ThreadId};
 
     #[cfg(debug_assertions)]
     struct TestLogger;
 
     #[cfg(debug_assertions)]
-    static TEST_LOG_RECORDS: Mutex<Vec<(Level, String)>> = Mutex::new(Vec::new());
+    #[cfg(debug_assertions)]
+    type LogMap = HashMap<ThreadId, Vec<(Level, String)>>;
+    #[cfg(debug_assertions)]
+    static TEST_LOG_RECORDS: Mutex<Option<LogMap>> = Mutex::new(None);
 
     #[cfg(debug_assertions)]
     impl Log for TestLogger {
@@ -485,9 +493,11 @@ mod tests {
         }
 
         fn log(&self, record: &Record) {
-            TEST_LOG_RECORDS
-                .lock()
-                .unwrap()
+            let thread_id = thread::current().id();
+            let mut guard = TEST_LOG_RECORDS.lock().unwrap();
+            let map = guard.get_or_insert_with(HashMap::new);
+            map.entry(thread_id)
+                .or_default()
                 .push((record.level(), format!("{}", record.args())));
         }
 
@@ -508,7 +518,13 @@ mod tests {
 
     #[cfg(debug_assertions)]
     fn drain_log_records() -> Vec<(Level, String)> {
-        std::mem::take(&mut *TEST_LOG_RECORDS.lock().unwrap())
+        let thread_id = thread::current().id();
+        TEST_LOG_RECORDS
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .remove(&thread_id)
+            .unwrap_or_default()
     }
 
     #[derive(Default)]

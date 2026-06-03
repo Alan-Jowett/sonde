@@ -481,7 +481,6 @@ mod tests {
     struct TestLogger;
 
     #[cfg(debug_assertions)]
-    #[cfg(debug_assertions)]
     type LogMap = HashMap<ThreadId, Vec<(Level, String)>>;
     #[cfg(debug_assertions)]
     static TEST_LOG_RECORDS: Mutex<Option<LogMap>> = Mutex::new(None);

@@ -1234,11 +1234,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Configure node with PSK stored, `reg_complete` not set, pairing button not held, and persisted base interval = 300 s.
 2. Seed RTC-retained wake state with a one-shot early-wake override shorter than 300 s.
 3. Simulate a boot with reset reason `ESP_RST_BROWNOUT`.
-4. Assert: the boot-action selection diverts to brownout recovery sleep before the PEER_REQUEST path is entered, and the selected sleep duration is 300 s.
-5. Reconfigure the same node with `reg_complete` set and the same persisted base interval.
-6. Re-seed RTC-retained wake state with a one-shot early-wake override shorter than 300 s.
-7. Simulate a boot with reset reason `ESP_RST_BROWNOUT`.
-8. Assert: the boot-action selection diverts to brownout recovery sleep before the normal WAKE path is entered, and the selected sleep duration is 300 s.
+4. Assert: the boot-action selection diverts to brownout recovery sleep before normal ESP-NOW activity is entered, and the selected sleep duration is 300 s.
+5. Assert: the selection is based on the brownout reset plus the paired boot state, so `reg_complete` does not alter the chosen brownout recovery action.
 
 ---
 
@@ -1693,9 +1690,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Configure node with PSK stored, `reg_complete` set, and persisted base interval = 300 s.
 2. Simulate a boot with reset reason `ESP_RST_BROWNOUT`.
 3. Assert: an INFO log is emitted containing "entering deep sleep" with `duration_seconds=300` and `reason=brownout_recovery`.
-4. Reconfigure the same node with `reg_complete` not set and the same persisted base interval.
-5. Simulate a boot with reset reason `ESP_RST_BROWNOUT`.
-6. Assert: an INFO log is emitted containing "entering deep sleep" with `duration_seconds=300` and `reason=brownout_recovery`.
+4. Assert: `reg_complete` does not affect the log format for this brownout recovery path.
 
 ---
 

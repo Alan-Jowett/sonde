@@ -7,7 +7,6 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
-use azure_core::date::OffsetDateTime;
 use azure_core::error::ErrorKind;
 use azure_core::Uuid;
 use base64::Engine as _;
@@ -29,6 +28,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use time::Duration as TimeDuration;
+use time::OffsetDateTime;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -1593,10 +1593,10 @@ impl TokenCredential for ClientAssertionCredential {
     async fn get_token(
         &self,
         scopes: &[&str],
-        _options: Option<TokenRequestOptions>,
+        _options: Option<TokenRequestOptions<'_>>,
     ) -> azure_core::Result<AccessToken> {
         if scopes.is_empty() {
-            return Err(azure_core::Error::message(
+            return Err(azure_core::Error::with_message(
                 ErrorKind::Credential,
                 "missing Azure token scope",
             ));

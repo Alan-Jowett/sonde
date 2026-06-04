@@ -10,7 +10,7 @@ axum = "0.8.9"
 azure_core = { version = "1.0.0", default-features = false }
 azure_core_legacy = { package = "azure_core", version = "0.21.0", default-features = false }
 azure_data_tables = "0.21.0"
-azure_identity = { version = "0.25.0", default-features = false, features = ["reqwest_rustls", "tokio"] }
+azure_identity = { version = "1.0.0", default-features = false, features = ["tokio"] }
 azure_identity_legacy = { package = "azure_identity", version = "0.21.0", default-features = false, features = ["enable_reqwest_rustls"] }
 base64 = "0.22"
 ciborium = "0.2"

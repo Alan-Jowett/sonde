@@ -6441,7 +6441,7 @@ dependencies = [
  "argon2",
  "chrono",
  "clap",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "hex",
  "hkdf",
  "hyper-util",

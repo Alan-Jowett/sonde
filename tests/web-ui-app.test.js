@@ -213,7 +213,7 @@ test('querySensorDataRange follows continuation tokens until a partition is exha
   try {
     const rows = await app.querySensorDataRange(['n:abc'], 1_000, 2_000, {
       topPerPage: 1000,
-      maxPagesPerPartition: Number.POSITIVE_INFINITY,
+      maxPagesPerPartition: 10,
     });
 
     assert.equal(rows.length, 2);
@@ -221,6 +221,48 @@ test('querySensorDataRange follows continuation tokens until a partition is exha
     assert.equal(new URL(urls[1]).searchParams.get('NextPartitionKey'), 'page-2');
     assert.equal(new URL(urls[1]).searchParams.get('NextRowKey'), 'row-2');
     assert.deepEqual(authHeaders, ['Bearer token-123', 'Bearer token-123']);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('querySensorDataRange rejects repeated continuation tokens for complete exports', async () => {
+  const originalFetch = global.fetch;
+  app.CONFIG.storageAccount = 'exampleacct';
+  app.APP.account = { username: 'test@example.com' };
+  app.APP.msalApp = {
+    async acquireTokenSilent() {
+      return { accessToken: 'token-123' };
+    },
+    setActiveAccount() {},
+  };
+
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return { value: [{ timestamp_ms: '1000', node_id: 'node-a' }] };
+    },
+    async text() {
+      return '';
+    },
+    headers: {
+      get(name) {
+        if (name === 'x-ms-continuation-NextPartitionKey') return 'page-2';
+        if (name === 'x-ms-continuation-NextRowKey') return 'row-2';
+        return null;
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => app.querySensorDataRange(['n:abc'], 1_000, 2_000, {
+        topPerPage: 1000,
+        maxPagesPerPartition: 10,
+        requireComplete: true,
+      }),
+      /repeated continuation token/i,
+    );
   } finally {
     global.fetch = originalFetch;
   }

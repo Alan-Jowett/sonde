@@ -1647,6 +1647,7 @@ const TIME_RANGE_MS = {
   '24h': 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
 };
+const SENSOR_EXPORT_MAX_PAGES_PER_PARTITION = 1000;
 
 function reverseTimestampHex(ms) {
   const max = BigInt('0xffffffffffffffff');
@@ -1715,13 +1716,18 @@ function updateSensorExportControls() {
 
 async function querySensorDataRange(partitionKeys, startMs, endMs, options = {}) {
   const token = await getToken();
-  const { topPerPage = 1000, maxPagesPerPartition = 1 } = options;
+  const {
+    topPerPage = 1000,
+    maxPagesPerPartition = 1,
+    requireComplete = false,
+  } = options;
 
   const fetchPartition = async (pk) => {
     const filter = sensorDataFilter(pk, startMs, endMs);
     let nextPartitionKey = null;
     let nextRowKey = null;
     const entities = [];
+    const seenContinuationTokens = new Set();
 
     for (let page = 0; page < maxPagesPerPartition; page++) {
       const url = new URL(tableQueryUrl(CONFIG.sensorDataTable));
@@ -1758,6 +1764,19 @@ async function querySensorDataRange(partitionKeys, startMs, endMs, options = {})
       if (!nextPartitionKey) {
         break;
       }
+      const continuationToken = `${nextPartitionKey}\n${nextRowKey || ''}`;
+      if (seenContinuationTokens.has(continuationToken)) {
+        throw new Error(
+          `Sensor export failed: Azure Tables returned a repeated continuation token for node partition ${pk}. Try again or narrow the export time range.`
+        );
+      }
+      seenContinuationTokens.add(continuationToken);
+    }
+
+    if (requireComplete && nextPartitionKey) {
+      throw new Error(
+        `Sensor export failed: Azure Tables returned more than ${maxPagesPerPartition} page(s) for node partition ${pk}. Narrow the export time range and try again.`
+      );
     }
 
     return entities;
@@ -1845,7 +1864,8 @@ async function exportSensorData(partitionKeys) {
   try {
     const rows = await querySensorDataRange(partitionKeys, startMs, endMs, {
       topPerPage: null,
-      maxPagesPerPartition: Number.POSITIVE_INFINITY,
+      maxPagesPerPartition: SENSOR_EXPORT_MAX_PAGES_PER_PARTITION,
+      requireComplete: true,
     });
     const content = format === 'csv' ? buildSensorExportCsv(rows) : buildSensorExportJsonl(rows);
     const blob = new Blob([content], {

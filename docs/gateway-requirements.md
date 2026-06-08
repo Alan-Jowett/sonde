@@ -2775,7 +2775,13 @@ MUST be silently discarded.
 **Description:**
 Key rotation MUST be crash-safe via a `pending_rotation` table with
 three phases: `migrating_psks`, `rewrapping_identity`, `committing`.
-On startup, if `pending_rotation` exists, the gateway MUST determine
+On startup, if `pending_rotation` exists, the gateway MUST first
+verify that the table schema contains the columns required by the
+current recovery algorithm and migrate legacy schemas in place before
+reading rotation metadata. In particular, a database created by an
+older deployment whose `pending_rotation` table lacks `new_epoch`
+MUST be upgraded before recovery queries run. After schema
+compatibility is established, the gateway MUST determine
 which recovery path to take based on the current `master_key_epoch`:
 
 - **Pre-commit crash** (`master_key_epoch` < pending epoch): The DB
@@ -2824,6 +2830,9 @@ provider write succeeds (or is determined unnecessary).
    `pending_rotation`, and starts successfully.
 7. Post-commit recovery runs before `GatewayIdentity` loading to prevent
    fatal decryption errors.
+8. On an upgraded deployment whose existing `pending_rotation` table lacks
+   `new_epoch`, startup migrates the table before any recovery query reads
+   `pending_rotation.new_epoch`, and the gateway starts successfully.
 
 ---
 

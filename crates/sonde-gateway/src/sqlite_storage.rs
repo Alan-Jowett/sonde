@@ -631,6 +631,147 @@ fn load_pending_rotation_key(
     }
 }
 
+fn current_key_loads_gateway_identity(
+    conn: &Connection,
+    current_key: &[u8; 32],
+) -> Result<bool, StorageError> {
+    let row: Option<(Vec<u8>, Vec<u8>)> = conn
+        .query_row(
+            "SELECT encrypted_seed, gateway_id FROM gateway_identity WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(map_err)?;
+    let (encrypted_seed, gateway_id_vec) = row.ok_or_else(|| {
+        StorageError::Internal(
+            "legacy pending_rotation row exists but gateway_identity is missing".into(),
+        )
+    })?;
+    let gateway_id: [u8; 16] = gateway_id_vec
+        .as_slice()
+        .try_into()
+        .map_err(|_| StorageError::Internal("gateway_id is not 16 bytes".into()))?;
+    Ok(decrypt_seed(current_key, &encrypted_seed, &gateway_id).is_ok())
+}
+
+fn pending_rotation_blob_decrypts_with_key(
+    enc_blob: &[u8],
+    current_key: &[u8; 32],
+) -> Result<bool, StorageError> {
+    if enc_blob.len() != ENCRYPTED_PSK_LEN {
+        return Err(StorageError::Internal(format!(
+            "pending_rotation.new_master_key_enc has wrong length: {} (expected {ENCRYPTED_PSK_LEN})",
+            enc_blob.len()
+        )));
+    }
+
+    let key = Key::<Aes256Gcm>::from_slice(current_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&enc_blob[..12]);
+    let payload = Payload {
+        msg: &enc_blob[12..],
+        aad: PENDING_ROTATION_AAD,
+    };
+
+    match cipher.decrypt(nonce, payload) {
+        Ok(plaintext) => {
+            if plaintext.len() != 32 {
+                return Err(StorageError::Internal(format!(
+                    "decrypted pending new master key is {} bytes, expected 32",
+                    plaintext.len()
+                )));
+            }
+            Ok(true)
+        }
+        Err(_) => Ok(false),
+    }
+}
+
+fn infer_legacy_pending_rotation_epoch(
+    conn: &Connection,
+    current_key: &[u8; 32],
+    enc_blob: &[u8],
+    pending_new_key_id: &[u8],
+) -> Result<u64, StorageError> {
+    let current_epoch_text: Option<String> = conn
+        .query_row(
+            "SELECT value FROM gateway_config WHERE key = 'master_key_epoch'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_err)?;
+    let current_epoch_text = current_epoch_text.ok_or_else(|| {
+        StorageError::Internal(
+            "legacy pending_rotation row exists but gateway_config.master_key_epoch is missing"
+                .into(),
+        )
+    })?;
+    let current_epoch: u64 = current_epoch_text.parse().map_err(|e| {
+        StorageError::Internal(format!(
+            "invalid gateway_config master_key_epoch during pending_rotation migration: {e}"
+        ))
+    })?;
+    if current_epoch == 0 {
+        return Err(StorageError::Internal(
+            "legacy pending_rotation row exists but gateway_config.master_key_epoch is 0".into(),
+        ));
+    }
+    let current_key_id_text: Option<String> = conn
+        .query_row(
+            "SELECT value FROM gateway_config WHERE key = 'master_key_id'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_err)?;
+    let current_key_id_text = current_key_id_text.ok_or_else(|| {
+        StorageError::Internal(
+            "legacy pending_rotation row exists but gateway_config.master_key_id is missing".into(),
+        )
+    })?;
+    let current_key_id = hex::decode(&current_key_id_text).map_err(|e| {
+        StorageError::Internal(format!(
+            "invalid gateway_config master_key_id during pending_rotation migration: {e}"
+        ))
+    })?;
+    if current_key_id.len() != 32 {
+        return Err(StorageError::Internal(format!(
+            "invalid gateway_config master_key_id length during pending_rotation migration: {}",
+            current_key_id.len()
+        )));
+    }
+
+    let pending_key_decrypts = pending_rotation_blob_decrypts_with_key(enc_blob, current_key)?;
+    let identity_loads = current_key_loads_gateway_identity(conn, current_key)?;
+    match (pending_key_decrypts, identity_loads) {
+        (true, true) => current_epoch.checked_add(1).ok_or_else(|| {
+            StorageError::Internal(
+                "cannot infer pending_rotation.new_epoch: master_key_epoch overflow".into(),
+            )
+        }),
+        (true, false) => {
+            if current_key_id.as_slice() == pending_new_key_id {
+                Ok(current_epoch)
+            } else {
+                Err(StorageError::Internal(
+                    "cannot infer pending_rotation.new_epoch from legacy schema: \
+                     gateway identity does not load with current key and gateway_config.master_key_id \
+                     does not match pending_rotation.new_master_key_id"
+                        .into(),
+                ))
+            }
+        }
+        (false, true) => Ok(current_epoch),
+        (false, false) => Err(StorageError::Internal(
+            "cannot infer pending_rotation.new_epoch from legacy schema: \
+             current key decrypts neither pending rotation key nor gateway identity"
+                .into(),
+        )),
+    }
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS nodes (
     node_id TEXT PRIMARY KEY,
@@ -1076,6 +1217,74 @@ impl SqliteStorage {
                     "migration failed: CREATE TABLE pending_rotation: {e}"
                 ))
             })?;
+
+            let pending_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(pending_rotation)")
+                .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration check failed (table: pending_rotation, column: new_epoch): {e}"
+                    ))
+                })?;
+            if !pending_cols.iter().any(|n| n == "new_epoch") {
+                let tx = conn.unchecked_transaction().map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: begin pending_rotation new_epoch transaction: {e}"
+                    ))
+                })?;
+                tx.execute_batch(
+                    "ALTER TABLE pending_rotation \
+                     ADD COLUMN new_epoch INTEGER NOT NULL DEFAULT 0",
+                )
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: ALTER TABLE pending_rotation ADD COLUMN new_epoch: {e}"
+                    ))
+                })?;
+
+                let has_pending_row = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pending_rotation WHERE id = 1)",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(map_err)?
+                    != 0;
+                if has_pending_row {
+                    let (enc_blob, pending_new_key_id): (Vec<u8>, Vec<u8>) = tx
+                        .query_row(
+                            "SELECT new_master_key_enc, new_master_key_id \
+                             FROM pending_rotation WHERE id = 1",
+                            [],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .map_err(map_err)?;
+                    let inferred_pending_epoch = infer_legacy_pending_rotation_epoch(
+                        &tx,
+                        &master_key,
+                        &enc_blob,
+                        &pending_new_key_id,
+                    )?;
+                    let inferred_pending_epoch = i64::try_from(inferred_pending_epoch).map_err(|_| {
+                        StorageError::Internal(
+                            "cannot infer pending_rotation.new_epoch: value exceeds SQLite integer range"
+                                .into(),
+                        )
+                    })?;
+                    tx.execute(
+                        "UPDATE pending_rotation SET new_epoch = ?1 \
+                         WHERE id = 1 AND new_epoch = 0",
+                        params![inferred_pending_epoch],
+                    )
+                    .map_err(map_err)?;
+                }
+
+                tx.commit().map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: commit pending_rotation new_epoch transaction: {e}"
+                    ))
+                })?;
+            }
 
             // Add encrypted_seed_new column to gateway_identity for crash-safe
             // rotation (GW-2007). Permanent column, reused on each rotation.
@@ -3867,6 +4076,288 @@ mod tests {
         store.store_program(&new_prog).await.unwrap();
         let fetched = store.get_program(&new_prog.hash).await.unwrap().unwrap();
         assert_eq!(fetched.abi_version, Some(2));
+    }
+
+    #[tokio::test]
+    async fn test_pending_rotation_new_epoch_migration() {
+        use rusqlite::Connection;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("legacy-pending-rotation.db");
+        let identity = GatewayIdentity::generate().unwrap();
+        let new_key = [0xAAu8; 32];
+        let new_key_id: [u8; 32] = Sha256::digest(new_key).into();
+
+        let key = Key::<Aes256Gcm>::from_slice(&TEST_MASTER_KEY_RAW);
+        let cipher = Aes256Gcm::new(key);
+        let nonce_bytes = [0x11u8; 12];
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: &new_key,
+                    aad: PENDING_ROTATION_AAD,
+                },
+            )
+            .unwrap();
+        let mut enc_blob = Vec::with_capacity(ENCRYPTED_PSK_LEN);
+        enc_blob.extend_from_slice(&nonce_bytes);
+        enc_blob.extend_from_slice(&ciphertext);
+
+        {
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            store.store_gateway_identity(&identity).await.unwrap();
+            let (_, epoch) = store.init_master_key_id().await.unwrap();
+            assert_eq!(epoch, 1);
+        }
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute("DROP TABLE pending_rotation", []).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE pending_rotation (
+                    id                 INTEGER PRIMARY KEY CHECK (id = 1),
+                    new_master_key_enc BLOB    NOT NULL,
+                    new_master_key_id  BLOB    NOT NULL,
+                    started_at         INTEGER NOT NULL,
+                    phase              TEXT    NOT NULL DEFAULT 'migrating_psks'
+                )",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO pending_rotation \
+                 (id, new_master_key_enc, new_master_key_id, started_at, phase) \
+                 VALUES (1, ?1, ?2, 1234, 'migrating_psks')",
+                params![enc_blob, new_key_id.to_vec()],
+            )
+            .unwrap();
+        }
+
+        let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+        let pending = store.read_pending_rotation().await.unwrap().unwrap();
+        assert_eq!(
+            pending.new_epoch, 2,
+            "legacy row should infer pending epoch"
+        );
+        assert_eq!(pending.phase, "migrating_psks");
+
+        let conn = Connection::open(&db_path).unwrap();
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(pending_rotation)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            columns.iter().any(|name| name == "new_epoch"),
+            "migration must add pending_rotation.new_epoch"
+        );
+        let stored_epoch: i64 = conn
+            .query_row(
+                "SELECT new_epoch FROM pending_rotation WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn test_pending_rotation_new_epoch_migration_post_commit_pre_provider_write() {
+        use rusqlite::Connection;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("legacy-pending-rotation-post-commit.db");
+        let identity = GatewayIdentity::generate().unwrap();
+        let new_key = [0xAAu8; 32];
+        let new_key_id: [u8; 32] = Sha256::digest(new_key).into();
+
+        {
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            store.store_gateway_identity(&identity).await.unwrap();
+            let (_, epoch) = store.init_master_key_id().await.unwrap();
+            store
+                .write_pending_rotation(&new_key, &new_key_id, epoch + 1)
+                .await
+                .unwrap();
+            store
+                .rewrap_identity_seed(&TEST_MASTER_KEY_RAW, &new_key)
+                .await
+                .unwrap();
+            store.commit_rotation(&new_key_id, epoch + 1).await.unwrap();
+        }
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            let row: (Vec<u8>, Vec<u8>, i64, String) = conn
+                .query_row(
+                    "SELECT new_master_key_enc, new_master_key_id, started_at, phase \
+                     FROM pending_rotation WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            conn.execute("DROP TABLE pending_rotation", []).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE pending_rotation (
+                    id                 INTEGER PRIMARY KEY CHECK (id = 1),
+                    new_master_key_enc BLOB    NOT NULL,
+                    new_master_key_id  BLOB    NOT NULL,
+                    started_at         INTEGER NOT NULL,
+                    phase              TEXT    NOT NULL DEFAULT 'migrating_psks'
+                )",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO pending_rotation \
+                 (id, new_master_key_enc, new_master_key_id, started_at, phase) \
+                 VALUES (1, ?1, ?2, ?3, ?4)",
+                params![row.0, row.1, row.2, row.3],
+            )
+            .unwrap();
+        }
+
+        let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+        let pending = store.read_pending_rotation().await.unwrap().unwrap();
+        assert_eq!(
+            pending.new_epoch, 2,
+            "post-commit legacy row should preserve the committed epoch"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pending_rotation_new_epoch_migration_rejects_ambiguous_identity_failure() {
+        use rusqlite::Connection;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("legacy-pending-rotation-ambiguous.db");
+        let identity = GatewayIdentity::generate().unwrap();
+        let new_key = [0xAAu8; 32];
+        let new_key_id: [u8; 32] = Sha256::digest(new_key).into();
+
+        {
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            store.store_gateway_identity(&identity).await.unwrap();
+            let (_, epoch) = store.init_master_key_id().await.unwrap();
+            store
+                .write_pending_rotation(&new_key, &new_key_id, epoch + 1)
+                .await
+                .unwrap();
+        }
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            let row: (Vec<u8>, Vec<u8>, i64, String) = conn
+                .query_row(
+                    "SELECT new_master_key_enc, new_master_key_id, started_at, phase \
+                     FROM pending_rotation WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            conn.execute(
+                "UPDATE gateway_identity SET encrypted_seed = ?1 WHERE id = 1",
+                params![vec![0xFFu8; 60]],
+            )
+            .unwrap();
+            conn.execute("DROP TABLE pending_rotation", []).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE pending_rotation (
+                    id                 INTEGER PRIMARY KEY CHECK (id = 1),
+                    new_master_key_enc BLOB    NOT NULL,
+                    new_master_key_id  BLOB    NOT NULL,
+                    started_at         INTEGER NOT NULL,
+                    phase              TEXT    NOT NULL DEFAULT 'migrating_psks'
+                )",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO pending_rotation \
+                 (id, new_master_key_enc, new_master_key_id, started_at, phase) \
+                 VALUES (1, ?1, ?2, ?3, ?4)",
+                params![row.0, row.1, row.2, row.3],
+            )
+            .unwrap();
+        }
+
+        let err = match SqliteStorage::open(&db_path, test_key()) {
+            Ok(_) => panic!("ambiguous legacy state should fail closed"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("cannot infer pending_rotation.new_epoch"),
+            "ambiguous legacy state must fail closed, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pending_rotation_new_epoch_migration_post_write_pre_delete() {
+        use rusqlite::Connection;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("legacy-pending-rotation-post-write.db");
+        let identity = GatewayIdentity::generate().unwrap();
+        let new_key = [0xAAu8; 32];
+        let new_key_id: [u8; 32] = Sha256::digest(new_key).into();
+
+        {
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            store.store_gateway_identity(&identity).await.unwrap();
+            let (_, epoch) = store.init_master_key_id().await.unwrap();
+            store
+                .write_pending_rotation(&new_key, &new_key_id, epoch + 1)
+                .await
+                .unwrap();
+            store
+                .rewrap_identity_seed(&TEST_MASTER_KEY_RAW, &new_key)
+                .await
+                .unwrap();
+            store.commit_rotation(&new_key_id, epoch + 1).await.unwrap();
+        }
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            let row: (Vec<u8>, Vec<u8>, i64, String) = conn
+                .query_row(
+                    "SELECT new_master_key_enc, new_master_key_id, started_at, phase \
+                     FROM pending_rotation WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            conn.execute("DROP TABLE pending_rotation", []).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE pending_rotation (
+                    id                 INTEGER PRIMARY KEY CHECK (id = 1),
+                    new_master_key_enc BLOB    NOT NULL,
+                    new_master_key_id  BLOB    NOT NULL,
+                    started_at         INTEGER NOT NULL,
+                    phase              TEXT    NOT NULL DEFAULT 'migrating_psks'
+                )",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO pending_rotation \
+                 (id, new_master_key_enc, new_master_key_id, started_at, phase) \
+                 VALUES (1, ?1, ?2, ?3, ?4)",
+                params![row.0, row.1, row.2, row.3],
+            )
+            .unwrap();
+        }
+
+        let store = SqliteStorage::open(&db_path, Zeroizing::new(new_key)).unwrap();
+        let pending = store.read_pending_rotation().await.unwrap().unwrap();
+        assert_eq!(
+            pending.new_epoch, 2,
+            "post-write legacy row should preserve the current epoch"
+        );
     }
 
     /// Verify that `open()` rejects a wrong master key when encrypted PSK rows

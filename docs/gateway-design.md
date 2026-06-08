@@ -2033,6 +2033,13 @@ info=gateway_id_raw||epoch_be64) → AES-256-GCM(key, nonce, plaintext, aad=gate
 
 **Key invariant:** During all pre-commit phases, original `encrypted_seed` remains usable with the old key. `GatewayIdentity` is always loadable on restart.
 
+**Legacy schema compatibility:** During `SqliteStorage::open()`, the
+storage migration pass checks `PRAGMA table_info(pending_rotation)`
+and adds any columns required by the current crash-recovery algorithm
+before any startup query reads `pending_rotation`. This upgrade path
+must cover databases created by older deployments whose
+`pending_rotation` table predates `new_epoch`.
+
 **Post-commit crash recovery:** If `pending_rotation` exists and
 `master_key_epoch` equals the pending epoch, the startup sequence must
 determine whether the provider write completed:
@@ -2112,6 +2119,10 @@ shared in `sonde-protocol`.
 Insert after step 2 (initialize storage):
 
 > 2a. Check `pending_rotation` with post-commit detection:
+>     - Before any epoch comparison or row read, run storage schema
+>       compatibility for `pending_rotation` so startup never issues a
+>       `SELECT ... new_epoch ...` against a legacy table that lacks
+>       that column.
 >     - If `pending_rotation` exists AND `master_key_epoch` = pending epoch,
 >       run post-commit recovery (try provider key for identity; if fail,
 >       decrypt new key from `pending_rotation`, write to provider, reload).

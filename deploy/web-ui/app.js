@@ -198,7 +198,6 @@ function exportEnvironment(env) {
   };
   const json = JSON.stringify(data, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
 
   const safeName = (env.name || '')
     .replace(/[/\\:*?"<>|\x00-\x1F\x7F]/g, '-')
@@ -206,6 +205,11 @@ function exportEnvironment(env) {
     .trim();
   const filename = safeName ? `${safeName}.json` : 'sonde-environment.json';
 
+  downloadBlob(filename, blob);
+}
+
+function downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = filename;
@@ -1062,9 +1066,13 @@ function tableQueryUrl(tableName) {
   return `${tableBaseUrl(tableName)}()`;
 }
 
+function escapeODataStringLiteral(value) {
+  return String(value).replaceAll("'", "''");
+}
+
 function entityUrl(tableName, partitionKey, rowKey) {
-  const encodedPartition = encodeURIComponent(String(partitionKey).replaceAll("'", "''"));
-  const encodedRow = encodeURIComponent(String(rowKey).replaceAll("'", "''"));
+  const encodedPartition = encodeURIComponent(escapeODataStringLiteral(partitionKey));
+  const encodedRow = encodeURIComponent(escapeODataStringLiteral(rowKey));
   return `https://${CONFIG.storageAccount}.table.core.windows.net/${tableName}(PartitionKey='${encodedPartition}',RowKey='${encodedRow}')`;
 }
 
@@ -1627,6 +1635,11 @@ const SENSOR_STATE = {
   selectedSeries: new Set(),
   seriesInitialized: false,
   autoRefresh: false,
+  exportStartMs: null,
+  exportEndMs: null,
+  exportFormat: 'jsonl',
+  exportBusy: false,
+  exportMessage: null,
 };
 
 const TIME_RANGE_MS = {
@@ -1634,41 +1647,139 @@ const TIME_RANGE_MS = {
   '24h': 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
 };
+const SENSOR_EXPORT_MAX_PAGES_PER_PARTITION = 1000;
 
 function reverseTimestampHex(ms) {
   const max = BigInt('0xffffffffffffffff');
   return (max - BigInt(ms)).toString(16).padStart(16, '0');
 }
 
-async function querySensorData(partitionKeys, timeRangeMs) {
+function sensorDataFilter(partitionKey, startMs, endMs) {
+  const rkStart = reverseTimestampHex(endMs);
+  const rkEnd = reverseTimestampHex(startMs);
+  return `PartitionKey eq '${escapeODataStringLiteral(partitionKey)}' and RowKey ge '${rkStart}' and RowKey le '${rkEnd}~'`;
+}
+
+function initializeSensorExportRange() {
+  if (Number.isFinite(SENSOR_STATE.exportStartMs) && Number.isFinite(SENSOR_STATE.exportEndMs)) {
+    return;
+  }
+  const endMs = Date.now();
+  SENSOR_STATE.exportEndMs = endMs;
+  SENSOR_STATE.exportStartMs = endMs - TIME_RANGE_MS['24h'];
+}
+
+function formatDateTimeLocalInput(timestampMs) {
+  if (!Number.isFinite(timestampMs)) {
+    return '';
+  }
+  const date = new Date(timestampMs);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function parseDateTimeLocalInput(value) {
+  if (!value) {
+    return null;
+  }
+  const timestampMs = new Date(value).getTime();
+  return Number.isFinite(timestampMs) ? timestampMs : null;
+}
+
+function setSensorExportMessage(kind, text) {
+  SENSOR_STATE.exportMessage = { kind, text };
+  const host = contentEl.querySelector('#sensor-export-status');
+  if (host) {
+    host.innerHTML = messageHtml(SENSOR_STATE.exportMessage);
+  }
+}
+
+function updateSensorExportControls() {
+  const startInput = document.getElementById('sensor-export-start');
+  const endInput = document.getElementById('sensor-export-end');
+  const formatSelect = document.getElementById('sensor-export-format');
+  const exportButton = document.getElementById('sensor-export-button');
+  const disabled = SENSOR_STATE.exportBusy;
+
+  if (startInput) startInput.disabled = disabled;
+  if (endInput) endInput.disabled = disabled;
+  if (formatSelect) formatSelect.disabled = disabled;
+  if (exportButton) {
+    exportButton.disabled = disabled;
+    exportButton.textContent = disabled ? 'Exporting…' : 'Export';
+  }
+}
+
+async function querySensorDataRange(partitionKeys, startMs, endMs, options = {}) {
   const token = await getToken();
-  const now = Date.now();
-  const start = now - timeRangeMs;
-  const rkStart = reverseTimestampHex(now);
-  const rkEnd = reverseTimestampHex(start);
+  const {
+    topPerPage = 1000,
+    maxPagesPerPartition = 1,
+    requireComplete = false,
+  } = options;
 
   const fetchPartition = async (pk) => {
-    const filter = `PartitionKey eq '${pk}' and RowKey ge '${rkStart}' and RowKey le '${rkEnd}~'`;
-    const url = new URL(tableQueryUrl(CONFIG.sensorDataTable));
-    url.searchParams.set('$filter', filter);
-    url.searchParams.set('$top', '1000');
+    const filter = sensorDataFilter(pk, startMs, endMs);
+    let nextPartitionKey = null;
+    let nextRowKey = null;
+    const entities = [];
+    const seenContinuationTokens = new Set();
 
-    const response = await fetch(url.toString(), {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json;odata=nometadata',
-        Authorization: `Bearer ${token}`,
-        'x-ms-version': '2019-02-02',
-      },
-    });
+    for (let page = 0; page < maxPagesPerPartition; page++) {
+      const url = new URL(tableQueryUrl(CONFIG.sensorDataTable));
+      url.searchParams.set('$filter', filter);
+      if (topPerPage != null) {
+        url.searchParams.set('$top', String(topPerPage));
+      }
+      if (nextPartitionKey) {
+        url.searchParams.set('NextPartitionKey', nextPartitionKey);
+        if (nextRowKey) url.searchParams.set('NextRowKey', nextRowKey);
+      }
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`SensorData query failed (${response.status}): ${text}`);
+      const response = await fetch(url.toString(), {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json;odata=nometadata',
+          Authorization: `Bearer ${token}`,
+          'x-ms-version': '2019-02-02',
+        },
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`SensorData query failed (${response.status}): ${text}`);
+      }
+
+      const payload = await response.json();
+      if (Array.isArray(payload.value)) {
+        entities.push(...payload.value);
+      }
+
+      nextPartitionKey = response.headers.get('x-ms-continuation-NextPartitionKey');
+      nextRowKey = response.headers.get('x-ms-continuation-NextRowKey');
+      if (!nextPartitionKey) {
+        break;
+      }
+      const continuationToken = `${nextPartitionKey}\n${nextRowKey || ''}`;
+      if (seenContinuationTokens.has(continuationToken)) {
+        throw new Error(
+          `Sensor export failed: Azure Tables returned a repeated continuation token for node partition ${pk}. Try again or narrow the export time range.`
+        );
+      }
+      seenContinuationTokens.add(continuationToken);
     }
 
-    const payload = await response.json();
-    return Array.isArray(payload.value) ? payload.value : [];
+    if (requireComplete && nextPartitionKey) {
+      throw new Error(
+        `Sensor export failed: Azure Tables returned more than ${maxPagesPerPartition} page(s) for node partition ${pk}. Narrow the export time range and try again.`
+      );
+    }
+
+    return entities;
   };
 
   const allEntities = [];
@@ -1681,6 +1792,91 @@ async function querySensorData(partitionKeys, timeRangeMs) {
     }
   }
   return allEntities;
+}
+
+function parseSensorReadingsForExport(decodedReadings) {
+  if (!decodedReadings || decodedReadings === '') {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(decodedReadings);
+  } catch {
+    throw new Error('Sensor export failed: `decoded_readings` is not valid JSON.');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Sensor export failed: `decoded_readings` must be a JSON object.');
+  }
+  return parsed;
+}
+
+function csvEscape(value) {
+  const text = value == null ? '' : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function sensorExportFilename(format) {
+  return `sensor-data.${format}`;
+}
+
+function buildSensorExportCsv(rows) {
+  const header = ['timestamp_ms', 'node_id', 'program_hash', 'raw_payload', 'decoded_readings_json'];
+  const lines = [header.join(',')];
+  const sorted = [...rows].sort((a, b) => (Number(a.timestamp_ms) || 0) - (Number(b.timestamp_ms) || 0));
+  for (const row of sorted) {
+    lines.push([
+      csvEscape(row.timestamp_ms || ''),
+      csvEscape(row.node_id || ''),
+      csvEscape(row.program_hash || ''),
+      csvEscape(row.raw_payload || ''),
+      csvEscape(row.decoded_readings || ''),
+    ].join(','));
+  }
+  return lines.join('\r\n');
+}
+
+function buildSensorExportJsonl(rows) {
+  const sorted = [...rows].sort((a, b) => (Number(a.timestamp_ms) || 0) - (Number(b.timestamp_ms) || 0));
+  return sorted.map((row) => JSON.stringify({
+    timestamp_ms: row.timestamp_ms || '',
+    node_id: row.node_id || '',
+    program_hash: row.program_hash || '',
+    raw_payload: row.raw_payload || '',
+    decoded_readings: parseSensorReadingsForExport(row.decoded_readings),
+  })).join('\n');
+}
+
+async function exportSensorData(partitionKeys) {
+  const startMs = SENSOR_STATE.exportStartMs;
+  const endMs = SENSOR_STATE.exportEndMs;
+  const format = SENSOR_STATE.exportFormat;
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    throw new Error('Select both export start and end times.');
+  }
+  if (startMs > endMs) {
+    throw new Error('Export start time must be earlier than or equal to the end time.');
+  }
+
+  SENSOR_STATE.exportBusy = true;
+  updateSensorExportControls();
+
+  try {
+    const rows = await querySensorDataRange(partitionKeys, startMs, endMs, {
+      topPerPage: null,
+      maxPagesPerPartition: SENSOR_EXPORT_MAX_PAGES_PER_PARTITION,
+      requireComplete: true,
+    });
+    const content = format === 'csv' ? buildSensorExportCsv(rows) : buildSensorExportJsonl(rows);
+    const blob = new Blob([content], {
+      type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/x-ndjson',
+    });
+    downloadBlob(sensorExportFilename(format), blob);
+    setSensorExportMessage('success', `Exported ${rows.length} sensor row(s) as .${format}.`);
+  } finally {
+    SENSOR_STATE.exportBusy = false;
+    updateSensorExportControls();
+  }
 }
 
 function parseSensorReadings(decodedReadings) {
@@ -2087,6 +2283,7 @@ async function renderSensorData() {
   }
 
   try {
+    initializeSensorExportRange();
     const actualRows = await queryTable(CONFIG.actualStateTable, '');
     const latestActual = latestByPartition(filterNodeRows(actualRows)).sort((a, b) =>
       String(a.node_id || '').localeCompare(String(b.node_id || ''))
@@ -2094,21 +2291,16 @@ async function renderSensorData() {
 
     const nodeIdMap = new Map(latestActual.map((r) => [r.PartitionKey, r.node_id]));
     const partitionKeys = latestActual.map((r) => r.PartitionKey);
-
-    if (partitionKeys.length === 0) {
-      renderCard('Sensor Data', '<p class="muted">No nodes have reported state yet.</p>');
-      if (SENSOR_STATE.autoRefresh) {
-        setAutoRefresh(async () => {
-          if (APP.activeTab === 'sensor-data') {
-            await renderSensorData();
-          }
-        });
-      }
-      return;
-    }
+    const hasKnownNodes = partitionKeys.length > 0;
 
     const rangeMs = TIME_RANGE_MS[SENSOR_STATE.timeRange] || TIME_RANGE_MS['24h'];
-    const sensorRows = await querySensorData(partitionKeys, rangeMs);
+    const now = Date.now();
+    const sensorRows = hasKnownNodes
+      ? await querySensorDataRange(partitionKeys, now - rangeMs, now, {
+          topPerPage: 1000,
+          maxPagesPerPartition: 1,
+        })
+      : [];
     const allSeries = extractSeries(sensorRows, nodeIdMap);
 
     // Prune stale and non-plottable selections before auto-selection
@@ -2157,6 +2349,9 @@ async function renderSensorData() {
     }).join('');
 
     const autoRefreshChecked = SENSOR_STATE.autoRefresh ? ' checked' : '';
+    const exportStartValue = formatDateTimeLocalInput(SENSOR_STATE.exportStartMs);
+    const exportEndValue = formatDateTimeLocalInput(SENSOR_STATE.exportEndMs);
+    const exportBusyAttr = SENSOR_STATE.exportBusy ? ' disabled' : '';
 
     renderCard('Sensor Data', `
       <div class="panel sensor-controls">
@@ -2171,6 +2366,27 @@ async function renderSensorData() {
             <input type="checkbox" id="sensor-auto-refresh"${autoRefreshChecked}> Auto-refresh
           </label>
         </div>
+        <div class="sensor-export-panel">
+          <div class="sensor-export-row">
+            <label class="sensor-export-field">
+              <span>Export start</span>
+              <input type="datetime-local" id="sensor-export-start" value="${escapeHtml(exportStartValue)}"${exportBusyAttr}>
+            </label>
+            <label class="sensor-export-field">
+              <span>Export end</span>
+              <input type="datetime-local" id="sensor-export-end" value="${escapeHtml(exportEndValue)}"${exportBusyAttr}>
+            </label>
+            <label class="sensor-export-field">
+              <span>Format</span>
+              <select id="sensor-export-format"${exportBusyAttr}>
+                <option value="jsonl"${SENSOR_STATE.exportFormat === 'jsonl' ? ' selected' : ''}>.jsonl</option>
+                <option value="csv"${SENSOR_STATE.exportFormat === 'csv' ? ' selected' : ''}>.csv</option>
+              </select>
+            </label>
+            <button type="button" class="secondary" id="sensor-export-button"${exportBusyAttr}>${SENSOR_STATE.exportBusy ? 'Exporting…' : 'Export'}</button>
+          </div>
+          <div id="sensor-export-status">${messageHtml(SENSOR_STATE.exportMessage)}</div>
+        </div>
         ${allSeries.length > 0 ? `
           <details class="sensor-series-picker" open>
             <summary><strong>Series</strong> (${allSeries.length} available, max 20 plotted)</summary>
@@ -2179,15 +2395,18 @@ async function renderSensorData() {
         ` : ''}
       </div>
       <div class="panel">
-        ${SENSOR_STATE.viewMode === 'graph'
-          ? '<div class="sensor-chart-area chart-container"><p class="muted">Rendering chart…</p></div>'
-          : renderSensorTable(sensorRows, nodeIdMap)}
+        ${!hasKnownNodes
+          ? '<p class="muted">No nodes have reported state yet.</p>'
+          : SENSOR_STATE.viewMode === 'graph'
+            ? '<div class="sensor-chart-area chart-container"><p class="muted">Rendering chart…</p></div>'
+            : renderSensorTable(sensorRows, nodeIdMap)}
       </div>
     `);
 
-    if (SENSOR_STATE.viewMode === 'graph') {
+    if (hasKnownNodes && SENSOR_STATE.viewMode === 'graph') {
       renderSensorChart(allSeries);
     }
+    updateSensorExportControls();
 
     // Attach event handlers
     for (const btn of contentEl.querySelectorAll('.sensor-range-btn')) {
@@ -2242,6 +2461,41 @@ async function renderSensorData() {
           });
         } else {
           clearRefresh();
+        }
+      });
+    }
+
+    const exportStartInput = document.getElementById('sensor-export-start');
+    if (exportStartInput) {
+      exportStartInput.addEventListener('change', () => {
+        SENSOR_STATE.exportStartMs = parseDateTimeLocalInput(exportStartInput.value);
+      });
+    }
+
+    const exportEndInput = document.getElementById('sensor-export-end');
+    if (exportEndInput) {
+      exportEndInput.addEventListener('change', () => {
+        SENSOR_STATE.exportEndMs = parseDateTimeLocalInput(exportEndInput.value);
+      });
+    }
+
+    const exportFormatSelect = document.getElementById('sensor-export-format');
+    if (exportFormatSelect) {
+      exportFormatSelect.addEventListener('change', () => {
+        SENSOR_STATE.exportFormat = exportFormatSelect.value === 'csv' ? 'csv' : 'jsonl';
+      });
+    }
+
+    const exportButton = document.getElementById('sensor-export-button');
+    if (exportButton) {
+      exportButton.addEventListener('click', async () => {
+        SENSOR_STATE.exportStartMs = parseDateTimeLocalInput(exportStartInput?.value || '');
+        SENSOR_STATE.exportEndMs = parseDateTimeLocalInput(exportEndInput?.value || '');
+        SENSOR_STATE.exportFormat = exportFormatSelect?.value === 'csv' ? 'csv' : 'jsonl';
+        try {
+          await exportSensorData(partitionKeys);
+        } catch (error) {
+          setSensorExportMessage('error', parseErrorPayload(error, 'Sensor export failed.'));
         }
       });
     }
@@ -2540,11 +2794,23 @@ function showEnvironmentForm(existingEnv) {
   });
 }
 
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    APP,
+    CONFIG,
+    buildSensorExportCsv,
+    buildSensorExportJsonl,
+    parseSensorReadingsForExport,
+    querySensorDataRange,
+    sensorDataFilter,
+  };
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   // MSAL loginPopup() opens a popup that loads this SPA.  The popup only needs
   // MSAL to process the auth response — skip full app init to avoid unnecessary
   // API calls and rendering.
-  if (window.opener && window.opener !== window) {
+  if ((window.opener && window.opener !== window) || window.__SONDE_TEST__ === true) {
     return;
   }
   init().catch((error) => renderError('Application failed to start', error));

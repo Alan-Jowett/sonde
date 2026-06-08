@@ -805,6 +805,38 @@ modal dialog.
 
 ---
 
+### WEB-0704  Sensor Data Export
+
+**Priority:** Must
+**Source:** User request (2026-06-08), web-ui-design.md §10.5
+**Confidence:** High
+
+**Description:**
+The SPA MUST allow operators to export sensor-data rows from a custom
+start/end time range as either `.jsonl` or `.csv`.
+
+**Acceptance criteria:**
+
+1. The Sensor Data tab provides export controls with a start time, end time,
+   format selector, and export action.
+2. The export range is independent of the graph/table view toggle, graph
+   time-range selector, and series selection state.
+3. Export queries all matching sensor-data rows across all known node
+   partitions for the selected time range.
+4. Export follows Azure Table continuation tokens so rows beyond the first
+   page are included in the downloaded file.
+5. CSV export writes one header row and one data row per sensor-data entity
+   with columns `timestamp_ms`, `node_id`, `program_hash`, `raw_payload`, and
+   `decoded_readings_json`.
+6. JSONL export writes one JSON object per line with fields `timestamp_ms`,
+   `node_id`, `program_hash`, `raw_payload`, and `decoded_readings`.
+7. Rows with empty `decoded_readings` export as an empty `decoded_readings_json`
+   CSV column and `decoded_readings: null` in JSONL.
+8. The export range is validated before querying; invalid or inverted ranges
+   are rejected with operator-visible feedback.
+
+---
+
 ## 12  Environment Manager (WEB-0800)
 
 ### WEB-0800  Runtime Environment Configuration

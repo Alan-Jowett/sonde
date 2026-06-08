@@ -92,6 +92,7 @@ and verifies one or more acceptance criteria.
 | WEB-0701 | T-WEB-0702, T-WEB-0703, T-WEB-0706, T-WEB-0713, T-WEB-0714, T-WEB-0715, T-WEB-0702b, T-WEB-0703b |
 | WEB-0702 | T-WEB-0704, T-WEB-0705, T-WEB-0704b, T-WEB-0704c |
 | WEB-0703 | T-WEB-0707, T-WEB-0708, T-WEB-0709, T-WEB-0710, T-WEB-0711, T-WEB-0712, T-WEB-0707b |
+| WEB-0704 | T-WEB-0716, T-WEB-0717, T-WEB-0718, T-WEB-0719, T-WEB-0720, T-WEB-0721, T-WEB-0722 |
 | WEB-0800 | T-WEB-0801, T-WEB-0802, T-WEB-0803, T-WEB-0804, T-WEB-0805, T-WEB-0806 |
 | WEB-0801 | T-WEB-0802 |
 | WEB-0802 | T-WEB-0806, T-WEB-0807, T-WEB-0808, T-WEB-0809 |
@@ -241,6 +242,13 @@ and verifies one or more acceptance criteria.
 | T-WEB-0710 | WEB-0703 | Unit suffix appears in tooltip values and Y-axis title when all series share the same suffix | Manual | Planned |
 | T-WEB-0711 | WEB-0703 | Overrides persist across page reloads via `localStorage` | Manual | Planned |
 | T-WEB-0712 | WEB-0703 | Reset to Default clears overrides and restores original label/scale | Manual | Planned |
+| T-WEB-0716 | WEB-0704 | Sensor Data tab exposes export start/end controls, format selector, and Export action | Manual/E2E | Planned |
+| T-WEB-0717 | WEB-0704 | JSONL export writes one JSON object per line with the required five fields and `decoded_readings: null` for empty rows | Manual/E2E | Planned |
+| T-WEB-0718 | WEB-0704 | CSV export writes the required header and preserves the raw JSON string in `decoded_readings_json` | Manual/E2E | Planned |
+| T-WEB-0719 | WEB-0704 | Export obeys the custom export range but ignores graph preset range, current view mode, and series selection | Manual/E2E | Planned |
+| T-WEB-0720 | WEB-0704 | Export follows Azure Table continuation tokens so ranges with more than 1000 rows per node export completely | Unit (JS) | Pass |
+| T-WEB-0721 | WEB-0704 | Missing or inverted export start/end values are rejected with operator-visible feedback and no file download | Manual | Planned |
+| T-WEB-0722 | WEB-0704 | Export includes matching rows from multiple known node partitions within the selected range | Manual/E2E | Planned |
 
 ### 5.8  Environment Manager
 

@@ -1066,9 +1066,13 @@ function tableQueryUrl(tableName) {
   return `${tableBaseUrl(tableName)}()`;
 }
 
+function escapeODataStringLiteral(value) {
+  return String(value).replaceAll("'", "''");
+}
+
 function entityUrl(tableName, partitionKey, rowKey) {
-  const encodedPartition = encodeURIComponent(String(partitionKey).replaceAll("'", "''"));
-  const encodedRow = encodeURIComponent(String(rowKey).replaceAll("'", "''"));
+  const encodedPartition = encodeURIComponent(escapeODataStringLiteral(partitionKey));
+  const encodedRow = encodeURIComponent(escapeODataStringLiteral(rowKey));
   return `https://${CONFIG.storageAccount}.table.core.windows.net/${tableName}(PartitionKey='${encodedPartition}',RowKey='${encodedRow}')`;
 }
 
@@ -1652,7 +1656,7 @@ function reverseTimestampHex(ms) {
 function sensorDataFilter(partitionKey, startMs, endMs) {
   const rkStart = reverseTimestampHex(endMs);
   const rkEnd = reverseTimestampHex(startMs);
-  return `PartitionKey eq '${partitionKey}' and RowKey ge '${rkStart}' and RowKey le '${rkEnd}~'`;
+  return `PartitionKey eq '${escapeODataStringLiteral(partitionKey)}' and RowKey ge '${rkStart}' and RowKey le '${rkEnd}~'`;
 }
 
 function initializeSensorExportRange() {

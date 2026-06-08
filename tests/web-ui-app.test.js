@@ -81,6 +81,19 @@ test('sensorDataFilter uses reverse-timestamp bounds for the requested range', (
   );
 });
 
+test('sensorDataFilter escapes single quotes in partition keys', () => {
+  const max = BigInt('0xffffffffffffffff');
+  const startMs = 1_000;
+  const endMs = 2_000;
+  const expectedStart = (max - BigInt(endMs)).toString(16).padStart(16, '0');
+  const expectedEnd = (max - BigInt(startMs)).toString(16).padStart(16, '0');
+
+  assert.equal(
+    app.sensorDataFilter("n:o'hare", startMs, endMs),
+    `PartitionKey eq 'n:o''hare' and RowKey ge '${expectedStart}' and RowKey le '${expectedEnd}~'`,
+  );
+});
+
 test('buildSensorExportCsv emits header, sorts by timestamp, and escapes JSON payloads', () => {
   const csv = app.buildSensorExportCsv([
     {

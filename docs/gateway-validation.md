@@ -4403,7 +4403,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-2005  Crash-safe key rotation
 
-**Traces to:** GW-2007 (AC-1, AC-2, AC-3, AC-4, AC-5, AC-6, AC-7)
+**Traces to:** GW-2007 (AC-1, AC-2, AC-3, AC-4, AC-5, AC-6, AC-7, AC-8)
 
 **Steps:**
 1. Start gateway with 10 registered nodes and a writable `FileKeyProvider`.
@@ -4428,9 +4428,16 @@ A configurable stub handler process (or in-process mock) that:
     correct key, deletes `pending_rotation`, and starts successfully.
 13. Verify post-commit recovery runs before `GatewayIdentity` loading
     (no fatal decryption error on startup).
+14. Create an existing database whose `pending_rotation` table lacks
+    `new_epoch` (legacy deployment shape).
+15. Restart gateway — verify startup migrates the table before crash
+    recovery reads `pending_rotation.new_epoch`.
+16. Verify gateway starts successfully after the migration.
 
 **Expected:**
 1. Partial rotation is resumed and completed after crash.
+2. Legacy `pending_rotation` schemas are migrated before startup
+   recovery queries read `new_epoch`.
 
 ---
 

@@ -537,6 +537,80 @@ async fn test_t2005_crash_safe_rotation() {
     assert_eq!(stored_id, new_id);
 }
 
+/// T-2005: Startup migrates a legacy `pending_rotation` table before recovery.
+#[tokio::test]
+async fn test_t2005_legacy_pending_rotation_schema_migrates_on_startup() {
+    use rusqlite::params;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("legacy-pending-rotation.db");
+    let master_key = Zeroizing::new([0x42u8; 32]);
+    let identity = GatewayIdentity::generate().unwrap();
+
+    let store = Arc::new(SqliteStorage::open(&db_path, master_key.clone()).unwrap());
+    store.store_gateway_identity(&identity).await.unwrap();
+    let (_, epoch) = store.init_master_key_id().await.unwrap();
+    store.init_rotation_code().await.unwrap();
+    register_test_node(&store, "node-a", 100).await;
+    drop(store);
+
+    let new_key = [0xAAu8; 32];
+    let new_id: [u8; 32] = Sha256::digest(new_key).into();
+    let key = Key::<Aes256Gcm>::from_slice(master_key.as_ref());
+    let cipher = Aes256Gcm::new(key);
+    let nonce_bytes = [0x11u8; 12];
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(
+            nonce,
+            Payload {
+                msg: &new_key,
+                aad: b"sonde-pending-rotation",
+            },
+        )
+        .unwrap();
+    let mut enc_blob = Vec::with_capacity(12 + ciphertext.len());
+    enc_blob.extend_from_slice(&nonce_bytes);
+    enc_blob.extend_from_slice(&ciphertext);
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("DROP TABLE IF EXISTS pending_rotation", [])
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pending_rotation (
+                id                 INTEGER PRIMARY KEY CHECK (id = 1),
+                new_master_key_enc BLOB    NOT NULL,
+                new_master_key_id  BLOB    NOT NULL,
+                started_at         INTEGER NOT NULL,
+                phase              TEXT    NOT NULL DEFAULT 'migrating_psks'
+            )",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pending_rotation \
+             (id, new_master_key_enc, new_master_key_id, started_at, phase) \
+             VALUES (1, ?1, ?2, 1234, 'migrating_psks')",
+            params![enc_blob, new_id.to_vec()],
+        )
+        .unwrap();
+    }
+
+    let reopened = Arc::new(SqliteStorage::open(&db_path, master_key).unwrap());
+    let pending = reopened.read_pending_rotation().await.unwrap().unwrap();
+    assert_eq!(pending.new_epoch, epoch + 1);
+
+    let recovered =
+        RotationEngine::resume_pending_rotation(&reopened, &identity, &NoopWritableKeyProvider)
+            .await
+            .unwrap();
+    assert!(recovered.is_some());
+    assert!(!reopened.is_rotation_in_progress().await.unwrap());
+
+    let (_, stored_epoch) = reopened.init_master_key_id().await.unwrap();
+    assert_eq!(stored_epoch, epoch + 1);
+}
+
 /// T-2008: gRPC rotation path.
 #[tokio::test]
 async fn test_t2008_grpc_rotation_path() {

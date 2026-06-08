@@ -306,7 +306,7 @@ default); set to the empty string to omit the custom domain redirect URI.
 
 ## 10. Sensor Data (WEB-0700)
 
-> **Requirements:** WEB-0700, WEB-0701, WEB-0702, WEB-0703
+> **Requirements:** WEB-0700, WEB-0701, WEB-0702, WEB-0703, WEB-0704
 
 ### 10.1  Data source
 
@@ -333,7 +333,7 @@ separate line on a time-series chart. The X-axis is time (derived from
 `timestamp_ms`); the Y-axis is the reading value.
 
 **Controls:**
-- Time range selector: Last 1h, 24h, 7d, custom.
+- Time range selector: Last 1h, 24h, 7d.
 - Auto-refresh toggle with configurable interval (default 30s).
 - Hover tooltip: timestamp, node ID, reading name, value.
 - Series selector: checkboxes to choose which (node, program, reading)
@@ -395,6 +395,39 @@ Overrides are stored in `localStorage` under the key
 Overrides survive page reloads and browser restarts. They are scoped to
 the browser origin (per localStorage rules) and are not shared across
 devices.
+
+### 10.5  Sensor data export (WEB-0704)
+
+The Sensor Data tab includes a separate export panel for downloading sensor
+rows over a custom start/end time range without changing the graph/table
+display state.
+
+**Controls:**
+- Start time and end time inputs (`datetime-local`)
+- Format selector with `.jsonl` and `.csv`
+- Export button
+
+**Behavior:**
+- The export range is validated client-side before querying. Missing values or
+  `start > end` are rejected with an inline error message and no network call.
+- Export scope is **all sensor-data rows in the chosen export range** across
+  all known node partitions. It does not depend on the graph view mode, graph
+  preset range, or series picker selection.
+- Export queries reuse the same authenticated Azure Tables access model as the
+  rest of the SPA. For each node partition, the SPA issues a filtered range
+  query and follows Azure Table continuation tokens until the partition's
+  matching rows are exhausted.
+- The export action surfaces success/failure status in the Sensor Data view.
+
+**File formats:**
+- **CSV:** Header row
+  `timestamp_ms,node_id,program_hash,raw_payload,decoded_readings_json`. The
+  `decoded_readings_json` column contains the original JSON string from the
+  table row, or the empty string when the source row has no decoded readings.
+- **JSONL:** One JSON object per line with keys `timestamp_ms`, `node_id`,
+  `program_hash`, `raw_payload`, and `decoded_readings`. The
+  `decoded_readings` value is the parsed JSON object when present, otherwise
+  `null`.
 
 ---
 

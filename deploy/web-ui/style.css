@@ -131,6 +131,25 @@ code { font-family: Consolas, "Courier New", monospace; }
   background: var(--accent);
   color: #fff;
 }
+.sensor-export-panel {
+  display: grid;
+  gap: 0.5rem;
+}
+.sensor-export-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+}
+.sensor-export-field {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 12rem;
+}
+.sensor-export-field select,
+.sensor-export-field input {
+  min-width: 0;
+}
 .sensor-series-picker { margin-top: 0.25rem; }
 .sensor-series-grid {
   display: flex;

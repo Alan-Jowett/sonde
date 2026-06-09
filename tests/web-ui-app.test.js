@@ -94,6 +94,19 @@ test('sensorDataFilter escapes single quotes in partition keys', () => {
   );
 });
 
+test('actualStateFilter uses reverse-timestamp bounds for the requested range', () => {
+  const max = BigInt('0xffffffffffffffff');
+  const startMs = 1_000;
+  const endMs = 2_000;
+  const expectedStart = (max - BigInt(endMs)).toString(16).padStart(16, '0');
+  const expectedEnd = (max - BigInt(startMs)).toString(16).padStart(16, '0');
+
+  assert.equal(
+    app.actualStateFilter('n:abc', startMs, endMs),
+    `PartitionKey eq 'n:abc' and RowKey ge '${expectedStart}' and RowKey le '${expectedEnd}~'`,
+  );
+});
+
 test('buildSensorExportCsv emits header, sorts by timestamp, and escapes JSON payloads', () => {
   const csv = app.buildSensorExportCsv([
     {
@@ -150,6 +163,92 @@ test('buildSensorExportJsonl emits parsed readings objects and null for empty re
     program_hash: 'bb',
     raw_payload: 'plain',
     decoded_readings: null,
+  });
+});
+
+test('buildDeviceExportCsv emits header, sorts by timestamp, and leaves missing values empty', () => {
+  const csv = app.buildDeviceExportCsv([
+    {
+      timestamp_ms: '2000',
+      node_id: 'node-b',
+      battery_mv: '3300',
+      wake_rssi_dbm: '-61',
+      firmware_version: '1.2.3',
+      firmware_abi_version: '4',
+      observed_schedule_interval_s: '300',
+      observed_current_program_hash: 'bb',
+      observed_assigned_program_hash: '',
+    },
+    {
+      timestamp_ms: '1000',
+      node_id: 'node-a',
+      battery_mv: '',
+      wake_rssi_dbm: '',
+      firmware_version: '',
+      firmware_abi_version: '',
+      observed_schedule_interval_s: '',
+      observed_current_program_hash: '',
+      observed_assigned_program_hash: '',
+    },
+  ]);
+
+  const lines = csv.split('\r\n');
+  assert.equal(
+    lines[0],
+    'timestamp_ms,node_id,battery_mv,wake_rssi_dbm,firmware_version,firmware_abi_version,observed_schedule_interval_s,observed_current_program_hash,observed_assigned_program_hash',
+  );
+  assert.equal(lines[1], '1000,node-a,,,,,,,');
+  assert.equal(lines[2], '2000,node-b,3300,-61,1.2.3,4,300,bb,');
+});
+
+test('buildDeviceExportJsonl emits null for missing optional values', () => {
+  const jsonl = app.buildDeviceExportJsonl([
+    {
+      timestamp_ms: '2000',
+      node_id: 'node-b',
+      battery_mv: null,
+      wake_rssi_dbm: null,
+      firmware_version: null,
+      firmware_abi_version: null,
+      observed_schedule_interval_s: null,
+      observed_current_program_hash: null,
+      observed_assigned_program_hash: null,
+    },
+    {
+      timestamp_ms: '1000',
+      node_id: 'node-a',
+      battery_mv: '3300',
+      wake_rssi_dbm: '-58',
+      firmware_version: '1.0.0',
+      firmware_abi_version: '2',
+      observed_schedule_interval_s: '120',
+      observed_current_program_hash: 'aa',
+      observed_assigned_program_hash: 'ab',
+    },
+  ]);
+
+  const lines = jsonl.split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(lines[0], {
+    timestamp_ms: '1000',
+    node_id: 'node-a',
+    battery_mv: '3300',
+    wake_rssi_dbm: '-58',
+    firmware_version: '1.0.0',
+    firmware_abi_version: '2',
+    observed_schedule_interval_s: '120',
+    observed_current_program_hash: 'aa',
+    observed_assigned_program_hash: 'ab',
+  });
+  assert.deepEqual(lines[1], {
+    timestamp_ms: '2000',
+    node_id: 'node-b',
+    battery_mv: null,
+    wake_rssi_dbm: null,
+    firmware_version: null,
+    firmware_abi_version: null,
+    observed_schedule_interval_s: null,
+    observed_current_program_hash: null,
+    observed_assigned_program_hash: null,
   });
 });
 
@@ -221,6 +320,69 @@ test('querySensorDataRange follows continuation tokens until a partition is exha
     assert.equal(new URL(urls[1]).searchParams.get('NextPartitionKey'), 'page-2');
     assert.equal(new URL(urls[1]).searchParams.get('NextRowKey'), 'row-2');
     assert.deepEqual(authHeaders, ['Bearer token-123', 'Bearer token-123']);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('queryActualStateRange follows continuation tokens until a partition is exhausted', async () => {
+  const originalFetch = global.fetch;
+  app.CONFIG.storageAccount = 'exampleacct';
+  app.APP.account = { username: 'test@example.com' };
+  app.APP.msalApp = {
+    async acquireTokenSilent() {
+      return { accessToken: 'token-123' };
+    },
+    setActiveAccount() {},
+  };
+
+  const urls = [];
+  global.fetch = async (url) => {
+    urls.push(url);
+    const parsed = new URL(url);
+    const nextPartitionKey = parsed.searchParams.get('NextPartitionKey');
+
+    if (!nextPartitionKey) {
+      return {
+        ok: true,
+        async json() {
+          return { value: [{ timestamp_ms: '1000', node_id: 'node-a', battery_mv: '3300' }] };
+        },
+        async text() {
+          return '';
+        },
+        headers: {
+          get(name) {
+            if (name === 'x-ms-continuation-NextPartitionKey') return 'page-2';
+            if (name === 'x-ms-continuation-NextRowKey') return 'row-2';
+            return null;
+          },
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      async json() {
+        return { value: [{ timestamp_ms: '2000', node_id: 'node-a', battery_mv: '3200' }] };
+      },
+      async text() {
+        return '';
+      },
+      headers: { get() { return null; } },
+    };
+  };
+
+  try {
+    const rows = await app.queryActualStateRange(['n:abc'], 1_000, 2_000, {
+      topPerPage: 1000,
+      maxPagesPerPartition: 10,
+    });
+
+    assert.equal(rows.length, 2);
+    assert.ok(urls[0].includes('/actualstate()'));
+    assert.equal(new URL(urls[1]).searchParams.get('NextPartitionKey'), 'page-2');
+    assert.equal(new URL(urls[1]).searchParams.get('NextRowKey'), 'row-2');
   } finally {
     global.fetch = originalFetch;
   }

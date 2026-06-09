@@ -110,12 +110,12 @@ Table. Each node is represented by the most recent row per `PartitionKey`
 
 **Description:**
 The dashboard table MUST display the following columns: Node ID, Battery (mV),
-Firmware, ABI Version, Schedule (s), Current Program Hash, Assigned Program
-Hash, Last Seen, Status.
+RSSI, Firmware, ABI Version, Schedule (s), Current Program Hash, Assigned
+Program Hash, Last Seen, Status.
 
 **Acceptance criteria:**
 
-1. All nine columns are present in the table header.
+1. All ten columns are present in the table header.
 2. Program hashes are displayed as truncated 8-character hex with a full-hash tooltip.
 3. "Last Seen" displays a relative time string (e.g., "5m ago").
 4. Missing values display "—".
@@ -155,6 +155,46 @@ cross-referencing the `desiredstate` table.
 3. When no desired-state row exists for a node, the node shows "Aligned" (unmanaged node).
 4. When `desired_schedule_interval_s` is set and differs from `observed_schedule_interval_s`, the node shows "Diverged."
 5. The Schedule column tooltip shows both observed and desired values.
+
+---
+
+### WEB-0105  Dashboard Device-Data Export
+
+**Priority:** Must
+**Source:** User request (2026-06-09), web-ui-design.md §4.1
+**Confidence:** High
+
+**Description:**
+The Dashboard tab MUST allow operators to export historical device-data rows
+from the append-only `actualstate` table over a custom start/end time range as
+either `.jsonl` or `.csv`. This export is for historical device diagnostics and
+MUST include battery and WAKE RSSI observations over time without introducing a
+new table or a new dashboard-style diagnostics view.
+
+**Acceptance criteria:**
+
+1. The Dashboard tab provides device-data export controls with a start time, end
+   time, format selector, and export action.
+2. The export queries historical `actualstate` rows across all known node
+   partitions for the selected time range; it is not limited to the latest row
+   currently shown in the dashboard table.
+3. The export follows Azure Table continuation tokens so rows beyond the first
+   page are included in the downloaded file.
+4. CSV export writes one header row and one data row per matching actual-state
+   entity with columns `timestamp_ms`, `node_id`, `battery_mv`,
+   `wake_rssi_dbm`, `firmware_version`, `firmware_abi_version`,
+   `observed_schedule_interval_s`, `observed_current_program_hash`, and
+   `observed_assigned_program_hash`.
+5. JSONL export writes one JSON object per line with fields `timestamp_ms`,
+   `node_id`, `battery_mv`, `wake_rssi_dbm`, `firmware_version`,
+   `firmware_abi_version`, `observed_schedule_interval_s`,
+   `observed_current_program_hash`, and `observed_assigned_program_hash`.
+6. Missing optional numeric or string fields export as empty CSV fields and
+   `null` JSON values.
+7. The export range is validated before querying; missing or inverted ranges are
+   rejected with operator-visible feedback.
+8. The export behavior is independent of dashboard auto-refresh and the
+   dashboard's latest-only deduplicated table view.
 
 ---
 

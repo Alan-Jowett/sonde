@@ -51,7 +51,44 @@ deploy/web-ui/
   - **Program divergence**: When a desired-state row exists for the node, divergence is flagged if the desired program hash differs from the actual current program hash. Missing, null, or empty `desired_assigned_program_hash` is treated as "no program desired" — so a node that still reports a current program hash is diverged until it confirms clearing. When no desired-state row exists at all, program divergence is not flagged (node is unmanaged).
   - **Schedule divergence**: Flagged when `desired_schedule_interval_s` is set and differs from `observed_schedule_interval_s`.
 - Auto-refresh every 30s by default (configurable).
-- Columns: Node ID, Battery (mV), Firmware, ABI Version, Schedule (s), Current Program Hash, Assigned Program Hash, Last Seen, Status (aligned/diverged).
+- Columns: Node ID, Battery (mV), RSSI, Firmware, ABI Version, Schedule (s), Current Program Hash, Assigned Program Hash, Last Seen, Status (aligned/diverged).
+
+### 4.1  Dashboard device-data export (WEB-0105)
+
+The Dashboard includes a separate export panel for downloading historical
+device-data rows from the append-only `actualstate` table. This is an
+export-only diagnostics feature; it does not add a second dashboard view or a
+new Azure table.
+
+**Controls:**
+- Start time and end time inputs (`datetime-local`)
+- Format selector with `.jsonl` and `.csv`
+- Export button
+
+**Behavior:**
+- The export range is validated client-side before querying. Missing values or
+  `start > end` are rejected with an inline error message and no network call.
+- Export scope is **all matching historical actual-state rows in the chosen
+  export range** across all known node partitions. It is not limited to the
+  latest row per node shown in the dashboard table.
+- Export queries reuse the same authenticated Azure Tables access model as the
+  rest of the SPA. For each node partition, the SPA issues a filtered range
+  query against `actualstate` and follows Azure Table continuation tokens until
+  the partition's matching rows are exhausted.
+- The export action surfaces success/failure status in the Dashboard view.
+- Dashboard auto-refresh continues to own the latest-state table only. The
+  export operation snapshots the operator-selected time range and does not
+  derive its result set from the deduplicated dashboard rows.
+
+**File formats:**
+- **CSV:** Header row
+  `timestamp_ms,node_id,battery_mv,wake_rssi_dbm,firmware_version,firmware_abi_version,observed_schedule_interval_s,observed_current_program_hash,observed_assigned_program_hash`.
+  Missing optional fields are written as empty fields.
+- **JSONL:** One JSON object per line with keys `timestamp_ms`, `node_id`,
+  `battery_mv`, `wake_rssi_dbm`, `firmware_version`, `firmware_abi_version`,
+  `observed_schedule_interval_s`, `observed_current_program_hash`, and
+  `observed_assigned_program_hash`. Missing optional fields are written as
+  `null`.
 
 ---
 

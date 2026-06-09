@@ -232,6 +232,13 @@ const APP = {
   sensorChart: null,
   rotationFormOpen: null, // gateway ID when rotation form is expanded (WEB-1002)
 };
+const DASHBOARD_EXPORT_STATE = {
+  startMs: null,
+  endMs: null,
+  format: 'jsonl',
+  busy: false,
+  message: null,
+};
 
 const contentEl = document.getElementById('content');
 const authControlsEl = document.getElementById('auth-controls');
@@ -1190,8 +1197,11 @@ async function renderDashboard() {
     const gatewayDesiredRows = latestByPartition(filterGatewayRows(desiredRows));
     const gatewayCardHtml = await renderGatewayStatusCard(gatewayRows, gatewayDesiredRows);
 
-    const latestActual = latestByPartition(filterNodeRows(actualRows)).sort((left, right) => String(left.node_id || '').localeCompare(String(right.node_id || '')));
+    const nodeRows = filterNodeRows(actualRows);
+    const latestActual = latestByPartition(nodeRows).sort((left, right) => String(left.node_id || '').localeCompare(String(right.node_id || '')));
+    const nodePartitionKeys = [...new Set(nodeRows.map((row) => row.PartitionKey).filter(Boolean))];
     const desiredByPartition = new Map(latestByPartition(filterNodeRows(desiredRows)).map((row) => [row.PartitionKey, row]));
+    initializeDashboardExportRange();
 
     const rowsHtml = latestActual.map((actual) => {
       const desired = desiredByPartition.get(actual.PartitionKey);
@@ -1220,8 +1230,33 @@ async function renderDashboard() {
       `;
     }).join('');
 
+    const exportStartValue = formatDateTimeLocalInput(DASHBOARD_EXPORT_STATE.startMs);
+    const exportEndValue = formatDateTimeLocalInput(DASHBOARD_EXPORT_STATE.endMs);
+    const exportBusyAttr = DASHBOARD_EXPORT_STATE.busy ? ' disabled' : '';
+
     renderCard('Dashboard', `
       ${gatewayCardHtml}
+      <div class="panel dashboard-export-panel">
+        <div class="dashboard-export-row">
+          <label class="dashboard-export-field">
+            <span>Export start</span>
+            <input type="datetime-local" id="dashboard-export-start" value="${escapeHtml(exportStartValue)}"${exportBusyAttr}>
+          </label>
+          <label class="dashboard-export-field">
+            <span>Export end</span>
+            <input type="datetime-local" id="dashboard-export-end" value="${escapeHtml(exportEndValue)}"${exportBusyAttr}>
+          </label>
+          <label class="dashboard-export-field">
+            <span>Format</span>
+            <select id="dashboard-export-format"${exportBusyAttr}>
+              <option value="jsonl"${DASHBOARD_EXPORT_STATE.format === 'jsonl' ? ' selected' : ''}>.jsonl</option>
+              <option value="csv"${DASHBOARD_EXPORT_STATE.format === 'csv' ? ' selected' : ''}>.csv</option>
+            </select>
+          </label>
+          <button type="button" class="secondary" id="dashboard-export-button"${exportBusyAttr}>${DASHBOARD_EXPORT_STATE.busy ? 'Exporting…' : 'Export'}</button>
+        </div>
+        <div id="dashboard-export-status">${messageHtml(DASHBOARD_EXPORT_STATE.message)}</div>
+      </div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -1238,10 +1273,47 @@ async function renderDashboard() {
               <th>Status</th>
             </tr>
           </thead>
-          <tbody>${rowsHtml || '<tr><td colspan="9" class="muted">No node state found.</td></tr>'}</tbody>
+          <tbody>${rowsHtml || '<tr><td colspan="10" class="muted">No node state found.</td></tr>'}</tbody>
         </table>
       </div>
     `);
+
+    updateDashboardExportControls();
+
+    const exportStartInput = document.getElementById('dashboard-export-start');
+    if (exportStartInput) {
+      exportStartInput.addEventListener('change', () => {
+        DASHBOARD_EXPORT_STATE.startMs = parseDateTimeLocalInput(exportStartInput.value);
+      });
+    }
+
+    const exportEndInput = document.getElementById('dashboard-export-end');
+    if (exportEndInput) {
+      exportEndInput.addEventListener('change', () => {
+        DASHBOARD_EXPORT_STATE.endMs = parseDateTimeLocalInput(exportEndInput.value);
+      });
+    }
+
+    const exportFormatSelect = document.getElementById('dashboard-export-format');
+    if (exportFormatSelect) {
+      exportFormatSelect.addEventListener('change', () => {
+        DASHBOARD_EXPORT_STATE.format = exportFormatSelect.value === 'csv' ? 'csv' : 'jsonl';
+      });
+    }
+
+    const exportButton = document.getElementById('dashboard-export-button');
+    if (exportButton) {
+      exportButton.addEventListener('click', async () => {
+        DASHBOARD_EXPORT_STATE.startMs = parseDateTimeLocalInput(exportStartInput?.value || '');
+        DASHBOARD_EXPORT_STATE.endMs = parseDateTimeLocalInput(exportEndInput?.value || '');
+        DASHBOARD_EXPORT_STATE.format = exportFormatSelect?.value === 'csv' ? 'csv' : 'jsonl';
+        try {
+          await exportDeviceData(nodePartitionKeys);
+        } catch (error) {
+          setDashboardExportMessage('error', parseErrorPayload(error, 'Device export failed.'));
+        }
+      });
+    }
 
     // Attach inline rotation form handlers (WEB-1002, WEB-1009).
     attachRotationFormHandlers(gatewayRows);
@@ -1654,10 +1726,18 @@ function reverseTimestampHex(ms) {
   return (max - BigInt(ms)).toString(16).padStart(16, '0');
 }
 
-function sensorDataFilter(partitionKey, startMs, endMs) {
+function historyTableFilter(partitionKey, startMs, endMs) {
   const rkStart = reverseTimestampHex(endMs);
   const rkEnd = reverseTimestampHex(startMs);
   return `PartitionKey eq '${escapeODataStringLiteral(partitionKey)}' and RowKey ge '${rkStart}' and RowKey le '${rkEnd}~'`;
+}
+
+function sensorDataFilter(partitionKey, startMs, endMs) {
+  return historyTableFilter(partitionKey, startMs, endMs);
+}
+
+function actualStateFilter(partitionKey, startMs, endMs) {
+  return historyTableFilter(partitionKey, startMs, endMs);
 }
 
 function initializeSensorExportRange() {
@@ -1715,22 +1795,32 @@ function updateSensorExportControls() {
 }
 
 async function querySensorDataRange(partitionKeys, startMs, endMs, options = {}) {
+  return queryPartitionedTableRange(CONFIG.sensorDataTable, partitionKeys, startMs, endMs, {
+    ...options,
+    filterBuilder: sensorDataFilter,
+    repeatedTokenLabel: 'Sensor export failed',
+  });
+}
+
+async function queryPartitionedTableRange(tableName, partitionKeys, startMs, endMs, options = {}) {
   const token = await getToken();
   const {
     topPerPage = 1000,
     maxPagesPerPartition = 1,
     requireComplete = false,
+    filterBuilder = historyTableFilter,
+    repeatedTokenLabel = 'History export failed',
   } = options;
 
   const fetchPartition = async (pk) => {
-    const filter = sensorDataFilter(pk, startMs, endMs);
+    const filter = filterBuilder(pk, startMs, endMs);
     let nextPartitionKey = null;
     let nextRowKey = null;
     const entities = [];
     const seenContinuationTokens = new Set();
 
     for (let page = 0; page < maxPagesPerPartition; page++) {
-      const url = new URL(tableQueryUrl(CONFIG.sensorDataTable));
+      const url = new URL(tableQueryUrl(tableName));
       url.searchParams.set('$filter', filter);
       if (topPerPage != null) {
         url.searchParams.set('$top', String(topPerPage));
@@ -1751,7 +1841,7 @@ async function querySensorDataRange(partitionKeys, startMs, endMs, options = {})
 
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(`SensorData query failed (${response.status}): ${text}`);
+        throw new Error(`Table query failed for ${tableName} (${response.status}): ${text}`);
       }
 
       const payload = await response.json();
@@ -1767,7 +1857,7 @@ async function querySensorDataRange(partitionKeys, startMs, endMs, options = {})
       const continuationToken = `${nextPartitionKey}\n${nextRowKey || ''}`;
       if (seenContinuationTokens.has(continuationToken)) {
         throw new Error(
-          `Sensor export failed: Azure Tables returned a repeated continuation token for node partition ${pk}. Try again or narrow the export time range.`
+          `${repeatedTokenLabel}: Azure Tables returned a repeated continuation token for node partition ${pk}. Try again or narrow the export time range.`
         );
       }
       seenContinuationTokens.add(continuationToken);
@@ -1775,7 +1865,7 @@ async function querySensorDataRange(partitionKeys, startMs, endMs, options = {})
 
     if (requireComplete && nextPartitionKey) {
       throw new Error(
-        `Sensor export failed: Azure Tables returned more than ${maxPagesPerPartition} page(s) for node partition ${pk}. Narrow the export time range and try again.`
+        `${repeatedTokenLabel}: Azure Tables returned more than ${maxPagesPerPartition} page(s) for node partition ${pk}. Narrow the export time range and try again.`
       );
     }
 
@@ -1792,6 +1882,14 @@ async function querySensorDataRange(partitionKeys, startMs, endMs, options = {})
     }
   }
   return allEntities;
+}
+
+async function queryActualStateRange(partitionKeys, startMs, endMs, options = {}) {
+  return queryPartitionedTableRange(CONFIG.actualStateTable, partitionKeys, startMs, endMs, {
+    ...options,
+    filterBuilder: actualStateFilter,
+    repeatedTokenLabel: 'Device export failed',
+  });
 }
 
 function parseSensorReadingsForExport(decodedReadings) {
@@ -1817,6 +1915,121 @@ function csvEscape(value) {
 
 function sensorExportFilename(format) {
   return `sensor-data.${format}`;
+}
+
+function initializeDashboardExportRange() {
+  if (Number.isFinite(DASHBOARD_EXPORT_STATE.startMs) && Number.isFinite(DASHBOARD_EXPORT_STATE.endMs)) {
+    return;
+  }
+  const endMs = Date.now();
+  DASHBOARD_EXPORT_STATE.endMs = endMs;
+  DASHBOARD_EXPORT_STATE.startMs = endMs - TIME_RANGE_MS['24h'];
+}
+
+function setDashboardExportMessage(kind, text) {
+  DASHBOARD_EXPORT_STATE.message = { kind, text };
+  const host = contentEl.querySelector('#dashboard-export-status');
+  if (host) {
+    host.innerHTML = messageHtml(DASHBOARD_EXPORT_STATE.message);
+  }
+}
+
+function updateDashboardExportControls() {
+  const startInput = document.getElementById('dashboard-export-start');
+  const endInput = document.getElementById('dashboard-export-end');
+  const formatSelect = document.getElementById('dashboard-export-format');
+  const exportButton = document.getElementById('dashboard-export-button');
+  const disabled = DASHBOARD_EXPORT_STATE.busy;
+
+  if (startInput) startInput.disabled = disabled;
+  if (endInput) endInput.disabled = disabled;
+  if (formatSelect) formatSelect.disabled = disabled;
+  if (exportButton) {
+    exportButton.disabled = disabled;
+    exportButton.textContent = disabled ? 'Exporting…' : 'Export';
+  }
+}
+
+function buildDeviceExportCsv(rows) {
+  const header = [
+    'timestamp_ms',
+    'node_id',
+    'battery_mv',
+    'wake_rssi_dbm',
+    'firmware_version',
+    'firmware_abi_version',
+    'observed_schedule_interval_s',
+    'observed_current_program_hash',
+    'observed_assigned_program_hash',
+  ];
+  const lines = [header.join(',')];
+  const sorted = [...rows].sort((a, b) => (Number(a.timestamp_ms) || 0) - (Number(b.timestamp_ms) || 0));
+  for (const row of sorted) {
+    lines.push([
+      csvEscape(row.timestamp_ms ?? ''),
+      csvEscape(row.node_id ?? ''),
+      csvEscape(row.battery_mv ?? ''),
+      csvEscape(row.wake_rssi_dbm ?? ''),
+      csvEscape(row.firmware_version ?? ''),
+      csvEscape(row.firmware_abi_version ?? ''),
+      csvEscape(row.observed_schedule_interval_s ?? ''),
+      csvEscape(row.observed_current_program_hash ?? ''),
+      csvEscape(row.observed_assigned_program_hash ?? ''),
+    ].join(','));
+  }
+  return lines.join('\r\n');
+}
+
+function buildDeviceExportJsonl(rows) {
+  const sorted = [...rows].sort((a, b) => (Number(a.timestamp_ms) || 0) - (Number(b.timestamp_ms) || 0));
+  return sorted.map((row) => JSON.stringify({
+    timestamp_ms: row.timestamp_ms ?? null,
+    node_id: row.node_id ?? null,
+    battery_mv: row.battery_mv ?? null,
+    wake_rssi_dbm: row.wake_rssi_dbm ?? null,
+    firmware_version: row.firmware_version ?? null,
+    firmware_abi_version: row.firmware_abi_version ?? null,
+    observed_schedule_interval_s: row.observed_schedule_interval_s ?? null,
+    observed_current_program_hash: row.observed_current_program_hash ?? null,
+    observed_assigned_program_hash: row.observed_assigned_program_hash ?? null,
+  })).join('\n');
+}
+
+function deviceExportFilename(format) {
+  return `device-data.${format}`;
+}
+
+async function exportDeviceData(partitionKeys) {
+  const startMs = DASHBOARD_EXPORT_STATE.startMs;
+  const endMs = DASHBOARD_EXPORT_STATE.endMs;
+  const format = DASHBOARD_EXPORT_STATE.format;
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    throw new Error('Select both export start and end times.');
+  }
+  if (startMs > endMs) {
+    throw new Error('Export start time must be earlier than or equal to the end time.');
+  }
+
+  DASHBOARD_EXPORT_STATE.busy = true;
+  updateDashboardExportControls();
+
+  try {
+    const rows = await queryActualStateRange(partitionKeys, startMs, endMs, {
+      topPerPage: null,
+      maxPagesPerPartition: SENSOR_EXPORT_MAX_PAGES_PER_PARTITION,
+      requireComplete: true,
+    });
+    const content = format === 'csv' ? buildDeviceExportCsv(rows) : buildDeviceExportJsonl(rows);
+    const blob = new Blob([content], {
+      type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/x-ndjson',
+    });
+    downloadBlob(deviceExportFilename(format), blob);
+    setDashboardExportMessage('success', `Exported ${rows.length} device row(s) as .${format}.`);
+  } finally {
+    DASHBOARD_EXPORT_STATE.busy = false;
+    updateDashboardExportControls();
+  }
 }
 
 function buildSensorExportCsv(rows) {
@@ -2800,7 +3013,11 @@ if (typeof module !== 'undefined' && module.exports) {
     CONFIG,
     buildSensorExportCsv,
     buildSensorExportJsonl,
+    buildDeviceExportCsv,
+    buildDeviceExportJsonl,
     parseSensorReadingsForExport,
+    actualStateFilter,
+    queryActualStateRange,
     querySensorDataRange,
     sensorDataFilter,
   };

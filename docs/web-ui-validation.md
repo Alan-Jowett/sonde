@@ -56,6 +56,7 @@ and verifies one or more acceptance criteria.
 | WEB-0102 | T-WEB-0102, T-WEB-0102b, T-WEB-0102c |
 | WEB-0103 | T-WEB-0103, T-WEB-0103b |
 | WEB-0104 | T-WEB-0104, T-WEB-0105, T-WEB-0106, T-WEB-0107, T-WEB-0108 |
+| WEB-0105 | T-WEB-0109, T-WEB-0110, T-WEB-0111, T-WEB-0112, T-WEB-0113, T-WEB-0114, T-WEB-0115 |
 | WEB-0201 | T-WEB-0201, T-WEB-0201b, T-WEB-0201c |
 | WEB-0202 | T-WEB-0202, T-WEB-0202b, T-WEB-0202c |
 | WEB-0203 | T-WEB-0203, T-WEB-0203b |
@@ -129,7 +130,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-0101 | WEB-0101 | SPA renders node table from `actualstate` query | Manual/E2E | Planned |
 | T-WEB-0101b | WEB-0101 | Nodes sorted alphabetically by `node_id` | Manual/E2E | Planned |
 | T-WEB-0101c | WEB-0101 | Empty `actualstate` table displays "No node state found." | Manual/E2E | Planned |
-| T-WEB-0102 | WEB-0102 | All nine required columns displayed | Manual/E2E | Planned |
+| T-WEB-0102 | WEB-0102 | All ten required columns displayed | Manual/E2E | Planned |
 | T-WEB-0102b | WEB-0102 | Program hashes truncated to 8-char hex with full-hash tooltip | Manual/E2E | Planned |
 | T-WEB-0102c | WEB-0102 | "Last Seen" shows relative time (e.g., "5m ago") | Manual/E2E | Planned |
 | T-WEB-0103 | WEB-0103 | Auto-refresh polls at configured interval (30s default) | Manual | Planned |
@@ -137,6 +138,13 @@ and verifies one or more acceptance criteria.
 | T-WEB-0104 | WEB-0104 | Divergence indicator shown when desired-state row exists and actual differs from desired | Manual/E2E | Planned |
 | T-WEB-0105 | WEB-0104 | Unassigned program (desired row exists, program hash empty/missing) shows Diverged while node still reports a current program | Manual/E2E | Planned |
 | T-WEB-0106 | WEB-0104 | Node with no desired-state row shows Aligned even if actual state reports a program | Manual/E2E | Planned |
+| T-WEB-0109 | WEB-0105 | Dashboard exposes device-data export start/end controls, format selector, and Export action | Manual/E2E | Planned |
+| T-WEB-0110 | WEB-0105 | JSONL device-data export writes one JSON object per line with the required historical actual-state fields and `null` for missing optional values | Manual/E2E | Planned |
+| T-WEB-0111 | WEB-0105 | CSV device-data export writes the required header and empty fields for missing optional values | Manual/E2E | Planned |
+| T-WEB-0112 | WEB-0105 | Device-data export includes multiple historical `actualstate` rows for the same node within the selected range, not just the dashboard's latest row | Manual/E2E | Planned |
+| T-WEB-0113 | WEB-0105 | Device-data export follows Azure Table continuation tokens so ranges with more than 1000 rows per node export completely | Unit (JS) | Planned |
+| T-WEB-0114 | WEB-0105 | Missing or inverted device-data export start/end values are rejected with operator-visible feedback and no file download | Manual | Planned |
+| T-WEB-0115 | WEB-0105 | Device-data export includes matching rows from multiple known node partitions within the selected range and is unaffected by dashboard auto-refresh | Manual/E2E | Planned |
 
 ### 5.2  Desired State
 

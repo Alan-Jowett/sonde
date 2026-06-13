@@ -839,7 +839,7 @@ modal dialog.
 3. Custom display name replaces the default label in series picker, chart legend, and tooltip.
 4. Scale divisor transforms plotted values (e.g., 1000 converts 21500 → 21.5).
 5. Unit suffix appears in tooltip values and Y-axis title (when all series share the same suffix).
-6. Overrides persist in `localStorage` under `sonde_series_overrides`.
+6. Overrides persist as part of the active environment's Sensor Data preferences and round-trip through environment export/import.
 7. Reset to Default clears overrides and restores original label/scale.
 8. The dialog has focus trapping and closes on Escape.
 
@@ -877,6 +877,37 @@ start/end time range as either `.jsonl` or `.csv`.
 
 ---
 
+### WEB-0705  Sensor Data Preference Persistence
+
+**Priority:** Should
+**Source:** User request (2026-06-12), web-ui-design.md §10.4b
+**Confidence:** High
+
+**Description:**
+The SPA MUST persist operator Sensor Data display preferences with each
+environment so they survive page reloads, environment export/import, and
+self-hosted SPA updates.
+
+**Acceptance criteria:**
+
+1. Each environment stores a Sensor Data preferences object containing `viewMode`,
+   preset `timeRange`, `selectedSeries`, and per-series display overrides.
+2. `viewMode` persists only the graph/table preference; export-form inputs,
+   export status messages, and other transient UI state are not persisted.
+3. Switching environments activates that environment's saved Sensor Data
+   preferences without reusing preferences from a different environment.
+4. Imported environment files that omit Sensor Data preferences remain valid and
+   use default Sensor Data preferences after import.
+5. On first run after upgrading from the legacy global storage model, the SPA
+   migrates any existing `sonde_series_overrides` data into the active
+   environment's per-series overrides.
+6. Export/import distinguishes between an omitted `selectedSeries` field
+   ("use the default initial auto-selection behavior") and a present empty
+   `selectedSeries: []` field ("preserve an intentionally empty series
+   selection").
+
+---
+
 ## 12  Environment Manager (WEB-0800)
 
 ### WEB-0800  Runtime Environment Configuration
@@ -892,8 +923,11 @@ without redeployment. Environments are stored in `localStorage`.
 **Acceptance criteria:**
 
 1. No deploy-time configuration file is required for normal operation.
-2. Each environment stores: name, clientId, tenantId, storageAccount, functionAppName.
+2. Each environment stores: name, clientId, tenantId, storageAccount,
+   functionAppName, and Sensor Data preferences.
 3. Environments are persisted in `localStorage` under `sonde_environments`.
+4. Sensor Data preferences are scoped to their environment and do not leak
+   across environment switches.
 
 ---
 
@@ -909,7 +943,7 @@ Adding an environment MUST persist all fields to `localStorage` under the
 
 **Acceptance criteria:**
 
-1. All five fields (name, clientId, tenantId, storageAccount, functionAppName) are stored.
+1. All environment fields, including Sensor Data preferences, are stored.
 2. The environment is retrievable after page reload.
 
 ---
@@ -990,12 +1024,22 @@ when the `name` field is blank, and handles conflicts with existing environments
 2. Clicking Import opens a file picker accepting `.json` files.
 3. The file MUST contain `version` equal to integer `1`; files with missing, non-numeric, zero, or greater-than-1 version values are rejected with an error message.
 4. The four data fields (`clientId`, `tenantId`, `storageAccount`, `functionAppName`) are validated using the same rules as WEB-0802.
-5. If `name` is blank or missing, a name prompt is shown before saving.
-6. If `name` conflicts with an existing environment, a prompt offers overwrite or rename.
-7. Overwriting the active environment triggers the full re-initialization sequence defined by WEB-0806.
-8. Successfully imported environments appear in the environment list and are persisted to `localStorage`.
-9. Non-JSON files, files with missing required fields, and files with a top-level type other than object are rejected with a descriptive error message.
-10. Extra JSON properties beyond the defined schema are ignored.
+5. If an optional `sensorData` object is present, `viewMode` is limited to
+   `graph` or `table`, `timeRange` is limited to the supported preset values,
+   `selectedSeries` is an array of strings, and each per-series override value
+   has `displayName` string, finite numeric `scaleDivisor`, and `unitSuffix`
+   string fields when present.
+6. If `sensorData` is absent, or if `sensorData.selectedSeries` is absent, the
+   imported environment uses default Sensor Data preferences for the missing
+   portion.
+7. If `name` is blank or missing, a name prompt is shown before saving.
+8. If `name` conflicts with an existing environment, a prompt offers overwrite or rename.
+9. Importing over an existing environment replaces that environment's Sensor
+   Data preferences with the imported values.
+10. Overwriting the active environment triggers the full re-initialization sequence defined by WEB-0806.
+11. Successfully imported environments appear in the environment list and are persisted to `localStorage`.
+12. Non-JSON files, files with missing required fields, and files with a top-level type other than object are rejected with a descriptive error message.
+13. Extra JSON properties beyond the defined schema are ignored.
 
 ---
 
@@ -1015,7 +1059,8 @@ import-compatible schema.
 1. Each environment row has an Export button alongside Use, Edit, and Delete.
 2. Clicking Export triggers a browser download of a `.json` file.
 3. The filename is derived from the environment name with unsafe filesystem characters replaced; if the result is empty, the fallback filename `sonde-environment.json` is used.
-4. The exported file contains `version` (integer 1) and all five fields (`name`, `clientId`, `tenantId`, `storageAccount`, `functionAppName`).
+4. The exported file contains `version` (integer 1), the five environment
+   connection fields, and the environment's Sensor Data preferences.
 5. The exported file is valid for re-import via WEB-0807.
 
 ---
@@ -1055,6 +1100,8 @@ re-initialize authentication and refresh the active tab.
 5. MSAL-related `sessionStorage` keys are cleared (not all session storage).
 6. A new MSAL instance is initialized with the new environment's credentials.
 7. The active tab is re-rendered.
+8. The active environment's Sensor Data preferences are loaded before the
+   Sensor Data tab is rendered again.
 
 ---
 

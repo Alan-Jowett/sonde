@@ -16,13 +16,179 @@ const CONFIG = {
 
 const ENV_STORAGE_KEY = 'sonde_environments';
 const ENV_ACTIVE_KEY = 'sonde_active_environment';
+const LEGACY_SERIES_OVERRIDES_KEY = 'sonde_series_overrides';
+const SENSOR_VIEW_MODES = new Set(['graph', 'table']);
+const SENSOR_TIME_RANGES = new Set(['1h', '24h', '7d']);
+
+function createDefaultSensorDataPreferences() {
+  return {
+    viewMode: 'graph',
+    timeRange: '24h',
+    selectedSeries: [],
+    selectedSeriesInitialized: false,
+    seriesOverrides: {},
+  };
+}
+
+function normalizeSeriesOverrideEntry(entry) {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+    return null;
+  }
+  const displayName = typeof entry.displayName === 'string' ? entry.displayName : '';
+  const unitSuffix = typeof entry.unitSuffix === 'string' ? entry.unitSuffix : '';
+  const scaleDivisor = typeof entry.scaleDivisor === 'number' && Number.isFinite(entry.scaleDivisor)
+    ? entry.scaleDivisor
+    : 0;
+  if (!displayName && !unitSuffix && scaleDivisor === 0) {
+    return null;
+  }
+  return {
+    displayName,
+    scaleDivisor,
+    unitSuffix,
+  };
+}
+
+function normalizeSeriesOverrides(rawOverrides) {
+  if (typeof rawOverrides !== 'object' || rawOverrides === null || Array.isArray(rawOverrides)) {
+    return {};
+  }
+  const normalized = {};
+  for (const [seriesKey, entry] of Object.entries(rawOverrides)) {
+    const normalizedEntry = normalizeSeriesOverrideEntry(entry);
+    if (normalizedEntry) {
+      normalized[seriesKey] = normalizedEntry;
+    }
+  }
+  return normalized;
+}
+
+function sanitizeSensorDataPreferences(rawPreferences) {
+  const defaults = createDefaultSensorDataPreferences();
+  if (typeof rawPreferences !== 'object' || rawPreferences === null || Array.isArray(rawPreferences)) {
+    return defaults;
+  }
+  return {
+    viewMode: SENSOR_VIEW_MODES.has(rawPreferences.viewMode) ? rawPreferences.viewMode : defaults.viewMode,
+    timeRange: SENSOR_TIME_RANGES.has(rawPreferences.timeRange) ? rawPreferences.timeRange : defaults.timeRange,
+    selectedSeries: Array.isArray(rawPreferences.selectedSeries)
+      ? rawPreferences.selectedSeries.filter((value) => typeof value === 'string')
+      : [],
+    selectedSeriesInitialized: typeof rawPreferences.selectedSeriesInitialized === 'boolean'
+      ? rawPreferences.selectedSeriesInitialized
+      : Array.isArray(rawPreferences.selectedSeries),
+    seriesOverrides: normalizeSeriesOverrides(rawPreferences.seriesOverrides),
+  };
+}
+
+function validateImportedSensorDataPreferences(rawPreferences) {
+  if (rawPreferences === undefined) {
+    return createDefaultSensorDataPreferences();
+  }
+  if (typeof rawPreferences !== 'object' || rawPreferences === null || Array.isArray(rawPreferences)) {
+    throw new Error('`sensorData` must be a JSON object.');
+  }
+
+  const preferences = createDefaultSensorDataPreferences();
+
+  if ('viewMode' in rawPreferences) {
+    if (typeof rawPreferences.viewMode !== 'string' || !SENSOR_VIEW_MODES.has(rawPreferences.viewMode)) {
+      throw new Error('`sensorData.viewMode` must be `graph` or `table`.');
+    }
+    preferences.viewMode = rawPreferences.viewMode;
+  }
+
+  if ('timeRange' in rawPreferences) {
+    if (typeof rawPreferences.timeRange !== 'string' || !SENSOR_TIME_RANGES.has(rawPreferences.timeRange)) {
+      throw new Error('`sensorData.timeRange` must be one of `1h`, `24h`, or `7d`.');
+    }
+    preferences.timeRange = rawPreferences.timeRange;
+  }
+
+  if ('selectedSeries' in rawPreferences) {
+    if (!Array.isArray(rawPreferences.selectedSeries) || rawPreferences.selectedSeries.some((value) => typeof value !== 'string')) {
+      throw new Error('`sensorData.selectedSeries` must be an array of strings.');
+    }
+    preferences.selectedSeries = [...rawPreferences.selectedSeries];
+    preferences.selectedSeriesInitialized = true;
+  }
+
+  if ('seriesOverrides' in rawPreferences) {
+    if (typeof rawPreferences.seriesOverrides !== 'object' || rawPreferences.seriesOverrides === null || Array.isArray(rawPreferences.seriesOverrides)) {
+      throw new Error('`sensorData.seriesOverrides` must be an object.');
+    }
+    const overrides = {};
+    for (const [seriesKey, entry] of Object.entries(rawPreferences.seriesOverrides)) {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+        throw new Error(`\`sensorData.seriesOverrides.${seriesKey}\` must be an object.`);
+      }
+      if ('displayName' in entry && typeof entry.displayName !== 'string') {
+        throw new Error(`\`sensorData.seriesOverrides.${seriesKey}.displayName\` must be a string.`);
+      }
+      if ('unitSuffix' in entry && typeof entry.unitSuffix !== 'string') {
+        throw new Error(`\`sensorData.seriesOverrides.${seriesKey}.unitSuffix\` must be a string.`);
+      }
+      if ('scaleDivisor' in entry && (typeof entry.scaleDivisor !== 'number' || !Number.isFinite(entry.scaleDivisor))) {
+        throw new Error(`\`sensorData.seriesOverrides.${seriesKey}.scaleDivisor\` must be a finite number.`);
+      }
+      const normalizedEntry = normalizeSeriesOverrideEntry(entry);
+      if (normalizedEntry) {
+        overrides[seriesKey] = normalizedEntry;
+      }
+    }
+    preferences.seriesOverrides = overrides;
+  }
+
+  return preferences;
+}
+
+function normalizeEnvironmentRecord(env) {
+  return {
+    name: typeof env?.name === 'string' ? env.name : '',
+    clientId: typeof env?.clientId === 'string' ? env.clientId : '',
+    tenantId: typeof env?.tenantId === 'string' ? env.tenantId : '',
+    storageAccount: typeof env?.storageAccount === 'string' ? env.storageAccount : '',
+    functionAppName: typeof env?.functionAppName === 'string' ? env.functionAppName : '',
+    sensorData: sanitizeSensorDataPreferences(env?.sensorData),
+  };
+}
+
+function buildEnvironmentExportData(env) {
+  const normalizedEnv = normalizeEnvironmentRecord(env);
+  return {
+    version: 1,
+    name: normalizedEnv.name,
+    clientId: normalizedEnv.clientId,
+    tenantId: normalizedEnv.tenantId,
+    storageAccount: normalizedEnv.storageAccount,
+    functionAppName: normalizedEnv.functionAppName,
+    sensorData: {
+      viewMode: normalizedEnv.sensorData.viewMode,
+      timeRange: normalizedEnv.sensorData.timeRange,
+      ...(normalizedEnv.sensorData.selectedSeriesInitialized
+        ? { selectedSeries: normalizedEnv.sensorData.selectedSeries }
+        : {}),
+      seriesOverrides: normalizedEnv.sensorData.seriesOverrides,
+    },
+  };
+}
+
+function loadLegacySeriesOverrides() {
+  try {
+    const raw = localStorage.getItem(LEGACY_SERIES_OVERRIDES_KEY);
+    if (!raw) return {};
+    return normalizeSeriesOverrides(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+}
 
 function loadEnvironments() {
   try {
     const raw = localStorage.getItem(ENV_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.map(normalizeEnvironmentRecord) : [];
   } catch {
     return [];
   }
@@ -30,7 +196,7 @@ function loadEnvironments() {
 
 function saveEnvironments(envs) {
   try {
-    localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(envs));
+    localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(envs.map(normalizeEnvironmentRecord)));
     return true;
   } catch {
     return false;
@@ -63,13 +229,47 @@ function applyEnvironment(env) {
   CONFIG.functionAppName = env.functionAppName || '';
 }
 
+function activateEnvironmentState(name, env) {
+  clearRefresh();
+  resetTransientSensorDataState();
+  setActiveEnvironmentName(name);
+  applyEnvironment(env);
+  applySensorDataPreferences(env?.sensorData);
+  APP.msalApp = null;
+  APP.account = null;
+  clearMsalSessionStorage();
+  updateEnvironmentIndicator();
+}
+
 function loadActiveEnvironment() {
-  const envs = loadEnvironments();
+  let envs = loadEnvironments();
   const activeName = getActiveEnvironmentName();
-  const env = envs.find((e) => e.name === activeName) || envs[0] || null;
+  let env = envs.find((e) => e.name === activeName) || envs[0] || null;
   if (env) {
     setActiveEnvironmentName(env.name);
+    const legacyOverrides = loadLegacySeriesOverrides();
+    if (Object.keys(legacyOverrides).length > 0 && Object.keys(env.sensorData.seriesOverrides).length === 0) {
+      const envIndex = envs.findIndex((entry) => entry.name === env.name);
+      if (envIndex >= 0) {
+        const migratedEnv = normalizeEnvironmentRecord(envs[envIndex]);
+        migratedEnv.sensorData.seriesOverrides = legacyOverrides;
+        const migratedEnvs = [...envs];
+        migratedEnvs[envIndex] = migratedEnv;
+        if (saveEnvironments(migratedEnvs)) {
+          envs = migratedEnvs;
+          env = migratedEnv;
+          try {
+            localStorage.removeItem(LEGACY_SERIES_OVERRIDES_KEY);
+          } catch {
+            // Storage may be unavailable; keep using environment-scoped preferences.
+          }
+        } else {
+          showViewMessage('error', 'Failed to migrate Sensor Data preferences. Browser storage may be disabled or full.');
+        }
+      }
+    }
     applyEnvironment(env);
+    applySensorDataPreferences(env.sensorData);
   }
   return env;
 }
@@ -138,6 +338,7 @@ function handleImportedJson(text) {
   };
   const validationError = validateEnvironmentFields(fields);
   if (validationError) throw new Error(validationError);
+  const sensorData = validateImportedSensorDataPreferences(data.sensorData);
 
   let name = typeof data.name === 'string' ? data.name.trim() : '';
   if (!name) {
@@ -162,7 +363,7 @@ function handleImportedJson(text) {
     }
   }
 
-  const envData = { name, ...fields };
+  const envData = { name, ...fields, sensorData };
   const idx = envs.findIndex((e) => e.name === name);
   if (idx >= 0) {
     envs[idx] = envData;
@@ -188,14 +389,7 @@ function handleImportedJson(text) {
 }
 
 function exportEnvironment(env) {
-  const data = {
-    version: 1,
-    name: env.name || '',
-    clientId: env.clientId || '',
-    tenantId: env.tenantId || '',
-    storageAccount: env.storageAccount || '',
-    functionAppName: env.functionAppName || '',
-  };
+  const data = buildEnvironmentExportData(env);
   const json = JSON.stringify(data, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
 
@@ -1656,28 +1850,20 @@ async function renderPrograms() {
 
 // 8. Sensor Data Tab (WEB-0700)
 
-// Series display overrides persisted in localStorage.
-// Shape: { [seriesKey]: { displayName, scaleDivisor, unitSuffix } }
-const SERIES_OVERRIDES_KEY = 'sonde_series_overrides';
+// Series display overrides are stored with the active environment's Sensor Data
+// preferences rather than in a global key.
 
 function loadSeriesOverrides() {
-  try {
-    const raw = localStorage.getItem(SERIES_OVERRIDES_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
-    return parsed;
-  } catch { return {}; }
+  const envs = loadEnvironments();
+  const activeName = getActiveEnvironmentName();
+  const env = envs.find((entry) => entry.name === activeName) || envs[0] || null;
+  return env ? normalizeSeriesOverrides(env.sensorData.seriesOverrides) : {};
 }
 
 function saveSeriesOverrides(overrides) {
-  try {
-    localStorage.setItem(SERIES_OVERRIDES_KEY, JSON.stringify(overrides));
-  } catch {
-    // Storage disabled or quota exceeded — surface to caller via return value
-    return false;
-  }
-  return true;
+  return updateActiveEnvironmentSensorData((sensorData) => {
+    sensorData.seriesOverrides = normalizeSeriesOverrides(overrides);
+  });
 }
 
 function getSeriesDisplayLabel(series, overrides) {
@@ -1699,6 +1885,72 @@ function getSeriesUnitSuffix(seriesKey, overrides) {
   const ov = overrides || loadSeriesOverrides();
   const o = ov[seriesKey];
   return (o && o.unitSuffix) ? o.unitSuffix : '';
+}
+
+function applySensorDataPreferences(preferences) {
+  const normalized = sanitizeSensorDataPreferences(preferences);
+  SENSOR_STATE.timeRange = normalized.timeRange;
+  SENSOR_STATE.viewMode = normalized.viewMode;
+  SENSOR_STATE.selectedSeries = new Set(normalized.selectedSeries);
+  SENSOR_STATE.seriesInitialized = normalized.selectedSeriesInitialized === true;
+}
+
+function updateActiveEnvironmentSensorData(updater) {
+  const activeName = getActiveEnvironmentName();
+  if (!activeName) {
+    return false;
+  }
+  const envs = loadEnvironments();
+  const envIndex = envs.findIndex((entry) => entry.name === activeName);
+  if (envIndex < 0) {
+    return false;
+  }
+  const nextEnv = normalizeEnvironmentRecord(envs[envIndex]);
+  const nextSensorData = sanitizeSensorDataPreferences(nextEnv.sensorData);
+  updater(nextSensorData);
+  nextEnv.sensorData = nextSensorData;
+  const nextEnvs = [...envs];
+  nextEnvs[envIndex] = nextEnv;
+  return saveEnvironments(nextEnvs);
+}
+
+function persistActiveSensorDataPreferences() {
+  const currentOverrides = loadSeriesOverrides();
+  return updateActiveEnvironmentSensorData((sensorData) => {
+    sensorData.viewMode = SENSOR_VIEW_MODES.has(SENSOR_STATE.viewMode) ? SENSOR_STATE.viewMode : 'graph';
+    sensorData.timeRange = SENSOR_TIME_RANGES.has(SENSOR_STATE.timeRange) ? SENSOR_STATE.timeRange : '24h';
+    sensorData.selectedSeries = [...SENSOR_STATE.selectedSeries].filter((value) => typeof value === 'string');
+    sensorData.selectedSeriesInitialized = SENSOR_STATE.seriesInitialized === true || sensorData.selectedSeries.length > 0;
+    sensorData.seriesOverrides = normalizeSeriesOverrides(currentOverrides);
+  });
+}
+
+function persistActiveSensorDataPreferencesOrWarn() {
+  if (persistActiveSensorDataPreferences()) {
+    return true;
+  }
+  showViewMessage('error', 'Failed to save Sensor Data preferences. Browser storage may be disabled or full.');
+  return false;
+}
+
+function resetTransientSensorDataState() {
+  SENSOR_STATE.autoRefresh = false;
+  SENSOR_STATE.exportStartMs = null;
+  SENSOR_STATE.exportEndMs = null;
+  SENSOR_STATE.exportFormat = 'jsonl';
+  SENSOR_STATE.exportBusy = false;
+  SENSOR_STATE.exportMessage = null;
+}
+
+function pruneUnavailableSelectedSeries(selectedSeries, currentPlottableKeys) {
+  let changed = false;
+  for (const key of [...selectedSeries]) {
+    if (!currentPlottableKeys.has(key)) {
+      selectedSeries.delete(key);
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 const SENSOR_STATE = {
@@ -2520,23 +2772,17 @@ async function renderSensorData() {
     const currentPlottableKeys = new Set(
       allSeries.filter((s) => s.points.length > 0).map((s) => s.key)
     );
-    const sizeBefore = SENSOR_STATE.selectedSeries.size;
-    for (const key of [...SENSOR_STATE.selectedSeries]) {
-      if (!currentPlottableKeys.has(key)) {
-        SENSOR_STATE.selectedSeries.delete(key);
-      }
-    }
-    const prunedCount = sizeBefore - SENSOR_STATE.selectedSeries.size;
-    if (SENSOR_STATE.selectedSeries.size === 0 && prunedCount > 0) {
-      SENSOR_STATE.seriesInitialized = false;
-    }
-
+    let selectionChanged = pruneUnavailableSelectedSeries(SENSOR_STATE.selectedSeries, currentPlottableKeys);
     if (!SENSOR_STATE.seriesInitialized && currentPlottableKeys.size > 0) {
       SENSOR_STATE.seriesInitialized = true;
       const plottable = allSeries.filter((s) => s.points.length > 0);
       for (const s of plottable.slice(0, Math.min(plottable.length, 5))) {
         SENSOR_STATE.selectedSeries.add(s.key);
       }
+      selectionChanged = true;
+    }
+    if (selectionChanged) {
+      persistActiveSensorDataPreferencesOrWarn();
     }
 
     const timeRangeButtons = Object.keys(TIME_RANGE_MS).map((range) => {
@@ -2625,6 +2871,7 @@ async function renderSensorData() {
     for (const btn of contentEl.querySelectorAll('.sensor-range-btn')) {
       btn.addEventListener('click', async () => {
         SENSOR_STATE.timeRange = btn.dataset.range;
+        persistActiveSensorDataPreferencesOrWarn();
         await renderSensorData();
       });
     }
@@ -2632,6 +2879,7 @@ async function renderSensorData() {
     for (const btn of contentEl.querySelectorAll('.sensor-view-btn')) {
       btn.addEventListener('click', async () => {
         SENSOR_STATE.viewMode = btn.dataset.view;
+        persistActiveSensorDataPreferencesOrWarn();
         await renderSensorData();
       });
     }
@@ -2648,6 +2896,7 @@ async function renderSensorData() {
         } else {
           SENSOR_STATE.selectedSeries.delete(cb.value);
         }
+        persistActiveSensorDataPreferencesOrWarn();
         if (SENSOR_STATE.viewMode === 'graph') {
           renderSensorChart(allSeries);
         }
@@ -2808,15 +3057,9 @@ function clearMsalSessionStorage() {
 }
 
 async function switchEnvironment(name) {
-  clearRefresh();
-  setActiveEnvironmentName(name);
   const envs = loadEnvironments();
   const env = envs.find((e) => e.name === name);
-  applyEnvironment(env);
-  APP.msalApp = null;
-  APP.account = null;
-  clearMsalSessionStorage();
-  updateEnvironmentIndicator();
+  activateEnvironmentState(name, env);
   await initMsal();
   await renderActiveTab();
 }
@@ -2903,6 +3146,8 @@ function showEnvironmentManager() {
         } else {
           clearRefresh();
           setActiveEnvironmentName('');
+          applySensorDataPreferences(createDefaultSensorDataPreferences());
+          resetTransientSensorDataState();
           CONFIG.msalClientId = '';
           CONFIG.msalAuthority = '';
           CONFIG.storageAccount = '';
@@ -2981,7 +3226,14 @@ function showEnvironmentForm(existingEnv) {
       return;
     }
 
-    const envData = { name, clientId, tenantId, storageAccount, functionAppName };
+    const envData = {
+      name,
+      clientId,
+      tenantId,
+      storageAccount,
+      functionAppName,
+      sensorData: existingEnv?.sensorData || createDefaultSensorDataPreferences(),
+    };
     if (isEdit) {
       const idx = envs.findIndex((e) => e.name === name);
       if (idx >= 0) envs[idx] = envData;
@@ -3019,7 +3271,20 @@ if (typeof module !== 'undefined' && module.exports) {
     actualStateFilter,
     queryActualStateRange,
     querySensorDataRange,
+    buildEnvironmentExportData,
+    activateEnvironmentState,
+    createDefaultSensorDataPreferences,
+    handleImportedJson,
+    loadActiveEnvironment,
+    loadEnvironments,
+    normalizeEnvironmentRecord,
+    persistActiveSensorDataPreferences,
+    pruneUnavailableSelectedSeries,
+    sanitizeSensorDataPreferences,
     sensorDataFilter,
+    SENSOR_STATE,
+    saveSeriesOverrides,
+    validateImportedSensorDataPreferences,
   };
 }
 

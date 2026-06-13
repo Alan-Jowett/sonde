@@ -2780,6 +2780,10 @@ async function renderSensorData() {
       allSeries.filter((s) => s.points.length > 0).map((s) => s.key)
     );
     let selectionChanged = pruneUnavailableSelectedSeries(SENSOR_STATE.selectedSeries, currentPlottableKeys);
+    if (selectionChanged && SENSOR_STATE.selectedSeries.size === 0) {
+      SENSOR_STATE.seriesInitialized = false;
+    }
+
     if (!SENSOR_STATE.seriesInitialized && currentPlottableKeys.size > 0) {
       SENSOR_STATE.seriesInitialized = true;
       const plottable = allSeries.filter((s) => s.points.length > 0);

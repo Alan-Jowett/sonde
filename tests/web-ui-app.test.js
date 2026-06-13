@@ -774,6 +774,20 @@ test('pruneUnavailableSelectedSeries removes stale saved selections without touc
   assert.deepEqual([...selectedSeries], ['keep']);
 });
 
+test('pruning all stale saved selections re-enables default auto-selection behavior', () => {
+  app.SENSOR_STATE.selectedSeries = new Set(['stale-series']);
+  app.SENSOR_STATE.seriesInitialized = true;
+
+  const changed = app.pruneUnavailableSelectedSeries(app.SENSOR_STATE.selectedSeries, new Set());
+  if (changed && app.SENSOR_STATE.selectedSeries.size === 0) {
+    app.SENSOR_STATE.seriesInitialized = false;
+  }
+
+  assert.equal(changed, true);
+  assert.deepEqual([...app.SENSOR_STATE.selectedSeries], []);
+  assert.equal(app.SENSOR_STATE.seriesInitialized, false);
+});
+
 test('buildEnvironmentExportData and import validation distinguish omitted and empty selectedSeries', () => {
   const defaultExport = app.buildEnvironmentExportData({
     name: 'prod',

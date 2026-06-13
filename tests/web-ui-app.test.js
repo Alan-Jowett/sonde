@@ -41,6 +41,7 @@ function makeElement() {
     remove() {},
     appendChild() {},
     removeChild() {},
+    insertAdjacentHTML() {},
     addEventListener() {},
     querySelector() { return null; },
     querySelectorAll() { return []; },
@@ -48,10 +49,17 @@ function makeElement() {
   };
 }
 
+function resetStorages() {
+  global.localStorage = makeStorage();
+  global.sessionStorage = makeStorage();
+}
+
 global.window = {
   __SONDE_TEST__: true,
   opener: null,
   location: { origin: 'https://example.test', pathname: '/', hash: '' },
+  prompt: () => null,
+  confirm: () => false,
 };
 global.document = {
   addEventListener() {},
@@ -60,13 +68,30 @@ global.document = {
   createElement() { return makeElement(); },
   body: makeElement(),
 };
-global.localStorage = makeStorage();
-global.sessionStorage = makeStorage();
+resetStorages();
 global.crypto = webcrypto;
 global.atob = (value) => Buffer.from(value, 'base64').toString('binary');
 global.btoa = (value) => Buffer.from(value, 'binary').toString('base64');
 
 const app = require(path.resolve(__dirname, '..', 'deploy', 'web-ui', 'app.js'));
+
+test.beforeEach(() => {
+  resetStorages();
+  global.window.confirm = () => false;
+  global.window.prompt = () => null;
+  app.SENSOR_STATE.timeRange = '24h';
+  app.SENSOR_STATE.viewMode = 'graph';
+  app.SENSOR_STATE.selectedSeries = new Set();
+  app.SENSOR_STATE.seriesInitialized = false;
+  app.SENSOR_STATE.autoRefresh = false;
+  app.SENSOR_STATE.exportStartMs = null;
+  app.SENSOR_STATE.exportEndMs = null;
+  app.SENSOR_STATE.exportFormat = 'jsonl';
+  app.SENSOR_STATE.exportBusy = false;
+  app.SENSOR_STATE.exportMessage = null;
+  app.APP.account = null;
+  app.APP.msalApp = null;
+});
 
 test('sensorDataFilter uses reverse-timestamp bounds for the requested range', () => {
   const max = BigInt('0xffffffffffffffff');
@@ -428,4 +453,396 @@ test('querySensorDataRange rejects repeated continuation tokens for complete exp
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test('loadActiveEnvironment migrates legacy series overrides into the active environment', () => {
+  localStorage.setItem('sonde_environments', JSON.stringify([
+    {
+      name: 'prod',
+      clientId: 'client',
+      tenantId: 'tenant',
+      storageAccount: 'storage',
+      functionAppName: 'func',
+    },
+  ]));
+  localStorage.setItem('sonde_active_environment', 'prod');
+  localStorage.setItem('sonde_series_overrides', JSON.stringify({
+    'n:abc|deadbeef|temp_mc': {
+      displayName: 'Office Temperature',
+      scaleDivisor: 1000,
+      unitSuffix: '°C',
+    },
+  }));
+
+  const env = app.loadActiveEnvironment();
+  const stored = app.loadEnvironments();
+
+  assert.equal(env.name, 'prod');
+  assert.deepEqual(stored[0].sensorData.seriesOverrides, {
+    'n:abc|deadbeef|temp_mc': {
+      displayName: 'Office Temperature',
+      scaleDivisor: 1000,
+      unitSuffix: '°C',
+    },
+  });
+  assert.equal(localStorage.getItem('sonde_series_overrides'), null);
+  assert.equal(app.SENSOR_STATE.viewMode, 'graph');
+  assert.equal(app.SENSOR_STATE.timeRange, '24h');
+});
+
+test('handleImportedJson overwrites sensorData preferences instead of merging them', () => {
+  global.window.confirm = () => true;
+  localStorage.setItem('sonde_environments', JSON.stringify([
+    {
+      name: 'other',
+      clientId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      tenantId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+      storageAccount: 'otherstorage',
+      functionAppName: 'other-func',
+      sensorData: {
+        viewMode: 'graph',
+        timeRange: '24h',
+        selectedSeries: ['keep-me'],
+        seriesOverrides: {
+          'old|series|key': { displayName: 'Old', scaleDivisor: 1, unitSuffix: 'x' },
+        },
+      },
+    },
+    {
+      name: 'prod',
+      clientId: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+      tenantId: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+      sensorData: {
+        viewMode: 'graph',
+        timeRange: '24h',
+        selectedSeries: ['old-series'],
+        seriesOverrides: {
+          'old-series': { displayName: 'Old', scaleDivisor: 10, unitSuffix: 'x' },
+        },
+      },
+    },
+  ]));
+  localStorage.setItem('sonde_active_environment', 'other');
+
+  app.handleImportedJson(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'importedprod',
+    functionAppName: 'imported-func',
+    sensorData: {
+      viewMode: 'table',
+      timeRange: '7d',
+      selectedSeries: ['new-series'],
+      selectedSeriesInitialized: true,
+      seriesOverrides: {
+        'new-series': {
+          displayName: 'Imported',
+          scaleDivisor: 1000,
+          unitSuffix: '°C',
+        },
+      },
+    },
+  }));
+
+  const prod = app.loadEnvironments().find((env) => env.name === 'prod');
+  assert.equal(prod.storageAccount, 'importedprod');
+  assert.deepEqual(prod.sensorData, {
+    viewMode: 'table',
+    timeRange: '7d',
+    selectedSeries: ['new-series'],
+    selectedSeriesInitialized: true,
+    seriesOverrides: {
+      'new-series': {
+        displayName: 'Imported',
+        scaleDivisor: 1000,
+        unitSuffix: '°C',
+      },
+    },
+  });
+});
+
+test('handleImportedJson initializes default sensorData preferences when omitted', () => {
+  app.handleImportedJson(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+  }));
+
+  assert.deepEqual(app.loadEnvironments()[0].sensorData, app.createDefaultSensorDataPreferences());
+});
+
+test('handleImportedJson preserves an explicit empty selectedSeries preference', () => {
+  localStorage.setItem('sonde_environments', JSON.stringify([
+    {
+      name: 'other',
+      clientId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      tenantId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+      storageAccount: 'otherstorage',
+      functionAppName: 'other-func',
+      sensorData: app.createDefaultSensorDataPreferences(),
+    },
+  ]));
+  localStorage.setItem('sonde_active_environment', 'other');
+
+  app.handleImportedJson(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: {
+      viewMode: 'graph',
+      timeRange: '24h',
+      selectedSeries: [],
+      seriesOverrides: {},
+    },
+  }));
+
+  localStorage.setItem('sonde_active_environment', 'prod');
+  app.loadActiveEnvironment();
+
+  const prod = app.loadEnvironments().find((env) => env.name === 'prod');
+  assert.deepEqual(prod.sensorData, {
+    viewMode: 'graph',
+    timeRange: '24h',
+    selectedSeries: [],
+    selectedSeriesInitialized: true,
+    seriesOverrides: {},
+  });
+  assert.deepEqual([...app.SENSOR_STATE.selectedSeries], []);
+  assert.equal(app.SENSOR_STATE.seriesInitialized, true);
+});
+
+test('validateImportedSensorDataPreferences rejects malformed selectedSeries arrays', () => {
+  assert.throws(
+    () => app.validateImportedSensorDataPreferences({ selectedSeries: ['ok', 42] }),
+    /selectedSeries/,
+  );
+});
+
+test('validateImportedSensorDataPreferences rejects reserved series override keys', () => {
+  const payload = JSON.parse('{"seriesOverrides":{"__proto__":{"displayName":"bad"}}}');
+  assert.throws(
+    () => app.validateImportedSensorDataPreferences(payload),
+    /reserved key/,
+  );
+});
+
+test('persistActiveSensorDataPreferences stores environment-scoped Sensor Data view state', () => {
+  localStorage.setItem('sonde_environments', JSON.stringify([
+    {
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+      sensorData: app.createDefaultSensorDataPreferences(),
+    },
+  ]));
+  localStorage.setItem('sonde_active_environment', 'prod');
+
+  assert.equal(app.saveSeriesOverrides({
+    'n:abc|deadbeef|temp_mc': {
+      displayName: 'Temp',
+      scaleDivisor: 1000,
+      unitSuffix: '°C',
+    },
+  }), true);
+
+  app.SENSOR_STATE.viewMode = 'table';
+  app.SENSOR_STATE.timeRange = '7d';
+  app.SENSOR_STATE.selectedSeries = new Set(['n:abc|deadbeef|temp_mc']);
+
+  assert.equal(app.persistActiveSensorDataPreferences(), true);
+
+  assert.deepEqual(app.loadEnvironments()[0].sensorData, {
+    viewMode: 'table',
+    timeRange: '7d',
+    selectedSeries: ['n:abc|deadbeef|temp_mc'],
+    selectedSeriesInitialized: true,
+    seriesOverrides: {
+      'n:abc|deadbeef|temp_mc': {
+        displayName: 'Temp',
+        scaleDivisor: 1000,
+        unitSuffix: '°C',
+      },
+    },
+  });
+});
+
+test('clearPersistedSelectedSeriesPreference restores default-selection semantics', () => {
+  localStorage.setItem('sonde_environments', JSON.stringify([
+    {
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+      sensorData: {
+        viewMode: 'graph',
+        timeRange: '24h',
+        selectedSeries: ['stale-series'],
+        selectedSeriesInitialized: true,
+        seriesOverrides: {},
+      },
+    },
+  ]));
+  localStorage.setItem('sonde_active_environment', 'prod');
+
+  assert.equal(app.clearPersistedSelectedSeriesPreference(), true);
+  assert.deepEqual(app.loadEnvironments()[0].sensorData, {
+    viewMode: 'graph',
+    timeRange: '24h',
+    selectedSeries: [],
+    selectedSeriesInitialized: false,
+    seriesOverrides: {},
+  });
+});
+
+test('buildEnvironmentExportData includes environment-scoped Sensor Data preferences', () => {
+  assert.deepEqual(
+    app.buildEnvironmentExportData({
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+      sensorData: {
+        viewMode: 'table',
+        timeRange: '1h',
+        selectedSeries: ['series-a'],
+        seriesOverrides: {
+          'series-a': { displayName: 'Series A', scaleDivisor: 2, unitSuffix: 'V' },
+        },
+      },
+    }),
+    {
+      version: 1,
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+      sensorData: {
+        viewMode: 'table',
+        timeRange: '1h',
+        selectedSeries: ['series-a'],
+        seriesOverrides: {
+          'series-a': { displayName: 'Series A', scaleDivisor: 2, unitSuffix: 'V' },
+        },
+      },
+    },
+  );
+});
+
+test('activateEnvironmentState loads saved Sensor Data preferences for the selected environment', () => {
+  app.SENSOR_STATE.timeRange = '24h';
+  app.SENSOR_STATE.viewMode = 'graph';
+  app.SENSOR_STATE.selectedSeries = new Set(['old-series']);
+  app.SENSOR_STATE.seriesInitialized = true;
+
+  app.activateEnvironmentState('prod', {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: {
+      viewMode: 'table',
+      timeRange: '7d',
+      selectedSeries: ['new-series'],
+      selectedSeriesInitialized: true,
+      seriesOverrides: {},
+    },
+  });
+
+  assert.equal(app.CONFIG.storageAccount, 'prodstorage');
+  assert.equal(app.SENSOR_STATE.viewMode, 'table');
+  assert.equal(app.SENSOR_STATE.timeRange, '7d');
+  assert.deepEqual([...app.SENSOR_STATE.selectedSeries], ['new-series']);
+  assert.equal(app.SENSOR_STATE.seriesInitialized, true);
+});
+
+test('activateEnvironmentState resets transient Sensor Data state on environment switch', () => {
+  app.SENSOR_STATE.autoRefresh = true;
+  app.SENSOR_STATE.exportStartMs = 111;
+  app.SENSOR_STATE.exportEndMs = 222;
+  app.SENSOR_STATE.exportFormat = 'csv';
+  app.SENSOR_STATE.exportBusy = true;
+  app.SENSOR_STATE.exportMessage = { kind: 'error', text: 'stale' };
+
+  app.activateEnvironmentState('prod', {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: app.createDefaultSensorDataPreferences(),
+  });
+
+  assert.equal(app.SENSOR_STATE.autoRefresh, false);
+  assert.equal(app.SENSOR_STATE.exportStartMs, null);
+  assert.equal(app.SENSOR_STATE.exportEndMs, null);
+  assert.equal(app.SENSOR_STATE.exportFormat, 'jsonl');
+  assert.equal(app.SENSOR_STATE.exportBusy, false);
+  assert.equal(app.SENSOR_STATE.exportMessage, null);
+});
+
+test('pruneUnavailableSelectedSeries removes stale saved selections without touching valid ones', () => {
+  const selectedSeries = new Set(['keep', 'drop']);
+  const changed = app.pruneUnavailableSelectedSeries(selectedSeries, new Set(['keep']));
+  assert.equal(changed, true);
+  assert.deepEqual([...selectedSeries], ['keep']);
+});
+
+test('pruning all stale saved selections re-enables default auto-selection behavior', () => {
+  app.SENSOR_STATE.selectedSeries = new Set(['stale-series']);
+  app.SENSOR_STATE.seriesInitialized = true;
+
+  const changed = app.pruneUnavailableSelectedSeries(app.SENSOR_STATE.selectedSeries, new Set());
+  if (changed && app.SENSOR_STATE.selectedSeries.size === 0) {
+    app.SENSOR_STATE.seriesInitialized = false;
+  }
+
+  assert.equal(changed, true);
+  assert.deepEqual([...app.SENSOR_STATE.selectedSeries], []);
+  assert.equal(app.SENSOR_STATE.seriesInitialized, false);
+});
+
+test('buildEnvironmentExportData and import validation distinguish omitted and empty selectedSeries', () => {
+  const defaultExport = app.buildEnvironmentExportData({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: app.createDefaultSensorDataPreferences(),
+  });
+  assert.equal('selectedSeries' in defaultExport.sensorData, false);
+  assert.equal(app.validateImportedSensorDataPreferences(defaultExport.sensorData).selectedSeriesInitialized, false);
+
+  const emptySelectionExport = app.buildEnvironmentExportData({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: {
+      viewMode: 'graph',
+      timeRange: '24h',
+      selectedSeries: [],
+      selectedSeriesInitialized: true,
+      seriesOverrides: {},
+    },
+  });
+  assert.deepEqual(emptySelectionExport.sensorData.selectedSeries, []);
+  assert.equal(app.validateImportedSensorDataPreferences(emptySelectionExport.sensorData).selectedSeriesInitialized, true);
 });

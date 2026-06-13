@@ -421,17 +421,52 @@ A **Reset to Default** button clears overrides for the series.
 
 #### Persistence
 
-Overrides are stored in `localStorage` under the key
-`sonde_series_overrides` as a JSON object keyed by series key
+Overrides are stored in the active environment's `sensorData.seriesOverrides`
+map as a JSON object keyed by series key
 (`partitionKey|programHash|readingName`). Each entry has the shape:
 
 ```json
 { "displayName": "string", "scaleDivisor": number, "unitSuffix": "string" }
 ```
 
-Overrides survive page reloads and browser restarts. They are scoped to
-the browser origin (per localStorage rules) and are not shared across
-devices.
+Overrides survive page reloads and browser restarts. They are scoped to the
+active environment and round-trip through the environment import/export schema.
+
+### 10.4b  Sensor Data preference persistence (WEB-0705)
+
+The Sensor Data tab persists operator preferences as part of the active
+environment record rather than in a global Sensor Data storage bucket.
+
+**Persisted fields:**
+- `viewMode` — `graph` or `table`
+- `timeRange` — one of the supported preset ranges (`1h`, `24h`, `7d`)
+- `selectedSeries` — array of series keys
+  (`partitionKey|programHash|readingName`)
+- `selectedSeriesInitialized` — internal local-storage-only boolean that
+  distinguishes "no explicit series selection has been saved yet" from
+  "the operator intentionally saved an empty selection"
+- `seriesOverrides` — the WEB-0703 per-series override map
+
+**Behavior:**
+- Sensor Data preference changes are saved back into the active environment's
+  object in `sonde_environments`.
+- When the SPA loads or the user switches environments, the Sensor Data tab
+  restores the active environment's saved preferences before rendering.
+- Export/import distinguishes between omitted and empty `selectedSeries`:
+  omitting the field means "no explicit selection has been saved yet, so use the
+  default initial auto-selection behavior", while `selectedSeries: []` means
+  "preserve an intentionally empty graph selection".
+- If a saved `selectedSeries` entry does not correspond to any currently
+  available series, the renderer prunes it without error.
+- Export-form fields (`start`, `end`, `format`), status banners, and other
+  transient Sensor Data UI state are not persisted.
+
+**Legacy migration:**
+- On the first run after this feature ships, if the active environment has no
+  `sensorData.seriesOverrides` data but the legacy global
+  `sonde_series_overrides` key exists, the SPA copies those overrides into the
+  active environment and then stops using the legacy global key for normal
+  reads/writes.
 
 ### 10.5  Sensor data export (WEB-0704)
 
@@ -491,7 +526,14 @@ Each environment is a JSON object stored in `localStorage`:
   "clientId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "storageAccount": "mystorageaccount",
-  "functionAppName": "sonde-decoder-xxxx"
+  "functionAppName": "sonde-decoder-xxxx",
+  "sensorData": {
+    "viewMode": "graph",
+    "timeRange": "24h",
+    "selectedSeries": [],
+    "selectedSeriesInitialized": false,
+    "seriesOverrides": {}
+  }
 }
 ```
 
@@ -514,16 +556,30 @@ for forward compatibility:
   "clientId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "storageAccount": "mystorageaccount",
-  "functionAppName": "sonde-decoder-xxxx"
+  "functionAppName": "sonde-decoder-xxxx",
+  "sensorData": {
+    "viewMode": "graph",
+    "timeRange": "24h",
+    "selectedSeries": [],
+    "seriesOverrides": {}
+  }
 }
 ```
 
 The `version` field MUST be integer `1`. Files with any other version value are
-rejected. Extra properties beyond the defined schema are silently ignored to
-allow forward-compatible extensions.
+rejected. The `sensorData` object is optional on import for backward
+compatibility with previously exported files and Azure companion bootstrap
+output; when omitted, the SPA uses default Sensor Data preferences. Within
+`sensorData`, `selectedSeries` is also optional: omission means no explicit
+selection has been saved yet, while an empty array preserves an intentional
+empty selection. The local-storage-only `selectedSeriesInitialized` flag is not
+serialized into the import/export file; omission versus presence of
+`selectedSeries` carries that distinction on the wire. Extra properties beyond
+the defined schema are silently ignored to allow forward-compatible extensions.
 
 The Azure companion bootstrap emits this file as `web-ui-environment.json` with
-`name` set to empty string — the SPA prompts the user for a name during import.
+`name` set to empty string and no `sensorData` object — the SPA prompts the
+user for a name during import and fills in default Sensor Data preferences.
 
 ### 11.3 Authority Derivation
 
@@ -557,19 +613,27 @@ accepting `.json` files. After selection:
    file version" error.
 3. Validate the four data fields using the same rules as the manual form
    (WEB-0802).
-4. If `name` is blank/missing, show a name input prompt before saving.
-5. If `name` matches an existing environment, show a conflict dialog offering
+4. If a `sensorData` object is present, validate `viewMode`, `timeRange`,
+   `selectedSeries`, and each `seriesOverrides` entry. Reject invalid
+   preference shapes instead of partially importing them.
+5. If `sensorData` is absent, initialize it to the default preference object.
+6. If `name` is blank/missing, show a name input prompt before saving.
+7. If `name` matches an existing environment, show a conflict dialog offering
    "Overwrite" or "Rename" options.
-6. If overwriting the active environment, trigger the full re-initialization
+8. Import overwrite semantics are replace, not merge: the imported
+   `sensorData` object replaces the destination environment's saved Sensor Data
+   preferences.
+9. If overwriting the active environment, trigger the full re-initialization
    sequence (WEB-0806): clear MSAL state, re-create MSAL instance, re-render.
-7. Save the environment to `localStorage` and refresh the environment list.
+10. Save the environment to `localStorage` and refresh the environment list.
 
 **Export (WEB-0808):** Each row's Export button serializes the environment to a
 JSON file using the import/export schema (§11.2b) and triggers a browser
 download. The filename is derived from the environment name with characters
 unsafe for filesystems (slashes, colons, control characters) replaced by
 hyphens. If the sanitized name is empty, the fallback `sonde-environment.json`
-is used.
+is used. Export always includes the environment's current `sensorData`
+preferences object.
 
 **Header indicator:** The active environment name is displayed in the top bar
 next to a ⚙ gear button that opens the environment manager modal.
@@ -584,7 +648,9 @@ When the user switches to a different environment:
 4. The active MSAL account is cleared
 5. MSAL-related `sessionStorage` keys are cleared (keys starting with `msal.` or containing `.login.` or `.acquireToken.`) — other session data is preserved
 6. A new MSAL instance is initialized with the new environment's credentials
-7. The active tab is re-rendered
+7. The active environment's `sensorData` preferences are loaded into the Sensor
+   Data view state
+8. The active tab is re-rendered
 
 ---
 

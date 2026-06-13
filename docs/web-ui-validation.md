@@ -93,16 +93,17 @@ and verifies one or more acceptance criteria.
 | WEB-0701 | T-WEB-0702, T-WEB-0703, T-WEB-0706, T-WEB-0713, T-WEB-0714, T-WEB-0715, T-WEB-0702b, T-WEB-0703b |
 | WEB-0702 | T-WEB-0704, T-WEB-0705, T-WEB-0704b, T-WEB-0704c |
 | WEB-0703 | T-WEB-0707, T-WEB-0708, T-WEB-0709, T-WEB-0710, T-WEB-0711, T-WEB-0712, T-WEB-0707b |
+| WEB-0705 | T-WEB-0723, T-WEB-0724, T-WEB-0725, T-WEB-0726, T-WEB-0802b |
 | WEB-0704 | T-WEB-0716, T-WEB-0717, T-WEB-0718, T-WEB-0719, T-WEB-0720, T-WEB-0721, T-WEB-0722 |
-| WEB-0800 | T-WEB-0801, T-WEB-0802, T-WEB-0803, T-WEB-0804, T-WEB-0805, T-WEB-0806 |
+| WEB-0800 | T-WEB-0801, T-WEB-0802, T-WEB-0802b, T-WEB-0803, T-WEB-0804, T-WEB-0805, T-WEB-0806 |
 | WEB-0801 | T-WEB-0802 |
 | WEB-0802 | T-WEB-0806, T-WEB-0807, T-WEB-0808, T-WEB-0809 |
 | WEB-0803 | T-WEB-0801, T-WEB-0801b, T-WEB-0818 |
 | WEB-0804 | T-WEB-0805, T-WEB-0805b, T-WEB-0805c |
-| WEB-0807 | T-WEB-0810, T-WEB-0811, T-WEB-0812, T-WEB-0813, T-WEB-0814, T-WEB-0815, T-WEB-0819, T-WEB-0820, T-WEB-0821, T-WEB-0822 |
+| WEB-0807 | T-WEB-0810, T-WEB-0810b, T-WEB-0810c, T-WEB-0811, T-WEB-0812, T-WEB-0813, T-WEB-0814, T-WEB-0815, T-WEB-0815b, T-WEB-0819, T-WEB-0820, T-WEB-0821, T-WEB-0822 |
 | WEB-0808 | T-WEB-0816, T-WEB-0816b, T-WEB-0816c, T-WEB-0817 |
 | WEB-0805 | T-WEB-0804, T-WEB-0804b |
-| WEB-0806 | T-WEB-0803, T-WEB-0803b, T-WEB-0803c, T-WEB-0803d, T-WEB-0803d2, T-WEB-0803e, T-WEB-0803f, T-WEB-0803g |
+| WEB-0806 | T-WEB-0803, T-WEB-0803b, T-WEB-0803c, T-WEB-0803d, T-WEB-0803d2, T-WEB-0803e, T-WEB-0803f, T-WEB-0803g, T-WEB-0803h |
 | WEB-0901 | T-WEB-0901, T-WEB-0901b, T-WEB-0901c |
 | WEB-0902 | T-WEB-0902, T-WEB-0902b |
 | WEB-1001 | T-WEB-1001, T-WEB-1001b, T-WEB-1001c, T-WEB-1001d |
@@ -248,7 +249,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-0708 | WEB-0703 | Custom display name replaces default label in series picker, chart legend, and tooltip | Manual | Planned |
 | T-WEB-0709 | WEB-0703 | Scale divisor transforms plotted values (e.g., 1000 converts 21500 → 21.5) | Manual | Planned |
 | T-WEB-0710 | WEB-0703 | Unit suffix appears in tooltip values and Y-axis title when all series share the same suffix | Manual | Planned |
-| T-WEB-0711 | WEB-0703 | Overrides persist across page reloads via `localStorage` | Manual | Planned |
+| T-WEB-0711 | WEB-0703 | Per-series display overrides persist with the active environment across page reloads | Manual | Planned |
 | T-WEB-0712 | WEB-0703 | Reset to Default clears overrides and restores original label/scale | Manual | Planned |
 | T-WEB-0716 | WEB-0704 | Sensor Data tab exposes export start/end controls, format selector, and Export action | Manual/E2E | Planned |
 | T-WEB-0717 | WEB-0704 | JSONL export writes one JSON object per line with the required five fields and `decoded_readings: null` for empty rows | Manual/E2E | Planned |
@@ -257,6 +258,10 @@ and verifies one or more acceptance criteria.
 | T-WEB-0720 | WEB-0704 | Export follows Azure Table continuation tokens so ranges with more than 1000 rows per node export completely | Unit (JS) | Pass |
 | T-WEB-0721 | WEB-0704 | Missing or inverted export start/end values are rejected with operator-visible feedback and no file download | Manual | Planned |
 | T-WEB-0722 | WEB-0704 | Export includes matching rows from multiple known node partitions within the selected range | Manual/E2E | Planned |
+| T-WEB-0723 | WEB-0705 | Graph/table mode and preset Sensor Data time range persist with the environment across reload and export/import | Manual | Planned |
+| T-WEB-0724 | WEB-0705 | Selected series are environment-scoped and unavailable saved series are ignored without error when rendering | Unit (JS) | Pass |
+| T-WEB-0725 | WEB-0705 | Export/import preserves explicit empty `selectedSeries: []` while treating omitted `selectedSeries` as the default initial auto-selection behavior | Unit (JS) | Pass |
+| T-WEB-0726 | WEB-0705 | Environment activation clears transient Sensor Data export state and auto-refresh instead of carrying it across environments | Unit (JS) | Pass |
 
 ### 5.8  Environment Manager
 
@@ -265,6 +270,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-0801 | WEB-0803 | First load with no environments shows full-screen setup modal; main UI is inaccessible | Manual | Planned |
 | T-WEB-0801b | WEB-0803 | Setup modal cannot be closed without adding an environment (no Close button) | Manual | Planned |
 | T-WEB-0802 | WEB-0801 | Adding an environment persists all fields to `localStorage` under `sonde_environments` | Manual | Planned |
+| T-WEB-0802b | WEB-0800 | First run after upgrade migrates legacy `sonde_series_overrides` into the active environment's Sensor Data preferences | Manual | Planned |
 | T-WEB-0803 | WEB-0806 | Switching environment re-initializes MSAL, clears session, and refreshes active tab | Manual | Planned |
 | T-WEB-0803b | WEB-0806 | Auto-refresh timer cleared on environment switch | Manual | Planned |
 | T-WEB-0803c | WEB-0806 | `CONFIG` fields updated from selected environment | Manual | Planned |
@@ -273,6 +279,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-0803e | WEB-0806 | Active MSAL account cleared on switch | Manual | Planned |
 | T-WEB-0803f | WEB-0806 | Only MSAL-related `sessionStorage` keys cleared (other session data preserved) | Manual | Planned |
 | T-WEB-0803g | WEB-0806 | Active tab re-rendered after switch | Manual | Planned |
+| T-WEB-0803h | WEB-0806 | Switching environments loads that environment's saved Sensor Data preferences before the Sensor Data tab re-renders | Unit (JS) | Pass |
 | T-WEB-0804 | WEB-0805 | Active environment name displayed in header bar | Manual | Planned |
 | T-WEB-0804b | WEB-0805 | Environment indicator updates when environment is switched | Manual | Planned |
 | T-WEB-0805 | WEB-0804 | Edit and delete operations on environments work correctly | Manual | Planned |
@@ -284,16 +291,19 @@ and verifies one or more acceptance criteria.
 
 | Test ID | Requirement | Description | Method | Status |
 |---|---|---|---|---|
-| T-WEB-0810 | WEB-0807 | Importing a valid `.json` file with all fields adds the environment to the list | Manual | Planned |
+| T-WEB-0810 | WEB-0807 | Importing a valid `.json` file with all required connection fields adds the environment to the list | Manual | Planned |
+| T-WEB-0810b | WEB-0807 | Importing a valid `sensorData` object restores view mode, preset time range, selected series, and per-series overrides | Manual | Planned |
+| T-WEB-0810c | WEB-0807 | Importing a legacy environment file without `sensorData` succeeds and initializes default Sensor Data preferences | Manual | Planned |
 | T-WEB-0811 | WEB-0807 | Importing a file with blank `name` prompts user for a name before saving | Manual | Planned |
 | T-WEB-0812 | WEB-0807 | Importing a file with a name that conflicts with an existing environment offers overwrite or rename | Manual | Planned |
 | T-WEB-0813 | WEB-0807 | Importing a file with `version` other than `1` (missing, zero, greater) is rejected with error | Manual | Planned |
 | T-WEB-0814 | WEB-0807, WEB-0802 | Importing a file with invalid field values (bad GUID, wrong storage account format) is rejected | Manual | Planned |
 | T-WEB-0815 | WEB-0807 | Overwriting the active environment via import triggers MSAL re-initialization | Manual | Planned |
-| T-WEB-0816 | WEB-0808 | Export button downloads a `.json` file with `version: 1` and all five fields | Manual | Planned |
+| T-WEB-0815b | WEB-0807 | Import overwrite replaces, rather than merges, the destination environment's saved Sensor Data preferences | Manual | Planned |
+| T-WEB-0816 | WEB-0808 | Export button downloads a `.json` file with `version: 1`, the five environment fields, and the `sensorData` object | Manual | Planned |
 | T-WEB-0816b | WEB-0808 | Export of an environment with unsafe filename characters (slashes, colons) produces a sanitized filename | Manual | Planned |
 | T-WEB-0816c | WEB-0808 | Export of an environment whose sanitized name is empty uses fallback `sonde-environment.json` | Manual | Planned |
-| T-WEB-0817 | WEB-0807, WEB-0808 | Exported file round-trips through import: export → import into fresh browser → environment is functional | Manual | Planned |
+| T-WEB-0817 | WEB-0807, WEB-0808 | Exported file round-trips through import: export → import into fresh browser → environment connection fields and Sensor Data preferences are preserved | Manual | Planned |
 | T-WEB-0818 | WEB-0803 | First-load setup modal includes Import button and accepts environment file | Manual | Planned |
 | T-WEB-0819 | WEB-0807 | Importing a non-JSON file (e.g., plain text, binary) is rejected with a descriptive error | Manual | Planned |
 | T-WEB-0820 | WEB-0807 | Importing a JSON file with top-level array, null, or string is rejected | Manual | Planned |

@@ -19,6 +19,7 @@ const ENV_ACTIVE_KEY = 'sonde_active_environment';
 const LEGACY_SERIES_OVERRIDES_KEY = 'sonde_series_overrides';
 const SENSOR_VIEW_MODES = new Set(['graph', 'table']);
 const SENSOR_TIME_RANGES = new Set(['1h', '24h', '7d']);
+const BLOCKED_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function createDefaultSensorDataPreferences() {
   return {
@@ -55,6 +56,9 @@ function normalizeSeriesOverrides(rawOverrides) {
   }
   const normalized = {};
   for (const [seriesKey, entry] of Object.entries(rawOverrides)) {
+    if (BLOCKED_OBJECT_KEYS.has(seriesKey)) {
+      continue;
+    }
     const normalizedEntry = normalizeSeriesOverrideEntry(entry);
     if (normalizedEntry) {
       normalized[seriesKey] = normalizedEntry;
@@ -119,6 +123,9 @@ function validateImportedSensorDataPreferences(rawPreferences) {
     }
     const overrides = {};
     for (const [seriesKey, entry] of Object.entries(rawPreferences.seriesOverrides)) {
+      if (BLOCKED_OBJECT_KEYS.has(seriesKey)) {
+        throw new Error(`\`sensorData.seriesOverrides.${seriesKey}\` uses a reserved key.`);
+      }
       if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
         throw new Error(`\`sensorData.seriesOverrides.${seriesKey}\` must be an object.`);
       }

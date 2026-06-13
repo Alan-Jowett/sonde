@@ -77,6 +77,8 @@ const app = require(path.resolve(__dirname, '..', 'deploy', 'web-ui', 'app.js'))
 
 test.beforeEach(() => {
   resetStorages();
+  global.window.confirm = () => false;
+  global.window.prompt = () => null;
   app.SENSOR_STATE.timeRange = '24h';
   app.SENSOR_STATE.viewMode = 'graph';
   app.SENSOR_STATE.selectedSeries = new Set();
@@ -623,6 +625,14 @@ test('validateImportedSensorDataPreferences rejects malformed selectedSeries arr
   assert.throws(
     () => app.validateImportedSensorDataPreferences({ selectedSeries: ['ok', 42] }),
     /selectedSeries/,
+  );
+});
+
+test('validateImportedSensorDataPreferences rejects reserved series override keys', () => {
+  const payload = JSON.parse('{"seriesOverrides":{"__proto__":{"displayName":"bad"}}}');
+  assert.throws(
+    () => app.validateImportedSensorDataPreferences(payload),
+    /reserved key/,
   );
 });
 

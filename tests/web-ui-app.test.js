@@ -678,6 +678,35 @@ test('persistActiveSensorDataPreferences stores environment-scoped Sensor Data v
   });
 });
 
+test('clearPersistedSelectedSeriesPreference restores default-selection semantics', () => {
+  localStorage.setItem('sonde_environments', JSON.stringify([
+    {
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+      sensorData: {
+        viewMode: 'graph',
+        timeRange: '24h',
+        selectedSeries: ['stale-series'],
+        selectedSeriesInitialized: true,
+        seriesOverrides: {},
+      },
+    },
+  ]));
+  localStorage.setItem('sonde_active_environment', 'prod');
+
+  assert.equal(app.clearPersistedSelectedSeriesPreference(), true);
+  assert.deepEqual(app.loadEnvironments()[0].sensorData, {
+    viewMode: 'graph',
+    timeRange: '24h',
+    selectedSeries: [],
+    selectedSeriesInitialized: false,
+    seriesOverrides: {},
+  });
+});
+
 test('buildEnvironmentExportData includes environment-scoped Sensor Data preferences', () => {
   assert.deepEqual(
     app.buildEnvironmentExportData({

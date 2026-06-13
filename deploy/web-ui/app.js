@@ -1940,6 +1940,21 @@ function persistActiveSensorDataPreferencesOrWarn() {
   return false;
 }
 
+function clearPersistedSelectedSeriesPreference() {
+  return updateActiveEnvironmentSensorData((sensorData) => {
+    sensorData.selectedSeries = [];
+    sensorData.selectedSeriesInitialized = false;
+  });
+}
+
+function clearPersistedSelectedSeriesPreferenceOrWarn() {
+  if (clearPersistedSelectedSeriesPreference()) {
+    return true;
+  }
+  showViewMessage('error', 'Failed to save Sensor Data preferences. Browser storage may be disabled or full.');
+  return false;
+}
+
 function resetTransientSensorDataState() {
   SENSOR_STATE.autoRefresh = false;
   SENSOR_STATE.exportStartMs = null;
@@ -2779,9 +2794,17 @@ async function renderSensorData() {
     const currentPlottableKeys = new Set(
       allSeries.filter((s) => s.points.length > 0).map((s) => s.key)
     );
+    const hadExplicitSelectionPreference = SENSOR_STATE.seriesInitialized;
     let selectionChanged = pruneUnavailableSelectedSeries(SENSOR_STATE.selectedSeries, currentPlottableKeys);
     if (selectionChanged && SENSOR_STATE.selectedSeries.size === 0) {
       SENSOR_STATE.seriesInitialized = false;
+    }
+    if (selectionChanged && hadExplicitSelectionPreference) {
+      if (SENSOR_STATE.selectedSeries.size === 0) {
+        clearPersistedSelectedSeriesPreferenceOrWarn();
+      } else {
+        persistActiveSensorDataPreferencesOrWarn();
+      }
     }
 
     if (!SENSOR_STATE.seriesInitialized && currentPlottableKeys.size > 0) {
@@ -2790,10 +2813,6 @@ async function renderSensorData() {
       for (const s of plottable.slice(0, Math.min(plottable.length, 5))) {
         SENSOR_STATE.selectedSeries.add(s.key);
       }
-      selectionChanged = true;
-    }
-    if (selectionChanged) {
-      persistActiveSensorDataPreferencesOrWarn();
     }
 
     const timeRangeButtons = Object.keys(TIME_RANGE_MS).map((range) => {
@@ -3285,6 +3304,7 @@ if (typeof module !== 'undefined' && module.exports) {
     buildEnvironmentExportData,
     activateEnvironmentState,
     createDefaultSensorDataPreferences,
+    clearPersistedSelectedSeriesPreference,
     handleImportedJson,
     loadActiveEnvironment,
     loadEnvironments,

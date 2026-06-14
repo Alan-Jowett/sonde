@@ -36,6 +36,7 @@ SRCS   := nop.c \
           deep_call.c \
           budget_exceeded.c \
           i2c_sensor.c \
+          bmp280_sensor.c \
           tmp102_sensor.c \
           sht40_sensor.c
 

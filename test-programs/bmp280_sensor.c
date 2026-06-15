@@ -130,42 +130,27 @@ int program(struct sonde_context *ctx)
 {
     __u8 chip_id = 0;
     int rc = bmp280_read_bytes(BMP280_REG_CHIP_ID, &chip_id, 1);
-    if (rc < 0 || chip_id != BMP280_CHIP_ID) {
-        char err[] = "bmp280: device not found\n";
-        bpf_trace_printk(err, (__u32)(sizeof(err) - 1));
+    if (rc < 0 || chip_id != BMP280_CHIP_ID)
         return 0;
-    }
 
     __u8 calib[BMP280_CALIB_LEN];
     rc = bmp280_read_bytes(BMP280_REG_CALIB_START, calib, sizeof(calib));
-    if (rc < 0) {
-        char err[] = "bmp280: calib read failed\n";
-        bpf_trace_printk(err, (__u32)(sizeof(err) - 1));
+    if (rc < 0)
         return 0;
-    }
 
     __u8 ctrl_meas_write[2] = { BMP280_REG_CTRL_MEAS, BMP280_CTRL_MEAS_FORCED };
     rc = i2c_write(BMP280_HANDLE, ctrl_meas_write, sizeof(ctrl_meas_write));
-    if (rc < 0) {
-        char err[] = "bmp280: trigger failed\n";
-        bpf_trace_printk(err, (__u32)(sizeof(err) - 1));
+    if (rc < 0)
         return 0;
-    }
 
     rc = delay_us(BMP280_CONVERSION_US);
-    if (rc < 0) {
-        char err[] = "bmp280: delay failed\n";
-        bpf_trace_printk(err, (__u32)(sizeof(err) - 1));
+    if (rc < 0)
         return 0;
-    }
 
     __u8 raw[BMP280_RAW_LEN];
     rc = bmp280_read_bytes(BMP280_REG_PRESS_MSB, raw, sizeof(raw));
-    if (rc < 0) {
-        char err[] = "bmp280: raw read failed\n";
-        bpf_trace_printk(err, (__u32)(sizeof(err) - 1));
+    if (rc < 0)
         return 0;
-    }
 
     __s32 adc_p = (__s32)(((__u32)raw[0] << 12) |
                           ((__u32)raw[1] << 4) |

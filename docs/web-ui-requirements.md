@@ -1555,6 +1555,8 @@ per-dashboard and shared across all metrics within that dashboard.
 8. Deleting a variable that is referenced by a metric expression triggers a
    confirmation prompt warning which metrics will be affected. If confirmed,
    the variable is deleted and affected metrics display expression errors.
+9. The variables configuration interface can be expanded or collapsed from its
+   header. When no saved pane state exists, it defaults to expanded.
 
 ---
 
@@ -1614,6 +1616,10 @@ expression, and dataset configuration within its assigned chart.
 10. Operators can delete a metric from its chart (with confirmation).
 11. Charts are displayed in the order they were added, and metrics are displayed
    in the order they were added within each chart.
+12. Each chart's metrics configuration section can be expanded or collapsed
+   independently from the chart header. Collapsing the metrics section hides
+   the metric list and metric actions but does not hide the chart's rendered
+   graph.
 
 ---
 
@@ -1678,23 +1684,27 @@ prevent charting and display an error.
 **Confidence:** High
 
 **Description:**
-Dashboard configurations (variables, charts, metrics, layout) MUST be persisted in
-`localStorage` as part of the environment's data. Dashboards survive page
-reloads and are included in environment export/import.
+Dashboard configurations (variables, charts, metrics, layout, and pane state)
+MUST be persisted in `localStorage` as part of the environment's data.
+Dashboards survive page reloads and are included in environment export/import.
 
 **Acceptance criteria:**
 
 1. Each environment's `localStorage` entry includes a `dashboards` array.
 2. Each dashboard object contains: `name`, `variables` (array of bindings),
-   `charts` (array of chart objects), and `timeRange` (dashboard-level time
-   window).
-3. Each chart object contains: `name` and `metrics` (array of metric configs).
+   `charts` (array of chart objects), `timeRange` (dashboard-level time
+   window), and variables-pane state.
+3. Each chart object contains: `name`, `metrics` (array of metric configs),
+   and metrics-pane state.
 4. Dashboards are persisted on any change (create, rename, delete, add/edit/delete
-   chart, add/edit/delete metric, add/edit/delete variable).
+   chart, add/edit/delete metric, add/edit/delete variable, expand/collapse
+   variables pane, expand/collapse chart metrics pane).
 5. Existing persisted dashboards using the legacy top-level `metrics` array are
    migrated on load to a single default chart containing those metrics.
 6. Switching environments loads that environment's dashboards.
 7. Dashboards from one environment do not leak into another environment.
+8. Existing dashboards without persisted pane state default to expanded panes
+   when loaded.
 
 ---
 
@@ -1713,7 +1723,8 @@ Dashboard configurations MUST be included in the environment export JSON
 1. The environment export JSON includes a `dashboards` field containing the
    full dashboard configuration array.
 2. Exporting an environment preserves all dashboard definitions (names,
-   variables, charts, metrics, expressions, and chart membership).
+   variables, charts, metrics, expressions, chart membership, and persisted
+   pane states).
 3. Importing an environment restores its dashboards into `localStorage`.
 4. Environments imported without a `dashboards` field default to an empty
    dashboards array.
@@ -1784,6 +1795,32 @@ metrics per dashboard to prevent performance degradation and browser crashes.
 3. Attempting to create beyond the limit displays a warning message.
 4. The limit is a soft limit — operators see a warning but can override if needed.
 5. No automatic deletion of old items; operators must manually clean up.
+
+---
+
+### WEB-1111  Collapsible Dashboard Configuration Panes
+
+**Priority:** Should
+**Source:** USER-REQUEST: Make the Variables section and Metrics section collapsible so admins can focus on the graph
+**Confidence:** High
+
+**Description:**
+The SPA MUST allow operators to collapse dashboard configuration panes that are
+not needed while viewing charts. This reduces visual clutter without removing
+dashboard data or hiding rendered charts.
+
+**Acceptance criteria:**
+
+1. The Variables pane has an expand/collapse control in its header.
+2. Each chart has an expand/collapse control for its Metrics pane in the chart
+   header.
+3. Variables and Metrics panes default to expanded when no persisted pane state
+   exists.
+4. Collapsing a pane hides its configuration content without deleting or
+   modifying the underlying dashboard, chart, variable, or metric definitions.
+5. Collapsing a chart's Metrics pane leaves that chart's rendered graph visible.
+6. Pane controls are keyboard accessible and expose expanded/collapsed state to
+   assistive technologies.
 
 ---
 
@@ -1867,4 +1904,5 @@ storage.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-17 | evolve skill | Added collapsible Variables and per-chart Metrics pane requirements, including persisted pane state and accessibility expectations. |
 | 2026-05-19 | Spec extraction (automated) | Initial extraction from web-ui-design.md, app.js, and web-ui-validation.md. |

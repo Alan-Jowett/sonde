@@ -166,6 +166,7 @@ function createDefaultDashboardsArray() {
 function createDefaultDashboard(name) {
   return {
     name: name || 'Dashboard 1',
+    variablesCollapsed: false,
     variables: [],
     charts: [],
     timeRange: {
@@ -179,6 +180,7 @@ function createDefaultDashboard(name) {
 function createDefaultChart(name) {
   return {
     name: name || 'Chart 1',
+    metricsCollapsed: false,
     metrics: [],
   };
 }
@@ -239,6 +241,7 @@ function normalizeDashboardChart(chart, index) {
     name: typeof chart.name === 'string' && chart.name.trim()
       ? chart.name.trim()
       : `Chart ${index + 1}`,
+    metricsCollapsed: chart.metricsCollapsed === true,
     metrics: Array.isArray(chart.metrics)
       ? chart.metrics.map(normalizeDashboardMetric).filter(Boolean)
       : [],
@@ -252,6 +255,7 @@ function normalizeDashboardCharts(dashboard) {
   if (Array.isArray(dashboard?.metrics) && dashboard.metrics.length > 0) {
     return [{
       name: 'Chart 1',
+      metricsCollapsed: false,
       metrics: dashboard.metrics.map(normalizeDashboardMetric).filter(Boolean),
     }];
   }
@@ -266,6 +270,7 @@ function normalizeDashboard(dashboard, index) {
     name: typeof dashboard.name === 'string' && dashboard.name.trim()
       ? dashboard.name.trim()
       : `Dashboard ${index + 1}`,
+    variablesCollapsed: dashboard.variablesCollapsed === true,
     variables: Array.isArray(dashboard.variables)
       ? dashboard.variables.map(normalizeDashboardVariable).filter(Boolean)
       : [],
@@ -278,9 +283,11 @@ function serializeDashboard(dashboard, index) {
   const normalized = normalizeDashboard(dashboard, index);
   return {
     name: normalized.name,
+    variablesCollapsed: normalized.variablesCollapsed === true,
     variables: normalized.variables.map((variable) => ({ ...variable })),
     charts: normalized.charts.map((chart) => ({
       name: chart.name,
+      metricsCollapsed: chart.metricsCollapsed === true,
       metrics: chart.metrics.map((metric) => ({
         id: metric.id,
         displayName: metric.displayName,
@@ -614,6 +621,7 @@ function validateImportedDashboardChart(chart, chartIndex, dashboardName) {
   }
   return {
     name: chartName,
+    metricsCollapsed: chart.metricsCollapsed === true,
     metrics,
   };
 }
@@ -635,11 +643,13 @@ function validateImportedDashboard(dashboard, index) {
   } else if (Array.isArray(dashboard.metrics) && dashboard.metrics.length > 0) {
     charts = [{
       name: 'Chart 1',
+      metricsCollapsed: false,
       metrics: dashboard.metrics.map((metric) => validateImportedDashboardMetric(metric, dashboardName)),
     }];
   }
   return {
     name: dashboardName,
+    variablesCollapsed: dashboard.variablesCollapsed === true,
     variables,
     charts,
     timeRange: (typeof dashboard.timeRange === 'object' && dashboard.timeRange !== null)
@@ -3485,6 +3495,7 @@ function renderDashboardTabs(dashboards, activeIndex) {
 
 function renderDashboardContent(dashboard) {
   const timeRange = normalizeDashboardTimeRange(dashboard.timeRange);
+  const variablesOpenAttr = dashboard.variablesCollapsed === true ? '' : ' open';
   return `
     <div class="dashboard-header">
       <h2>${escapeHtml(dashboard.name)}</h2>
@@ -3514,10 +3525,18 @@ function renderDashboardContent(dashboard) {
       </div>
     </div>
     
-    <div class="dashboard-variables">
-      <h3>Variables <button class="btn btn-sm btn-secondary" id="add-variable-btn">+ Add Variable</button></h3>
-      ${renderVariablesList(dashboard.variables)}
-    </div>
+    <details class="dashboard-pane dashboard-variables" id="dashboard-variables-pane"${variablesOpenAttr}>
+      <summary class="dashboard-pane-summary">
+        <span class="dashboard-pane-title">Variables</span>
+        <span class="dashboard-pane-meta">${dashboard.variables.length} defined</span>
+      </summary>
+      <div class="dashboard-pane-body">
+        <div class="dashboard-pane-actions">
+          <button class="btn btn-sm btn-secondary" id="add-variable-btn">+ Add Variable</button>
+        </div>
+        ${renderVariablesList(dashboard.variables)}
+      </div>
+    </details>
     
     <div class="dashboard-charts">
       <h3>Charts <button class="btn btn-sm btn-primary" id="add-chart-btn">+ Add Chart</button></h3>
@@ -3560,22 +3579,33 @@ function renderVariablesList(variables) {
 }
 
 function renderChartCard(chart, chartIndex, variableCount) {
+  const metricsOpenAttr = chart.metricsCollapsed === true ? '' : ' open';
+  const metricCount = chart.metrics.length;
   return `
     <div class="chart-card" id="chart-${chartIndex}">
-      <div class="chart-header">
-        <h4>${escapeHtml(chart.name)}</h4>
-        <div class="chart-actions">
-          <button class="btn-sm btn-primary" data-add-metric="${chartIndex}">+ Add Metric</button>
-          <button class="btn-sm" data-edit-chart="${chartIndex}">Rename</button>
-          <button class="btn-sm btn-danger" data-delete-chart="${chartIndex}">Delete</button>
+      <details class="chart-metrics-pane" data-chart-metrics-pane="${chartIndex}"${metricsOpenAttr}>
+        <summary class="chart-header chart-pane-summary">
+          <span class="chart-header-main">
+            <span class="chart-pane-title">${escapeHtml(chart.name)}</span>
+            <span class="chart-pane-meta">${metricCount} metric${metricCount === 1 ? '' : 's'}</span>
+          </span>
+          <span class="chart-actions">
+            <button class="btn-sm" data-edit-chart="${chartIndex}">Rename</button>
+            <button class="btn-sm btn-danger" data-delete-chart="${chartIndex}">Delete</button>
+          </span>
+        </summary>
+        <div class="chart-metrics-pane-body">
+          <div class="chart-metrics-actions">
+            <button class="btn-sm btn-primary" data-add-metric="${chartIndex}">+ Add Metric</button>
+          </div>
+          <div class="chart-metrics">
+            ${chart.metrics.length === 0
+              ? `<p class="text-muted">No metrics yet. ${variableCount === 0 ? 'Add variables first, then ' : ''}click "+ Add Metric" for this chart.</p>`
+              : chart.metrics.map((metric, metricIndex) => renderMetricCard(metric, chartIndex, metricIndex)).join('')
+            }
+          </div>
         </div>
-      </div>
-      <div class="chart-metrics">
-        ${chart.metrics.length === 0
-          ? `<p class="text-muted">No metrics yet. ${variableCount === 0 ? 'Add variables first, then ' : ''}click "+ Add Metric" for this chart.</p>`
-          : chart.metrics.map((metric, metricIndex) => renderMetricCard(metric, chartIndex, metricIndex)).join('')
-        }
-      </div>
+      </details>
       ${chart.metrics.length > 0 ? `
         <div class="metric-chart-container">
           <canvas id="metric-chart-${chartIndex}"></canvas>
@@ -3968,15 +3998,41 @@ function attachDashboardHandlers() {
   });
   
   document.getElementById('add-variable-btn')?.addEventListener('click', () => showAddVariableModal());
+  document.getElementById('dashboard-variables-pane')?.addEventListener('toggle', (e) => {
+    const env = loadActiveEnvironment();
+    const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+    dashboard.variablesCollapsed = !e.currentTarget.open;
+    const environments = loadEnvironments();
+    persistDashboardEnvironment(env, environments);
+  });
   document.querySelectorAll('[data-edit-chart]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       editChart(parseInt(btn.dataset.editChart, 10));
     });
   });
 
   document.querySelectorAll('[data-delete-chart]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       deleteChart(parseInt(btn.dataset.deleteChart, 10));
+    });
+  });
+
+  document.querySelectorAll('[data-chart-metrics-pane]').forEach(pane => {
+    pane.addEventListener('toggle', (e) => {
+      const chartIndex = parseInt(e.currentTarget.dataset.chartMetricsPane, 10);
+      const env = loadActiveEnvironment();
+      const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+      const chart = dashboard?.charts?.[chartIndex];
+      if (!chart) {
+        return;
+      }
+      chart.metricsCollapsed = !e.currentTarget.open;
+      const environments = loadEnvironments();
+      persistDashboardEnvironment(env, environments);
     });
   });
 
@@ -4761,6 +4817,8 @@ if (typeof module !== 'undefined' && module.exports) {
     fetchVariableData,
     evaluateMetricTimeSeries,
     renderMetricCharts,
+    renderDashboardContent,
+    renderChartCard,
     downsamplePoints,
     APP_DASHBOARD_STATE,
     persistDashboardEnvironment,

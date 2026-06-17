@@ -476,8 +476,13 @@ and verifies one or more acceptance criteria.
 | T-WEB-1127 | WEB-1106 | Dashboard changes trigger saveEnvironments() | Unit: Mock saveEnvironments, verify called on add/edit/delete | Not Started |
 | T-WEB-1127b | WEB-1106 | localStorage quota exceeded shows error, dashboard not lost | Unit: Mock QuotaExceededError, verify error message, dashboard in memory | Not Started |
 | T-WEB-1127c | WEB-1106 | Legacy persisted dashboard with top-level metrics migrates to a default chart on load | Integration: Seed old schema in localStorage, load environment, verify one default chart contains the metrics | Not Started |
+| T-WEB-1127d | WEB-1106 | Variables pane expand/collapse state persists across reload | Integration: Collapse the Variables pane, reload, verify it remains collapsed for that dashboard | Not Started |
+| T-WEB-1127e | WEB-1106 | Per-chart Metrics pane expand/collapse state persists across reload | Integration: Collapse one chart's Metrics pane, reload, verify only that chart remains collapsed | Not Started |
+| T-WEB-1127f | WEB-1106 | Dashboards without stored pane state default Variables and Metrics panes to expanded | Integration: Seed legacy dashboard without pane-state fields, load, verify Variables and all chart Metrics panes are expanded | Not Started |
 | T-WEB-1128 | WEB-1107 | Environment export includes dashboards array in JSON | Integration: Export environment with dashboards, verify JSON structure | Not Started |
+| T-WEB-1128b | WEB-1107 | Environment export preserves persisted pane states | Integration: Export dashboard with collapsed Variables pane and collapsed chart Metrics pane, verify both state fields appear in JSON | Not Started |
 | T-WEB-1129 | WEB-1107 | Environment import restores dashboards | Integration: Import JSON with dashboards, verify restored | Not Started |
+| T-WEB-1129b | WEB-1107 | Environment import restores persisted pane states | Integration: Import dashboard JSON with collapsed pane states, verify restored UI state after load | Not Started |
 | T-WEB-1130 | WEB-1107 | Missing dashboards field defaults to empty array | Integration: Import JSON without dashboards field, verify default | Not Started |
 | T-WEB-1130b | WEB-1107 | Import with undefined variable shows warning | Integration: Import metric with undefined variable, verify warning displayed | Not Started |
 | T-WEB-1130c | WEB-1107 | Legacy dashboard import migrates top-level metrics into a default chart | Integration: Import old schema, verify one default chart containing the metrics | Not Started |
@@ -487,6 +492,11 @@ and verifies one or more acceptance criteria.
 | T-WEB-1109b | WEB-1109 | Parentheses override precedence: `(2 + 3) * 4` evaluates to `20` | Unit: Evaluate expression, verify result | Not Started |
 | T-WEB-1110a | WEB-1110 | Creating 21st dashboard shows warning | Manual: Create 20 dashboards, attempt 21st, verify warning | Not Started |
 | T-WEB-1110b | WEB-1110 | Creating 11th metric shows warning | Manual: Create 10 metrics, attempt 11th, verify warning | Not Started |
+| T-WEB-1133 | WEB-1111 | Variables pane can be collapsed and expanded from its header | Manual: Toggle Variables pane twice, verify content hides and returns | Not Started |
+| T-WEB-1134 | WEB-1111 | Each chart's Metrics pane can be collapsed independently | Manual: Collapse one chart's Metrics pane, verify another chart remains unchanged | Not Started |
+| T-WEB-1135 | WEB-1111 | Collapsing a chart's Metrics pane keeps the rendered graph visible | Manual: Collapse Metrics pane on populated chart, verify canvas and legend remain visible | Not Started |
+| T-WEB-1136 | WEB-1111 | Pane controls default to expanded when no saved state exists | Manual: Open a new dashboard, verify Variables and Metrics panes start expanded | Not Started |
+| T-WEB-1137 | WEB-1111 | Pane controls expose expanded/collapsed state to keyboard and assistive technology | Manual: Keyboard-navigate to pane controls, toggle them, verify accessible state changes | Not Started |
 
 ---
 
@@ -494,6 +504,7 @@ and verifies one or more acceptance criteria.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-17 | evolve skill | Added validation coverage for collapsible Variables and per-chart Metrics panes, including persistence, default state, and accessibility checks. |
 | 2026-06-16 | evolve skill | Added §5.11 (Custom Dashboards) test cases T-WEB-1100 through T-WEB-1132. Updated traceability matrix for WEB-1100 series requirements. |
 | 2026-05-29 | Issue #1092 | Added T-WEB-1009 through T-WEB-1009k for gateway convergence. Updated T-WEB-1001/1002 for badge and inline form. Retired T-WEB-1006/1006b. |
 | 2026-05-19 | Spec extraction (automated) | Restructured with sections, traceability matrix, risk prioritization. Added references to web-ui-requirements.md. |

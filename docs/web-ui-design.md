@@ -859,14 +859,16 @@ Dashboards Section
 ├── Dashboard Tabs [Tab 1] [Tab 2] [+]
 ├── Active Dashboard View
 │   ├── Variables Panel
+│   │   ├── Collapsible header
 │   │   ├── Variable List (name → data source mapping)
 │   │   └── [+ Add Variable] button
 │   ├── Charts Panel
 │   │   ├── Chart 1
-│   │   │   ├── Chart header (name, rename/delete actions)
-│   │   │   ├── Metric list (dataset definitions)
+│   │   │   ├── Chart header (name, rename/delete actions, metrics toggle)
+│   │   │   ├── Collapsible Metrics section
+│   │   │   │   ├── Metric list (dataset definitions)
+│   │   │   │   └── [+ Add Metric] button
 │   │   │   ├── Shared chart canvas
-│   │   │   └── [+ Add Metric] button
 │   │   ├── Chart 2
 │   │   └── [+ Add Chart] button
 │   └── Time Range Selector (shared across all charts)
@@ -878,6 +880,9 @@ Dashboards Section
 - "+" tab button creates a new dashboard (prompts for name).
 - Active dashboard is highlighted.
 - Each dashboard displays its variables and charts in a vertical layout.
+- Variables Panel is expanded by default and can be collapsed from its header.
+- Each chart's Metrics section is expanded by default and can be collapsed
+  independently without hiding the chart canvas.
 
 **Empty State:**
 - New dashboards show: "No charts yet. Click '+ Add Chart' to get started."
@@ -896,6 +901,7 @@ Dashboards Section
 ```javascript
 {
   name: string,           // User-assigned dashboard name
+  variablesCollapsed: boolean, // True when the Variables pane is collapsed
   variables: [            // Array of variable bindings
     {
       name: string,       // Variable identifier (e.g., "GTMF")
@@ -906,6 +912,7 @@ Dashboards Section
   charts: [               // Array of named charts
     {
       name: string,       // User-assigned chart name
+      metricsCollapsed: boolean, // True when the Metrics pane is collapsed
       metrics: [          // Datasets rendered on this chart
         {
           id: string,         // Unique metric ID (UUID or timestamp-based)
@@ -924,6 +931,10 @@ Dashboards Section
 }
 ```
 
+Dashboards loaded from persisted data that omit `variablesCollapsed` or
+`metricsCollapsed` are normalized to `false` so legacy dashboards start with all
+configuration panes expanded.
+
 #### localStorage Schema
 
 Dashboards are stored as part of each environment's configuration:
@@ -939,8 +950,8 @@ Dashboards are stored as part of each environment's configuration:
     functionAppName: "...",
     sensorData: { ... },
     dashboards: [          // NEW: Array of dashboard objects
-      { /* dashboard 1 */ },
-      { /* dashboard 2 */ }
+      { /* dashboard 1 with variablesCollapsed + charts[].metricsCollapsed */ },
+      { /* dashboard 2 with variablesCollapsed + charts[].metricsCollapsed */ }
     ]
   }
 ]
@@ -969,10 +980,14 @@ Dashboards are stored as part of each environment's configuration:
   expression.
 
 **Variable Display:**
-- Variables Panel shows a table:
+- Variables Panel header includes an expand/collapse control with accessible
+  expanded/collapsed state.
+- Variables Panel shows a table when expanded:
   | Variable | Data Source | Actions |
   |----------|-------------|---------|
   | GTMF | Node 7, Temperature (milliF) | Edit Delete |
+- When collapsed, the table and add button are hidden and the panel can be
+  reopened without losing any configured variables.
 
 ### 14.4 Chart and Metric Editing
 
@@ -992,9 +1007,13 @@ Dashboards are stored as part of each environment's configuration:
 **Chart Display:**
 - Each chart renders as a card containing:
   - Chart name
-  - Metric dataset list with edit/delete actions
+  - Metrics expand/collapse control in the chart header
+  - Metric dataset list with edit/delete actions when expanded
   - Shared `<canvas>` for all metrics assigned to that chart
-  - "+ Add Metric" button scoped to that chart
+  - "+ Add Metric" button scoped to that chart when the Metrics section is
+    expanded
+- Collapsing the Metrics section hides metric configuration content but leaves
+  the shared chart canvas and legend visible.
 
 ### 14.5 Expression Editor
 
@@ -1080,6 +1099,8 @@ Dashboards are stored as part of each environment's configuration:
 - Dashboard-level time range selector (same UI as Sensor Data tab).
 - All charts and metrics in the dashboard share the same time window.
 - Operators can select presets (1h, 6h, 24h, 7d) or custom start/end.
+- Variables/metrics pane state is independent from the time-range controls and
+  does not affect chart evaluation.
 
 **Data Fetching:**
 - For each variable binding, query `sensordata` table filtered by node ID and
@@ -1149,6 +1170,7 @@ Dashboards are stored as part of each environment's configuration:
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-17 | evolve skill | Added collapsible Variables and per-chart Metrics panes, including persisted pane state and accessibility requirements for dashboard configuration UI. |
 | 2026-06-16 | evolve skill | Added §14 (Custom Dashboards) with variable binding, expression evaluation, and environment export integration. |
 | 2026-05-29 | Issue #1092 | Added §13.1.1 gateway convergence rules. Replaced §13.2 rotation modal with inline form. Added convergence badge to §13.1. |
 | 2026-05-19 | Trifecta remediation (#1012) | Added §12 (cross-cutting concerns: HTML escaping, MSAL hash routing, popup detection). Fixed §10.2 downsample cap to 500 points per series. |

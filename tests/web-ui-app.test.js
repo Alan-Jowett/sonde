@@ -674,6 +674,34 @@ test('handleImportedJson migrates legacy dashboard metrics into a default chart'
   assert.equal(prod.dashboards[0].charts.length, 1);
   assert.equal(prod.dashboards[0].charts[0].name, 'Chart 1');
   assert.equal(prod.dashboards[0].charts[0].metrics[0].expression, 'TEMP / 1000');
+  assert.equal(prod.dashboards[0].variablesCollapsed, false);
+  assert.equal(prod.dashboards[0].charts[0].metricsCollapsed, false);
+});
+
+test('handleImportedJson restores persisted dashboard pane states', () => {
+  app.handleImportedJson(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    dashboards: [{
+      name: 'Imported Dashboard',
+      variablesCollapsed: true,
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [{
+        name: 'Chart 1',
+        metricsCollapsed: true,
+        metrics: [{ displayName: 'Temp', expression: 'TEMP / 1000', color: '#123456' }],
+      }],
+      timeRange: { preset: '24h', start: null, end: null },
+    }],
+  }));
+
+  const prod = app.loadEnvironments().find((env) => env.name === 'prod');
+  assert.equal(prod.dashboards[0].variablesCollapsed, true);
+  assert.equal(prod.dashboards[0].charts[0].metricsCollapsed, true);
 });
 
 test('handleImportedJson rejects dashboard variables that fail editor validation', () => {
@@ -829,9 +857,11 @@ test('buildEnvironmentExportData omits dashboard validation annotations', () => 
     sensorData: app.createDefaultSensorDataPreferences(),
     dashboards: [{
       name: 'Imported Dashboard',
+      variablesCollapsed: true,
       variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
       charts: [{
         name: 'Chart 1',
+        metricsCollapsed: true,
         metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
       }],
       timeRange: { preset: '24h', start: null, end: null },
@@ -840,13 +870,38 @@ test('buildEnvironmentExportData omits dashboard validation annotations', () => 
 
   assert.deepEqual(exported.dashboards, [{
     name: 'Imported Dashboard',
+    variablesCollapsed: true,
     variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
     charts: [{
       name: 'Chart 1',
+      metricsCollapsed: true,
       metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
     }],
     timeRange: { preset: '24h', start: null, end: null },
   }]);
+});
+
+test('renderDashboardContent defaults the Variables pane to expanded', () => {
+  const html = app.renderDashboardContent({
+    name: 'Dashboard',
+    variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+    charts: [],
+    timeRange: { preset: '24h', start: null, end: null },
+  });
+
+  assert.match(html, /id="dashboard-variables-pane" open/);
+});
+
+test('renderChartCard keeps the graph visible when Metrics pane is collapsed', () => {
+  const html = app.renderChartCard({
+    name: 'Chart 1',
+    metricsCollapsed: true,
+    metrics: [{ id: 'metric-1', displayName: 'Temp', expression: 'TEMP / 1000', color: '#123456' }],
+  }, 0, 1);
+
+  assert.doesNotMatch(html, /data-chart-metrics-pane="0" open/);
+  assert.match(html, /class="metric-chart-container"/);
+  assert.match(html, /data-add-metric="0"/);
 });
 
 test('activateEnvironmentState loads saved Sensor Data preferences for the selected environment', () => {
@@ -1370,6 +1425,8 @@ test('normalizeEnvironmentRecord migrates legacy top-level dashboard metrics on 
   assert.equal(normalized.dashboards[0].charts.length, 1);
   assert.equal(normalized.dashboards[0].charts[0].name, 'Chart 1');
   assert.equal(normalized.dashboards[0].charts[0].metrics[0].expression, 'TEMP');
+  assert.equal(normalized.dashboards[0].variablesCollapsed, false);
+  assert.equal(normalized.dashboards[0].charts[0].metricsCollapsed, false);
 });
 
 test('normalizeEnvironmentRecord clears stale metric validation annotations before revalidating', () => {
@@ -1441,9 +1498,11 @@ test('persistDashboardEnvironment strips dashboard validation annotations before
     sensorData: app.createDefaultSensorDataPreferences(),
     dashboards: [{
       name: 'Persisted',
+      variablesCollapsed: true,
       variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
       charts: [{
         name: 'Chart 1',
+        metricsCollapsed: true,
         metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
       }],
       timeRange: { preset: '24h', start: null, end: null },
@@ -1454,9 +1513,11 @@ test('persistDashboardEnvironment strips dashboard validation annotations before
   const stored = JSON.parse(localStorage.getItem('sonde_environments'));
   assert.deepEqual(stored[0].dashboards, [{
     name: 'Persisted',
+    variablesCollapsed: true,
     variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
     charts: [{
       name: 'Chart 1',
+      metricsCollapsed: true,
       metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
     }],
     timeRange: { preset: '24h', start: null, end: null },

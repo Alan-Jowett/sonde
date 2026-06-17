@@ -884,7 +884,6 @@ test('buildEnvironmentExportData omits dashboard validation annotations', () => 
 test('renderDashboardContent defaults the Variables pane to expanded', () => {
   const html = app.renderDashboardContent({
     name: 'Dashboard',
-    variablesCollapsed: false,
     variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
     charts: [],
     timeRange: { preset: '24h', start: null, end: null },

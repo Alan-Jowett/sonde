@@ -470,10 +470,6 @@ code { font-family: Consolas, "Courier New", monospace; }
   outline-offset: -2px;
 }
 
-.chart-metrics {
-  margin-bottom: 1rem;
-}
-
 .chart-card {
   background: var(--surface);
   border: 1px solid var(--border);

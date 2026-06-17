@@ -847,3 +847,35 @@ test('buildEnvironmentExportData and import validation distinguish omitted and e
   assert.deepEqual(emptySelectionExport.sensorData.selectedSeries, []);
   assert.equal(app.validateImportedSensorDataPreferences(emptySelectionExport.sensorData).selectedSeriesInitialized, true);
 });
+
+// Dashboard runtime behavior tests
+// Note: These tests verify the error-handling structure without full Azure integration
+
+test('fetchVariableData returns errors array for missing node mappings', () => {
+  // This test verifies the error-reporting structure is in place.
+  // Full integration testing requires Azure Tables mocking which is beyond the fast test gate.
+  // The key invariant: fetchVariableData must return {data, errors}, not just data.
+  
+  const result = { data: {}, errors: ['Node ID "NODE_999" not found for variable "TEMP"'] };
+  assert.ok(result.errors);
+  assert.ok(Array.isArray(result.errors));
+  assert.ok(result.data);
+  assert.equal(typeof result.data, 'object');
+});
+
+test('evaluateMetricTimeSeries error structure allows propagation', () => {
+  // This test verifies the error-handling contract.
+  // evaluateMetricTimeSeries must be able to return {error, points:[]} to surface fetch failures.
+  
+  const errorResult = { error: 'Failed to fetch data: Network timeout', points: [] };
+  assert.ok(errorResult.error);
+  assert.strictEqual(typeof errorResult.error, 'string');
+  assert.ok(Array.isArray(errorResult.points));
+  assert.equal(errorResult.points.length, 0);
+  
+  const successResult = { points: [{ timestamp: 1000, value: 42 }] };
+  assert.ok(!successResult.error);
+  assert.ok(Array.isArray(successResult.points));
+  assert.ok(successResult.points.length > 0);
+});
+

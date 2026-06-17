@@ -3373,7 +3373,14 @@ async function evaluateMetricTimeSeries(metric, variables, timeRange) {
     return { error: 'Expression uses no variables', points: [] };
   }
   
-  const variableData = await fetchVariableData(usedVariables, timeRange || { preset: '24h' });
+  const fetchResult = await fetchVariableData(usedVariables, timeRange || { preset: '24h' });
+  
+  // Propagate any fetch errors
+  if (fetchResult.errors && fetchResult.errors.length > 0) {
+    return { error: fetchResult.errors[0], points: [] };  // Show first error
+  }
+  
+  const variableData = fetchResult.data;
   
   const timestamps = new Set();
   Object.values(variableData).forEach(data => {
@@ -3422,6 +3429,7 @@ async function evaluateMetricTimeSeries(metric, variables, timeRange) {
 
 async function fetchVariableData(variables, timeRange) {
   const result = {};
+  const errors = [];
   
   const now = Date.now();
   let startMs;
@@ -3439,19 +3447,39 @@ async function fetchVariableData(variables, timeRange) {
       break;
   }
   
+  // Fetch node mappings to resolve nodeId -> partitionKey
+  let nodes;
+  try {
+    nodes = await fetchActualStateNodes();
+  } catch (error) {
+    errors.push(`Failed to fetch node mappings: ${error.message}`);
+    return { data: result, errors };
+  }
+  
+  const nodeIdToPartitionKey = new Map();
+  for (const node of nodes) {
+    nodeIdToPartitionKey.set(node.nodeId, node.partitionKey);
+  }
+  
   // Group variables by partition key (node ID) to minimize queries
   const partitionMap = new Map();
   for (const variable of variables) {
-    if (!partitionMap.has(variable.nodeId)) {
-      partitionMap.set(variable.nodeId, []);
+    const partitionKey = nodeIdToPartitionKey.get(variable.nodeId);
+    if (!partitionKey) {
+      errors.push(`Node ID "${variable.nodeId}" not found for variable "${variable.name}"`);
+      result[variable.name] = [];
+      continue;
     }
-    partitionMap.get(variable.nodeId).push(variable);
+    if (!partitionMap.has(partitionKey)) {
+      partitionMap.set(partitionKey, []);
+    }
+    partitionMap.get(partitionKey).push(variable);
   }
   
   // Query sensor data for each partition
-  for (const [nodeId, vars] of partitionMap.entries()) {
+  for (const [partitionKey, vars] of partitionMap.entries()) {
     try {
-      const rows = await querySensorDataRange([nodeId], startMs, now, {
+      const rows = await querySensorDataRange([partitionKey], startMs, now, {
         topPerPage: 1000,
         maxPagesPerPartition: 10
       });
@@ -3479,14 +3507,15 @@ async function fetchVariableData(variables, timeRange) {
         }
       }
     } catch (error) {
-      console.error(`Failed to fetch data for node ${nodeId}:`, error);
+      const nodeNames = vars.map(v => v.nodeId).join(', ');
+      errors.push(`Failed to fetch data for node(s) ${nodeNames}: ${error.message}`);
       for (const variable of vars) {
         result[variable.name] = [];
       }
     }
   }
   
-  return result;
+  return { data: result, errors };
 }
 
 function attachDashboardHandlers() {
@@ -3635,16 +3664,16 @@ async function showAddVariableModal() {
     return;
   }
   
-  const displayName = prompt(`Enter node ID (available: ${nodes.map(n => n.displayName).join(', ')}):`, nodes[0].displayName);
+  const displayName = prompt(`Enter node ID (available: ${nodes.map(n => n.nodeId).join(', ')}):`, nodes[0].nodeId);
   if (!displayName) return;
   
-  // Map display name back to partition key for internal queries
-  const selectedNode = nodes.find(n => n.displayName === displayName);
+  // Validate selected node ID
+  const selectedNode = nodes.find(n => n.nodeId === displayName);
   if (!selectedNode) {
     alert('Invalid node ID selected.');
     return;
   }
-  const nodeId = selectedNode.nodeId;
+  const nodeId = selectedNode.nodeId;  // Store user-facing nodeId
   
   const readingType = prompt('Enter reading type (e.g., temperature_millif, pressure_pa):', '');
   if (!readingType) return;
@@ -3659,7 +3688,7 @@ async function showAddVariableModal() {
   renderActiveTab();
 }
 
-function showEditVariableModal(index) {
+async function showEditVariableModal(index) {
   const env = loadActiveEnvironment();
   const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
   const variable = dashboard.variables[index];
@@ -3677,8 +3706,23 @@ function showEditVariableModal(index) {
     variable.name = newName;
   }
   
-  const newNodeId = prompt('Enter node ID:', variable.nodeId);
-  if (newNodeId) variable.nodeId = newNodeId;
+  // Fetch available nodes for constrained selection
+  const nodes = await fetchActualStateNodes();
+  if (nodes.length === 0) {
+    alert('No nodes available to select from.');
+    return;
+  }
+  
+  const newNodeId = prompt(`Enter node ID (available: ${nodes.map(n => n.nodeId).join(', ')}):`, variable.nodeId);
+  if (newNodeId) {
+    // Validate selected node exists
+    const selectedNode = nodes.find(n => n.nodeId === newNodeId);
+    if (!selectedNode) {
+      alert('Invalid node ID. Variable not updated.');
+      return;
+    }
+    variable.nodeId = newNodeId;
+  }
   
   const newReadingType = prompt('Enter reading type:', variable.readingType);
   if (newReadingType) variable.readingType = newReadingType;
@@ -3822,8 +3866,8 @@ async function fetchActualStateNodes() {
     const nodeRows = filterNodeRows(rows);
     const latest = latestByPartition(nodeRows);
     return latest.map(row => ({
-      nodeId: row.PartitionKey,
-      displayName: row.node_id || row.PartitionKey
+      partitionKey: row.PartitionKey,  // Internal key for queries
+      nodeId: row.node_id || row.PartitionKey  // User-facing ID
     }));
   } catch (error) {
     console.error('Failed to fetch nodes:', error);
@@ -4140,6 +4184,10 @@ if (typeof module !== 'undefined' && module.exports) {
     SENSOR_STATE,
     saveSeriesOverrides,
     validateImportedSensorDataPreferences,
+    // Dashboard functions for testing
+    fetchActualStateNodes,
+    fetchVariableData,
+    evaluateMetricTimeSeries,
   };
 }
 

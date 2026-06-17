@@ -3453,7 +3453,7 @@ async function fetchVariableData(variables, timeRange) {
     try {
       const rows = await querySensorDataRange([nodeId], startMs, now, {
         topPerPage: 1000,
-        pageLimit: 10
+        maxPagesPerPartition: 10
       });
       
       // Extract requested readings from each row
@@ -3511,7 +3511,7 @@ function attachDashboardHandlers() {
     const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
     dashboard.timeRange.preset = e.target.value;
     environments = loadEnvironments();
-    const envIndex = environments.findIndex(env => env.name === env.name);
+    const envIndex = environments.findIndex(e => e.name === env.name);
     if (envIndex >= 0) {
       environments[envIndex] = env;
       saveEnvironments(environments);
@@ -3635,8 +3635,16 @@ async function showAddVariableModal() {
     return;
   }
   
-  const nodeId = prompt(`Enter node ID (available: ${nodes.map(n => n.nodeId).join(', ')}):`, nodes[0].nodeId);
-  if (!nodeId) return;
+  const displayName = prompt(`Enter node ID (available: ${nodes.map(n => n.displayName).join(', ')}):`, nodes[0].displayName);
+  if (!displayName) return;
+  
+  // Map display name back to partition key for internal queries
+  const selectedNode = nodes.find(n => n.displayName === displayName);
+  if (!selectedNode) {
+    alert('Invalid node ID selected.');
+    return;
+  }
+  const nodeId = selectedNode.nodeId;
   
   const readingType = prompt('Enter reading type (e.g., temperature_millif, pressure_pa):', '');
   if (!readingType) return;

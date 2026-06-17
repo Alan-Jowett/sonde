@@ -1804,7 +1804,7 @@ metrics in the Dashboards feature (WEB-1100). MUST NOT use `eval()` or
 
 ---
 
-## 17  Assumptions
+## 18  Assumptions
 
 ### ASM-001  Azure Public Cloud Only
 
@@ -1824,7 +1824,7 @@ environment configuration.
 
 ---
 
-## 18  Risks
+## 19  Risks
 
 ### RISK-001  CDN Availability
 
@@ -1844,7 +1844,7 @@ storage.
 
 ---
 
-## 19  Revision History
+## 20  Revision History
 
 | Date | Author | Description |
 |------|--------|-------------|

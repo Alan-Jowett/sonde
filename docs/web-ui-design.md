@@ -920,23 +920,23 @@ Dashboards are stored as part of each environment's configuration:
 
 ```javascript
 // In localStorage under "sonde_environments"
-{
-  environments: [
-    {
-      name: "Production",
-      clientId: "...",
-      tenantId: "...",
-      storageAccount: "...",
-      functionAppName: "...",
-      sensorDataPreferences: { ... },
-      dashboards: [          // NEW: Array of dashboard objects
-        { /* dashboard 1 */ },
-        { /* dashboard 2 */ }
-      ]
-    }
-  ],
-  activeEnvironment: "Production"
-}
+[
+  {
+    name: "Production",
+    clientId: "...",
+    tenantId: "...",
+    storageAccount: "...",
+    functionAppName: "...",
+    sensorData: { ... },
+    dashboards: [          // NEW: Array of dashboard objects
+      { /* dashboard 1 */ },
+      { /* dashboard 2 */ }
+    ]
+  }
+]
+
+// In localStorage under "sonde_active_environment"
+"Production"
 ```
 
 ### 14.3 Variable Binding UI
@@ -1078,7 +1078,7 @@ Dashboards are stored as part of each environment's configuration:
     "tenantId": "...",
     "storageAccount": "...",
     "functionAppName": "...",
-    "sensorDataPreferences": { ... },
+    "sensorData": { ... },
     "dashboards": [
       {
         "name": "Greenhouse Monitoring",

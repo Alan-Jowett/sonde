@@ -573,6 +573,7 @@ function handleImportedJson(text) {
   if (!saveEnvironments(envs)) {
     throw new Error('Failed to save environment. Browser storage may be disabled or full.');
   }
+  clearUnsavedDashboardEnvironment(name);
 
   const isFirstEnv = envs.length === 1;
   const isActiveEnv = getActiveEnvironmentName() === name;
@@ -4407,6 +4408,7 @@ function showEnvironmentForm(existingEnv) {
       if (errorEl) { errorEl.textContent = 'Failed to save environment. Browser storage may be disabled or full.'; errorEl.style.display = ''; }
       return;
     }
+    clearUnsavedDashboardEnvironment(name);
 
     const isFirstEnv = !isEdit && envs.length === 1;
     const isActiveEnv = getActiveEnvironmentName() === name;

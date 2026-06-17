@@ -1102,3 +1102,36 @@ test('destroyAllDashboardCharts destroys and clears all retained dashboard chart
   assert.equal(destroyed, 2);
   assert.deepEqual(app.APP_DASHBOARD_STATE.metricCharts, {});
 });
+
+test('same-name environment import clears stale unsaved dashboard fallback', () => {
+  const originalEnv = {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: app.createDefaultSensorDataPreferences(),
+    dashboards: [{ name: 'Persisted', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+  };
+  localStorage.setItem('sonde_environments', JSON.stringify([originalEnv]));
+  app.activateEnvironmentState(originalEnv.name, originalEnv);
+  app.APP_DASHBOARD_STATE.unsavedEnvironment = {
+    ...originalEnv,
+    dashboards: [{ name: 'Unsaved Shadow', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+  };
+  global.window.confirm = () => true;
+
+  app.handleImportedJson(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    dashboards: [{ name: 'Imported Replacement', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+  }));
+
+  const loaded = app.loadActiveEnvironment();
+  assert.equal(app.APP_DASHBOARD_STATE.unsavedEnvironment, null);
+  assert.equal(loaded.dashboards[0].name, 'Imported Replacement');
+});

@@ -981,7 +981,7 @@ Dashboards are stored as part of each environment's configuration:
 2. Prompt or modal appears with fields:
    - **Chart Name** (text input)
 3. On save:
-   - Create `chart = { id, name, metrics: [] }`.
+   - Create `chart = { name, metrics: [] }`.
    - Append to `dashboard.charts`.
    - Persist to `localStorage`.
 
@@ -1085,7 +1085,7 @@ Dashboards are stored as part of each environment's configuration:
 - For each variable binding, query `sensordata` table filtered by node ID and
   reading type within the time range.
 - Evaluate each metric expression at each timestamp.
-- Group computed metric series by chart ID.
+- Group computed metric series by chart membership in `dashboard.charts`.
 - Render each chart with one dataset per metric assigned to that chart.
 - Downsample if needed (reuse Sensor Data tab logic, max 500 points per metric dataset).
 

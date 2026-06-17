@@ -3289,7 +3289,11 @@ async function renderDashboards() {
   
   if (!Array.isArray(env.dashboards)) {
     env.dashboards = createDefaultDashboardsArray();
+<<<<<<< HEAD
     const environments = loadEnvironments();
+=======
+    environments = loadEnvironments();
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
     persistDashboardEnvironment(env, environments);
   }
   
@@ -3490,15 +3494,18 @@ async function renderMetricCharts(dashboard) {
     const result = await evaluateMetricTimeSeriesFn(metric, dashboard.variables, dashboard.timeRange, deps);
     
     if (result.error) {
+      destroyDashboardChart(i);
       canvas.parentElement.innerHTML = `<div class="error-text">${escapeHtml(result.error)}</div>`;
 >>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
       continue;
     }
     if (result.points.length === 0) {
+      destroyDashboardChart(i);
       canvas.parentElement.innerHTML = '<div class="text-muted">No data in selected time range.</div>';
       continue;
     }
     
+<<<<<<< HEAD
     const result = await evaluateMetricTimeSeriesFn(metric, dashboard.variables, dashboard.timeRange, deps);
     
     if (result.error) {
@@ -3511,6 +3518,9 @@ async function renderMetricCharts(dashboard) {
       canvas.parentElement.innerHTML = '<div class="text-muted">No data in selected time range.</div>';
       continue;
     }
+=======
+    destroyDashboardChart(i);
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
     const chartPoints = downsamplePointsFn(result.points, 500).map(p => ({ x: p.timestamp, y: p.value }));
     
 <<<<<<< HEAD
@@ -3761,6 +3771,7 @@ function attachDashboardHandlers() {
 =======
     }
     environments = loadEnvironments();
+<<<<<<< HEAD
     const envIndex = environments.findIndex(e => e.name === env.name);
     if (envIndex >= 0) {
       environments[envIndex] = env;
@@ -3798,6 +3809,8 @@ function attachDashboardHandlers() {
     }
     dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
     const environments = loadEnvironments();
+=======
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
     persistDashboardEnvironment(env, environments);
     renderActiveTab();
   });
@@ -3813,11 +3826,7 @@ function attachDashboardHandlers() {
     }
     dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
     environments = loadEnvironments();
-    const envIndex = environments.findIndex(entry => entry.name === env.name);
-    if (envIndex >= 0) {
-      environments[envIndex] = env;
-      saveEnvironments(environments);
-    }
+    persistDashboardEnvironment(env, environments);
     renderActiveTab();
   });
   document.getElementById('dashboard-time-end')?.addEventListener('change', (e) => {
@@ -3832,11 +3841,7 @@ function attachDashboardHandlers() {
     }
     dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
     environments = loadEnvironments();
-    const envIndex = environments.findIndex(entry => entry.name === env.name);
-    if (envIndex >= 0) {
-      environments[envIndex] = env;
-      saveEnvironments(environments);
-    }
+    persistDashboardEnvironment(env, environments);
     renderActiveTab();
   });
   
@@ -3853,7 +3858,11 @@ function attachDashboardHandlers() {
     const newName = window.prompt('Enter new dashboard name:', dashboard.name);
     if (newName && newName.trim()) {
       dashboard.name = newName.trim();
+<<<<<<< HEAD
       const environments = loadEnvironments();
+=======
+      environments = loadEnvironments();
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
       persistDashboardEnvironment(env, environments);
       renderActiveTab();
     }
@@ -3902,7 +3911,11 @@ function showAddDashboardModal() {
   const name = window.prompt('Enter dashboard name:', `Dashboard ${env.dashboards.length + 1}`);
   if (name && name.trim()) {
     env.dashboards.push(createDefaultDashboard(name.trim()));
+<<<<<<< HEAD
     const environments = loadEnvironments();
+=======
+    environments = loadEnvironments();
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
     persistDashboardEnvironment(env, environments);
     APP_DASHBOARD_STATE.activeDashboardIndex = env.dashboards.length - 1;
     renderActiveTab();
@@ -3915,7 +3928,11 @@ function deleteDashboard(index) {
   if (!window.confirm(`Delete dashboard "${dashboard.name}"? This cannot be undone.`)) return;
   
   env.dashboards.splice(index, 1);
+<<<<<<< HEAD
   const environments = loadEnvironments();
+=======
+  environments = loadEnvironments();
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
   persistDashboardEnvironment(env, environments);
   
   if (APP_DASHBOARD_STATE.activeDashboardIndex >= env.dashboards.length) {
@@ -4099,12 +4116,16 @@ async function showVariableModal(index = null) {
     persistDashboardEnvironment(env, environments);
 =======
     environments = loadEnvironments();
+<<<<<<< HEAD
     const envIndex = environments.findIndex((entry) => entry.name === env.name);
     if (envIndex >= 0) {
       environments[envIndex] = env;
       saveEnvironments(environments);
     }
 >>>>>>> de06846 (Fix code review round 4 findings F-001 through F-003)
+=======
+    persistDashboardEnvironment(env, environments);
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
     closeModal();
     renderActiveTab();
   });
@@ -4137,7 +4158,11 @@ function deleteVariable(index) {
   }
   
   dashboard.variables.splice(index, 1);
+<<<<<<< HEAD
   const environments = loadEnvironments();
+=======
+  environments = loadEnvironments();
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
   persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
@@ -4183,7 +4208,11 @@ Variables: ${availableVars}`;
   };
   
   dashboard.metrics.push(metric);
+<<<<<<< HEAD
   const environments = loadEnvironments();
+=======
+  environments = loadEnvironments();
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
   persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
@@ -4213,7 +4242,11 @@ function showEditMetricModal(index) {
   const newColor = window.prompt('Enter color (hex):', metric.color);
   if (newColor) metric.color = newColor;
   
+<<<<<<< HEAD
   const environments = loadEnvironments();
+=======
+  environments = loadEnvironments();
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
   persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
@@ -4226,7 +4259,11 @@ function deleteMetric(index) {
   if (!window.confirm(`Delete metric "${metric.displayName}"?`)) return;
   
   dashboard.metrics.splice(index, 1);
+<<<<<<< HEAD
   const environments = loadEnvironments();
+=======
+  environments = loadEnvironments();
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
   persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
@@ -4570,10 +4607,13 @@ if (typeof module !== 'undefined' && module.exports) {
     persistDashboardEnvironment,
     destroyDashboardChart,
     destroyAllDashboardCharts,
+<<<<<<< HEAD
 =======
     renderMetricCharts,
     downsamplePoints,
 >>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
+=======
+>>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
     getDashboardTimeRangeBounds,
     normalizeDashboardTimeRange,
     validateVariableName,

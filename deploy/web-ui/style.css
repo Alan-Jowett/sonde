@@ -370,15 +370,45 @@ code { font-family: Consolas, "Courier New", monospace; }
 }
 
 .dashboard-variables,
-.dashboard-metrics {
+.dashboard-charts {
   margin-bottom: 2rem;
 }
 
 .dashboard-variables h3,
-.dashboard-metrics h3 {
+.dashboard-charts h3 {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-bottom: 1rem;
+}
+
+.chart-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.chart-header h4 {
+  margin: 0;
+}
+
+.chart-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.chart-metrics {
   margin-bottom: 1rem;
 }
 
@@ -428,6 +458,10 @@ code { font-family: Consolas, "Courier New", monospace; }
 }
 
 .metric-header h4 {
+  margin: 0;
+}
+
+.metric-header h5 {
   margin: 0;
 }
 

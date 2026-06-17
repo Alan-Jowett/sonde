@@ -167,12 +167,19 @@ function createDefaultDashboard(name) {
   return {
     name: name || 'Dashboard 1',
     variables: [],
-    metrics: [],
+    charts: [],
     timeRange: {
       preset: '24h',
       start: null,
       end: null
     }
+  };
+}
+
+function createDefaultChart(name) {
+  return {
+    name: name || 'Chart 1',
+    metrics: [],
   };
 }
 
@@ -219,7 +226,36 @@ function normalizeDashboardMetric(metric) {
     displayName,
     expression,
     color: typeof metric.color === 'string' ? metric.color : '#007bff',
+    ...(typeof metric._validationError === 'string' ? { _validationError: metric._validationError } : {}),
+    ...(typeof metric._validationWarning === 'string' ? { _validationWarning: metric._validationWarning } : {}),
   };
+}
+
+function normalizeDashboardChart(chart, index) {
+  if (typeof chart !== 'object' || chart === null) {
+    return createDefaultChart(`Chart ${index + 1}`);
+  }
+  return {
+    name: typeof chart.name === 'string' && chart.name.trim()
+      ? chart.name.trim()
+      : `Chart ${index + 1}`,
+    metrics: Array.isArray(chart.metrics)
+      ? chart.metrics.map(normalizeDashboardMetric).filter(Boolean)
+      : [],
+  };
+}
+
+function normalizeDashboardCharts(dashboard) {
+  if (Array.isArray(dashboard?.charts)) {
+    return dashboard.charts.map((chart, index) => normalizeDashboardChart(chart, index));
+  }
+  if (Array.isArray(dashboard?.metrics) && dashboard.metrics.length > 0) {
+    return [{
+      name: 'Chart 1',
+      metrics: dashboard.metrics.map(normalizeDashboardMetric).filter(Boolean),
+    }];
+  }
+  return [];
 }
 
 function normalizeDashboard(dashboard, index) {
@@ -233,9 +269,7 @@ function normalizeDashboard(dashboard, index) {
     variables: Array.isArray(dashboard.variables)
       ? dashboard.variables.map(normalizeDashboardVariable).filter(Boolean)
       : [],
-    metrics: Array.isArray(dashboard.metrics)
-      ? dashboard.metrics.map(normalizeDashboardMetric).filter(Boolean)
-      : [],
+    charts: normalizeDashboardCharts(dashboard),
     timeRange: normalizeDashboardTimeRange(dashboard.timeRange),
   };
 }
@@ -245,14 +279,25 @@ function serializeDashboard(dashboard, index) {
   return {
     name: normalized.name,
     variables: normalized.variables.map((variable) => ({ ...variable })),
-    metrics: normalized.metrics.map((metric) => ({
-      id: metric.id,
-      displayName: metric.displayName,
-      expression: metric.expression,
-      color: metric.color,
+    charts: normalized.charts.map((chart) => ({
+      name: chart.name,
+      metrics: chart.metrics.map((metric) => ({
+        id: metric.id,
+        displayName: metric.displayName,
+        expression: metric.expression,
+        color: metric.color,
+      })),
     })),
     timeRange: normalizeDashboardTimeRange(normalized.timeRange),
   };
+}
+
+function getDashboardMetricCount(dashboard) {
+  return normalizeDashboardCharts(dashboard).reduce((count, chart) => count + chart.metrics.length, 0);
+}
+
+function getDashboardMetrics(dashboard) {
+  return normalizeDashboardCharts(dashboard).flatMap((chart) => chart.metrics);
 }
 
 function validateVariableName(name, existingNames) {
@@ -317,16 +362,17 @@ function normalizeEnvironmentRecord(env) {
 
   // Re-validate all metric expressions (defense-in-depth for localStorage tampering)
   normalized.dashboards.forEach(dashboard => {
-    if (!dashboard.metrics) return;
-    dashboard.metrics.forEach(metric => {
-      const variableNames = (dashboard.variables || []).map(v => v.name);
-      const validation = validateExpression(metric.expression, variableNames);
-      if (validation.error) {
-        metric._validationError = validation.error;
-      } else if (validation.warning) {
-        metric._validationWarning = validation.warning;
+    const variableNames = (dashboard.variables || []).map(v => v.name);
+    for (const chart of dashboard.charts || []) {
+      for (const metric of chart.metrics || []) {
+        const validation = validateExpression(metric.expression, variableNames);
+        if (validation.error) {
+          metric._validationError = validation.error;
+        } else if (validation.warning) {
+          metric._validationWarning = validation.warning;
+        }
       }
-    });
+    }
   });
 
   return normalized;
@@ -553,6 +599,23 @@ function validateImportedDashboardMetric(metric, dashboardName) {
   };
 }
 
+function validateImportedDashboardChart(chart, chartIndex, dashboardName) {
+  if (typeof chart !== 'object' || chart === null || Array.isArray(chart)) {
+    throw new Error(`Dashboard "${dashboardName}" charts must be objects.`);
+  }
+  const chartName = typeof chart.name === 'string' && chart.name.trim()
+    ? chart.name.trim()
+    : `Chart ${chartIndex + 1}`;
+  const metrics = [];
+  for (const metric of Array.isArray(chart.metrics) ? chart.metrics : []) {
+    metrics.push(validateImportedDashboardMetric(metric, dashboardName));
+  }
+  return {
+    name: chartName,
+    metrics,
+  };
+}
+
 function validateImportedDashboard(dashboard, index) {
   if (typeof dashboard !== 'object' || dashboard === null || Array.isArray(dashboard)) {
     throw new Error(`Dashboard entry ${index + 1} must be an object.`);
@@ -564,14 +627,19 @@ function validateImportedDashboard(dashboard, index) {
   for (const variable of Array.isArray(dashboard.variables) ? dashboard.variables : []) {
     variables.push(validateImportedDashboardVariable(variable, variables.map((entry) => entry.name), dashboardName));
   }
-  const metrics = [];
-  for (const metric of Array.isArray(dashboard.metrics) ? dashboard.metrics : []) {
-    metrics.push(validateImportedDashboardMetric(metric, dashboardName));
+  let charts = [];
+  if (Array.isArray(dashboard.charts)) {
+    charts = dashboard.charts.map((chart, chartIndex) => validateImportedDashboardChart(chart, chartIndex, dashboardName));
+  } else if (Array.isArray(dashboard.metrics) && dashboard.metrics.length > 0) {
+    charts = [{
+      name: 'Chart 1',
+      metrics: dashboard.metrics.map((metric) => validateImportedDashboardMetric(metric, dashboardName)),
+    }];
   }
   return {
     name: dashboardName,
     variables,
-    metrics,
+    charts,
     timeRange: (typeof dashboard.timeRange === 'object' && dashboard.timeRange !== null)
       ? normalizeDashboardTimeRange({
           preset: typeof dashboard.timeRange.preset === 'string' ? dashboard.timeRange.preset : '24h',
@@ -3336,7 +3404,7 @@ function canAddDashboard(env) {
 }
 
 function canAddMetric(dashboard) {
-  if (dashboard.metrics.length >= 10) {
+  if (getDashboardMetricCount(dashboard) >= 10) {
     return {
       allowed: false,
       warning: 'You have reached the recommended limit of 10 metrics per dashboard. Adding more may impact performance. Continue anyway?'
@@ -3390,7 +3458,7 @@ async function renderDashboards() {
   `;
   
   attachDashboardHandlers();
-  if (dashboard.metrics.length > 0) {
+  if (dashboard.charts.length > 0) {
     await renderMetricCharts(dashboard);
   }
 }
@@ -3449,11 +3517,11 @@ function renderDashboardContent(dashboard) {
       ${renderVariablesList(dashboard.variables)}
     </div>
     
-    <div class="dashboard-metrics">
-      <h3>Metrics <button class="btn btn-sm btn-primary" id="add-metric-btn">+ Add Metric</button></h3>
-      ${dashboard.metrics.length === 0 
-        ? '<p class="text-muted">No metrics yet. ' + (dashboard.variables.length === 0 ? 'Add variables first, then ' : '') + 'click "+ Add Metric" above.</p>'
-        : dashboard.metrics.map((m, i) => renderMetricCard(m, i)).join('')
+    <div class="dashboard-charts">
+      <h3>Charts <button class="btn btn-sm btn-primary" id="add-chart-btn">+ Add Chart</button></h3>
+      ${dashboard.charts.length === 0
+        ? '<p class="text-muted">No charts yet. Click "+ Add Chart" above to get started.</p>'
+        : dashboard.charts.map((chart, chartIndex) => renderChartCard(chart, chartIndex, dashboard.variables.length)).join('')
       }
     </div>
   `;
@@ -3489,25 +3557,48 @@ function renderVariablesList(variables) {
   `;
 }
 
-function renderMetricCard(metric, index) {
+function renderChartCard(chart, chartIndex, variableCount) {
+  return `
+    <div class="chart-card" id="chart-${chartIndex}">
+      <div class="chart-header">
+        <h4>${escapeHtml(chart.name)}</h4>
+        <div class="chart-actions">
+          <button class="btn-sm btn-primary" data-add-metric="${chartIndex}">+ Add Metric</button>
+          <button class="btn-sm" data-edit-chart="${chartIndex}">Rename</button>
+          <button class="btn-sm btn-danger" data-delete-chart="${chartIndex}">Delete</button>
+        </div>
+      </div>
+      <div class="chart-metrics">
+        ${chart.metrics.length === 0
+          ? `<p class="text-muted">No metrics yet. ${variableCount === 0 ? 'Add variables first, then ' : ''}click "+ Add Metric" for this chart.</p>`
+          : chart.metrics.map((metric, metricIndex) => renderMetricCard(metric, chartIndex, metricIndex)).join('')
+        }
+      </div>
+      ${chart.metrics.length > 0 ? `
+        <div class="metric-chart-container">
+          <canvas id="metric-chart-${chartIndex}"></canvas>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderMetricCard(metric, chartIndex, metricIndex) {
   const hasError = metric._validationError;
   const hasWarning = metric._validationWarning;
   return `
-    <div class="metric-card ${hasError ? 'metric-error' : ''}" id="metric-${index}">
+    <div class="metric-card ${hasError ? 'metric-error' : ''}" id="metric-${chartIndex}-${metricIndex}">
       <div class="metric-header">
-        <h4>${escapeHtml(metric.displayName || `Metric ${index + 1}`)}</h4>
+        <h5>${escapeHtml(metric.displayName || `Metric ${metricIndex + 1}`)}</h5>
         <div class="metric-actions">
-          <button class="btn-sm" data-edit-metric="${index}">Edit</button>
-          <button class="btn-sm btn-danger" data-delete-metric="${index}">Delete</button>
+          <button class="btn-sm" data-edit-metric-chart="${chartIndex}" data-edit-metric-index="${metricIndex}">Edit</button>
+          <button class="btn-sm btn-danger" data-delete-metric-chart="${chartIndex}" data-delete-metric-index="${metricIndex}">Delete</button>
         </div>
       </div>
       <div class="metric-expression">
         <code>${escapeHtml(metric.expression)}</code>
         ${hasError ? `<div class="error-text">${escapeHtml(metric._validationError)}</div>` : ''}
         ${!hasError && hasWarning ? `<div class="text-muted">${escapeHtml(metric._validationWarning)}</div>` : ''}
-      </div>
-      <div class="metric-chart-container">
-        <canvas id="metric-chart-${index}"></canvas>
       </div>
     </div>
   `;
@@ -3529,48 +3620,61 @@ function getDashboardTimeRangeBounds(timeRange, nowMs = Date.now()) {
 }
 
 async function renderMetricCharts(dashboard, deps = {}) {
+  const normalizedDashboard = normalizeDashboard(dashboard, 0);
   const evaluateMetricTimeSeriesFn = deps.evaluateMetricTimeSeriesFn || evaluateMetricTimeSeries;
   const downsamplePointsFn = deps.downsamplePointsFn || downsamplePoints;
   const chartFactory = deps.chartFactory || ((canvas, config) => new Chart(canvas, config));
-  for (let i = 0; i < dashboard.metrics.length; i++) {
-    const metric = dashboard.metrics[i];
-    if (metric._validationError) continue;
-    
-    const canvas = document.getElementById(`metric-chart-${i}`);
+  for (let chartIndex = 0; chartIndex < normalizedDashboard.charts.length; chartIndex++) {
+    const chart = normalizedDashboard.charts[chartIndex];
+    const canvas = document.getElementById(`metric-chart-${chartIndex}`);
     if (!canvas) continue;
-    if (metric._validationWarning) {
-      destroyDashboardChart(i);
-      canvas.parentElement.innerHTML = `<div class="text-muted">${escapeHtml(metric._validationWarning)}</div>`;
+
+    destroyDashboardChart(chartIndex);
+    const datasets = [];
+    let fallbackMessage = null;
+    let fallbackClassName = 'text-muted';
+
+    for (const metric of chart.metrics) {
+      if (metric._validationError) {
+        fallbackMessage = fallbackMessage || metric._validationError;
+        fallbackClassName = 'error-text';
+        continue;
+      }
+      if (metric._validationWarning) {
+        fallbackMessage = fallbackMessage || metric._validationWarning;
+        continue;
+      }
+
+      const result = await evaluateMetricTimeSeriesFn(metric, normalizedDashboard.variables, normalizedDashboard.timeRange, deps);
+      if (result.error) {
+        fallbackMessage = fallbackMessage || result.error;
+        fallbackClassName = 'error-text';
+        continue;
+      }
+      if (result.points.length === 0) {
+        fallbackMessage = fallbackMessage || 'No data in selected time range.';
+        continue;
+      }
+
+      datasets.push({
+        label: metric.displayName || metric.expression,
+        data: downsamplePointsFn(result.points, 500).map(point => ({ x: point.timestamp, y: point.value })),
+        borderColor: metric.color || '#007bff',
+        backgroundColor: metric.color || '#007bff',
+        fill: false,
+        tension: 0.1,
+      });
+    }
+
+    if (datasets.length === 0) {
+      canvas.parentElement.innerHTML = `<div class="${fallbackClassName}">${escapeHtml(fallbackMessage || 'No data in selected time range.')}</div>`;
       continue;
     }
-    
-    const result = await evaluateMetricTimeSeriesFn(metric, dashboard.variables, dashboard.timeRange, deps);
-    
-    if (result.error) {
-      destroyDashboardChart(i);
-      canvas.parentElement.innerHTML = `<div class="error-text">${escapeHtml(result.error)}</div>`;
-      continue;
-    }
-    if (result.points.length === 0) {
-      destroyDashboardChart(i);
-      canvas.parentElement.innerHTML = '<div class="text-muted">No data in selected time range.</div>';
-      continue;
-    }
-    
-    destroyDashboardChart(i);
-    const chartPoints = downsamplePointsFn(result.points, 500).map(p => ({ x: p.timestamp, y: p.value }));
-    
-    APP_DASHBOARD_STATE.metricCharts[i] = chartFactory(canvas, {
+
+    APP_DASHBOARD_STATE.metricCharts[chartIndex] = chartFactory(canvas, {
       type: 'line',
       data: {
-        datasets: [{
-          label: metric.displayName || metric.expression,
-          data: chartPoints,
-          borderColor: metric.color || '#007bff',
-          backgroundColor: metric.color || '#007bff',
-          fill: false,
-          tension: 0.1
-        }]
+        datasets,
       },
       options: {
         responsive: true,
@@ -3837,6 +3941,10 @@ function attachDashboardHandlers() {
     if (!check.allowed && !window.confirm(check.warning)) return;
     showAddDashboardModal();
   });
+
+  document.getElementById('add-chart-btn')?.addEventListener('click', () => {
+    showAddChartModal();
+  });
   
   document.getElementById('edit-dashboard-name-btn')?.addEventListener('click', () => {
     const env = loadActiveEnvironment();
@@ -3851,12 +3959,26 @@ function attachDashboardHandlers() {
   });
   
   document.getElementById('add-variable-btn')?.addEventListener('click', () => showAddVariableModal());
-  document.getElementById('add-metric-btn')?.addEventListener('click', () => {
-    const env = loadActiveEnvironment();
-    const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
-    const check = canAddMetric(dashboard);
-    if (!check.allowed && !window.confirm(check.warning)) return;
-    showAddMetricModal();
+  document.querySelectorAll('[data-edit-chart]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      editChart(parseInt(btn.dataset.editChart, 10));
+    });
+  });
+
+  document.querySelectorAll('[data-delete-chart]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      deleteChart(parseInt(btn.dataset.deleteChart, 10));
+    });
+  });
+
+  document.querySelectorAll('[data-add-metric]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const env = loadActiveEnvironment();
+      const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+      const check = canAddMetric(dashboard);
+      if (!check.allowed && !window.confirm(check.warning)) return;
+      showAddMetricModal(parseInt(btn.dataset.addMetric, 10));
+    });
   });
   
   document.querySelectorAll('[data-edit-variable]').forEach(btn => {
@@ -3873,17 +3995,21 @@ function attachDashboardHandlers() {
     });
   });
   
-  document.querySelectorAll('[data-edit-metric]').forEach(btn => {
+  document.querySelectorAll('[data-edit-metric-chart]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const index = parseInt(btn.dataset.editMetric);
-      showEditMetricModal(index);
+      showEditMetricModal(
+        parseInt(btn.dataset.editMetricChart, 10),
+        parseInt(btn.dataset.editMetricIndex, 10),
+      );
     });
   });
-  
-  document.querySelectorAll('[data-delete-metric]').forEach(btn => {
+
+  document.querySelectorAll('[data-delete-metric-chart]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const index = parseInt(btn.dataset.deleteMetric);
-      deleteMetric(index);
+      deleteMetric(
+        parseInt(btn.dataset.deleteMetricChart, 10),
+        parseInt(btn.dataset.deleteMetricIndex, 10),
+      );
     });
   });
 }
@@ -3912,6 +4038,52 @@ function deleteDashboard(index) {
   if (APP_DASHBOARD_STATE.activeDashboardIndex >= env.dashboards.length) {
     APP_DASHBOARD_STATE.activeDashboardIndex = Math.max(0, env.dashboards.length - 1);
   }
+  renderActiveTab();
+}
+
+function showAddChartModal() {
+  const env = loadActiveEnvironment();
+  const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+  const name = window.prompt('Enter chart name:', `Chart ${dashboard.charts.length + 1}`);
+  if (!name || !name.trim()) {
+    return;
+  }
+  dashboard.charts.push(createDefaultChart(name.trim()));
+  const environments = loadEnvironments();
+  persistDashboardEnvironment(env, environments);
+  renderActiveTab();
+}
+
+function editChart(chartIndex) {
+  const env = loadActiveEnvironment();
+  const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+  const chart = dashboard.charts[chartIndex];
+  if (!chart) {
+    return;
+  }
+  const name = window.prompt('Enter new chart name:', chart.name);
+  if (!name || !name.trim()) {
+    return;
+  }
+  chart.name = name.trim();
+  const environments = loadEnvironments();
+  persistDashboardEnvironment(env, environments);
+  renderActiveTab();
+}
+
+function deleteChart(chartIndex) {
+  const env = loadActiveEnvironment();
+  const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+  const chart = dashboard.charts[chartIndex];
+  if (!chart) {
+    return;
+  }
+  if (!window.confirm(`Delete chart "${chart.name}" and its metrics?`)) {
+    return;
+  }
+  dashboard.charts.splice(chartIndex, 1);
+  const environments = loadEnvironments();
+  persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
 
@@ -4107,7 +4279,7 @@ function deleteVariable(index) {
   const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
   const variable = dashboard.variables[index];
   
-  const usedInMetrics = dashboard.metrics.filter(m =>
+  const usedInMetrics = getDashboardMetrics(dashboard).filter(m =>
     isVariableUsedInExpression(variable.name, m.expression)
   );
   
@@ -4124,9 +4296,15 @@ function deleteVariable(index) {
   renderActiveTab();
 }
 
-function showAddMetricModal() {
+function showAddMetricModal(chartIndex) {
   const env = loadActiveEnvironment();
   const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+  const chart = dashboard.charts[chartIndex];
+
+  if (!chart) {
+    alert('Add a chart before creating metrics.');
+    return;
+  }
   
   if (dashboard.variables.length === 0) {
     alert('Add variables first before creating metrics.');
@@ -4164,22 +4342,27 @@ Variables: ${availableVars}`;
     color: color || '#007bff'
   };
   
-  dashboard.metrics.push(metric);
+  chart.metrics.push(metric);
   const environments = loadEnvironments();
   persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
 
-function showEditMetricModal(index) {
+function showEditMetricModal(chartIndex, metricIndex) {
   const env = loadActiveEnvironment();
   const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
-  const metric = dashboard.metrics[index];
+  const chart = dashboard.charts[chartIndex];
+  const metric = chart?.metrics[metricIndex];
+  if (!chart || !metric) {
+    return;
+  }
   
+  const nextMetric = { ...metric };
   const newDisplayName = window.prompt('Enter display name:', metric.displayName);
-  if (newDisplayName) metric.displayName = newDisplayName;
+  if (newDisplayName) nextMetric.displayName = newDisplayName;
   
   const availableVars = dashboard.variables.map(v => v.name).join(', ');
-  const newExpression = window.prompt(`Enter expression (variables: ${availableVars}):`, metric.expression);
+  const newExpression = window.prompt(`Enter expression (variables: ${availableVars}):`, nextMetric.expression);
   if (newExpression) {
     const validation = validateExpression(newExpression, dashboard.variables.map(v => v.name));
     if (validation.error) {
@@ -4189,25 +4372,49 @@ function showEditMetricModal(index) {
     if (validation.warning) {
       alert(validation.warning);
     }
-    metric.expression = newExpression;
+    nextMetric.expression = newExpression;
   }
   
-  const newColor = window.prompt('Enter color (hex):', metric.color);
-  if (newColor) metric.color = newColor;
+  const newColor = window.prompt('Enter color (hex):', nextMetric.color);
+  if (newColor) nextMetric.color = newColor;
+
+  let nextChartIndex = chartIndex;
+  if (dashboard.charts.length > 1) {
+    const chartChoices = dashboard.charts.map((entry, index) => `${index + 1}: ${entry.name}`).join('\n');
+    const chartSelection = window.prompt(`Enter chart number for this metric:\n${chartChoices}`, String(chartIndex + 1));
+    if (chartSelection) {
+      nextChartIndex = Number.parseInt(chartSelection, 10) - 1;
+      if (!Number.isInteger(nextChartIndex) || nextChartIndex < 0 || nextChartIndex >= dashboard.charts.length) {
+        alert('Chart number must match an existing chart.');
+        return;
+      }
+    }
+  }
+
+  if (nextChartIndex === chartIndex) {
+    chart.metrics[metricIndex] = nextMetric;
+  } else {
+    chart.metrics.splice(metricIndex, 1);
+    dashboard.charts[nextChartIndex].metrics.push(nextMetric);
+  }
   
   const environments = loadEnvironments();
   persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
 
-function deleteMetric(index) {
+function deleteMetric(chartIndex, metricIndex) {
   const env = loadActiveEnvironment();
   const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
-  const metric = dashboard.metrics[index];
+  const chart = dashboard.charts[chartIndex];
+  const metric = chart?.metrics[metricIndex];
+  if (!chart || !metric) {
+    return;
+  }
   
   if (!window.confirm(`Delete metric "${metric.displayName}"?`)) return;
   
-  dashboard.metrics.splice(index, 1);
+  chart.metrics.splice(metricIndex, 1);
   const environments = loadEnvironments();
   persistDashboardEnvironment(env, environments);
   renderActiveTab();

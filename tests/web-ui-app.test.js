@@ -1047,33 +1047,6 @@ test('evaluateMetricTimeSeries computes time-series points from real fetched dat
     { timestamp: 2000, value: 25.5 },
   ]);
 });
-<<<<<<< HEAD
-<<<<<<< HEAD
-
-test('evaluateMetricTimeSeries reports undefined variables explicitly', async () => {
-  const result = await app.evaluateMetricTimeSeries({
-    expression: 'TEMP + UNKNOWN',
-  }, [
-    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
-  ], { preset: '24h' }, {
-    parserFactory: () => ({
-      parse() {
-        return {
-          variables() { return ['TEMP', 'UNKNOWN']; },
-          evaluate() { return 0; },
-        };
-      },
-    }),
-    fetchVariableDataFn: async () => {
-      throw new Error('fetchVariableData should not run when variables are undefined');
-    },
-  });
-
-  assert.equal(result.error, 'Undefined variables: UNKNOWN');
-  assert.deepEqual(result.points, []);
-});
-=======
->>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
 
 test('evaluateMetricTimeSeries reports undefined variables explicitly', async () => {
   const result = await app.evaluateMetricTimeSeries({
@@ -1103,19 +1076,10 @@ test('renderMetricCharts shows a no-data message when evaluation yields zero poi
   const parent = makeElement();
   const canvas = makeElement();
   canvas.parentElement = parent;
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
   let destroyed = 0;
   app.APP_DASHBOARD_STATE.metricCharts[0] = {
     destroy() { destroyed += 1; },
   };
-<<<<<<< HEAD
-=======
->>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
-=======
->>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
   global.document.getElementById = (id) => {
     if (id === 'metric-chart-0') return canvas;
     return makeElement();
@@ -1134,16 +1098,8 @@ test('renderMetricCharts shows a no-data message when evaluation yields zero poi
     });
 
     assert.match(parent.innerHTML, /No data in selected time range\./);
-<<<<<<< HEAD
-<<<<<<< HEAD
     assert.equal(destroyed, 1);
     assert.equal(app.APP_DASHBOARD_STATE.metricCharts[0], undefined);
-=======
->>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
-=======
-    assert.equal(destroyed, 1);
-    assert.equal(app.APP_DASHBOARD_STATE.metricCharts[0], undefined);
->>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
   } finally {
     global.document.getElementById = originalGetElementById;
   }
@@ -1187,10 +1143,6 @@ test('renderMetricCharts downsamples dashboard datasets to 500 points before cha
     global.document.getElementById = originalGetElementById;
   }
 });
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
 
 test('persistDashboardEnvironment preserves edited dashboards in memory after quota failures', () => {
   const env = {
@@ -1238,10 +1190,6 @@ test('destroyAllDashboardCharts destroys and clears all retained dashboard chart
   assert.equal(destroyed, 2);
   assert.deepEqual(app.APP_DASHBOARD_STATE.metricCharts, {});
 });
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> c580ee1 (Fix code review round 7 finding F-001)
 
 test('same-name environment import clears stale unsaved dashboard fallback', () => {
   const originalEnv = {
@@ -1275,12 +1223,3 @@ test('same-name environment import clears stale unsaved dashboard fallback', () 
   assert.equal(app.APP_DASHBOARD_STATE.unsavedEnvironment, null);
   assert.equal(loaded.dashboards[0].name, 'Imported Replacement');
 });
-<<<<<<< HEAD
-=======
->>>>>>> de06846 (Fix code review round 4 findings F-001 through F-003)
-=======
->>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
-=======
->>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
-=======
->>>>>>> c580ee1 (Fix code review round 7 finding F-001)

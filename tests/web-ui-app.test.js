@@ -739,6 +739,7 @@ test('buildEnvironmentExportData includes environment-scoped Sensor Data prefere
           'series-a': { displayName: 'Series A', scaleDivisor: 2, unitSuffix: 'V' },
         },
       },
+      dashboards: [],
     },
   );
 });

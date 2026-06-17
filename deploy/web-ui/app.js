@@ -430,6 +430,35 @@ function handleImportedJson(text) {
   const validationError = validateEnvironmentFields(fields);
   if (validationError) throw new Error(validationError);
   const sensorData = validateImportedSensorDataPreferences(data.sensorData);
+  
+  // Validate and import dashboards
+  let dashboards = [];
+  if (Array.isArray(data.dashboards)) {
+    dashboards = data.dashboards.map(d => {
+      if (typeof d !== 'object' || d === null) return null;
+      return {
+        name: typeof d.name === 'string' ? d.name : 'Imported Dashboard',
+        variables: Array.isArray(d.variables) ? d.variables.filter(v =>
+          typeof v === 'object' && v !== null &&
+          typeof v.name === 'string' &&
+          typeof v.nodeId === 'string' &&
+          typeof v.readingType === 'string'
+        ) : [],
+        metrics: Array.isArray(d.metrics) ? d.metrics.filter(m =>
+          typeof m === 'object' && m !== null &&
+          typeof m.displayName === 'string' &&
+          typeof m.expression === 'string'
+        ) : [],
+        timeRange: (typeof d.timeRange === 'object' && d.timeRange !== null)
+          ? {
+              preset: typeof d.timeRange.preset === 'string' ? d.timeRange.preset : '24h',
+              start: d.timeRange.start || null,
+              end: d.timeRange.end || null
+            }
+          : { preset: '24h', start: null, end: null }
+      };
+    }).filter(Boolean);
+  }
 
   let name = typeof data.name === 'string' ? data.name.trim() : '';
   if (!name) {
@@ -454,7 +483,7 @@ function handleImportedJson(text) {
     }
   }
 
-  const envData = { name, ...fields, sensorData };
+  const envData = { name, ...fields, sensorData, dashboards };
   const idx = envs.findIndex((e) => e.name === name);
   if (idx >= 0) {
     envs[idx] = envData;
@@ -3196,7 +3225,14 @@ function renderDashboardContent(dashboard) {
   return `
     <div class="dashboard-header">
       <h2>${escapeHtml(dashboard.name)}</h2>
-      <button class="btn btn-secondary" id="edit-dashboard-name-btn">Rename</button>
+      <div class="dashboard-header-controls">
+        <select id="dashboard-time-range" class="time-range-select">
+          <option value="1h" ${dashboard.timeRange.preset === '1h' ? 'selected' : ''}>Last Hour</option>
+          <option value="24h" ${dashboard.timeRange.preset === '24h' ? 'selected' : ''}>Last 24 Hours</option>
+          <option value="7d" ${dashboard.timeRange.preset === '7d' ? 'selected' : ''}>Last 7 Days</option>
+        </select>
+        <button class="btn btn-secondary" id="edit-dashboard-name-btn">Rename</button>
+      </div>
     </div>
     
     <div class="dashboard-variables">
@@ -3302,8 +3338,12 @@ async function renderMetricCharts(dashboard) {
         maintainAspectRatio: false,
         scales: {
           x: {
-            type: 'time',
-            time: { unit: 'hour' }
+            type: 'linear',
+            ticks: {
+              callback: function(value) {
+                return new Date(value).toLocaleTimeString();
+              }
+            }
           },
           y: {
             beginAtZero: false
@@ -3381,41 +3421,68 @@ async function evaluateMetricTimeSeries(metric, variables, timeRange) {
 }
 
 async function fetchVariableData(variables, timeRange) {
-  const env = loadActiveEnvironment();
   const result = {};
   
-  const now = new Date();
-  let startTime;
+  const now = Date.now();
+  let startMs;
   
   switch (timeRange.preset) {
     case '1h':
-      startTime = new Date(now.getTime() - 60 * 60 * 1000);
+      startMs = now - 60 * 60 * 1000;
       break;
     case '7d':
-      startTime = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      startMs = now - 7 * 24 * 60 * 60 * 1000;
       break;
     case '24h':
     default:
-      startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      startMs = now - 24 * 60 * 60 * 1000;
       break;
   }
   
-  const timestampFilter = `Timestamp ge datetime'${startTime.toISOString()}'`;
-  
+  // Group variables by partition key (node ID) to minimize queries
+  const partitionMap = new Map();
   for (const variable of variables) {
-    const partitionFilter = `PartitionKey eq '${variable.nodeId}'`;
-    const rowFilter = `RowKey eq '${variable.readingType}'`;
-    const filter = `${partitionFilter} and ${rowFilter} and ${timestampFilter}`;
-    
+    if (!partitionMap.has(variable.nodeId)) {
+      partitionMap.set(variable.nodeId, []);
+    }
+    partitionMap.get(variable.nodeId).push(variable);
+  }
+  
+  // Query sensor data for each partition
+  for (const [nodeId, vars] of partitionMap.entries()) {
     try {
-      const data = await fetchTableData(env.storageAccount, CONFIG.sensorDataTable, filter);
-      result[variable.name] = data.map(row => ({
-        timestamp: new Date(row.Timestamp).getTime(),
-        value: row.Value
-      }));
+      const rows = await querySensorDataRange([nodeId], startMs, now, {
+        topPerPage: 1000,
+        pageLimit: 10
+      });
+      
+      // Extract requested readings from each row
+      for (const row of rows) {
+        const timestampMs = Number(row.timestamp_ms);
+        if (!Number.isFinite(timestampMs)) continue;
+        
+        const readings = parseSensorReadings(row.decoded_readings);
+        if (!readings) continue;
+        
+        // Map each variable to its value at this timestamp
+        for (const variable of vars) {
+          const value = readings[variable.readingType];
+          if (value !== undefined && typeof value === 'number') {
+            if (!result[variable.name]) {
+              result[variable.name] = [];
+            }
+            result[variable.name].push({
+              timestamp: timestampMs,
+              value
+            });
+          }
+        }
+      }
     } catch (error) {
-      console.error(`Failed to fetch data for variable ${variable.name}:`, error);
-      result[variable.name] = [];
+      console.error(`Failed to fetch data for node ${nodeId}:`, error);
+      for (const variable of vars) {
+        result[variable.name] = [];
+      }
     }
   }
   
@@ -3437,6 +3504,19 @@ function attachDashboardHandlers() {
       const index = parseInt(btn.dataset.deleteDashboard);
       deleteDashboard(index);
     });
+  });
+  
+  document.getElementById('dashboard-time-range')?.addEventListener('change', (e) => {
+    const env = loadActiveEnvironment();
+    const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+    dashboard.timeRange.preset = e.target.value;
+    environments = loadEnvironments();
+    const envIndex = environments.findIndex(env => env.name === env.name);
+    if (envIndex >= 0) {
+      environments[envIndex] = env;
+      saveEnvironments(environments);
+    }
+    renderActiveTab();
   });
   
   document.getElementById('add-dashboard-btn')?.addEventListener('click', () => {
@@ -3729,11 +3809,16 @@ function deleteMetric(index) {
 }
 
 async function fetchActualStateNodes() {
-  const env = loadActiveEnvironment();
   try {
-    const data = await fetchTableData(env.storageAccount, CONFIG.actualStateTable, '');
-    return data.map(row => ({ nodeId: row.PartitionKey }));
-  } catch {
+    const rows = await queryTable(CONFIG.actualStateTable, '');
+    const nodeRows = filterNodeRows(rows);
+    const latest = latestByPartition(nodeRows);
+    return latest.map(row => ({
+      nodeId: row.PartitionKey,
+      displayName: row.node_id || row.PartitionKey
+    }));
+  } catch (error) {
+    console.error('Failed to fetch nodes:', error);
     return [];
   }
 }

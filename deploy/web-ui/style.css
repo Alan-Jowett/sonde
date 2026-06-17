@@ -344,10 +344,24 @@ code { font-family: Consolas, "Courier New", monospace; }
   justify-content: space-between;
   align-items: center;
   margin-bottom: 1.5rem;
+  gap: 1rem;
 }
 
 .dashboard-header h2 {
   margin: 0;
+}
+
+.dashboard-header-controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.time-range-select {
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  background: var(--surface);
 }
 
 .dashboard-variables,

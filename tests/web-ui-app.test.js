@@ -637,7 +637,7 @@ test('handleImportedJson normalizes dashboard custom time ranges from import pay
     dashboards: [{
       name: 'Imported Dashboard',
       variables: [],
-      metrics: [],
+      charts: [],
       timeRange: {
         preset: 'custom',
         start: '0',
@@ -654,6 +654,28 @@ test('handleImportedJson normalizes dashboard custom time ranges from import pay
   });
 });
 
+test('handleImportedJson migrates legacy dashboard metrics into a default chart', () => {
+  app.handleImportedJson(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    dashboards: [{
+      name: 'Imported Dashboard',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      metrics: [{ displayName: 'Temp', expression: 'TEMP / 1000', color: '#123456' }],
+      timeRange: { preset: '24h', start: null, end: null },
+    }],
+  }));
+
+  const prod = app.loadEnvironments().find((env) => env.name === 'prod');
+  assert.equal(prod.dashboards[0].charts.length, 1);
+  assert.equal(prod.dashboards[0].charts[0].name, 'Chart 1');
+  assert.equal(prod.dashboards[0].charts[0].metrics[0].expression, 'TEMP / 1000');
+});
+
 test('handleImportedJson rejects dashboard variables that fail editor validation', () => {
   assert.throws(
     () => app.handleImportedJson(JSON.stringify({
@@ -666,7 +688,7 @@ test('handleImportedJson rejects dashboard variables that fail editor validation
       dashboards: [{
         name: 'Imported Dashboard',
         variables: [{ name: '__proto__', nodeId: 'NODE_001', readingType: 'temp_mc' }],
-        metrics: [],
+        charts: [],
         timeRange: { preset: '24h', start: null, end: null },
       }],
     })),
@@ -808,7 +830,10 @@ test('buildEnvironmentExportData omits dashboard validation annotations', () => 
     dashboards: [{
       name: 'Imported Dashboard',
       variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
-      metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+      charts: [{
+        name: 'Chart 1',
+        metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+      }],
       timeRange: { preset: '24h', start: null, end: null },
     }],
   });
@@ -816,7 +841,10 @@ test('buildEnvironmentExportData omits dashboard validation annotations', () => 
   assert.deepEqual(exported.dashboards, [{
     name: 'Imported Dashboard',
     variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
-    metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+    charts: [{
+      name: 'Chart 1',
+      metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+    }],
     timeRange: { preset: '24h', start: null, end: null },
   }]);
 });
@@ -1149,8 +1177,8 @@ test('renderMetricCharts shows a no-data message when evaluation yields zero poi
 
   try {
     await app.renderMetricCharts({
-      metrics: [{ displayName: 'Temp', expression: 'TEMP / 1000' }],
       variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [{ name: 'Chart 1', metrics: [{ displayName: 'Temp', expression: 'TEMP / 1000' }] }],
       timeRange: { preset: '24h' },
     }, {
       evaluateMetricTimeSeriesFn: async () => ({ points: [] }),
@@ -1162,6 +1190,45 @@ test('renderMetricCharts shows a no-data message when evaluation yields zero poi
     assert.match(parent.innerHTML, /No data in selected time range\./);
     assert.equal(destroyed, 1);
     assert.equal(app.APP_DASHBOARD_STATE.metricCharts[0], undefined);
+  } finally {
+    global.document.getElementById = originalGetElementById;
+  }
+});
+
+test('renderMetricCharts prefers errors over no-data fallback messages', async () => {
+  const originalGetElementById = global.document.getElementById;
+  const parent = makeElement();
+  const canvas = makeElement();
+  canvas.parentElement = parent;
+  global.document.getElementById = (id) => {
+    if (id === 'metric-chart-0') return canvas;
+    return makeElement();
+  };
+
+  try {
+    await app.renderMetricCharts({
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [{
+        name: 'Chart 1',
+        metrics: [
+          { displayName: 'No Data', expression: 'TEMP' },
+          { displayName: 'Broken', expression: 'BROKEN' },
+        ],
+      }],
+      timeRange: { preset: '24h' },
+    }, {
+      evaluateMetricTimeSeriesFn: async (metric) => (
+        metric.expression === 'TEMP'
+          ? { points: [] }
+          : { error: 'Expression error: bad parse', points: [] }
+      ),
+      chartFactory: () => {
+        throw new Error('chartFactory should not run when all metrics fail');
+      },
+    });
+
+    assert.match(parent.innerHTML, /Expression error: bad parse/);
+    assert.doesNotMatch(parent.innerHTML, /No data in selected time range/);
   } finally {
     global.document.getElementById = originalGetElementById;
   }
@@ -1185,8 +1252,8 @@ test('renderMetricCharts downsamples dashboard datasets to 500 points before cha
 
   try {
     await app.renderMetricCharts({
-      metrics: [{ displayName: 'Dense', expression: 'TEMP' }],
       variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [{ name: 'Chart 1', metrics: [{ displayName: 'Dense', expression: 'TEMP' }] }],
       timeRange: { preset: '24h' },
     }, {
       evaluateMetricTimeSeriesFn: async () => ({ points: rawPoints }),
@@ -1206,6 +1273,51 @@ test('renderMetricCharts downsamples dashboard datasets to 500 points before cha
   }
 });
 
+test('renderMetricCharts combines multiple metrics on the same chart into multiple datasets', async () => {
+  const originalGetElementById = global.document.getElementById;
+  const parent = makeElement();
+  const canvas = makeElement();
+  canvas.parentElement = parent;
+  global.document.getElementById = (id) => {
+    if (id === 'metric-chart-0') return canvas;
+    return makeElement();
+  };
+
+  const resultsByExpression = {
+    TEMP: { points: [{ timestamp: 1000, value: 1 }] },
+    PRESS_DERIVED: { points: [{ timestamp: 1000, value: 2 }] },
+  };
+  let capturedConfig = null;
+
+  try {
+    await app.renderMetricCharts({
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [{
+        name: 'Chart 1',
+        metrics: [
+          { displayName: 'Temp', expression: 'TEMP', color: '#111111' },
+          { displayName: 'Press', expression: 'PRESS', color: '#222222', _validationWarning: 'Undefined variables: PRESS' },
+          { displayName: 'Press Derived', expression: 'PRESS_DERIVED', color: '#333333' },
+        ],
+      }],
+      timeRange: { preset: '24h' },
+    }, {
+      evaluateMetricTimeSeriesFn: async (metric) => resultsByExpression[metric.expression] || { points: [] },
+      chartFactory: (chartCanvas, config) => {
+        assert.equal(chartCanvas, canvas);
+        capturedConfig = config;
+        return { destroy() {} };
+      },
+    });
+
+    assert.ok(capturedConfig);
+    assert.equal(capturedConfig.data.datasets.length, 2);
+    assert.deepEqual(capturedConfig.data.datasets.map((dataset) => dataset.label), ['Temp', 'Press Derived']);
+  } finally {
+    global.document.getElementById = originalGetElementById;
+  }
+});
+
 test('persistDashboardEnvironment preserves edited dashboards in memory after quota failures', () => {
   const env = {
     name: 'prod',
@@ -1214,7 +1326,7 @@ test('persistDashboardEnvironment preserves edited dashboards in memory after qu
     storageAccount: 'prodstorage',
     functionAppName: 'prod-func',
     sensorData: app.createDefaultSensorDataPreferences(),
-    dashboards: [{ name: 'Original', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+    dashboards: [{ name: 'Original', variables: [], charts: [], timeRange: { preset: '24h', start: null, end: null } }],
   };
   app.activateEnvironmentState(env.name, env);
 
@@ -1228,7 +1340,7 @@ test('persistDashboardEnvironment preserves edited dashboards in memory after qu
   try {
     const editedEnv = {
       ...env,
-      dashboards: [{ name: 'Edited', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+      dashboards: [{ name: 'Edited', variables: [], charts: [], timeRange: { preset: '24h', start: null, end: null } }],
     };
     const ok = app.persistDashboardEnvironment(editedEnv, [env]);
     assert.equal(ok, false);
@@ -1237,6 +1349,72 @@ test('persistDashboardEnvironment preserves edited dashboards in memory after qu
     assert.equal(app.APP_DASHBOARD_STATE.unsavedEnvironment.dashboards[0].name, 'Edited');
   } finally {
     global.localStorage.setItem = originalSetItem;
+  }
+});
+
+test('normalizeEnvironmentRecord migrates legacy top-level dashboard metrics on load', () => {
+  const normalized = app.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    dashboards: [{
+      name: 'Legacy',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      metrics: [{ displayName: 'Temp', expression: 'TEMP', color: '#123456' }],
+      timeRange: { preset: '24h', start: null, end: null },
+    }],
+  });
+
+  assert.equal(normalized.dashboards[0].charts.length, 1);
+  assert.equal(normalized.dashboards[0].charts[0].name, 'Chart 1');
+  assert.equal(normalized.dashboards[0].charts[0].metrics[0].expression, 'TEMP');
+});
+
+test('normalizeEnvironmentRecord clears stale metric validation annotations before revalidating', () => {
+  const originalExprEval = global.exprEval;
+  global.exprEval = {
+    Parser: class {
+      parse() {
+        return {
+          variables() {
+            return ['TEMP'];
+          },
+        };
+      }
+    },
+  };
+
+  try {
+    const normalized = app.normalizeEnvironmentRecord({
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+      dashboards: [{
+        name: 'Dashboard',
+        variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+        charts: [{
+          name: 'Chart 1',
+          metrics: [{
+            id: 'metric-1',
+            displayName: 'Temp',
+            expression: 'TEMP',
+            color: '#123456',
+            _validationWarning: 'Undefined variables: TEMP',
+            _validationError: 'Syntax error: stale',
+          }],
+        }],
+        timeRange: { preset: '24h', start: null, end: null },
+      }],
+    });
+
+    assert.equal(normalized.dashboards[0].charts[0].metrics[0]._validationWarning, undefined);
+    assert.equal(normalized.dashboards[0].charts[0].metrics[0]._validationError, undefined);
+  } finally {
+    global.exprEval = originalExprEval;
   }
 });
 
@@ -1264,7 +1442,10 @@ test('persistDashboardEnvironment strips dashboard validation annotations before
     dashboards: [{
       name: 'Persisted',
       variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
-      metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+      charts: [{
+        name: 'Chart 1',
+        metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+      }],
       timeRange: { preset: '24h', start: null, end: null },
     }],
   };
@@ -1274,7 +1455,10 @@ test('persistDashboardEnvironment strips dashboard validation annotations before
   assert.deepEqual(stored[0].dashboards, [{
     name: 'Persisted',
     variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
-    metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+    charts: [{
+      name: 'Chart 1',
+      metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+    }],
     timeRange: { preset: '24h', start: null, end: null },
   }]);
 });
@@ -1287,13 +1471,13 @@ test('same-name environment import clears stale unsaved dashboard fallback', () 
     storageAccount: 'prodstorage',
     functionAppName: 'prod-func',
     sensorData: app.createDefaultSensorDataPreferences(),
-    dashboards: [{ name: 'Persisted', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+    dashboards: [{ name: 'Persisted', variables: [], charts: [], timeRange: { preset: '24h', start: null, end: null } }],
   };
   localStorage.setItem('sonde_environments', JSON.stringify([originalEnv]));
   app.activateEnvironmentState(originalEnv.name, originalEnv);
   app.APP_DASHBOARD_STATE.unsavedEnvironment = {
     ...originalEnv,
-    dashboards: [{ name: 'Unsaved Shadow', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+    dashboards: [{ name: 'Unsaved Shadow', variables: [], charts: [], timeRange: { preset: '24h', start: null, end: null } }],
   };
   global.window.confirm = () => true;
 
@@ -1304,7 +1488,7 @@ test('same-name environment import clears stale unsaved dashboard fallback', () 
     tenantId: '22222222-2222-2222-2222-222222222222',
     storageAccount: 'prodstorage',
     functionAppName: 'prod-func',
-    dashboards: [{ name: 'Imported Replacement', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+    dashboards: [{ name: 'Imported Replacement', variables: [], charts: [], timeRange: { preset: '24h', start: null, end: null } }],
   }));
 
   const loaded = app.loadActiveEnvironment();

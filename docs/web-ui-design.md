@@ -849,7 +849,8 @@ against the gateway actual-state row.
 The Dashboards feature allows operators to create custom visualizations by
 binding sensor data sources to variables and defining computed metrics using
 algebraic expressions. Each environment can have multiple dashboards; each
-dashboard contains multiple metrics displayed as time-series charts.
+dashboard contains multiple named charts; each chart can display multiple
+metrics as overlaid time-series datasets.
 
 ### 14.1 UI Structure
 
@@ -860,11 +861,15 @@ Dashboards Section
 │   ├── Variables Panel
 │   │   ├── Variable List (name → data source mapping)
 │   │   └── [+ Add Variable] button
-│   ├── Metrics Panel
-│   │   ├── Metric 1 (chart + expression)
-│   │   ├── Metric 2 (chart + expression)
-│   │   └── [+ Add Metric] button
-│   └── Time Range Selector (shared across metrics)
+│   ├── Charts Panel
+│   │   ├── Chart 1
+│   │   │   ├── Chart header (name, rename/delete actions)
+│   │   │   ├── Metric list (dataset definitions)
+│   │   │   ├── Shared chart canvas
+│   │   │   └── [+ Add Metric] button
+│   │   ├── Chart 2
+│   │   └── [+ Add Chart] button
+│   └── Time Range Selector (shared across all charts)
 └── Dashboard Management (rename, delete)
 ```
 
@@ -872,12 +877,12 @@ Dashboards Section
 - Dashboard tabs appear horizontally at the top of the Dashboards section.
 - "+" tab button creates a new dashboard (prompts for name).
 - Active dashboard is highlighted.
-- Each dashboard displays its variables and metrics in a vertical layout.
+- Each dashboard displays its variables and charts in a vertical layout.
 
 **Empty State:**
-- New dashboards show: "No metrics yet. Click '+ Add Metric' to get started."
+- New dashboards show: "No charts yet. Click '+ Add Chart' to get started."
 - Dashboards with no variables show a prompt to add variables before creating
-  metrics.
+  metrics within charts.
 
 **Limits (WEB-1110):**
 - Soft limit: 20 dashboards per environment.
@@ -898,12 +903,17 @@ Dashboards Section
       readingType: string // Reading type (e.g., "temperature_millif")
     }
   ],
-  metrics: [              // Array of computed metrics
+  charts: [               // Array of named charts
     {
-      id: string,         // Unique metric ID (UUID or timestamp-based)
-      displayName: string,// User-friendly label (e.g., "Greenhouse Temp (°F)")
-      expression: string, // Algebraic formula (e.g., "GTMF / 1000")
-      color: string       // Chart line color (hex, auto-assigned if omitted)
+      name: string,       // User-assigned chart name
+      metrics: [          // Datasets rendered on this chart
+        {
+          id: string,         // Unique metric ID (UUID or timestamp-based)
+          displayName: string,// User-friendly label (e.g., "Greenhouse Temp (°F)")
+          expression: string, // Algebraic formula (e.g., "GTMF / 1000")
+          color: string       // Dataset line color (hex, auto-assigned if omitted)
+        }
+      ]
     }
   ],
   timeRange: {            // Dashboard-level time window
@@ -964,20 +974,43 @@ Dashboards are stored as part of each environment's configuration:
   |----------|-------------|---------|
   | GTMF | Node 7, Temperature (milliF) | Edit Delete |
 
-### 14.4 Expression Editor
+### 14.4 Chart and Metric Editing
+
+**Add Chart Flow:**
+1. Operator clicks "+ Add Chart" in Charts Panel.
+2. Prompt or modal appears with fields:
+   - **Chart Name** (text input)
+3. On save:
+   - Create `chart = { name, metrics: [] }`.
+   - Append to `dashboard.charts`.
+   - Persist to `localStorage`.
+
+**Edit/Delete Chart:**
+- Edit: Rename chart without affecting contained metrics.
+- Delete: Confirmation prompt warns that all contained metrics will be removed.
+
+**Chart Display:**
+- Each chart renders as a card containing:
+  - Chart name
+  - Metric dataset list with edit/delete actions
+  - Shared `<canvas>` for all metrics assigned to that chart
+  - "+ Add Metric" button scoped to that chart
+
+### 14.5 Expression Editor
 
 **Add Metric Flow:**
-1. Operator clicks "+ Add Metric" in Metrics Panel.
+1. Operator clicks "+ Add Metric" within a specific chart card.
 2. Form appears with fields:
    - **Display Name** (text input)
    - **Expression** (text area with monospace font)
    - **Color** (color picker, optional, defaults to auto-assigned)
+   - **Chart** (selected chart, prefilled to the chart where the action started)
 3. On blur or save, expression is validated:
-   - Parse using expression library (see §14.5).
+   - Parse using expression library (see §14.6).
    - Check for syntax errors → display inline error message.
    - Check for undefined variables → display warning list.
 4. On save:
-   - Add to `dashboard.metrics` array with unique ID.
+   - Add to `chart.metrics` array with unique ID.
    - Persist to `localStorage`.
 
 **Expression Syntax Help:**
@@ -993,7 +1026,7 @@ Dashboards are stored as part of each environment's configuration:
 - As operator types, show sample evaluation with current variable values.
 - Example: "Expression `GTMF / 1000` with current `GTMF = 75000` → `75`"
 
-### 14.5 Expression Evaluator Architecture
+### 14.6 Expression Evaluator Architecture
 
 **Library Selection:**
 - Use **`expr-eval`** (https://github.com/silentmatt/expr-eval) version 2.0.2+.
@@ -1020,7 +1053,7 @@ Dashboards are stored as part of each environment's configuration:
    - Build context object: `{ GTMF: 75000, P: 92500, H: 65.5, ... }`.
    - Evaluate expression with context.
    - Collect `(timestamp, value)` pair.
-3. Render collected pairs as a line chart.
+3. Render collected pairs as a dataset on the assigned chart.
 
 **Error Handling:**
 - **Parse errors**: Do not render chart; display error badge on metric.
@@ -1028,42 +1061,50 @@ Dashboards are stored as part of each environment's configuration:
   (gap in chart), log to browser console.
 - **Missing variable at timestamp**: Skip that timestamp (gap in chart).
 
-### 14.6 Chart Rendering
+### 14.7 Chart Rendering
 
 **Chart Library:**
 - Reuse **Chart.js 4.4.9** (already used by Sensor Data tab).
-- Each metric renders as a separate `<canvas>` element.
+- Each chart renders as a single `<canvas>` element.
 
 **Layout:**
-- Metrics are stacked vertically.
-- Each metric shows:
-  - Display name as chart title.
-  - Expression as subtitle or tooltip.
-  - Line chart with time on X-axis, computed value on Y-axis.
+- Charts are stacked vertically within the dashboard.
+- Each chart shows:
+  - Chart name as card header.
+  - One shared line chart with time on X-axis and a single shared Y-axis.
+  - Legend entries for each metric assigned to the chart.
+  - Metric expressions in the dataset editor/list, not as chart subtitles.
 - Metrics use auto-assigned colors unless operator specifies a color.
 
 **Time Range:**
 - Dashboard-level time range selector (same UI as Sensor Data tab).
-- All metrics in the dashboard share the same time window.
+- All charts and metrics in the dashboard share the same time window.
 - Operators can select presets (1h, 6h, 24h, 7d) or custom start/end.
 
 **Data Fetching:**
 - For each variable binding, query `sensordata` table filtered by node ID and
   reading type within the time range.
-- Merge data from all variables by timestamp.
-- Evaluate expression at each timestamp.
-- Downsample if needed (reuse Sensor Data tab logic, max 500 points per metric).
+- Evaluate each metric expression at each timestamp.
+- Group computed metric series by chart membership in `dashboard.charts`.
+- Render each chart with one dataset per metric assigned to that chart.
+- Downsample if needed (reuse Sensor Data tab logic, max 500 points per metric dataset).
 
 **Empty State:**
-- If no data exists for any variable: "No data in selected time range."
+- If a chart has no metrics: show an inline prompt to add a metric.
+- If no data exists for any metric on a chart: "No data in selected time range."
 - If expression has errors: "Expression error: <message>."
 - If variable is undefined: "Undefined variable: <name>."
 
-### 14.7 Persistence and Export
+**Legacy Migration:**
+- When loading a persisted dashboard with a top-level `metrics` array and no
+  `charts` array, create a default chart (for example `Chart 1`) and move all
+  legacy metrics into that chart.
+
+### 14.8 Persistence and Export
 
 **localStorage Persistence:**
 - Dashboards are nested under each environment in `sonde_environments`.
-- Any dashboard change (add/edit/delete dashboard, variable, or metric)
+- Any dashboard change (add/edit/delete dashboard, chart, variable, or metric)
   triggers a `saveEnvironments()` call.
 - Switching environments loads that environment's dashboards.
 
@@ -1083,7 +1124,7 @@ Dashboards are stored as part of each environment's configuration:
       {
         "name": "Greenhouse Monitoring",
         "variables": [ ... ],
-        "metrics": [ ... ],
+        "charts": [ ... ],
         "timeRange": { ... }
       }
     ]
@@ -1091,8 +1132,10 @@ Dashboards are stored as part of each environment's configuration:
   ```
 - Importing an environment restores its dashboards.
 - Missing `dashboards` field defaults to `[]`.
+- Importing a legacy dashboard object with top-level `metrics` migrates those
+  metrics into a single default chart.
 
-### 14.8 Coexistence with Sensor Data Tab
+### 14.9 Coexistence with Sensor Data Tab
 
 - Both "Sensor Data" and "Dashboards" are top-level tabs in the SPA navigation.
 - Each tab maintains independent state.

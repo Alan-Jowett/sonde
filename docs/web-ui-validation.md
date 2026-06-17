@@ -115,14 +115,14 @@ and verifies one or more acceptance criteria.
 | WEB-1007 | T-WEB-1007, T-WEB-1007b |
 | WEB-1008 | T-WEB-1008 |
 | WEB-1009 | T-WEB-1009, T-WEB-1009b, T-WEB-1009c, T-WEB-1009d, T-WEB-1009e, T-WEB-1009f, T-WEB-1009g, T-WEB-1009h, T-WEB-1009i, T-WEB-1009j, T-WEB-1009k |
-| WEB-1100 | T-WEB-1100, T-WEB-1101, T-WEB-1102, T-WEB-1103, T-WEB-1104 |
+| WEB-1100 | T-WEB-1100, T-WEB-1101, T-WEB-1102, T-WEB-1103, T-WEB-1104, T-WEB-1104b |
 | WEB-1101 | T-WEB-1105, T-WEB-1106, T-WEB-1107, T-WEB-1108, T-WEB-1109, T-WEB-1109c |
 | WEB-1102 | T-WEB-1110, T-WEB-1111, T-WEB-1111b, T-WEB-1112, T-WEB-1113, T-WEB-1114 |
-| WEB-1103 | T-WEB-1115, T-WEB-1116, T-WEB-1117 |
-| WEB-1104 | T-WEB-1118, T-WEB-1119, T-WEB-1120 |
+| WEB-1103 | T-WEB-1115, T-WEB-1116, T-WEB-1117, T-WEB-1118, T-WEB-1118b |
+| WEB-1104 | T-WEB-1119, T-WEB-1120, T-WEB-1120b, T-WEB-1120c, T-WEB-1120d |
 | WEB-1105 | T-WEB-1121, T-WEB-1122, T-WEB-1123, T-WEB-1124 |
-| WEB-1106 | T-WEB-1125, T-WEB-1126, T-WEB-1127, T-WEB-1127b |
-| WEB-1107 | T-WEB-1128, T-WEB-1129, T-WEB-1130, T-WEB-1130b |
+| WEB-1106 | T-WEB-1125, T-WEB-1126, T-WEB-1127, T-WEB-1127b, T-WEB-1127c |
+| WEB-1107 | T-WEB-1128, T-WEB-1129, T-WEB-1130, T-WEB-1130b, T-WEB-1130c |
 | WEB-1108 | T-WEB-1131, T-WEB-1132 |
 | WEB-1109 | T-WEB-1109a, T-WEB-1109b |
 | WEB-1110 | T-WEB-1110a, T-WEB-1110b |
@@ -444,6 +444,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-1102 | WEB-1100 | Dashboard tabs allow switching between dashboards | Manual: Create 2 dashboards, verify switching preserves state | Not Started |
 | T-WEB-1103 | WEB-1100 | Dashboard can be renamed | Manual: Rename dashboard, verify name persisted | Not Started |
 | T-WEB-1104 | WEB-1100 | Dashboard can be deleted with confirmation | Manual: Delete dashboard, verify confirmation prompt | Not Started |
+| T-WEB-1104b | WEB-1100 | Empty dashboard prompts the operator to add a chart | Manual: Create dashboard with no charts, verify empty-state message | Not Started |
 | T-WEB-1105 | WEB-1101 | Add variable binding with valid node ID, reading type, and variable name | Manual: Add variable, verify stored in localStorage | Not Started |
 | T-WEB-1106 | WEB-1101 | Variable name validation rejects invalid JS identifiers | Unit: Test regex `/^[a-zA-Z_][a-zA-Z0-9_]*$/` with invalid inputs | Not Started |
 | T-WEB-1107 | WEB-1101 | Variable name uniqueness enforced within dashboard | Manual: Add duplicate variable name, verify error | Not Started |
@@ -456,12 +457,16 @@ and verifies one or more acceptance criteria.
 | T-WEB-1112 | WEB-1102 | Syntax errors display inline error message | Manual: Enter `(x +`, verify error shown | Not Started |
 | T-WEB-1113 | WEB-1102 | Undefined variable warning displayed | Manual: Enter expression with undefined variable, verify warning | Not Started |
 | T-WEB-1114 | WEB-1102 | Supported operators and functions work correctly | Unit: Test `+`, `-`, `*`, `/`, `^`, `sqrt`, `log`, `abs`, etc. | Not Started |
-| T-WEB-1115 | WEB-1103 | Add metric with display name and expression | Manual: Add metric, verify rendered with chart | Not Started |
-| T-WEB-1116 | WEB-1103 | Edit metric updates name/expression/color | Manual: Edit metric, verify changes reflected | Not Started |
-| T-WEB-1117 | WEB-1103 | Delete metric removes from dashboard | Manual: Delete metric, verify removal with confirmation | Not Started |
-| T-WEB-1118 | WEB-1104 | Expression `(x - 92000) / 10` with x=92500 produces 50 | Integration: Mock data, verify computed value | Not Started |
-| T-WEB-1119 | WEB-1104 | Expression `sqrt(T * T + H * H)` with T=3, H=4 produces 5 | Integration: Mock data, verify computed value | Not Started |
-| T-WEB-1120 | WEB-1104 | Time-series evaluation creates chart with correct points | Integration: Mock time-series data, verify chart data | Not Started |
+| T-WEB-1115 | WEB-1103 | Add chart with a name to a dashboard | Manual: Create chart, verify card appears and persists | Not Started |
+| T-WEB-1116 | WEB-1103 | Rename chart updates persisted chart name | Manual: Rename chart, reload, verify saved name | Not Started |
+| T-WEB-1117 | WEB-1103 | Delete chart removes the chart and its metrics after confirmation | Manual: Delete populated chart, verify removal | Not Started |
+| T-WEB-1118 | WEB-1103 | Add metric with display name and expression to a selected chart | Manual: Add metric from a chart card, verify it appears in that chart | Not Started |
+| T-WEB-1118b | WEB-1103 | Edit metric can move it to a different chart | Manual: Reassign metric, verify dataset appears on new chart | Not Started |
+| T-WEB-1119 | WEB-1104 | Expression `(x - 92000) / 10` with x=92500 produces 50 | Integration: Mock data, verify computed value | Not Started |
+| T-WEB-1120 | WEB-1104 | Expression `sqrt(T * T + H * H)` with T=3, H=4 produces 5 | Integration: Mock data, verify computed value | Not Started |
+| T-WEB-1120b | WEB-1104 | Time-series evaluation creates datasets with correct points on the assigned chart | Integration: Mock time-series data, verify chart datasets | Not Started |
+| T-WEB-1120c | WEB-1104 | Multiple metrics assigned to the same chart render on one shared graph | Integration: Add two metrics to one chart, verify one canvas with two datasets | Not Started |
+| T-WEB-1120d | WEB-1104 | Multiple charts in one dashboard render as separate graphs sharing one dashboard time range | Integration: Add two charts, verify two canvases and shared range controls | Not Started |
 | T-WEB-1121 | WEB-1105 | Malformed expression prevents charting and shows error | Manual: Enter `(x + / 10`, verify chart not rendered, error shown | Not Started |
 | T-WEB-1122 | WEB-1105 | Missing variable data skips timestamp (gap in chart) | Integration: Mock partial data, verify gaps | Not Started |
 | T-WEB-1123 | WEB-1105 | Runtime error (e.g., log(-5)) skips point, logs to console | Integration: Mock negative value, verify point skipped | Not Started |
@@ -470,10 +475,12 @@ and verifies one or more acceptance criteria.
 | T-WEB-1126 | WEB-1106 | Switching environments loads that environment's dashboards | Integration: Create dashboards in env1, switch to env2, verify isolation | Not Started |
 | T-WEB-1127 | WEB-1106 | Dashboard changes trigger saveEnvironments() | Unit: Mock saveEnvironments, verify called on add/edit/delete | Not Started |
 | T-WEB-1127b | WEB-1106 | localStorage quota exceeded shows error, dashboard not lost | Unit: Mock QuotaExceededError, verify error message, dashboard in memory | Not Started |
+| T-WEB-1127c | WEB-1106 | Legacy persisted dashboard with top-level metrics migrates to a default chart on load | Integration: Seed old schema in localStorage, load environment, verify one default chart contains the metrics | Not Started |
 | T-WEB-1128 | WEB-1107 | Environment export includes dashboards array in JSON | Integration: Export environment with dashboards, verify JSON structure | Not Started |
 | T-WEB-1129 | WEB-1107 | Environment import restores dashboards | Integration: Import JSON with dashboards, verify restored | Not Started |
 | T-WEB-1130 | WEB-1107 | Missing dashboards field defaults to empty array | Integration: Import JSON without dashboards field, verify default | Not Started |
 | T-WEB-1130b | WEB-1107 | Import with undefined variable shows warning | Integration: Import metric with undefined variable, verify warning displayed | Not Started |
+| T-WEB-1130c | WEB-1107 | Legacy dashboard import migrates top-level metrics into a default chart | Integration: Import old schema, verify one default chart containing the metrics | Not Started |
 | T-WEB-1131 | WEB-1108 | Both Sensor Data and Dashboards tabs visible | Manual: Verify both tabs present in navigation | Not Started |
 | T-WEB-1132 | WEB-1108 | Switching between tabs preserves independent state | Manual: Configure both tabs, switch, verify state preserved | Not Started |
 | T-WEB-1109a | WEB-1109 | Operator precedence: `2 + 3 * 4` evaluates to `14` | Unit: Evaluate expression, verify result | Not Started |

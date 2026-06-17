@@ -54,7 +54,7 @@ program ingestion.
 | **SPA** | Single-page application — the web UI served from `deploy/web-ui/`. |
 | **Actual state** | The latest telemetry row a node has reported, stored in the `actualstate` Azure Table. |
 | **BIP-39 fingerprint** | Six-word fingerprint string displayed in the UI so the operator can verify the gateway identity against the modem. |
-| **Dashboard** | A named collection of variables and computed metrics in the Dashboards feature (WEB-1100). Each environment can have multiple dashboards. |
+| **Dashboard** | A named collection of variables and charts in the Dashboards feature (WEB-1100). Each chart can contain multiple computed metrics. |
 | **Desired state** | An operator-specified target configuration for a node, stored in the `desiredstate` Azure Table. |
 | **Divergence** | A mismatch between a node's actual state and its desired state (program hash or schedule interval). |
 | **Environment** | A named set of Azure backend connection details (client ID, tenant ID, storage account, function app) stored in `localStorage`. |
@@ -1508,8 +1508,9 @@ success` for Aligned, `badge warning` for Diverged).
 **Description:**
 The SPA MUST provide a "Dashboards" section where operators can create,
 rename, delete, and navigate between multiple custom dashboards. Each
-dashboard can contain multiple computed metrics (time-series charts derived
-from algebraic expressions).
+dashboard can contain multiple named charts, and each chart can contain
+multiple computed metrics (time-series datasets derived from algebraic
+expressions).
 
 **Acceptance criteria:**
 
@@ -1520,7 +1521,7 @@ from algebraic expressions).
 5. Operators can switch between dashboards by clicking tabs.
 6. Operators can rename an existing dashboard.
 7. Operators can delete a dashboard (with confirmation prompt).
-8. Empty dashboards display a message prompting the operator to add metrics.
+8. Empty dashboards display a message prompting the operator to add charts.
 
 ---
 
@@ -1583,26 +1584,36 @@ library (not `eval()`).
 
 ---
 
-### WEB-1103  Metric Configuration
+### WEB-1103  Chart and Metric Configuration
 
 **Priority:** Should
-**Source:** USER-REQUEST: Each metric has a display name, expression, and chart
+**Source:** USER-REQUEST: Each dashboard can have multiple charts and each chart can contain multiple metrics
 **Confidence:** High
 
 **Description:**
-Each dashboard contains one or more metrics. A metric is a computed time series
-defined by a display name, an expression, and chart configuration.
+Each dashboard contains one or more named charts. Each chart contains one or
+more metrics. A metric is a computed time series defined by a display name, an
+expression, and dataset configuration within its assigned chart.
 
 **Acceptance criteria:**
 
-1. Operators can add a metric to a dashboard via "**+ Add Metric**" button.
-2. Adding a metric opens a configuration dialog or inline form.
-3. Required fields: display name (user-friendly label), expression (algebraic
+1. Operators can add a chart to a dashboard via a dedicated action such as
+   "**+ Add Chart**".
+2. Adding a chart prompts for a chart name.
+3. Operators can rename an existing chart.
+4. Operators can delete an existing chart with confirmation. Deleting a chart
+   removes the metrics assigned to it.
+5. Operators can add a metric to a selected chart via a dedicated action such as
+   "**+ Add Metric**".
+6. Adding a metric opens a configuration dialog or inline form.
+7. Required fields: display name (user-friendly label), expression (algebraic
    formula).
-4. Optional fields: chart color (auto-assigned if not specified).
-5. Operators can edit an existing metric (name, expression, color).
-6. Operators can delete a metric from a dashboard (with confirmation).
-7. Metrics are displayed in the order they were added (vertical stack layout).
+8. Optional fields: chart color (auto-assigned if not specified).
+9. Operators can edit an existing metric (name, expression, color, assigned
+   chart).
+10. Operators can delete a metric from its chart (with confirmation).
+11. Charts are displayed in the order they were added, and metrics are displayed
+   in the order they were added within each chart.
 
 ---
 
@@ -1627,9 +1638,11 @@ evaluated with variable values from that timestamp.
 4. Expression evaluation uses the variable values at that timestamp.
 5. If a variable has no data at a timestamp, that timestamp is skipped (gap in
    chart).
-6. The resulting computed time series is plotted as a line chart.
-7. Multiple metrics on the same dashboard are rendered as separate charts
-   (vertical stack).
+6. Each chart renders as a line chart.
+7. Multiple metrics assigned to the same chart are rendered as separate datasets
+   on that shared chart.
+8. A dashboard can contain multiple charts, each sharing the dashboard-wide time
+   range.
 
 ---
 
@@ -1665,7 +1678,7 @@ prevent charting and display an error.
 **Confidence:** High
 
 **Description:**
-Dashboard configurations (variables, metrics, layout) MUST be persisted in
+Dashboard configurations (variables, charts, metrics, layout) MUST be persisted in
 `localStorage` as part of the environment's data. Dashboards survive page
 reloads and are included in environment export/import.
 
@@ -1673,11 +1686,15 @@ reloads and are included in environment export/import.
 
 1. Each environment's `localStorage` entry includes a `dashboards` array.
 2. Each dashboard object contains: `name`, `variables` (array of bindings),
-   `metrics` (array of metric configs), `timeRange` (dashboard-level time window).
-3. Dashboards are persisted on any change (create, rename, delete, add/edit/delete
-   metric, add/edit/delete variable).
-4. Switching environments loads that environment's dashboards.
-5. Dashboards from one environment do not leak into another environment.
+   `charts` (array of chart objects), and `timeRange` (dashboard-level time
+   window).
+3. Each chart object contains: `name` and `metrics` (array of metric configs).
+4. Dashboards are persisted on any change (create, rename, delete, add/edit/delete
+   chart, add/edit/delete metric, add/edit/delete variable).
+5. Existing persisted dashboards using the legacy top-level `metrics` array are
+   migrated on load to a single default chart containing those metrics.
+6. Switching environments loads that environment's dashboards.
+7. Dashboards from one environment do not leak into another environment.
 
 ---
 
@@ -1696,12 +1713,14 @@ Dashboard configurations MUST be included in the environment export JSON
 1. The environment export JSON includes a `dashboards` field containing the
    full dashboard configuration array.
 2. Exporting an environment preserves all dashboard definitions (names,
-   variables, metrics, expressions).
+   variables, charts, metrics, expressions, and chart membership).
 3. Importing an environment restores its dashboards into `localStorage`.
 4. Environments imported without a `dashboards` field default to an empty
    dashboards array.
 5. Importing over an existing environment replaces that environment's dashboards
    with the imported dashboards.
+6. Importing a legacy dashboard object with a top-level `metrics` array but no
+   `charts` array migrates those metrics into a single default chart.
 
 ---
 

@@ -3,6 +3,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 const { webcrypto } = require('node:crypto');
 
@@ -906,6 +907,14 @@ test('validateExpression reports undefined variables as warnings, not errors', (
   } finally {
     global.exprEval = originalExprEval;
   }
+});
+
+test('index.html pins expr-eval with the current CDN SHA-384 hash', () => {
+  const indexHtml = fs.readFileSync(path.resolve(__dirname, '..', 'deploy', 'web-ui', 'index.html'), 'utf8');
+  assert.match(
+    indexHtml,
+    /<script src="https:\/\/cdn\.jsdelivr\.net\/npm\/expr-eval@2\.0\.2\/dist\/bundle\.min\.js" integrity="sha384-\/4W8jQ\+DhKy3zhz8s0HRh\/l4kEliBAJQmAWqrrtJr7BAuODvB2MKsjR8h5MGefjl" crossorigin="anonymous"><\/script>/,
+  );
 });
 
 // Dashboard runtime behavior tests

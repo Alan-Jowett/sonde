@@ -1373,6 +1373,43 @@ test('renderMetricCharts combines multiple metrics on the same chart into multip
   }
 });
 
+test('renderMetricCharts formats tooltip titles as local date-time strings', async () => {
+  const originalGetElementById = global.document.getElementById;
+  const parent = makeElement();
+  const canvas = makeElement();
+  canvas.parentElement = parent;
+  global.document.getElementById = (id) => {
+    if (id === 'metric-chart-0') return canvas;
+    return makeElement();
+  };
+
+  let capturedConfig = null;
+  const timestamp = 1_781_692_819_928;
+
+  try {
+    await app.renderMetricCharts({
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [{ name: 'Chart 1', metrics: [{ displayName: 'Temperature', expression: 'TEMP' }] }],
+      timeRange: { preset: '24h' },
+    }, {
+      evaluateMetricTimeSeriesFn: async () => ({ points: [{ timestamp, value: 53.254 }] }),
+      chartFactory: (chartCanvas, config) => {
+        assert.equal(chartCanvas, canvas);
+        capturedConfig = config;
+        return { destroy() {} };
+      },
+    });
+
+    assert.ok(capturedConfig);
+    assert.equal(
+      capturedConfig.options.plugins.tooltip.callbacks.title([{ parsed: { x: timestamp } }]),
+      new Date(timestamp).toLocaleString(),
+    );
+  } finally {
+    global.document.getElementById = originalGetElementById;
+  }
+});
+
 test('persistDashboardEnvironment preserves edited dashboards in memory after quota failures', () => {
   const env = {
     name: 'prod',

@@ -822,6 +822,14 @@ function relativeTime(timestampMs) {
   return `${diffSeconds}s ago`;
 }
 
+function formatChartTooltipTimestamp(timestampMs) {
+  const value = Number(timestampMs);
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return new Date(value).toLocaleString();
+}
+
 function randomHex(bytes) {
   const data = new Uint8Array(bytes);
   crypto.getRandomValues(data);
@@ -2900,7 +2908,7 @@ function renderSensorChart(allSeries) {
           callbacks: {
             title(items) {
               if (!items.length) return '';
-              return new Date(items[0].parsed.x).toLocaleString();
+              return formatChartTooltipTimestamp(items[0].parsed.x);
             },
             label(item) {
               const ds = item.dataset;
@@ -3729,6 +3737,16 @@ async function renderMetricCharts(dashboard, deps = {}) {
           },
           y: {
             beginAtZero: false
+          }
+        },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              title(items) {
+                if (!items.length) return '';
+                return formatChartTooltipTimestamp(items[0].parsed.x);
+              }
+            }
           }
         }
       }

@@ -1066,6 +1066,29 @@ test('evaluateMetricTimeSeries reports undefined variables explicitly', async ()
 =======
 >>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
 
+test('evaluateMetricTimeSeries reports undefined variables explicitly', async () => {
+  const result = await app.evaluateMetricTimeSeries({
+    expression: 'TEMP + UNKNOWN',
+  }, [
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '24h' }, {
+    parserFactory: () => ({
+      parse() {
+        return {
+          variables() { return ['TEMP', 'UNKNOWN']; },
+          evaluate() { return 0; },
+        };
+      },
+    }),
+    fetchVariableDataFn: async () => {
+      throw new Error('fetchVariableData should not run when variables are undefined');
+    },
+  });
+
+  assert.equal(result.error, 'Undefined variables: UNKNOWN');
+  assert.deepEqual(result.points, []);
+});
+
 test('renderMetricCharts shows a no-data message when evaluation yields zero points', async () => {
   const originalGetElementById = global.document.getElementById;
   const parent = makeElement();

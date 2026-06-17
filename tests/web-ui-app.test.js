@@ -849,33 +849,132 @@ test('buildEnvironmentExportData and import validation distinguish omitted and e
 });
 
 // Dashboard runtime behavior tests
-// Note: These tests verify the error-handling structure without full Azure integration
 
-test('fetchVariableData returns errors array for missing node mappings', () => {
-  // This test verifies the error-reporting structure is in place.
-  // Full integration testing requires Azure Tables mocking which is beyond the fast test gate.
-  // The key invariant: fetchVariableData must return {data, errors}, not just data.
-  
-  const result = { data: {}, errors: ['Node ID "NODE_999" not found for variable "TEMP"'] };
-  assert.ok(result.errors);
-  assert.ok(Array.isArray(result.errors));
-  assert.ok(result.data);
-  assert.equal(typeof result.data, 'object');
+test('fetchReadingTypesForNode discovers numeric reading types for the selected node', async () => {
+  const nowMs = 9_000_000;
+  const readingTypes = await app.fetchReadingTypesForNode('NODE_001', {
+    nowFn: () => nowMs,
+    fetchActualStateNodesFn: async () => [
+      { nodeId: 'NODE_001', partitionKey: 'n:abc123' },
+      { nodeId: 'NODE_002', partitionKey: 'n:def456' },
+    ],
+    querySensorDataRangeFn: async (partitionKeys, startMs, endMs, options) => {
+      assert.deepEqual(partitionKeys, ['n:abc123']);
+      assert.equal(startMs, nowMs - (7 * 24 * 60 * 60 * 1000));
+      assert.equal(endMs, nowMs);
+      assert.equal(options.maxPagesPerPartition, 5);
+      return [
+        { decoded_readings: '{"temp_mc":25000,"humidity_pct":"45","status":"ok"}' },
+        { decoded_readings: '{"pressure_pa":92500,"temp_mc":26000}' },
+      ];
+    },
+  });
+
+  assert.deepEqual(readingTypes, ['humidity_pct', 'pressure_pa', 'temp_mc']);
 });
 
-test('evaluateMetricTimeSeries error structure allows propagation', () => {
-  // This test verifies the error-handling contract.
-  // evaluateMetricTimeSeries must be able to return {error, points:[]} to surface fetch failures.
-  
-  const errorResult = { error: 'Failed to fetch data: Network timeout', points: [] };
-  assert.ok(errorResult.error);
-  assert.strictEqual(typeof errorResult.error, 'string');
-  assert.ok(Array.isArray(errorResult.points));
-  assert.equal(errorResult.points.length, 0);
-  
-  const successResult = { points: [{ timestamp: 1000, value: 42 }] };
-  assert.ok(!successResult.error);
-  assert.ok(Array.isArray(successResult.points));
-  assert.ok(successResult.points.length > 0);
+test('fetchVariableData validates reading types and honors the 6h preset window', async () => {
+  const nowMs = 40_000_000;
+  const result = await app.fetchVariableData([
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+    { name: 'PRESS', nodeId: 'NODE_001', readingType: 'pressure_pa' },
+  ], { preset: '6h' }, {
+    nowFn: () => nowMs,
+    fetchActualStateNodesFn: async () => [
+      { nodeId: 'NODE_001', partitionKey: 'n:abc123' },
+    ],
+    querySensorDataRangeFn: async (partitionKeys, startMs, endMs, options) => {
+      assert.deepEqual(partitionKeys, ['n:abc123']);
+      assert.equal(startMs, nowMs - (6 * 60 * 60 * 1000));
+      assert.equal(endMs, nowMs);
+      assert.equal(options.maxPagesPerPartition, 10);
+      return [
+        {
+          timestamp_ms: '1000',
+          decoded_readings: '{"temp_mc":25000}',
+        },
+      ];
+    },
+  });
+
+  assert.deepEqual(result.data.TEMP, [{ timestamp: 1000, value: 25000 }]);
+  assert.deepEqual(result.data.PRESS, []);
+  assert.deepEqual(result.errors, ['Reading type "pressure_pa" not found for node "NODE_001"']);
 });
 
+test('fetchVariableData honors custom dashboard time ranges', async () => {
+  await app.fetchVariableData([
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], {
+    preset: 'custom',
+    start: 1111,
+    end: 2222,
+  }, {
+    fetchActualStateNodesFn: async () => [
+      { nodeId: 'NODE_001', partitionKey: 'n:abc123' },
+    ],
+    querySensorDataRangeFn: async (partitionKeys, startMs, endMs) => {
+      assert.deepEqual(partitionKeys, ['n:abc123']);
+      assert.equal(startMs, 1111);
+      assert.equal(endMs, 2222);
+      return [];
+    },
+  });
+});
+
+test('evaluateMetricTimeSeries propagates fetch failures as user-visible errors', async () => {
+  const result = await app.evaluateMetricTimeSeries({
+    expression: 'TEMP / 1000',
+  }, [
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '24h' }, {
+    parserFactory: () => ({
+      parse(expression) {
+        assert.equal(expression, 'TEMP / 1000');
+        return {
+          variables() { return ['TEMP']; },
+          evaluate() { return 0; },
+        };
+      },
+    }),
+    fetchVariableDataFn: async () => ({
+      data: {},
+      errors: ['Failed to fetch data for node(s) NODE_001: Network timeout'],
+    }),
+  });
+
+  assert.equal(result.error, 'Failed to fetch data for node(s) NODE_001: Network timeout');
+  assert.deepEqual(result.points, []);
+});
+
+test('evaluateMetricTimeSeries computes time-series points from real fetched data', async () => {
+  const result = await app.evaluateMetricTimeSeries({
+    expression: 'TEMP / 1000',
+  }, [
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '24h' }, {
+    parserFactory: () => ({
+      parse(expression) {
+        assert.equal(expression, 'TEMP / 1000');
+        return {
+          variables() { return ['TEMP']; },
+          evaluate(context) { return context.TEMP / 1000; },
+        };
+      },
+    }),
+    fetchVariableDataFn: async () => ({
+      data: {
+        TEMP: [
+          { timestamp: 1000, value: 25000 },
+          { timestamp: 2000, value: 25500 },
+        ],
+      },
+      errors: [],
+    }),
+  });
+
+  assert.deepEqual(result.points, [
+    { timestamp: 1000, value: 25 },
+    { timestamp: 2000, value: 25.5 },
+  ]);
+});

@@ -151,6 +151,13 @@ function validateImportedSensorDataPreferences(rawPreferences) {
 
 // Dashboard data model
 const RESERVED_FUNCTION_NAMES = ['sqrt', 'log', 'log10', 'exp', 'abs', 'min', 'max'];
+const DASHBOARD_TIME_RANGE_MS = {
+  '1h': 60 * 60 * 1000,
+  '6h': 6 * 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+};
+const DASHBOARD_READING_DISCOVERY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 function createDefaultDashboardsArray() {
   return [];
@@ -166,6 +173,70 @@ function createDefaultDashboard(name) {
       start: null,
       end: null
     }
+  };
+}
+
+function normalizeDashboardTimeRange(timeRange) {
+  const preset = typeof timeRange?.preset === 'string' ? timeRange.preset : '24h';
+  const start = Number.isFinite(timeRange?.start) ? timeRange.start : null;
+  const end = Number.isFinite(timeRange?.end) ? timeRange.end : null;
+
+  if (preset === 'custom' && start != null && end != null && start < end) {
+    return { preset, start, end };
+  }
+
+  if (Object.prototype.hasOwnProperty.call(DASHBOARD_TIME_RANGE_MS, preset)) {
+    return { preset, start: null, end: null };
+  }
+
+  return { preset: '24h', start: null, end: null };
+}
+
+function normalizeDashboardVariable(variable) {
+  if (typeof variable !== 'object' || variable === null) {
+    return null;
+  }
+  const name = typeof variable.name === 'string' ? variable.name.trim() : '';
+  const nodeId = typeof variable.nodeId === 'string' ? variable.nodeId.trim() : '';
+  const readingType = typeof variable.readingType === 'string' ? variable.readingType.trim() : '';
+  if (!name || !nodeId || !readingType) {
+    return null;
+  }
+  return { name, nodeId, readingType };
+}
+
+function normalizeDashboardMetric(metric) {
+  if (typeof metric !== 'object' || metric === null) {
+    return null;
+  }
+  const displayName = typeof metric.displayName === 'string' ? metric.displayName : '';
+  const expression = typeof metric.expression === 'string' ? metric.expression : '';
+  if (!expression) {
+    return null;
+  }
+  return {
+    id: typeof metric.id === 'string' ? metric.id : `metric-${crypto.randomUUID?.() || Date.now()}`,
+    displayName,
+    expression,
+    color: typeof metric.color === 'string' ? metric.color : '#007bff',
+  };
+}
+
+function normalizeDashboard(dashboard, index) {
+  if (typeof dashboard !== 'object' || dashboard === null) {
+    return createDefaultDashboard(`Dashboard ${index + 1}`);
+  }
+  return {
+    name: typeof dashboard.name === 'string' && dashboard.name.trim()
+      ? dashboard.name.trim()
+      : `Dashboard ${index + 1}`,
+    variables: Array.isArray(dashboard.variables)
+      ? dashboard.variables.map(normalizeDashboardVariable).filter(Boolean)
+      : [],
+    metrics: Array.isArray(dashboard.metrics)
+      ? dashboard.metrics.map(normalizeDashboardMetric).filter(Boolean)
+      : [],
+    timeRange: normalizeDashboardTimeRange(dashboard.timeRange),
   };
 }
 
@@ -221,7 +292,9 @@ function normalizeEnvironmentRecord(env) {
     storageAccount: typeof env?.storageAccount === 'string' ? env.storageAccount : '',
     functionAppName: typeof env?.functionAppName === 'string' ? env.functionAppName : '',
     sensorData: sanitizeSensorDataPreferences(env?.sensorData),
-    dashboards: Array.isArray(env?.dashboards) ? env.dashboards : createDefaultDashboardsArray(),
+    dashboards: Array.isArray(env?.dashboards)
+      ? env.dashboards.map((dashboard, index) => normalizeDashboard(dashboard, index))
+      : createDefaultDashboardsArray(),
   };
 
   // Re-validate all metric expressions (defense-in-depth for localStorage tampering)
@@ -3222,15 +3295,32 @@ function renderDashboardTabs(dashboards, activeIndex) {
 }
 
 function renderDashboardContent(dashboard) {
+  const timeRange = normalizeDashboardTimeRange(dashboard.timeRange);
   return `
     <div class="dashboard-header">
       <h2>${escapeHtml(dashboard.name)}</h2>
       <div class="dashboard-header-controls">
         <select id="dashboard-time-range" class="time-range-select">
-          <option value="1h" ${dashboard.timeRange.preset === '1h' ? 'selected' : ''}>Last Hour</option>
-          <option value="24h" ${dashboard.timeRange.preset === '24h' ? 'selected' : ''}>Last 24 Hours</option>
-          <option value="7d" ${dashboard.timeRange.preset === '7d' ? 'selected' : ''}>Last 7 Days</option>
+          <option value="1h" ${timeRange.preset === '1h' ? 'selected' : ''}>Last Hour</option>
+          <option value="6h" ${timeRange.preset === '6h' ? 'selected' : ''}>Last 6 Hours</option>
+          <option value="24h" ${timeRange.preset === '24h' ? 'selected' : ''}>Last 24 Hours</option>
+          <option value="7d" ${timeRange.preset === '7d' ? 'selected' : ''}>Last 7 Days</option>
+          <option value="custom" ${timeRange.preset === 'custom' ? 'selected' : ''}>Custom Range</option>
         </select>
+        <input
+          type="datetime-local"
+          id="dashboard-time-start"
+          class="time-range-input"
+          value="${escapeHtml(formatDateTimeLocalInput(timeRange.start))}"
+          ${timeRange.preset === 'custom' ? '' : 'disabled'}
+        >
+        <input
+          type="datetime-local"
+          id="dashboard-time-end"
+          class="time-range-input"
+          value="${escapeHtml(formatDateTimeLocalInput(timeRange.end))}"
+          ${timeRange.preset === 'custom' ? '' : 'disabled'}
+        >
         <button class="btn btn-secondary" id="edit-dashboard-name-btn">Rename</button>
       </div>
     </div>
@@ -3302,6 +3392,21 @@ function renderMetricCard(metric, index) {
   `;
 }
 
+function getDashboardTimeRangeBounds(timeRange, nowMs = Date.now()) {
+  const normalized = normalizeDashboardTimeRange(timeRange);
+  if (normalized.preset === 'custom') {
+    return {
+      startMs: normalized.start,
+      endMs: normalized.end,
+    };
+  }
+  const rangeMs = DASHBOARD_TIME_RANGE_MS[normalized.preset] || DASHBOARD_TIME_RANGE_MS['24h'];
+  return {
+    startMs: nowMs - rangeMs,
+    endMs: nowMs,
+  };
+}
+
 async function renderMetricCharts(dashboard) {
   for (let i = 0; i < dashboard.metrics.length; i++) {
     const metric = dashboard.metrics[i];
@@ -3354,9 +3459,10 @@ async function renderMetricCharts(dashboard) {
   }
 }
 
-async function evaluateMetricTimeSeries(metric, variables, timeRange) {
-  const env = loadActiveEnvironment();
-  const parser = new exprEval.Parser();
+async function evaluateMetricTimeSeries(metric, variables, timeRange, deps = {}) {
+  const parserFactory = deps.parserFactory || (() => new exprEval.Parser());
+  const fetchVariableDataFn = deps.fetchVariableDataFn || fetchVariableData;
+  const parser = parserFactory();
   let expr;
   
   try {
@@ -3373,7 +3479,7 @@ async function evaluateMetricTimeSeries(metric, variables, timeRange) {
     return { error: 'Expression uses no variables', points: [] };
   }
   
-  const fetchResult = await fetchVariableData(usedVariables, timeRange || { preset: '24h' });
+  const fetchResult = await fetchVariableDataFn(usedVariables, timeRange || { preset: '24h' }, deps);
   
   // Propagate any fetch errors
   if (fetchResult.errors && fetchResult.errors.length > 0) {
@@ -3427,30 +3533,19 @@ async function evaluateMetricTimeSeries(metric, variables, timeRange) {
   return { points };
 }
 
-async function fetchVariableData(variables, timeRange) {
+async function fetchVariableData(variables, timeRange, deps = {}) {
   const result = {};
   const errors = [];
-  
-  const now = Date.now();
-  let startMs;
-  
-  switch (timeRange.preset) {
-    case '1h':
-      startMs = now - 60 * 60 * 1000;
-      break;
-    case '7d':
-      startMs = now - 7 * 24 * 60 * 60 * 1000;
-      break;
-    case '24h':
-    default:
-      startMs = now - 24 * 60 * 60 * 1000;
-      break;
-  }
-  
+
+  const nowFn = deps.nowFn || Date.now;
+  const fetchActualStateNodesFn = deps.fetchActualStateNodesFn || fetchActualStateNodes;
+  const querySensorDataRangeFn = deps.querySensorDataRangeFn || querySensorDataRange;
+  const { startMs, endMs } = getDashboardTimeRangeBounds(timeRange, nowFn());
+
   // Fetch node mappings to resolve nodeId -> partitionKey
   let nodes;
   try {
-    nodes = await fetchActualStateNodes();
+    nodes = await fetchActualStateNodesFn(deps);
   } catch (error) {
     errors.push(`Failed to fetch node mappings: ${error.message}`);
     return { data: result, errors };
@@ -3479,10 +3574,11 @@ async function fetchVariableData(variables, timeRange) {
   // Query sensor data for each partition
   for (const [partitionKey, vars] of partitionMap.entries()) {
     try {
-      const rows = await querySensorDataRange([partitionKey], startMs, now, {
+      const rows = await querySensorDataRangeFn([partitionKey], startMs, endMs, {
         topPerPage: 1000,
         maxPagesPerPartition: 10
       });
+      const availableReadingTypes = new Set();
       
       // Extract requested readings from each row
       for (const row of rows) {
@@ -3491,11 +3587,16 @@ async function fetchVariableData(variables, timeRange) {
         
         const readings = parseSensorReadings(row.decoded_readings);
         if (!readings) continue;
+        for (const [readingName, readingValue] of Object.entries(readings)) {
+          if (toPlottableNumber(readingValue) != null) {
+            availableReadingTypes.add(readingName);
+          }
+        }
         
         // Map each variable to its value at this timestamp
         for (const variable of vars) {
-          const value = readings[variable.readingType];
-          if (value !== undefined && typeof value === 'number') {
+          const value = toPlottableNumber(readings[variable.readingType]);
+          if (value != null) {
             if (!result[variable.name]) {
               result[variable.name] = [];
             }
@@ -3503,6 +3604,16 @@ async function fetchVariableData(variables, timeRange) {
               timestamp: timestampMs,
               value
             });
+          }
+        }
+      }
+      if (rows.length > 0) {
+        for (const variable of vars) {
+          if (!availableReadingTypes.has(variable.readingType)) {
+            errors.push(`Reading type "${variable.readingType}" not found for node "${variable.nodeId}"`);
+            if (!result[variable.name]) {
+              result[variable.name] = [];
+            }
           }
         }
       }
@@ -3539,8 +3650,54 @@ function attachDashboardHandlers() {
     const env = loadActiveEnvironment();
     const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
     dashboard.timeRange.preset = e.target.value;
+    if (dashboard.timeRange.preset === 'custom' && (!Number.isFinite(dashboard.timeRange.start) || !Number.isFinite(dashboard.timeRange.end) || dashboard.timeRange.start >= dashboard.timeRange.end)) {
+      const defaultBounds = getDashboardTimeRangeBounds({ preset: '24h' });
+      dashboard.timeRange.start = defaultBounds.startMs;
+      dashboard.timeRange.end = defaultBounds.endMs;
+    } else if (dashboard.timeRange.preset !== 'custom') {
+      dashboard.timeRange.start = null;
+      dashboard.timeRange.end = null;
+    }
     environments = loadEnvironments();
     const envIndex = environments.findIndex(e => e.name === env.name);
+    if (envIndex >= 0) {
+      environments[envIndex] = env;
+      saveEnvironments(environments);
+    }
+    renderActiveTab();
+  });
+  document.getElementById('dashboard-time-start')?.addEventListener('change', (e) => {
+    const env = loadActiveEnvironment();
+    const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+    const startMs = parseDateTimeLocalInput(e.target.value);
+    const endMs = Number.isFinite(dashboard.timeRange.end) ? dashboard.timeRange.end : parseDateTimeLocalInput(document.getElementById('dashboard-time-end')?.value);
+    if (startMs == null || endMs == null || startMs >= endMs) {
+      alert('Custom time range must have a start before the end.');
+      renderActiveTab();
+      return;
+    }
+    dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
+    environments = loadEnvironments();
+    const envIndex = environments.findIndex(entry => entry.name === env.name);
+    if (envIndex >= 0) {
+      environments[envIndex] = env;
+      saveEnvironments(environments);
+    }
+    renderActiveTab();
+  });
+  document.getElementById('dashboard-time-end')?.addEventListener('change', (e) => {
+    const env = loadActiveEnvironment();
+    const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+    const endMs = parseDateTimeLocalInput(e.target.value);
+    const startMs = Number.isFinite(dashboard.timeRange.start) ? dashboard.timeRange.start : parseDateTimeLocalInput(document.getElementById('dashboard-time-start')?.value);
+    if (startMs == null || endMs == null || startMs >= endMs) {
+      alert('Custom time range must have a start before the end.');
+      renderActiveTab();
+      return;
+    }
+    dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
+    environments = loadEnvironments();
+    const envIndex = environments.findIndex(entry => entry.name === env.name);
     if (envIndex >= 0) {
       environments[envIndex] = env;
       saveEnvironments(environments);
@@ -3644,96 +3801,195 @@ function deleteDashboard(index) {
   renderActiveTab();
 }
 
-async function showAddVariableModal() {
+async function fetchReadingTypesForNode(nodeId, deps = {}) {
+  const fetchActualStateNodesFn = deps.fetchActualStateNodesFn || fetchActualStateNodes;
+  const querySensorDataRangeFn = deps.querySensorDataRangeFn || querySensorDataRange;
+  const nowFn = deps.nowFn || Date.now;
+  const nodes = await fetchActualStateNodesFn(deps);
+  const node = nodes.find((entry) => entry.nodeId === nodeId);
+  if (!node || !node.partitionKey) {
+    return [];
+  }
+  const endMs = nowFn();
+  const startMs = endMs - DASHBOARD_READING_DISCOVERY_WINDOW_MS;
+  const rows = await querySensorDataRangeFn([node.partitionKey], startMs, endMs, {
+    topPerPage: 1000,
+    maxPagesPerPartition: 5,
+  });
+  const readingTypes = new Set();
+  for (const row of rows) {
+    const readings = parseSensorReadings(row.decoded_readings);
+    if (!readings) continue;
+    for (const [readingName, value] of Object.entries(readings)) {
+      if (toPlottableNumber(value) != null) {
+        readingTypes.add(readingName);
+      }
+    }
+  }
+  return [...readingTypes].sort();
+}
+
+async function showVariableModal(index = null) {
+  const isEdit = index != null;
   const env = loadActiveEnvironment();
   const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
-  
+  const variable = isEdit ? dashboard.variables[index] : null;
   const nodes = await fetchActualStateNodes();
   if (nodes.length === 0) {
     alert('No nodes available. Nodes must be online and reporting to create variables.');
     return;
   }
-  
-  const name = prompt('Enter variable name (must be valid JavaScript identifier, e.g., TEMP, PRESS_KPA):', '');
-  if (!name) return;
-  
-  const existingNames = dashboard.variables.map(v => v.name);
-  const validation = validateVariableName(name, existingNames);
-  if (!validation.valid) {
-    alert(validation.error);
-    return;
+
+  const existing = document.getElementById('dashboard-variable-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'dashboard-variable-overlay';
+  overlay.className = 'env-manager-overlay';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', isEdit ? 'Edit Variable' : 'Add Variable');
+  overlay.innerHTML = `
+    <div class="env-manager-panel panel">
+      <h2>${isEdit ? 'Edit Variable' : 'Add Variable'}</h2>
+      <div class="stack">
+        <label>
+          Variable Name
+          <input type="text" id="dashboard-variable-name" value="${escapeHtml(variable?.name || '')}" placeholder="e.g. TEMP, PRESS_KPA">
+        </label>
+        <label>
+          Node ID
+          <select id="dashboard-variable-node">
+            ${nodes.map((node) => `<option value="${escapeHtml(node.nodeId)}" ${node.nodeId === (variable?.nodeId || nodes[0].nodeId) ? 'selected' : ''}>${escapeHtml(node.nodeId)}</option>`).join('')}
+          </select>
+        </label>
+        <label>
+          Reading Type
+          <select id="dashboard-variable-reading" disabled>
+            <option value="">Loading readings…</option>
+          </select>
+        </label>
+      </div>
+      <div style="margin-top:1rem;display:flex;gap:0.5rem">
+        <button type="button" class="primary" id="dashboard-variable-save">Save</button>
+        <button type="button" class="secondary" id="dashboard-variable-cancel">Cancel</button>
+      </div>
+      <div id="dashboard-variable-error" class="alert error" style="display:none;margin-top:0.75rem"></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const nameInput = document.getElementById('dashboard-variable-name');
+  const nodeSelect = document.getElementById('dashboard-variable-node');
+  const readingSelect = document.getElementById('dashboard-variable-reading');
+  const errorEl = document.getElementById('dashboard-variable-error');
+
+  if (nameInput) nameInput.focus();
+
+  function closeModal() {
+    overlay.remove();
   }
-  
-  const displayName = prompt(`Enter node ID (available: ${nodes.map(n => n.nodeId).join(', ')}):`, nodes[0].nodeId);
-  if (!displayName) return;
-  
-  // Validate selected node ID
-  const selectedNode = nodes.find(n => n.nodeId === displayName);
-  if (!selectedNode) {
-    alert('Invalid node ID selected.');
-    return;
+
+  async function loadReadingsForSelectedNode(preferredReadingType) {
+    if (!nodeSelect || !readingSelect) return;
+    readingSelect.disabled = true;
+    readingSelect.innerHTML = '<option value="">Loading readings…</option>';
+    if (errorEl) {
+      errorEl.textContent = '';
+      errorEl.style.display = 'none';
+    }
+    try {
+      const readingTypes = await fetchReadingTypesForNode(nodeSelect.value);
+      if (readingTypes.length === 0) {
+        readingSelect.innerHTML = '<option value="">No numeric readings discovered</option>';
+        readingSelect.disabled = true;
+        if (errorEl) {
+          errorEl.textContent = `No numeric readings were discovered for node "${nodeSelect.value}" in recent sensor data.`;
+          errorEl.style.display = '';
+        }
+        return;
+      }
+      const selectedReading = readingTypes.includes(preferredReadingType) ? preferredReadingType : readingTypes[0];
+      readingSelect.innerHTML = readingTypes.map((readingType) => `
+        <option value="${escapeHtml(readingType)}" ${readingType === selectedReading ? 'selected' : ''}>${escapeHtml(readingType)}</option>
+      `).join('');
+      readingSelect.disabled = false;
+      if (preferredReadingType && !readingTypes.includes(preferredReadingType) && errorEl) {
+        errorEl.textContent = `Reading type "${preferredReadingType}" is no longer available for node "${nodeSelect.value}". Choose a replacement before saving.`;
+        errorEl.style.display = '';
+      }
+    } catch (error) {
+      readingSelect.innerHTML = '<option value="">Failed to load readings</option>';
+      readingSelect.disabled = true;
+      if (errorEl) {
+        errorEl.textContent = `Failed to load readings: ${error.message}`;
+        errorEl.style.display = '';
+      }
+    }
   }
-  const nodeId = selectedNode.nodeId;  // Store user-facing nodeId
-  
-  const readingType = prompt('Enter reading type (e.g., temperature_millif, pressure_pa):', '');
-  if (!readingType) return;
-  
-  dashboard.variables.push({ name, nodeId, readingType });
-  environments = loadEnvironments();
-  const envIndex = environments.findIndex(e => e.name === env.name);
-  if (envIndex >= 0) {
-    environments[envIndex] = env;
-    saveEnvironments(environments);
-  }
-  renderActiveTab();
+
+  document.getElementById('dashboard-variable-cancel')?.addEventListener('click', closeModal);
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) {
+      closeModal();
+    }
+  });
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      closeModal();
+    }
+  });
+  nodeSelect?.addEventListener('change', () => {
+    loadReadingsForSelectedNode(null);
+  });
+  document.getElementById('dashboard-variable-save')?.addEventListener('click', () => {
+    const name = nameInput?.value.trim();
+    const nodeId = nodeSelect?.value;
+    const readingType = readingSelect?.value;
+    if (!name || !nodeId || !readingType) {
+      if (errorEl) {
+        errorEl.textContent = 'Variable name, node ID, and reading type are required.';
+        errorEl.style.display = '';
+      }
+      return;
+    }
+    const existingNames = dashboard.variables
+      .map((entry, entryIndex) => (entryIndex === index ? null : entry.name))
+      .filter(Boolean);
+    const validation = validateVariableName(name, existingNames);
+    if (!validation.valid) {
+      if (errorEl) {
+        errorEl.textContent = validation.error;
+        errorEl.style.display = '';
+      }
+      return;
+    }
+
+    const normalizedVariable = { name, nodeId, readingType };
+    if (isEdit) {
+      dashboard.variables[index] = normalizedVariable;
+    } else {
+      dashboard.variables.push(normalizedVariable);
+    }
+    environments = loadEnvironments();
+    const envIndex = environments.findIndex((entry) => entry.name === env.name);
+    if (envIndex >= 0) {
+      environments[envIndex] = env;
+      saveEnvironments(environments);
+    }
+    closeModal();
+    renderActiveTab();
+  });
+
+  await loadReadingsForSelectedNode(variable?.readingType || null);
+}
+
+async function showAddVariableModal() {
+  await showVariableModal(null);
 }
 
 async function showEditVariableModal(index) {
-  const env = loadActiveEnvironment();
-  const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
-  const variable = dashboard.variables[index];
-  
-  const newName = prompt('Enter variable name:', variable.name);
-  if (!newName) return;
-  
-  if (newName !== variable.name) {
-    const existingNames = dashboard.variables.map((v, i) => i === index ? null : v.name).filter(Boolean);
-    const validation = validateVariableName(newName, existingNames);
-    if (!validation.valid) {
-      alert(validation.error);
-      return;
-    }
-    variable.name = newName;
-  }
-  
-  // Fetch available nodes for constrained selection
-  const nodes = await fetchActualStateNodes();
-  if (nodes.length === 0) {
-    alert('No nodes available to select from.');
-    return;
-  }
-  
-  const newNodeId = prompt(`Enter node ID (available: ${nodes.map(n => n.nodeId).join(', ')}):`, variable.nodeId);
-  if (newNodeId) {
-    // Validate selected node exists
-    const selectedNode = nodes.find(n => n.nodeId === newNodeId);
-    if (!selectedNode) {
-      alert('Invalid node ID. Variable not updated.');
-      return;
-    }
-    variable.nodeId = newNodeId;
-  }
-  
-  const newReadingType = prompt('Enter reading type:', variable.readingType);
-  if (newReadingType) variable.readingType = newReadingType;
-  
-  environments = loadEnvironments();
-  const envIndex = environments.findIndex(e => e.name === env.name);
-  if (envIndex >= 0) {
-    environments[envIndex] = env;
-    saveEnvironments(environments);
-  }
-  renderActiveTab();
+  await showVariableModal(index);
 }
 
 function deleteVariable(index) {
@@ -4186,8 +4442,11 @@ if (typeof module !== 'undefined' && module.exports) {
     validateImportedSensorDataPreferences,
     // Dashboard functions for testing
     fetchActualStateNodes,
+    fetchReadingTypesForNode,
     fetchVariableData,
     evaluateMetricTimeSeries,
+    getDashboardTimeRangeBounds,
+    normalizeDashboardTimeRange,
   };
 }
 

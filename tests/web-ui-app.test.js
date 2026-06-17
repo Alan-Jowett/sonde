@@ -852,6 +852,34 @@ test('buildEnvironmentExportData and import validation distinguish omitted and e
   assert.equal(app.validateImportedSensorDataPreferences(emptySelectionExport.sensorData).selectedSeriesInitialized, true);
 });
 
+test('validateVariableName rejects blocked object keys', () => {
+  const validation = app.validateVariableName('__proto__', []);
+  assert.equal(validation.valid, false);
+  assert.match(validation.error, /reserved/i);
+});
+
+test('validateExpression reports undefined variables as warnings, not errors', () => {
+  const originalExprEval = global.exprEval;
+  global.exprEval = {
+    Parser: class {
+      parse() {
+        return {
+          variables() { return ['TEMP', 'UNKNOWN']; },
+        };
+      }
+    }
+  };
+
+  try {
+    const validation = app.validateExpression('TEMP + UNKNOWN', ['TEMP']);
+    assert.equal(validation.valid, true);
+    assert.equal(validation.error, undefined);
+    assert.equal(validation.warning, 'Undefined variables: UNKNOWN');
+  } finally {
+    global.exprEval = originalExprEval;
+  }
+});
+
 // Dashboard runtime behavior tests
 
 test('fetchReadingTypesForNode discovers numeric reading types for the selected node', async () => {
@@ -981,6 +1009,29 @@ test('evaluateMetricTimeSeries computes time-series points from real fetched dat
     { timestamp: 1000, value: 25 },
     { timestamp: 2000, value: 25.5 },
   ]);
+});
+
+test('evaluateMetricTimeSeries reports undefined variables explicitly', async () => {
+  const result = await app.evaluateMetricTimeSeries({
+    expression: 'TEMP + UNKNOWN',
+  }, [
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '24h' }, {
+    parserFactory: () => ({
+      parse() {
+        return {
+          variables() { return ['TEMP', 'UNKNOWN']; },
+          evaluate() { return 0; },
+        };
+      },
+    }),
+    fetchVariableDataFn: async () => {
+      throw new Error('fetchVariableData should not run when variables are undefined');
+    },
+  });
+
+  assert.equal(result.error, 'Undefined variables: UNKNOWN');
+  assert.deepEqual(result.points, []);
 });
 
 test('renderMetricCharts shows a no-data message when evaluation yields zero points', async () => {

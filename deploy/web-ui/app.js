@@ -244,6 +244,9 @@ function validateVariableName(name, existingNames) {
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
     return { valid: false, error: 'Variable name must be a valid JavaScript identifier' };
   }
+  if (BLOCKED_OBJECT_KEYS.has(name)) {
+    return { valid: false, error: `'${name}' is reserved and cannot be used as a variable name` };
+  }
   if (existingNames.includes(name)) {
     return { valid: false, error: 'Variable name must be unique within dashboard' };
   }
@@ -261,7 +264,7 @@ function validateExpression(expression, availableVariables) {
     const undefinedVars = usedVars.filter(v => !availableVariables.includes(v));
     if (undefinedVars.length > 0) {
       return {
-        valid: false,
+        valid: true,
         warning: `Undefined variables: ${undefinedVars.join(', ')}`
       };
     }
@@ -303,8 +306,10 @@ function normalizeEnvironmentRecord(env) {
     dashboard.metrics.forEach(metric => {
       const variableNames = (dashboard.variables || []).map(v => v.name);
       const validation = validateExpression(metric.expression, variableNames);
-      if (!validation.valid) {
-        metric._validationError = validation.error || validation.warning;
+      if (validation.error) {
+        metric._validationError = validation.error;
+      } else if (validation.warning) {
+        metric._validationWarning = validation.warning;
       }
     });
   });
@@ -3284,7 +3289,7 @@ async function renderDashboards() {
   
   if (!Array.isArray(env.dashboards)) {
     env.dashboards = createDefaultDashboardsArray();
-    environments = loadEnvironments();
+    const environments = loadEnvironments();
     persistDashboardEnvironment(env, environments);
   }
   
@@ -3298,7 +3303,7 @@ async function renderDashboards() {
     `;
     document.getElementById('add-first-dashboard-btn')?.addEventListener('click', () => {
       const check = canAddDashboard(env);
-      if (!check.allowed && !confirm(check.warning)) return;
+      if (!check.allowed && !window.confirm(check.warning)) return;
       showAddDashboardModal();
     });
     return;
@@ -3325,10 +3330,12 @@ async function renderDashboards() {
 
 function renderDashboardTabs(dashboards, activeIndex) {
   const tabs = dashboards.map((d, i) => `
-    <button class="dashboard-tab ${i === activeIndex ? 'active' : ''}" data-dashboard-index="${i}">
-      ${escapeHtml(d.name)}
-      <button class="dashboard-tab-delete" data-delete-dashboard="${i}" title="Delete dashboard">&times;</button>
-    </button>
+    <div class="dashboard-tab-item">
+      <button type="button" class="dashboard-tab ${i === activeIndex ? 'active' : ''}" data-dashboard-index="${i}">
+        ${escapeHtml(d.name)}
+      </button>
+      <button type="button" class="dashboard-tab-delete" data-delete-dashboard="${i}" title="Delete dashboard" aria-label="Delete dashboard ${escapeHtml(d.name)}">&times;</button>
+    </div>
   `).join('');
   
   return `
@@ -3417,6 +3424,7 @@ function renderVariablesList(variables) {
 
 function renderMetricCard(metric, index) {
   const hasError = metric._validationError;
+  const hasWarning = metric._validationWarning;
   return `
     <div class="metric-card ${hasError ? 'metric-error' : ''}" id="metric-${index}">
       <div class="metric-header">
@@ -3429,6 +3437,7 @@ function renderMetricCard(metric, index) {
       <div class="metric-expression">
         <code>${escapeHtml(metric.expression)}</code>
         ${hasError ? `<div class="error-text">${escapeHtml(metric._validationError)}</div>` : ''}
+        ${!hasError && hasWarning ? `<div class="text-muted">${escapeHtml(metric._validationWarning)}</div>` : ''}
       </div>
       <div class="metric-chart-container">
         <canvas id="metric-chart-${index}"></canvas>
@@ -3462,6 +3471,11 @@ async function renderMetricCharts(dashboard, deps = {}) {
     
     const canvas = document.getElementById(`metric-chart-${i}`);
     if (!canvas) continue;
+    if (metric._validationWarning) {
+      destroyDashboardChart(i);
+      canvas.parentElement.innerHTML = `<div class="text-muted">${escapeHtml(metric._validationWarning)}</div>`;
+      continue;
+    }
     
     const result = await evaluateMetricTimeSeriesFn(metric, dashboard.variables, dashboard.timeRange, deps);
     
@@ -3526,6 +3540,10 @@ async function evaluateMetricTimeSeries(metric, variables, timeRange, deps = {})
   }
   
   const usedVariableNames = expr.variables();
+  const undefinedVariableNames = usedVariableNames.filter(name => !variables.some(v => v.name === name));
+  if (undefinedVariableNames.length > 0) {
+    return { error: `Undefined variables: ${undefinedVariableNames.join(', ')}`, points: [] };
+  }
   const usedVariables = variables.filter(v => usedVariableNames.includes(v.name));
   
   if (usedVariables.length === 0) {
@@ -3540,33 +3558,32 @@ async function evaluateMetricTimeSeries(metric, variables, timeRange, deps = {})
   }
   
   const variableData = fetchResult.data;
-  
+  const indexedVariableData = Object.create(null);
   const timestamps = new Set();
-  Object.values(variableData).forEach(data => {
-    data.forEach(point => timestamps.add(point.timestamp));
-  });
+  for (const variable of usedVariables) {
+    const data = variableData[variable.name] || [];
+    const byTimestamp = new Map();
+    data.forEach(point => {
+      byTimestamp.set(point.timestamp, point.value);
+      timestamps.add(point.timestamp);
+    });
+    indexedVariableData[variable.name] = byTimestamp;
+  }
   
   const sortedTimestamps = Array.from(timestamps).sort((a, b) => a - b);
   
   const points = [];
   for (const timestamp of sortedTimestamps) {
-    const context = {};
+    const context = Object.create(null);
     let hasAllVars = true;
     
     for (const variable of usedVariables) {
-      const data = variableData[variable.name];
-      if (!data) {
+      const data = indexedVariableData[variable.name];
+      if (!data || !data.has(timestamp)) {
         hasAllVars = false;
         break;
       }
-      
-      const point = data.find(p => p.timestamp === timestamp);
-      if (point) {
-        context[variable.name] = point.value;
-      } else {
-        hasAllVars = false;
-        break;
-      }
+      context[variable.name] = data.get(timestamp);
     }
     
     if (!hasAllVars) continue;
@@ -3587,7 +3604,7 @@ async function evaluateMetricTimeSeries(metric, variables, timeRange, deps = {})
 }
 
 async function fetchVariableData(variables, timeRange, deps = {}) {
-  const result = {};
+  const result = Object.create(null);
   const errors = [];
 
   const nowFn = deps.nowFn || Date.now;
@@ -3711,7 +3728,7 @@ function attachDashboardHandlers() {
       dashboard.timeRange.start = null;
       dashboard.timeRange.end = null;
     }
-    environments = loadEnvironments();
+    const environments = loadEnvironments();
     persistDashboardEnvironment(env, environments);
     renderActiveTab();
   });
@@ -3726,7 +3743,7 @@ function attachDashboardHandlers() {
       return;
     }
     dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
-    environments = loadEnvironments();
+    const environments = loadEnvironments();
     persistDashboardEnvironment(env, environments);
     renderActiveTab();
   });
@@ -3741,7 +3758,7 @@ function attachDashboardHandlers() {
       return;
     }
     dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
-    environments = loadEnvironments();
+    const environments = loadEnvironments();
     persistDashboardEnvironment(env, environments);
     renderActiveTab();
   });
@@ -3749,17 +3766,17 @@ function attachDashboardHandlers() {
   document.getElementById('add-dashboard-btn')?.addEventListener('click', () => {
     const env = loadActiveEnvironment();
     const check = canAddDashboard(env);
-    if (!check.allowed && !confirm(check.warning)) return;
+    if (!check.allowed && !window.confirm(check.warning)) return;
     showAddDashboardModal();
   });
   
   document.getElementById('edit-dashboard-name-btn')?.addEventListener('click', () => {
     const env = loadActiveEnvironment();
     const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
-    const newName = prompt('Enter new dashboard name:', dashboard.name);
+    const newName = window.prompt('Enter new dashboard name:', dashboard.name);
     if (newName && newName.trim()) {
       dashboard.name = newName.trim();
-      environments = loadEnvironments();
+      const environments = loadEnvironments();
       persistDashboardEnvironment(env, environments);
       renderActiveTab();
     }
@@ -3770,7 +3787,7 @@ function attachDashboardHandlers() {
     const env = loadActiveEnvironment();
     const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
     const check = canAddMetric(dashboard);
-    if (!check.allowed && !confirm(check.warning)) return;
+    if (!check.allowed && !window.confirm(check.warning)) return;
     showAddMetricModal();
   });
   
@@ -3805,10 +3822,10 @@ function attachDashboardHandlers() {
 
 function showAddDashboardModal() {
   const env = loadActiveEnvironment();
-  const name = prompt('Enter dashboard name:', `Dashboard ${env.dashboards.length + 1}`);
+  const name = window.prompt('Enter dashboard name:', `Dashboard ${env.dashboards.length + 1}`);
   if (name && name.trim()) {
     env.dashboards.push(createDefaultDashboard(name.trim()));
-    environments = loadEnvironments();
+    const environments = loadEnvironments();
     persistDashboardEnvironment(env, environments);
     APP_DASHBOARD_STATE.activeDashboardIndex = env.dashboards.length - 1;
     renderActiveTab();
@@ -3818,10 +3835,10 @@ function showAddDashboardModal() {
 function deleteDashboard(index) {
   const env = loadActiveEnvironment();
   const dashboard = env.dashboards[index];
-  if (!confirm(`Delete dashboard "${dashboard.name}"? This cannot be undone.`)) return;
+  if (!window.confirm(`Delete dashboard "${dashboard.name}"? This cannot be undone.`)) return;
   
   env.dashboards.splice(index, 1);
-  environments = loadEnvironments();
+  const environments = loadEnvironments();
   persistDashboardEnvironment(env, environments);
   
   if (APP_DASHBOARD_STATE.activeDashboardIndex >= env.dashboards.length) {
@@ -4000,7 +4017,7 @@ async function showVariableModal(index = null) {
     } else {
       dashboard.variables.push(normalizedVariable);
     }
-    environments = loadEnvironments();
+    const environments = loadEnvironments();
     persistDashboardEnvironment(env, environments);
     closeModal();
     renderActiveTab();
@@ -4028,13 +4045,13 @@ function deleteVariable(index) {
   
   if (usedInMetrics.length > 0) {
     const metricNames = usedInMetrics.map(m => m.displayName).join(', ');
-    if (!confirm(`Variable '${variable.name}' is used in metrics: ${metricNames}. These metrics will show errors. Continue?`)) {
+    if (!window.confirm(`Variable '${variable.name}' is used in metrics: ${metricNames}. These metrics will show errors. Continue?`)) {
       return;
     }
   }
   
   dashboard.variables.splice(index, 1);
-  environments = loadEnvironments();
+  const environments = loadEnvironments();
   persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
@@ -4048,7 +4065,7 @@ function showAddMetricModal() {
     return;
   }
   
-  const displayName = prompt('Enter metric display name:', 'New Metric');
+  const displayName = window.prompt('Enter metric display name:', 'New Metric');
   if (!displayName) return;
   
   const availableVars = dashboard.variables.map(v => v.name).join(', ');
@@ -4058,16 +4075,19 @@ Precedence: () > ^ > * / > + - (left-to-right)
 Functions: sqrt(x), log(x), log10(x), exp(x), abs(x), min(a,b), max(a,b)
 Variables: ${availableVars}`;
   
-  const expression = prompt(`Enter expression:\n${helpText}`, '');
+  const expression = window.prompt(`Enter expression:\n${helpText}`, '');
   if (!expression) return;
   
   const validation = validateExpression(expression, dashboard.variables.map(v => v.name));
-  if (!validation.valid) {
-    alert(validation.error || validation.warning);
-    if (validation.error) return;
+  if (validation.error) {
+    alert(validation.error);
+    return;
+  }
+  if (validation.warning) {
+    alert(validation.warning);
   }
   
-  const color = prompt('Enter color (hex code, optional):', '#007bff');
+  const color = window.prompt('Enter color (hex code, optional):', '#007bff');
   
   const metric = {
     id: `m_${Date.now()}`,
@@ -4077,7 +4097,7 @@ Variables: ${availableVars}`;
   };
   
   dashboard.metrics.push(metric);
-  environments = loadEnvironments();
+  const environments = loadEnvironments();
   persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
@@ -4087,27 +4107,27 @@ function showEditMetricModal(index) {
   const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
   const metric = dashboard.metrics[index];
   
-  const newDisplayName = prompt('Enter display name:', metric.displayName);
+  const newDisplayName = window.prompt('Enter display name:', metric.displayName);
   if (newDisplayName) metric.displayName = newDisplayName;
   
   const availableVars = dashboard.variables.map(v => v.name).join(', ');
-  const newExpression = prompt(`Enter expression (variables: ${availableVars}):`, metric.expression);
+  const newExpression = window.prompt(`Enter expression (variables: ${availableVars}):`, metric.expression);
   if (newExpression) {
     const validation = validateExpression(newExpression, dashboard.variables.map(v => v.name));
-    if (!validation.valid) {
-      alert(validation.error || validation.warning);
-      if (!validation.error) {
-        metric.expression = newExpression;
-      }
-    } else {
-      metric.expression = newExpression;
+    if (validation.error) {
+      alert(validation.error);
+      return;
     }
+    if (validation.warning) {
+      alert(validation.warning);
+    }
+    metric.expression = newExpression;
   }
   
-  const newColor = prompt('Enter color (hex):', metric.color);
+  const newColor = window.prompt('Enter color (hex):', metric.color);
   if (newColor) metric.color = newColor;
   
-  environments = loadEnvironments();
+  const environments = loadEnvironments();
   persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
@@ -4117,10 +4137,10 @@ function deleteMetric(index) {
   const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
   const metric = dashboard.metrics[index];
   
-  if (!confirm(`Delete metric "${metric.displayName}"?`)) return;
+  if (!window.confirm(`Delete metric "${metric.displayName}"?`)) return;
   
   dashboard.metrics.splice(index, 1);
-  environments = loadEnvironments();
+  const environments = loadEnvironments();
   persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
@@ -4464,6 +4484,8 @@ if (typeof module !== 'undefined' && module.exports) {
     destroyAllDashboardCharts,
     getDashboardTimeRangeBounds,
     normalizeDashboardTimeRange,
+    validateVariableName,
+    validateExpression,
   };
 }
 

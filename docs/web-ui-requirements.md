@@ -54,15 +54,19 @@ program ingestion.
 | **SPA** | Single-page application — the web UI served from `deploy/web-ui/`. |
 | **Actual state** | The latest telemetry row a node has reported, stored in the `actualstate` Azure Table. |
 | **BIP-39 fingerprint** | Six-word fingerprint string displayed in the UI so the operator can verify the gateway identity against the modem. |
+| **Dashboard** | A named collection of variables and computed metrics in the Dashboards feature (WEB-1100). Each environment can have multiple dashboards. |
 | **Desired state** | An operator-specified target configuration for a node, stored in the `desiredstate` Azure Table. |
 | **Divergence** | A mismatch between a node's actual state and its desired state (program hash or schedule interval). |
 | **Environment** | A named set of Azure backend connection details (client ID, tenant ID, storage account, function app) stored in `localStorage`. |
+| **Expression** | An algebraic formula (e.g., `(x - 92000) / 10`) used to compute a metric from dashboard variables. |
 | **Gateway status** | The gateway ACTUAL_STATE summary shown in a dedicated dashboard card, read from the `actualstate` Azure Table with `PartitionKey` starting with `"g:"`. The SPA selects the latest row per gateway partition using `latestByPartition` (lexicographically smallest reverse-timestamp `RowKey`). |
+| **Metric** | A computed time series in a dashboard, defined by a display name, an expression, and chart configuration. Rendered as a line chart. |
 | **ProgramIngest** | An HTTP-triggered Azure Function that accepts ELF uploads, runs Prevail verification, and stores verified program images. |
 | **Reverse-timestamp RowKey** | `{(u64::MAX - timestamp_ms):016x}:{(u64::MAX - sequence):016x}:{random_nonce:016x}` — ensures newest rows sort first in Azure Tables. |
 | **Rotation code** | A six-character operator-entered confirmation code normalized to uppercase `[A-Z0-9]` and included in the encrypted rotation payload. |
 | **Rotation payload** | The encrypted `RotationPayloadV1` binary blob written to the gateway's `desiredstate` row to request master key rotation. |
 | **Series** | A unique `(NodeId, ProgramHash, ReadingName)` tuple in sensor data, rendered as one line on the time-series chart. |
+| **Variable binding** | An association between a data source (node ID + reading type) and a variable name in a dashboard, allowing the variable to be used in metric expressions. |
 
 ---
 
@@ -1493,7 +1497,278 @@ success` for Aligned, `badge warning` for Diverged).
 
 ---
 
-## 16  Dependencies
+## 16  Custom Dashboards (WEB-1100)
+
+### WEB-1100  Dashboard Creation and Management
+
+**Priority:** Should
+**Source:** USER-REQUEST: Allow admins to create custom dashboards with computed metrics using algebraic expressions over sensor readings
+**Confidence:** High
+
+**Description:**
+The SPA MUST provide a "Dashboards" section where operators can create,
+rename, delete, and navigate between multiple custom dashboards. Each
+dashboard can contain multiple computed metrics (time-series charts derived
+from algebraic expressions).
+
+**Acceptance criteria:**
+
+1. A "Dashboards" tab or section is available in the SPA navigation.
+2. Operators can create a new dashboard via a "**+**" button.
+3. When creating a dashboard, the operator is prompted for a dashboard name.
+4. Dashboards are displayed as tabs within the Dashboards section.
+5. Operators can switch between dashboards by clicking tabs.
+6. Operators can rename an existing dashboard.
+7. Operators can delete a dashboard (with confirmation prompt).
+8. Empty dashboards display a message prompting the operator to add metrics.
+
+---
+
+### WEB-1101  Variable Binding
+
+**Priority:** Should
+**Source:** USER-REQUEST: Bind sensor data sources to variable names for use in expressions
+**Confidence:** High
+
+**Description:**
+Within each dashboard, operators MUST be able to define variables by binding
+data sources (node ID + reading type) to variable names. Variables are scoped
+per-dashboard and shared across all metrics within that dashboard.
+
+**Acceptance criteria:**
+
+1. Each dashboard has a variables configuration interface.
+2. Operators can add a variable by selecting a data source and assigning a
+   variable name.
+3. Data source selection includes node ID and reading type (e.g., "Node 7,
+   Temperature (milliF)").
+4. Variable names MUST be valid JavaScript identifiers (alphanumeric + underscore,
+   no spaces, cannot start with a digit).
+5. Variable names MUST be unique within a dashboard.
+6. Variable names MUST NOT collide with reserved function names. The reserved
+   list includes at minimum: `sqrt`, `log`, `log10`, `exp`, `abs`, `min`, `max`.
+   The SPA MAY extend this list if the expression evaluator library adds
+   additional functions. The UI validates this on save and rejects reserved
+   names with an error message.
+7. Operators can edit or delete existing variable bindings.
+8. Deleting a variable that is referenced by a metric expression triggers a
+   confirmation prompt warning which metrics will be affected. If confirmed,
+   the variable is deleted and affected metrics display expression errors.
+
+---
+
+### WEB-1102  Expression Editor
+
+**Priority:** Should
+**Source:** USER-REQUEST: Allow algebraic expressions like `(x - 92000) / 10`, `sqrt(T * T + H * H)`
+**Confidence:** High
+
+**Description:**
+The SPA MUST provide an expression editor for defining computed metrics.
+Expressions use dashboard variables and support basic arithmetic and math
+functions. Expressions MUST be evaluated safely using a JavaScript expression
+library (not `eval()`).
+
+**Acceptance criteria:**
+
+1. The expression editor is a text input field.
+2. Supported operators: `+`, `-`, `*`, `/`, `^` (power).
+3. Supported functions: `sqrt()`, `log()`, `log10()`, `exp()`, `abs()`, `min()`,
+   `max()`.
+4. The editor validates expression syntax on blur or save.
+5. Syntax errors display an inline error message.
+6. Expressions that reference undefined variables display a warning.
+7. The SPA uses a safe expression evaluator library (e.g., `expr-eval`,
+   `mathjs`, or similar) — NOT `eval()` or `Function()` constructor.
+
+---
+
+### WEB-1103  Metric Configuration
+
+**Priority:** Should
+**Source:** USER-REQUEST: Each metric has a display name, expression, and chart
+**Confidence:** High
+
+**Description:**
+Each dashboard contains one or more metrics. A metric is a computed time series
+defined by a display name, an expression, and chart configuration.
+
+**Acceptance criteria:**
+
+1. Operators can add a metric to a dashboard via "**+ Add Metric**" button.
+2. Adding a metric opens a configuration dialog or inline form.
+3. Required fields: display name (user-friendly label), expression (algebraic
+   formula).
+4. Optional fields: chart color (auto-assigned if not specified).
+5. Operators can edit an existing metric (name, expression, color).
+6. Operators can delete a metric from a dashboard (with confirmation).
+7. Metrics are displayed in the order they were added (vertical stack layout).
+
+---
+
+### WEB-1104  Time-Series Expression Evaluation
+
+**Priority:** Should
+**Source:** USER-REQUEST: Expressions evaluated per timestamp to create computed time series
+**Confidence:** High
+
+**Description:**
+For each metric, the SPA MUST evaluate the expression over the selected time
+range, producing a computed time series for charting. Evaluation occurs
+per-timestamp: for each data point in the time range, the expression is
+evaluated with variable values from that timestamp.
+
+**Acceptance criteria:**
+
+1. The dashboard has a time range selector (similar to Sensor Data tab).
+2. The SPA fetches raw sensor data for all bound variables within the time range.
+3. For each timestamp where at least one variable has data, the expression is
+   evaluated.
+4. Expression evaluation uses the variable values at that timestamp.
+5. If a variable has no data at a timestamp, that timestamp is skipped (gap in
+   chart).
+6. The resulting computed time series is plotted as a line chart.
+7. Multiple metrics on the same dashboard are rendered as separate charts
+   (vertical stack).
+
+---
+
+### WEB-1105  Error Handling
+
+**Priority:** Should
+**Source:** USER-REQUEST: Missing data → skip points; malformed expression → show error
+**Confidence:** High
+
+**Description:**
+The SPA MUST handle errors gracefully during expression evaluation and data
+fetching. Missing data results in gaps in the chart; malformed expressions
+prevent charting and display an error.
+
+**Acceptance criteria:**
+
+1. If an expression has syntax errors, the metric displays an error badge and
+   the chart is not rendered.
+2. If an expression references an undefined variable, a warning is displayed.
+3. If variable data is unavailable for a timestamp, that point is skipped (gap
+   in chart).
+4. If expression evaluation throws a runtime error (e.g., `log(-5)`, division
+   by zero), that point is skipped and logged to the browser console.
+5. If all evaluations fail for a metric, the chart displays a "No data" message.
+6. Network errors fetching sensor data display a user-visible error message.
+
+---
+
+### WEB-1106  Dashboard Persistence
+
+**Priority:** Should
+**Source:** USER-REQUEST: Store dashboards in localStorage, export via environment export
+**Confidence:** High
+
+**Description:**
+Dashboard configurations (variables, metrics, layout) MUST be persisted in
+`localStorage` as part of the environment's data. Dashboards survive page
+reloads and are included in environment export/import.
+
+**Acceptance criteria:**
+
+1. Each environment's `localStorage` entry includes a `dashboards` array.
+2. Each dashboard object contains: `name`, `variables` (array of bindings),
+   `metrics` (array of metric configs), `timeRange` (dashboard-level time window).
+3. Dashboards are persisted on any change (create, rename, delete, add/edit/delete
+   metric, add/edit/delete variable).
+4. Switching environments loads that environment's dashboards.
+5. Dashboards from one environment do not leak into another environment.
+
+---
+
+### WEB-1107  Environment Export/Import Integration
+
+**Priority:** Should
+**Source:** USER-REQUEST: Dashboards exported as single JSON with all environment state
+**Confidence:** High
+
+**Description:**
+Dashboard configurations MUST be included in the environment export JSON
+(WEB-0808). Importing an environment restores its dashboards.
+
+**Acceptance criteria:**
+
+1. The environment export JSON includes a `dashboards` field containing the
+   full dashboard configuration array.
+2. Exporting an environment preserves all dashboard definitions (names,
+   variables, metrics, expressions).
+3. Importing an environment restores its dashboards into `localStorage`.
+4. Environments imported without a `dashboards` field default to an empty
+   dashboards array.
+5. Importing over an existing environment replaces that environment's dashboards
+   with the imported dashboards.
+
+---
+
+### WEB-1108  Dashboard Tab Coexistence
+
+**Priority:** Should
+**Source:** USER-REQUEST: Coexist with existing graphing pane (side-by-side for now)
+**Confidence:** High
+
+**Description:**
+The new Dashboards section MUST coexist with the existing Sensor Data tab. Both
+are available in the SPA navigation. The existing Sensor Data tab remains
+unchanged.
+
+**Acceptance criteria:**
+
+1. Both "Sensor Data" and "Dashboards" tabs are visible in the SPA navigation.
+2. Switching between tabs preserves their independent state.
+3. No changes to the existing Sensor Data tab functionality.
+4. Dashboards do not share localStorage keys with Sensor Data preferences (beyond
+   both being scoped to the environment).
+
+---
+
+### WEB-1109  Expression Operator Precedence
+
+**Priority:** Should
+**Source:** Audit remediation: Ambiguity in expression evaluation order
+**Confidence:** High
+
+**Description:**
+The SPA MUST document operator precedence in help text and evaluate expressions
+according to standard mathematical precedence: parentheses first, then
+exponentiation, then multiplication/division (left-to-right), then
+addition/subtraction (left-to-right).
+
+**Acceptance criteria:**
+
+1. Expression help text states operator precedence rules.
+2. Expression `2 + 3 * 4` evaluates to `14` (not `20`).
+3. Expression `(2 + 3) * 4` evaluates to `20`.
+4. Expression `2 ^ 3 * 4` evaluates to `32` (not `4096`).
+5. Expression `10 / 2 * 3` evaluates to `15` (left-to-right).
+
+---
+
+### WEB-1110  Dashboard and Metric Limits
+
+**Priority:** Should
+**Source:** Audit remediation: Performance considerations for unbounded arrays
+**Confidence:** High
+
+**Description:**
+The SPA SHOULD enforce reasonable limits on dashboards per environment and
+metrics per dashboard to prevent performance degradation and browser crashes.
+
+**Acceptance criteria:**
+
+1. Maximum dashboards per environment: 20.
+2. Maximum metrics per dashboard: 10.
+3. Attempting to create beyond the limit displays a warning message.
+4. The limit is a soft limit — operators see a warning but can override if needed.
+5. No automatic deletion of old items; operators must manually clean up.
+
+---
+
+## 17  Dependencies
 
 ### DEP-001  MSAL.js Browser Library
 
@@ -1519,6 +1794,13 @@ verification, and stores verified program images in the `programs` table.
 
 EasyAuth configured on the Function App to validate Entra ID bearer tokens on
 HTTP routes.
+
+### DEP-006  Expression Evaluator Library
+
+Safe JavaScript expression evaluator library (e.g., `expr-eval` or `mathjs`)
+loaded from CDN. Provides arithmetic and math function evaluation for computed
+metrics in the Dashboards feature (WEB-1100). MUST NOT use `eval()` or
+`Function()` constructor to avoid code injection vulnerabilities.
 
 ---
 

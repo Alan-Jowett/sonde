@@ -844,9 +844,268 @@ against the gateway actual-state row.
 
 ---
 
-## 14. Revision History
+## 14. Custom Dashboards (WEB-1100)
+
+The Dashboards feature allows operators to create custom visualizations by
+binding sensor data sources to variables and defining computed metrics using
+algebraic expressions. Each environment can have multiple dashboards; each
+dashboard contains multiple metrics displayed as time-series charts.
+
+### 14.1 UI Structure
+
+```
+Dashboards Section
+├── Dashboard Tabs [Tab 1] [Tab 2] [+]
+├── Active Dashboard View
+│   ├── Variables Panel
+│   │   ├── Variable List (name → data source mapping)
+│   │   └── [+ Add Variable] button
+│   ├── Metrics Panel
+│   │   ├── Metric 1 (chart + expression)
+│   │   ├── Metric 2 (chart + expression)
+│   │   └── [+ Add Metric] button
+│   └── Time Range Selector (shared across metrics)
+└── Dashboard Management (rename, delete)
+```
+
+**Navigation:**
+- Dashboard tabs appear horizontally at the top of the Dashboards section.
+- "+" tab button creates a new dashboard (prompts for name).
+- Active dashboard is highlighted.
+- Each dashboard displays its variables and metrics in a vertical layout.
+
+**Empty State:**
+- New dashboards show: "No metrics yet. Click '+ Add Metric' to get started."
+- Dashboards with no variables show a prompt to add variables before creating
+  metrics.
+
+**Limits (WEB-1110):**
+- Soft limit: 20 dashboards per environment.
+- Soft limit: 10 metrics per dashboard.
+- UI shows warning when approaching/exceeding limit but allows override.
+
+### 14.2 Data Model
+
+#### Dashboard Schema
+
+```javascript
+{
+  name: string,           // User-assigned dashboard name
+  variables: [            // Array of variable bindings
+    {
+      name: string,       // Variable identifier (e.g., "GTMF")
+      nodeId: string,     // Source node ID (e.g., "node_7")
+      readingType: string // Reading type (e.g., "temperature_millif")
+    }
+  ],
+  metrics: [              // Array of computed metrics
+    {
+      id: string,         // Unique metric ID (UUID or timestamp-based)
+      displayName: string,// User-friendly label (e.g., "Greenhouse Temp (°F)")
+      expression: string, // Algebraic formula (e.g., "GTMF / 1000")
+      color: string       // Chart line color (hex, auto-assigned if omitted)
+    }
+  ],
+  timeRange: {            // Dashboard-level time window
+    preset: string | null,  // "1h", "6h", "24h", "7d", or null for custom
+    start: number | null,   // Unix timestamp ms (if custom range)
+    end: number | null      // Unix timestamp ms (if custom range)
+  }
+}
+```
+
+#### localStorage Schema
+
+Dashboards are stored as part of each environment's configuration:
+
+```javascript
+// In localStorage under "sonde_environments"
+[
+  {
+    name: "Production",
+    clientId: "...",
+    tenantId: "...",
+    storageAccount: "...",
+    functionAppName: "...",
+    sensorData: { ... },
+    dashboards: [          // NEW: Array of dashboard objects
+      { /* dashboard 1 */ },
+      { /* dashboard 2 */ }
+    ]
+  }
+]
+
+// In localStorage under "sonde_active_environment"
+"Production"
+```
+
+### 14.3 Variable Binding UI
+
+**Add Variable Flow:**
+1. Operator clicks "+ Add Variable" in Variables Panel.
+2. Modal or inline form appears with fields:
+   - **Variable Name** (text input, validated as JS identifier)
+   - **Node ID** (dropdown, populated from `actualstate` table deduplication)
+   - **Reading Type** (dropdown, filtered by selected node's reported readings)
+3. On save:
+   - Validate variable name uniqueness within dashboard.
+   - Validate JS identifier format: `/^[a-zA-Z_][a-zA-Z0-9_]*$/`.
+   - Add to `dashboard.variables` array.
+   - Persist to `localStorage`.
+
+**Edit/Delete Variable:**
+- Edit: Opens same form with pre-filled values.
+- Delete: Confirmation prompt warns if variable is used in any metric
+  expression.
+
+**Variable Display:**
+- Variables Panel shows a table:
+  | Variable | Data Source | Actions |
+  |----------|-------------|---------|
+  | GTMF | Node 7, Temperature (milliF) | Edit Delete |
+
+### 14.4 Expression Editor
+
+**Add Metric Flow:**
+1. Operator clicks "+ Add Metric" in Metrics Panel.
+2. Form appears with fields:
+   - **Display Name** (text input)
+   - **Expression** (text area with monospace font)
+   - **Color** (color picker, optional, defaults to auto-assigned)
+3. On blur or save, expression is validated:
+   - Parse using expression library (see §14.5).
+   - Check for syntax errors → display inline error message.
+   - Check for undefined variables → display warning list.
+4. On save:
+   - Add to `dashboard.metrics` array with unique ID.
+   - Persist to `localStorage`.
+
+**Expression Syntax Help:**
+- Help text below expression field lists supported operators and functions:
+  ```
+  Operators: + - * / ^ (power)
+  Precedence: () > ^ > * / > + - (left-to-right)
+  Functions: sqrt(x), log(x), log10(x), exp(x), abs(x), min(a,b), max(a,b)
+  Example: (GTMF - 273150) / 1000
+  ```
+
+**Live Preview (Optional Enhancement):**
+- As operator types, show sample evaluation with current variable values.
+- Example: "Expression `GTMF / 1000` with current `GTMF = 75000` → `75`"
+
+### 14.5 Expression Evaluator Architecture
+
+**Library Selection:**
+- Use **`expr-eval`** (https://github.com/silentmatt/expr-eval) version 2.0.2+.
+  - Lightweight (~15 KB minified).
+  - Supports arithmetic, power, and math functions.
+  - Safe: does not use `eval()` or `Function()`.
+  - MIT licensed.
+- Alternative: **`mathjs`** (more features but larger bundle size).
+- Load from CDN (jsDelivr) with SRI hash.
+
+**Supported Operations:**
+- Arithmetic: `+`, `-`, `*`, `/`, `^` (power)
+- Functions: `sqrt`, `log` (natural log), `log10`, `exp`, `abs`, `min`, `max`
+- Parentheses for grouping
+
+**Security:**
+- MUST NOT use `eval()`, `new Function()`, or any dynamic code execution.
+- Expression library MUST be loaded from a trusted CDN with SRI hash.
+- Variable values are numbers only (no string injection).
+
+**Evaluation Context:**
+1. Fetch sensor data for all bound variables within time range.
+2. For each timestamp `t` where at least one variable has data:
+   - Build context object: `{ GTMF: 75000, P: 92500, H: 65.5, ... }`.
+   - Evaluate expression with context.
+   - Collect `(timestamp, value)` pair.
+3. Render collected pairs as a line chart.
+
+**Error Handling:**
+- **Parse errors**: Do not render chart; display error badge on metric.
+- **Runtime errors** (e.g., `log(-5)`, division by zero): Skip that timestamp
+  (gap in chart), log to browser console.
+- **Missing variable at timestamp**: Skip that timestamp (gap in chart).
+
+### 14.6 Chart Rendering
+
+**Chart Library:**
+- Reuse **Chart.js 4.4.9** (already used by Sensor Data tab).
+- Each metric renders as a separate `<canvas>` element.
+
+**Layout:**
+- Metrics are stacked vertically.
+- Each metric shows:
+  - Display name as chart title.
+  - Expression as subtitle or tooltip.
+  - Line chart with time on X-axis, computed value on Y-axis.
+- Metrics use auto-assigned colors unless operator specifies a color.
+
+**Time Range:**
+- Dashboard-level time range selector (same UI as Sensor Data tab).
+- All metrics in the dashboard share the same time window.
+- Operators can select presets (1h, 6h, 24h, 7d) or custom start/end.
+
+**Data Fetching:**
+- For each variable binding, query `sensordata` table filtered by node ID and
+  reading type within the time range.
+- Merge data from all variables by timestamp.
+- Evaluate expression at each timestamp.
+- Downsample if needed (reuse Sensor Data tab logic, max 500 points per metric).
+
+**Empty State:**
+- If no data exists for any variable: "No data in selected time range."
+- If expression has errors: "Expression error: <message>."
+- If variable is undefined: "Undefined variable: <name>."
+
+### 14.7 Persistence and Export
+
+**localStorage Persistence:**
+- Dashboards are nested under each environment in `sonde_environments`.
+- Any dashboard change (add/edit/delete dashboard, variable, or metric)
+  triggers a `saveEnvironments()` call.
+- Switching environments loads that environment's dashboards.
+
+**Environment Export (WEB-0808 Integration):**
+- When exporting an environment, include the `dashboards` array in the JSON.
+- Schema:
+  ```json
+  {
+    "version": 1,
+    "name": "Production",
+    "clientId": "...",
+    "tenantId": "...",
+    "storageAccount": "...",
+    "functionAppName": "...",
+    "sensorData": { ... },
+    "dashboards": [
+      {
+        "name": "Greenhouse Monitoring",
+        "variables": [ ... ],
+        "metrics": [ ... ],
+        "timeRange": { ... }
+      }
+    ]
+  }
+  ```
+- Importing an environment restores its dashboards.
+- Missing `dashboards` field defaults to `[]`.
+
+### 14.8 Coexistence with Sensor Data Tab
+
+- Both "Sensor Data" and "Dashboards" are top-level tabs in the SPA navigation.
+- Each tab maintains independent state.
+- Dashboards do not modify the Sensor Data tab.
+- Long-term plan: deprecate Sensor Data tab once Dashboards feature matures,
+  but for MVP they coexist.
+
+---
+
+## 15. Revision History
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-16 | evolve skill | Added §14 (Custom Dashboards) with variable binding, expression evaluation, and environment export integration. |
 | 2026-05-29 | Issue #1092 | Added §13.1.1 gateway convergence rules. Replaced §13.2 rotation modal with inline form. Added convergence badge to §13.1. |
 | 2026-05-19 | Trifecta remediation (#1012) | Added §12 (cross-cutting concerns: HTML escaping, MSAL hash routing, popup detection). Fixed §10.2 downsample cap to 500 points per series. |

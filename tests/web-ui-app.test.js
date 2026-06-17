@@ -79,6 +79,7 @@ test.beforeEach(() => {
   resetStorages();
   global.window.confirm = () => false;
   global.window.prompt = () => null;
+  global.alert = () => {};
   app.SENSOR_STATE.timeRange = '24h';
   app.SENSOR_STATE.viewMode = 'graph';
   app.SENSOR_STATE.selectedSeries = new Set();
@@ -91,6 +92,9 @@ test.beforeEach(() => {
   app.SENSOR_STATE.exportMessage = null;
   app.APP.account = null;
   app.APP.msalApp = null;
+  app.APP_DASHBOARD_STATE.activeDashboardIndex = 0;
+  app.APP_DASHBOARD_STATE.metricCharts = {};
+  app.APP_DASHBOARD_STATE.unsavedEnvironment = null;
 });
 
 test('sensorDataFilter uses reverse-timestamp bounds for the requested range', () => {
@@ -621,6 +625,34 @@ test('handleImportedJson preserves an explicit empty selectedSeries preference',
   assert.equal(app.SENSOR_STATE.seriesInitialized, true);
 });
 
+test('handleImportedJson normalizes dashboard custom time ranges from import payloads', () => {
+  app.handleImportedJson(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    dashboards: [{
+      name: 'Imported Dashboard',
+      variables: [],
+      metrics: [],
+      timeRange: {
+        preset: 'custom',
+        start: '0',
+        end: '1000',
+      },
+    }],
+  }));
+
+  const prod = app.loadEnvironments().find((env) => env.name === 'prod');
+  assert.deepEqual(prod.dashboards[0].timeRange, {
+    preset: 'custom',
+    start: 0,
+    end: 1000,
+  });
+});
+
 test('validateImportedSensorDataPreferences rejects malformed selectedSeries arrays', () => {
   assert.throws(
     () => app.validateImportedSensorDataPreferences({ selectedSeries: ['ok', 42] }),
@@ -739,6 +771,7 @@ test('buildEnvironmentExportData includes environment-scoped Sensor Data prefere
           'series-a': { displayName: 'Series A', scaleDivisor: 2, unitSuffix: 'V' },
         },
       },
+      dashboards: [],
     },
   );
 });
@@ -845,4 +878,339 @@ test('buildEnvironmentExportData and import validation distinguish omitted and e
   });
   assert.deepEqual(emptySelectionExport.sensorData.selectedSeries, []);
   assert.equal(app.validateImportedSensorDataPreferences(emptySelectionExport.sensorData).selectedSeriesInitialized, true);
+});
+
+test('validateVariableName rejects blocked object keys', () => {
+  const validation = app.validateVariableName('__proto__', []);
+  assert.equal(validation.valid, false);
+  assert.match(validation.error, /reserved/i);
+});
+
+test('validateExpression reports undefined variables as warnings, not errors', () => {
+  const originalExprEval = global.exprEval;
+  global.exprEval = {
+    Parser: class {
+      parse() {
+        return {
+          variables() { return ['TEMP', 'UNKNOWN']; },
+        };
+      }
+    }
+  };
+
+  try {
+    const validation = app.validateExpression('TEMP + UNKNOWN', ['TEMP']);
+    assert.equal(validation.valid, true);
+    assert.equal(validation.error, undefined);
+    assert.equal(validation.warning, 'Undefined variables: UNKNOWN');
+  } finally {
+    global.exprEval = originalExprEval;
+  }
+});
+
+// Dashboard runtime behavior tests
+
+test('fetchReadingTypesForNode discovers numeric reading types for the selected node', async () => {
+  const nowMs = 9_000_000;
+  const readingTypes = await app.fetchReadingTypesForNode('NODE_001', {
+    nowFn: () => nowMs,
+    fetchActualStateNodesFn: async () => [
+      { nodeId: 'NODE_001', partitionKey: 'n:abc123' },
+      { nodeId: 'NODE_002', partitionKey: 'n:def456' },
+    ],
+    querySensorDataRangeFn: async (partitionKeys, startMs, endMs, options) => {
+      assert.deepEqual(partitionKeys, ['n:abc123']);
+      assert.equal(startMs, nowMs - (7 * 24 * 60 * 60 * 1000));
+      assert.equal(endMs, nowMs);
+      assert.equal(options.maxPagesPerPartition, 5);
+      return [
+        { decoded_readings: '{"temp_mc":25000,"humidity_pct":"45","status":"ok"}' },
+        { decoded_readings: '{"pressure_pa":92500,"temp_mc":26000}' },
+      ];
+    },
+  });
+
+  assert.deepEqual(readingTypes, ['humidity_pct', 'pressure_pa', 'temp_mc']);
+});
+
+test('fetchVariableData validates reading types and honors the 6h preset window', async () => {
+  const nowMs = 40_000_000;
+  const result = await app.fetchVariableData([
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+    { name: 'PRESS', nodeId: 'NODE_001', readingType: 'pressure_pa' },
+  ], { preset: '6h' }, {
+    nowFn: () => nowMs,
+    fetchActualStateNodesFn: async () => [
+      { nodeId: 'NODE_001', partitionKey: 'n:abc123' },
+    ],
+    querySensorDataRangeFn: async (partitionKeys, startMs, endMs, options) => {
+      assert.deepEqual(partitionKeys, ['n:abc123']);
+      assert.equal(startMs, nowMs - (6 * 60 * 60 * 1000));
+      assert.equal(endMs, nowMs);
+      assert.equal(options.maxPagesPerPartition, 10);
+      return [
+        {
+          timestamp_ms: '1000',
+          decoded_readings: '{"temp_mc":25000}',
+        },
+      ];
+    },
+  });
+
+  assert.deepEqual(result.data.TEMP, [{ timestamp: 1000, value: 25000 }]);
+  assert.deepEqual(result.data.PRESS, []);
+  assert.deepEqual(result.errors, ['Reading type "pressure_pa" not found for node "NODE_001"']);
+});
+
+test('fetchVariableData honors custom dashboard time ranges', async () => {
+  await app.fetchVariableData([
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], {
+    preset: 'custom',
+    start: 1111,
+    end: 2222,
+  }, {
+    fetchActualStateNodesFn: async () => [
+      { nodeId: 'NODE_001', partitionKey: 'n:abc123' },
+    ],
+    querySensorDataRangeFn: async (partitionKeys, startMs, endMs) => {
+      assert.deepEqual(partitionKeys, ['n:abc123']);
+      assert.equal(startMs, 1111);
+      assert.equal(endMs, 2222);
+      return [];
+    },
+  });
+});
+
+test('evaluateMetricTimeSeries propagates fetch failures as user-visible errors', async () => {
+  const result = await app.evaluateMetricTimeSeries({
+    expression: 'TEMP / 1000',
+  }, [
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '24h' }, {
+    parserFactory: () => ({
+      parse(expression) {
+        assert.equal(expression, 'TEMP / 1000');
+        return {
+          variables() { return ['TEMP']; },
+          evaluate() { return 0; },
+        };
+      },
+    }),
+    fetchVariableDataFn: async () => ({
+      data: {},
+      errors: ['Failed to fetch data for node(s) NODE_001: Network timeout'],
+    }),
+  });
+
+  assert.equal(result.error, 'Failed to fetch data for node(s) NODE_001: Network timeout');
+  assert.deepEqual(result.points, []);
+});
+
+test('evaluateMetricTimeSeries computes time-series points from real fetched data', async () => {
+  const result = await app.evaluateMetricTimeSeries({
+    expression: 'TEMP / 1000',
+  }, [
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '24h' }, {
+    parserFactory: () => ({
+      parse(expression) {
+        assert.equal(expression, 'TEMP / 1000');
+        return {
+          variables() { return ['TEMP']; },
+          evaluate(context) { return context.TEMP / 1000; },
+        };
+      },
+    }),
+    fetchVariableDataFn: async () => ({
+      data: {
+        TEMP: [
+          { timestamp: 1000, value: 25000 },
+          { timestamp: 2000, value: 25500 },
+        ],
+      },
+      errors: [],
+    }),
+  });
+
+  assert.deepEqual(result.points, [
+    { timestamp: 1000, value: 25 },
+    { timestamp: 2000, value: 25.5 },
+  ]);
+});
+
+test('evaluateMetricTimeSeries reports undefined variables explicitly', async () => {
+  const result = await app.evaluateMetricTimeSeries({
+    expression: 'TEMP + UNKNOWN',
+  }, [
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '24h' }, {
+    parserFactory: () => ({
+      parse() {
+        return {
+          variables() { return ['TEMP', 'UNKNOWN']; },
+          evaluate() { return 0; },
+        };
+      },
+    }),
+    fetchVariableDataFn: async () => {
+      throw new Error('fetchVariableData should not run when variables are undefined');
+    },
+  });
+
+  assert.equal(result.error, 'Undefined variables: UNKNOWN');
+  assert.deepEqual(result.points, []);
+});
+
+test('renderMetricCharts shows a no-data message when evaluation yields zero points', async () => {
+  const originalGetElementById = global.document.getElementById;
+  const parent = makeElement();
+  const canvas = makeElement();
+  canvas.parentElement = parent;
+  let destroyed = 0;
+  app.APP_DASHBOARD_STATE.metricCharts[0] = {
+    destroy() { destroyed += 1; },
+  };
+  global.document.getElementById = (id) => {
+    if (id === 'metric-chart-0') return canvas;
+    return makeElement();
+  };
+
+  try {
+    await app.renderMetricCharts({
+      metrics: [{ displayName: 'Temp', expression: 'TEMP / 1000' }],
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      timeRange: { preset: '24h' },
+    }, {
+      evaluateMetricTimeSeriesFn: async () => ({ points: [] }),
+      chartFactory: () => {
+        throw new Error('chartFactory should not run for empty metrics');
+      },
+    });
+
+    assert.match(parent.innerHTML, /No data in selected time range\./);
+    assert.equal(destroyed, 1);
+    assert.equal(app.APP_DASHBOARD_STATE.metricCharts[0], undefined);
+  } finally {
+    global.document.getElementById = originalGetElementById;
+  }
+});
+
+test('renderMetricCharts downsamples dashboard datasets to 500 points before charting', async () => {
+  const originalGetElementById = global.document.getElementById;
+  const parent = makeElement();
+  const canvas = makeElement();
+  canvas.parentElement = parent;
+  global.document.getElementById = (id) => {
+    if (id === 'metric-chart-0') return canvas;
+    return makeElement();
+  };
+
+  const rawPoints = Array.from({ length: 1200 }, (_, index) => ({
+    timestamp: 1000 + index,
+    value: index,
+  }));
+  let capturedConfig = null;
+
+  try {
+    await app.renderMetricCharts({
+      metrics: [{ displayName: 'Dense', expression: 'TEMP' }],
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      timeRange: { preset: '24h' },
+    }, {
+      evaluateMetricTimeSeriesFn: async () => ({ points: rawPoints }),
+      chartFactory: (chartCanvas, config) => {
+        assert.equal(chartCanvas, canvas);
+        capturedConfig = config;
+        return { destroy() {} };
+      },
+    });
+
+    assert.ok(capturedConfig);
+    assert.equal(capturedConfig.data.datasets[0].data.length, 500);
+    assert.deepEqual(capturedConfig.data.datasets[0].data[0], { x: 1000, y: 0 });
+    assert.deepEqual(capturedConfig.data.datasets[0].data.at(-1), { x: 2199, y: 1199 });
+  } finally {
+    global.document.getElementById = originalGetElementById;
+  }
+});
+
+test('persistDashboardEnvironment preserves edited dashboards in memory after quota failures', () => {
+  const env = {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: app.createDefaultSensorDataPreferences(),
+    dashboards: [{ name: 'Original', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+  };
+  app.activateEnvironmentState(env.name, env);
+
+  const originalSetItem = global.localStorage.setItem;
+  global.localStorage.setItem = () => {
+    const error = new Error('quota');
+    error.name = 'QuotaExceededError';
+    throw error;
+  };
+
+  try {
+    const editedEnv = {
+      ...env,
+      dashboards: [{ name: 'Edited', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+    };
+    const ok = app.persistDashboardEnvironment(editedEnv, [env]);
+    assert.equal(ok, false);
+    const loaded = app.loadActiveEnvironment();
+    assert.equal(loaded.dashboards[0].name, 'Edited');
+    assert.equal(app.APP_DASHBOARD_STATE.unsavedEnvironment.dashboards[0].name, 'Edited');
+  } finally {
+    global.localStorage.setItem = originalSetItem;
+  }
+});
+
+test('destroyAllDashboardCharts destroys and clears all retained dashboard charts', () => {
+  let destroyed = 0;
+  app.APP_DASHBOARD_STATE.metricCharts = {
+    0: { destroy() { destroyed += 1; } },
+    1: { destroy() { destroyed += 1; } },
+  };
+
+  app.destroyAllDashboardCharts();
+
+  assert.equal(destroyed, 2);
+  assert.deepEqual(app.APP_DASHBOARD_STATE.metricCharts, {});
+});
+
+test('same-name environment import clears stale unsaved dashboard fallback', () => {
+  const originalEnv = {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: app.createDefaultSensorDataPreferences(),
+    dashboards: [{ name: 'Persisted', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+  };
+  localStorage.setItem('sonde_environments', JSON.stringify([originalEnv]));
+  app.activateEnvironmentState(originalEnv.name, originalEnv);
+  app.APP_DASHBOARD_STATE.unsavedEnvironment = {
+    ...originalEnv,
+    dashboards: [{ name: 'Unsaved Shadow', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+  };
+  global.window.confirm = () => true;
+
+  app.handleImportedJson(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    dashboards: [{ name: 'Imported Replacement', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+  }));
+
+  const loaded = app.loadActiveEnvironment();
+  assert.equal(app.APP_DASHBOARD_STATE.unsavedEnvironment, null);
+  assert.equal(loaded.dashboards[0].name, 'Imported Replacement');
 });

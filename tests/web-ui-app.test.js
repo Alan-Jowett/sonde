@@ -1207,6 +1207,9 @@ test('destroyAllDashboardCharts destroys and clears all retained dashboard chart
   assert.deepEqual(app.APP_DASHBOARD_STATE.metricCharts, {});
 });
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> c580ee1 (Fix code review round 7 finding F-001)
 
 test('same-name environment import clears stale unsaved dashboard fallback', () => {
   const originalEnv = {
@@ -1240,9 +1243,12 @@ test('same-name environment import clears stale unsaved dashboard fallback', () 
   assert.equal(app.APP_DASHBOARD_STATE.unsavedEnvironment, null);
   assert.equal(loaded.dashboards[0].name, 'Imported Replacement');
 });
+<<<<<<< HEAD
 =======
 >>>>>>> de06846 (Fix code review round 4 findings F-001 through F-003)
 =======
 >>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
 =======
 >>>>>>> 81336eb (Fix code review round 6 findings F-001 and F-002)
+=======
+>>>>>>> c580ee1 (Fix code review round 7 finding F-001)

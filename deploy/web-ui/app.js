@@ -365,6 +365,8 @@ function normalizeEnvironmentRecord(env) {
     const variableNames = (dashboard.variables || []).map(v => v.name);
     for (const chart of dashboard.charts || []) {
       for (const metric of chart.metrics || []) {
+        delete metric._validationError;
+        delete metric._validationWarning;
         const validation = validateExpression(metric.expression, variableNames);
         if (validation.error) {
           metric._validationError = validation.error;
@@ -3633,26 +3635,33 @@ async function renderMetricCharts(dashboard, deps = {}) {
     const datasets = [];
     let fallbackMessage = null;
     let fallbackClassName = 'text-muted';
+    let fallbackSeverity = 0;
+
+    function setFallback(message, className, severity) {
+      if (severity >= fallbackSeverity) {
+        fallbackMessage = message;
+        fallbackClassName = className;
+        fallbackSeverity = severity;
+      }
+    }
 
     for (const metric of chart.metrics) {
       if (metric._validationError) {
-        fallbackMessage = fallbackMessage || metric._validationError;
-        fallbackClassName = 'error-text';
+        setFallback(metric._validationError, 'error-text', 3);
         continue;
       }
       if (metric._validationWarning) {
-        fallbackMessage = fallbackMessage || metric._validationWarning;
+        setFallback(metric._validationWarning, 'text-muted', 2);
         continue;
       }
 
       const result = await evaluateMetricTimeSeriesFn(metric, normalizedDashboard.variables, normalizedDashboard.timeRange, deps);
       if (result.error) {
-        fallbackMessage = fallbackMessage || result.error;
-        fallbackClassName = 'error-text';
+        setFallback(result.error, 'error-text', 3);
         continue;
       }
       if (result.points.length === 0) {
-        fallbackMessage = fallbackMessage || 'No data in selected time range.';
+        setFallback('No data in selected time range.', 'text-muted', 1);
         continue;
       }
 

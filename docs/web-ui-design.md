@@ -905,7 +905,6 @@ Dashboards Section
   ],
   charts: [               // Array of named charts
     {
-      id: string,         // Unique chart ID
       name: string,       // User-assigned chart name
       metrics: [          // Datasets rendered on this chart
         {

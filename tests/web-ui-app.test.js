@@ -1195,6 +1195,45 @@ test('renderMetricCharts shows a no-data message when evaluation yields zero poi
   }
 });
 
+test('renderMetricCharts prefers errors over no-data fallback messages', async () => {
+  const originalGetElementById = global.document.getElementById;
+  const parent = makeElement();
+  const canvas = makeElement();
+  canvas.parentElement = parent;
+  global.document.getElementById = (id) => {
+    if (id === 'metric-chart-0') return canvas;
+    return makeElement();
+  };
+
+  try {
+    await app.renderMetricCharts({
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [{
+        name: 'Chart 1',
+        metrics: [
+          { displayName: 'No Data', expression: 'TEMP' },
+          { displayName: 'Broken', expression: 'BROKEN' },
+        ],
+      }],
+      timeRange: { preset: '24h' },
+    }, {
+      evaluateMetricTimeSeriesFn: async (metric) => (
+        metric.expression === 'TEMP'
+          ? { points: [] }
+          : { error: 'Expression error: bad parse', points: [] }
+      ),
+      chartFactory: () => {
+        throw new Error('chartFactory should not run when all metrics fail');
+      },
+    });
+
+    assert.match(parent.innerHTML, /Expression error: bad parse/);
+    assert.doesNotMatch(parent.innerHTML, /No data in selected time range/);
+  } finally {
+    global.document.getElementById = originalGetElementById;
+  }
+});
+
 test('renderMetricCharts downsamples dashboard datasets to 500 points before charting', async () => {
   const originalGetElementById = global.document.getElementById;
   const parent = makeElement();
@@ -1331,6 +1370,52 @@ test('normalizeEnvironmentRecord migrates legacy top-level dashboard metrics on 
   assert.equal(normalized.dashboards[0].charts.length, 1);
   assert.equal(normalized.dashboards[0].charts[0].name, 'Chart 1');
   assert.equal(normalized.dashboards[0].charts[0].metrics[0].expression, 'TEMP');
+});
+
+test('normalizeEnvironmentRecord clears stale metric validation annotations before revalidating', () => {
+  const originalExprEval = global.exprEval;
+  global.exprEval = {
+    Parser: class {
+      parse() {
+        return {
+          variables() {
+            return ['TEMP'];
+          },
+        };
+      }
+    },
+  };
+
+  try {
+    const normalized = app.normalizeEnvironmentRecord({
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+      dashboards: [{
+        name: 'Dashboard',
+        variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+        charts: [{
+          name: 'Chart 1',
+          metrics: [{
+            id: 'metric-1',
+            displayName: 'Temp',
+            expression: 'TEMP',
+            color: '#123456',
+            _validationWarning: 'Undefined variables: TEMP',
+            _validationError: 'Syntax error: stale',
+          }],
+        }],
+        timeRange: { preset: '24h', start: null, end: null },
+      }],
+    });
+
+    assert.equal(normalized.dashboards[0].charts[0].metrics[0]._validationWarning, undefined);
+    assert.equal(normalized.dashboards[0].charts[0].metrics[0]._validationError, undefined);
+  } finally {
+    global.exprEval = originalExprEval;
+  }
 });
 
 test('destroyAllDashboardCharts destroys and clears all retained dashboard charts', () => {

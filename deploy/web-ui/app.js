@@ -396,6 +396,9 @@ function applyEnvironment(env) {
 function activateEnvironmentState(name, env) {
   clearRefresh();
   resetTransientSensorDataState();
+  if (APP_DASHBOARD_STATE.unsavedEnvironment?.name && APP_DASHBOARD_STATE.unsavedEnvironment.name !== name) {
+    clearUnsavedDashboardEnvironment();
+  }
   setActiveEnvironmentName(name);
   applyEnvironment(env);
   applySensorDataPreferences(env?.sensorData);
@@ -408,7 +411,10 @@ function activateEnvironmentState(name, env) {
 function loadActiveEnvironment() {
   let envs = loadEnvironments();
   const activeName = getActiveEnvironmentName();
-  let env = envs.find((e) => e.name === activeName) || envs[0] || null;
+  const unsavedEnv = APP_DASHBOARD_STATE.unsavedEnvironment?.name === activeName
+    ? normalizeEnvironmentRecord(APP_DASHBOARD_STATE.unsavedEnvironment)
+    : null;
+  let env = unsavedEnv || envs.find((e) => e.name === activeName) || envs[0] || null;
   if (env) {
     setActiveEnvironmentName(env.name);
     const legacyOverrides = loadLegacySeriesOverrides();
@@ -3202,7 +3208,49 @@ async function renderSensorData() {
 const APP_DASHBOARD_STATE = {
   activeDashboardIndex: 0,
   metricCharts: {},
+  unsavedEnvironment: null,
 };
+
+function setUnsavedDashboardEnvironment(env) {
+  APP_DASHBOARD_STATE.unsavedEnvironment = env ? normalizeEnvironmentRecord(env) : null;
+}
+
+function clearUnsavedDashboardEnvironment(name = null) {
+  if (!name || APP_DASHBOARD_STATE.unsavedEnvironment?.name === name) {
+    APP_DASHBOARD_STATE.unsavedEnvironment = null;
+  }
+}
+
+function persistDashboardEnvironment(env, environments = null) {
+  const normalizedEnv = normalizeEnvironmentRecord(env);
+  const envs = Array.isArray(environments) ? environments.map(normalizeEnvironmentRecord) : loadEnvironments();
+  const envIndex = envs.findIndex((entry) => entry.name === normalizedEnv.name);
+  if (envIndex >= 0) {
+    envs[envIndex] = normalizedEnv;
+  } else {
+    envs.push(normalizedEnv);
+  }
+  if (saveEnvironments(envs)) {
+    clearUnsavedDashboardEnvironment(normalizedEnv.name);
+    return true;
+  }
+  setUnsavedDashboardEnvironment(normalizedEnv);
+  return false;
+}
+
+function destroyDashboardChart(index) {
+  const chart = APP_DASHBOARD_STATE.metricCharts[index];
+  if (chart && typeof chart.destroy === 'function') {
+    chart.destroy();
+  }
+  delete APP_DASHBOARD_STATE.metricCharts[index];
+}
+
+function destroyAllDashboardCharts() {
+  for (const index of Object.keys(APP_DASHBOARD_STATE.metricCharts)) {
+    destroyDashboardChart(index);
+  }
+}
 
 function canAddDashboard(env) {
   if (env.dashboards.length >= 20) {
@@ -3236,11 +3284,7 @@ async function renderDashboards() {
   if (!Array.isArray(env.dashboards)) {
     env.dashboards = createDefaultDashboardsArray();
     environments = loadEnvironments();
-    const envIndex = environments.findIndex(e => e.name === env.name);
-    if (envIndex >= 0) {
-      environments[envIndex] = env;
-      saveEnvironments(environments);
-    }
+    persistDashboardEnvironment(env, environments);
   }
   
   if (env.dashboards.length === 0) {
@@ -3421,17 +3465,17 @@ async function renderMetricCharts(dashboard, deps = {}) {
     const result = await evaluateMetricTimeSeriesFn(metric, dashboard.variables, dashboard.timeRange, deps);
     
     if (result.error) {
+      destroyDashboardChart(i);
       canvas.parentElement.innerHTML = `<div class="error-text">${escapeHtml(result.error)}</div>`;
       continue;
     }
     if (result.points.length === 0) {
+      destroyDashboardChart(i);
       canvas.parentElement.innerHTML = '<div class="text-muted">No data in selected time range.</div>';
       continue;
     }
     
-    if (APP_DASHBOARD_STATE.metricCharts[i]) {
-      APP_DASHBOARD_STATE.metricCharts[i].destroy();
-    }
+    destroyDashboardChart(i);
     const chartPoints = downsamplePointsFn(result.points, 500).map(p => ({ x: p.timestamp, y: p.value }));
     
     APP_DASHBOARD_STATE.metricCharts[i] = chartFactory(canvas, {
@@ -3667,11 +3711,7 @@ function attachDashboardHandlers() {
       dashboard.timeRange.end = null;
     }
     environments = loadEnvironments();
-    const envIndex = environments.findIndex(e => e.name === env.name);
-    if (envIndex >= 0) {
-      environments[envIndex] = env;
-      saveEnvironments(environments);
-    }
+    persistDashboardEnvironment(env, environments);
     renderActiveTab();
   });
   document.getElementById('dashboard-time-start')?.addEventListener('change', (e) => {
@@ -3686,11 +3726,7 @@ function attachDashboardHandlers() {
     }
     dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
     environments = loadEnvironments();
-    const envIndex = environments.findIndex(entry => entry.name === env.name);
-    if (envIndex >= 0) {
-      environments[envIndex] = env;
-      saveEnvironments(environments);
-    }
+    persistDashboardEnvironment(env, environments);
     renderActiveTab();
   });
   document.getElementById('dashboard-time-end')?.addEventListener('change', (e) => {
@@ -3705,11 +3741,7 @@ function attachDashboardHandlers() {
     }
     dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
     environments = loadEnvironments();
-    const envIndex = environments.findIndex(entry => entry.name === env.name);
-    if (envIndex >= 0) {
-      environments[envIndex] = env;
-      saveEnvironments(environments);
-    }
+    persistDashboardEnvironment(env, environments);
     renderActiveTab();
   });
   
@@ -3727,11 +3759,7 @@ function attachDashboardHandlers() {
     if (newName && newName.trim()) {
       dashboard.name = newName.trim();
       environments = loadEnvironments();
-      const envIndex = environments.findIndex(e => e.name === env.name);
-      if (envIndex >= 0) {
-        environments[envIndex] = env;
-        saveEnvironments(environments);
-      }
+      persistDashboardEnvironment(env, environments);
       renderActiveTab();
     }
   });
@@ -3780,11 +3808,7 @@ function showAddDashboardModal() {
   if (name && name.trim()) {
     env.dashboards.push(createDefaultDashboard(name.trim()));
     environments = loadEnvironments();
-    const envIndex = environments.findIndex(e => e.name === env.name);
-    if (envIndex >= 0) {
-      environments[envIndex] = env;
-      saveEnvironments(environments);
-    }
+    persistDashboardEnvironment(env, environments);
     APP_DASHBOARD_STATE.activeDashboardIndex = env.dashboards.length - 1;
     renderActiveTab();
   }
@@ -3797,11 +3821,7 @@ function deleteDashboard(index) {
   
   env.dashboards.splice(index, 1);
   environments = loadEnvironments();
-  const envIndex = environments.findIndex(e => e.name === env.name);
-  if (envIndex >= 0) {
-    environments[envIndex] = env;
-    saveEnvironments(environments);
-  }
+  persistDashboardEnvironment(env, environments);
   
   if (APP_DASHBOARD_STATE.activeDashboardIndex >= env.dashboards.length) {
     APP_DASHBOARD_STATE.activeDashboardIndex = Math.max(0, env.dashboards.length - 1);
@@ -3980,11 +4000,7 @@ async function showVariableModal(index = null) {
       dashboard.variables.push(normalizedVariable);
     }
     environments = loadEnvironments();
-    const envIndex = environments.findIndex((entry) => entry.name === env.name);
-    if (envIndex >= 0) {
-      environments[envIndex] = env;
-      saveEnvironments(environments);
-    }
+    persistDashboardEnvironment(env, environments);
     closeModal();
     renderActiveTab();
   });
@@ -4018,11 +4034,7 @@ function deleteVariable(index) {
   
   dashboard.variables.splice(index, 1);
   environments = loadEnvironments();
-  const envIndex = environments.findIndex(e => e.name === env.name);
-  if (envIndex >= 0) {
-    environments[envIndex] = env;
-    saveEnvironments(environments);
-  }
+  persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
 
@@ -4065,11 +4077,7 @@ Variables: ${availableVars}`;
   
   dashboard.metrics.push(metric);
   environments = loadEnvironments();
-  const envIndex = environments.findIndex(e => e.name === env.name);
-  if (envIndex >= 0) {
-    environments[envIndex] = env;
-    saveEnvironments(environments);
-  }
+  persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
 
@@ -4099,11 +4107,7 @@ function showEditMetricModal(index) {
   if (newColor) metric.color = newColor;
   
   environments = loadEnvironments();
-  const envIndex = environments.findIndex(e => e.name === env.name);
-  if (envIndex >= 0) {
-    environments[envIndex] = env;
-    saveEnvironments(environments);
-  }
+  persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
 
@@ -4116,11 +4120,7 @@ function deleteMetric(index) {
   
   dashboard.metrics.splice(index, 1);
   environments = loadEnvironments();
-  const envIndex = environments.findIndex(e => e.name === env.name);
-  if (envIndex >= 0) {
-    environments[envIndex] = env;
-    saveEnvironments(environments);
-  }
+  persistDashboardEnvironment(env, environments);
   renderActiveTab();
 }
 
@@ -4153,6 +4153,7 @@ async function renderActiveTab() {
     APP.sensorChart.destroy();
     APP.sensorChart = null;
   }
+  destroyAllDashboardCharts();
 
   switch (APP.activeTab) {
     case 'desired-state':
@@ -4455,6 +4456,10 @@ if (typeof module !== 'undefined' && module.exports) {
     evaluateMetricTimeSeries,
     renderMetricCharts,
     downsamplePoints,
+    APP_DASHBOARD_STATE,
+    persistDashboardEnvironment,
+    destroyDashboardChart,
+    destroyAllDashboardCharts,
     getDashboardTimeRangeBounds,
     normalizeDashboardTimeRange,
   };

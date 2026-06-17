@@ -79,6 +79,7 @@ test.beforeEach(() => {
   resetStorages();
   global.window.confirm = () => false;
   global.window.prompt = () => null;
+  global.alert = () => {};
   app.SENSOR_STATE.timeRange = '24h';
   app.SENSOR_STATE.viewMode = 'graph';
   app.SENSOR_STATE.selectedSeries = new Set();
@@ -91,6 +92,9 @@ test.beforeEach(() => {
   app.SENSOR_STATE.exportMessage = null;
   app.APP.account = null;
   app.APP.msalApp = null;
+  app.APP_DASHBOARD_STATE.activeDashboardIndex = 0;
+  app.APP_DASHBOARD_STATE.metricCharts = {};
+  app.APP_DASHBOARD_STATE.unsavedEnvironment = null;
 });
 
 test('sensorDataFilter uses reverse-timestamp bounds for the requested range', () => {
@@ -984,6 +988,10 @@ test('renderMetricCharts shows a no-data message when evaluation yields zero poi
   const parent = makeElement();
   const canvas = makeElement();
   canvas.parentElement = parent;
+  let destroyed = 0;
+  app.APP_DASHBOARD_STATE.metricCharts[0] = {
+    destroy() { destroyed += 1; },
+  };
   global.document.getElementById = (id) => {
     if (id === 'metric-chart-0') return canvas;
     return makeElement();
@@ -1002,6 +1010,8 @@ test('renderMetricCharts shows a no-data message when evaluation yields zero poi
     });
 
     assert.match(parent.innerHTML, /No data in selected time range\./);
+    assert.equal(destroyed, 1);
+    assert.equal(app.APP_DASHBOARD_STATE.metricCharts[0], undefined);
   } finally {
     global.document.getElementById = originalGetElementById;
   }
@@ -1044,4 +1054,51 @@ test('renderMetricCharts downsamples dashboard datasets to 500 points before cha
   } finally {
     global.document.getElementById = originalGetElementById;
   }
+});
+
+test('persistDashboardEnvironment preserves edited dashboards in memory after quota failures', () => {
+  const env = {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: app.createDefaultSensorDataPreferences(),
+    dashboards: [{ name: 'Original', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+  };
+  app.activateEnvironmentState(env.name, env);
+
+  const originalSetItem = global.localStorage.setItem;
+  global.localStorage.setItem = () => {
+    const error = new Error('quota');
+    error.name = 'QuotaExceededError';
+    throw error;
+  };
+
+  try {
+    const editedEnv = {
+      ...env,
+      dashboards: [{ name: 'Edited', variables: [], metrics: [], timeRange: { preset: '24h', start: null, end: null } }],
+    };
+    const ok = app.persistDashboardEnvironment(editedEnv, [env]);
+    assert.equal(ok, false);
+    const loaded = app.loadActiveEnvironment();
+    assert.equal(loaded.dashboards[0].name, 'Edited');
+    assert.equal(app.APP_DASHBOARD_STATE.unsavedEnvironment.dashboards[0].name, 'Edited');
+  } finally {
+    global.localStorage.setItem = originalSetItem;
+  }
+});
+
+test('destroyAllDashboardCharts destroys and clears all retained dashboard charts', () => {
+  let destroyed = 0;
+  app.APP_DASHBOARD_STATE.metricCharts = {
+    0: { destroy() { destroyed += 1; } },
+    1: { destroy() { destroyed += 1; } },
+  };
+
+  app.destroyAllDashboardCharts();
+
+  assert.equal(destroyed, 2);
+  assert.deepEqual(app.APP_DASHBOARD_STATE.metricCharts, {});
 });

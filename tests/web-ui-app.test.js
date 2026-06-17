@@ -654,6 +654,26 @@ test('handleImportedJson normalizes dashboard custom time ranges from import pay
   });
 });
 
+test('handleImportedJson rejects dashboard variables that fail editor validation', () => {
+  assert.throws(
+    () => app.handleImportedJson(JSON.stringify({
+      version: 1,
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+      dashboards: [{
+        name: 'Imported Dashboard',
+        variables: [{ name: '__proto__', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+        metrics: [],
+        timeRange: { preset: '24h', start: null, end: null },
+      }],
+    })),
+    /reserved/i,
+  );
+});
+
 test('validateImportedSensorDataPreferences rejects malformed selectedSeries arrays', () => {
   assert.throws(
     () => app.validateImportedSensorDataPreferences({ selectedSeries: ['ok', 42] }),
@@ -775,6 +795,30 @@ test('buildEnvironmentExportData includes environment-scoped Sensor Data prefere
       dashboards: [],
     },
   );
+});
+
+test('buildEnvironmentExportData omits dashboard validation annotations', () => {
+  const exported = app.buildEnvironmentExportData({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: app.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Imported Dashboard',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+      timeRange: { preset: '24h', start: null, end: null },
+    }],
+  });
+
+  assert.deepEqual(exported.dashboards, [{
+    name: 'Imported Dashboard',
+    variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+    metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+    timeRange: { preset: '24h', start: null, end: null },
+  }]);
 });
 
 test('activateEnvironmentState loads saved Sensor Data preferences for the selected environment', () => {
@@ -1048,6 +1092,24 @@ test('evaluateMetricTimeSeries computes time-series points from real fetched dat
   ]);
 });
 
+test('evaluateMetricTimeSeries reports parser construction failures as expression errors', async () => {
+  const result = await app.evaluateMetricTimeSeries({
+    expression: 'TEMP / 1000',
+  }, [
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '24h' }, {
+    parserFactory: () => {
+      throw new Error('exprEval is not defined');
+    },
+    fetchVariableDataFn: async () => {
+      throw new Error('fetchVariableData should not run when parser construction fails');
+    },
+  });
+
+  assert.equal(result.error, 'Expression error: exprEval is not defined');
+  assert.deepEqual(result.points, []);
+});
+
 test('evaluateMetricTimeSeries reports undefined variables explicitly', async () => {
   const result = await app.evaluateMetricTimeSeries({
     expression: 'TEMP + UNKNOWN',
@@ -1189,6 +1251,32 @@ test('destroyAllDashboardCharts destroys and clears all retained dashboard chart
 
   assert.equal(destroyed, 2);
   assert.deepEqual(app.APP_DASHBOARD_STATE.metricCharts, {});
+});
+
+test('persistDashboardEnvironment strips dashboard validation annotations before saving', () => {
+  const env = {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: app.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Persisted',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+      timeRange: { preset: '24h', start: null, end: null },
+    }],
+  };
+
+  assert.equal(app.persistDashboardEnvironment(env, []), true);
+  const stored = JSON.parse(localStorage.getItem('sonde_environments'));
+  assert.deepEqual(stored[0].dashboards, [{
+    name: 'Persisted',
+    variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+    metrics: [{ id: 'metric-1', displayName: 'Warns', expression: 'TEMP + UNKNOWN', color: '#123456' }],
+    timeRange: { preset: '24h', start: null, end: null },
+  }]);
 });
 
 test('same-name environment import clears stale unsaved dashboard fallback', () => {

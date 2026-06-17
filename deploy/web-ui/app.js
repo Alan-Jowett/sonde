@@ -240,6 +240,21 @@ function normalizeDashboard(dashboard, index) {
   };
 }
 
+function serializeDashboard(dashboard, index) {
+  const normalized = normalizeDashboard(dashboard, index);
+  return {
+    name: normalized.name,
+    variables: normalized.variables.map((variable) => ({ ...variable })),
+    metrics: normalized.metrics.map((metric) => ({
+      id: metric.id,
+      displayName: metric.displayName,
+      expression: metric.expression,
+      color: metric.color,
+    })),
+    timeRange: normalizeDashboardTimeRange(normalized.timeRange),
+  };
+}
+
 function validateVariableName(name, existingNames) {
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
     return { valid: false, error: 'Variable name must be a valid JavaScript identifier' };
@@ -317,8 +332,21 @@ function normalizeEnvironmentRecord(env) {
   return normalized;
 }
 
+function serializeEnvironmentRecord(env) {
+  const normalized = normalizeEnvironmentRecord(env);
+  return {
+    name: normalized.name,
+    clientId: normalized.clientId,
+    tenantId: normalized.tenantId,
+    storageAccount: normalized.storageAccount,
+    functionAppName: normalized.functionAppName,
+    sensorData: normalized.sensorData,
+    dashboards: normalized.dashboards.map((dashboard, index) => serializeDashboard(dashboard, index)),
+  };
+}
+
 function buildEnvironmentExportData(env) {
-  const normalizedEnv = normalizeEnvironmentRecord(env);
+  const normalizedEnv = serializeEnvironmentRecord(env);
   return {
     version: 1,
     name: normalizedEnv.name,
@@ -361,7 +389,7 @@ function loadEnvironments() {
 
 function saveEnvironments(envs) {
   try {
-    localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(envs.map(normalizeEnvironmentRecord)));
+    localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(envs.map(serializeEnvironmentRecord)));
     return true;
   } catch (error) {
     if (error.name === 'QuotaExceededError') {
@@ -492,6 +520,68 @@ function importEnvironmentFromFile() {
   input.click();
 }
 
+function validateImportedDashboardVariable(variable, existingNames, dashboardName) {
+  if (typeof variable !== 'object' || variable === null || Array.isArray(variable)) {
+    throw new Error(`Dashboard "${dashboardName}" variables must be objects.`);
+  }
+  const name = typeof variable.name === 'string' ? variable.name.trim() : '';
+  const nodeId = typeof variable.nodeId === 'string' ? variable.nodeId.trim() : '';
+  const readingType = typeof variable.readingType === 'string' ? variable.readingType.trim() : '';
+  if (!name || !nodeId || !readingType) {
+    throw new Error(`Dashboard "${dashboardName}" variables require string name, nodeId, and readingType fields.`);
+  }
+  const validation = validateVariableName(name, existingNames);
+  if (!validation.valid) {
+    throw new Error(`Dashboard "${dashboardName}" variable "${name}": ${validation.error}.`);
+  }
+  return { name, nodeId, readingType };
+}
+
+function validateImportedDashboardMetric(metric, dashboardName) {
+  if (typeof metric !== 'object' || metric === null || Array.isArray(metric)) {
+    throw new Error(`Dashboard "${dashboardName}" metrics must be objects.`);
+  }
+  const expression = typeof metric.expression === 'string' ? metric.expression.trim() : '';
+  if (!expression) {
+    throw new Error(`Dashboard "${dashboardName}" metrics require a non-empty string expression.`);
+  }
+  return {
+    id: typeof metric.id === 'string' ? metric.id : `metric-${crypto.randomUUID?.() || Date.now()}`,
+    displayName: typeof metric.displayName === 'string' ? metric.displayName : '',
+    expression,
+    color: typeof metric.color === 'string' ? metric.color : '#007bff',
+  };
+}
+
+function validateImportedDashboard(dashboard, index) {
+  if (typeof dashboard !== 'object' || dashboard === null || Array.isArray(dashboard)) {
+    throw new Error(`Dashboard entry ${index + 1} must be an object.`);
+  }
+  const dashboardName = typeof dashboard.name === 'string' && dashboard.name.trim()
+    ? dashboard.name.trim()
+    : `Imported Dashboard ${index + 1}`;
+  const variables = [];
+  for (const variable of Array.isArray(dashboard.variables) ? dashboard.variables : []) {
+    variables.push(validateImportedDashboardVariable(variable, variables.map((entry) => entry.name), dashboardName));
+  }
+  const metrics = [];
+  for (const metric of Array.isArray(dashboard.metrics) ? dashboard.metrics : []) {
+    metrics.push(validateImportedDashboardMetric(metric, dashboardName));
+  }
+  return {
+    name: dashboardName,
+    variables,
+    metrics,
+    timeRange: (typeof dashboard.timeRange === 'object' && dashboard.timeRange !== null)
+      ? normalizeDashboardTimeRange({
+          preset: typeof dashboard.timeRange.preset === 'string' ? dashboard.timeRange.preset : '24h',
+          start: dashboard.timeRange.start == null ? null : Number(dashboard.timeRange.start),
+          end: dashboard.timeRange.end == null ? null : Number(dashboard.timeRange.end),
+        })
+      : { preset: '24h', start: null, end: null },
+  };
+}
+
 function handleImportedJson(text) {
   let data;
   try {
@@ -518,30 +608,7 @@ function handleImportedJson(text) {
   // Validate and import dashboards
   let dashboards = [];
   if (Array.isArray(data.dashboards)) {
-    dashboards = data.dashboards.map(d => {
-      if (typeof d !== 'object' || d === null) return null;
-      return {
-        name: typeof d.name === 'string' ? d.name : 'Imported Dashboard',
-        variables: Array.isArray(d.variables) ? d.variables.filter(v =>
-          typeof v === 'object' && v !== null &&
-          typeof v.name === 'string' &&
-          typeof v.nodeId === 'string' &&
-          typeof v.readingType === 'string'
-        ) : [],
-        metrics: Array.isArray(d.metrics) ? d.metrics.filter(m =>
-          typeof m === 'object' && m !== null &&
-          typeof m.displayName === 'string' &&
-          typeof m.expression === 'string'
-        ) : [],
-        timeRange: (typeof d.timeRange === 'object' && d.timeRange !== null)
-          ? normalizeDashboardTimeRange({
-              preset: typeof d.timeRange.preset === 'string' ? d.timeRange.preset : '24h',
-              start: d.timeRange.start == null ? null : Number(d.timeRange.start),
-              end: d.timeRange.end == null ? null : Number(d.timeRange.end)
-            })
-          : { preset: '24h', start: null, end: null }
-      };
-    }).filter(Boolean);
+    dashboards = data.dashboards.map((dashboard, index) => validateImportedDashboard(dashboard, index));
   }
 
   let name = typeof data.name === 'string' ? data.name.trim() : '';
@@ -3529,10 +3596,11 @@ async function renderMetricCharts(dashboard, deps = {}) {
 async function evaluateMetricTimeSeries(metric, variables, timeRange, deps = {}) {
   const parserFactory = deps.parserFactory || (() => new exprEval.Parser());
   const fetchVariableDataFn = deps.fetchVariableDataFn || fetchVariableData;
-  const parser = parserFactory();
+  let parser;
   let expr;
   
   try {
+    parser = parserFactory();
     expr = parser.parse(metric.expression);
   } catch (error) {
     console.error('Expression parse error:', error);

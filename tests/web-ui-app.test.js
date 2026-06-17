@@ -978,3 +978,70 @@ test('evaluateMetricTimeSeries computes time-series points from real fetched dat
     { timestamp: 2000, value: 25.5 },
   ]);
 });
+
+test('renderMetricCharts shows a no-data message when evaluation yields zero points', async () => {
+  const originalGetElementById = global.document.getElementById;
+  const parent = makeElement();
+  const canvas = makeElement();
+  canvas.parentElement = parent;
+  global.document.getElementById = (id) => {
+    if (id === 'metric-chart-0') return canvas;
+    return makeElement();
+  };
+
+  try {
+    await app.renderMetricCharts({
+      metrics: [{ displayName: 'Temp', expression: 'TEMP / 1000' }],
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      timeRange: { preset: '24h' },
+    }, {
+      evaluateMetricTimeSeriesFn: async () => ({ points: [] }),
+      chartFactory: () => {
+        throw new Error('chartFactory should not run for empty metrics');
+      },
+    });
+
+    assert.match(parent.innerHTML, /No data in selected time range\./);
+  } finally {
+    global.document.getElementById = originalGetElementById;
+  }
+});
+
+test('renderMetricCharts downsamples dashboard datasets to 500 points before charting', async () => {
+  const originalGetElementById = global.document.getElementById;
+  const parent = makeElement();
+  const canvas = makeElement();
+  canvas.parentElement = parent;
+  global.document.getElementById = (id) => {
+    if (id === 'metric-chart-0') return canvas;
+    return makeElement();
+  };
+
+  const rawPoints = Array.from({ length: 1200 }, (_, index) => ({
+    timestamp: 1000 + index,
+    value: index,
+  }));
+  let capturedConfig = null;
+
+  try {
+    await app.renderMetricCharts({
+      metrics: [{ displayName: 'Dense', expression: 'TEMP' }],
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      timeRange: { preset: '24h' },
+    }, {
+      evaluateMetricTimeSeriesFn: async () => ({ points: rawPoints }),
+      chartFactory: (chartCanvas, config) => {
+        assert.equal(chartCanvas, canvas);
+        capturedConfig = config;
+        return { destroy() {} };
+      },
+    });
+
+    assert.ok(capturedConfig);
+    assert.equal(capturedConfig.data.datasets[0].data.length, 500);
+    assert.deepEqual(capturedConfig.data.datasets[0].data[0], { x: 1000, y: 0 });
+    assert.deepEqual(capturedConfig.data.datasets[0].data.at(-1), { x: 2199, y: 1199 });
+  } finally {
+    global.document.getElementById = originalGetElementById;
+  }
+});

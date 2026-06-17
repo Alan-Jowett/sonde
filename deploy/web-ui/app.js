@@ -3407,7 +3407,10 @@ function getDashboardTimeRangeBounds(timeRange, nowMs = Date.now()) {
   };
 }
 
-async function renderMetricCharts(dashboard) {
+async function renderMetricCharts(dashboard, deps = {}) {
+  const evaluateMetricTimeSeriesFn = deps.evaluateMetricTimeSeriesFn || evaluateMetricTimeSeries;
+  const downsamplePointsFn = deps.downsamplePointsFn || downsamplePoints;
+  const chartFactory = deps.chartFactory || ((canvas, config) => new Chart(canvas, config));
   for (let i = 0; i < dashboard.metrics.length; i++) {
     const metric = dashboard.metrics[i];
     if (metric._validationError) continue;
@@ -3415,23 +3418,28 @@ async function renderMetricCharts(dashboard) {
     const canvas = document.getElementById(`metric-chart-${i}`);
     if (!canvas) continue;
     
-    const result = await evaluateMetricTimeSeries(metric, dashboard.variables, dashboard.timeRange);
+    const result = await evaluateMetricTimeSeriesFn(metric, dashboard.variables, dashboard.timeRange, deps);
     
     if (result.error) {
       canvas.parentElement.innerHTML = `<div class="error-text">${escapeHtml(result.error)}</div>`;
+      continue;
+    }
+    if (result.points.length === 0) {
+      canvas.parentElement.innerHTML = '<div class="text-muted">No data in selected time range.</div>';
       continue;
     }
     
     if (APP_DASHBOARD_STATE.metricCharts[i]) {
       APP_DASHBOARD_STATE.metricCharts[i].destroy();
     }
+    const chartPoints = downsamplePointsFn(result.points, 500).map(p => ({ x: p.timestamp, y: p.value }));
     
-    APP_DASHBOARD_STATE.metricCharts[i] = new Chart(canvas, {
+    APP_DASHBOARD_STATE.metricCharts[i] = chartFactory(canvas, {
       type: 'line',
       data: {
         datasets: [{
           label: metric.displayName || metric.expression,
-          data: result.points.map(p => ({ x: p.timestamp, y: p.value })),
+          data: chartPoints,
           borderColor: metric.color || '#007bff',
           backgroundColor: metric.color || '#007bff',
           fill: false,
@@ -4445,6 +4453,8 @@ if (typeof module !== 'undefined' && module.exports) {
     fetchReadingTypesForNode,
     fetchVariableData,
     evaluateMetricTimeSeries,
+    renderMetricCharts,
+    downsamplePoints,
     getDashboardTimeRangeBounds,
     normalizeDashboardTimeRange,
   };

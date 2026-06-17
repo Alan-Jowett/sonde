@@ -3461,10 +3461,14 @@ function getDashboardTimeRangeBounds(timeRange, nowMs = Date.now()) {
   };
 }
 
+<<<<<<< HEAD
 async function renderMetricCharts(dashboard, deps = {}) {
   const evaluateMetricTimeSeriesFn = deps.evaluateMetricTimeSeriesFn || evaluateMetricTimeSeries;
   const downsamplePointsFn = deps.downsamplePointsFn || downsamplePoints;
   const chartFactory = deps.chartFactory || ((canvas, config) => new Chart(canvas, config));
+=======
+async function renderMetricCharts(dashboard) {
+>>>>>>> de06846 (Fix code review round 4 findings F-001 through F-003)
   for (let i = 0; i < dashboard.metrics.length; i++) {
     const metric = dashboard.metrics[i];
     if (metric._validationError) continue;
@@ -3604,7 +3608,11 @@ async function evaluateMetricTimeSeries(metric, variables, timeRange, deps = {})
 }
 
 async function fetchVariableData(variables, timeRange, deps = {}) {
+<<<<<<< HEAD
   const result = Object.create(null);
+=======
+  const result = {};
+>>>>>>> de06846 (Fix code review round 4 findings F-001 through F-003)
   const errors = [];
 
   const nowFn = deps.nowFn || Date.now;
@@ -3727,6 +3735,15 @@ function attachDashboardHandlers() {
     } else if (dashboard.timeRange.preset !== 'custom') {
       dashboard.timeRange.start = null;
       dashboard.timeRange.end = null;
+<<<<<<< HEAD
+=======
+    }
+    environments = loadEnvironments();
+    const envIndex = environments.findIndex(e => e.name === env.name);
+    if (envIndex >= 0) {
+      environments[envIndex] = env;
+      saveEnvironments(environments);
+>>>>>>> de06846 (Fix code review round 4 findings F-001 through F-003)
     }
     const environments = loadEnvironments();
     persistDashboardEnvironment(env, environments);
@@ -3760,6 +3777,44 @@ function attachDashboardHandlers() {
     dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
     const environments = loadEnvironments();
     persistDashboardEnvironment(env, environments);
+    renderActiveTab();
+  });
+  document.getElementById('dashboard-time-start')?.addEventListener('change', (e) => {
+    const env = loadActiveEnvironment();
+    const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+    const startMs = parseDateTimeLocalInput(e.target.value);
+    const endMs = Number.isFinite(dashboard.timeRange.end) ? dashboard.timeRange.end : parseDateTimeLocalInput(document.getElementById('dashboard-time-end')?.value);
+    if (startMs == null || endMs == null || startMs >= endMs) {
+      alert('Custom time range must have a start before the end.');
+      renderActiveTab();
+      return;
+    }
+    dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
+    environments = loadEnvironments();
+    const envIndex = environments.findIndex(entry => entry.name === env.name);
+    if (envIndex >= 0) {
+      environments[envIndex] = env;
+      saveEnvironments(environments);
+    }
+    renderActiveTab();
+  });
+  document.getElementById('dashboard-time-end')?.addEventListener('change', (e) => {
+    const env = loadActiveEnvironment();
+    const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+    const endMs = parseDateTimeLocalInput(e.target.value);
+    const startMs = Number.isFinite(dashboard.timeRange.start) ? dashboard.timeRange.start : parseDateTimeLocalInput(document.getElementById('dashboard-time-start')?.value);
+    if (startMs == null || endMs == null || startMs >= endMs) {
+      alert('Custom time range must have a start before the end.');
+      renderActiveTab();
+      return;
+    }
+    dashboard.timeRange = { preset: 'custom', start: startMs, end: endMs };
+    environments = loadEnvironments();
+    const envIndex = environments.findIndex(entry => entry.name === env.name);
+    if (envIndex >= 0) {
+      environments[envIndex] = env;
+      saveEnvironments(environments);
+    }
     renderActiveTab();
   });
   
@@ -4017,8 +4072,17 @@ async function showVariableModal(index = null) {
     } else {
       dashboard.variables.push(normalizedVariable);
     }
+<<<<<<< HEAD
     const environments = loadEnvironments();
     persistDashboardEnvironment(env, environments);
+=======
+    environments = loadEnvironments();
+    const envIndex = environments.findIndex((entry) => entry.name === env.name);
+    if (envIndex >= 0) {
+      environments[envIndex] = env;
+      saveEnvironments(environments);
+    }
+>>>>>>> de06846 (Fix code review round 4 findings F-001 through F-003)
     closeModal();
     renderActiveTab();
   });
@@ -4476,6 +4540,7 @@ if (typeof module !== 'undefined' && module.exports) {
     fetchReadingTypesForNode,
     fetchVariableData,
     evaluateMetricTimeSeries,
+<<<<<<< HEAD
     renderMetricCharts,
     downsamplePoints,
     APP_DASHBOARD_STATE,
@@ -4486,6 +4551,10 @@ if (typeof module !== 'undefined' && module.exports) {
     normalizeDashboardTimeRange,
     validateVariableName,
     validateExpression,
+=======
+    getDashboardTimeRangeBounds,
+    normalizeDashboardTimeRange,
+>>>>>>> de06846 (Fix code review round 4 findings F-001 through F-003)
   };
 }
 

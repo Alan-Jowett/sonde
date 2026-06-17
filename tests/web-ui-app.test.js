@@ -1038,6 +1038,7 @@ test('evaluateMetricTimeSeries computes time-series points from real fetched dat
     { timestamp: 2000, value: 25.5 },
   ]);
 });
+<<<<<<< HEAD
 
 test('evaluateMetricTimeSeries reports undefined variables explicitly', async () => {
   const result = await app.evaluateMetricTimeSeries({
@@ -1214,3 +1215,5 @@ test('same-name environment import clears stale unsaved dashboard fallback', () 
   assert.equal(app.APP_DASHBOARD_STATE.unsavedEnvironment, null);
   assert.equal(loaded.dashboards[0].name, 'Imported Replacement');
 });
+=======
+>>>>>>> de06846 (Fix code review round 4 findings F-001 through F-003)

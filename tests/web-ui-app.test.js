@@ -625,6 +625,34 @@ test('handleImportedJson preserves an explicit empty selectedSeries preference',
   assert.equal(app.SENSOR_STATE.seriesInitialized, true);
 });
 
+test('handleImportedJson normalizes dashboard custom time ranges from import payloads', () => {
+  app.handleImportedJson(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    dashboards: [{
+      name: 'Imported Dashboard',
+      variables: [],
+      metrics: [],
+      timeRange: {
+        preset: 'custom',
+        start: '0',
+        end: '1000',
+      },
+    }],
+  }));
+
+  const prod = app.loadEnvironments().find((env) => env.name === 'prod');
+  assert.deepEqual(prod.dashboards[0].timeRange, {
+    preset: 'custom',
+    start: 0,
+    end: 1000,
+  });
+});
+
 test('validateImportedSensorDataPreferences rejects malformed selectedSeries arrays', () => {
   assert.throws(
     () => app.validateImportedSensorDataPreferences({ selectedSeries: ['ok', 42] }),

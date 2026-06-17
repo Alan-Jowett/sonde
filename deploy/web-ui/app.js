@@ -365,7 +365,7 @@ function saveEnvironments(envs) {
     return true;
   } catch (error) {
     if (error.name === 'QuotaExceededError') {
-      alert('Storage quota exceeded. Dashboard changes could not be saved. Try deleting old dashboards or clearing browser data.');
+      alert('Storage quota exceeded. Environment changes could not be saved. Try deleting old data or clearing browser data.');
       return false;
     }
     return false;
@@ -534,11 +534,11 @@ function handleImportedJson(text) {
           typeof m.expression === 'string'
         ) : [],
         timeRange: (typeof d.timeRange === 'object' && d.timeRange !== null)
-          ? {
+          ? normalizeDashboardTimeRange({
               preset: typeof d.timeRange.preset === 'string' ? d.timeRange.preset : '24h',
-              start: d.timeRange.start || null,
-              end: d.timeRange.end || null
-            }
+              start: d.timeRange.start == null ? null : Number(d.timeRange.start),
+              end: d.timeRange.end == null ? null : Number(d.timeRange.end)
+            })
           : { preset: '24h', start: null, end: null }
       };
     }).filter(Boolean);

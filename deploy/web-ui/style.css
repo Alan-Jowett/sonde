@@ -267,3 +267,179 @@ code { font-family: Consolas, "Courier New", monospace; }
   margin: 1rem;
   width: 100%;
 }
+
+/* Custom Dashboards */
+.dashboards-empty {
+  text-align: center;
+  padding: 3rem;
+  color: var(--muted);
+}
+
+.dashboards-container {
+  padding: 1rem;
+}
+
+.dashboard-tabs-bar {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 2px solid var(--border);
+  margin-bottom: 1.5rem;
+  overflow-x: auto;
+}
+
+.dashboard-tab {
+  padding: 0.75rem 1rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-bottom: 3px solid transparent;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted);
+}
+
+.dashboard-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.dashboard-tab-delete {
+  margin-left: 0.25rem;
+  padding: 0 0.35rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--danger);
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.dashboard-tab-delete:hover {
+  background: var(--danger);
+  color: white;
+  border-radius: 3px;
+}
+
+.dashboard-tab-add {
+  margin-left: auto;
+  padding: 0.5rem 1rem;
+  border: 1px dashed var(--border);
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
+  border-radius: 0.25rem;
+}
+
+.dashboard-tab-add:hover {
+  background: var(--surface-alt);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.dashboard-header h2 {
+  margin: 0;
+}
+
+.dashboard-variables,
+.dashboard-metrics {
+  margin-bottom: 2rem;
+}
+
+.dashboard-variables h3,
+.dashboard-metrics h3 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.variables-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.variables-table th,
+.variables-table td {
+  padding: 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.variables-table th {
+  background: var(--surface-alt);
+  font-weight: 600;
+}
+
+.variables-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.metric-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.metric-card.metric-error {
+  border-color: var(--danger);
+  background: #fff5f5;
+}
+
+.metric-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.metric-header h4 {
+  margin: 0;
+}
+
+.metric-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.metric-expression {
+  margin-bottom: 1rem;
+}
+
+.metric-expression code {
+  background: var(--surface-alt);
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  display: block;
+}
+
+.metric-chart-container {
+  position: relative;
+  height: 250px;
+}
+
+.error-text {
+  color: var(--danger);
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+}
+
+.text-muted {
+  color: var(--muted);
+}
+

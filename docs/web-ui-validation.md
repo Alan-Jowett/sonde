@@ -115,6 +115,17 @@ and verifies one or more acceptance criteria.
 | WEB-1007 | T-WEB-1007, T-WEB-1007b |
 | WEB-1008 | T-WEB-1008 |
 | WEB-1009 | T-WEB-1009, T-WEB-1009b, T-WEB-1009c, T-WEB-1009d, T-WEB-1009e, T-WEB-1009f, T-WEB-1009g, T-WEB-1009h, T-WEB-1009i, T-WEB-1009j, T-WEB-1009k |
+| WEB-1100 | T-WEB-1100, T-WEB-1101, T-WEB-1102, T-WEB-1103, T-WEB-1104 |
+| WEB-1101 | T-WEB-1105, T-WEB-1106, T-WEB-1107, T-WEB-1108, T-WEB-1109, T-WEB-1109c |
+| WEB-1102 | T-WEB-1110, T-WEB-1111, T-WEB-1111b, T-WEB-1112, T-WEB-1113, T-WEB-1114 |
+| WEB-1103 | T-WEB-1115, T-WEB-1116, T-WEB-1117 |
+| WEB-1104 | T-WEB-1118, T-WEB-1119, T-WEB-1120 |
+| WEB-1105 | T-WEB-1121, T-WEB-1122, T-WEB-1123, T-WEB-1124 |
+| WEB-1106 | T-WEB-1125, T-WEB-1126, T-WEB-1127, T-WEB-1127b |
+| WEB-1107 | T-WEB-1128, T-WEB-1129, T-WEB-1130, T-WEB-1130b |
+| WEB-1108 | T-WEB-1131, T-WEB-1132 |
+| WEB-1109 | T-WEB-1109a, T-WEB-1109b |
+| WEB-1110 | T-WEB-1110a, T-WEB-1110b |
 | WEB-CC-01 | T-WEB-CC-01, T-WEB-CC-01b |
 | WEB-CC-02 | T-WEB-CC-02, T-WEB-CC-02b |
 | WEB-CC-03 | T-WEB-CC-03, T-WEB-CC-03b |
@@ -411,6 +422,8 @@ and verifies one or more acceptance criteria.
 | Rotation key derivation timeout (Argon2id WASM slow on mobile) | Medium | Medium | P2 | T-WEB-1003 |
 | XSS from unescaped user/server data | High | Low | P1 | T-WEB-CC-02 |
 | Sensor data renders incorrect values | Medium | Low | P3 | T-WEB-0706, T-WEB-0709, T-WEB-0713–0715 |
+| Dashboard expression injection vulnerability | High | Low | P1 | T-WEB-1111 |
+| Dashboard computed metrics show incorrect values | Medium | Low | P2 | T-WEB-1118, T-WEB-1119, T-WEB-1120 |
 
 ---
 
@@ -422,10 +435,59 @@ and verifies one or more acceptance criteria.
 
 ---
 
+### 5.11  Custom Dashboards (WEB-1100)
+
+| Test ID | Requirement | Description | Method | Status |
+|---|---|---|---|---|
+| T-WEB-1100 | WEB-1100 | Dashboards tab is available in SPA navigation | Manual: Verify tab/section appears | Not Started |
+| T-WEB-1101 | WEB-1100 | "+" button creates new dashboard with prompt for name | Manual: Click "+", enter name, verify dashboard created | Not Started |
+| T-WEB-1102 | WEB-1100 | Dashboard tabs allow switching between dashboards | Manual: Create 2 dashboards, verify switching preserves state | Not Started |
+| T-WEB-1103 | WEB-1100 | Dashboard can be renamed | Manual: Rename dashboard, verify name persisted | Not Started |
+| T-WEB-1104 | WEB-1100 | Dashboard can be deleted with confirmation | Manual: Delete dashboard, verify confirmation prompt | Not Started |
+| T-WEB-1105 | WEB-1101 | Add variable binding with valid node ID, reading type, and variable name | Manual: Add variable, verify stored in localStorage | Not Started |
+| T-WEB-1106 | WEB-1101 | Variable name validation rejects invalid JS identifiers | Unit: Test regex `/^[a-zA-Z_][a-zA-Z0-9_]*$/` with invalid inputs | Not Started |
+| T-WEB-1107 | WEB-1101 | Variable name uniqueness enforced within dashboard | Manual: Add duplicate variable name, verify error | Not Started |
+| T-WEB-1108 | WEB-1101 | Edit variable updates binding | Manual: Edit variable, verify change persisted | Not Started |
+| T-WEB-1109 | WEB-1101 | Delete variable warns if used in metric expression | Manual: Delete variable used in metric, verify confirmation prompt | Not Started |
+| T-WEB-1109c | WEB-1101 | Reserved function name rejected as variable name | Manual: Attempt to create variable named `sqrt`, verify error | Not Started |
+| T-WEB-1110 | WEB-1102 | Expression editor validates syntax on blur/save | Unit: Test expr-eval parser with valid/invalid expressions | Not Started |
+| T-WEB-1111 | WEB-1102 | Expression evaluator does NOT use eval() or Function() | Code review: Verify expr-eval library usage, no eval calls | Not Started |
+| T-WEB-1111b | WEB-1102 | Malicious expression rejected or safely evaluated | Integration: Test `constructor.constructor('alert(1)')()`, verify no execution | Not Started |
+| T-WEB-1112 | WEB-1102 | Syntax errors display inline error message | Manual: Enter `(x +`, verify error shown | Not Started |
+| T-WEB-1113 | WEB-1102 | Undefined variable warning displayed | Manual: Enter expression with undefined variable, verify warning | Not Started |
+| T-WEB-1114 | WEB-1102 | Supported operators and functions work correctly | Unit: Test `+`, `-`, `*`, `/`, `^`, `sqrt`, `log`, `abs`, etc. | Not Started |
+| T-WEB-1115 | WEB-1103 | Add metric with display name and expression | Manual: Add metric, verify rendered with chart | Not Started |
+| T-WEB-1116 | WEB-1103 | Edit metric updates name/expression/color | Manual: Edit metric, verify changes reflected | Not Started |
+| T-WEB-1117 | WEB-1103 | Delete metric removes from dashboard | Manual: Delete metric, verify removal with confirmation | Not Started |
+| T-WEB-1118 | WEB-1104 | Expression `(x - 92000) / 10` with x=92500 produces 50 | Integration: Mock data, verify computed value | Not Started |
+| T-WEB-1119 | WEB-1104 | Expression `sqrt(T * T + H * H)` with T=3, H=4 produces 5 | Integration: Mock data, verify computed value | Not Started |
+| T-WEB-1120 | WEB-1104 | Time-series evaluation creates chart with correct points | Integration: Mock time-series data, verify chart data | Not Started |
+| T-WEB-1121 | WEB-1105 | Malformed expression prevents charting and shows error | Manual: Enter `(x + / 10`, verify chart not rendered, error shown | Not Started |
+| T-WEB-1122 | WEB-1105 | Missing variable data skips timestamp (gap in chart) | Integration: Mock partial data, verify gaps | Not Started |
+| T-WEB-1123 | WEB-1105 | Runtime error (e.g., log(-5)) skips point, logs to console | Integration: Mock negative value, verify point skipped | Not Started |
+| T-WEB-1124 | WEB-1105 | Network error fetching data shows user-visible error | Integration: Mock network failure, verify error message | Not Started |
+| T-WEB-1125 | WEB-1106 | Dashboard persisted in localStorage under environment | Unit: Add dashboard, verify `sonde_environments[env].dashboards` | Not Started |
+| T-WEB-1126 | WEB-1106 | Switching environments loads that environment's dashboards | Integration: Create dashboards in env1, switch to env2, verify isolation | Not Started |
+| T-WEB-1127 | WEB-1106 | Dashboard changes trigger saveEnvironments() | Unit: Mock saveEnvironments, verify called on add/edit/delete | Not Started |
+| T-WEB-1127b | WEB-1106 | localStorage quota exceeded shows error, dashboard not lost | Unit: Mock QuotaExceededError, verify error message, dashboard in memory | Not Started |
+| T-WEB-1128 | WEB-1107 | Environment export includes dashboards array in JSON | Integration: Export environment with dashboards, verify JSON structure | Not Started |
+| T-WEB-1129 | WEB-1107 | Environment import restores dashboards | Integration: Import JSON with dashboards, verify restored | Not Started |
+| T-WEB-1130 | WEB-1107 | Missing dashboards field defaults to empty array | Integration: Import JSON without dashboards field, verify default | Not Started |
+| T-WEB-1130b | WEB-1107 | Import with undefined variable shows warning | Integration: Import metric with undefined variable, verify warning displayed | Not Started |
+| T-WEB-1131 | WEB-1108 | Both Sensor Data and Dashboards tabs visible | Manual: Verify both tabs present in navigation | Not Started |
+| T-WEB-1132 | WEB-1108 | Switching between tabs preserves independent state | Manual: Configure both tabs, switch, verify state preserved | Not Started |
+| T-WEB-1109a | WEB-1109 | Operator precedence: `2 + 3 * 4` evaluates to `14` | Unit: Evaluate expression, verify result | Not Started |
+| T-WEB-1109b | WEB-1109 | Parentheses override precedence: `(2 + 3) * 4` evaluates to `20` | Unit: Evaluate expression, verify result | Not Started |
+| T-WEB-1110a | WEB-1110 | Creating 21st dashboard shows warning | Manual: Create 20 dashboards, attempt 21st, verify warning | Not Started |
+| T-WEB-1110b | WEB-1110 | Creating 11th metric shows warning | Manual: Create 10 metrics, attempt 11th, verify warning | Not Started |
+
+---
+
 ## 8  Revision History
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-16 | evolve skill | Added §5.11 (Custom Dashboards) test cases T-WEB-1100 through T-WEB-1132. Updated traceability matrix for WEB-1100 series requirements. |
 | 2026-05-29 | Issue #1092 | Added T-WEB-1009 through T-WEB-1009k for gateway convergence. Updated T-WEB-1001/1002 for badge and inline form. Retired T-WEB-1006/1006b. |
 | 2026-05-19 | Spec extraction (automated) | Restructured with sections, traceability matrix, risk prioritization. Added references to web-ui-requirements.md. |
 | 2026-05-19 | Trifecta remediation (#1012) | Added ~35 fine-grained test cases to cover all acceptance criteria individually. Updated traceability matrix. |

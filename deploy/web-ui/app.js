@@ -149,15 +149,94 @@ function validateImportedSensorDataPreferences(rawPreferences) {
   return preferences;
 }
 
-function normalizeEnvironmentRecord(env) {
+// Dashboard data model
+const RESERVED_FUNCTION_NAMES = ['sqrt', 'log', 'log10', 'exp', 'abs', 'min', 'max'];
+
+function createDefaultDashboardsArray() {
+  return [];
+}
+
+function createDefaultDashboard(name) {
   return {
+    name: name || 'Dashboard 1',
+    variables: [],
+    metrics: [],
+    timeRange: {
+      preset: '24h',
+      start: null,
+      end: null
+    }
+  };
+}
+
+function validateVariableName(name, existingNames) {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+    return { valid: false, error: 'Variable name must be a valid JavaScript identifier' };
+  }
+  if (existingNames.includes(name)) {
+    return { valid: false, error: 'Variable name must be unique within dashboard' };
+  }
+  if (RESERVED_FUNCTION_NAMES.includes(name)) {
+    return { valid: false, error: `'${name}' is a reserved function name` };
+  }
+  return { valid: true };
+}
+
+function validateExpression(expression, availableVariables) {
+  try {
+    const parser = new exprEval.Parser();
+    const expr = parser.parse(expression);
+    const usedVars = expr.variables();
+    const undefinedVars = usedVars.filter(v => !availableVariables.includes(v));
+    if (undefinedVars.length > 0) {
+      return {
+        valid: false,
+        warning: `Undefined variables: ${undefinedVars.join(', ')}`
+      };
+    }
+    return { valid: true };
+  } catch (error) {
+    return {
+      valid: false,
+      error: `Syntax error: ${error.message}`
+    };
+  }
+}
+
+function isVariableUsedInExpression(variableName, expression) {
+  try {
+    const parser = new exprEval.Parser();
+    const expr = parser.parse(expression);
+    return expr.variables().includes(variableName);
+  } catch {
+    return expression.includes(variableName);
+  }
+}
+
+function normalizeEnvironmentRecord(env) {
+  const normalized = {
     name: typeof env?.name === 'string' ? env.name : '',
     clientId: typeof env?.clientId === 'string' ? env.clientId : '',
     tenantId: typeof env?.tenantId === 'string' ? env.tenantId : '',
     storageAccount: typeof env?.storageAccount === 'string' ? env.storageAccount : '',
     functionAppName: typeof env?.functionAppName === 'string' ? env.functionAppName : '',
     sensorData: sanitizeSensorDataPreferences(env?.sensorData),
+    dashboards: Array.isArray(env?.dashboards) ? env.dashboards : createDefaultDashboardsArray(),
   };
+
+  // Re-validate all metric expressions (defense-in-depth for localStorage tampering)
+  normalized.dashboards.forEach(dashboard => {
+    if (!dashboard.metrics) return;
+    dashboard.metrics.forEach(metric => {
+      const variableNames = (dashboard.variables || []).map(v => v.name);
+      const validation = validateExpression(metric.expression, variableNames);
+      if (!validation.valid) {
+        metric._validationError = validation.error || validation.warning;
+      }
+    });
+  });
+
+  return normalized;
 }
 
 function buildEnvironmentExportData(env) {
@@ -177,6 +256,7 @@ function buildEnvironmentExportData(env) {
         : {}),
       seriesOverrides: normalizedEnv.sensorData.seriesOverrides,
     },
+    dashboards: normalizedEnv.dashboards,
   };
 }
 
@@ -205,7 +285,11 @@ function saveEnvironments(envs) {
   try {
     localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(envs.map(normalizeEnvironmentRecord)));
     return true;
-  } catch {
+  } catch (error) {
+    if (error.name === 'QuotaExceededError') {
+      alert('Storage quota exceeded. Dashboard changes could not be saved. Try deleting old dashboards or clearing browser data.');
+      return false;
+    }
     return false;
   }
 }
@@ -422,7 +506,7 @@ function downloadBlob(filename, blob) {
 function functionScopes() {
   return [`api://${CONFIG.msalClientId}/user_impersonation`];
 }
-const TAB_IDS = ['dashboard', 'desired-state', 'programs', 'sensor-data'];
+const TAB_IDS = ['dashboard', 'desired-state', 'programs', 'sensor-data', 'dashboards'];
 const APP = {
   msalApp: null,
   account: null,
@@ -3011,6 +3095,649 @@ async function renderSensorData() {
   }
 }
 
+// 8. Custom Dashboards
+
+const APP_DASHBOARD_STATE = {
+  activeDashboardIndex: 0,
+  metricCharts: {},
+};
+
+function canAddDashboard(env) {
+  if (env.dashboards.length >= 20) {
+    return {
+      allowed: false,
+      warning: 'You have reached the recommended limit of 20 dashboards per environment. Creating more may impact performance. Continue anyway?'
+    };
+  }
+  return { allowed: true };
+}
+
+function canAddMetric(dashboard) {
+  if (dashboard.metrics.length >= 10) {
+    return {
+      allowed: false,
+      warning: 'You have reached the recommended limit of 10 metrics per dashboard. Adding more may impact performance. Continue anyway?'
+    };
+  }
+  return { allowed: true };
+}
+
+async function renderDashboards() {
+  const content = document.getElementById('content');
+  const env = loadActiveEnvironment();
+  
+  if (!env) {
+    content.innerHTML = renderError('Configuration Error', new Error('No environment selected'));
+    return;
+  }
+  
+  if (!Array.isArray(env.dashboards)) {
+    env.dashboards = createDefaultDashboardsArray();
+    environments = loadEnvironments();
+    const envIndex = environments.findIndex(e => e.name === env.name);
+    if (envIndex >= 0) {
+      environments[envIndex] = env;
+      saveEnvironments(environments);
+    }
+  }
+  
+  if (env.dashboards.length === 0) {
+    content.innerHTML = `
+      <div class="dashboards-empty">
+        <h2>No Dashboards Yet</h2>
+        <p>Create a custom dashboard to visualize sensor data with algebraic expressions.</p>
+        <button class="btn btn-primary" id="add-first-dashboard-btn">+ Create Dashboard</button>
+      </div>
+    `;
+    document.getElementById('add-first-dashboard-btn')?.addEventListener('click', () => {
+      const check = canAddDashboard(env);
+      if (!check.allowed && !confirm(check.warning)) return;
+      showAddDashboardModal();
+    });
+    return;
+  }
+  
+  if (APP_DASHBOARD_STATE.activeDashboardIndex >= env.dashboards.length) {
+    APP_DASHBOARD_STATE.activeDashboardIndex = 0;
+  }
+  
+  const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+  
+  content.innerHTML = `
+    <div class="dashboards-container">
+      ${renderDashboardTabs(env.dashboards, APP_DASHBOARD_STATE.activeDashboardIndex)}
+      ${renderDashboardContent(dashboard)}
+    </div>
+  `;
+  
+  attachDashboardHandlers();
+  if (dashboard.metrics.length > 0) {
+    await renderMetricCharts(dashboard);
+  }
+}
+
+function renderDashboardTabs(dashboards, activeIndex) {
+  const tabs = dashboards.map((d, i) => `
+    <button class="dashboard-tab ${i === activeIndex ? 'active' : ''}" data-dashboard-index="${i}">
+      ${escapeHtml(d.name)}
+      <button class="dashboard-tab-delete" data-delete-dashboard="${i}" title="Delete dashboard">&times;</button>
+    </button>
+  `).join('');
+  
+  return `
+    <div class="dashboard-tabs-bar">
+      ${tabs}
+      <button class="dashboard-tab-add" id="add-dashboard-btn">+</button>
+    </div>
+  `;
+}
+
+function renderDashboardContent(dashboard) {
+  return `
+    <div class="dashboard-header">
+      <h2>${escapeHtml(dashboard.name)}</h2>
+      <button class="btn btn-secondary" id="edit-dashboard-name-btn">Rename</button>
+    </div>
+    
+    <div class="dashboard-variables">
+      <h3>Variables <button class="btn btn-sm btn-secondary" id="add-variable-btn">+ Add Variable</button></h3>
+      ${renderVariablesList(dashboard.variables)}
+    </div>
+    
+    <div class="dashboard-metrics">
+      <h3>Metrics <button class="btn btn-sm btn-primary" id="add-metric-btn">+ Add Metric</button></h3>
+      ${dashboard.metrics.length === 0 
+        ? '<p class="text-muted">No metrics yet. ' + (dashboard.variables.length === 0 ? 'Add variables first, then ' : '') + 'click "+ Add Metric" above.</p>'
+        : dashboard.metrics.map((m, i) => renderMetricCard(m, i)).join('')
+      }
+    </div>
+  `;
+}
+
+function renderVariablesList(variables) {
+  if (variables.length === 0) {
+    return '<p class="text-muted">No variables defined yet.</p>';
+  }
+  
+  const rows = variables.map((v, i) => `
+    <tr>
+      <td><code>${escapeHtml(v.name)}</code></td>
+      <td>${escapeHtml(v.nodeId)} - ${escapeHtml(v.readingType)}</td>
+      <td>
+        <button class="btn-sm" data-edit-variable="${i}">Edit</button>
+        <button class="btn-sm btn-danger" data-delete-variable="${i}">Delete</button>
+      </td>
+    </tr>
+  `).join('');
+  
+  return `
+    <table class="variables-table">
+      <thead>
+        <tr>
+          <th>Variable</th>
+          <th>Data Source</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function renderMetricCard(metric, index) {
+  const hasError = metric._validationError;
+  return `
+    <div class="metric-card ${hasError ? 'metric-error' : ''}" id="metric-${index}">
+      <div class="metric-header">
+        <h4>${escapeHtml(metric.displayName || `Metric ${index + 1}`)}</h4>
+        <div class="metric-actions">
+          <button class="btn-sm" data-edit-metric="${index}">Edit</button>
+          <button class="btn-sm btn-danger" data-delete-metric="${index}">Delete</button>
+        </div>
+      </div>
+      <div class="metric-expression">
+        <code>${escapeHtml(metric.expression)}</code>
+        ${hasError ? `<div class="error-text">${escapeHtml(metric._validationError)}</div>` : ''}
+      </div>
+      <div class="metric-chart-container">
+        <canvas id="metric-chart-${index}"></canvas>
+      </div>
+    </div>
+  `;
+}
+
+async function renderMetricCharts(dashboard) {
+  for (let i = 0; i < dashboard.metrics.length; i++) {
+    const metric = dashboard.metrics[i];
+    if (metric._validationError) continue;
+    
+    const canvas = document.getElementById(`metric-chart-${i}`);
+    if (!canvas) continue;
+    
+    const result = await evaluateMetricTimeSeries(metric, dashboard.variables, dashboard.timeRange);
+    
+    if (result.error) {
+      canvas.parentElement.innerHTML = `<div class="error-text">${escapeHtml(result.error)}</div>`;
+      continue;
+    }
+    
+    if (APP_DASHBOARD_STATE.metricCharts[i]) {
+      APP_DASHBOARD_STATE.metricCharts[i].destroy();
+    }
+    
+    APP_DASHBOARD_STATE.metricCharts[i] = new Chart(canvas, {
+      type: 'line',
+      data: {
+        datasets: [{
+          label: metric.displayName || metric.expression,
+          data: result.points.map(p => ({ x: p.timestamp, y: p.value })),
+          borderColor: metric.color || '#007bff',
+          backgroundColor: metric.color || '#007bff',
+          fill: false,
+          tension: 0.1
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: 'hour' }
+          },
+          y: {
+            beginAtZero: false
+          }
+        }
+      }
+    });
+  }
+}
+
+async function evaluateMetricTimeSeries(metric, variables, timeRange) {
+  const env = loadActiveEnvironment();
+  const parser = new exprEval.Parser();
+  let expr;
+  
+  try {
+    expr = parser.parse(metric.expression);
+  } catch (error) {
+    console.error('Expression parse error:', error);
+    return { error: `Expression error: ${error.message}`, points: [] };
+  }
+  
+  const usedVariableNames = expr.variables();
+  const usedVariables = variables.filter(v => usedVariableNames.includes(v.name));
+  
+  if (usedVariables.length === 0) {
+    return { error: 'Expression uses no variables', points: [] };
+  }
+  
+  const variableData = await fetchVariableData(usedVariables, timeRange || { preset: '24h' });
+  
+  const timestamps = new Set();
+  Object.values(variableData).forEach(data => {
+    data.forEach(point => timestamps.add(point.timestamp));
+  });
+  
+  const sortedTimestamps = Array.from(timestamps).sort((a, b) => a - b);
+  
+  const points = [];
+  for (const timestamp of sortedTimestamps) {
+    const context = {};
+    let hasAllVars = true;
+    
+    for (const variable of usedVariables) {
+      const data = variableData[variable.name];
+      if (!data) {
+        hasAllVars = false;
+        break;
+      }
+      
+      const point = data.find(p => p.timestamp === timestamp);
+      if (point) {
+        context[variable.name] = point.value;
+      } else {
+        hasAllVars = false;
+        break;
+      }
+    }
+    
+    if (!hasAllVars) continue;
+    
+    try {
+      const value = expr.evaluate(context);
+      if (Number.isFinite(value)) {
+        points.push({ timestamp, value });
+      } else {
+        console.warn(`Non-finite value at timestamp ${timestamp}: ${value}`);
+      }
+    } catch (error) {
+      console.warn(`Evaluation error at timestamp ${timestamp}:`, error);
+    }
+  }
+  
+  return { points };
+}
+
+async function fetchVariableData(variables, timeRange) {
+  const env = loadActiveEnvironment();
+  const result = {};
+  
+  const now = new Date();
+  let startTime;
+  
+  switch (timeRange.preset) {
+    case '1h':
+      startTime = new Date(now.getTime() - 60 * 60 * 1000);
+      break;
+    case '7d':
+      startTime = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      break;
+    case '24h':
+    default:
+      startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      break;
+  }
+  
+  const timestampFilter = `Timestamp ge datetime'${startTime.toISOString()}'`;
+  
+  for (const variable of variables) {
+    const partitionFilter = `PartitionKey eq '${variable.nodeId}'`;
+    const rowFilter = `RowKey eq '${variable.readingType}'`;
+    const filter = `${partitionFilter} and ${rowFilter} and ${timestampFilter}`;
+    
+    try {
+      const data = await fetchTableData(env.storageAccount, CONFIG.sensorDataTable, filter);
+      result[variable.name] = data.map(row => ({
+        timestamp: new Date(row.Timestamp).getTime(),
+        value: row.Value
+      }));
+    } catch (error) {
+      console.error(`Failed to fetch data for variable ${variable.name}:`, error);
+      result[variable.name] = [];
+    }
+  }
+  
+  return result;
+}
+
+function attachDashboardHandlers() {
+  document.querySelectorAll('.dashboard-tab').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      if (e.target.classList.contains('dashboard-tab-delete')) return;
+      APP_DASHBOARD_STATE.activeDashboardIndex = parseInt(btn.dataset.dashboardIndex);
+      renderActiveTab();
+    });
+  });
+  
+  document.querySelectorAll('.dashboard-tab-delete').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const index = parseInt(btn.dataset.deleteDashboard);
+      deleteDashboard(index);
+    });
+  });
+  
+  document.getElementById('add-dashboard-btn')?.addEventListener('click', () => {
+    const env = loadActiveEnvironment();
+    const check = canAddDashboard(env);
+    if (!check.allowed && !confirm(check.warning)) return;
+    showAddDashboardModal();
+  });
+  
+  document.getElementById('edit-dashboard-name-btn')?.addEventListener('click', () => {
+    const env = loadActiveEnvironment();
+    const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+    const newName = prompt('Enter new dashboard name:', dashboard.name);
+    if (newName && newName.trim()) {
+      dashboard.name = newName.trim();
+      environments = loadEnvironments();
+      const envIndex = environments.findIndex(e => e.name === env.name);
+      if (envIndex >= 0) {
+        environments[envIndex] = env;
+        saveEnvironments(environments);
+      }
+      renderActiveTab();
+    }
+  });
+  
+  document.getElementById('add-variable-btn')?.addEventListener('click', () => showAddVariableModal());
+  document.getElementById('add-metric-btn')?.addEventListener('click', () => {
+    const env = loadActiveEnvironment();
+    const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+    const check = canAddMetric(dashboard);
+    if (!check.allowed && !confirm(check.warning)) return;
+    showAddMetricModal();
+  });
+  
+  document.querySelectorAll('[data-edit-variable]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const index = parseInt(btn.dataset.editVariable);
+      showEditVariableModal(index);
+    });
+  });
+  
+  document.querySelectorAll('[data-delete-variable]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const index = parseInt(btn.dataset.deleteVariable);
+      deleteVariable(index);
+    });
+  });
+  
+  document.querySelectorAll('[data-edit-metric]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const index = parseInt(btn.dataset.editMetric);
+      showEditMetricModal(index);
+    });
+  });
+  
+  document.querySelectorAll('[data-delete-metric]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const index = parseInt(btn.dataset.deleteMetric);
+      deleteMetric(index);
+    });
+  });
+}
+
+function showAddDashboardModal() {
+  const env = loadActiveEnvironment();
+  const name = prompt('Enter dashboard name:', `Dashboard ${env.dashboards.length + 1}`);
+  if (name && name.trim()) {
+    env.dashboards.push(createDefaultDashboard(name.trim()));
+    environments = loadEnvironments();
+    const envIndex = environments.findIndex(e => e.name === env.name);
+    if (envIndex >= 0) {
+      environments[envIndex] = env;
+      saveEnvironments(environments);
+    }
+    APP_DASHBOARD_STATE.activeDashboardIndex = env.dashboards.length - 1;
+    renderActiveTab();
+  }
+}
+
+function deleteDashboard(index) {
+  const env = loadActiveEnvironment();
+  const dashboard = env.dashboards[index];
+  if (!confirm(`Delete dashboard "${dashboard.name}"? This cannot be undone.`)) return;
+  
+  env.dashboards.splice(index, 1);
+  environments = loadEnvironments();
+  const envIndex = environments.findIndex(e => e.name === env.name);
+  if (envIndex >= 0) {
+    environments[envIndex] = env;
+    saveEnvironments(environments);
+  }
+  
+  if (APP_DASHBOARD_STATE.activeDashboardIndex >= env.dashboards.length) {
+    APP_DASHBOARD_STATE.activeDashboardIndex = Math.max(0, env.dashboards.length - 1);
+  }
+  renderActiveTab();
+}
+
+async function showAddVariableModal() {
+  const env = loadActiveEnvironment();
+  const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+  
+  const nodes = await fetchActualStateNodes();
+  if (nodes.length === 0) {
+    alert('No nodes available. Nodes must be online and reporting to create variables.');
+    return;
+  }
+  
+  const name = prompt('Enter variable name (must be valid JavaScript identifier, e.g., TEMP, PRESS_KPA):', '');
+  if (!name) return;
+  
+  const existingNames = dashboard.variables.map(v => v.name);
+  const validation = validateVariableName(name, existingNames);
+  if (!validation.valid) {
+    alert(validation.error);
+    return;
+  }
+  
+  const nodeId = prompt(`Enter node ID (available: ${nodes.map(n => n.nodeId).join(', ')}):`, nodes[0].nodeId);
+  if (!nodeId) return;
+  
+  const readingType = prompt('Enter reading type (e.g., temperature_millif, pressure_pa):', '');
+  if (!readingType) return;
+  
+  dashboard.variables.push({ name, nodeId, readingType });
+  environments = loadEnvironments();
+  const envIndex = environments.findIndex(e => e.name === env.name);
+  if (envIndex >= 0) {
+    environments[envIndex] = env;
+    saveEnvironments(environments);
+  }
+  renderActiveTab();
+}
+
+function showEditVariableModal(index) {
+  const env = loadActiveEnvironment();
+  const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+  const variable = dashboard.variables[index];
+  
+  const newName = prompt('Enter variable name:', variable.name);
+  if (!newName) return;
+  
+  if (newName !== variable.name) {
+    const existingNames = dashboard.variables.map((v, i) => i === index ? null : v.name).filter(Boolean);
+    const validation = validateVariableName(newName, existingNames);
+    if (!validation.valid) {
+      alert(validation.error);
+      return;
+    }
+    variable.name = newName;
+  }
+  
+  const newNodeId = prompt('Enter node ID:', variable.nodeId);
+  if (newNodeId) variable.nodeId = newNodeId;
+  
+  const newReadingType = prompt('Enter reading type:', variable.readingType);
+  if (newReadingType) variable.readingType = newReadingType;
+  
+  environments = loadEnvironments();
+  const envIndex = environments.findIndex(e => e.name === env.name);
+  if (envIndex >= 0) {
+    environments[envIndex] = env;
+    saveEnvironments(environments);
+  }
+  renderActiveTab();
+}
+
+function deleteVariable(index) {
+  const env = loadActiveEnvironment();
+  const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+  const variable = dashboard.variables[index];
+  
+  const usedInMetrics = dashboard.metrics.filter(m =>
+    isVariableUsedInExpression(variable.name, m.expression)
+  );
+  
+  if (usedInMetrics.length > 0) {
+    const metricNames = usedInMetrics.map(m => m.displayName).join(', ');
+    if (!confirm(`Variable '${variable.name}' is used in metrics: ${metricNames}. These metrics will show errors. Continue?`)) {
+      return;
+    }
+  }
+  
+  dashboard.variables.splice(index, 1);
+  environments = loadEnvironments();
+  const envIndex = environments.findIndex(e => e.name === env.name);
+  if (envIndex >= 0) {
+    environments[envIndex] = env;
+    saveEnvironments(environments);
+  }
+  renderActiveTab();
+}
+
+function showAddMetricModal() {
+  const env = loadActiveEnvironment();
+  const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+  
+  if (dashboard.variables.length === 0) {
+    alert('Add variables first before creating metrics.');
+    return;
+  }
+  
+  const displayName = prompt('Enter metric display name:', 'New Metric');
+  if (!displayName) return;
+  
+  const availableVars = dashboard.variables.map(v => v.name).join(', ');
+  const helpText = `
+Operators: + - * / ^ (power)
+Precedence: () > ^ > * / > + - (left-to-right)
+Functions: sqrt(x), log(x), log10(x), exp(x), abs(x), min(a,b), max(a,b)
+Variables: ${availableVars}`;
+  
+  const expression = prompt(`Enter expression:\n${helpText}`, '');
+  if (!expression) return;
+  
+  const validation = validateExpression(expression, dashboard.variables.map(v => v.name));
+  if (!validation.valid) {
+    alert(validation.error || validation.warning);
+    if (validation.error) return;
+  }
+  
+  const color = prompt('Enter color (hex code, optional):', '#007bff');
+  
+  const metric = {
+    id: `m_${Date.now()}`,
+    displayName,
+    expression,
+    color: color || '#007bff'
+  };
+  
+  dashboard.metrics.push(metric);
+  environments = loadEnvironments();
+  const envIndex = environments.findIndex(e => e.name === env.name);
+  if (envIndex >= 0) {
+    environments[envIndex] = env;
+    saveEnvironments(environments);
+  }
+  renderActiveTab();
+}
+
+function showEditMetricModal(index) {
+  const env = loadActiveEnvironment();
+  const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+  const metric = dashboard.metrics[index];
+  
+  const newDisplayName = prompt('Enter display name:', metric.displayName);
+  if (newDisplayName) metric.displayName = newDisplayName;
+  
+  const availableVars = dashboard.variables.map(v => v.name).join(', ');
+  const newExpression = prompt(`Enter expression (variables: ${availableVars}):`, metric.expression);
+  if (newExpression) {
+    const validation = validateExpression(newExpression, dashboard.variables.map(v => v.name));
+    if (!validation.valid) {
+      alert(validation.error || validation.warning);
+      if (!validation.error) {
+        metric.expression = newExpression;
+      }
+    } else {
+      metric.expression = newExpression;
+    }
+  }
+  
+  const newColor = prompt('Enter color (hex):', metric.color);
+  if (newColor) metric.color = newColor;
+  
+  environments = loadEnvironments();
+  const envIndex = environments.findIndex(e => e.name === env.name);
+  if (envIndex >= 0) {
+    environments[envIndex] = env;
+    saveEnvironments(environments);
+  }
+  renderActiveTab();
+}
+
+function deleteMetric(index) {
+  const env = loadActiveEnvironment();
+  const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
+  const metric = dashboard.metrics[index];
+  
+  if (!confirm(`Delete metric "${metric.displayName}"?`)) return;
+  
+  dashboard.metrics.splice(index, 1);
+  environments = loadEnvironments();
+  const envIndex = environments.findIndex(e => e.name === env.name);
+  if (envIndex >= 0) {
+    environments[envIndex] = env;
+    saveEnvironments(environments);
+  }
+  renderActiveTab();
+}
+
+async function fetchActualStateNodes() {
+  const env = loadActiveEnvironment();
+  try {
+    const data = await fetchTableData(env.storageAccount, CONFIG.actualStateTable, '');
+    return data.map(row => ({ nodeId: row.PartitionKey }));
+  } catch {
+    return [];
+  }
+}
+
 // 9. Tab Router
 function setActiveTab(tabId) {
   APP.activeTab = TAB_IDS.includes(tabId) ? tabId : 'dashboard';
@@ -3035,6 +3762,9 @@ async function renderActiveTab() {
       break;
     case 'sensor-data':
       await renderSensorData();
+      break;
+    case 'dashboards':
+      await renderDashboards();
       break;
     case 'dashboard':
     default:
@@ -3263,6 +3993,7 @@ function showEnvironmentForm(existingEnv) {
       storageAccount,
       functionAppName,
       sensorData: existingEnv?.sensorData || createDefaultSensorDataPreferences(),
+      dashboards: existingEnv?.dashboards || createDefaultDashboardsArray(),
     };
     if (isEdit) {
       const idx = envs.findIndex((e) => e.name === name);

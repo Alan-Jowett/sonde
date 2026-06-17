@@ -3462,22 +3462,40 @@ function getDashboardTimeRangeBounds(timeRange, nowMs = Date.now()) {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
 async function renderMetricCharts(dashboard, deps = {}) {
   const evaluateMetricTimeSeriesFn = deps.evaluateMetricTimeSeriesFn || evaluateMetricTimeSeries;
   const downsamplePointsFn = deps.downsamplePointsFn || downsamplePoints;
   const chartFactory = deps.chartFactory || ((canvas, config) => new Chart(canvas, config));
+<<<<<<< HEAD
 =======
 async function renderMetricCharts(dashboard) {
 >>>>>>> de06846 (Fix code review round 4 findings F-001 through F-003)
+=======
+>>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
   for (let i = 0; i < dashboard.metrics.length; i++) {
     const metric = dashboard.metrics[i];
     if (metric._validationError) continue;
     
     const canvas = document.getElementById(`metric-chart-${i}`);
     if (!canvas) continue;
+<<<<<<< HEAD
     if (metric._validationWarning) {
       destroyDashboardChart(i);
       canvas.parentElement.innerHTML = `<div class="text-muted">${escapeHtml(metric._validationWarning)}</div>`;
+=======
+    
+    const result = await evaluateMetricTimeSeriesFn(metric, dashboard.variables, dashboard.timeRange, deps);
+    
+    if (result.error) {
+      canvas.parentElement.innerHTML = `<div class="error-text">${escapeHtml(result.error)}</div>`;
+>>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
+      continue;
+    }
+    if (result.points.length === 0) {
+      canvas.parentElement.innerHTML = '<div class="text-muted">No data in selected time range.</div>';
       continue;
     }
     
@@ -3493,10 +3511,14 @@ async function renderMetricCharts(dashboard) {
       canvas.parentElement.innerHTML = '<div class="text-muted">No data in selected time range.</div>';
       continue;
     }
+    const chartPoints = downsamplePointsFn(result.points, 500).map(p => ({ x: p.timestamp, y: p.value }));
     
+<<<<<<< HEAD
     destroyDashboardChart(i);
     const chartPoints = downsamplePointsFn(result.points, 500).map(p => ({ x: p.timestamp, y: p.value }));
     
+=======
+>>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
     APP_DASHBOARD_STATE.metricCharts[i] = chartFactory(canvas, {
       type: 'line',
       data: {
@@ -4541,12 +4563,17 @@ if (typeof module !== 'undefined' && module.exports) {
     fetchVariableData,
     evaluateMetricTimeSeries,
 <<<<<<< HEAD
+<<<<<<< HEAD
     renderMetricCharts,
     downsamplePoints,
     APP_DASHBOARD_STATE,
     persistDashboardEnvironment,
     destroyDashboardChart,
     destroyAllDashboardCharts,
+=======
+    renderMetricCharts,
+    downsamplePoints,
+>>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
     getDashboardTimeRangeBounds,
     normalizeDashboardTimeRange,
     validateVariableName,

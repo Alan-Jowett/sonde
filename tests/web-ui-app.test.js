@@ -1039,6 +1039,7 @@ test('evaluateMetricTimeSeries computes time-series points from real fetched dat
   ]);
 });
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 test('evaluateMetricTimeSeries reports undefined variables explicitly', async () => {
   const result = await app.evaluateMetricTimeSeries({
@@ -1062,16 +1063,21 @@ test('evaluateMetricTimeSeries reports undefined variables explicitly', async ()
   assert.equal(result.error, 'Undefined variables: UNKNOWN');
   assert.deepEqual(result.points, []);
 });
+=======
+>>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
 
 test('renderMetricCharts shows a no-data message when evaluation yields zero points', async () => {
   const originalGetElementById = global.document.getElementById;
   const parent = makeElement();
   const canvas = makeElement();
   canvas.parentElement = parent;
+<<<<<<< HEAD
   let destroyed = 0;
   app.APP_DASHBOARD_STATE.metricCharts[0] = {
     destroy() { destroyed += 1; },
   };
+=======
+>>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
   global.document.getElementById = (id) => {
     if (id === 'metric-chart-0') return canvas;
     return makeElement();
@@ -1090,8 +1096,11 @@ test('renderMetricCharts shows a no-data message when evaluation yields zero poi
     });
 
     assert.match(parent.innerHTML, /No data in selected time range\./);
+<<<<<<< HEAD
     assert.equal(destroyed, 1);
     assert.equal(app.APP_DASHBOARD_STATE.metricCharts[0], undefined);
+=======
+>>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)
   } finally {
     global.document.getElementById = originalGetElementById;
   }
@@ -1135,6 +1144,7 @@ test('renderMetricCharts downsamples dashboard datasets to 500 points before cha
     global.document.getElementById = originalGetElementById;
   }
 });
+<<<<<<< HEAD
 
 test('persistDashboardEnvironment preserves edited dashboards in memory after quota failures', () => {
   const env = {
@@ -1217,3 +1227,5 @@ test('same-name environment import clears stale unsaved dashboard fallback', () 
 });
 =======
 >>>>>>> de06846 (Fix code review round 4 findings F-001 through F-003)
+=======
+>>>>>>> 751eefb (Fix code review round 5 findings F-001 and F-002)

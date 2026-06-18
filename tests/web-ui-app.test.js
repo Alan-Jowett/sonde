@@ -1266,6 +1266,42 @@ test('getCachedSensorDataRows does not mark truncated fetches as full historical
   ]);
 });
 
+test('getCachedSensorDataRows does not treat truncated exact-range fetches as exact cache hits', async () => {
+  const calls = [];
+  const incompleteRows = [{
+    PartitionKey: 'n:abc123',
+    RowKey: 'row-2',
+    timestamp_ms: '2000',
+    decoded_readings: '{"temp_mc":25000}',
+  }];
+  Object.defineProperty(incompleteRows, '__complete', {
+    value: false,
+    enumerable: false,
+    configurable: true,
+  });
+
+  const deps = {
+    querySensorDataRangeFn: async (partitionKeys, startMs, endMs) => {
+      calls.push({ partitionKeys, startMs, endMs });
+      return incompleteRows;
+    },
+  };
+
+  await app.getCachedSensorDataRows(['n:abc123'], 2000, 3000, {
+    topPerPage: 1000,
+    maxPagesPerPartition: 1,
+  }, deps);
+  await app.getCachedSensorDataRows(['n:abc123'], 2000, 3000, {
+    topPerPage: 1000,
+    maxPagesPerPartition: 1,
+  }, deps);
+
+  assert.deepEqual(calls, [
+    { partitionKeys: ['n:abc123'], startMs: 2000, endMs: 3000 },
+    { partitionKeys: ['n:abc123'], startMs: 2000, endMs: 3000 },
+  ]);
+});
+
 test('fetchVariableData reuses one cached sensor fetch for overlapping variables on the same partition', async () => {
   let queryCount = 0;
   const deps = {

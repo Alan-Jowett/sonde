@@ -1840,7 +1840,7 @@ function mergeSensorRowsIntoCache(partitionKey, rows, rangeStartMs, rangeEndMs, 
   for (const row of rows) {
     cache.rowsByKey.set(tableRowIdentity(row), row);
   }
-  if (options.requestKey) {
+  if (options.requestKey && options.complete === true) {
     cache.exactRequestKeys.add(options.requestKey);
   }
   if (options.complete === true) {

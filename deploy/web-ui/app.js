@@ -789,8 +789,10 @@ function createSessionTelemetryCache() {
       watermarkMs: null,
       rowsByKey: new Map(),
       latestByPartition: new Map(),
+      inFlightRequests: new Map(),
     },
     sensorDataByPartition: new Map(),
+    sensorDataInFlightRequests: new Map(),
   };
 }
 
@@ -802,8 +804,10 @@ function clearSessionTelemetryCache() {
     watermarkMs: null,
     rowsByKey: new Map(),
     latestByPartition: new Map(),
+    inFlightRequests: new Map(),
   };
   SESSION_TELEMETRY_CACHE.sensorDataByPartition = new Map();
+  SESSION_TELEMETRY_CACHE.sensorDataInFlightRequests = new Map();
 }
 
 function ensureSessionTelemetryCacheEnvironment() {
@@ -1783,6 +1787,26 @@ function mergeActualStateRowsIntoCache(rows, fallbackWatermarkMs = null) {
   cache.watermarkMs = maxTimestampMs ?? fallbackWatermarkMs ?? cache.watermarkMs;
 }
 
+function getOrStartSharedTelemetryRequest(registry, requestKey, createRequest) {
+  const existing = registry.get(requestKey);
+  if (existing) {
+    return existing;
+  }
+
+  let promise;
+  promise = (async () => {
+    try {
+      return await createRequest();
+    } finally {
+      if (registry.get(requestKey) === promise) {
+        registry.delete(requestKey);
+      }
+    }
+  })();
+  registry.set(requestKey, promise);
+  return promise;
+}
+
 async function getCachedActualStateRows(deps = {}) {
   ensureSessionTelemetryCacheEnvironment();
   const cache = SESSION_TELEMETRY_CACHE.actualState;
@@ -1791,17 +1815,27 @@ async function getCachedActualStateRows(deps = {}) {
   const nowMs = nowFn();
 
   if (!cache.loaded) {
-    const rows = await queryTableFn(CONFIG.actualStateTable, '');
-    mergeActualStateRowsIntoCache(rows, nowMs);
+    await getOrStartSharedTelemetryRequest(cache.inFlightRequests, 'initial-full-scan', async () => {
+      const rows = await queryTableFn(CONFIG.actualStateTable, '');
+      mergeActualStateRowsIntoCache(rows, nowMs);
+    });
     return Array.from(cache.rowsByKey.values());
   }
 
   if (Number.isFinite(cache.watermarkMs) && nowMs >= cache.watermarkMs) {
-    const rows = await queryTableFn(
-      CONFIG.actualStateTable,
-      globalHistoryTableFilter(cache.watermarkMs, nowMs),
-    );
-    mergeActualStateRowsIntoCache(rows, nowMs);
+    const previousWatermarkMs = cache.watermarkMs;
+    const requestKey = JSON.stringify({
+      kind: 'actualstate-delta',
+      startMs: previousWatermarkMs,
+      endMs: nowMs,
+    });
+    await getOrStartSharedTelemetryRequest(cache.inFlightRequests, requestKey, async () => {
+      const rows = await queryTableFn(
+        CONFIG.actualStateTable,
+        globalHistoryTableFilter(previousWatermarkMs, nowMs),
+      );
+      mergeActualStateRowsIntoCache(rows, nowMs);
+    });
   }
 
   return Array.from(cache.rowsByKey.values());
@@ -1833,6 +1867,10 @@ function sensorRequestCacheKey(startMs, endMs, options = {}) {
     maxPagesPerPartition: options.maxPagesPerPartition ?? null,
     requireComplete: options.requireComplete === true,
   });
+}
+
+function sensorInFlightRequestKey(partitionKey, startMs, endMs, options = {}) {
+  return `${partitionKey}|${sensorRequestCacheKey(startMs, endMs, options)}`;
 }
 
 function mergeSensorRowsIntoCache(partitionKey, rows, rangeStartMs, rangeEndMs, options = {}) {
@@ -1893,11 +1931,23 @@ async function getCachedSensorDataRows(partitionKeys, startMs, endMs, options = 
   }
 
   await Promise.all(fetchPlans.map(async (plan) => {
-    const rows = await querySensorDataRangeFn([plan.partitionKey], plan.startMs, plan.endMs, options);
-    mergeSensorRowsIntoCache(plan.partitionKey, rows, plan.startMs, plan.endMs, {
-      complete: rows.__complete === true,
-      requestKey: plan.exactRequest === true ? plan.requestKey : null,
-    });
+    const inFlightRequestKey = sensorInFlightRequestKey(
+      plan.partitionKey,
+      plan.startMs,
+      plan.endMs,
+      options,
+    );
+    await getOrStartSharedTelemetryRequest(
+      SESSION_TELEMETRY_CACHE.sensorDataInFlightRequests,
+      inFlightRequestKey,
+      async () => {
+        const rows = await querySensorDataRangeFn([plan.partitionKey], plan.startMs, plan.endMs, options);
+        mergeSensorRowsIntoCache(plan.partitionKey, rows, plan.startMs, plan.endMs, {
+          complete: rows.__complete === true,
+          requestKey: plan.exactRequest === true ? plan.requestKey : null,
+        });
+      },
+    );
   }));
 
   const rows = [];

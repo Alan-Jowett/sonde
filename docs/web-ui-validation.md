@@ -52,9 +52,9 @@ and verifies one or more acceptance criteria.
 
 | Requirement | Test Cases |
 |-------------|------------|
-| WEB-0101 | T-WEB-0101, T-WEB-0101b, T-WEB-0101c |
+| WEB-0101 | T-WEB-0101, T-WEB-0101b, T-WEB-0101c, T-WEB-0727, T-WEB-0734 |
 | WEB-0102 | T-WEB-0102, T-WEB-0102b, T-WEB-0102c |
-| WEB-0103 | T-WEB-0103, T-WEB-0103b |
+| WEB-0103 | T-WEB-0103, T-WEB-0103b, T-WEB-0728, T-WEB-0734 |
 | WEB-0104 | T-WEB-0104, T-WEB-0105, T-WEB-0106, T-WEB-0107, T-WEB-0108 |
 | WEB-0105 | T-WEB-0109, T-WEB-0110, T-WEB-0111, T-WEB-0112, T-WEB-0113, T-WEB-0114, T-WEB-0115 |
 | WEB-0201 | T-WEB-0201, T-WEB-0201b, T-WEB-0201c |
@@ -89,12 +89,12 @@ and verifies one or more acceptance criteria.
 | WEB-0605 | T-WEB-0605 |
 | WEB-0606 | T-WEB-0606, T-WEB-0606b, T-WEB-0606c, T-WEB-0606d, T-WEB-0606e |
 | WEB-0607 | T-WEB-0607 |
-| WEB-0700 | T-WEB-0701, T-WEB-0701b |
+| WEB-0700 | T-WEB-0701, T-WEB-0701b, T-WEB-0735 |
 | WEB-0701 | T-WEB-0702, T-WEB-0703, T-WEB-0706, T-WEB-0713, T-WEB-0714, T-WEB-0715, T-WEB-0702b, T-WEB-0703b |
 | WEB-0702 | T-WEB-0704, T-WEB-0705, T-WEB-0704b, T-WEB-0704c |
 | WEB-0703 | T-WEB-0707, T-WEB-0708, T-WEB-0709, T-WEB-0710, T-WEB-0711, T-WEB-0712, T-WEB-0707b |
 | WEB-0705 | T-WEB-0723, T-WEB-0724, T-WEB-0725, T-WEB-0726, T-WEB-0802b |
-| WEB-0706 | T-WEB-0727, T-WEB-0728, T-WEB-0729, T-WEB-0730, T-WEB-0731, T-WEB-0732, T-WEB-0733 |
+| WEB-0706 | T-WEB-0727, T-WEB-0728, T-WEB-0729, T-WEB-0730, T-WEB-0731, T-WEB-0732, T-WEB-0733, T-WEB-0734, T-WEB-0735, T-WEB-0736 |
 | WEB-0704 | T-WEB-0716, T-WEB-0717, T-WEB-0718, T-WEB-0719, T-WEB-0720, T-WEB-0721, T-WEB-0722 |
 | WEB-0800 | T-WEB-0801, T-WEB-0802, T-WEB-0802b, T-WEB-0803, T-WEB-0804, T-WEB-0805, T-WEB-0806 |
 | WEB-0801 | T-WEB-0802 |
@@ -120,7 +120,7 @@ and verifies one or more acceptance criteria.
 | WEB-1101 | T-WEB-1105, T-WEB-1106, T-WEB-1107, T-WEB-1108, T-WEB-1109, T-WEB-1109c |
 | WEB-1102 | T-WEB-1110, T-WEB-1111, T-WEB-1111b, T-WEB-1112, T-WEB-1113, T-WEB-1114 |
 | WEB-1103 | T-WEB-1115, T-WEB-1116, T-WEB-1117, T-WEB-1118, T-WEB-1118b |
-| WEB-1104 | T-WEB-1119, T-WEB-1120, T-WEB-1120b, T-WEB-1120c, T-WEB-1120d, T-WEB-1120e |
+| WEB-1104 | T-WEB-1119, T-WEB-1120, T-WEB-1120b, T-WEB-1120c, T-WEB-1120d, T-WEB-1120e, T-WEB-0733, T-WEB-0736 |
 | WEB-1105 | T-WEB-1121, T-WEB-1122, T-WEB-1123, T-WEB-1124 |
 | WEB-1106 | T-WEB-1125, T-WEB-1126, T-WEB-1127, T-WEB-1127b, T-WEB-1127c |
 | WEB-1107 | T-WEB-1128, T-WEB-1129, T-WEB-1130, T-WEB-1130b, T-WEB-1130c |
@@ -281,6 +281,9 @@ and verifies one or more acceptance criteria.
 | T-WEB-0731 | WEB-0706 | Session telemetry cache is not written to `localStorage` and is excluded from environment export/import data | Unit (JS) | Not Started |
 | T-WEB-0732 | WEB-0706 | Switching environments clears or isolates session telemetry cache entries before the next environment renders | Unit (JS) | Pass |
 | T-WEB-0733 | WEB-0706 | Multiple dashboard metrics with overlapping variable sources reuse one cached `sensordata` fetch result per partition for a render/time-range context | Unit (JS) | Pass |
+| T-WEB-0734 | WEB-0706 | Concurrent identical `actualstate` consumers in one environment share a single in-flight Azure Table request during cold-session hydration and during identical delta refreshes | Unit (JS) | Planned |
+| T-WEB-0735 | WEB-0706 | Concurrent identical `sensordata` consumers for one partition/range/options share a single in-flight Azure Table request during cold-session fetch | Unit (JS) | Planned |
+| T-WEB-0736 | WEB-0706 | Multiple dashboard metric consumers that request the same cold-session telemetry scope before the first fetch resolves observe one shared in-flight request and receive identical results | Unit (JS) | Planned |
 
 ### 5.8  Environment Manager
 
@@ -513,6 +516,7 @@ and verifies one or more acceptance criteria.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-18 | evolve skill | Added WEB-0706 validation coverage for in-flight request coalescing across actualstate hydration, sensordata cold fetches, and overlapping dashboard metric consumers. |
 | 2026-06-18 | evolve skill | Added WEB-0706 session telemetry cache traceability and validation cases for reuse, delta refresh, uncovered historical backfill, environment isolation, and dashboard metric fetch deduplication. |
 | 2026-06-17 | evolve skill | Added validation coverage for collapsible Variables and per-chart Metrics panes, including persistence, default state, and accessibility checks. |
 | 2026-06-16 | evolve skill | Added §5.11 (Custom Dashboards) test cases T-WEB-1100 through T-WEB-1132. Updated traceability matrix for WEB-1100 series requirements. |

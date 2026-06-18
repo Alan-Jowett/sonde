@@ -100,8 +100,9 @@ Table. Each node is represented by the most recent row per `PartitionKey`
 **Acceptance criteria:**
 
 1. The Dashboard tab resolves node state from `actualstate` data on load, either
-   by querying Azure Tables directly or by reusing a session-scoped telemetry
-   cache that was refreshed from Azure Tables.
+   by querying Azure Tables directly, by reusing a session-scoped telemetry
+   cache that was refreshed from Azure Tables, or by joining an identical
+   in-flight session request for the same data.
 2. Nodes are deduplicated to one row per `PartitionKey` (latest only).
 3. Nodes are sorted alphabetically by `node_id`.
 4. An empty table displays "No node state found."
@@ -142,6 +143,9 @@ The dashboard MUST auto-refresh at a configurable interval (default 30 seconds).
 1. After initial render, the dashboard refreshes against the latest
    `actualstate` data and re-renders every 30 seconds.
 2. Auto-refresh is cancelled when navigating to a different tab.
+3. If an identical `actualstate` refresh/load is already in flight for the
+   active environment, auto-refresh reuses that in-flight work instead of
+   issuing a duplicate Azure Table request.
 
 ---
 
@@ -786,8 +790,9 @@ Azure Table.
 
 1. A "Sensor Data" tab appears in the tab bar.
 2. The tab obtains `sensordata` rows using per-node partition queries, either
-   directly from Azure Tables or by reusing a session-scoped telemetry cache
-   populated from those queries.
+   directly from Azure Tables, by reusing a session-scoped telemetry cache
+   populated from those queries, or by joining an identical in-flight session
+   request for the same partition/range/options.
 3. The tab displays a loading indicator while fetching.
 
 ---
@@ -927,9 +932,11 @@ self-hosted SPA updates.
 The SPA MUST maintain a session-scoped in-memory telemetry cache for normal
 rendering paths that consume `actualstate` or `sensordata`. The cache exists
 only for the current page session, reuses overlapping reads across tabs, and
-refreshes by fetching only uncached rows when possible. Historical export
-actions remain completeness-first direct Azure Table queries rather than relying
-on the cache for correctness.
+refreshes by fetching only uncached rows when possible. It MUST also coalesce
+identical in-flight session reads so concurrent consumers await one Azure Table
+request instead of issuing duplicates. Historical export actions remain
+completeness-first direct Azure Table queries rather than relying on the cache
+for correctness.
 
 **Acceptance criteria:**
 
@@ -940,16 +947,20 @@ on the cache for correctness.
    Dashboard, Desired State node discovery, Sensor Data, and Dashboards reuse
    shared cached `actualstate` / `sensordata` rows instead of issuing redundant
    network fetches for unchanged data.
-3. When the requested time range is already covered by the cache, refreshes
+3. If multiple normal-rendering consumers request the same `actualstate` scope
+   or the same `sensordata` partition/range/options while the first request is
+   still in flight, the SPA issues exactly one Azure Table request for that
+   scope and shares the in-flight result across those consumers.
+4. When the requested time range is already covered by the cache, refreshes
    fetch only rows newer than the cached watermark when possible, merge them
    into the in-memory cache, and deduplicate rows by stable table row identity.
-4. When the operator widens the requested time range beyond cached historical
+5. When the operator widens the requested time range beyond cached historical
    coverage, the SPA fetches only the uncovered older interval(s) needed to
    satisfy the new range before rendering.
-5. New nodes that publish `actualstate` rows newer than the cached watermark are
+6. New nodes that publish `actualstate` rows newer than the cached watermark are
    discovered by the next global `actualstate` delta refresh and become
    available to downstream normal-rendering consumers in the same session.
-6. Switching environments or otherwise resetting the active runtime environment
+7. Switching environments or otherwise resetting the active runtime environment
    clears or isolates the telemetry cache so rows from one environment do not
    leak into another.
 
@@ -1682,7 +1693,8 @@ evaluated with variable values from that timestamp.
 
 1. The dashboard has a time range selector (similar to Sensor Data tab).
 2. The SPA obtains raw sensor data for all bound variables within the time
-   range, reusing the session telemetry cache when coverage exists and fetching
+   range, reusing the session telemetry cache when coverage exists, joining any
+   identical in-flight telemetry fetch already serving that scope, and fetching
    only uncached rows when needed.
 3. For each timestamp where at least one variable has data, the expression is
    evaluated.
@@ -1952,6 +1964,7 @@ storage.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-18 | evolve skill | Tightened WEB-0706 session telemetry cache requirements to include in-flight request coalescing and aligned Dashboard, Sensor Data, and Dashboards acceptance criteria with shared cold-session fetches. |
 | 2026-06-18 | evolve skill | Added WEB-0706 session telemetry cache requirements and aligned Dashboard, Sensor Data, and Dashboards requirements with cache-backed rendering semantics. |
 | 2026-06-17 | evolve skill | Added collapsible Variables and per-chart Metrics pane requirements, including persisted pane state and accessibility expectations. |
 | 2026-05-19 | Spec extraction (automated) | Initial extraction from web-ui-design.md, app.js, and web-ui-validation.md. |

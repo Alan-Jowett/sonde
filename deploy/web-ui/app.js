@@ -487,6 +487,8 @@ function activateEnvironmentState(name, env) {
   if (APP_DASHBOARD_STATE.unsavedEnvironment?.name && APP_DASHBOARD_STATE.unsavedEnvironment.name !== name) {
     clearUnsavedDashboardEnvironment();
   }
+  clearSessionTelemetryCache();
+  SESSION_TELEMETRY_CACHE.environmentName = name || '';
   setActiveEnvironmentName(name);
   applyEnvironment(env);
   applySensorDataPreferences(env?.sensorData);
@@ -778,6 +780,40 @@ const APP = {
   sensorChart: null,
   rotationFormOpen: null, // gateway ID when rotation form is expanded (WEB-1002)
 };
+
+function createSessionTelemetryCache() {
+  return {
+    environmentName: null,
+    actualState: {
+      loaded: false,
+      watermarkMs: null,
+      rowsByKey: new Map(),
+      latestByPartition: new Map(),
+    },
+    sensorDataByPartition: new Map(),
+  };
+}
+
+const SESSION_TELEMETRY_CACHE = createSessionTelemetryCache();
+
+function clearSessionTelemetryCache() {
+  SESSION_TELEMETRY_CACHE.actualState = {
+    loaded: false,
+    watermarkMs: null,
+    rowsByKey: new Map(),
+    latestByPartition: new Map(),
+  };
+  SESSION_TELEMETRY_CACHE.sensorDataByPartition = new Map();
+}
+
+function ensureSessionTelemetryCacheEnvironment() {
+  const activeName = getActiveEnvironmentName() || '';
+  if (SESSION_TELEMETRY_CACHE.environmentName !== activeName) {
+    clearSessionTelemetryCache();
+    SESSION_TELEMETRY_CACHE.environmentName = activeName;
+  }
+}
+
 const DASHBOARD_EXPORT_STATE = {
   startMs: null,
   endMs: null,
@@ -1651,6 +1687,10 @@ function entityUrl(tableName, partitionKey, rowKey) {
   return `https://${CONFIG.storageAccount}.table.core.windows.net/${tableName}(PartitionKey='${encodedPartition}',RowKey='${encodedRow}')`;
 }
 
+function tableRowIdentity(row) {
+  return `${row?.PartitionKey || ''}|${row?.RowKey || ''}`;
+}
+
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const text = await response.text();
@@ -1715,6 +1755,158 @@ async function queryTable(tableName, filter, { top } = {}) {
   return allEntities;
 }
 
+function globalHistoryTableFilter(startMs, endMs) {
+  const rkStart = reverseTimestampHex(endMs);
+  const rkEnd = reverseTimestampHex(startMs);
+  return `RowKey ge '${rkStart}' and RowKey le '${rkEnd}~'`;
+}
+
+function mergeActualStateRowsIntoCache(rows, fallbackWatermarkMs = null) {
+  const cache = SESSION_TELEMETRY_CACHE.actualState;
+  let maxTimestampMs = Number.isFinite(cache.watermarkMs) ? cache.watermarkMs : null;
+
+  for (const row of rows) {
+    cache.rowsByKey.set(tableRowIdentity(row), row);
+
+    const existingLatest = cache.latestByPartition.get(row.PartitionKey);
+    if (!existingLatest || String(row.RowKey) < String(existingLatest.RowKey)) {
+      cache.latestByPartition.set(row.PartitionKey, row);
+    }
+
+    const timestampMs = Number(row.timestamp_ms);
+    if (Number.isFinite(timestampMs) && (maxTimestampMs == null || timestampMs > maxTimestampMs)) {
+      maxTimestampMs = timestampMs;
+    }
+  }
+
+  cache.loaded = true;
+  cache.watermarkMs = maxTimestampMs ?? fallbackWatermarkMs ?? cache.watermarkMs;
+}
+
+async function getCachedActualStateRows(deps = {}) {
+  ensureSessionTelemetryCacheEnvironment();
+  const cache = SESSION_TELEMETRY_CACHE.actualState;
+  const queryTableFn = deps.queryTableFn || queryTable;
+  const nowFn = deps.nowFn || Date.now;
+  const nowMs = nowFn();
+
+  if (!cache.loaded) {
+    const rows = await queryTableFn(CONFIG.actualStateTable, '');
+    mergeActualStateRowsIntoCache(rows, nowMs);
+    return Array.from(cache.rowsByKey.values());
+  }
+
+  if (Number.isFinite(cache.watermarkMs) && nowMs >= cache.watermarkMs) {
+    const rows = await queryTableFn(
+      CONFIG.actualStateTable,
+      globalHistoryTableFilter(cache.watermarkMs, nowMs),
+    );
+    mergeActualStateRowsIntoCache(rows, nowMs);
+  }
+
+  return Array.from(cache.rowsByKey.values());
+}
+
+function createSensorPartitionCache() {
+  return {
+    rowsByKey: new Map(),
+    exactRequestKeys: new Set(),
+    coverageStartMs: null,
+    coverageEndMs: null,
+  };
+}
+
+function getSensorPartitionCache(partitionKey) {
+  let cache = SESSION_TELEMETRY_CACHE.sensorDataByPartition.get(partitionKey);
+  if (!cache) {
+    cache = createSensorPartitionCache();
+    SESSION_TELEMETRY_CACHE.sensorDataByPartition.set(partitionKey, cache);
+  }
+  return cache;
+}
+
+function sensorRequestCacheKey(startMs, endMs, options = {}) {
+  return JSON.stringify({
+    startMs,
+    endMs,
+    topPerPage: options.topPerPage ?? null,
+    maxPagesPerPartition: options.maxPagesPerPartition ?? null,
+    requireComplete: options.requireComplete === true,
+  });
+}
+
+function mergeSensorRowsIntoCache(partitionKey, rows, rangeStartMs, rangeEndMs, options = {}) {
+  const cache = getSensorPartitionCache(partitionKey);
+  for (const row of rows) {
+    cache.rowsByKey.set(tableRowIdentity(row), row);
+  }
+  if (options.requestKey && options.complete === true) {
+    cache.exactRequestKeys.add(options.requestKey);
+  }
+  if (options.complete === true) {
+    cache.coverageStartMs = cache.coverageStartMs == null
+      ? rangeStartMs
+      : Math.min(cache.coverageStartMs, rangeStartMs);
+    cache.coverageEndMs = cache.coverageEndMs == null
+      ? rangeEndMs
+      : Math.max(cache.coverageEndMs, rangeEndMs);
+  }
+}
+
+function selectCachedSensorRows(partitionKey, startMs, endMs) {
+  const cache = getSensorPartitionCache(partitionKey);
+  const rows = [];
+  for (const row of cache.rowsByKey.values()) {
+    const timestampMs = Number(row.timestamp_ms);
+    if (Number.isFinite(timestampMs) && timestampMs >= startMs && timestampMs <= endMs) {
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+async function getCachedSensorDataRows(partitionKeys, startMs, endMs, options = {}, deps = {}) {
+  ensureSessionTelemetryCacheEnvironment();
+  const querySensorDataRangeFn = deps.querySensorDataRangeFn || querySensorDataRange;
+  const fetchPlans = [];
+
+  for (const partitionKey of partitionKeys) {
+    const cache = getSensorPartitionCache(partitionKey);
+    const requestKey = sensorRequestCacheKey(startMs, endMs, options);
+    const covered = cache.coverageStartMs != null
+      && cache.coverageEndMs != null
+      && startMs >= cache.coverageStartMs
+      && endMs <= cache.coverageEndMs;
+    if (cache.exactRequestKeys.has(requestKey) || covered) {
+      continue;
+    }
+    if (cache.coverageStartMs == null || cache.coverageEndMs == null) {
+      fetchPlans.push({ partitionKey, startMs, endMs, requestKey, exactRequest: true });
+      continue;
+    }
+    if (startMs < cache.coverageStartMs) {
+      fetchPlans.push({ partitionKey, startMs, endMs: cache.coverageStartMs });
+    }
+    if (endMs > cache.coverageEndMs) {
+      fetchPlans.push({ partitionKey, startMs: cache.coverageEndMs, endMs });
+    }
+  }
+
+  await Promise.all(fetchPlans.map(async (plan) => {
+    const rows = await querySensorDataRangeFn([plan.partitionKey], plan.startMs, plan.endMs, options);
+    mergeSensorRowsIntoCache(plan.partitionKey, rows, plan.startMs, plan.endMs, {
+      complete: rows.__complete !== false,
+      requestKey: plan.exactRequest === true ? plan.requestKey : null,
+    });
+  }));
+
+  const rows = [];
+  for (const partitionKey of partitionKeys) {
+    rows.push(...selectCachedSensorRows(partitionKey, startMs, endMs));
+  }
+  return rows;
+}
+
 async function insertEntity(tableName, entity) {
   const token = await getToken();
   return fetchJson(tableBaseUrl(tableName), {
@@ -1756,7 +1948,7 @@ async function renderDashboard() {
 
   try {
     const [actualRows, desiredRows] = await Promise.all([
-      queryTable(CONFIG.actualStateTable, ''),
+      getCachedActualStateRows(),
       queryTable(CONFIG.desiredStateTable, ''),
     ]);
 
@@ -1950,7 +2142,7 @@ async function renderDesiredState() {
     const [programs, desiredRows, actualRows] = await Promise.all([
       listPrograms(),
       queryTable(CONFIG.desiredStateTable, ''),
-      queryTable(CONFIG.actualStateTable, ''),
+      getCachedActualStateRows(),
     ]);
 
     const latestActual = latestByPartition(filterNodeRows(actualRows))
@@ -2510,18 +2702,33 @@ async function queryPartitionedTableRange(tableName, partitionKeys, startMs, end
       );
     }
 
+    Object.defineProperty(entities, '__complete', {
+      value: !nextPartitionKey,
+      enumerable: false,
+      configurable: true,
+    });
+
     return entities;
   };
 
   const allEntities = [];
   const batchSize = 6;
+  let allComplete = true;
   for (let i = 0; i < partitionKeys.length; i += batchSize) {
     const batch = partitionKeys.slice(i, i + batchSize);
     const results = await Promise.all(batch.map(fetchPartition));
     for (const entities of results) {
+      if (entities.__complete === false) {
+        allComplete = false;
+      }
       allEntities.push(...entities);
     }
   }
+  Object.defineProperty(allEntities, '__complete', {
+    value: allComplete,
+    enumerable: false,
+    configurable: true,
+  });
   return allEntities;
 }
 
@@ -3138,7 +3345,7 @@ async function renderSensorData() {
 
   try {
     initializeSensorExportRange();
-    const actualRows = await queryTable(CONFIG.actualStateTable, '');
+    const actualRows = await getCachedActualStateRows();
     const latestActual = latestByPartition(filterNodeRows(actualRows)).sort((a, b) =>
       String(a.node_id || '').localeCompare(String(b.node_id || ''))
     );
@@ -3150,7 +3357,7 @@ async function renderSensorData() {
     const rangeMs = TIME_RANGE_MS[SENSOR_STATE.timeRange] || TIME_RANGE_MS['24h'];
     const now = Date.now();
     const sensorRows = hasKnownNodes
-      ? await querySensorDataRange(partitionKeys, now - rangeMs, now, {
+      ? await getCachedSensorDataRows(partitionKeys, now - rangeMs, now, {
           topPerPage: 1000,
           maxPagesPerPartition: 1,
         })
@@ -3858,7 +4065,7 @@ async function fetchVariableData(variables, timeRange, deps = {}) {
 
   const nowFn = deps.nowFn || Date.now;
   const fetchActualStateNodesFn = deps.fetchActualStateNodesFn || fetchActualStateNodes;
-  const querySensorDataRangeFn = deps.querySensorDataRangeFn || querySensorDataRange;
+  const getCachedSensorDataRowsFn = deps.getCachedSensorDataRowsFn || getCachedSensorDataRows;
   const { startMs, endMs } = getDashboardTimeRangeBounds(timeRange, nowFn());
 
   // Fetch node mappings to resolve nodeId -> partitionKey
@@ -3893,10 +4100,10 @@ async function fetchVariableData(variables, timeRange, deps = {}) {
   // Query sensor data for each partition
   for (const [partitionKey, vars] of partitionMap.entries()) {
     try {
-      const rows = await querySensorDataRangeFn([partitionKey], startMs, endMs, {
+      const rows = await getCachedSensorDataRowsFn([partitionKey], startMs, endMs, {
         topPerPage: 1000,
         maxPagesPerPartition: 10
-      });
+      }, deps);
       const availableReadingTypes = new Set();
       
       // Extract requested readings from each row
@@ -4192,7 +4399,7 @@ function deleteChart(chartIndex) {
 
 async function fetchReadingTypesForNode(nodeId, deps = {}) {
   const fetchActualStateNodesFn = deps.fetchActualStateNodesFn || fetchActualStateNodes;
-  const querySensorDataRangeFn = deps.querySensorDataRangeFn || querySensorDataRange;
+  const getCachedSensorDataRowsFn = deps.getCachedSensorDataRowsFn || getCachedSensorDataRows;
   const nowFn = deps.nowFn || Date.now;
   const nodes = await fetchActualStateNodesFn(deps);
   const node = nodes.find((entry) => entry.nodeId === nodeId);
@@ -4201,10 +4408,10 @@ async function fetchReadingTypesForNode(nodeId, deps = {}) {
   }
   const endMs = nowFn();
   const startMs = endMs - DASHBOARD_READING_DISCOVERY_WINDOW_MS;
-  const rows = await querySensorDataRangeFn([node.partitionKey], startMs, endMs, {
+  const rows = await getCachedSensorDataRowsFn([node.partitionKey], startMs, endMs, {
     topPerPage: 1000,
     maxPagesPerPartition: 5,
-  });
+  }, deps);
   const readingTypes = new Set();
   for (const row of rows) {
     const readings = parseSensorReadings(row.decoded_readings);
@@ -4523,9 +4730,9 @@ function deleteMetric(chartIndex, metricIndex) {
   renderActiveTab();
 }
 
-async function fetchActualStateNodes() {
+async function fetchActualStateNodes(deps = {}) {
   try {
-    const rows = await queryTable(CONFIG.actualStateTable, '');
+    const rows = await getCachedActualStateRows(deps);
     const nodeRows = filterNodeRows(rows);
     const latest = latestByPartition(nodeRows);
     return latest.map(row => ({
@@ -4834,8 +5041,11 @@ if (typeof module !== 'undefined' && module.exports) {
     actualStateFilter,
     queryActualStateRange,
     querySensorDataRange,
+    getCachedActualStateRows,
+    getCachedSensorDataRows,
     buildEnvironmentExportData,
     activateEnvironmentState,
+    clearSessionTelemetryCache,
     createDefaultSensorDataPreferences,
     clearPersistedSelectedSeriesPreference,
     handleImportedJson,
@@ -4859,6 +5069,7 @@ if (typeof module !== 'undefined' && module.exports) {
     renderChartCard,
     downsamplePoints,
     APP_DASHBOARD_STATE,
+    SESSION_TELEMETRY_CACHE,
     persistDashboardEnvironment,
     destroyDashboardChart,
     destroyAllDashboardCharts,

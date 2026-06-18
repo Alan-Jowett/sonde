@@ -94,6 +94,7 @@ and verifies one or more acceptance criteria.
 | WEB-0702 | T-WEB-0704, T-WEB-0705, T-WEB-0704b, T-WEB-0704c |
 | WEB-0703 | T-WEB-0707, T-WEB-0708, T-WEB-0709, T-WEB-0710, T-WEB-0711, T-WEB-0712, T-WEB-0707b |
 | WEB-0705 | T-WEB-0723, T-WEB-0724, T-WEB-0725, T-WEB-0726, T-WEB-0802b |
+| WEB-0706 | T-WEB-0727, T-WEB-0728, T-WEB-0729, T-WEB-0730, T-WEB-0731, T-WEB-0732, T-WEB-0733 |
 | WEB-0704 | T-WEB-0716, T-WEB-0717, T-WEB-0718, T-WEB-0719, T-WEB-0720, T-WEB-0721, T-WEB-0722 |
 | WEB-0800 | T-WEB-0801, T-WEB-0802, T-WEB-0802b, T-WEB-0803, T-WEB-0804, T-WEB-0805, T-WEB-0806 |
 | WEB-0801 | T-WEB-0802 |
@@ -273,6 +274,13 @@ and verifies one or more acceptance criteria.
 | T-WEB-0724 | WEB-0705 | Selected series are environment-scoped and unavailable saved series are ignored without error when rendering | Unit (JS) | Pass |
 | T-WEB-0725 | WEB-0705 | Export/import preserves explicit empty `selectedSeries: []` while treating omitted `selectedSeries` as the default initial auto-selection behavior | Unit (JS) | Pass |
 | T-WEB-0726 | WEB-0705 | Environment activation clears transient Sensor Data export state and auto-refresh instead of carrying it across environments | Unit (JS) | Pass |
+| T-WEB-0727 | WEB-0706 | Dashboard, Desired State node discovery, Sensor Data, and Dashboards reuse cached `actualstate` rows within one session instead of repeating unchanged table fetches | Unit (JS) | Pass |
+| T-WEB-0728 | WEB-0706 | When the requested range is already covered, refresh fetches only rows newer than the cached watermark and merges them without duplicates | Unit (JS) | Not Started |
+| T-WEB-0729 | WEB-0706 | Expanding a requested time range fetches only the uncovered older interval and preserves already cached newer rows | Unit (JS) | Pass |
+| T-WEB-0730 | WEB-0706 | A newly reporting node whose `actualstate` row arrives after the watermark is discovered by delta refresh and becomes visible to downstream views in the same session | Integration | Not Started |
+| T-WEB-0731 | WEB-0706 | Session telemetry cache is not written to `localStorage` and is excluded from environment export/import data | Unit (JS) | Not Started |
+| T-WEB-0732 | WEB-0706 | Switching environments clears or isolates session telemetry cache entries before the next environment renders | Unit (JS) | Pass |
+| T-WEB-0733 | WEB-0706 | Multiple dashboard metrics with overlapping variable sources reuse one cached `sensordata` fetch result per partition for a render/time-range context | Unit (JS) | Pass |
 
 ### 5.8  Environment Manager
 
@@ -505,6 +513,7 @@ and verifies one or more acceptance criteria.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-18 | evolve skill | Added WEB-0706 session telemetry cache traceability and validation cases for reuse, delta refresh, uncovered historical backfill, environment isolation, and dashboard metric fetch deduplication. |
 | 2026-06-17 | evolve skill | Added validation coverage for collapsible Variables and per-chart Metrics panes, including persistence, default state, and accessibility checks. |
 | 2026-06-16 | evolve skill | Added §5.11 (Custom Dashboards) test cases T-WEB-1100 through T-WEB-1132. Updated traceability matrix for WEB-1100 series requirements. |
 | 2026-05-29 | Issue #1092 | Added T-WEB-1009 through T-WEB-1009k for gateway convergence. Updated T-WEB-1001/1002 for badge and inline form. Retired T-WEB-1006/1006b. |

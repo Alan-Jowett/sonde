@@ -503,6 +503,69 @@ display state.
 
 ---
 
+### 10.6 Session telemetry cache (WEB-0706)
+
+Normal rendering paths share a session-scoped in-memory telemetry cache. The
+cache is an optimization layer over Azure Tables; it does not change rendered
+semantics, does not become a new source of truth, and is not persisted to
+`localStorage`.
+
+**Scope:**
+- Applies to normal rendering and discovery paths that read `actualstate` or
+  `sensordata`:
+  - Dashboard latest-state rendering
+  - Desired State node discovery / node dropdown population
+  - Sensor Data graph/table rendering
+  - Dashboards variable reading-type discovery and metric evaluation
+- Does **not** apply to historical export actions. Device-data export and
+  sensor-data export continue to issue direct completeness-first Azure Table
+  queries for the operator-selected range.
+
+**Environment isolation:**
+- Cache entries are scoped to the active environment.
+- Switching environments discards or fully isolates cached telemetry from the
+  previous environment before the new environment renders.
+
+**ActualState cache model:**
+- Maintain an in-memory row map keyed by `PartitionKey + "|" + RowKey`.
+- Maintain a derived latest-row map keyed by `PartitionKey` for fast node and
+  gateway lookups.
+- Maintain a global watermark representing the newest `actualstate` history row
+  already incorporated into the cache.
+- Initial session hydration may query `actualstate` broadly enough to discover
+  the current node set.
+- Subsequent refreshes issue a global `actualstate` delta query bounded to rows
+  newer than the watermark, merge returned rows into the row map, update the
+  per-partition latest-row view, and surface newly seen node partitions.
+
+**SensorData cache model:**
+- Maintain per-partition row maps keyed by `PartitionKey + "|" + RowKey`.
+- Track covered time bounds per partition so the SPA knows whether a requested
+  range is already satisfied from cache.
+- When a render requests a time range fully covered by cache, reuse cached rows.
+- When the request extends to newer data, fetch only the uncovered newer tail
+  when possible, merge by row identity, and extend coverage.
+- When the request expands to older historical data, fetch only the uncovered
+  older interval and merge it with existing cached rows.
+
+**Consumer behavior:**
+- Consumers request telemetry from a shared cache service rather than calling
+  Azure Table queries independently.
+- If multiple consumers in the same session need overlapping telemetry, they
+  share the same cached backing rows.
+- Dashboards metric evaluation resolves shared variable data from the cache once
+  per render/time-range context, then reuses that materialized telemetry across
+  all metrics that reference the same node partitions.
+
+**Correctness constraints:**
+- Cache merges deduplicate by stable Azure Table row identity
+  (`PartitionKey`, `RowKey`).
+- Delta refresh must not drop newer rows that arrive after the previous render.
+- Cache misses and fetch failures surface through the existing user-visible
+  loading/error states; the cache must not silently mask network failures.
+
+---
+
 ## 11. Environment Manager (WEB-0800)
 
 > **Requirements:** WEB-0800, WEB-0801, WEB-0802, WEB-0803, WEB-0804, WEB-0805, WEB-0806, WEB-0807, WEB-0808
@@ -1106,8 +1169,10 @@ Dashboards are stored as part of each environment's configuration:
   does not affect chart evaluation.
 
 **Data Fetching:**
-- For each variable binding, query `sensordata` table filtered by node ID and
-  reading type within the time range.
+- For each variable binding, resolve `sensordata` rows from the shared session
+  telemetry cache when the requested range is already covered; otherwise fetch
+  only the missing interval(s), merge them into cache, and then evaluate from
+  the merged result.
 - Evaluate each metric expression at each timestamp.
 - Group computed metric series by chart membership in `dashboard.charts`.
 - Render each chart with one dataset per metric assigned to that chart.
@@ -1173,6 +1238,7 @@ Dashboards are stored as part of each environment's configuration:
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-18 | evolve skill | Added §10.6 session telemetry cache design and updated dashboard metric data-fetching to use shared in-memory coverage-aware telemetry reuse. |
 | 2026-06-17 | evolve skill | Added collapsible Variables and per-chart Metrics panes, including persisted pane state and accessibility requirements for dashboard configuration UI. |
 | 2026-06-16 | evolve skill | Added §14 (Custom Dashboards) with variable binding, expression evaluation, and environment export integration. |
 | 2026-05-29 | Issue #1092 | Added §13.1.1 gateway convergence rules. Replaced §13.2 rotation modal with inline form. Added convergence badge to §13.1. |

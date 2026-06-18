@@ -81,6 +81,7 @@ test.beforeEach(() => {
   global.window.confirm = () => false;
   global.window.prompt = () => null;
   global.alert = () => {};
+  app.clearSessionTelemetryCache();
   app.SENSOR_STATE.timeRange = '24h';
   app.SENSOR_STATE.viewMode = 'graph';
   app.SENSOR_STATE.selectedSeries = new Set();
@@ -1060,8 +1061,18 @@ test('fetchReadingTypesForNode discovers numeric reading types for the selected 
       assert.equal(endMs, nowMs);
       assert.equal(options.maxPagesPerPartition, 5);
       return [
-        { decoded_readings: '{"temp_mc":25000,"humidity_pct":"45","status":"ok"}' },
-        { decoded_readings: '{"pressure_pa":92500,"temp_mc":26000}' },
+        {
+          PartitionKey: 'n:abc123',
+          RowKey: 'row-1',
+          timestamp_ms: String(nowMs - 1000),
+          decoded_readings: '{"temp_mc":25000,"humidity_pct":"45","status":"ok"}',
+        },
+        {
+          PartitionKey: 'n:abc123',
+          RowKey: 'row-2',
+          timestamp_ms: String(nowMs - 500),
+          decoded_readings: '{"pressure_pa":92500,"temp_mc":26000}',
+        },
       ];
     },
   });
@@ -1086,14 +1097,16 @@ test('fetchVariableData validates reading types and honors the 6h preset window'
       assert.equal(options.maxPagesPerPartition, 10);
       return [
         {
-          timestamp_ms: '1000',
+          PartitionKey: 'n:abc123',
+          RowKey: 'row-1',
+          timestamp_ms: String(nowMs - 1000),
           decoded_readings: '{"temp_mc":25000}',
         },
       ];
     },
   });
 
-  assert.deepEqual(result.data.TEMP, [{ timestamp: 1000, value: 25000 }]);
+  assert.deepEqual(result.data.TEMP, [{ timestamp: nowMs - 1000, value: 25000 }]);
   assert.deepEqual(result.data.PRESS, []);
   assert.deepEqual(result.errors, ['Reading type "pressure_pa" not found for node "NODE_001"']);
 });
@@ -1116,6 +1129,125 @@ test('fetchVariableData honors custom dashboard time ranges', async () => {
       return [];
     },
   });
+});
+
+test('fetchActualStateNodes reuses the session cache and discovers new nodes from delta refresh', async () => {
+  const rows = [
+    [{
+      PartitionKey: 'n:abc123',
+      RowKey: 'ffff',
+      node_id: 'NODE_001',
+      timestamp_ms: '1000',
+    }],
+    [{
+      PartitionKey: 'n:def456',
+      RowKey: 'fffe',
+      node_id: 'NODE_002',
+      timestamp_ms: '2000',
+    }],
+  ];
+  const filters = [];
+  let callIndex = 0;
+
+  const first = await app.fetchActualStateNodes({
+    nowFn: () => 1_500,
+    queryTableFn: async (_tableName, filter) => {
+      filters.push(filter);
+      return rows[callIndex++] || [];
+    },
+  });
+  const second = await app.fetchActualStateNodes({
+    nowFn: () => 2_500,
+    queryTableFn: async (_tableName, filter) => {
+      filters.push(filter);
+      return rows[callIndex++] || [];
+    },
+  });
+
+  assert.deepEqual(first, [
+    { partitionKey: 'n:abc123', nodeId: 'NODE_001' },
+  ]);
+  assert.deepEqual(second, [
+    { partitionKey: 'n:abc123', nodeId: 'NODE_001' },
+    { partitionKey: 'n:def456', nodeId: 'NODE_002' },
+  ]);
+  assert.equal(filters[0], '');
+  assert.notEqual(filters[1], '');
+});
+
+test('getCachedSensorDataRows fetches only uncovered historical intervals', async () => {
+  const calls = [];
+  const rowsByCall = [
+    [{
+      PartitionKey: 'n:abc123',
+      RowKey: 'row-2',
+      timestamp_ms: '2000',
+      decoded_readings: '{"temp_mc":25000}',
+    }],
+    [{
+      PartitionKey: 'n:abc123',
+      RowKey: 'row-1',
+      timestamp_ms: '1000',
+      decoded_readings: '{"temp_mc":24000}',
+    }],
+  ];
+
+  const deps = {
+    querySensorDataRangeFn: async (partitionKeys, startMs, endMs) => {
+      calls.push({ partitionKeys, startMs, endMs });
+      return rowsByCall[calls.length - 1] || [];
+    },
+  };
+
+  await app.getCachedSensorDataRows(['n:abc123'], 2000, 3000, {
+    topPerPage: 1000,
+    maxPagesPerPartition: 10,
+  }, deps);
+  const expanded = await app.getCachedSensorDataRows(['n:abc123'], 1000, 3000, {
+    topPerPage: 1000,
+    maxPagesPerPartition: 10,
+  }, deps);
+  await app.getCachedSensorDataRows(['n:abc123'], 1000, 3000, {
+    topPerPage: 1000,
+    maxPagesPerPartition: 10,
+  }, deps);
+
+  assert.deepEqual(calls, [
+    { partitionKeys: ['n:abc123'], startMs: 2000, endMs: 3000 },
+    { partitionKeys: ['n:abc123'], startMs: 1000, endMs: 2000 },
+  ]);
+  assert.deepEqual(
+    expanded.map((row) => row.RowKey).sort(),
+    ['row-1', 'row-2'],
+  );
+});
+
+test('fetchVariableData reuses cached sensor rows across repeated calls in the same session', async () => {
+  let queryCount = 0;
+  const deps = {
+    nowFn: () => 40_000_000,
+    fetchActualStateNodesFn: async () => [
+      { nodeId: 'NODE_001', partitionKey: 'n:abc123' },
+    ],
+    querySensorDataRangeFn: async () => {
+      queryCount += 1;
+      return [{
+        PartitionKey: 'n:abc123',
+        RowKey: 'row-1',
+        timestamp_ms: '1000',
+        decoded_readings: '{"temp_mc":25000}',
+      }];
+    },
+  };
+
+  await app.fetchVariableData([
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '6h' }, deps);
+  await app.fetchVariableData([
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '6h' }, deps);
+
+  assert.equal(queryCount, 1);
 });
 
 test('evaluateMetricTimeSeries propagates fetch failures as user-visible errors', async () => {
@@ -1645,4 +1777,48 @@ test('same-name environment import clears stale unsaved dashboard fallback', () 
   const loaded = app.loadActiveEnvironment();
   assert.equal(app.APP_DASHBOARD_STATE.unsavedEnvironment, null);
   assert.equal(loaded.dashboards[0].name, 'Imported Replacement');
+});
+
+test('activateEnvironmentState clears session telemetry cache on environment switch', async () => {
+  const env = {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: app.createDefaultSensorDataPreferences(),
+  };
+  app.activateEnvironmentState(env.name, env);
+
+  await app.fetchActualStateNodes({
+    nowFn: () => 1_500,
+    queryTableFn: async () => [{
+      PartitionKey: 'n:abc123',
+      RowKey: 'ffff',
+      node_id: 'NODE_001',
+      timestamp_ms: '1000',
+    }],
+  });
+  await app.getCachedSensorDataRows(['n:abc123'], 1000, 2000, {}, {
+    querySensorDataRangeFn: async () => [{
+      PartitionKey: 'n:abc123',
+      RowKey: 'row-1',
+      timestamp_ms: '1500',
+      decoded_readings: '{"temp_mc":25000}',
+    }],
+  });
+
+  assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.rowsByKey.size, 1);
+  assert.equal(app.SESSION_TELEMETRY_CACHE.sensorDataByPartition.size, 1);
+
+  app.activateEnvironmentState('staging', {
+    ...env,
+    name: 'staging',
+    storageAccount: 'stagingstorage',
+  });
+
+  assert.equal(app.SESSION_TELEMETRY_CACHE.environmentName, 'staging');
+  assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.loaded, false);
+  assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.rowsByKey.size, 0);
+  assert.equal(app.SESSION_TELEMETRY_CACHE.sensorDataByPartition.size, 0);
 });

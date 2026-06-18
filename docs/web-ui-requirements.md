@@ -99,7 +99,9 @@ Table. Each node is represented by the most recent row per `PartitionKey`
 
 **Acceptance criteria:**
 
-1. The Dashboard tab queries the `actualstate` table on load.
+1. The Dashboard tab resolves node state from `actualstate` data on load, either
+   by querying Azure Tables directly or by reusing a session-scoped telemetry
+   cache that was refreshed from Azure Tables.
 2. Nodes are deduplicated to one row per `PartitionKey` (latest only).
 3. Nodes are sorted alphabetically by `node_id`.
 4. An empty table displays "No node state found."
@@ -137,7 +139,8 @@ The dashboard MUST auto-refresh at a configurable interval (default 30 seconds).
 
 **Acceptance criteria:**
 
-1. After initial render, the dashboard re-fetches and re-renders every 30 seconds.
+1. After initial render, the dashboard refreshes against the latest
+   `actualstate` data and re-renders every 30 seconds.
 2. Auto-refresh is cancelled when navigating to a different tab.
 
 ---
@@ -782,7 +785,9 @@ Azure Table.
 **Acceptance criteria:**
 
 1. A "Sensor Data" tab appears in the tab bar.
-2. The tab queries `sensordata` table using per-node partition queries.
+2. The tab obtains `sensordata` rows using per-node partition queries, either
+   directly from Azure Tables or by reusing a session-scoped telemetry cache
+   populated from those queries.
 3. The tab displays a loading indicator while fetching.
 
 ---
@@ -909,6 +914,44 @@ self-hosted SPA updates.
    ("use the default initial auto-selection behavior") and a present empty
    `selectedSeries: []` field ("preserve an intentionally empty series
    selection").
+
+---
+
+### WEB-0706  Session Telemetry Cache
+
+**Priority:** Must
+**Source:** USER-REQUEST: cache `actualstate` and `sensordata` for the active browser session, avoid redundant fetches, and fetch only newer rows on refresh
+**Confidence:** High
+
+**Description:**
+The SPA MUST maintain a session-scoped in-memory telemetry cache for normal
+rendering paths that consume `actualstate` or `sensordata`. The cache exists
+only for the current page session, reuses overlapping reads across tabs, and
+refreshes by fetching only uncached rows when possible. Historical export
+actions remain completeness-first direct Azure Table queries rather than relying
+on the cache for correctness.
+
+**Acceptance criteria:**
+
+1. The cache lifetime is limited to the current page session; cached telemetry
+   is NOT written to `localStorage` and is NOT included in environment
+   export/import data.
+2. Within a single active environment, overlapping normal-rendering reads from
+   Dashboard, Desired State node discovery, Sensor Data, and Dashboards reuse
+   shared cached `actualstate` / `sensordata` rows instead of issuing redundant
+   network fetches for unchanged data.
+3. When the requested time range is already covered by the cache, refreshes
+   fetch only rows newer than the cached watermark when possible, merge them
+   into the in-memory cache, and deduplicate rows by stable table row identity.
+4. When the operator widens the requested time range beyond cached historical
+   coverage, the SPA fetches only the uncovered older interval(s) needed to
+   satisfy the new range before rendering.
+5. New nodes that publish `actualstate` rows newer than the cached watermark are
+   discovered by the next global `actualstate` delta refresh and become
+   available to downstream normal-rendering consumers in the same session.
+6. Switching environments or otherwise resetting the active runtime environment
+   clears or isolates the telemetry cache so rows from one environment do not
+   leak into another.
 
 ---
 
@@ -1638,7 +1681,9 @@ evaluated with variable values from that timestamp.
 **Acceptance criteria:**
 
 1. The dashboard has a time range selector (similar to Sensor Data tab).
-2. The SPA fetches raw sensor data for all bound variables within the time range.
+2. The SPA obtains raw sensor data for all bound variables within the time
+   range, reusing the session telemetry cache when coverage exists and fetching
+   only uncached rows when needed.
 3. For each timestamp where at least one variable has data, the expression is
    evaluated.
 4. Expression evaluation uses the variable values at that timestamp.
@@ -1907,5 +1952,6 @@ storage.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-18 | evolve skill | Added WEB-0706 session telemetry cache requirements and aligned Dashboard, Sensor Data, and Dashboards requirements with cache-backed rendering semantics. |
 | 2026-06-17 | evolve skill | Added collapsible Variables and per-chart Metrics pane requirements, including persisted pane state and accessibility expectations. |
 | 2026-05-19 | Spec extraction (automated) | Initial extraction from web-ui-design.md, app.js, and web-ui-validation.md. |

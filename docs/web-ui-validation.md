@@ -119,7 +119,7 @@ and verifies one or more acceptance criteria.
 | WEB-1101 | T-WEB-1105, T-WEB-1106, T-WEB-1107, T-WEB-1108, T-WEB-1109, T-WEB-1109c |
 | WEB-1102 | T-WEB-1110, T-WEB-1111, T-WEB-1111b, T-WEB-1112, T-WEB-1113, T-WEB-1114 |
 | WEB-1103 | T-WEB-1115, T-WEB-1116, T-WEB-1117, T-WEB-1118, T-WEB-1118b |
-| WEB-1104 | T-WEB-1119, T-WEB-1120, T-WEB-1120b, T-WEB-1120c, T-WEB-1120d |
+| WEB-1104 | T-WEB-1119, T-WEB-1120, T-WEB-1120b, T-WEB-1120c, T-WEB-1120d, T-WEB-1120e |
 | WEB-1105 | T-WEB-1121, T-WEB-1122, T-WEB-1123, T-WEB-1124 |
 | WEB-1106 | T-WEB-1125, T-WEB-1126, T-WEB-1127, T-WEB-1127b, T-WEB-1127c |
 | WEB-1107 | T-WEB-1128, T-WEB-1129, T-WEB-1130, T-WEB-1130b, T-WEB-1130c |
@@ -467,6 +467,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-1120b | WEB-1104 | Time-series evaluation creates datasets with correct points on the assigned chart | Integration: Mock time-series data, verify chart datasets | Not Started |
 | T-WEB-1120c | WEB-1104 | Multiple metrics assigned to the same chart render on one shared graph | Integration: Add two metrics to one chart, verify one canvas with two datasets | Not Started |
 | T-WEB-1120d | WEB-1104 | Multiple charts in one dashboard render as separate graphs sharing one dashboard time range | Integration: Add two charts, verify two canvases and shared range controls | Not Started |
+| T-WEB-1120e | WEB-1104 | Dashboard chart X-axis labels show date + time for time ranges longer than 24 hours and time-only labels for 24 hours or less | Integration: Mock 24h, 7d, and custom >24h ranges; inspect tick label formatter output | Not Started |
 | T-WEB-1121 | WEB-1105 | Malformed expression prevents charting and shows error | Manual: Enter `(x + / 10`, verify chart not rendered, error shown | Not Started |
 | T-WEB-1122 | WEB-1105 | Missing variable data skips timestamp (gap in chart) | Integration: Mock partial data, verify gaps | Not Started |
 | T-WEB-1123 | WEB-1105 | Runtime error (e.g., log(-5)) skips point, logs to console | Integration: Mock negative value, verify point skipped | Not Started |

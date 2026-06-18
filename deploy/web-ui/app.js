@@ -830,6 +830,20 @@ function formatChartTooltipTimestamp(timestampMs) {
   return new Date(value).toLocaleString();
 }
 
+function formatTimeAxisTick(timestampMs, includeDate) {
+  const value = Number(timestampMs);
+  if (!Number.isFinite(value)) {
+    return '';
+  }
+  const date = new Date(value);
+  const hh = date.getHours().toString().padStart(2, '0');
+  const mm = date.getMinutes().toString().padStart(2, '0');
+  if (includeDate) {
+    return `${date.getMonth() + 1}/${date.getDate()} ${hh}:${mm}`;
+  }
+  return `${hh}:${mm}`;
+}
+
 function randomHex(bytes) {
   const data = new Uint8Array(bytes);
   crypto.getRandomValues(data);
@@ -3659,11 +3673,17 @@ function getDashboardTimeRangeBounds(timeRange, nowMs = Date.now()) {
   };
 }
 
+function dashboardRangeShowsDateLabels(timeRange, nowMs = Date.now()) {
+  const { startMs, endMs } = getDashboardTimeRangeBounds(timeRange, nowMs);
+  return Number.isFinite(startMs) && Number.isFinite(endMs) && (endMs - startMs) > DASHBOARD_TIME_RANGE_MS['24h'];
+}
+
 async function renderMetricCharts(dashboard, deps = {}) {
   const normalizedDashboard = normalizeDashboard(dashboard, 0);
   const evaluateMetricTimeSeriesFn = deps.evaluateMetricTimeSeriesFn || evaluateMetricTimeSeries;
   const downsamplePointsFn = deps.downsamplePointsFn || downsamplePoints;
   const chartFactory = deps.chartFactory || ((canvas, config) => new Chart(canvas, config));
+  const includeDateInAxisLabels = dashboardRangeShowsDateLabels(normalizedDashboard.timeRange);
   for (let chartIndex = 0; chartIndex < normalizedDashboard.charts.length; chartIndex++) {
     const chart = normalizedDashboard.charts[chartIndex];
     const canvas = document.getElementById(`metric-chart-${chartIndex}`);
@@ -3731,7 +3751,7 @@ async function renderMetricCharts(dashboard, deps = {}) {
             type: 'linear',
             ticks: {
               callback: function(value) {
-                return new Date(value).toLocaleTimeString();
+                return formatTimeAxisTick(value, includeDateInAxisLabels);
               }
             }
           },

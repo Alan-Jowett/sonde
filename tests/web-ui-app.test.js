@@ -73,6 +73,22 @@ function createDeferred() {
   });
   return { promise, resolve, reject };
 }
+
+function flushAsyncWork() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function makeEnvironment(name, overrides = {}) {
+  return {
+    name,
+    clientId: `${name}-client`,
+    tenantId: `${name}-tenant`,
+    storageAccount: `${name}storage`,
+    functionAppName: `${name}-func`,
+    sensorData: app.createDefaultSensorDataPreferences(),
+    ...overrides,
+  };
+}
 global.window = {
   __SONDE_TEST__: true,
   opener: null,
@@ -1236,6 +1252,39 @@ test('concurrent actualstate consumers share one in-flight cold-session query', 
   ]);
 });
 
+test('actualstate shared request registry is populated before synchronous re-entry', async () => {
+  const deferred = createDeferred();
+  const filters = [];
+  let reentered = false;
+  const deps = {
+    nowFn: () => 1_500,
+  };
+  deps.queryTableFn = (_tableName, filter) => {
+    filters.push(filter);
+    if (!reentered) {
+      reentered = true;
+      void app.fetchActualStateNodes(deps);
+    }
+    return deferred.promise;
+  };
+
+  const first = app.fetchActualStateNodes(deps);
+
+  await Promise.resolve();
+  assert.deepEqual(filters, ['']);
+
+  deferred.resolve([{
+    PartitionKey: 'n:abc123',
+    RowKey: 'ffff',
+    node_id: 'NODE_001',
+    timestamp_ms: '1000',
+  }]);
+
+  assert.deepEqual(await first, [
+    { partitionKey: 'n:abc123', nodeId: 'NODE_001' },
+  ]);
+});
+
 test('concurrent actualstate delta consumers share one in-flight refresh query', async () => {
   const deferred = createDeferred();
   const filters = [];
@@ -1288,6 +1337,38 @@ test('concurrent actualstate delta consumers share one in-flight refresh query',
     { partitionKey: 'n:abc123', nodeId: 'NODE_001' },
     { partitionKey: 'n:def456', nodeId: 'NODE_002' },
   ]);
+});
+
+test('actualstate results from a previous environment are discarded after an environment switch', async () => {
+  const deferred = createDeferred();
+  const prod = makeEnvironment('prod');
+  const staging = makeEnvironment('staging');
+  let queryCount = 0;
+
+  app.activateEnvironmentState(prod.name, prod);
+  const request = app.fetchActualStateNodes({
+    nowFn: () => 1_500,
+    queryTableFn: async () => {
+      queryCount += 1;
+      return deferred.promise;
+    },
+  });
+
+  await Promise.resolve();
+  assert.equal(queryCount, 1);
+
+  app.activateEnvironmentState(staging.name, staging);
+  deferred.resolve([{
+    PartitionKey: 'n:abc123',
+    RowKey: 'ffff',
+    node_id: 'NODE_001',
+    timestamp_ms: '1000',
+  }]);
+
+  assert.deepEqual(await request, []);
+  assert.equal(app.SESSION_TELEMETRY_CACHE.environmentName, staging.name);
+  assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.rowsByKey.size, 0);
+  assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.latestByPartition.size, 0);
 });
 test('getCachedSensorDataRows fetches only uncovered historical intervals', async () => {
   const calls = [];
@@ -1441,6 +1522,42 @@ test('concurrent identical sensordata consumers share one in-flight cold-session
   assert.deepEqual((await second).map((row) => row.RowKey), ['row-2']);
 });
 
+test('sensordata results from a previous environment are discarded after an environment switch', async () => {
+  const deferred = createDeferred();
+  const prod = makeEnvironment('prod');
+  const staging = makeEnvironment('staging');
+  const calls = [];
+
+  app.activateEnvironmentState(prod.name, prod);
+  const request = app.getCachedSensorDataRows(['n:abc123'], 2000, 3000, {
+    topPerPage: 1000,
+    maxPagesPerPartition: 1,
+  }, {
+    querySensorDataRangeFn: async (partitionKeys, startMs, endMs) => {
+      calls.push({ partitionKeys, startMs, endMs });
+      return deferred.promise;
+    },
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(calls, [
+    { partitionKeys: ['n:abc123'], startMs: 2000, endMs: 3000 },
+  ]);
+
+  app.activateEnvironmentState(staging.name, staging);
+  deferred.resolve(withCompleteMarker([{
+    PartitionKey: 'n:abc123',
+    RowKey: 'row-2',
+    timestamp_ms: '2000',
+    decoded_readings: '{"temp_mc":25000}',
+  }]));
+
+  assert.deepEqual(await request, []);
+  assert.equal(app.SESSION_TELEMETRY_CACHE.environmentName, staging.name);
+  const stagingCache = app.SESSION_TELEMETRY_CACHE.sensorDataByPartition.get('n:abc123');
+  assert.equal(stagingCache?.rowsByKey.size ?? 0, 0);
+});
+
 test('fetchVariableData reuses one cached sensor fetch for overlapping variables on the same partition', async () => {
   let queryCount = 0;
   const deps = {
@@ -1490,7 +1607,7 @@ test('concurrent dashboard metric consumers share one in-flight cold-session tel
     { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
   ], { preset: '6h' }, deps);
 
-  await Promise.resolve();
+  await flushAsyncWork();
   assert.equal(queryCount, 1);
 
   deferred.resolve(withCompleteMarker([{

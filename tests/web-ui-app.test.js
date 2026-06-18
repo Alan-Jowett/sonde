@@ -1370,6 +1370,49 @@ test('actualstate results from a previous environment are discarded after an env
   assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.rowsByKey.size, 0);
   assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.latestByPartition.size, 0);
 });
+
+test('actualstate delta refresh returns the active environment cache after an environment switch', async () => {
+  const deferred = createDeferred();
+  const prod = makeEnvironment('prod');
+  const staging = makeEnvironment('staging');
+  let queryCount = 0;
+  const queryTableFn = async () => {
+    queryCount += 1;
+    if (queryCount === 1) {
+      return [{
+        PartitionKey: 'n:abc123',
+        RowKey: 'ffff',
+        node_id: 'NODE_001',
+        timestamp_ms: '1000',
+      }];
+    }
+    return deferred.promise;
+  };
+
+  app.activateEnvironmentState(prod.name, prod);
+  await app.fetchActualStateNodes({
+    nowFn: () => 1_500,
+    queryTableFn,
+  });
+
+  const request = app.fetchActualStateNodes({
+    nowFn: () => 2_000,
+    queryTableFn,
+  });
+
+  await Promise.resolve();
+  app.activateEnvironmentState(staging.name, staging);
+  deferred.resolve([{
+    PartitionKey: 'n:def456',
+    RowKey: 'fffe',
+    node_id: 'NODE_002',
+    timestamp_ms: '1800',
+  }]);
+
+  assert.deepEqual(await request, []);
+  assert.equal(app.SESSION_TELEMETRY_CACHE.environmentName, staging.name);
+  assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.rowsByKey.size, 0);
+});
 test('getCachedSensorDataRows fetches only uncovered historical intervals', async () => {
   const calls = [];
   const rowsByCall = [

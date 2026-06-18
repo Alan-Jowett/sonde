@@ -1830,7 +1830,8 @@ async function getCachedActualStateRows(deps = {}) {
         mergeActualStateRowsIntoCache(rows, nowMs);
       }
     });
-    return Array.from(cache.rowsByKey.values());
+    ensureSessionTelemetryCacheEnvironment();
+    return Array.from(SESSION_TELEMETRY_CACHE.actualState.rowsByKey.values());
   }
 
   if (Number.isFinite(cache.watermarkMs) && nowMs >= cache.watermarkMs) {
@@ -1851,7 +1852,8 @@ async function getCachedActualStateRows(deps = {}) {
     });
   }
 
-  return Array.from(cache.rowsByKey.values());
+  ensureSessionTelemetryCacheEnvironment();
+  return Array.from(SESSION_TELEMETRY_CACHE.actualState.rowsByKey.values());
 }
 
 function createSensorPartitionCache() {
@@ -1883,7 +1885,14 @@ function sensorRequestCacheKey(startMs, endMs, options = {}) {
 }
 
 function sensorInFlightRequestKey(partitionKey, startMs, endMs, options = {}) {
-  return `${partitionKey}|${sensorRequestCacheKey(startMs, endMs, options)}`;
+  return JSON.stringify({
+    partitionKey,
+    startMs,
+    endMs,
+    topPerPage: options.topPerPage ?? null,
+    maxPagesPerPartition: options.maxPagesPerPartition ?? null,
+    requireComplete: options.requireComplete === true,
+  });
 }
 
 function mergeSensorRowsIntoCache(partitionKey, rows, rangeStartMs, rangeEndMs, options = {}) {

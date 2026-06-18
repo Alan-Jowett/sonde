@@ -281,7 +281,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-0731 | WEB-0706 | Session telemetry cache is not written to `localStorage` and is excluded from environment export/import data | Unit (JS) | Not Started |
 | T-WEB-0732 | WEB-0706 | Switching environments clears or isolates session telemetry cache entries before the next environment renders | Unit (JS) | Pass |
 | T-WEB-0733 | WEB-0706 | Multiple dashboard metrics with overlapping variable sources reuse one cached `sensordata` fetch result per partition for a render/time-range context | Unit (JS) | Pass |
-| T-WEB-0734 | WEB-0706 | Concurrent identical `actualstate` consumers in one environment share a single in-flight Azure Table request during cold-session hydration and during identical delta refreshes | Unit (JS) | Pass |
+| T-WEB-0734 | WEB-0706 | Dashboard cold-session node-state loads and identical dashboard auto-refresh `actualstate` reads in one environment share a single in-flight Azure Table request during hydration and during identical delta refreshes | Unit (JS) | Pass |
 | T-WEB-0735 | WEB-0706 | Concurrent identical `sensordata` consumers for one partition/range/options share a single in-flight Azure Table request during cold-session fetch | Unit (JS) | Pass |
 | T-WEB-0736 | WEB-0706 | Multiple dashboard metric consumers that request the same cold-session telemetry scope before the first fetch resolves observe one shared in-flight request and receive identical results | Unit (JS) | Pass |
 

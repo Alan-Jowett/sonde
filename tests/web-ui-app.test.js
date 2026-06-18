@@ -55,6 +55,15 @@ function resetStorages() {
   global.sessionStorage = makeStorage();
 }
 
+function withCompleteMarker(rows, complete = true) {
+  Object.defineProperty(rows, '__complete', {
+    value: complete,
+    enumerable: false,
+    configurable: true,
+  });
+  return rows;
+}
+
 global.window = {
   __SONDE_TEST__: true,
   opener: null,
@@ -1175,21 +1184,32 @@ test('fetchActualStateNodes reuses the session cache and discovers new nodes fro
   assert.notEqual(filters[1], '');
 });
 
+test('fetchActualStateNodes propagates actualstate query failures', async () => {
+  await assert.rejects(
+    app.fetchActualStateNodes({
+      queryTableFn: async () => {
+        throw new Error('Azure actualstate failed');
+      },
+    }),
+    /Azure actualstate failed/,
+  );
+});
+
 test('getCachedSensorDataRows fetches only uncovered historical intervals', async () => {
   const calls = [];
   const rowsByCall = [
-    [{
+    withCompleteMarker([{
       PartitionKey: 'n:abc123',
       RowKey: 'row-2',
       timestamp_ms: '2000',
       decoded_readings: '{"temp_mc":25000}',
-    }],
-    [{
+    }]),
+    withCompleteMarker([{
       PartitionKey: 'n:abc123',
       RowKey: 'row-1',
       timestamp_ms: '1000',
       decoded_readings: '{"temp_mc":24000}',
-    }],
+    }]),
   ];
 
   const deps = {
@@ -1224,17 +1244,12 @@ test('getCachedSensorDataRows fetches only uncovered historical intervals', asyn
 
 test('getCachedSensorDataRows does not mark truncated fetches as full historical coverage', async () => {
   const calls = [];
-  const firstRows = [{
+  const firstRows = withCompleteMarker([{
     PartitionKey: 'n:abc123',
     RowKey: 'row-2',
     timestamp_ms: '2000',
     decoded_readings: '{"temp_mc":25000}',
-  }];
-  Object.defineProperty(firstRows, '__complete', {
-    value: false,
-    enumerable: false,
-    configurable: true,
-  });
+  }], false);
 
   const deps = {
     querySensorDataRangeFn: async (partitionKeys, startMs, endMs) => {
@@ -1242,12 +1257,12 @@ test('getCachedSensorDataRows does not mark truncated fetches as full historical
       if (calls.length === 1) {
         return firstRows;
       }
-      return [{
+      return withCompleteMarker([{
         PartitionKey: 'n:abc123',
         RowKey: 'row-1',
         timestamp_ms: '1000',
         decoded_readings: '{"temp_mc":24000}',
-      }];
+      }]);
     },
   };
 
@@ -1268,17 +1283,12 @@ test('getCachedSensorDataRows does not mark truncated fetches as full historical
 
 test('getCachedSensorDataRows does not treat truncated exact-range fetches as exact cache hits', async () => {
   const calls = [];
-  const incompleteRows = [{
+  const incompleteRows = withCompleteMarker([{
     PartitionKey: 'n:abc123',
     RowKey: 'row-2',
     timestamp_ms: '2000',
     decoded_readings: '{"temp_mc":25000}',
-  }];
-  Object.defineProperty(incompleteRows, '__complete', {
-    value: false,
-    enumerable: false,
-    configurable: true,
-  });
+  }], false);
 
   const deps = {
     querySensorDataRangeFn: async (partitionKeys, startMs, endMs) => {

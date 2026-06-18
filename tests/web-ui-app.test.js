@@ -1410,6 +1410,59 @@ test('renderMetricCharts formats tooltip titles as local date-time strings', asy
   }
 });
 
+test('renderMetricCharts formats x-axis ticks as time-only for 24h and date + time for longer dashboard ranges', async () => {
+  const originalGetElementById = global.document.getElementById;
+  const parent = makeElement();
+  const canvas = makeElement();
+  canvas.parentElement = parent;
+  global.document.getElementById = (id) => {
+    if (id === 'metric-chart-0') return canvas;
+    return makeElement();
+  };
+
+  const basePoint = { timestamp: Date.UTC(2026, 5, 17, 20, 5, 0), value: 1 };
+  const capturedConfigs = [];
+  const date = new Date(basePoint.timestamp);
+  const expectedTimeOnly = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const expectedDateTime = `${date.getMonth() + 1}/${date.getDate()} ${expectedTimeOnly}`;
+
+  try {
+    for (const timeRange of [
+      { preset: '24h' },
+      { preset: '7d' },
+      { preset: 'custom', start: 0, end: (24 * 60 * 60 * 1000) + 1 },
+    ]) {
+      await app.renderMetricCharts({
+        variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+        charts: [{ name: 'Chart 1', metrics: [{ displayName: 'Temperature', expression: 'TEMP' }] }],
+        timeRange,
+      }, {
+        evaluateMetricTimeSeriesFn: async () => ({ points: [basePoint] }),
+        chartFactory: (_chartCanvas, config) => {
+          capturedConfigs.push(config);
+          return { destroy() {} };
+        },
+      });
+    }
+
+    assert.equal(capturedConfigs.length, 3);
+    assert.equal(
+      capturedConfigs[0].options.scales.x.ticks.callback(basePoint.timestamp),
+      expectedTimeOnly,
+    );
+    assert.equal(
+      capturedConfigs[1].options.scales.x.ticks.callback(basePoint.timestamp),
+      expectedDateTime,
+    );
+    assert.equal(
+      capturedConfigs[2].options.scales.x.ticks.callback(basePoint.timestamp),
+      expectedDateTime,
+    );
+  } finally {
+    global.document.getElementById = originalGetElementById;
+  }
+});
+
 test('persistDashboardEnvironment preserves edited dashboards in memory after quota failures', () => {
   const env = {
     name: 'prod',

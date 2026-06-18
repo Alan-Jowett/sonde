@@ -1099,6 +1099,9 @@ Dashboards are stored as part of each environment's configuration:
 - Dashboard-level time range selector (same UI as Sensor Data tab).
 - All charts and metrics in the dashboard share the same time window.
 - Operators can select presets (1h, 6h, 24h, 7d) or custom start/end.
+- Chart X-axis tick labels adapt to the selected time window: ranges longer
+  than 24 hours show date + time, while ranges of 24 hours or less show
+  time-only labels.
 - Variables/metrics pane state is independent from the time-range controls and
   does not affect chart evaluation.
 

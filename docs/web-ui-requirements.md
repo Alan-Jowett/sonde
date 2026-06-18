@@ -1649,6 +1649,9 @@ evaluated with variable values from that timestamp.
    on that shared chart.
 8. A dashboard can contain multiple charts, each sharing the dashboard-wide time
    range.
+9. When the selected dashboard time range exceeds 24 hours, each chart's X-axis
+   tick labels display both calendar date and time. For dashboard time ranges
+   of 24 hours or less, X-axis tick labels may remain time-only.
 
 ---
 

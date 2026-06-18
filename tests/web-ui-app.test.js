@@ -73,7 +73,6 @@ function createDeferred() {
   });
   return { promise, resolve, reject };
 }
-
 global.window = {
   __SONDE_TEST__: true,
   opener: null,
@@ -1290,7 +1289,6 @@ test('concurrent actualstate delta consumers share one in-flight refresh query',
     { partitionKey: 'n:def456', nodeId: 'NODE_002' },
   ]);
 });
-
 test('getCachedSensorDataRows fetches only uncovered historical intervals', async () => {
   const calls = [];
   const rowsByCall = [

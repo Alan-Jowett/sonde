@@ -783,27 +783,33 @@ const APP = {
 
 function createSessionTelemetryCache() {
   return {
+    generation: 0,
     environmentName: null,
     actualState: {
       loaded: false,
       watermarkMs: null,
       rowsByKey: new Map(),
       latestByPartition: new Map(),
+      inFlightRequests: new Map(),
     },
     sensorDataByPartition: new Map(),
+    sensorDataInFlightRequests: new Map(),
   };
 }
 
 const SESSION_TELEMETRY_CACHE = createSessionTelemetryCache();
 
 function clearSessionTelemetryCache() {
+  SESSION_TELEMETRY_CACHE.generation += 1;
   SESSION_TELEMETRY_CACHE.actualState = {
     loaded: false,
     watermarkMs: null,
     rowsByKey: new Map(),
     latestByPartition: new Map(),
+    inFlightRequests: new Map(),
   };
   SESSION_TELEMETRY_CACHE.sensorDataByPartition = new Map();
+  SESSION_TELEMETRY_CACHE.sensorDataInFlightRequests = new Map();
 }
 
 function ensureSessionTelemetryCacheEnvironment() {
@@ -1783,28 +1789,71 @@ function mergeActualStateRowsIntoCache(rows, fallbackWatermarkMs = null) {
   cache.watermarkMs = maxTimestampMs ?? fallbackWatermarkMs ?? cache.watermarkMs;
 }
 
+function getOrStartSharedTelemetryRequest(registry, requestKey, createRequest) {
+  const existing = registry.get(requestKey);
+  if (existing) {
+    return existing;
+  }
+
+  let resolvePromise;
+  let rejectPromise;
+  const promise = new Promise((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  registry.set(requestKey, promise);
+
+  Promise.resolve()
+    .then(createRequest)
+    .then(resolvePromise, rejectPromise)
+    .finally(() => {
+      if (registry.get(requestKey) === promise) {
+        registry.delete(requestKey);
+      }
+    });
+
+  return promise;
+}
+
 async function getCachedActualStateRows(deps = {}) {
   ensureSessionTelemetryCacheEnvironment();
   const cache = SESSION_TELEMETRY_CACHE.actualState;
   const queryTableFn = deps.queryTableFn || queryTable;
   const nowFn = deps.nowFn || Date.now;
   const nowMs = nowFn();
+  const generationAtStart = SESSION_TELEMETRY_CACHE.generation;
 
   if (!cache.loaded) {
-    const rows = await queryTableFn(CONFIG.actualStateTable, '');
-    mergeActualStateRowsIntoCache(rows, nowMs);
-    return Array.from(cache.rowsByKey.values());
+    await getOrStartSharedTelemetryRequest(cache.inFlightRequests, 'initial-full-scan', async () => {
+      const rows = await queryTableFn(CONFIG.actualStateTable, '');
+      if (SESSION_TELEMETRY_CACHE.generation === generationAtStart) {
+        mergeActualStateRowsIntoCache(rows, nowMs);
+      }
+    });
+    ensureSessionTelemetryCacheEnvironment();
+    return Array.from(SESSION_TELEMETRY_CACHE.actualState.rowsByKey.values());
   }
 
   if (Number.isFinite(cache.watermarkMs) && nowMs >= cache.watermarkMs) {
-    const rows = await queryTableFn(
-      CONFIG.actualStateTable,
-      globalHistoryTableFilter(cache.watermarkMs, nowMs),
-    );
-    mergeActualStateRowsIntoCache(rows, nowMs);
+    const previousWatermarkMs = cache.watermarkMs;
+    const requestKey = JSON.stringify({
+      kind: 'actualstate-delta',
+      startMs: previousWatermarkMs,
+      endMs: nowMs,
+    });
+    await getOrStartSharedTelemetryRequest(cache.inFlightRequests, requestKey, async () => {
+      const rows = await queryTableFn(
+        CONFIG.actualStateTable,
+        globalHistoryTableFilter(previousWatermarkMs, nowMs),
+      );
+      if (SESSION_TELEMETRY_CACHE.generation === generationAtStart) {
+        mergeActualStateRowsIntoCache(rows, nowMs);
+      }
+    });
   }
 
-  return Array.from(cache.rowsByKey.values());
+  ensureSessionTelemetryCacheEnvironment();
+  return Array.from(SESSION_TELEMETRY_CACHE.actualState.rowsByKey.values());
 }
 
 function createSensorPartitionCache() {
@@ -1827,6 +1876,17 @@ function getSensorPartitionCache(partitionKey) {
 
 function sensorRequestCacheKey(startMs, endMs, options = {}) {
   return JSON.stringify({
+    startMs,
+    endMs,
+    topPerPage: options.topPerPage ?? null,
+    maxPagesPerPartition: options.maxPagesPerPartition ?? null,
+    requireComplete: options.requireComplete === true,
+  });
+}
+
+function sensorInFlightRequestKey(partitionKey, startMs, endMs, options = {}) {
+  return JSON.stringify({
+    partitionKey,
     startMs,
     endMs,
     topPerPage: options.topPerPage ?? null,
@@ -1869,6 +1929,7 @@ async function getCachedSensorDataRows(partitionKeys, startMs, endMs, options = 
   ensureSessionTelemetryCacheEnvironment();
   const querySensorDataRangeFn = deps.querySensorDataRangeFn || querySensorDataRange;
   const fetchPlans = [];
+  const generationAtStart = SESSION_TELEMETRY_CACHE.generation;
 
   for (const partitionKey of partitionKeys) {
     const cache = getSensorPartitionCache(partitionKey);
@@ -1893,11 +1954,25 @@ async function getCachedSensorDataRows(partitionKeys, startMs, endMs, options = 
   }
 
   await Promise.all(fetchPlans.map(async (plan) => {
-    const rows = await querySensorDataRangeFn([plan.partitionKey], plan.startMs, plan.endMs, options);
-    mergeSensorRowsIntoCache(plan.partitionKey, rows, plan.startMs, plan.endMs, {
-      complete: rows.__complete === true,
-      requestKey: plan.exactRequest === true ? plan.requestKey : null,
-    });
+    const inFlightRequestKey = sensorInFlightRequestKey(
+      plan.partitionKey,
+      plan.startMs,
+      plan.endMs,
+      options,
+    );
+    await getOrStartSharedTelemetryRequest(
+      SESSION_TELEMETRY_CACHE.sensorDataInFlightRequests,
+      inFlightRequestKey,
+      async () => {
+        const rows = await querySensorDataRangeFn([plan.partitionKey], plan.startMs, plan.endMs, options);
+        if (SESSION_TELEMETRY_CACHE.generation === generationAtStart) {
+          mergeSensorRowsIntoCache(plan.partitionKey, rows, plan.startMs, plan.endMs, {
+            complete: rows.__complete === true,
+            requestKey: plan.exactRequest === true ? plan.requestKey : null,
+          });
+        }
+      },
+    );
   }));
 
   const rows = [];

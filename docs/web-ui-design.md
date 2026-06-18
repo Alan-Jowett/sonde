@@ -532,27 +532,45 @@ semantics, does not become a new source of truth, and is not persisted to
   gateway lookups.
 - Maintain a global watermark representing the newest `actualstate` history row
   already incorporated into the cache.
+- Maintain an in-flight request registry keyed by the active environment and
+  normalized `actualstate` request scope (initial full scan vs. bounded delta
+  refresh window).
 - Initial session hydration may query `actualstate` broadly enough to discover
   the current node set.
+- If another consumer requests the same `actualstate` scope while that fetch is
+  still running, return the existing in-flight promise instead of starting a
+  second Azure Table request.
 - Subsequent refreshes issue a global `actualstate` delta query bounded to rows
   newer than the watermark, merge returned rows into the row map, update the
   per-partition latest-row view, and surface newly seen node partitions.
+- Remove the in-flight entry when the shared request settles so later refreshes
+  can observe newer bounds or retry failures.
 
 **SensorData cache model:**
 - Maintain per-partition row maps keyed by `PartitionKey + "|" + RowKey`.
 - Track covered time bounds per partition so the SPA knows whether a requested
   range is already satisfied from cache.
+- Maintain an in-flight request registry keyed by active environment plus the
+  normalized `sensordata` request identity (`partitionKey`, `startMs`, `endMs`,
+  and any query options that affect completeness, such as paging limits).
 - When a render requests a time range fully covered by cache, reuse cached rows.
 - When the request extends to newer data, fetch only the uncovered newer tail
   when possible, merge by row identity, and extend coverage.
 - When the request expands to older historical data, fetch only the uncovered
   older interval and merge it with existing cached rows.
+- If another consumer requests the same uncovered `sensordata` scope while the
+  first request is still in flight, return the existing in-flight promise for
+  that request identity instead of issuing a duplicate query.
+- Remove the in-flight entry when the shared request settles so retries and
+  wider follow-on ranges are evaluated against the updated cache state.
 
 **Consumer behavior:**
 - Consumers request telemetry from a shared cache service rather than calling
   Azure Table queries independently.
 - If multiple consumers in the same session need overlapping telemetry, they
   share the same cached backing rows.
+- If multiple consumers in the same session ask for an identical telemetry
+  scope before the cache is warm, they also share the same in-flight request.
 - Dashboards metric evaluation resolves shared variable data from the cache once
   per render/time-range context, then reuses that materialized telemetry across
   all metrics that reference the same node partitions.
@@ -561,6 +579,8 @@ semantics, does not become a new source of truth, and is not persisted to
 - Cache merges deduplicate by stable Azure Table row identity
   (`PartitionKey`, `RowKey`).
 - Delta refresh must not drop newer rows that arrive after the previous render.
+- Failed in-flight requests are not retained as satisfied cache entries; later
+  callers must be able to retry the Azure query.
 - Cache misses and fetch failures surface through the existing user-visible
   loading/error states; the cache must not silently mask network failures.
 
@@ -1238,6 +1258,7 @@ Dashboards are stored as part of each environment's configuration:
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-18 | evolve skill | Extended §10.6 session telemetry cache design with in-flight request registries and consumer coalescing rules for duplicate cold-session Azure reads. |
 | 2026-06-18 | evolve skill | Added §10.6 session telemetry cache design and updated dashboard metric data-fetching to use shared in-memory coverage-aware telemetry reuse. |
 | 2026-06-17 | evolve skill | Added collapsible Variables and per-chart Metrics panes, including persisted pane state and accessibility requirements for dashboard configuration UI. |
 | 2026-06-16 | evolve skill | Added §14 (Custom Dashboards) with variable binding, expression evaluation, and environment export integration. |

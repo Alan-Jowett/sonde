@@ -2713,13 +2713,22 @@ async function queryPartitionedTableRange(tableName, partitionKeys, startMs, end
 
   const allEntities = [];
   const batchSize = 6;
+  let allComplete = true;
   for (let i = 0; i < partitionKeys.length; i += batchSize) {
     const batch = partitionKeys.slice(i, i + batchSize);
     const results = await Promise.all(batch.map(fetchPartition));
     for (const entities of results) {
+      if (entities.__complete === false) {
+        allComplete = false;
+      }
       allEntities.push(...entities);
     }
   }
+  Object.defineProperty(allEntities, '__complete', {
+    value: allComplete,
+    enumerable: false,
+    configurable: true,
+  });
   return allEntities;
 }
 

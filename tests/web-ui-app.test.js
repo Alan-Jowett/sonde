@@ -1222,7 +1222,51 @@ test('getCachedSensorDataRows fetches only uncovered historical intervals', asyn
   );
 });
 
-test('fetchVariableData reuses cached sensor rows across repeated calls in the same session', async () => {
+test('getCachedSensorDataRows does not mark truncated fetches as full historical coverage', async () => {
+  const calls = [];
+  const firstRows = [{
+    PartitionKey: 'n:abc123',
+    RowKey: 'row-2',
+    timestamp_ms: '2000',
+    decoded_readings: '{"temp_mc":25000}',
+  }];
+  Object.defineProperty(firstRows, '__complete', {
+    value: false,
+    enumerable: false,
+    configurable: true,
+  });
+
+  const deps = {
+    querySensorDataRangeFn: async (partitionKeys, startMs, endMs) => {
+      calls.push({ partitionKeys, startMs, endMs });
+      if (calls.length === 1) {
+        return firstRows;
+      }
+      return [{
+        PartitionKey: 'n:abc123',
+        RowKey: 'row-1',
+        timestamp_ms: '1000',
+        decoded_readings: '{"temp_mc":24000}',
+      }];
+    },
+  };
+
+  await app.getCachedSensorDataRows(['n:abc123'], 2000, 3000, {
+    topPerPage: 1000,
+    maxPagesPerPartition: 1,
+  }, deps);
+  await app.getCachedSensorDataRows(['n:abc123'], 1000, 3000, {
+    topPerPage: 1000,
+    maxPagesPerPartition: 1,
+  }, deps);
+
+  assert.deepEqual(calls, [
+    { partitionKeys: ['n:abc123'], startMs: 2000, endMs: 3000 },
+    { partitionKeys: ['n:abc123'], startMs: 1000, endMs: 3000 },
+  ]);
+});
+
+test('fetchVariableData reuses one cached sensor fetch for overlapping variables on the same partition', async () => {
   let queryCount = 0;
   const deps = {
     nowFn: () => 40_000_000,
@@ -1234,20 +1278,20 @@ test('fetchVariableData reuses cached sensor rows across repeated calls in the s
       return [{
         PartitionKey: 'n:abc123',
         RowKey: 'row-1',
-        timestamp_ms: '1000',
-        decoded_readings: '{"temp_mc":25000}',
+        timestamp_ms: String(40_000_000 - 1000),
+        decoded_readings: '{"temp_mc":25000,"pressure_pa":92500}',
       }];
     },
   };
 
-  await app.fetchVariableData([
+  const result = await app.fetchVariableData([
     { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
-  ], { preset: '6h' }, deps);
-  await app.fetchVariableData([
-    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+    { name: 'PRESS', nodeId: 'NODE_001', readingType: 'pressure_pa' },
   ], { preset: '6h' }, deps);
 
   assert.equal(queryCount, 1);
+  assert.deepEqual(result.data.TEMP, [{ timestamp: 40_000_000 - 1000, value: 25000 }]);
+  assert.deepEqual(result.data.PRESS, [{ timestamp: 40_000_000 - 1000, value: 92500 }]);
 });
 
 test('evaluateMetricTimeSeries propagates fetch failures as user-visible errors', async () => {

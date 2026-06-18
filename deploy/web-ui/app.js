@@ -1895,7 +1895,7 @@ async function getCachedSensorDataRows(partitionKeys, startMs, endMs, options = 
   await Promise.all(fetchPlans.map(async (plan) => {
     const rows = await querySensorDataRangeFn([plan.partitionKey], plan.startMs, plan.endMs, options);
     mergeSensorRowsIntoCache(plan.partitionKey, rows, plan.startMs, plan.endMs, {
-      complete: rows.__complete !== false,
+      complete: rows.__complete === true,
       requestKey: plan.exactRequest === true ? plan.requestKey : null,
     });
   }));
@@ -4430,7 +4430,13 @@ async function showVariableModal(index = null) {
   const env = loadActiveEnvironment();
   const dashboard = env.dashboards[APP_DASHBOARD_STATE.activeDashboardIndex];
   const variable = isEdit ? dashboard.variables[index] : null;
-  const nodes = await fetchActualStateNodes();
+  let nodes;
+  try {
+    nodes = await fetchActualStateNodes();
+  } catch (error) {
+    renderError('Dashboard', error);
+    return;
+  }
   if (nodes.length === 0) {
     alert('No nodes available. Nodes must be online and reporting to create variables.');
     return;
@@ -4731,18 +4737,13 @@ function deleteMetric(chartIndex, metricIndex) {
 }
 
 async function fetchActualStateNodes(deps = {}) {
-  try {
-    const rows = await getCachedActualStateRows(deps);
-    const nodeRows = filterNodeRows(rows);
-    const latest = latestByPartition(nodeRows);
-    return latest.map(row => ({
-      partitionKey: row.PartitionKey,  // Internal key for queries
-      nodeId: row.node_id || row.PartitionKey  // User-facing ID
-    }));
-  } catch (error) {
-    console.error('Failed to fetch nodes:', error);
-    return [];
-  }
+  const rows = await getCachedActualStateRows(deps);
+  const nodeRows = filterNodeRows(rows);
+  const latest = latestByPartition(nodeRows);
+  return latest.map(row => ({
+    partitionKey: row.PartitionKey,  // Internal key for queries
+    nodeId: row.node_id || row.PartitionKey  // User-facing ID
+  }));
 }
 
 // 9. Tab Router

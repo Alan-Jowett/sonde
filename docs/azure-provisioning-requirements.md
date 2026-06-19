@@ -255,6 +255,29 @@ and private-key PEM.
 
 ---
 
+### AZP-0204  Shared read-only dashboard data access
+
+**Priority:** Must
+**Source:** kiosk-app-requirements.md KA-0400
+
+**Description:**
+The provisioning workflow MUST grant the shared certificate-authenticated Entra
+application/service principal the read-only Azure Table data-plane access needed
+by the kiosk dashboard app. This is additive to the Azure companion runtime
+identity model and does not remove or narrow the companion's existing queue-role
+requirements.
+
+**Acceptance criteria:**
+
+1. The shared application/service principal can read the Azure Table resources
+   required for dashboard rendering.
+2. The shared application/service principal is not granted Azure Table write
+   permission solely for kiosk dashboard viewing.
+3. The documented dashboard-read permissions remain narrower than general
+   administrator or owner privileges.
+
+---
+
 ## 5  Lifecycle behavior
 
 ### AZP-0300  Idempotent deployment workflow
@@ -377,4 +400,3 @@ workflow dispatch without reverse-engineering the workflow YAML.
 5. The setup guide explains the disposable resource-group safety boundary, including the default CI prefix behavior and the requirement that only CI-owned disposable groups are in scope for destructive cleanup.
 6. The setup guide describes how to manually dispatch the workflow and what success or cleanup signals an operator should expect from the first run.
 7. `deploy/bicep/README.md` links operators to `deploy/bicep/azure-live-ci-setup.md` for the procedural setup path.
-

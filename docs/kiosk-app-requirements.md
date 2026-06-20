@@ -46,7 +46,7 @@ Each requirement uses the following fields:
 ### KA-0100  Android kiosk deployment
 
 **Priority:** Must  
-**Source:** USER-REQUEST: "I want a Android app"
+**Source:** USER-REQUEST: Request an Android app
 
 **Description:**  
 The initial kiosk release MUST run on Android physical devices and MUST be
@@ -134,9 +134,14 @@ variant.
 
 1. The kiosk import accepts the same `version`, `name`, `clientId`, `tenantId`,
    `storageAccount`, `functionAppName`, and `dashboards` fields used by the SPA.
-2. An environment JSON exported from the SPA can be imported into the kiosk app
+2. The kiosk import tolerates the optional `sensorData` object used by SPA
+   environment export/import, even though kiosk mode does not render the SPA
+   Sensor Data surface.
+3. The kiosk import ignores unknown extra JSON properties so future additive SPA
+   export fields do not break kiosk onboarding.
+4. An environment JSON exported from the SPA can be imported into the kiosk app
    without manual editing.
-3. The kiosk import rejects malformed or incomplete environment JSON with an
+5. The kiosk import rejects malformed or incomplete environment JSON with an
    actionable error.
 
 ---

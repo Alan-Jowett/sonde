@@ -78,6 +78,11 @@ dashboard runtime to be factored into a shared frontend module consumed by:
 1. the SPA, and
 2. the kiosk frontend shell.
 
+Because the current Web UI is a zero-build vanilla HTML/JS/CSS SPA, this
+extraction must remain compatible with that deployment model. The shared module
+therefore uses directly served frontend assets and must not require introducing
+a mandatory bundler or build pipeline for the existing SPA.
+
 The shared module owns:
 
 - imported environment/dashboard normalization,

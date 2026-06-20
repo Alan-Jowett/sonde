@@ -121,8 +121,12 @@ full device UX.
 1. Export an environment JSON from the SPA.
 2. Import the same JSON into the kiosk app.
 3. Assert: the import succeeds without schema translation or manual editing.
-4. Import malformed JSON and JSON missing required fields.
-5. Assert: the kiosk app reports actionable validation errors.
+4. Assert: an SPA export that includes the optional `sensorData` object is still
+   accepted by the kiosk app.
+5. Assert: unknown additive JSON properties are ignored rather than causing
+   import failure.
+6. Import malformed JSON and JSON missing required fields.
+7. Assert: the kiosk app reports actionable validation errors.
 
 ---
 

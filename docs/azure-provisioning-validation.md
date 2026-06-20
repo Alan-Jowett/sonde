@@ -170,6 +170,23 @@
 
 ---
 
+### T-AZP-0204  Shared runtime identity has read-only dashboard table access
+
+**Validates:** AZP-0204
+
+**Procedure:**
+1. Run the provisioning workflow.
+2. Inspect the Azure Table data-plane permissions granted to the shared
+   certificate-authenticated Entra application/service principal.
+3. Assert: the identity can read the Azure Table resources required for kiosk
+   dashboard rendering.
+4. Assert: the identity is not granted Azure Table write permission solely for
+   kiosk dashboard viewing.
+5. Assert: the documented permissions remain narrower than general owner or
+   administrator privileges.
+
+---
+
 ### T-AZP-0300  Re-running deployment converges cleanly
 
 **Validates:** AZP-0300
@@ -261,4 +278,3 @@
 5. Assert: the setup guide names the exact Azure RBAC roles, Storage Queue data-plane roles, and Microsoft Graph permissions required by the federated CI identity.
 6. Assert: the setup guide explains the disposable resource-group safety boundary, including the default CI prefix behavior and the CI-owned tag/ownership expectations.
 7. Assert: the setup guide tells the operator how to manually dispatch the workflow and what first-run success and teardown signals to expect.
-

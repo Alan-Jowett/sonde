@@ -166,7 +166,7 @@ without hardcoding a public-cloud URL.
 
 ## 4  Runtime identity provisioning
 
-> **Requirements:** AZP-0200, AZP-0201, AZP-0202
+> **Requirements:** AZP-0200, AZP-0201, AZP-0202, AZP-0204
 
 The current Azure companion runtime design uses a certificate-authenticated
 Entra application/service principal rather than managed identity. The
@@ -208,6 +208,19 @@ Azure companion bridge:
 
 The design intentionally avoids broader "owner" or "administrator" roles for
 normal runtime operation.
+
+For the additive kiosk dashboard app, the same shared Entra application/service
+principal may also receive read-only Azure Table data-plane permissions needed
+for dashboard rendering. This additive grant is limited to dashboard-read
+scenarios:
+
+1. read the Azure Table resources used for dashboard telemetry and latest-state
+   views, and
+2. avoid write-capable Azure Table roles when the kiosk app is the only added
+   consumer.
+
+This preserves the existing queue-bridge model while allowing the kiosk app to
+perform unattended application-authenticated reads after setup.
 
 ### 4.4  Azure handler Function App identity
 
@@ -381,4 +394,3 @@ For the key setup actions above, the guide provides both:
 The guide may reference the workflow file for exact variable names, but it must
 not force an operator to infer the required permissions or safety boundary by
 reading the YAML directly.
-

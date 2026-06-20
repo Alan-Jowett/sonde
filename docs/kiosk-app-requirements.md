@@ -345,7 +345,7 @@ persistent navigation tab strip.
 ### KA-0301  Static imported dashboard configuration
 
 **Priority:** Must  
-**Source:** USER-REQUEST: "It should also not have options for add/editing/removing the variables, addings/editing/removing charts, adding/editing/removing metrics. Layout and charts should be static and derived from the json."
+**Source:** USER-REQUEST: Keep imported dashboard layouts read-only with no add/edit/remove controls for variables, charts, or metrics
 
 **Description:**  
 The kiosk app MUST treat imported dashboard configuration as read-only.

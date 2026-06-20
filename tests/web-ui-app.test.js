@@ -1093,6 +1093,17 @@ test('validateVariableName rejects blocked object keys', () => {
   assert.match(validation.error, /reserved/i);
 });
 
+test('dashboard runtime validateVariableName accepts underscore-leading identifiers', () => {
+  const validation = dashboardRuntime.validateVariableName('_TEMP', []);
+  assert.deepEqual(validation, { valid: true });
+});
+
+test('dashboard runtime validateVariableName rejects blocked object keys directly', () => {
+  const validation = dashboardRuntime.validateVariableName('constructor', []);
+  assert.equal(validation.valid, false);
+  assert.match(validation.error, /reserved/i);
+});
+
 test('validateExpression reports undefined variables as warnings, not errors', () => {
   const originalExprEval = global.exprEval;
   global.exprEval = {
@@ -1806,6 +1817,30 @@ test('evaluateMetricTimeSeries reports undefined variables explicitly', async ()
 
   assert.equal(result.error, 'Undefined variables: UNKNOWN');
   assert.deepEqual(result.points, []);
+});
+
+test('dashboard runtime evaluateMetricTimeSeries isolates prototype-sensitive variable names', async () => {
+  const result = await dashboardRuntime.evaluateMetricTimeSeries({
+    expression: '__proto__',
+  }, [
+    { name: '__proto__', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '24h' }, {
+    parserFactory: () => ({
+      parse() {
+        return {
+          variables() { return ['__proto__']; },
+          evaluate(context) { return context['__proto__']; },
+        };
+      },
+    }),
+    fetchVariableDataFn: async () => {
+      const data = Object.create(null);
+      data['__proto__'] = [{ timestamp: 1000, value: 25 }];
+      return data;
+    },
+  });
+
+  assert.deepEqual(result, { points: [{ timestamp: 1000, value: 25 }] });
 });
 
 test('renderMetricCharts shows a no-data message when evaluation yields zero points', async () => {

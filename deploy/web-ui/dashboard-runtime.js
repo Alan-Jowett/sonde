@@ -9,6 +9,7 @@
   root.SondeDashboardRuntime = factory();
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   const RESERVED_FUNCTION_NAMES = ['sqrt', 'log', 'log10', 'exp', 'abs', 'min', 'max'];
+  const BLOCKED_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
   const DASHBOARD_TIME_RANGE_MS = {
     '1h': 60 * 60 * 1000,
     '6h': 6 * 60 * 60 * 1000,
@@ -180,8 +181,11 @@
     if (!name || !name.trim()) {
       return { valid: false, error: 'Variable name is required' };
     }
-    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) {
-      return { valid: false, error: 'Variable name must start with a letter and contain only letters, numbers, and underscores' };
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      return { valid: false, error: 'Variable name must start with a letter or underscore and contain only letters, numbers, and underscores' };
+    }
+    if (BLOCKED_OBJECT_KEYS.has(name)) {
+      return { valid: false, error: `'${name}' is reserved and cannot be used as a variable name` };
     }
     if (existingNames.includes(name)) {
       return { valid: false, error: `Variable name '${name}' already exists` };
@@ -799,14 +803,14 @@
     }
 
     const sortedTimestamps = [...timestamps].sort((a, b) => a - b);
-    const variableMaps = {};
+    const variableMaps = Object.create(null);
     for (const [name, points] of Object.entries(variableData)) {
       variableMaps[name] = new Map(points.map((point) => [point.timestamp, point.value]));
     }
 
     const result = [];
     for (const timestamp of sortedTimestamps) {
-      const values = {};
+      const values = Object.create(null);
       let hasAllVariables = true;
       for (const variableName of usedVars) {
         const value = variableMaps[variableName]?.get(timestamp);

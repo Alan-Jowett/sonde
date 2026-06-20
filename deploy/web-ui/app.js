@@ -180,7 +180,7 @@ function validateVariableName(name, existingNames) {
     return { valid: false, error: `'${name}' is reserved and cannot be used as a variable name` };
   }
   const validation = DASHBOARD_RUNTIME.validateVariableName(name, existingNames);
-  if (!validation.valid && validation.error === 'Variable name must start with a letter and contain only letters, numbers, and underscores') {
+  if (!validation.valid && validation.error === 'Variable name must start with a letter or underscore and contain only letters, numbers, and underscores') {
     return { valid: false, error: 'Variable name must be a valid JavaScript identifier' };
   }
   if (!validation.valid && validation.error?.startsWith("Variable name '") && validation.error.endsWith('already exists')) {

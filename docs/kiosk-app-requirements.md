@@ -99,6 +99,25 @@ provisioning flow, gateway, node, or modem.
 
 ---
 
+### KA-0103  Future managed-device kiosk compatibility
+
+**Priority:** May  
+**Source:** follow-up review: Android kiosk deployment expectations
+
+**Description:**  
+The kiosk app design MAY support Android managed-device deployment features such
+as Lock Task Mode in the future, but the initial kiosk specification does not
+require them. The design SHOULD NOT preclude adding that support later.
+
+**Acceptance criteria:**
+
+1. The initial kiosk requirements do not depend on Android Lock Task Mode.
+2. The design documents Lock Task Mode as optional future support rather than a
+   current requirement.
+3. No current requirement assumes the device is fully managed.
+
+---
+
 ## 4  Environment onboarding and identity lifecycle
 
 ### KA-0200  Exact SPA environment import compatibility
@@ -219,10 +238,77 @@ remote cleanup could not be completed.
 **Acceptance criteria:**
 
 1. Reset always clears local secure credential state and telemetry cache.
-2. Reset attempts to remove the kiosk certificate from the shared Entra app.
+2. Reset attempts to remove the kiosk certificate from the shared Entra app
+   before discarding locally persisted non-secret metadata needed to identify
+   that remote credential.
 3. If remote certificate removal succeeds, the app confirms cleanup.
 4. If remote certificate removal cannot be completed, the app reports that the
    remote credential may require manual cleanup.
+
+---
+
+### KA-0206  Certificate renewal
+
+**Priority:** Must  
+**Source:** follow-up review: certificate lifecycle after initial provisioning
+
+**Description:**  
+The kiosk app MUST detect impending kiosk-certificate expiration and renew or
+replace the certificate before expiration whenever the current permissions and
+service policy allow.
+
+**Acceptance criteria:**
+
+1. The kiosk app tracks the current kiosk certificate's validity period.
+2. Before expiration, the app attempts to provision a replacement certificate
+   and attach it to the shared Entra app when permissions allow.
+3. Successful renewal updates the locally stored credential state used for
+   unattended application sign-in.
+4. If renewal is not permitted or fails, the app surfaces an actionable warning
+   or error rather than silently continuing toward certificate expiry.
+
+---
+
+### KA-0207  Permission-failure reporting for certificate management
+
+**Priority:** Must  
+**Source:** follow-up review: shared Entra app permissions
+
+**Description:**  
+The setup and renewal flows MUST fail with an actionable error when the signed-in
+user lacks permission to add, replace, or remove credentials on the shared
+Entra application.
+
+**Acceptance criteria:**
+
+1. Initial certificate attachment reports an actionable error when the signed-in
+   user lacks required permission on the shared Entra app.
+2. Certificate renewal reports an actionable error when the signed-in user lacks
+   required permission to rotate credentials.
+3. Reset cleanup reports an actionable error when the signed-in user lacks
+   required permission to remove the kiosk certificate.
+
+---
+
+### KA-0208  Certificate identity persistence
+
+**Priority:** Must  
+**Source:** follow-up review: certificate identification for cleanup
+
+**Description:**  
+The kiosk app MUST persist non-secret certificate-identifying metadata for the
+current kiosk credential so that renewal, reset cleanup, and operator-guided
+manual cleanup can target the correct remote credential unambiguously.
+
+**Acceptance criteria:**
+
+1. The kiosk app persists at least one stable identifier for the active kiosk
+   certificate credential, such as a thumbprint, key identifier, or credential
+   object identifier.
+2. Reset preserves that non-secret identifier long enough to record or report
+   the outcome of the remote cleanup attempt.
+3. If remote cleanup fails, the app can surface enough identifying information
+   for manual follow-up without exposing the private key.
 
 ---
 
@@ -362,6 +448,8 @@ interactive dashboard display.
 2. The currently displayed dashboard remains visible while background refresh is
    in progress.
 3. Refresh completion updates subsequent renders without requiring app restart.
+4. Background refresh runs on an implementation-defined cadence that does not
+   require user interaction.
 
 ---
 
@@ -421,6 +509,8 @@ clearly indicating that live refresh is unavailable.
    out of dashboard mode when usable cached data exists.
 4. If no cached data exists and live fetch is unavailable, the app surfaces an
    actionable offline or connectivity error.
+5. After app restart in offline conditions, cached dashboards still render when
+   usable cached telemetry exists.
 
 ---
 

@@ -139,18 +139,39 @@ Each kiosk installation instead:
 This supports multiple kiosks using one shared Entra app with distinct per-kiosk
 certificate credentials.
 
+The setup and renewal flows assume the signed-in operator has enough permission
+to add or replace credentials on that shared Entra app. When that permission is
+absent, the kiosk app fails explicitly with an actionable operator-facing error.
+
 ### 3.3  Credential material
 
 The kiosk backend stores:
 
 - imported environment metadata,
+- non-secret remote-correlation metadata for the kiosk certificate credential
+  (for example thumbprint, key ID, or credential object ID),
 - a local kiosk credential identifier sufficient to target later cleanup,
 - the generated private key in secure storage, and
 - any non-secret state needed to re-establish application sign-in on restart.
 
 The backend must never depend on browser localStorage for secret material.
 
-### 3.4  Reset cleanup
+### 3.4  Certificate renewal
+
+The kiosk backend monitors certificate validity and treats renewal as an
+extension of the existing setup contract:
+
+1. detect that the current kiosk certificate is approaching expiry,
+2. sign in or re-use sufficient operator authority for credential management,
+3. generate and attach a replacement certificate,
+4. update local secure credential state and remote-correlation metadata, and
+5. retire the prior kiosk certificate when policy and permissions allow.
+
+If renewal cannot complete because of permission or policy constraints, the app
+surfaces an actionable warning or error rather than silently drifting into
+credential expiry.
+
+### 3.5  Reset cleanup
 
 Reset performs two cleanup phases:
 
@@ -160,6 +181,9 @@ Reset performs two cleanup phases:
    the shared Entra app and surface success/failure explicitly.
 
 Remote cleanup failure is visible to the operator; it is not silently ignored.
+Non-secret remote-correlation metadata is retained long enough to record and
+report that cleanup outcome, even if private-key material has already been
+destroyed.
 
 ---
 
@@ -234,6 +258,12 @@ The guarded operator entrypoint must:
 3. lead to the minimal operator actions needed for reset, re-import, and setup
    recovery.
 
+### 4.6  Optional future Lock Task support
+
+The initial kiosk design does not require Android Lock Task Mode or full
+managed-device deployment. However, the frontend and backend split should avoid
+unnecessary assumptions that would block a future managed-device deployment mode.
+
 ---
 
 ## 5  Telemetry data flow and caching
@@ -300,6 +330,9 @@ In that case the frontend:
 If no usable cache exists, the kiosk shows an actionable connectivity or
 authentication error rather than an empty success-shaped dashboard.
 
+After app restart under offline conditions, the same cached-first behavior
+applies before any successful live refresh is available.
+
 ### 5.6  Cache bounds and eviction
 
 The persistent telemetry cache is explicitly bounded. The implementation may use
@@ -312,6 +345,16 @@ preserve the kiosk goals of:
 
 Eviction therefore targets older or less recently used historical telemetry
 before more recent data that is likely to support the active dashboard set.
+
+### 5.7  Background refresh cadence
+
+The background refresh scheduler is implementation-defined rather than
+operator-configured in the kiosk UI. The scheduler may be fixed-interval or
+adaptive, but it must:
+
+1. operate without user interaction,
+2. preserve the active dashboard display while refresh work runs, and
+3. avoid changing imported dashboard time-range semantics.
 
 ---
 
@@ -349,10 +392,11 @@ used to attach the credential is an implementation detail, but the contract is:
 | KA-0100, KA-0102 | §§1, 2 |
 | KA-0101 | §2.2 |
 | KA-0200, KA-0201 | §§3.1, 4.1 |
-| KA-0202, KA-0203, KA-0204, KA-0205 | §§3, 6 |
+| KA-0202, KA-0203, KA-0204, KA-0205, KA-0206, KA-0207, KA-0208 | §§3, 6 |
 | KA-0300, KA-0301, KA-0302, KA-0303 | §4 |
 | KA-0400, KA-0401, KA-0402, KA-0403, KA-0404, KA-0405, KA-0407 | §5, §6 |
 | KA-0406 | §4.5 |
+| KA-0103 | §4.6 |
 
 ---
 
@@ -360,5 +404,6 @@ used to attach the credential is an implementation detail, but the contract is:
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-19 | evolve skill | Clarified kiosk certificate lifecycle, permission-failure reporting, certificate identity persistence, offline restart behavior, implementation-defined refresh cadence, and optional future Lock Task support. |
 | 2026-06-19 | evolve skill | Added optional kiosk design coverage for offline cached presentation, guarded operator-only controls, and bounded cache eviction. |
 | 2026-06-19 | evolve skill | Added initial kiosk dashboard app design covering shared dashboard-runtime extraction, one-time setup/user sign-in, per-kiosk certificate attachment to the shared Entra app, app-authenticated reads, persistent telemetry caching, and swipe/pull-to-refresh UX. |

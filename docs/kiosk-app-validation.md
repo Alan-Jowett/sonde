@@ -36,12 +36,16 @@ full device UX.
 | KA-0100 | T-KA-100 |
 | KA-0101 | T-KA-101, T-KA-300 |
 | KA-0102 | T-KA-102 |
+| KA-0103 | T-KA-103 |
 | KA-0200 | T-KA-200 |
 | KA-0201 | T-KA-201 |
 | KA-0202 | T-KA-202, T-KA-207 |
 | KA-0203 | T-KA-203 |
 | KA-0204 | T-KA-204 |
 | KA-0205 | T-KA-205 |
+| KA-0206 | T-KA-206 |
+| KA-0207 | T-KA-208 |
+| KA-0208 | T-KA-209 |
 | KA-0300 | T-KA-300 |
 | KA-0301 | T-KA-301 |
 | KA-0302 | T-KA-302 |
@@ -93,6 +97,17 @@ full device UX.
 2. Assert: no existing SPA, pairing-tool, Azure-companion, or Azure-provisioning
    requirement was removed.
 3. Assert: supporting changes in other component specs are additive only.
+
+---
+
+### T-KA-103  Lock Task Mode remains optional future support
+
+**Validates:** KA-0103
+
+**Procedure:**
+1. Inspect the kiosk requirements and design documents.
+2. Assert: Android Lock Task Mode is documented as optional future support.
+3. Assert: no current kiosk requirement depends on the device being fully managed.
 
 ---
 
@@ -180,6 +195,24 @@ full device UX.
 
 ---
 
+### T-KA-206  Certificate renewal rotates credentials before expiry
+
+**Validates:** KA-0206
+
+**Procedure:**
+1. Complete kiosk setup with a certificate that is near expiry in the test
+   fixture.
+2. Trigger the renewal path.
+3. Assert: the app detects impending expiry and attempts to attach a replacement
+   certificate.
+4. Assert: successful renewal updates the local credential state used for
+   unattended app sign-in.
+5. Force renewal failure.
+6. Assert: the app surfaces an actionable warning or error rather than silently
+   continuing.
+
+---
+
 ### T-KA-207  Restart bypasses user sign-in and uses application sign-in
 
 **Validates:** KA-0202
@@ -189,6 +222,36 @@ full device UX.
 2. Fully terminate and relaunch the app.
 3. Assert: the app does not prompt for interactive user sign-in.
 4. Assert: the app signs in as the application and reaches dashboard mode.
+
+---
+
+### T-KA-208  Certificate-management permission failures are actionable
+
+**Validates:** KA-0207
+
+**Procedure:**
+1. Simulate a signed-in user who lacks permission to modify credentials on the
+   shared Entra app.
+2. Attempt initial certificate attachment.
+3. Assert: setup fails with an actionable permission error.
+4. Repeat for renewal and reset cleanup flows.
+5. Assert: each flow reports an actionable permission error rather than a silent
+   or generic failure.
+
+---
+
+### T-KA-209  Certificate identity metadata supports unambiguous cleanup
+
+**Validates:** KA-0208
+
+**Procedure:**
+1. Complete kiosk setup.
+2. Inspect locally persisted non-secret certificate metadata.
+3. Assert: at least one stable remote-correlation identifier is stored for the
+   active kiosk certificate.
+4. Trigger reset with remote cleanup failure.
+5. Assert: the app retains or reports enough non-secret identifying metadata for
+   manual cleanup follow-up without exposing the private key.
 
 ---
 
@@ -287,6 +350,8 @@ full device UX.
 4. Assert: refreshed data is incorporated after the fetch completes.
 5. Assert: the refresh uses the dashboard's imported fixed time range rather
    than an operator-edited or ad hoc range.
+6. Assert: the refresh path runs on an implementation-defined cadence without
+   requiring user interaction.
 
 ---
 
@@ -327,8 +392,10 @@ full device UX.
 4. Assert: the dashboard continues rendering from cached data.
 5. Assert: the UI indicates cached/offline status rather than implying a fresh
    live refresh succeeded.
-6. Repeat with no cache present.
-7. Assert: the app shows an actionable offline or connectivity error.
+6. Restart the app while still offline.
+7. Assert: the dashboard still renders from cached data after restart.
+8. Repeat with no cache present.
+9. Assert: the app shows an actionable offline or connectivity error.
 
 ---
 

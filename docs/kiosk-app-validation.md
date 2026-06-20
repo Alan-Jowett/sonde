@@ -51,6 +51,9 @@ full device UX.
 | KA-0402 | T-KA-402 |
 | KA-0403 | T-KA-403 |
 | KA-0404 | T-KA-404 |
+| KA-0405 | T-KA-405 |
+| KA-0406 | T-KA-406 |
+| KA-0407 | T-KA-407 |
 
 ---
 
@@ -313,8 +316,55 @@ full device UX.
 
 ---
 
+### T-KA-405  Offline mode renders cached dashboards with stale-data indication
+
+**Validates:** KA-0405
+
+**Procedure:**
+1. Populate the kiosk cache for a dashboard.
+2. Simulate network or Azure read failure.
+3. Open or refresh the dashboard.
+4. Assert: the dashboard continues rendering from cached data.
+5. Assert: the UI indicates cached/offline status rather than implying a fresh
+   live refresh succeeded.
+6. Repeat with no cache present.
+7. Assert: the app shows an actionable offline or connectivity error.
+
+---
+
+### T-KA-406  Guarded operator controls stay hidden during normal kiosk use
+
+**Validates:** KA-0406
+
+**Procedure:**
+1. Open dashboard mode in steady-state kiosk presentation.
+2. Assert: no persistent settings toolbar or administrator menu consumes chart area.
+3. Perform ordinary swipe and pull-to-refresh gestures.
+4. Assert: operator controls do not appear accidentally.
+5. Perform the guarded operator gesture or equivalent deliberate action.
+6. Assert: reset and re-import actions become available.
+
+---
+
+### T-KA-407  Telemetry cache eviction preserves recent dashboard usefulness
+
+**Validates:** KA-0407
+
+**Procedure:**
+1. Configure the kiosk cache near its retention or size limit.
+2. Insert additional telemetry until eviction is required.
+3. Assert: cache growth remains bounded.
+4. Assert: older or less recently used historical telemetry is evicted before
+   recently used dashboard data.
+5. Restart the app.
+6. Assert: enough recent data remains to support warm startup for recently used
+   dashboards.
+
+---
+
 ## 7  Revision history
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-19 | evolve skill | Added optional kiosk validation coverage for offline cached presentation, guarded operator controls, and bounded cache eviction. |
 | 2026-06-19 | evolve skill | Added initial kiosk dashboard app validation coverage for setup flow, shared-app certificate attachment, dashboard-only UI, fixed imported layouts, persistent telemetry cache, background refresh, pull-to-refresh, and swipe navigation. |

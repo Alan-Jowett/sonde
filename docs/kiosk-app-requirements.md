@@ -402,8 +402,70 @@ overlap.
 
 ---
 
+### KA-0405  Offline behavior
+
+**Priority:** Should  
+**Source:** follow-up spec hardening review
+
+**Description:**  
+When network connectivity or Azure service access is unavailable, the kiosk app
+SHOULD continue presenting the most recent locally cached dashboard data while
+clearly indicating that live refresh is unavailable.
+
+**Acceptance criteria:**
+
+1. If cached dashboard data exists, the kiosk app continues rendering it while
+   network or Azure reads are unavailable.
+2. The kiosk UI distinguishes cached/offline presentation from fresh live data.
+3. Background refresh failures caused by offline conditions do not force the app
+   out of dashboard mode when usable cached data exists.
+4. If no cached data exists and live fetch is unavailable, the app surfaces an
+   actionable offline or connectivity error.
+
+---
+
+### KA-0406  Minimal operator UI
+
+**Priority:** Should  
+**Source:** follow-up spec hardening review
+
+**Description:**  
+The kiosk app SHOULD minimize persistent operator chrome while still exposing a
+guarded path to reset or re-import configuration.
+
+**Acceptance criteria:**
+
+1. Normal dashboard presentation does not dedicate persistent screen space to a
+   settings toolbar or administrator menu.
+2. A guarded operator-only affordance exists for reset and re-import actions.
+3. The guarded affordance requires an intentional gesture sequence or equivalent
+   deliberate action so it is not triggered accidentally during kiosk use.
+
+---
+
+### KA-0407  Telemetry cache eviction
+
+**Priority:** Should  
+**Source:** follow-up spec hardening review
+
+**Description:**  
+The kiosk app SHOULD bound persistent telemetry cache growth using an explicit
+eviction policy so long-running kiosk use does not consume unbounded local
+storage.
+
+**Acceptance criteria:**
+
+1. The cache implementation defines a bounded retention or size policy.
+2. Eviction prefers removing the least valuable historical data before more
+   recently used dashboard data.
+3. Eviction preserves enough recent data to support warm startup and fast
+   dashboard switching under normal kiosk use.
+
+---
+
 ## 7  Revision history
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-19 | evolve skill | Added optional kiosk hardening requirements for offline behavior, guarded minimal operator UI, and bounded telemetry cache eviction. |
 | 2026-06-19 | evolve skill | Added initial Android kiosk dashboard app requirements for static imported dashboards, one-time user setup, per-kiosk certificate credentials, app-authenticated reads, persistent telemetry cache, swipe navigation, and additive-only scope. |

@@ -219,6 +219,21 @@ The kiosk frontend adds two mobile gestures:
 The gesture layer is orthogonal to the shared dashboard runtime and must not
 change imported dashboard semantics.
 
+### 4.5  Guarded operator controls
+
+The kiosk frontend keeps operator controls off the steady-state dashboard
+surface. Reset and re-import remain available through a guarded entrypoint such
+as a hidden gesture, long-press corner affordance, or similarly deliberate
+interaction.
+
+The guarded operator entrypoint must:
+
+1. avoid consuming persistent chart area,
+2. resist accidental activation during ordinary dashboard swiping or
+   pull-to-refresh, and
+3. lead to the minimal operator actions needed for reset, re-import, and setup
+   recovery.
+
 ---
 
 ## 5  Telemetry data flow and caching
@@ -269,6 +284,35 @@ Refresh is triggered by:
 
 The frontend keeps the current dashboard visible while refresh is in progress.
 
+### 5.5  Offline presentation
+
+If a refresh cannot complete because the device is offline or Azure reads are
+temporarily unavailable, the kiosk remains in dashboard mode when usable cached
+data exists.
+
+In that case the frontend:
+
+1. continues rendering the most recent cached dashboard state,
+2. marks the display as cached/offline rather than silently implying fresh data,
+   and
+3. continues retrying through the normal background or manual refresh paths.
+
+If no usable cache exists, the kiosk shows an actionable connectivity or
+authentication error rather than an empty success-shaped dashboard.
+
+### 5.6  Cache bounds and eviction
+
+The persistent telemetry cache is explicitly bounded. The implementation may use
+an LRU-like policy, time-window trimming, or a hybrid policy, but it must
+preserve the kiosk goals of:
+
+1. warm startup after restart,
+2. fast switching among recently viewed dashboards, and
+3. bounded local storage growth during long-lived kiosk operation.
+
+Eviction therefore targets older or less recently used historical telemetry
+before more recent data that is likely to support the active dashboard set.
+
 ---
 
 ## 6  Azure and security integration
@@ -307,7 +351,8 @@ used to attach the credential is an implementation detail, but the contract is:
 | KA-0200, KA-0201 | §§3.1, 4.1 |
 | KA-0202, KA-0203, KA-0204, KA-0205 | §§3, 6 |
 | KA-0300, KA-0301, KA-0302, KA-0303 | §4 |
-| KA-0400, KA-0401, KA-0402, KA-0403, KA-0404 | §5, §6 |
+| KA-0400, KA-0401, KA-0402, KA-0403, KA-0404, KA-0405, KA-0407 | §5, §6 |
+| KA-0406 | §4.5 |
 
 ---
 
@@ -315,4 +360,5 @@ used to attach the credential is an implementation detail, but the contract is:
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-19 | evolve skill | Added optional kiosk design coverage for offline cached presentation, guarded operator-only controls, and bounded cache eviction. |
 | 2026-06-19 | evolve skill | Added initial kiosk dashboard app design covering shared dashboard-runtime extraction, one-time setup/user sign-in, per-kiosk certificate attachment to the shared Entra app, app-authenticated reads, persistent telemetry caching, and swipe/pull-to-refresh UX. |

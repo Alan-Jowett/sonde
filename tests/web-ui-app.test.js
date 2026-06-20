@@ -109,6 +109,7 @@ global.atob = (value) => Buffer.from(value, 'base64').toString('binary');
 global.btoa = (value) => Buffer.from(value, 'binary').toString('base64');
 
 const app = require(path.resolve(__dirname, '..', 'deploy', 'web-ui', 'app.js'));
+const dashboardRuntime = require(path.resolve(__dirname, '..', 'deploy', 'web-ui', 'dashboard-runtime.js'));
 
 test.beforeEach(() => {
   resetStorages();
@@ -914,6 +915,49 @@ test('buildEnvironmentExportData omits dashboard validation annotations', () => 
     }],
     timeRange: { preset: '24h', start: null, end: null },
   }]);
+});
+
+test('dashboard-runtime module normalizes and exports environments with the same SPA semantics', () => {
+  const env = {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: {
+      viewMode: 'table',
+      timeRange: '7d',
+      selectedSeries: ['new-series'],
+      selectedSeriesInitialized: true,
+      seriesOverrides: {
+        'new-series': {
+          displayName: 'Imported',
+          scaleDivisor: 1000,
+          unitSuffix: '°C',
+        },
+      },
+    },
+    dashboards: [{
+      name: 'Imported Dashboard',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      metrics: [{ id: 'metric-1', displayName: 'Temp', expression: 'TEMP / 1000', color: '#123456' }],
+      timeRange: { preset: '24h', start: null, end: null },
+    }],
+  };
+
+  const deps = {
+    sanitizeSensorDataPreferences: app.sanitizeSensorDataPreferences,
+    validateExpressionFn: app.validateExpression,
+  };
+
+  assert.deepEqual(
+    dashboardRuntime.normalizeEnvironmentRecord(env, deps),
+    app.normalizeEnvironmentRecord(env),
+  );
+  assert.deepEqual(
+    dashboardRuntime.buildEnvironmentExportData(env, deps),
+    app.buildEnvironmentExportData(env),
+  );
 });
 
 test('renderDashboardContent defaults the Variables pane to expanded', () => {

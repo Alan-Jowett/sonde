@@ -431,6 +431,26 @@
     return `${year}-${month}-${day}T${hours}:${minutes}`;
   }
 
+  function describeDashboardTimeRange(timeRange) {
+    const normalized = normalizeDashboardTimeRange(timeRange);
+    switch (normalized.preset) {
+      case '1h':
+        return 'Last Hour';
+      case '6h':
+        return 'Last 6 Hours';
+      case '24h':
+        return 'Last 24 Hours';
+      case '7d':
+        return 'Last 7 Days';
+      case 'custom':
+        if (Number.isFinite(normalized.start) && Number.isFinite(normalized.end)) {
+          return `${new Date(normalized.start).toLocaleString()} - ${new Date(normalized.end).toLocaleString()}`;
+        }
+        return 'Custom Range';
+      default:
+        return 'Last 24 Hours';
+    }
+  }
   function renderDashboardTabs(dashboards, activeIndex) {
     const tabs = dashboards.map((dashboard, index) => `
     <div class="dashboard-tab-item">
@@ -449,7 +469,8 @@
   `;
   }
 
-  function renderVariablesList(variables) {
+  function renderVariablesList(variables, options = {}) {
+    const readOnly = options.readOnly === true;
     if (variables.length === 0) {
       return '<p class="text-muted">No variables defined yet.</p>';
     }
@@ -458,10 +479,12 @@
     <tr>
       <td><code>${escapeHtml(variable.name)}</code></td>
       <td>${escapeHtml(variable.nodeId)} - ${escapeHtml(variable.readingType)}</td>
+      ${readOnly ? '' : `
       <td>
         <button class="btn-sm" data-edit-variable="${index}">Edit</button>
         <button class="btn-sm btn-danger" data-delete-variable="${index}">Delete</button>
       </td>
+      `}
     </tr>
   `).join('');
 
@@ -471,7 +494,7 @@
         <tr>
           <th>Variable</th>
           <th>Data Source</th>
-          <th>Actions</th>
+          ${readOnly ? '' : '<th>Actions</th>'}
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -479,17 +502,20 @@
   `;
   }
 
-  function renderMetricCard(metric, chartIndex, metricIndex) {
+  function renderMetricCard(metric, chartIndex, metricIndex, options = {}) {
+    const readOnly = options.readOnly === true;
     const hasError = metric._validationError;
     const hasWarning = metric._validationWarning;
     return `
     <div class="metric-card ${hasError ? 'metric-error' : ''}" id="metric-${chartIndex}-${metricIndex}">
       <div class="metric-header">
         <h5>${escapeHtml(metric.displayName || `Metric ${metricIndex + 1}`)}</h5>
+        ${readOnly ? '' : `
         <div class="metric-actions">
           <button class="btn-sm" data-edit-metric-chart="${chartIndex}" data-edit-metric-index="${metricIndex}">Edit</button>
           <button class="btn-sm btn-danger" data-delete-metric-chart="${chartIndex}" data-delete-metric-index="${metricIndex}">Delete</button>
         </div>
+        `}
       </div>
       <div class="metric-expression">
         <code>${escapeHtml(metric.expression)}</code>
@@ -500,7 +526,8 @@
   `;
   }
 
-  function renderChartCard(chart, chartIndex, variableCount) {
+  function renderChartCard(chart, chartIndex, variableCount, options = {}) {
+    const readOnly = options.readOnly === true;
     const metricsOpenAttr = chart.metricsCollapsed === true ? '' : ' open';
     const metricCount = chart.metrics.length;
     return `
@@ -511,19 +538,25 @@
             <span class="chart-pane-title">${escapeHtml(chart.name)}</span>
             <span class="chart-pane-meta">${metricCount} metric${metricCount === 1 ? '' : 's'}</span>
           </span>
+          ${readOnly ? '' : `
           <span class="chart-actions">
             <button class="btn-sm" data-edit-chart="${chartIndex}">Rename</button>
             <button class="btn-sm btn-danger" data-delete-chart="${chartIndex}">Delete</button>
           </span>
+          `}
         </summary>
         <div class="chart-metrics-pane-body">
+          ${readOnly ? '' : `
           <div class="chart-metrics-actions">
             <button class="btn-sm btn-primary" data-add-metric="${chartIndex}">+ Add Metric</button>
           </div>
+          `}
           <div class="chart-metrics">
             ${chart.metrics.length === 0
-              ? `<p class="text-muted">No metrics yet. ${variableCount === 0 ? 'Add variables first, then ' : ''}click "+ Add Metric" for this chart.</p>`
-              : chart.metrics.map((metric, metricIndex) => renderMetricCard(metric, chartIndex, metricIndex)).join('')
+              ? (readOnly
+                ? '<p class="text-muted">No metrics are defined for this chart.</p>'
+                : `<p class="text-muted">No metrics yet. ${variableCount === 0 ? 'Add variables first, then ' : ''}click "+ Add Metric" for this chart.</p>`)
+              : chart.metrics.map((metric, metricIndex) => renderMetricCard(metric, chartIndex, metricIndex, options)).join('')
             }
           </div>
         </div>
@@ -537,13 +570,17 @@
   `;
   }
 
-  function renderDashboardContent(dashboard) {
+  function renderDashboardContent(dashboard, options = {}) {
+    const readOnly = options.readOnly === true;
     const timeRange = normalizeDashboardTimeRange(dashboard.timeRange);
     const variablesOpenAttr = dashboard.variablesCollapsed === true ? '' : ' open';
     return `
     <div class="dashboard-header">
       <h2>${escapeHtml(dashboard.name)}</h2>
       <div class="dashboard-header-controls">
+        ${readOnly ? `
+        <span class="dashboard-time-range-label">${escapeHtml(describeDashboardTimeRange(timeRange))}</span>
+        ` : `
         <select id="dashboard-time-range" class="time-range-select">
           <option value="1h" ${timeRange.preset === '1h' ? 'selected' : ''}>Last Hour</option>
           <option value="6h" ${timeRange.preset === '6h' ? 'selected' : ''}>Last 6 Hours</option>
@@ -566,6 +603,7 @@
           ${timeRange.preset === 'custom' ? '' : 'disabled'}
         >
         <button class="btn btn-secondary" id="edit-dashboard-name-btn">Rename</button>
+        `}
       </div>
     </div>
 
@@ -575,23 +613,34 @@
         <span class="dashboard-pane-meta">${dashboard.variables.length} defined</span>
       </summary>
       <div class="dashboard-pane-body">
+        ${readOnly ? '' : `
         <div class="dashboard-pane-actions">
           <button class="btn btn-sm btn-secondary" id="add-variable-btn">+ Add Variable</button>
         </div>
-        ${renderVariablesList(dashboard.variables)}
+        `}
+        ${renderVariablesList(dashboard.variables, options)}
       </div>
     </details>
 
     <div class="dashboard-charts">
-      <h3>Charts <button class="btn btn-sm btn-primary" id="add-chart-btn">+ Add Chart</button></h3>
+      <h3>Charts${readOnly ? '' : ' <button class="btn btn-sm btn-primary" id="add-chart-btn">+ Add Chart</button>'}</h3>
       ${dashboard.charts.length === 0
-        ? '<p class="text-muted">No charts yet. Click "+ Add Chart" above to get started.</p>'
-        : dashboard.charts.map((chart, chartIndex) => renderChartCard(chart, chartIndex, dashboard.variables.length)).join('')
+        ? (readOnly
+          ? '<p class="text-muted">No charts are defined for this dashboard.</p>'
+          : '<p class="text-muted">No charts yet. Click "+ Add Chart" above to get started.</p>')
+        : dashboard.charts.map((chart, chartIndex) => renderChartCard(chart, chartIndex, dashboard.variables.length, options)).join('')
       }
     </div>
   `;
   }
 
+  function renderReadOnlyDashboardPage(dashboard) {
+    return `
+    <section class="dashboard-page dashboard-page--read-only">
+      ${renderDashboardContent(dashboard, { readOnly: true })}
+    </section>
+  `;
+  }
   function getDashboardTimeRangeBounds(timeRange, nowMs = Date.now()) {
     const normalized = normalizeDashboardTimeRange(timeRange);
     if (normalized.preset === 'custom') {
@@ -857,6 +906,7 @@
     normalizeEnvironmentRecord,
     renderChartCard,
     renderDashboardContent,
+    renderReadOnlyDashboardPage,
     renderDashboardTabs,
     renderMetricCharts,
     serializeDashboard,

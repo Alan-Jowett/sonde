@@ -677,7 +677,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 4. Assert: the program's I2C traffic is limited to the documented VEML7700 registers needed for configuration and measurement.
 5. Assert: the program calls `delay_us()` with a duration consistent with the selected integration-time profile before reading result registers.
 6. Assert: the program emits APP_DATA via `send_async()` or `send()` with a payload containing the written configuration word, the mocked ALS/WHITE counts, and the derived lux value.
-7. Assert: if the mock HAL injects an I2C error on a documented register access, the program emits no APP_DATA for that wake cycle.
+7. Assert: if the mock HAL injects an I2C error while writing the measurement configuration or reading the `ALS`/`WHITE` result registers, the program emits no APP_DATA for that wake cycle.
 
 ---
 

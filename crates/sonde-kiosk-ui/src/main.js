@@ -461,7 +461,12 @@ async function loadStoredTelemetryCache(deps = {}) {
   if (!raw) {
     return new Map();
   }
-  return parseTelemetryCacheJson(raw);
+  try {
+    return parseTelemetryCacheJson(raw);
+  } catch {
+    await clearStoredTelemetryCache(deps);
+    return new Map();
+  }
 }
 
 async function persistTelemetryCache(deps = {}) {
@@ -611,13 +616,13 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
       const response = validateFetchDashboardVariableDataResponse(
         await fetchDashboardVariableData(refreshRequest, deps),
       );
-      cacheTelemetryRefreshResponse(environment, refreshRequest, response);
-      await persistTelemetryCache(deps);
       if (refreshGeneration !== APP_STATE.refreshGeneration
         || environment !== APP_STATE.activeEnvironment
         || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex) {
         return;
       }
+      cacheTelemetryRefreshResponse(environment, refreshRequest, response);
+      await persistTelemetryCache(deps);
       const refreshedAtMs = Number.isFinite(response?.refreshedAtMs)
         ? Number(response.refreshedAtMs)
         : nowFn();

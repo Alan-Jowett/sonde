@@ -337,6 +337,65 @@ test('triggerDashboardRefresh rejects invalid telemetry payloads', async () => {
   assert.match(kiosk.APP_STATE.telemetryNotice, /invalid response payload/i);
 });
 
+test('triggerDashboardRefresh does not persist telemetry after reset clears the active environment', async () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  let releaseRefresh;
+  let persisted = false;
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache.clear();
+  kiosk.APP_STATE.refreshInFlightPromise = null;
+
+  const refreshPromise = kiosk.triggerDashboardRefresh('manual', {
+    nowFn: () => 9_000,
+    fetchDashboardVariableDataFn: async () => {
+      await new Promise((resolve) => {
+        releaseRefresh = resolve;
+      });
+      return {
+        refreshedAtMs: 9_000,
+        series: [{
+          nodeId: 'NODE_001',
+          readingType: 'temp_mc',
+          points: [{ timestampMs: 8_000, value: 20.25 }],
+        }],
+      };
+    },
+    invoke: async (command) => {
+      if (command === 'save_telemetry_cache_json') {
+        persisted = true;
+      }
+      return null;
+    },
+  });
+
+  kiosk.APP_STATE.activeEnvironment = null;
+  kiosk.APP_STATE.refreshGeneration += 1;
+  releaseRefresh();
+  await refreshPromise;
+
+  assert.equal(persisted, false);
+  assert.equal(kiosk.APP_STATE.telemetryCache.size, 0);
+});
+
 test('interpretDashboardGesture distinguishes refresh from horizontal navigation', () => {
   assert.equal(kiosk.interpretDashboardGesture(-120, 10), 'next');
   assert.equal(kiosk.interpretDashboardGesture(120, 10), 'previous');
@@ -429,4 +488,20 @@ test('telemetry cache JSON round-trips through parse and serialize helpers', () 
       refreshedAtMs: 9_000,
     },
   ]]);
+});
+
+test('loadStoredTelemetryCache clears corrupted persisted cache and recovers with an empty map', async () => {
+  const invoked = [];
+  const cache = await kiosk.loadStoredTelemetryCache({
+    invoke: async (command) => {
+      invoked.push(command);
+      if (command === 'get_telemetry_cache_json') {
+        return '{not valid json';
+      }
+      return null;
+    },
+  });
+
+  assert.equal(cache.size, 0);
+  assert.deepEqual(invoked, ['get_telemetry_cache_json', 'clear_telemetry_cache_json']);
 });

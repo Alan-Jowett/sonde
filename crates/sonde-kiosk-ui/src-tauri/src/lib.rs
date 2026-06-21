@@ -84,7 +84,7 @@ fn read_optional_file_to_string(path: &Path) -> Result<Option<String>, String> {
         Ok(json) => Ok(Some(json)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!(
-            "failed to read kiosk environment from {}: {error}",
+            "failed to read kiosk app data from {}: {error}",
             path.display()
         )),
     }
@@ -94,7 +94,7 @@ fn write_string_to_path(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
-                "failed to create kiosk environment directory {}: {error}",
+                "failed to create kiosk app data directory {}: {error}",
                 parent.display()
             )
         })?;

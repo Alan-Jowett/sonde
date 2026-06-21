@@ -165,11 +165,17 @@ static __noinline __u16 veml7700_select_conf(void)
 
 static __noinline void veml7700_record_lux_ml(__u32 lux_ml)
 {
-    state.recent_lux_ml[state.recent_index] = lux_ml;
-    if (state.recent_index >= 2u)
+    __u8 index = state.recent_index;
+
+    if (index >= 3u)
+        index = 0u;
+    state.recent_index = index;
+
+    state.recent_lux_ml[index] = lux_ml;
+    if (index >= 2u)
         state.recent_index = 0u;
     else
-        state.recent_index += 1u;
+        state.recent_index = index + 1u;
     if (state.recent_count < 3u)
         state.recent_count += 1u;
 }

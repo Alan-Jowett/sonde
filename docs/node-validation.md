@@ -53,9 +53,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 - `send_program` — calls `send()` with a fixed blob.
 - `send_recv_program` — calls `send_recv()` and checks the reply.
 - `map_program` — reads and writes a map.
-- `global_rodata_program` — reads a compile-time initialized global variable.
-- `global_data_program` — reads and updates a writable global variable with initial data.
-- `global_bss_program` — reads and updates a zero-initialized global variable.
+- `globals_diagnostic_program` — combined resident diagnostic program that emits one compact fixed-width binary report per wake covering `.rodata`, `.data`, and `.bss`. The source ELF also carries a paired `SEC("decoder")` section for gateway-side decoding, but node-validation exercises the resident `sonde` image directly.
 - `early_wake_program` — calls `set_next_wake(10)`.
 - `oversized_map_program` — declares maps exceeding the memory budget.
 - `deep_call_program` — BPF-to-BPF calls at max depth (8 frames).
@@ -930,11 +928,11 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0504, ND-0606, ND-0607
 
 **Procedure:**
-1. Build a resident BPF program with a compile-time initialized `.rodata` global (for example, `const uint32_t threshold = 1337;`) and map relocations emitted by the ELF loader.
+1. Build or load `globals_diagnostic_program`, whose fixed-width report contains at least `wake_index`, `rodata_value`, `data_before`, `data_after`, `bss_before`, and `bss_after`.
 2. Install the program on the node.
-3. Run one wake cycle with the program instrumented to report the global's value through an observable side effect (for example, `send()` or a test helper-visible map write).
+3. Run one wake cycle and capture the emitted APP_DATA blob.
 4. Assert: the program executes successfully.
-5. Assert: the observed value equals the compile-time `.rodata` initializer.
+5. Assert: `rodata_value` in the report equals the program-defined compile-time `.rodata` initializer.
 
 ---
 
@@ -943,11 +941,11 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0504, ND-0603, ND-0606, ND-0607
 
 **Procedure:**
-1. Build a resident BPF program with a writable `.data` global initialized to a known value (for example, `uint32_t counter = 7;`).
+1. Build or load `globals_diagnostic_program`.
 2. Install the program on the node.
-3. Run one wake cycle where the program reads the global, updates it, and reports both the pre-update and post-update values through an observable side effect.
-4. Assert: the pre-update value equals the compile-time initializer.
-5. Assert: the post-update value reflects the program's write.
+3. Run one wake cycle and capture the emitted APP_DATA blob.
+4. Assert: `data_before` equals the program-defined compile-time `.data` initializer.
+5. Assert: `data_after` reflects the program's in-wake write and differs from `data_before` in the expected direction.
 
 ---
 
@@ -956,12 +954,13 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0504, ND-0603, ND-0606, ND-0607
 
 **Procedure:**
-1. Build a resident BPF program with a writable zero-initialized `.bss` global (for example, `uint32_t counter;`).
+1. Build or load `globals_diagnostic_program`.
 2. Install the program on the node.
-3. Run one wake cycle where the program reports the global's initial value, then updates it to a non-zero value.
-4. Assert: the reported initial value is `0`.
-5. Trigger a second wake cycle with the same resident program.
-6. Assert: the program observes the value written during the first wake cycle, demonstrating persistence across deep sleep.
+3. Run the first wake cycle and capture the emitted APP_DATA blob.
+4. Assert: `wake_index` identifies the first observation and `bss_before` is `0`.
+5. Assert: `bss_after` is non-zero, proving the program wrote the `.bss`-backed global.
+6. Trigger a second wake cycle with the same resident program and capture the second APP_DATA blob.
+7. Assert: the second report's `bss_before` equals the first report's `bss_after`, demonstrating persistence across deep sleep.
 
 ---
 

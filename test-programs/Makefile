@@ -39,7 +39,8 @@ SRCS   := nop.c \
           bmp280_sensor.c \
           tmp102_sensor.c \
           sht40_sensor.c \
-          veml7700_sensor.c
+          veml7700_sensor.c \
+          globals_diagnostic.c
 
 OBJS   := $(SRCS:.c=.o)
 

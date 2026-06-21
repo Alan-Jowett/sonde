@@ -25,7 +25,7 @@ These tests validate that:
 
 ## 2  Architecture
 
-All core components (gateway engine, modem bridge, node mock) run **in a single process** within one tokio runtime. No serial ports, PTYs, or network sockets are required. The one exception is APP_DATA handler tests (T-E2E-030/031), which spawn a small stub executable via `HandlerRouter` to exercise the real handler stdio path. This stub is built as a `[[bin]]` target in the E2E crate and is self-contained. All tests are deterministic and portable (Linux, macOS, Windows CI).
+All core components (gateway engine, modem bridge, node mock) run **in a single process** within one tokio runtime. No serial ports, PTYs, or network sockets are required. The one exception is APP_DATA handler tests (T-E2E-030/031/031a), which spawn a small stub executable via `HandlerRouter` to exercise the real handler stdio path. This stub is built as a `[[bin]]` target in the E2E crate and is self-contained. All tests are deterministic and portable (Linux, macOS, Windows CI).
 
 ```
 ┌──────────────┐        duplex()        ┌──────────────────┐
@@ -52,11 +52,11 @@ All core components (gateway engine, modem bridge, node mock) run **in a single 
 
 ### 2.1  Gateway side
 
-- **Engine:** Real `Gateway` from `sonde_gateway::engine`. Tests that don't need APP_DATA handling use `Gateway::new_with_pending()`. Tests that exercise APP_DATA routing (T-E2E-030, T-E2E-031) use `Gateway::new_with_handler()` with a `HandlerRouter` configured to spawn a small stub executable (see below).
+- **Engine:** Real `Gateway` from `sonde_gateway::engine`. Tests that don't need APP_DATA handling use `Gateway::new_with_pending()`. Tests that exercise APP_DATA routing (T-E2E-030, T-E2E-031, T-E2E-031a) use `Gateway::new_with_handler()` with a `HandlerRouter` configured to spawn a small stub executable (see below).
 - **Storage:** `SqliteStorage::in_memory()` for test isolation (no files).
 - **Transport:** `UsbEspNowTransport::new(duplex_client, channel)` — the gateway's modem adapter connected to the in-memory duplex stream.
 - **Admin:** Direct function calls on `Gateway` and `Storage` (no gRPC in E2E tests). Admin operations are exercised by calling storage/engine methods directly, avoiding the need for network sockets.
-- **Handler:** For APP_DATA tests (T-E2E-030/031) only: `HandlerRouter` spawns a stub executable built as a `[[bin]]` target in the E2E crate. The stub uses the gateway's handler framing protocol: 4-byte big-endian length prefix followed by CBOR payload (matching `sonde_gateway::handler::write_message`/`read_message`). It reads DATA messages from stdin, writes DATA_REPLY to stdout. Protocol-only tests do not use a handler.
+- **Handler:** For APP_DATA tests (T-E2E-030/031/031a) only: `HandlerRouter` spawns a stub executable built as a `[[bin]]` target in the E2E crate. The stub uses the gateway's handler framing protocol: 4-byte big-endian length prefix followed by CBOR payload (matching `sonde_gateway::handler::write_message`/`read_message`). It reads DATA messages from stdin, writes DATA_REPLY to stdout. Protocol-only tests do not use a handler.
 
 ### 2.2  Modem bridge
 
@@ -140,7 +140,7 @@ Each test follows this sequence:
 3. **Create PipeSerial adapter:** Bridges the sync `SerialPort` trait (used by `Bridge`) to the async duplex stream (used by `UsbEspNowTransport`). A background tokio task shuttles bytes between the duplex server half and the adapter's internal ring buffers.
 4. **Start modem bridge:** Spawn a **std::thread** running a bridge poll loop. Construct `let mut bridge = Bridge::new(pipe_serial, channel_radio, ModemCounters::new())` (note: `ModemCounters::new()` already returns `Arc`). The loop checks an `AtomicBool` stop flag each iteration and sleeps unconditionally for 1ms after each `poll()` call (since `Bridge::poll()` returns `()` and does not report whether work was done). The thread is joined at test teardown.
 5. **Start gateway transport:** `UsbEspNowTransport::new(duplex_client, channel)` — this runs the startup handshake (RESET → MODEM_READY → SET_CHANNEL → SET_CHANNEL_ACK) against the bridge.
-6. **Create gateway engine:** `Gateway::new_with_pending(storage, pending_commands, session_manager)` for protocol tests, or `Gateway::new_with_handler(storage, session_timeout, handler_router)` for APP_DATA tests (T-E2E-030/031). Commands are queued via `Gateway::queue_command()` when using the handler variant.
+6. **Create gateway engine:** `Gateway::new_with_pending(storage, pending_commands, session_manager)` for protocol tests, or `Gateway::new_with_handler(storage, session_timeout, handler_router)` for APP_DATA tests (T-E2E-030/031/031a). Commands are queued via `Gateway::queue_command()` when using the handler variant.
 7. **Register test nodes:** Insert `NodeRecord` into storage with known PSKs.
 8. **Run test scenario:** Drive node wake cycles (via `spawn_blocking` since `run_wake_cycle` is sync) and assert on gateway behavior.
 9. **Teardown:** Set the stop flag, join the bridge thread, drop the transport.
@@ -437,6 +437,28 @@ impl E2eNode {
 **Assertions:**
 - Handler received the data.
 - No APP_DATA_REPLY frame sent to node.
+
+---
+
+#### T-E2E-031a  Globals diagnostic program is decoded and logged end-to-end
+
+**Validates:** GW-0500, GW-0508, GW-1903, ND-0504, ND-0602, ND-0603, ND-0606, ND-0607.
+
+**Preconditions:**
+1. Node registered with a PSK and assigned `globals_diagnostic_program`.
+2. The assigned ELF includes a paired `SEC("decoder")` section that decodes the program's compact fixed-width binary diagnostic payload into named readings.
+3. Gateway configured with a handler that emits one LOG message per diagnostic DATA message using the decoder-produced `readings` field.
+
+**Procedure:**
+1. Complete the initial WAKE/COMMAND/program-update flow so the resident program is installed.
+2. Run a first wake cycle with the resident program. Capture the gateway log output.
+3. Run a second wake cycle with the same installed program, without reinstalling it. Capture the gateway log output.
+
+**Assertions:**
+- Each wake produces exactly one APP_DATA message routed through the decoder and handler pipeline.
+- The first handler LOG message reflects the first-wake diagnostic state: `.rodata` read succeeded, `.data` shows initializer then post-write value, and `.bss` starts at zero.
+- The second handler LOG message reflects persistence: `.bss` before-value matches the non-zero value written during the first wake.
+- No APP_DATA_REPLY frame is sent to the node.
 
 ---
 
@@ -950,6 +972,7 @@ impl E2eNode {
 | T-E2E-022 | GW-0202, ND-0503 |
 | T-E2E-030 | GW-0500, GW-0501, ND-0602 |
 | T-E2E-031 | GW-0500, ND-0602 |
+| T-E2E-031a | GW-0500, GW-0508, GW-1903, ND-0504, ND-0602, ND-0603, ND-0606, ND-0607 |
 | T-E2E-032 | GW-0500, GW-0600, ND-0300, ND-0602 |
 | T-E2E-040 | GW-1002, ND-0700 |
 | T-E2E-041 | GW-0602, ND-0303 |
@@ -988,7 +1011,7 @@ crates/sonde-e2e/
 └── tests/
     ├── harness.rs      # shared test setup (ChannelRadio, ChannelTransport, E2eNode, BLE pairing helpers, etc.)
     ├── e2e_tests.rs    # test cases T-E2E-060..070, T-E2E-081, T-E2E-083
-    └── aead_e2e_tests.rs  # AEAD and handler routing tests: T-E2E-001..004, T-E2E-030..034
+    └── aead_e2e_tests.rs  # AEAD and handler routing tests: T-E2E-001..004, T-E2E-030..034 plus T-E2E-031a
 ```
 
 ### 6.2  Async ↔ sync bridge

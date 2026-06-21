@@ -1720,6 +1720,7 @@ mod tests {
     mod aead_tests {
         use super::*;
         use crate::node_aead::NodeAead;
+        use sonde_bpf::ebpf;
         use sonde_protocol::{decode_frame, encode_frame, open_frame};
 
         /// Encode a COMMAND response using AES-GCM for test fixtures.
@@ -1749,6 +1750,131 @@ mod tests {
                 nonce,
             };
             encode_frame(&header, &payload_cbor, psk, &aead, &sha).unwrap()
+        }
+
+        fn insn(opc: u8, dst: u8, src: u8, off: i16, imm: i32) -> [u8; 8] {
+            let regs = ((src & 0x0f) << 4) | (dst & 0x0f);
+            let off_bytes = off.to_le_bytes();
+            let imm_bytes = imm.to_le_bytes();
+            [
+                opc,
+                regs,
+                off_bytes[0],
+                off_bytes[1],
+                imm_bytes[0],
+                imm_bytes[1],
+                imm_bytes[2],
+                imm_bytes[3],
+            ]
+        }
+
+        fn prog_from(insns: &[[u8; 8]]) -> Vec<u8> {
+            insns.iter().flat_map(|i| i.iter().copied()).collect()
+        }
+
+        fn lddw_map(dst: u8, map_index: i32) -> [[u8; 8]; 2] {
+            [
+                insn(ebpf::LD_DW_IMM, dst, 1, 0, map_index),
+                insn(0, 0, 0, 0, 0),
+            ]
+        }
+
+        fn program_image(
+            bytecode: Vec<u8>,
+            maps: Vec<sonde_protocol::MapDef>,
+            map_initial_data: Vec<Vec<u8>>,
+            map_readonly: Vec<bool>,
+        ) -> Vec<u8> {
+            sonde_protocol::ProgramImage {
+                bytecode,
+                maps,
+                map_initial_data,
+                map_readonly,
+            }
+            .encode_deterministic()
+            .unwrap()
+        }
+
+        fn resident_command(psk: &[u8; 32], nonce: u64) -> Vec<u8> {
+            make_command(psk, nonce, &CommandPayload::Nop)
+        }
+
+        fn next_mock_nonce(rng: &MockRng) -> u64 {
+            rng.0 + 1
+        }
+
+        fn rodata_read_program() -> Vec<u8> {
+            let lddw_rodata = lddw_map(1, 0);
+            let lddw_output = lddw_map(1, 1);
+            prog_from(&[
+                lddw_rodata[0],
+                lddw_rodata[1],
+                insn(ebpf::ST_W_IMM, 10, 0, -4, 0),
+                insn(ebpf::MOV64_REG, 2, 10, 0, 0),
+                insn(ebpf::ADD64_IMM, 2, 0, 0, -4),
+                insn(
+                    ebpf::CALL,
+                    0,
+                    0,
+                    0,
+                    crate::bpf_helpers::helper_ids::MAP_LOOKUP_ELEM as i32,
+                ),
+                insn(ebpf::LD_W_REG, 6, 0, 0, 0),
+                insn(ebpf::ST_W_REG, 10, 6, -8, 0),
+                lddw_output[0],
+                lddw_output[1],
+                insn(ebpf::MOV64_REG, 2, 10, 0, 0),
+                insn(ebpf::ADD64_IMM, 2, 0, 0, -4),
+                insn(ebpf::MOV64_REG, 3, 10, 0, 0),
+                insn(ebpf::ADD64_IMM, 3, 0, 0, -8),
+                insn(ebpf::MOV64_IMM, 4, 0, 0, 0),
+                insn(
+                    ebpf::CALL,
+                    0,
+                    0,
+                    0,
+                    crate::bpf_helpers::helper_ids::MAP_UPDATE_ELEM as i32,
+                ),
+                insn(ebpf::MOV64_IMM, 0, 0, 0, 0),
+                insn(ebpf::EXIT, 0, 0, 0, 0),
+            ])
+        }
+
+        fn increment_global_program() -> Vec<u8> {
+            let lddw_map0 = lddw_map(1, 0);
+            prog_from(&[
+                lddw_map0[0],
+                lddw_map0[1],
+                insn(ebpf::ST_W_IMM, 10, 0, -4, 0),
+                insn(ebpf::MOV64_REG, 2, 10, 0, 0),
+                insn(ebpf::ADD64_IMM, 2, 0, 0, -4),
+                insn(
+                    ebpf::CALL,
+                    0,
+                    0,
+                    0,
+                    crate::bpf_helpers::helper_ids::MAP_LOOKUP_ELEM as i32,
+                ),
+                insn(ebpf::LD_W_REG, 6, 0, 0, 0),
+                insn(ebpf::ADD64_IMM, 6, 0, 0, 1),
+                insn(ebpf::ST_W_REG, 10, 6, -8, 0),
+                lddw_map0[0],
+                lddw_map0[1],
+                insn(ebpf::MOV64_REG, 2, 10, 0, 0),
+                insn(ebpf::ADD64_IMM, 2, 0, 0, -4),
+                insn(ebpf::MOV64_REG, 3, 10, 0, 0),
+                insn(ebpf::ADD64_IMM, 3, 0, 0, -8),
+                insn(ebpf::MOV64_IMM, 4, 0, 0, 0),
+                insn(
+                    ebpf::CALL,
+                    0,
+                    0,
+                    0,
+                    crate::bpf_helpers::helper_ids::MAP_UPDATE_ELEM as i32,
+                ),
+                insn(ebpf::MOV64_IMM, 0, 0, 0, 0),
+                insn(ebpf::EXIT, 0, 0, 0, 0),
+            ])
         }
 
         #[test]
@@ -2469,6 +2595,237 @@ mod tests {
             assert!(storage.read_program(1).is_some());
             assert_eq!(storage.active_partition, 1);
             assert!(interp.loaded);
+        }
+
+        #[test]
+        fn run_wake_cycle_resident_program_reads_rodata_global() {
+            let psk = [0x61u8; 32];
+            let sha = crate::crypto::SoftwareSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+
+            let image_cbor = program_image(
+                rodata_read_program(),
+                vec![
+                    sonde_protocol::MapDef {
+                        map_type: 0,
+                        key_size: 4,
+                        value_size: 4,
+                        max_entries: 1,
+                    },
+                    sonde_protocol::MapDef {
+                        map_type: 1,
+                        key_size: 4,
+                        value_size: 4,
+                        max_entries: 1,
+                    },
+                ],
+                vec![1337u32.to_le_bytes().to_vec(), Vec::new()],
+                vec![true, false],
+            );
+
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            storage.programs[0] = Some(image_cbor);
+            storage.active_partition = 0;
+
+            let mut transport = MockTransport::new();
+            let mut rng = MockRng(u64::from(key_hint));
+            transport.queue_response(Some(resident_command(&psk, next_mock_nonce(&rng))));
+            let mut hal = MockHal::default();
+            let clock = MockClock::default();
+            let mut interp = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+            let mut async_queue = AsyncQueue::new();
+
+            let outcome = run_wake_cycle(
+                &mut transport,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &BoardLayout::LEGACY_COMPAT,
+                &mut interp,
+                &mut map_storage,
+                &sha,
+                &aead,
+                &mut async_queue,
+            );
+
+            assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+            assert_eq!(map_storage.map_count(), 2);
+            assert_eq!(
+                u32::from_le_bytes(
+                    map_storage
+                        .get(0)
+                        .unwrap()
+                        .lookup(0)
+                        .unwrap()
+                        .try_into()
+                        .unwrap()
+                ),
+                1337
+            );
+            assert_eq!(
+                u32::from_le_bytes(
+                    map_storage
+                        .get(1)
+                        .unwrap()
+                        .lookup(0)
+                        .unwrap()
+                        .try_into()
+                        .unwrap()
+                ),
+                1337
+            );
+        }
+
+        #[test]
+        fn run_wake_cycle_resident_program_updates_data_global() {
+            let psk = [0x62u8; 32];
+            let sha = crate::crypto::SoftwareSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+
+            let image_cbor = program_image(
+                increment_global_program(),
+                vec![sonde_protocol::MapDef {
+                    map_type: 0,
+                    key_size: 4,
+                    value_size: 4,
+                    max_entries: 1,
+                }],
+                vec![7u32.to_le_bytes().to_vec()],
+                vec![false],
+            );
+
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            storage.programs[0] = Some(image_cbor);
+            storage.active_partition = 0;
+
+            let mut transport = MockTransport::new();
+            let mut rng = MockRng(u64::from(key_hint));
+            transport.queue_response(Some(resident_command(&psk, next_mock_nonce(&rng))));
+            let mut hal = MockHal::default();
+            let clock = MockClock::default();
+            let mut interp = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+            let mut async_queue = AsyncQueue::new();
+
+            let outcome = run_wake_cycle(
+                &mut transport,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &BoardLayout::LEGACY_COMPAT,
+                &mut interp,
+                &mut map_storage,
+                &sha,
+                &aead,
+                &mut async_queue,
+            );
+
+            assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+            assert_eq!(
+                u32::from_le_bytes(
+                    map_storage
+                        .get(0)
+                        .unwrap()
+                        .lookup(0)
+                        .unwrap()
+                        .try_into()
+                        .unwrap()
+                ),
+                8
+            );
+        }
+
+        #[test]
+        fn run_wake_cycle_resident_program_persists_bss_global_across_wakes() {
+            let psk = [0x63u8; 32];
+            let sha = crate::crypto::SoftwareSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+
+            let image_cbor = program_image(
+                increment_global_program(),
+                vec![sonde_protocol::MapDef {
+                    map_type: 0,
+                    key_size: 4,
+                    value_size: 4,
+                    max_entries: 1,
+                }],
+                vec![Vec::new()],
+                vec![false],
+            );
+
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            storage.programs[0] = Some(image_cbor);
+            storage.active_partition = 0;
+            let mut hal = MockHal::default();
+            let mut rng = MockRng(u64::from(key_hint));
+            let clock = MockClock::default();
+            let mut interp = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+            let mut async_queue = AsyncQueue::new();
+
+            let mut transport_first = MockTransport::new();
+            transport_first.queue_response(Some(resident_command(&psk, next_mock_nonce(&rng))));
+            let first_outcome = run_wake_cycle(
+                &mut transport_first,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &BoardLayout::LEGACY_COMPAT,
+                &mut interp,
+                &mut map_storage,
+                &sha,
+                &aead,
+                &mut async_queue,
+            );
+            assert_eq!(first_outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+            assert_eq!(
+                u32::from_le_bytes(
+                    map_storage
+                        .get(0)
+                        .unwrap()
+                        .lookup(0)
+                        .unwrap()
+                        .try_into()
+                        .unwrap()
+                ),
+                1
+            );
+
+            let mut transport_second = MockTransport::new();
+            transport_second.queue_response(Some(resident_command(&psk, next_mock_nonce(&rng))));
+            let second_outcome = run_wake_cycle(
+                &mut transport_second,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &BoardLayout::LEGACY_COMPAT,
+                &mut interp,
+                &mut map_storage,
+                &sha,
+                &aead,
+                &mut async_queue,
+            );
+            assert_eq!(second_outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+            assert_eq!(
+                u32::from_le_bytes(
+                    map_storage
+                        .get(0)
+                        .unwrap()
+                        .lookup(0)
+                        .unwrap()
+                        .try_into()
+                        .unwrap()
+                ),
+                2
+            );
         }
 
         #[test]

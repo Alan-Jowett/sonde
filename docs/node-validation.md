@@ -53,6 +53,9 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 - `send_program` — calls `send()` with a fixed blob.
 - `send_recv_program` — calls `send_recv()` and checks the reply.
 - `map_program` — reads and writes a map.
+- `global_rodata_program` — reads a compile-time initialized global variable.
+- `global_data_program` — reads and updates a writable global variable with initial data.
+- `global_bss_program` — reads and updates a zero-initialized global variable.
 - `early_wake_program` — calls `set_next_wake(10)`.
 - `oversized_map_program` — declares maps exceeding the memory budget.
 - `deep_call_program` — BPF-to-BPF calls at max depth (8 frames).
@@ -919,6 +922,46 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 2. Load the program on the node.
 3. Assert: the map is allocated successfully.
 4. Assert: entry 0 is zero-filled (initial data ignored).
+
+---
+
+### T-N620d  Resident program reads `.rodata` global at runtime
+
+**Validates:** ND-0504, ND-0606, ND-0607
+
+**Procedure:**
+1. Build a resident BPF program with a compile-time initialized `.rodata` global (for example, `const uint32_t threshold = 1337;`) and map relocations emitted by the ELF loader.
+2. Install the program on the node.
+3. Run one wake cycle with the program instrumented to report the global's value through an observable side effect (for example, `send()` or a test helper-visible map write).
+4. Assert: the program executes successfully.
+5. Assert: the observed value equals the compile-time `.rodata` initializer.
+
+---
+
+### T-N620e  Resident program reads and updates `.data` global at runtime
+
+**Validates:** ND-0504, ND-0603, ND-0606, ND-0607
+
+**Procedure:**
+1. Build a resident BPF program with a writable `.data` global initialized to a known value (for example, `uint32_t counter = 7;`).
+2. Install the program on the node.
+3. Run one wake cycle where the program reads the global, updates it, and reports both the pre-update and post-update values through an observable side effect.
+4. Assert: the pre-update value equals the compile-time initializer.
+5. Assert: the post-update value reflects the program's write.
+
+---
+
+### T-N620f  Resident program uses zero-initialized `.bss` global across wakes
+
+**Validates:** ND-0504, ND-0603, ND-0606, ND-0607
+
+**Procedure:**
+1. Build a resident BPF program with a writable zero-initialized `.bss` global (for example, `uint32_t counter;`).
+2. Install the program on the node.
+3. Run one wake cycle where the program reports the global's initial value, then updates it to a non-zero value.
+4. Assert: the reported initial value is `0`.
+5. Trigger a second wake cycle with the same resident program.
+6. Assert: the program observes the value written during the first wake cycle, demonstrating persistence across deep sleep.
 
 ---
 
@@ -2669,16 +2712,16 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0501a | T-N503, T-N928 |
 | ND-0502 | T-N504 |
 | ND-0503 | T-N505, T-N505a |
-| ND-0504 | T-N506 |
+| ND-0504 | T-N506, T-N620d, T-N620e, T-N620f |
 | ND-0505 | T-N507, T-N508, T-N509, T-N929 |
 | ND-0506 | T-N508, T-N510 |
 | ND-0600 | T-N930 |
 | ND-0601 | T-N600, T-N601, T-N602, T-N603, T-N931 |
 | ND-0602 | T-N604, T-N605, T-N606, T-N621, T-N627a |
-| ND-0603 | T-N607, T-N608, T-N609, T-N932 |
+| ND-0603 | T-N607, T-N608, T-N609, T-N620e, T-N620f, T-N932 |
 | ND-0604 | T-N610, T-N611, T-N612, T-N613, T-N933, T-N0608b, T-N0608c |
 | ND-0605 | T-N614, T-N615, T-N934 |
-| ND-0606 | T-N616, T-N619, T-N620, T-N935 |
+| ND-0606 | T-N616, T-N619, T-N620, T-N620d, T-N620e, T-N620f, T-N935 |
 | ND-0700 | T-N201, T-N700 |
 | ND-0701 | T-N701, T-N803, T-N936 |
 | ND-0702 | T-N702, T-N937 |
@@ -2708,7 +2751,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0919 | T-N942, T-N942a |
 | ND-0608 | T-N0607a, T-N0607b, T-N0607c, T-N0607d, T-N0607e, T-N0607f, T-N0607g |
 | ND-0608a | T-N202b, T-N0608a, T-N0608b, T-N0608c |
-| ND-0607 | T-N620a, T-N620b, T-N620c |
+| ND-0607 | T-N620a, T-N620b, T-N620c, T-N620d, T-N620e, T-N620f |
 | ND-0609 | T-N621, T-N621a, T-N626, T-N627, T-N632 |
 | ND-0610 | T-N622, T-N623, T-N624 |
 | ND-0611 | T-N623, T-N623a |

@@ -451,7 +451,6 @@
         return 'Last 24 Hours';
     }
   }
-
   function renderDashboardTabs(dashboards, activeIndex) {
     const tabs = dashboards.map((dashboard, index) => `
     <div class="dashboard-tab-item">
@@ -642,7 +641,6 @@
     </section>
   `;
   }
-
   function getDashboardTimeRangeBounds(timeRange, nowMs = Date.now()) {
     const normalized = normalizeDashboardTimeRange(timeRange);
     if (normalized.preset === 'custom') {

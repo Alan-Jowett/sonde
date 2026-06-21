@@ -208,7 +208,7 @@ Each entry in the `maps` array is a CBOR map:
 | 4 | `max_entries` | uint | Maximum number of entries. |
 | 5 | `initial_data` | bstr | Initial bytes for the map value. Absent if the map has no initial data (e.g. `.bss`, explicit maps). Present for `.rodata` / `.data` global variable maps. |
 
-Key 5 (`initial_data`) carries the ELF section content for global variable maps (`.rodata`, `.data`) so the node can pre-populate map memory before BPF execution. The field is optional: decoders MUST tolerate its absence (maps without initial data are zero-filled). Encoders (e.g., the gateway) MUST only emit `initial_data` whose byte length equals `value_size`. Decoders, including nodes, MUST treat any present `initial_data` whose length does not equal `value_size` as if it were absent (the map value remains zero-filled).
+Key 5 (`initial_data`) carries the ELF section content for global variable maps (`.rodata`, `.data`) so the node can pre-populate map memory before BPF execution. ELF `.bss` globals are represented by the absence of key 5 and therefore start zero-filled. The field is optional: decoders MUST tolerate its absence (maps without initial data are zero-filled). Encoders (e.g., the gateway) MUST only emit `initial_data` whose byte length equals `value_size`. Decoders, including nodes, MUST treat any present `initial_data` whose length does not equal `value_size` as if it were absent (the map value remains zero-filled).
 
 #### Program hash
 
@@ -234,16 +234,16 @@ This encoding is consistent with the standard BPF loader convention (`src=1` = m
 
 #### Ingestion pipeline
 
-The gateway ingests a BPF ELF file and transforms it into a compact CBOR program image through the following sequential steps: (1) parse the ELF to extract the `.text` bytecode section, `.maps` map definitions, and global data section content (`.rodata`, `.data`); (2) verify the bytecode with Prevail, which resolves map relocations to `LDDW src=1` instructions; (3) encode the result as a CBOR map `{ 1: bytecode, 2: [map_defs_with_initial_data...] }`; (4) compute `program_hash` as the SHA-256 of that CBOR image; and (5) store the image in the program library keyed by hash. The original ELF is never sent to nodes.
+The gateway ingests a BPF ELF file and transforms it into a compact CBOR program image through the following sequential steps: (1) parse the ELF to extract the `.text` bytecode section, `.maps` map definitions, and global variable section metadata (`.rodata`, `.data`, `.bss`), including initial bytes where present; (2) verify the bytecode with Prevail, which resolves map relocations to `LDDW src=1` instructions; (3) encode the result as a CBOR map `{ 1: bytecode, 2: [map_defs_with_initial_data...] }`; (4) compute `program_hash` as the SHA-256 of that CBOR image; and (5) store the image in the program library keyed by hash. The original ELF is never sent to nodes.
 
 ```
 BPF ELF file (developer artifact)
   │
   ├── Parse ELF: extract .text (bytecode), .maps (map definitions),
-  │   and .rodata/.data section content (initial map data)
+  │   and .rodata/.data/.bss global variable sections
   ├── Verify with Prevail (resolves map relocations to LDDW src=1)
   ├── Encode program image as CBOR: { 1: bytecode, 2: [map_defs...] }
-  │   (each global-variable map entry includes key 5: initial_data)
+  │   (global-variable map entries include key 5 only when initial bytes exist)
   ├── Compute program_hash = SHA-256(program image CBOR)
   ├── Store in program library (keyed by hash)
   │
@@ -777,4 +777,3 @@ There is no separate wire protocol version field. The protocol evolves through:
 > **Breaking change in 0.4.0:** The `firmware_version` field (key 15) in `WAKE` is **required**. Gateways running 0.4.0+ will silently discard `WAKE` messages from pre-0.4.0 nodes that do not include this field. All nodes must be updated to 0.4.0 firmware. Pre-1.0 versions reserve the right to make breaking protocol changes when necessary; post-1.0 all changes will be strictly additive.
 
 This avoids version negotiation complexity and matches the reality that node firmware updates require physical access and are rare.
-

@@ -577,13 +577,13 @@ The firmware MUST enforce BPF execution constraints: 512-byte stack per call fra
 **Source:** bpf-environment.md §5.3
 
 **Description:**  
-On program install, the firmware MUST verify that the new program's map definitions fit within the available sleep-persistent memory budget. If they exceed the budget, installation MUST fail. The firmware MUST accept `map_type` 0 (global variable maps from `.rodata`/`.data` ELF sections) and `map_type` 1 (`BPF_MAP_TYPE_ARRAY`). Both types are stored identically as array maps; `map_type` 0 global variable maps typically use `max_entries == 1` and may carry `initial_data` (ND-0607). All other `map_type` values MUST be rejected.
+On program install, the firmware MUST verify that the new program's map definitions fit within the available sleep-persistent memory budget. If they exceed the budget, installation MUST fail. The firmware MUST accept `map_type` 0 (global variable maps from `.rodata`/`.data`/`.bss` ELF sections) and `map_type` 1 (`BPF_MAP_TYPE_ARRAY`). Both types are stored identically as array maps; `map_type` 0 global variable maps typically use `max_entries == 1` and may carry `initial_data` (ND-0607). All other `map_type` values MUST be rejected.
 
 **Acceptance criteria:**
 
 1. A program whose maps exceed the memory budget is not installed.
 2. The existing program remains active if installation fails.
-3. A program with `map_type` 0 (global variable map) passes map validation and is installed.
+3. A program with `map_type` 0 (global variable map from `.rodata`, `.data`, or `.bss`) passes map validation and is installed.
 4. A program with `map_type` 1 (`BPF_MAP_TYPE_ARRAY`) passes map validation and is installed.
 5. A program with any `map_type` other than 0 or 1 is rejected.
 
@@ -595,7 +595,7 @@ On program install, the firmware MUST verify that the new program's map definiti
 **Source:** protocol.md §6 (Program image format — key 5)
 
 **Description:**  
-The program image format MUST support optional initial data for each map definition. When present, initial data bytes are written to map entry 0 after allocation. The byte length of the initial data MUST equal the map's `value_size`. Maps without initial data remain zero-filled. This mechanism carries ELF `.rodata` / `.data` section content for global variable maps so that compile-time constants are available to BPF programs at first execution.
+The program image format MUST support optional initial data for each map definition. When present, initial data bytes are written to map entry 0 after allocation. The byte length of the initial data MUST equal the map's `value_size`. Maps without initial data remain zero-filled. This mechanism carries ELF `.rodata` / `.data` section content for global variable maps so that compile-time constants and writable initial state are available to BPF programs at first execution. Global variables originating from ELF `.bss` have no `initial_data` entry and therefore start zero-filled.
 
 **Acceptance criteria:**
 

@@ -179,19 +179,23 @@
 
   function validateVariableName(name, existingNames) {
     if (!name || !name.trim()) {
-      return { valid: false, error: 'Variable name is required' };
+      return { valid: false, reason: 'missing', error: 'Variable name is required' };
     }
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-      return { valid: false, error: 'Variable name must start with a letter or underscore and contain only letters, numbers, and underscores' };
+      return {
+        valid: false,
+        reason: 'invalid_identifier',
+        error: 'Variable name must start with a letter or underscore and contain only letters, numbers, and underscores',
+      };
     }
     if (BLOCKED_OBJECT_KEYS.has(name)) {
-      return { valid: false, error: `'${name}' is reserved and cannot be used as a variable name` };
+      return { valid: false, reason: 'reserved_key', error: `'${name}' is reserved and cannot be used as a variable name` };
     }
     if (existingNames.includes(name)) {
-      return { valid: false, error: `Variable name '${name}' already exists` };
+      return { valid: false, reason: 'duplicate', error: `Variable name '${name}' already exists` };
     }
     if (RESERVED_FUNCTION_NAMES.includes(name)) {
-      return { valid: false, error: `'${name}' is a reserved function name` };
+      return { valid: false, reason: 'reserved_function', error: `'${name}' is a reserved function name` };
     }
     return { valid: true };
   }
@@ -440,7 +444,7 @@
     return `
     <div class="dashboard-tabs-bar">
       ${tabs}
-      <button class="dashboard-tab-add" id="add-dashboard-btn">+</button>
+      <button type="button" class="dashboard-tab-add" id="add-dashboard-btn" title="Add dashboard" aria-label="Add dashboard">+</button>
     </div>
   `;
   }

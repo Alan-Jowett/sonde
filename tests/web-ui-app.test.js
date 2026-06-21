@@ -983,6 +983,15 @@ test('renderChartCard keeps the graph visible when Metrics pane is collapsed', (
   assert.match(html, /data-add-metric="0"/);
 });
 
+test('renderDashboardTabs gives the add button an explicit button type and accessible name', () => {
+  const html = dashboardRuntime.renderDashboardTabs([{ name: 'Dashboard 1' }], 0);
+
+  assert.match(html, /id="add-dashboard-btn"/);
+  assert.match(html, /type="button"/);
+  assert.match(html, /aria-label="Add dashboard"/);
+  assert.match(html, /title="Add dashboard"/);
+});
+
 test('activateEnvironmentState loads saved Sensor Data preferences for the selected environment', () => {
   app.SENSOR_STATE.timeRange = '24h';
   app.SENSOR_STATE.viewMode = 'graph';
@@ -1091,6 +1100,14 @@ test('validateVariableName rejects blocked object keys', () => {
   const validation = app.validateVariableName('__proto__', []);
   assert.equal(validation.valid, false);
   assert.match(validation.error, /reserved/i);
+});
+
+test('validateVariableName preserves SPA wording without depending on runtime message text', () => {
+  const validation = app.validateVariableName('1bad', []);
+  assert.deepEqual(validation, {
+    valid: false,
+    error: 'Variable name must be a valid JavaScript identifier',
+  });
 });
 
 test('dashboard runtime validateVariableName accepts underscore-leading identifiers', () => {

@@ -460,12 +460,12 @@ fn extract_global_section_data(data: &[u8]) -> Vec<(Vec<u8>, bool)> {
     sections
 }
 
-/// Rewrite ELF global-data relocations into `LD_DW_IMM src=1` map loads.
+/// Rewrite ELF global-data relocations into `LD_DW_IMM src=6` map-value loads.
 ///
 /// The CBOR `ProgramImage` stores only raw bytecode, not ELF relocation
 /// metadata. Any `.rodata`, `.data`, or `.bss` reference therefore has to be
 /// converted from an ELF relocation into the runtime form expected by the node
-/// and decoder interpreters: `LD_DW_IMM` with `src=1` and `imm=<map index>`.
+/// and decoder interpreters: `LD_DW_IMM` with `src=6` and `imm=<map index>`.
 fn rewrite_global_data_relocations(
     elf_bytes: &[u8],
     target_section_name: &str,
@@ -753,9 +753,8 @@ fn rewrite_global_data_relocations(
                 )));
             }
 
-            bytecode[r_offset + 1] = (bytecode[r_offset + 1] & 0x0f) | 0x10;
+            bytecode[r_offset + 1] = (bytecode[r_offset + 1] & 0x0f) | 0x60;
             bytecode[r_offset + 4..r_offset + 8].copy_from_slice(&map_index.to_le_bytes());
-            bytecode[r_offset + 12..r_offset + 16].copy_from_slice(&0u32.to_le_bytes());
         }
     }
 
@@ -2519,7 +2518,7 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_global_data_relocations_rewrites_lddw_to_map_index() {
+    fn rewrite_global_data_relocations_rewrites_lddw_to_map_value_index() {
         let elf = make_bpf_elf_with_global_data_relocation("sonde", ".data");
         let mut bytecode = vec![
             0x18, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
@@ -2547,7 +2546,7 @@ mod tests {
         rewrite_global_data_relocations(&elf, "sonde", &mut bytecode, &map_descriptors).unwrap();
 
         assert_eq!(bytecode[0], BPF_LD_DW_IMM);
-        assert_eq!(bytecode[1], 0x11, "src nibble should be rewritten to 1");
+        assert_eq!(bytecode[1], 0x61, "src nibble should be rewritten to 6");
         assert_eq!(
             u32::from_le_bytes([bytecode[4], bytecode[5], bytecode[6], bytecode[7]]),
             0,

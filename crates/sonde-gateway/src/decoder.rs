@@ -426,6 +426,7 @@ pub unsafe fn execute_decoder(
 
         map_regions.push(MapRegion {
             relocated_ptr: base_ptr,
+            key_size: map_def.key_size,
             value_size: map_def.value_size,
             data_start: base_ptr,
             data_end: end_ptr,

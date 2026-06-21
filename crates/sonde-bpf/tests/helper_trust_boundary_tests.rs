@@ -62,6 +62,7 @@ fn make_map(backing: &mut [u8], value_size: u32) -> MapRegion {
     let ptr = backing.as_mut_ptr() as u64;
     MapRegion {
         relocated_ptr: ptr,
+        key_size: 0,
         value_size,
         data_start: ptr,
         data_end: ptr + backing.len() as u64,

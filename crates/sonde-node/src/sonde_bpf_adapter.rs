@@ -94,6 +94,7 @@ impl BpfInterpreter for SondeBpfInterpreter {
                     })?;
             new_regions.push(MapRegion {
                 relocated_ptr: ptr,
+                key_size: def.key_size,
                 value_size: def.value_size,
                 data_start: ptr,
                 data_end: ptr.checked_add(total_bytes).ok_or(BpfError::MapLoadError {
@@ -315,6 +316,32 @@ mod tests {
         };
         let result = interp.load(&prog, &[0x1000], &[def]);
         assert!(matches!(result, Err(BpfError::MapLoadError { .. })));
+    }
+
+    #[test]
+    fn test_direct_map_value_relocation_loads_entry_zero_value() {
+        let prog = vec![
+            0x18, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r1 = map_value_by_idx(0)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //
+            0x61, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = *(u32 *)(r1 + 0)
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+        let mut backing = [0u8; 8];
+        backing[4..8].copy_from_slice(&0x11223344u32.to_le_bytes());
+        let def = sonde_protocol::MapDef {
+            map_type: 0,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        };
+        let mut interp = SondeBpfInterpreter::new();
+        interp
+            .load(&prog, &[backing.as_ptr() as u64], &[def])
+            .expect("map value relocation should load");
+        let result = interp
+            .execute(0, 100_000)
+            .expect("program should read entry-zero value");
+        assert_eq!(result, 0x11223344);
     }
 
     #[test]

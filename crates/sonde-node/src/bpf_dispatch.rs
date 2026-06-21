@@ -877,6 +877,15 @@ mod tests {
                         rc,
                     } if expected_handle == handle && expected_write == w => {
                         if rc == 0 {
+                            if self.strict_i2c {
+                                assert_eq!(
+                                    read.len(),
+                                    buf.len(),
+                                    "strict i2c expectation length mismatch: expected {} bytes, program requested {}",
+                                    read.len(),
+                                    buf.len()
+                                );
+                            }
                             let copy_len = buf.len().min(read.len());
                             buf[..copy_len].copy_from_slice(&read[..copy_len]);
                         }
@@ -988,7 +997,7 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn with_recording_clock_context_and_queue<F, R>(
+    fn with_recording_clock_test_context_and_queue<F, R>(
         hal: &mut TestHal,
         transport: &mut TestTransport,
         map_storage: &mut MapStorage,
@@ -1047,7 +1056,7 @@ mod tests {
         F: FnOnce() -> R,
     {
         let mut queue = AsyncQueue::new();
-        with_recordingless_test_context_and_queue(
+        with_test_clock_context_and_queue(
             hal,
             transport,
             map_storage,
@@ -1063,7 +1072,7 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn with_recordingless_test_context_and_queue<F, R>(
+    fn with_test_clock_context_and_queue<F, R>(
         hal: &mut TestHal,
         transport: &mut TestTransport,
         map_storage: &mut MapStorage,
@@ -1127,9 +1136,31 @@ mod tests {
 
     fn compile_veml7700_program_image() -> sonde_protocol::ProgramImage {
         const VEML7700_STATE_SIZE: u32 = 16;
+        const STATE_MAP_TYPE: u32 = 1;
+        const STATE_MAP_DEF_SIZE: u64 = 32;
 
         let elf = decode_veml7700_sensor_elf();
         let file = object::File::parse(&*elf).expect("compiled ELF should parse");
+        let maps_section = file
+            .section_by_name(".maps")
+            .expect("compiled ELF should contain a .maps section");
+        assert_eq!(
+            maps_section
+                .data()
+                .expect(".maps section bytes should be readable")
+                .len() as u64,
+            STATE_MAP_DEF_SIZE,
+            "embedded ELF .maps section size should match the single-entry state_map definition"
+        );
+        let state_map_symbol = file
+            .symbols()
+            .find(|symbol| symbol.name().ok() == Some("state_map"))
+            .expect("compiled ELF should define the state_map symbol");
+        assert_eq!(
+            state_map_symbol.size(),
+            STATE_MAP_DEF_SIZE,
+            "embedded ELF state_map symbol size should match the expected map-definition layout"
+        );
         let section = file
             .section_by_name("sonde")
             .expect("compiled ELF should contain a sonde section");
@@ -1150,40 +1181,64 @@ mod tests {
                 if symbol_name != "state_map" {
                     return None;
                 }
-                let offset = offset as usize;
-                assert_eq!(
-                    bytecode
-                        .get(offset)
-                        .copied()
-                        .expect("relocation must point at an instruction"),
-                    0x18,
-                    "state_map relocation should target an LDDW instruction"
-                );
-                Some(offset)
+                Some(relocation_lldw_start(
+                    &bytecode,
+                    offset as usize,
+                    symbol_name,
+                ))
             })
             .collect();
-        assert_eq!(
-            relocations.len(),
-            1,
-            "compiled ELF should contain exactly one state_map LDDW relocation"
+        assert!(
+            !relocations.is_empty(),
+            "compiled ELF should contain at least one state_map relocation"
         );
 
-        let offset = relocations[0];
-        bytecode[offset + 1] = (bytecode[offset + 1] & 0x0f) | 0x10;
-        bytecode[offset + 4..offset + 8].copy_from_slice(&0i32.to_le_bytes());
-        bytecode[offset + 12..offset + 16].copy_from_slice(&0i32.to_le_bytes());
+        let mut patched_offsets = Vec::new();
+        for offset in relocations {
+            if patched_offsets.contains(&offset) {
+                continue;
+            }
+            patched_offsets.push(offset);
+            bytecode[offset + 1] = (bytecode[offset + 1] & 0x0f) | 0x10;
+            bytecode[offset + 4..offset + 8].copy_from_slice(&0i32.to_le_bytes());
+            bytecode[offset + 12..offset + 16].copy_from_slice(&0i32.to_le_bytes());
+        }
 
         sonde_protocol::ProgramImage {
             bytecode,
             maps: vec![MapDef {
-                map_type: 1,
+                // Must match `state_map` in `test-programs/veml7700_sensor.c`
+                // and `BPF_MAP_TYPE_ARRAY` in `include/sonde_helpers.h`.
+                map_type: STATE_MAP_TYPE,
                 key_size: 4,
+                // Kept in sync with the C source by the compile-time assertion
+                // `veml7700_state_size_must_be_16`.
                 value_size: VEML7700_STATE_SIZE,
                 max_entries: 1,
             }],
             map_initial_data: vec![Vec::new()],
             map_readonly: vec![false],
         }
+    }
+
+    fn relocation_lldw_start(
+        bytecode: &[u8],
+        relocation_offset: usize,
+        symbol_name: &str,
+    ) -> usize {
+        for candidate in [relocation_offset, relocation_offset.saturating_sub(4)] {
+            let Some(opcode) = bytecode.get(candidate).copied() else {
+                continue;
+            };
+            if opcode == 0x18 && relocation_offset >= candidate && relocation_offset < candidate + 8
+            {
+                return candidate;
+            }
+        }
+
+        panic!(
+            "relocation for {symbol_name} at byte offset {relocation_offset} does not point to an LDDW instruction"
+        );
     }
 
     fn default_identity() -> NodeIdentity {
@@ -2693,7 +2748,7 @@ mod tests {
             .load(&image.bytecode, maps.map_pointers(), &image.maps)
             .unwrap();
 
-        with_recording_clock_context_and_queue(
+        with_recording_clock_test_context_and_queue(
             &mut hal,
             &mut transport,
             &mut maps,
@@ -2794,7 +2849,7 @@ mod tests {
             .load(&image.bytecode, maps.map_pointers(), &image.maps)
             .unwrap();
 
-        with_recording_clock_context_and_queue(
+        with_recording_clock_test_context_and_queue(
             &mut hal,
             &mut transport,
             &mut maps,
@@ -2885,7 +2940,7 @@ mod tests {
             .unwrap();
 
         for timestamp in [111u64, 222u64] {
-            with_recording_clock_context_and_queue(
+            with_recording_clock_test_context_and_queue(
                 &mut hal,
                 &mut transport,
                 &mut maps,

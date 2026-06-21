@@ -69,6 +69,8 @@ struct veml7700_state {
     __u8 recent_index;
 };
 
+typedef char veml7700_state_size_must_be_16[(sizeof(struct veml7700_state) == 16u) ? 1 : -1];
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);

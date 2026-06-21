@@ -759,15 +759,10 @@ mod tests {
     use crate::map_storage::MapStorage;
     use crate::sleep::{SleepManager, WakeReason};
     use crate::traits::{Clock, Transport};
-    use object::{Object, ObjectSection};
+    use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget};
     use sonde_protocol::{MapDef, NodeMessage, MSG_APP_DATA};
     use std::cell::RefCell;
     use std::collections::VecDeque;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     // -- Test mocks ---------------------------------------------------------
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1109,60 +1104,31 @@ mod tests {
         f()
     }
 
-    fn compile_veml7700_program_image() -> sonde_protocol::ProgramImage {
-        const VEML7700_STATE_SIZE: u32 = 16;
-        const CLANG_ENV: &str = "SONDE_TEST_CLANG";
+    // Pre-compiled BPF ELF for `test-programs/veml7700_sensor.c`
+    // (`clang -target bpf -O2 -Wall -Wextra -DSONDE_DISABLE_DECODER=1`).
+    // Embedding avoids a runtime clang dependency in host/CI tests.
+    const VEML7700_SENSOR_ELF_HEX: &str = include_str!("veml7700_sensor_elf.hex");
 
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let repo_root = manifest_dir
-            .parent()
-            .and_then(|path| path.parent())
-            .expect("workspace layout should be crates/sonde-node under repo root");
-        let test_programs_dir = repo_root.join("test-programs");
-        let source_path = test_programs_dir.join("veml7700_sensor.c");
-        let clang = std::env::var_os(CLANG_ENV).unwrap_or_else(|| "clang".into());
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock must be after Unix epoch")
-            .as_nanos();
-        let temp_dir =
-            std::env::temp_dir().join(format!("sonde-veml7700-{}-{unique}", std::process::id()));
-        let object_path = temp_dir.join("veml7700_sensor.o");
-
-        fs::create_dir_all(&temp_dir).expect("temporary directory creation should succeed");
-        let compile = Command::new(&clang)
-            .arg("-target")
-            .arg("bpf")
-            .arg("-O2")
-            .arg("-Wall")
-            .arg("-Wextra")
-            .arg("-DSONDE_DISABLE_DECODER=1")
-            .arg("-I")
-            .arg(&test_programs_dir)
-            .arg("-c")
-            .arg(&source_path)
-            .arg("-o")
-            .arg(&object_path)
-            .output()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "failed to spawn {:?} for VEML7700 test-program compilation: {}. \
-set {} to a clang executable path or ensure clang is on PATH",
-                    clang, error, CLANG_ENV
-                )
-            });
+    fn decode_veml7700_sensor_elf() -> Vec<u8> {
+        let hex = VEML7700_SENSOR_ELF_HEX.trim();
         assert!(
-            compile.status.success(),
-            "failed to compile {}:\nstdout:\n{}\nstderr:\n{}",
-            source_path.display(),
-            String::from_utf8_lossy(&compile.stdout),
-            String::from_utf8_lossy(&compile.stderr)
+            hex.len().is_multiple_of(2),
+            "embedded VEML7700 ELF hex should contain an even number of digits"
         );
 
-        let elf = fs::read(&object_path).expect("compiled VEML7700 BPF object should be readable");
-        let _ = fs::remove_file(&object_path);
-        let _ = fs::remove_dir_all(&temp_dir);
+        let mut bytes = Vec::with_capacity(hex.len() / 2);
+        for i in (0..hex.len()).step_by(2) {
+            let byte = u8::from_str_radix(&hex[i..i + 2], 16)
+                .expect("embedded VEML7700 ELF hex should be valid");
+            bytes.push(byte);
+        }
+        bytes
+    }
 
+    fn compile_veml7700_program_image() -> sonde_protocol::ProgramImage {
+        const VEML7700_STATE_SIZE: u32 = 16;
+
+        let elf = decode_veml7700_sensor_elf();
         let file = object::File::parse(&*elf).expect("compiled ELF should parse");
         let section = file
             .section_by_name("sonde")
@@ -1171,22 +1137,38 @@ set {} to a clang executable path or ensure clang is on PATH",
             .data()
             .expect("sonde section bytes should be readable")
             .to_vec();
-        let relocations: Vec<_> = section.relocations().collect();
+        let relocations: Vec<usize> = section
+            .relocations()
+            .filter_map(|(offset, relocation)| {
+                let RelocationTarget::Symbol(symbol_index) = relocation.target() else {
+                    return None;
+                };
+                let symbol = file
+                    .symbol_by_index(symbol_index)
+                    .expect("relocation symbol should be readable");
+                let symbol_name = symbol.name().expect("relocation symbol should be named");
+                if symbol_name != "state_map" {
+                    return None;
+                }
+                let offset = offset as usize;
+                assert_eq!(
+                    bytecode
+                        .get(offset)
+                        .copied()
+                        .expect("relocation must point at an instruction"),
+                    0x18,
+                    "state_map relocation should target an LDDW instruction"
+                );
+                Some(offset)
+            })
+            .collect();
         assert_eq!(
             relocations.len(),
             1,
-            "expected only the state_map relocation after helper inlining"
+            "compiled ELF should contain exactly one state_map LDDW relocation"
         );
 
-        let offset = relocations[0].0 as usize;
-        assert_eq!(
-            bytecode
-                .get(offset)
-                .copied()
-                .expect("relocation must point at an instruction"),
-            0x18,
-            "state_map relocation should target an LDDW instruction"
-        );
+        let offset = relocations[0];
         bytecode[offset + 1] = (bytecode[offset + 1] & 0x0f) | 0x10;
         bytecode[offset + 4..offset + 8].copy_from_slice(&0i32.to_le_bytes());
         bytecode[offset + 12..offset + 16].copy_from_slice(&0i32.to_le_bytes());

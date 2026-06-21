@@ -3,20 +3,63 @@
 
 //! Tauri v2 backend for the Sonde kiosk dashboard app.
 //!
-//! This tranche persists the imported kiosk environment JSON and exposes the
-//! shared dashboard runtime source to the frontend shell. Identity bootstrap,
-//! secure credential storage, and Azure-backed telemetry refresh remain in later
-//! implementation tranches.
+//! This tranche persists the imported kiosk environment JSON, exposes the shared
+//! dashboard runtime source to the frontend shell, and defines the telemetry
+//! refresh command contract used by the kiosk UI. Identity bootstrap, secure
+//! credential storage, and live application-authenticated Azure reads remain in
+//! later implementation tranches.
 
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 const ENVIRONMENT_FILE_NAME: &str = "environment.json";
 const SHARED_DASHBOARD_RUNTIME_SOURCE: &str =
     include_str!("../../../../deploy/web-ui/dashboard-runtime.js");
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DashboardVariableRequest {
+    node_id: String,
+    reading_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FetchDashboardVariableDataRequest {
+    client_id: String,
+    tenant_id: String,
+    storage_account: String,
+    function_app_name: String,
+    start_ms: i64,
+    end_ms: i64,
+    variables: Vec<DashboardVariableRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct TelemetryPoint {
+    timestamp_ms: i64,
+    value: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct DashboardVariableSeries {
+    node_id: String,
+    reading_type: String,
+    points: Vec<TelemetryPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct FetchDashboardVariableDataResponse {
+    refreshed_at_ms: i64,
+    series: Vec<DashboardVariableSeries>,
+}
 
 fn environment_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let mut path = app
@@ -66,6 +109,18 @@ fn remove_environment_json_at_path(path: &Path) -> Result<(), String> {
     }
 }
 
+fn fetch_dashboard_variable_data_with_backend<F>(
+    request: &FetchDashboardVariableDataRequest,
+    fetcher: F,
+) -> Result<FetchDashboardVariableDataResponse, String>
+where
+    F: FnOnce(
+        &FetchDashboardVariableDataRequest,
+    ) -> Result<FetchDashboardVariableDataResponse, String>,
+{
+    fetcher(request)
+}
+
 #[tauri::command]
 fn shared_dashboard_runtime_source() -> &'static str {
     SHARED_DASHBOARD_RUNTIME_SOURCE
@@ -84,6 +139,15 @@ fn save_environment_json(app: tauri::AppHandle, json: String) -> Result<(), Stri
 #[tauri::command]
 fn clear_environment_json(app: tauri::AppHandle) -> Result<(), String> {
     remove_environment_json_at_path(&environment_file_path(&app)?)
+}
+
+#[tauri::command]
+fn fetch_dashboard_variable_data(
+    request: FetchDashboardVariableDataRequest,
+) -> Result<FetchDashboardVariableDataResponse, String> {
+    fetch_dashboard_variable_data_with_backend(&request, |_request| {
+        Err("Application-authenticated telemetry refresh is not configured yet.".into())
+    })
 }
 
 pub fn run() {
@@ -105,6 +169,7 @@ pub fn run() {
             get_environment_json,
             save_environment_json,
             clear_environment_json,
+            fetch_dashboard_variable_data,
         ])
         .run(tauri::generate_context!())
         .expect("error running Sonde Dashboard Kiosk");
@@ -147,5 +212,51 @@ mod tests {
         let path = temp_path("clear-missing.json");
         let _ = fs::remove_file(&path);
         assert!(remove_environment_json_at_path(&path).is_ok());
+    }
+
+    fn sample_request() -> FetchDashboardVariableDataRequest {
+        FetchDashboardVariableDataRequest {
+            client_id: "client".into(),
+            tenant_id: "tenant".into(),
+            storage_account: "storage".into(),
+            function_app_name: "func".into(),
+            start_ms: 100,
+            end_ms: 200,
+            variables: vec![DashboardVariableRequest {
+                node_id: "NODE_001".into(),
+                reading_type: "temp_mc".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn fetch_dashboard_variable_data_default_backend_reports_unconfigured() {
+        let error = fetch_dashboard_variable_data(sample_request()).unwrap_err();
+        assert_eq!(
+            error,
+            "Application-authenticated telemetry refresh is not configured yet."
+        );
+    }
+
+    #[test]
+    fn fetch_dashboard_variable_data_with_backend_passes_request_through() {
+        let request = sample_request();
+        let expected = FetchDashboardVariableDataResponse {
+            refreshed_at_ms: 1234,
+            series: vec![DashboardVariableSeries {
+                node_id: "NODE_001".into(),
+                reading_type: "temp_mc".into(),
+                points: vec![TelemetryPoint {
+                    timestamp_ms: 1234,
+                    value: 42.0,
+                }],
+            }],
+        };
+        let actual = fetch_dashboard_variable_data_with_backend(&request, |seen_request| {
+            assert_eq!(seen_request, &request);
+            Ok(expected.clone())
+        })
+        .unwrap();
+        assert_eq!(actual, expected);
     }
 }

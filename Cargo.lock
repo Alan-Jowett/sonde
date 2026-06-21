@@ -6616,6 +6616,7 @@ dependencies = [
 name = "sonde-kiosk-ui"
 version = "0.8.0"
 dependencies = [
+ "serde",
  "tauri",
  "tauri-build",
  "tracing",

@@ -10,15 +10,25 @@ const SENSOR_VIEW_MODES = new Set(['graph', 'table']);
 const SENSOR_TIME_RANGES = new Set(['1h', '24h', '7d']);
 const BLOCKED_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const OPERATOR_LONG_PRESS_MS = 800;
+const HORIZONTAL_SWIPE_THRESHOLD_PX = 50;
+const PULL_TO_REFRESH_THRESHOLD_PX = 90;
+const PULL_TO_REFRESH_MAX_HORIZONTAL_DRIFT_PX = 40;
+const BACKGROUND_REFRESH_INTERVAL_MS = 60 * 1000;
 
 const APP_STATE = {
   runtime: null,
   activeEnvironment: null,
   activeDashboardIndex: 0,
   metricCharts: {},
-  telemetryNotice: 'Imported dashboards are rendered read-only in this tranche. Azure-backed telemetry refresh is implemented in a later tranche.',
+  telemetryNotice: 'Waiting for live telemetry refresh.',
+  telemetryStatusKind: 'info',
+  telemetryCache: new Map(),
+  refreshGeneration: 0,
+  refreshTimer: null,
+  refreshIntervalMs: BACKGROUND_REFRESH_INTERVAL_MS,
   operatorPanelOpen: false,
   operatorPressTimer: null,
+  dependencies: {},
 };
 
 function createDefaultSensorDataPreferences() {
@@ -234,6 +244,164 @@ function renderDashboardFrame(runtime, environment, activeDashboardIndex, status
   `;
 }
 
+function setTelemetryNotice(text, kind = 'info') {
+  APP_STATE.telemetryNotice = text;
+  APP_STATE.telemetryStatusKind = kind;
+
+  const status = document.getElementById('dashboard-status');
+  if (status) {
+    status.textContent = text;
+    status.className = `status-pill status-pill--${kind}`;
+  }
+
+  const pageStatus = document.querySelector?.('.dashboard-page-status');
+  if (pageStatus) {
+    pageStatus.textContent = text;
+    pageStatus.className = `dashboard-page-status dashboard-page-status--${kind}`;
+  }
+}
+
+function clearTelemetryCache() {
+  APP_STATE.telemetryCache.clear();
+}
+
+function getActiveDashboard() {
+  if (!APP_STATE.activeEnvironment) {
+    return null;
+  }
+  return APP_STATE.activeEnvironment.dashboards[APP_STATE.activeDashboardIndex] ?? null;
+}
+
+function buildTelemetrySourceCacheKey(environment, source) {
+  return JSON.stringify({
+    clientId: environment.clientId,
+    storageAccount: environment.storageAccount,
+    nodeId: source.nodeId,
+    readingType: source.readingType,
+  });
+}
+
+function filterTelemetryPointsToRange(points, startMs, endMs) {
+  return points.filter((point) => Number.isFinite(point.timestampMs)
+    && point.timestampMs >= startMs
+    && point.timestampMs <= endMs);
+}
+
+function buildCachedVariableData(runtime, environment, dashboard, nowMs = Date.now()) {
+  const { startMs, endMs } = runtime.getDashboardTimeRangeBounds(dashboard.timeRange, nowMs);
+  const result = Object.create(null);
+
+  for (const variable of dashboard.variables) {
+    const cacheKey = buildTelemetrySourceCacheKey(environment, variable);
+    const cached = APP_STATE.telemetryCache.get(cacheKey);
+    result[variable.name] = cached
+      ? filterTelemetryPointsToRange(cached.points, startMs, endMs)
+      : [];
+  }
+
+  return result;
+}
+
+function buildDashboardRefreshRequest(environment, dashboard, runtime, nowMs = Date.now()) {
+  const { startMs, endMs } = runtime.getDashboardTimeRangeBounds(dashboard.timeRange, nowMs);
+  const seenSources = new Set();
+  const variables = [];
+
+  for (const variable of dashboard.variables) {
+    const sourceKey = `${variable.nodeId}\n${variable.readingType}`;
+    if (seenSources.has(sourceKey)) {
+      continue;
+    }
+    seenSources.add(sourceKey);
+    variables.push({
+      nodeId: variable.nodeId,
+      readingType: variable.readingType,
+    });
+  }
+
+  return {
+    clientId: environment.clientId,
+    tenantId: environment.tenantId,
+    storageAccount: environment.storageAccount,
+    functionAppName: environment.functionAppName,
+    startMs,
+    endMs,
+    variables,
+  };
+}
+
+function normalizeTelemetryPoints(points) {
+  if (!Array.isArray(points)) {
+    return [];
+  }
+
+  return points
+    .filter((point) => typeof point === 'object' && point !== null)
+    .map((point) => ({
+      timestampMs: Number(point.timestampMs),
+      value: Number(point.value),
+    }))
+    .filter((point) => Number.isFinite(point.timestampMs) && Number.isFinite(point.value))
+    .sort((left, right) => left.timestampMs - right.timestampMs);
+}
+
+function cacheTelemetryRefreshResponse(environment, request, response) {
+  for (const series of response?.series ?? []) {
+    if (typeof series !== 'object' || series === null) {
+      continue;
+    }
+
+    const key = buildTelemetrySourceCacheKey(environment, {
+      nodeId: series.nodeId,
+      readingType: series.readingType,
+    });
+    APP_STATE.telemetryCache.set(key, {
+      points: normalizeTelemetryPoints(series.points),
+      coverageStartMs: request.startMs,
+      coverageEndMs: request.endMs,
+      refreshedAtMs: Number.isFinite(response.refreshedAtMs) ? Number(response.refreshedAtMs) : Date.now(),
+    });
+  }
+}
+
+async function fetchDashboardVariableData(request, deps = APP_STATE.dependencies) {
+  if (typeof deps.fetchDashboardVariableDataFn === 'function') {
+    return deps.fetchDashboardVariableDataFn(request);
+  }
+
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    throw new Error('Tauri invoke bridge is unavailable.');
+  }
+
+  return invokeFn('fetch_dashboard_variable_data', { request });
+}
+
+function createCachedMetricEvaluator(runtime, environment, dashboard, nowMs = Date.now()) {
+  const cachedVariableData = buildCachedVariableData(runtime, environment, dashboard, nowMs);
+  return async (metric, variables, timeRange) => runtime.evaluateMetricTimeSeries(metric, variables, timeRange, {
+    fetchVariableDataFn: async (usedVariables) => {
+      const result = Object.create(null);
+      for (const variable of usedVariables) {
+        result[variable.name] = cachedVariableData[variable.name]
+          ? [...cachedVariableData[variable.name]]
+          : [];
+      }
+      return result;
+    },
+  });
+}
+
+function interpretDashboardGesture(deltaX, deltaY) {
+  if (deltaY >= PULL_TO_REFRESH_THRESHOLD_PX && Math.abs(deltaX) <= PULL_TO_REFRESH_MAX_HORIZONTAL_DRIFT_PX) {
+    return 'refresh';
+  }
+  if (Math.abs(deltaX) >= HORIZONTAL_SWIPE_THRESHOLD_PX && Math.abs(deltaX) > Math.abs(deltaY)) {
+    return deltaX < 0 ? 'next' : 'previous';
+  }
+  return null;
+}
+
 function destroyDashboardCharts() {
   for (const chart of Object.values(APP_STATE.metricCharts)) {
     if (chart && typeof chart.destroy === 'function') {
@@ -243,7 +411,7 @@ function destroyDashboardCharts() {
   APP_STATE.metricCharts = {};
 }
 
-async function renderActiveDashboard() {
+async function renderActiveDashboard(deps = APP_STATE.dependencies) {
   const environment = APP_STATE.activeEnvironment;
   const runtime = APP_STATE.runtime;
   if (!environment || !runtime) {
@@ -259,6 +427,7 @@ async function renderActiveDashboard() {
   destroyDashboardCharts();
   overlay.classList.remove('hidden');
   overlay.textContent = buildDashboardOverlay(environment, APP_STATE.activeDashboardIndex);
+  status.className = `status-pill status-pill--${APP_STATE.telemetryStatusKind}`;
   status.textContent = APP_STATE.telemetryNotice;
   pageHost.innerHTML = renderDashboardFrame(runtime, environment, APP_STATE.activeDashboardIndex, APP_STATE.telemetryNotice);
 
@@ -276,21 +445,99 @@ async function renderActiveDashboard() {
       storeChartInstanceFn: (chartIndex, chart) => {
         APP_STATE.metricCharts[chartIndex] = chart;
       },
-      evaluateMetricTimeSeriesFn: async () => ({ points: [] }),
+      evaluateMetricTimeSeriesFn: createCachedMetricEvaluator(
+        runtime,
+        environment,
+        dashboard,
+        (deps.nowFn || Date.now)(),
+      ),
     });
   }
 }
 
-async function showDashboardMode() {
+function stopBackgroundRefreshLoop(deps = APP_STATE.dependencies) {
+  if (APP_STATE.refreshTimer == null) {
+    return;
+  }
+  const clearIntervalFn = deps.clearIntervalFn || globalThis.clearInterval;
+  if (typeof clearIntervalFn === 'function') {
+    clearIntervalFn(APP_STATE.refreshTimer);
+  }
+  APP_STATE.refreshTimer = null;
+}
+
+function startBackgroundRefreshLoop(deps = APP_STATE.dependencies) {
+  stopBackgroundRefreshLoop(deps);
+  const setIntervalFn = deps.setIntervalFn || globalThis.setInterval;
+  if (typeof setIntervalFn !== 'function') {
+    return;
+  }
+  APP_STATE.refreshTimer = setIntervalFn(() => {
+    void triggerDashboardRefresh('background', deps);
+  }, APP_STATE.refreshIntervalMs);
+}
+
+async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.dependencies) {
+  const runtime = APP_STATE.runtime;
+  const environment = APP_STATE.activeEnvironment;
+  const dashboard = getActiveDashboard();
+  if (!runtime || !environment || !dashboard) {
+    return;
+  }
+
+  const nowFn = deps.nowFn || Date.now;
+  const refreshRequest = buildDashboardRefreshRequest(environment, dashboard, runtime, nowFn());
+  if (refreshRequest.variables.length === 0) {
+    setTelemetryNotice('No telemetry variables are defined for this dashboard.', 'info');
+    return;
+  }
+  const refreshGeneration = ++APP_STATE.refreshGeneration;
+  const dashboardIndexAtStart = APP_STATE.activeDashboardIndex;
+  const refreshingMessage = reason === 'manual'
+    ? 'Manual refresh in progress…'
+    : reason === 'switch'
+      ? 'Loading live data for this dashboard…'
+      : 'Refreshing live dashboard data…';
+  setTelemetryNotice(refreshingMessage, 'refreshing');
+
+  try {
+    const response = await fetchDashboardVariableData(refreshRequest, deps);
+    cacheTelemetryRefreshResponse(environment, refreshRequest, response);
+    if (refreshGeneration !== APP_STATE.refreshGeneration
+      || environment !== APP_STATE.activeEnvironment
+      || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex) {
+      return;
+    }
+    const refreshedAtMs = Number.isFinite(response?.refreshedAtMs)
+      ? Number(response.refreshedAtMs)
+      : nowFn();
+    setTelemetryNotice(`Live data refreshed at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
+    await renderActiveDashboard(deps);
+  } catch (error) {
+    if (refreshGeneration !== APP_STATE.refreshGeneration
+      || environment !== APP_STATE.activeEnvironment
+      || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex) {
+      return;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    setTelemetryNotice(`Live refresh unavailable: ${message}`, 'error');
+  }
+}
+
+async function showDashboardMode(deps = APP_STATE.dependencies) {
   document.getElementById('setup-screen')?.classList.add('hidden');
   document.getElementById('dashboard-screen')?.classList.remove('hidden');
-  await renderActiveDashboard();
+  await renderActiveDashboard(deps);
+  startBackgroundRefreshLoop(deps);
+  await triggerDashboardRefresh('initial', deps);
 }
 
 function showSetupMode(message) {
+  stopBackgroundRefreshLoop();
   destroyDashboardCharts();
   APP_STATE.activeEnvironment = null;
   APP_STATE.activeDashboardIndex = 0;
+  APP_STATE.refreshGeneration = 0;
   document.getElementById('dashboard-screen')?.classList.add('hidden');
   document.getElementById('setup-screen')?.classList.remove('hidden');
   document.getElementById('dashboard-overlay')?.classList.add('hidden');
@@ -335,7 +582,7 @@ async function clearStoredEnvironment(deps = {}) {
   await invokeFn('clear_environment_json');
 }
 
-function moveDashboard(delta) {
+function moveDashboard(delta, deps = APP_STATE.dependencies) {
   if (!APP_STATE.activeEnvironment || !APP_STATE.activeEnvironment.dashboards.length) {
     return;
   }
@@ -344,7 +591,9 @@ function moveDashboard(delta) {
     return;
   }
   APP_STATE.activeDashboardIndex = nextIndex;
-  renderActiveDashboard().catch((error) => showSetupMode(error.message));
+  renderActiveDashboard(deps)
+    .then(() => triggerDashboardRefresh('switch', deps))
+    .catch((error) => showSetupMode(error.message));
 }
 
 function hideOperatorPanel() {
@@ -357,27 +606,43 @@ function showOperatorPanel() {
   document.getElementById('operator-panel')?.classList.remove('hidden');
 }
 
-function installSwipeNavigation(host) {
+function installSwipeNavigation(host, deps = APP_STATE.dependencies) {
   let touchStartX = null;
+  let touchStartY = null;
   host.addEventListener('touchstart', (event) => {
     touchStartX = event.changedTouches[0]?.clientX ?? null;
+    touchStartY = event.changedTouches[0]?.clientY ?? null;
   }, { passive: true });
   host.addEventListener('touchend', (event) => {
     const endX = event.changedTouches[0]?.clientX ?? null;
-    if (!Number.isFinite(touchStartX) || !Number.isFinite(endX)) {
+    const endY = event.changedTouches[0]?.clientY ?? null;
+    if (!Number.isFinite(touchStartX) || !Number.isFinite(touchStartY)
+      || !Number.isFinite(endX) || !Number.isFinite(endY)) {
       touchStartX = null;
+      touchStartY = null;
       return;
     }
     const deltaX = endX - touchStartX;
+    const deltaY = endY - touchStartY;
     touchStartX = null;
-    if (Math.abs(deltaX) < 50) {
-      return;
+    touchStartY = null;
+    switch (interpretDashboardGesture(deltaX, deltaY)) {
+      case 'next':
+        moveDashboard(1, deps);
+        break;
+      case 'previous':
+        moveDashboard(-1, deps);
+        break;
+      case 'refresh':
+        void triggerDashboardRefresh('manual', deps);
+        break;
+      default:
+        break;
     }
-    moveDashboard(deltaX < 0 ? 1 : -1);
   }, { passive: true });
 }
 
-function installOperatorControls(fileInput) {
+function installOperatorControls(fileInput, deps = APP_STATE.dependencies) {
   const hotspot = document.getElementById('operator-hotspot');
   const reimport = document.getElementById('operator-reimport');
   const reset = document.getElementById('operator-reset');
@@ -405,7 +670,8 @@ function installOperatorControls(fileInput) {
     fileInput.click();
   });
   reset?.addEventListener('click', async () => {
-    await clearStoredEnvironment();
+    await clearStoredEnvironment(deps);
+    clearTelemetryCache();
     hideOperatorPanel();
     showSetupMode('Imported environment cleared. Import a new SPA environment JSON to resume kiosk mode.');
   });
@@ -419,14 +685,17 @@ async function importEnvironmentFromText(text, deps = {}) {
   }
   const environment = validateImportedEnvironmentJson(text, runtime, deps);
   await persistEnvironment(environment, deps);
+  clearTelemetryCache();
+  setTelemetryNotice('Waiting for live telemetry refresh.', 'info');
   APP_STATE.activeEnvironment = environment;
   APP_STATE.activeDashboardIndex = 0;
-  await showDashboardMode();
+  await showDashboardMode(deps);
 }
 
 async function initKioskApp(deps = {}) {
   const runtime = await loadSharedDashboardRuntime(deps);
   APP_STATE.runtime = runtime;
+  APP_STATE.dependencies = deps;
 
   const fileInput = document.getElementById('import-file');
   const importButton = document.getElementById('import-button');
@@ -451,8 +720,8 @@ async function initKioskApp(deps = {}) {
     }
   });
 
-  installSwipeNavigation(pageHost);
-  installOperatorControls(fileInput);
+  installSwipeNavigation(pageHost, deps);
+  installOperatorControls(fileInput, deps);
   document.addEventListener('keydown', (event) => {
     if (APP_STATE.operatorPanelOpen) {
       if (event.key === 'Escape') {
@@ -461,16 +730,18 @@ async function initKioskApp(deps = {}) {
       return;
     }
     if (event.key === 'ArrowLeft') {
-      moveDashboard(-1);
+      moveDashboard(-1, deps);
     } else if (event.key === 'ArrowRight') {
-      moveDashboard(1);
+      moveDashboard(1, deps);
     }
   });
 
   const storedEnvironment = await loadStoredEnvironment({ ...deps, runtime });
   if (storedEnvironment) {
+    clearTelemetryCache();
+    setTelemetryNotice('Waiting for live telemetry refresh.', 'info');
     APP_STATE.activeEnvironment = storedEnvironment;
-    await showDashboardMode();
+    await showDashboardMode(deps);
   } else {
     showSetupMode('No environment imported yet.');
   }
@@ -479,10 +750,18 @@ async function initKioskApp(deps = {}) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     APP_STATE,
+    BACKGROUND_REFRESH_INTERVAL_MS,
     createDefaultSensorDataPreferences,
+    buildCachedVariableData,
+    buildDashboardRefreshRequest,
+    cacheTelemetryRefreshResponse,
+    fetchDashboardVariableData,
     initKioskApp,
+    interpretDashboardGesture,
     loadSharedDashboardRuntime,
     renderDashboardFrame,
+    startBackgroundRefreshLoop,
+    triggerDashboardRefresh,
     validateEnvironmentFields,
     validateImportedEnvironmentJson,
     validateImportedSensorDataPreferences,

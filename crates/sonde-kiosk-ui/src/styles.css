@@ -154,6 +154,24 @@ button:hover {
   padding: 8px 12px;
 }
 
+.status-pill--refreshing {
+  color: #bae6fd;
+  border-color: rgba(14, 165, 233, 0.45);
+  background: rgba(14, 165, 233, 0.2);
+}
+
+.status-pill--live {
+  color: #bbf7d0;
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.16);
+}
+
+.status-pill--error {
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.16);
+}
+
 .dashboard-page-host .dashboard-page {
   background: rgba(17, 24, 39, 0.92);
   border: 1px solid var(--border);
@@ -262,6 +280,22 @@ button:hover {
 
 .dashboard-page-host .error-text {
   color: #fca5a5;
+}
+
+.dashboard-page-status {
+  margin-bottom: 12px;
+}
+
+.dashboard-page-status--refreshing {
+  color: #bae6fd;
+}
+
+.dashboard-page-status--live {
+  color: #bbf7d0;
+}
+
+.dashboard-page-status--error {
+  color: #fecaca;
 }
 
 .operator-hotspot {

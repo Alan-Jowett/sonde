@@ -31,6 +31,7 @@
  *        x2 / 800 ms: lux_ml = als_counts * 3.6 mLux/count
  *   6. Clamp the reported lux value to a minimum of 1 mLux.
  *   7. Store the new reading in the three-sample rolling history.
+ *   8. Persist the selected profile only after the measurement succeeds.
  *
  * Payload (18 bytes, queued with send_async):
  *   [0..7]   timestamp (little-endian u64, ms since epoch)
@@ -196,7 +197,6 @@ int program(struct sonde_context *ctx)
     }
 
     conf = veml7700_select_conf(state);
-    state->current_conf = conf;
 
     rc = veml7700_write_word(VEML7700_REG_ALS_CONF_0, conf);
     if (rc < 0) {
@@ -224,6 +224,7 @@ int program(struct sonde_context *ctx)
         return 0;
     }
 
+    state->current_conf = conf;
     __u32 lux_ml = veml7700_counts_to_lux_ml(conf, als_counts);
     veml7700_record_lux_ml(state, lux_ml);
     __u8 payload[18];

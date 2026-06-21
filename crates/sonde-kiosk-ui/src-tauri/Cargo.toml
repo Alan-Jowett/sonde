@@ -10,6 +10,7 @@ name = "sonde_kiosk_ui_backend"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
 tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_info"] }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

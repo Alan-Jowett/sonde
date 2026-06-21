@@ -37,6 +37,9 @@ sonde-bpf = { path = "../sonde-bpf", default-features = false }
 [build-dependencies]
 embuild = { version = "0.33", optional = true }
 
+[dev-dependencies]
+object = "0.36.7"
+
 [package.metadata.esp-idf-sys]
 esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
 esp_idf_component_manager = "n"

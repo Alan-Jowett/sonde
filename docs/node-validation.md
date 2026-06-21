@@ -60,6 +60,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 - `oversized_map_program` — declares maps exceeding the memory budget.
 - `deep_call_program` — BPF-to-BPF calls at max depth (8 frames).
 - `budget_exceeded_program` — runs more instructions than the budget allows.
+- `veml7700_sensor_program` — representative I2C ambient-light sensor program that writes configuration, waits for conversion, reads ALS/WHITE result registers, and emits an APP_DATA payload.
 
 ---
 
@@ -659,6 +660,24 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Configure mock I2C device at bus 0, addr 0x48 to return `[0x1A, 0x2B]`.
 2. Install program that calls `i2c_read(handle, buf, 2)`.
 3. Assert: program receives `[0x1A, 0x2B]`.
+
+---
+
+### T-N600a  Representative I2C sensor program — VEML7700 register flow
+
+**Validates:** ND-0504, ND-0601, ND-0602, ND-0604
+
+**Procedure:**
+1. Load `veml7700_sensor_program` as a resident BPF program.
+2. Configure mock I2C device at bus 0, addr `0x10` with a datasheet-consistent register map:
+   - accept a 16-bit little-endian write to `ALS_CONF_0` (`0x00`);
+   - return fixed 16-bit little-endian values for `ALS` (`0x04`) and `WHITE` (`0x05`);
+   - reject reads from undocumented register addresses.
+3. Execute one wake cycle with a mock gateway that accepts APP_DATA.
+4. Assert: the program's I2C traffic is limited to the documented VEML7700 registers needed for configuration and measurement.
+5. Assert: the program calls `delay_us()` with a duration consistent with the selected integration-time profile before reading result registers.
+6. Assert: the program emits APP_DATA via `send_async()` or `send()` with a payload containing the written configuration word, the mocked ALS/WHITE counts, and the derived lux value.
+7. Assert: if the mock HAL injects an I2C error on a documented register access, the program emits no APP_DATA for that wake cycle.
 
 ---
 
@@ -2712,14 +2731,14 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0501a | T-N503, T-N928 |
 | ND-0502 | T-N504 |
 | ND-0503 | T-N505, T-N505a |
-| ND-0504 | T-N506, T-N620d, T-N620e, T-N620f |
+| ND-0504 | T-N506, T-N600a, T-N620d, T-N620e, T-N620f |
 | ND-0505 | T-N507, T-N508, T-N509, T-N929 |
 | ND-0506 | T-N508, T-N510 |
 | ND-0600 | T-N930 |
-| ND-0601 | T-N600, T-N601, T-N602, T-N603, T-N931 |
-| ND-0602 | T-N604, T-N605, T-N606, T-N621, T-N627a |
+| ND-0601 | T-N600, T-N600a, T-N601, T-N602, T-N603, T-N931 |
+| ND-0602 | T-N600a, T-N604, T-N605, T-N606, T-N621, T-N627a |
 | ND-0603 | T-N607, T-N608, T-N609, T-N620e, T-N620f, T-N932 |
-| ND-0604 | T-N610, T-N611, T-N612, T-N613, T-N933, T-N0608b, T-N0608c |
+| ND-0604 | T-N600a, T-N610, T-N611, T-N612, T-N613, T-N933, T-N0608b, T-N0608c |
 | ND-0605 | T-N614, T-N615, T-N934 |
 | ND-0606 | T-N616, T-N619, T-N620, T-N620d, T-N620e, T-N620f, T-N935 |
 | ND-0700 | T-N201, T-N700 |
@@ -2834,6 +2853,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N509 | `test_wake_reason_early`, `test_wake_reason` (sleep.rs) | wake_cycle.rs, sleep.rs |
 | T-N510 | `test_post_update_immediate_execution` | wake_cycle.rs |
 | T-N600 | `test_helper_i2c_read` | bpf_dispatch.rs |
+| T-N600a | `test_veml7700_sensor_program_queues_payload_with_documented_registers`, `test_veml7700_sensor_program_suppresses_payload_on_i2c_error`, `test_veml7700_sensor_program_switches_to_lowlight_after_low_reading` | bpf_dispatch.rs |
 | T-N601 | `test_helper_i2c_error` | bpf_dispatch.rs |
 | T-N602 | `test_helper_spi_transfer` | bpf_dispatch.rs |
 | T-N603 | `test_helper_gpio_and_adc` | bpf_dispatch.rs |

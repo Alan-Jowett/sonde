@@ -1111,6 +1111,7 @@ mod tests {
 
     fn compile_veml7700_program_image() -> sonde_protocol::ProgramImage {
         const VEML7700_STATE_SIZE: u32 = 16;
+        const CLANG_ENV: &str = "SONDE_TEST_CLANG";
 
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repo_root = manifest_dir
@@ -1119,6 +1120,7 @@ mod tests {
             .expect("workspace layout should be crates/sonde-node under repo root");
         let test_programs_dir = repo_root.join("test-programs");
         let source_path = test_programs_dir.join("veml7700_sensor.c");
+        let clang = std::env::var_os(CLANG_ENV).unwrap_or_else(|| "clang".into());
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock must be after Unix epoch")
@@ -1128,7 +1130,7 @@ mod tests {
         let object_path = temp_dir.join("veml7700_sensor.o");
 
         fs::create_dir_all(&temp_dir).expect("temporary directory creation should succeed");
-        let compile = Command::new("clang")
+        let compile = Command::new(&clang)
             .arg("-target")
             .arg("bpf")
             .arg("-O2")
@@ -1142,7 +1144,13 @@ mod tests {
             .arg("-o")
             .arg(&object_path)
             .output()
-            .expect("clang should be available for test-program compilation");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "failed to spawn {:?} for VEML7700 test-program compilation: {}. \
+set {} to a clang executable path or ensure clang is on PATH",
+                    clang, error, CLANG_ENV
+                )
+            });
         assert!(
             compile.status.success(),
             "failed to compile {}:\nstdout:\n{}\nstderr:\n{}",
@@ -1153,7 +1161,7 @@ mod tests {
 
         let elf = fs::read(&object_path).expect("compiled VEML7700 BPF object should be readable");
         let _ = fs::remove_file(&object_path);
-        let _ = fs::remove_dir(&temp_dir);
+        let _ = fs::remove_dir_all(&temp_dir);
 
         let file = object::File::parse(&*elf).expect("compiled ELF should parse");
         let section = file

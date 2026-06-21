@@ -195,6 +195,29 @@ test('cacheTelemetryRefreshResponse reuses telemetry across dashboards sharing a
   ]);
 });
 
+test('cacheTelemetryRefreshResponse ignores malformed series identifiers', () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  kiosk.APP_STATE.telemetryCache.clear();
+  kiosk.cacheTelemetryRefreshResponse(environment, { startMs: 1_000, endMs: 9_000 }, {
+    refreshedAtMs: 2_000,
+    series: [{ nodeId: 'NODE_001', points: [{ timestampMs: 2_000, value: 1 }] }],
+  });
+
+  assert.equal(kiosk.APP_STATE.telemetryCache.size, 0);
+});
+
 test('buildDashboardRefreshRequest de-duplicates sources without delimiter collisions', () => {
   const environment = runtime.normalizeEnvironmentRecord({
     name: 'prod',
@@ -282,6 +305,38 @@ test('triggerDashboardRefresh caches live telemetry from the injected fetcher', 
   assert.match(kiosk.APP_STATE.telemetryNotice, /Live data refreshed/);
 });
 
+test('triggerDashboardRefresh rejects invalid telemetry payloads', async () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache.clear();
+
+  await kiosk.triggerDashboardRefresh('manual', {
+    nowFn: () => 9_000,
+    fetchDashboardVariableDataFn: async () => null,
+  });
+
+  assert.match(kiosk.APP_STATE.telemetryNotice, /invalid response payload/i);
+});
+
 test('interpretDashboardGesture distinguishes refresh from horizontal navigation', () => {
   assert.equal(kiosk.interpretDashboardGesture(-120, 10), 'next');
   assert.equal(kiosk.interpretDashboardGesture(120, 10), 'previous');
@@ -303,4 +358,75 @@ test('startBackgroundRefreshLoop uses the kiosk refresh cadence', () => {
 
   assert.equal(scheduledMs, kiosk.BACKGROUND_REFRESH_INTERVAL_MS);
   assert.equal(kiosk.APP_STATE.refreshTimer, 42);
+});
+
+test('background refresh skips starting a second request while one is in flight', async () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  let releaseRefresh;
+  let callCount = 0;
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache.clear();
+  kiosk.APP_STATE.refreshInFlightPromise = null;
+
+  const deps = {
+    nowFn: () => 9_000,
+    fetchDashboardVariableDataFn: async () => {
+      callCount += 1;
+      await new Promise((resolve) => {
+        releaseRefresh = resolve;
+      });
+      return {
+        refreshedAtMs: 9_000,
+        series: [{ nodeId: 'NODE_001', readingType: 'temp_mc', points: [] }],
+      };
+    },
+  };
+
+  const firstRefresh = kiosk.triggerDashboardRefresh('background', deps);
+  const secondRefresh = kiosk.triggerDashboardRefresh('background', deps);
+  assert.equal(callCount, 1);
+
+  releaseRefresh();
+  await Promise.all([firstRefresh, secondRefresh]);
+});
+
+test('telemetry cache JSON round-trips through parse and serialize helpers', () => {
+  kiosk.APP_STATE.telemetryCache = new Map([
+    ['cache-key', {
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 9_000,
+      refreshedAtMs: 9_000,
+    }],
+  ]);
+
+  const parsed = kiosk.parseTelemetryCacheJson(kiosk.serializeTelemetryCache());
+  assert.deepEqual(Array.from(parsed.entries()), [[
+    'cache-key',
+    {
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 9_000,
+      refreshedAtMs: 9_000,
+    },
+  ]]);
 });

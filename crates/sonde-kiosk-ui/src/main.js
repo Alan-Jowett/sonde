@@ -22,13 +22,11 @@ const APP_STATE = {
   metricCharts: {},
   telemetryNotice: 'Waiting for live telemetry refresh.',
   telemetryStatusKind: 'info',
-  // This tranche only reuses live telemetry within the current process. The
-  // persistent cross-restart cache from KA-0401 is implemented in a later
-  // tranche alongside offline startup behavior.
   telemetryCache: new Map(),
   refreshGeneration: 0,
   refreshTimer: null,
   refreshIntervalMs: BACKGROUND_REFRESH_INTERVAL_MS,
+  refreshInFlightPromise: null,
   operatorPanelOpen: false,
   operatorPressTimer: null,
   dependencies: {},
@@ -272,6 +270,10 @@ function clearTelemetryCache() {
   APP_STATE.telemetryCache.clear();
 }
 
+function replaceTelemetryCache(entries) {
+  APP_STATE.telemetryCache = entries instanceof Map ? entries : new Map();
+}
+
 function getActiveDashboard() {
   if (!APP_STATE.activeEnvironment) {
     return null;
@@ -307,6 +309,60 @@ function buildCachedVariableData(runtime, environment, dashboard, nowMs = Date.n
   }
 
   return result;
+}
+
+function normalizeTelemetryCacheRecord(record) {
+  if (typeof record !== 'object' || record === null) {
+    return null;
+  }
+
+  const coverageStartMs = Number(record.coverageStartMs);
+  const coverageEndMs = Number(record.coverageEndMs);
+  const refreshedAtMs = Number(record.refreshedAtMs);
+  return {
+    points: normalizeTelemetryPoints(record.points),
+    coverageStartMs: Number.isFinite(coverageStartMs) ? coverageStartMs : null,
+    coverageEndMs: Number.isFinite(coverageEndMs) ? coverageEndMs : null,
+    refreshedAtMs: Number.isFinite(refreshedAtMs) ? refreshedAtMs : null,
+  };
+}
+
+function serializeTelemetryCache() {
+  return JSON.stringify({
+    version: 1,
+    entries: Array.from(APP_STATE.telemetryCache.entries()).map(([key, value]) => ({
+      key,
+      ...value,
+    })),
+  });
+}
+
+function parseTelemetryCacheJson(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error('Stored telemetry cache is not valid JSON.');
+  }
+
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    throw new Error('Stored telemetry cache must be a JSON object.');
+  }
+  if (data.version !== 1) {
+    throw new Error(`Unsupported telemetry cache version: ${data.version ?? 'missing'}.`);
+  }
+  if (!Array.isArray(data.entries)) {
+    throw new Error('Stored telemetry cache entries must be an array.');
+  }
+
+  const cache = new Map();
+  for (const entry of data.entries) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry) || typeof entry.key !== 'string') {
+      throw new Error('Stored telemetry cache contains an invalid entry.');
+    }
+    cache.set(entry.key, normalizeTelemetryCacheRecord(entry));
+  }
+  return cache;
 }
 
 function buildDashboardRefreshRequest(environment, dashboard, runtime, nowMs = Date.now()) {
@@ -354,7 +410,9 @@ function normalizeTelemetryPoints(points) {
 
 function cacheTelemetryRefreshResponse(environment, request, response) {
   for (const series of response?.series ?? []) {
-    if (typeof series !== 'object' || series === null) {
+    if (typeof series !== 'object' || series === null
+      || typeof series.nodeId !== 'string'
+      || typeof series.readingType !== 'string') {
       continue;
     }
 
@@ -382,6 +440,44 @@ async function fetchDashboardVariableData(request, deps = APP_STATE.dependencies
   }
 
   return invokeFn('fetch_dashboard_variable_data', { request });
+}
+
+function validateFetchDashboardVariableDataResponse(response) {
+  if (typeof response !== 'object' || response === null || Array.isArray(response)) {
+    throw new Error('Telemetry refresh returned an invalid response payload.');
+  }
+  if (!Array.isArray(response.series)) {
+    throw new Error('Telemetry refresh returned an invalid response payload.');
+  }
+  return response;
+}
+
+async function loadStoredTelemetryCache(deps = {}) {
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    return new Map();
+  }
+  const raw = await invokeFn('get_telemetry_cache_json');
+  if (!raw) {
+    return new Map();
+  }
+  return parseTelemetryCacheJson(raw);
+}
+
+async function persistTelemetryCache(deps = {}) {
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    return;
+  }
+  await invokeFn('save_telemetry_cache_json', { json: serializeTelemetryCache() });
+}
+
+async function clearStoredTelemetryCache(deps = {}) {
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    return;
+  }
+  await invokeFn('clear_telemetry_cache_json');
 }
 
 function createCachedMetricEvaluator(runtime, environment, dashboard, nowMs = Date.now()) {
@@ -484,6 +580,10 @@ function startBackgroundRefreshLoop(deps = APP_STATE.dependencies) {
 }
 
 async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.dependencies) {
+  if (reason === 'background' && APP_STATE.refreshInFlightPromise) {
+    return APP_STATE.refreshInFlightPromise;
+  }
+
   const runtime = APP_STATE.runtime;
   const environment = APP_STATE.activeEnvironment;
   const dashboard = getActiveDashboard();
@@ -506,28 +606,39 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
       : 'Refreshing live dashboard data…';
   setTelemetryNotice(refreshingMessage, 'refreshing');
 
-  try {
-    const response = await fetchDashboardVariableData(refreshRequest, deps);
-    cacheTelemetryRefreshResponse(environment, refreshRequest, response);
-    if (refreshGeneration !== APP_STATE.refreshGeneration
-      || environment !== APP_STATE.activeEnvironment
-      || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex) {
-      return;
+  const refreshPromise = (async () => {
+    try {
+      const response = validateFetchDashboardVariableDataResponse(
+        await fetchDashboardVariableData(refreshRequest, deps),
+      );
+      cacheTelemetryRefreshResponse(environment, refreshRequest, response);
+      await persistTelemetryCache(deps);
+      if (refreshGeneration !== APP_STATE.refreshGeneration
+        || environment !== APP_STATE.activeEnvironment
+        || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex) {
+        return;
+      }
+      const refreshedAtMs = Number.isFinite(response?.refreshedAtMs)
+        ? Number(response.refreshedAtMs)
+        : nowFn();
+      setTelemetryNotice(`Live data refreshed at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
+      await renderActiveDashboard(deps);
+    } catch (error) {
+      if (refreshGeneration !== APP_STATE.refreshGeneration
+        || environment !== APP_STATE.activeEnvironment
+        || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex) {
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      setTelemetryNotice(`Live refresh unavailable: ${message}`, 'error');
+    } finally {
+      if (APP_STATE.refreshInFlightPromise === refreshPromise) {
+        APP_STATE.refreshInFlightPromise = null;
+      }
     }
-    const refreshedAtMs = Number.isFinite(response?.refreshedAtMs)
-      ? Number(response.refreshedAtMs)
-      : nowFn();
-    setTelemetryNotice(`Live data refreshed at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
-    await renderActiveDashboard(deps);
-  } catch (error) {
-    if (refreshGeneration !== APP_STATE.refreshGeneration
-      || environment !== APP_STATE.activeEnvironment
-      || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex) {
-      return;
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    setTelemetryNotice(`Live refresh unavailable: ${message}`, 'error');
-  }
+  })();
+  APP_STATE.refreshInFlightPromise = refreshPromise;
+  return refreshPromise;
 }
 
 async function showDashboardMode(deps = APP_STATE.dependencies) {
@@ -544,6 +655,7 @@ function showSetupMode(message) {
   APP_STATE.activeEnvironment = null;
   APP_STATE.activeDashboardIndex = 0;
   APP_STATE.refreshGeneration = 0;
+  APP_STATE.refreshInFlightPromise = null;
   document.getElementById('dashboard-screen')?.classList.add('hidden');
   document.getElementById('setup-screen')?.classList.remove('hidden');
   document.getElementById('dashboard-overlay')?.classList.add('hidden');
@@ -677,6 +789,7 @@ function installOperatorControls(fileInput, deps = APP_STATE.dependencies) {
   });
   reset?.addEventListener('click', async () => {
     await clearStoredEnvironment(deps);
+    await clearStoredTelemetryCache(deps);
     clearTelemetryCache();
     hideOperatorPanel();
     showSetupMode('Imported environment cleared. Import a new SPA environment JSON to resume kiosk mode.');
@@ -692,6 +805,7 @@ async function importEnvironmentFromText(text, deps = {}) {
   const environment = validateImportedEnvironmentJson(text, runtime, deps);
   await persistEnvironment(environment, deps);
   clearTelemetryCache();
+  await clearStoredTelemetryCache(deps);
   setTelemetryNotice('Waiting for live telemetry refresh.', 'info');
   APP_STATE.activeEnvironment = environment;
   APP_STATE.activeDashboardIndex = 0;
@@ -702,6 +816,7 @@ async function initKioskApp(deps = {}) {
   const runtime = await loadSharedDashboardRuntime(deps);
   APP_STATE.runtime = runtime;
   APP_STATE.dependencies = deps;
+  replaceTelemetryCache(await loadStoredTelemetryCache(deps));
 
   const fileInput = document.getElementById('import-file');
   const importButton = document.getElementById('import-button');
@@ -744,7 +859,6 @@ async function initKioskApp(deps = {}) {
 
   const storedEnvironment = await loadStoredEnvironment({ ...deps, runtime });
   if (storedEnvironment) {
-    clearTelemetryCache();
     setTelemetryNotice('Waiting for live telemetry refresh.', 'info');
     APP_STATE.activeEnvironment = storedEnvironment;
     await showDashboardMode(deps);
@@ -761,14 +875,21 @@ if (typeof module !== 'undefined' && module.exports) {
     buildCachedVariableData,
     buildDashboardRefreshRequest,
     cacheTelemetryRefreshResponse,
+    clearStoredTelemetryCache,
     fetchDashboardVariableData,
     initKioskApp,
     interpretDashboardGesture,
+    loadStoredTelemetryCache,
     loadSharedDashboardRuntime,
+    parseTelemetryCacheJson,
+    persistTelemetryCache,
+    replaceTelemetryCache,
     renderDashboardFrame,
+    serializeTelemetryCache,
     setTelemetryNotice,
     startBackgroundRefreshLoop,
     triggerDashboardRefresh,
+    validateFetchDashboardVariableDataResponse,
     validateEnvironmentFields,
     validateImportedEnvironmentJson,
     validateImportedSensorDataPreferences,

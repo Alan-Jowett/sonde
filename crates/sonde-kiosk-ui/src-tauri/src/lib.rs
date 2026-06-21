@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 const ENVIRONMENT_FILE_NAME: &str = "environment.json";
+const TELEMETRY_CACHE_FILE_NAME: &str = "telemetry-cache.json";
 const SHARED_DASHBOARD_RUNTIME_SOURCE: &str =
     include_str!("../../../../deploy/web-ui/dashboard-runtime.js");
 
@@ -61,16 +62,24 @@ struct FetchDashboardVariableDataResponse {
     series: Vec<DashboardVariableSeries>,
 }
 
-fn environment_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn app_data_file_path(app: &tauri::AppHandle, file_name: &str) -> Result<PathBuf, String> {
     let mut path = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("failed to resolve kiosk app data directory: {error}"))?;
-    path.push(ENVIRONMENT_FILE_NAME);
+    path.push(file_name);
     Ok(path)
 }
 
-fn read_environment_json_from_path(path: &Path) -> Result<Option<String>, String> {
+fn environment_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app_data_file_path(app, ENVIRONMENT_FILE_NAME)
+}
+
+fn telemetry_cache_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app_data_file_path(app, TELEMETRY_CACHE_FILE_NAME)
+}
+
+fn read_optional_file_to_string(path: &Path) -> Result<Option<String>, String> {
     match fs::read_to_string(path) {
         Ok(json) => Ok(Some(json)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
@@ -81,7 +90,7 @@ fn read_environment_json_from_path(path: &Path) -> Result<Option<String>, String
     }
 }
 
-fn write_environment_json_to_path(path: &Path, json: &str) -> Result<(), String> {
+fn write_string_to_path(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -90,20 +99,20 @@ fn write_environment_json_to_path(path: &Path, json: &str) -> Result<(), String>
             )
         })?;
     }
-    fs::write(path, json).map_err(|error| {
+    fs::write(path, contents).map_err(|error| {
         format!(
-            "failed to write kiosk environment to {}: {error}",
+            "failed to write kiosk app data to {}: {error}",
             path.display()
         )
     })
 }
 
-fn remove_environment_json_at_path(path: &Path) -> Result<(), String> {
+fn remove_optional_file_at_path(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!(
-            "failed to remove kiosk environment at {}: {error}",
+            "failed to remove kiosk app data at {}: {error}",
             path.display()
         )),
     }
@@ -128,17 +137,32 @@ fn shared_dashboard_runtime_source() -> &'static str {
 
 #[tauri::command]
 fn get_environment_json(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    read_environment_json_from_path(&environment_file_path(&app)?)
+    read_optional_file_to_string(&environment_file_path(&app)?)
 }
 
 #[tauri::command]
 fn save_environment_json(app: tauri::AppHandle, json: String) -> Result<(), String> {
-    write_environment_json_to_path(&environment_file_path(&app)?, &json)
+    write_string_to_path(&environment_file_path(&app)?, &json)
 }
 
 #[tauri::command]
 fn clear_environment_json(app: tauri::AppHandle) -> Result<(), String> {
-    remove_environment_json_at_path(&environment_file_path(&app)?)
+    remove_optional_file_at_path(&environment_file_path(&app)?)
+}
+
+#[tauri::command]
+fn get_telemetry_cache_json(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    read_optional_file_to_string(&telemetry_cache_file_path(&app)?)
+}
+
+#[tauri::command]
+fn save_telemetry_cache_json(app: tauri::AppHandle, json: String) -> Result<(), String> {
+    write_string_to_path(&telemetry_cache_file_path(&app)?, &json)
+}
+
+#[tauri::command]
+fn clear_telemetry_cache_json(app: tauri::AppHandle) -> Result<(), String> {
+    remove_optional_file_at_path(&telemetry_cache_file_path(&app)?)
 }
 
 #[tauri::command]
@@ -169,6 +193,9 @@ pub fn run() {
             get_environment_json,
             save_environment_json,
             clear_environment_json,
+            get_telemetry_cache_json,
+            save_telemetry_cache_json,
+            clear_telemetry_cache_json,
             fetch_dashboard_variable_data,
         ])
         .run(tauri::generate_context!())
@@ -192,26 +219,38 @@ mod tests {
     fn read_environment_json_missing_file_returns_none() {
         let path = temp_path("missing.json");
         let _ = fs::remove_file(&path);
-        assert_eq!(read_environment_json_from_path(&path).unwrap(), None);
+        assert_eq!(read_optional_file_to_string(&path).unwrap(), None);
     }
 
     #[test]
     fn write_then_read_environment_json_round_trips() {
         let path = temp_path("round-trip.json");
         let _ = fs::remove_file(&path);
-        write_environment_json_to_path(&path, "{\"name\":\"prod\"}").unwrap();
+        write_string_to_path(&path, "{\"name\":\"prod\"}").unwrap();
         assert_eq!(
-            read_environment_json_from_path(&path).unwrap(),
+            read_optional_file_to_string(&path).unwrap(),
             Some("{\"name\":\"prod\"}".into())
         );
-        remove_environment_json_at_path(&path).unwrap();
+        remove_optional_file_at_path(&path).unwrap();
     }
 
     #[test]
     fn clear_environment_json_ignores_missing_file() {
         let path = temp_path("clear-missing.json");
         let _ = fs::remove_file(&path);
-        assert!(remove_environment_json_at_path(&path).is_ok());
+        assert!(remove_optional_file_at_path(&path).is_ok());
+    }
+
+    #[test]
+    fn telemetry_cache_json_round_trips() {
+        let path = temp_path("telemetry-cache.json");
+        let _ = fs::remove_file(&path);
+        write_string_to_path(&path, "{\"version\":1,\"entries\":[]}").unwrap();
+        assert_eq!(
+            read_optional_file_to_string(&path).unwrap(),
+            Some("{\"version\":1,\"entries\":[]}".into())
+        );
+        remove_optional_file_at_path(&path).unwrap();
     }
 
     fn sample_request() -> FetchDashboardVariableDataRequest {

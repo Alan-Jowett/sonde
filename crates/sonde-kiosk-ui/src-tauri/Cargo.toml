@@ -1,0 +1,18 @@
+[package]
+name = "sonde-kiosk-ui"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+description = "Tauri v2 kiosk dashboard app for sonde"
+
+[lib]
+name = "sonde_kiosk_ui_backend"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_info"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

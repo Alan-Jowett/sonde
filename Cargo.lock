@@ -6613,6 +6613,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonde-kiosk-ui"
+version = "0.8.0"
+dependencies = [
+ "tauri",
+ "tauri-build",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "sonde-modem"
 version = "0.8.0"
 dependencies = [

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/config.schema.json",
+  "productName": "Sonde Dashboard Kiosk",
+  "version": "0.8.0",
+  "identifier": "com.sonde.kiosk",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Sonde Dashboard Kiosk",
+        "width": 1280,
+        "height": 800,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' blob: https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "../../sonde-pair-ui/src-tauri/icons/icon.png",
+      "../../sonde-pair-ui/src-tauri/icons/32x32.png",
+      "../../sonde-pair-ui/src-tauri/icons/128x128.png",
+      "../../sonde-pair-ui/src-tauri/icons/128x128@2x.png",
+      "../../sonde-pair-ui/src-tauri/icons/icon.icns",
+      "../../sonde-pair-ui/src-tauri/icons/icon.ico"
+    ]
+  }
+}

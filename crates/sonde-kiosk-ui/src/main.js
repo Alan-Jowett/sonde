@@ -409,6 +409,7 @@ function normalizeTelemetryPoints(points) {
 }
 
 function cacheTelemetryRefreshResponse(environment, request, response) {
+  let cachedSeriesCount = 0;
   for (const series of response?.series ?? []) {
     if (typeof series !== 'object' || series === null
       || typeof series.nodeId !== 'string'
@@ -426,7 +427,9 @@ function cacheTelemetryRefreshResponse(environment, request, response) {
       coverageEndMs: request.endMs,
       refreshedAtMs: Number.isFinite(response.refreshedAtMs) ? Number(response.refreshedAtMs) : Date.now(),
     });
+    cachedSeriesCount += 1;
   }
+  return cachedSeriesCount;
 }
 
 async function fetchDashboardVariableData(request, deps = APP_STATE.dependencies) {
@@ -621,7 +624,10 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
         || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex) {
         return;
       }
-      cacheTelemetryRefreshResponse(environment, refreshRequest, response);
+      const cachedSeriesCount = cacheTelemetryRefreshResponse(environment, refreshRequest, response);
+      if (cachedSeriesCount === 0) {
+        throw new Error('Telemetry refresh returned no usable series.');
+      }
       await persistTelemetryCache(deps);
       const refreshedAtMs = Number.isFinite(response?.refreshedAtMs)
         ? Number(response.refreshedAtMs)

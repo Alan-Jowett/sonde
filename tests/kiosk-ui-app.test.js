@@ -218,6 +218,32 @@ test('cacheTelemetryRefreshResponse ignores malformed series identifiers', () =>
   assert.equal(kiosk.APP_STATE.telemetryCache.size, 0);
 });
 
+test('cacheTelemetryRefreshResponse reports how many usable series were cached', () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  kiosk.APP_STATE.telemetryCache.clear();
+  const cachedSeriesCount = kiosk.cacheTelemetryRefreshResponse(environment, { startMs: 1_000, endMs: 9_000 }, {
+    refreshedAtMs: 2_000,
+    series: [
+      { nodeId: 'NODE_001', readingType: 'temp_mc', points: [{ timestampMs: 2_000, value: 1 }] },
+      { nodeId: 'NODE_002', points: [{ timestampMs: 2_000, value: 1 }] },
+    ],
+  });
+
+  assert.equal(cachedSeriesCount, 1);
+});
+
 test('buildDashboardRefreshRequest de-duplicates sources without delimiter collisions', () => {
   const environment = runtime.normalizeEnvironmentRecord({
     name: 'prod',
@@ -335,6 +361,41 @@ test('triggerDashboardRefresh rejects invalid telemetry payloads', async () => {
   });
 
   assert.match(kiosk.APP_STATE.telemetryNotice, /invalid response payload/i);
+});
+
+test('triggerDashboardRefresh rejects refreshes with no usable telemetry series', async () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache.clear();
+
+  await kiosk.triggerDashboardRefresh('manual', {
+    nowFn: () => 9_000,
+    fetchDashboardVariableDataFn: async () => ({
+      refreshedAtMs: 9_000,
+      series: [{ nodeId: 'NODE_001', points: [{ timestampMs: 8_000, value: 20.25 }] }],
+    }),
+  });
+
+  assert.match(kiosk.APP_STATE.telemetryNotice, /no usable series/i);
 });
 
 test('triggerDashboardRefresh does not persist telemetry after reset clears the active environment', async () => {

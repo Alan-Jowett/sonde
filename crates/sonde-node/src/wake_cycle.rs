@@ -1799,6 +1799,10 @@ mod tests {
             make_command(psk, nonce, &CommandPayload::Nop)
         }
 
+        fn next_mock_nonce(rng: &MockRng) -> u64 {
+            rng.0 + 1
+        }
+
         fn rodata_read_program() -> Vec<u8> {
             let lddw_rodata = lddw_map(1, 0);
             let lddw_output = lddw_map(1, 1);
@@ -2625,9 +2629,9 @@ mod tests {
             storage.active_partition = 0;
 
             let mut transport = MockTransport::new();
-            transport.queue_response(Some(resident_command(&psk, 1)));
+            let mut rng = MockRng(u64::from(key_hint));
+            transport.queue_response(Some(resident_command(&psk, next_mock_nonce(&rng))));
             let mut hal = MockHal::default();
-            let mut rng = MockRng(0);
             let clock = MockClock::default();
             let mut interp = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
             let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
@@ -2699,9 +2703,9 @@ mod tests {
             storage.active_partition = 0;
 
             let mut transport = MockTransport::new();
-            transport.queue_response(Some(resident_command(&psk, 1)));
+            let mut rng = MockRng(u64::from(key_hint));
+            transport.queue_response(Some(resident_command(&psk, next_mock_nonce(&rng))));
             let mut hal = MockHal::default();
-            let mut rng = MockRng(0);
             let clock = MockClock::default();
             let mut interp = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
             let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
@@ -2759,14 +2763,14 @@ mod tests {
             storage.programs[0] = Some(image_cbor);
             storage.active_partition = 0;
             let mut hal = MockHal::default();
-            let mut rng = MockRng(0);
+            let mut rng = MockRng(u64::from(key_hint));
             let clock = MockClock::default();
             let mut interp = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
             let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
             let mut async_queue = AsyncQueue::new();
 
             let mut transport_first = MockTransport::new();
-            transport_first.queue_response(Some(resident_command(&psk, 1)));
+            transport_first.queue_response(Some(resident_command(&psk, next_mock_nonce(&rng))));
             let first_outcome = run_wake_cycle(
                 &mut transport_first,
                 &mut storage,
@@ -2795,7 +2799,7 @@ mod tests {
             );
 
             let mut transport_second = MockTransport::new();
-            transport_second.queue_response(Some(resident_command(&psk, 2)));
+            transport_second.queue_response(Some(resident_command(&psk, next_mock_nonce(&rng))));
             let second_outcome = run_wake_cycle(
                 &mut transport_second,
                 &mut storage,

@@ -32,24 +32,6 @@ static const __u32 globals_diag_rodata = GLOBALS_DIAG_RODATA_INIT;
 static __u32 globals_diag_data = GLOBALS_DIAG_DATA_INIT;
 static __u32 globals_diag_bss;
 
-static __noinline void store_u32_le(__u8 *dst, __u32 value)
-{
-    dst[0] = (__u8)value;
-    dst[1] = (__u8)(value >> 8);
-    dst[2] = (__u8)(value >> 16);
-    dst[3] = (__u8)(value >> 24);
-}
-
-static __noinline __u32 load_u32_le(const __u8 *src)
-{
-    return (__u32)(
-        (__u32)src[0] |
-        ((__u32)src[1] << 8) |
-        ((__u32)src[2] << 16) |
-        ((__u32)src[3] << 24)
-    );
-}
-
 SEC("sonde")
 int program(struct sonde_context *ctx)
 {
@@ -66,12 +48,35 @@ int program(struct sonde_context *ctx)
     globals_diag_data = data_after;
     globals_diag_bss = bss_after;
 
-    store_u32_le(&report[0], wake_index);
-    store_u32_le(&report[4], rodata_value);
-    store_u32_le(&report[8], data_before);
-    store_u32_le(&report[12], data_after);
-    store_u32_le(&report[16], bss_before);
-    store_u32_le(&report[20], bss_after);
+    report[0] = (__u8)wake_index;
+    report[1] = (__u8)(wake_index >> 8);
+    report[2] = (__u8)(wake_index >> 16);
+    report[3] = (__u8)(wake_index >> 24);
+
+    report[4] = (__u8)rodata_value;
+    report[5] = (__u8)(rodata_value >> 8);
+    report[6] = (__u8)(rodata_value >> 16);
+    report[7] = (__u8)(rodata_value >> 24);
+
+    report[8] = (__u8)data_before;
+    report[9] = (__u8)(data_before >> 8);
+    report[10] = (__u8)(data_before >> 16);
+    report[11] = (__u8)(data_before >> 24);
+
+    report[12] = (__u8)data_after;
+    report[13] = (__u8)(data_after >> 8);
+    report[14] = (__u8)(data_after >> 16);
+    report[15] = (__u8)(data_after >> 24);
+
+    report[16] = (__u8)bss_before;
+    report[17] = (__u8)(bss_before >> 8);
+    report[18] = (__u8)(bss_before >> 16);
+    report[19] = (__u8)(bss_before >> 24);
+
+    report[20] = (__u8)bss_after;
+    report[21] = (__u8)(bss_after >> 8);
+    report[22] = (__u8)(bss_after >> 16);
+    report[23] = (__u8)(bss_after >> 24);
 
     send(report, GLOBALS_DIAG_REPORT_LEN);
     return 0;
@@ -86,12 +91,42 @@ int decode(struct decoder_context *ctx)
     if (data + GLOBALS_DIAG_REPORT_LEN > data_end)
         return 0;
 
-    __u32 wake_index = load_u32_le(&data[0]);
-    __u32 rodata_value = load_u32_le(&data[4]);
-    __u32 data_before = load_u32_le(&data[8]);
-    __u32 data_after = load_u32_le(&data[12]);
-    __u32 bss_before = load_u32_le(&data[16]);
-    __u32 bss_after = load_u32_le(&data[20]);
+    __u32 wake_index = (__u32)(
+        (__u32)data[0] |
+        ((__u32)data[1] << 8) |
+        ((__u32)data[2] << 16) |
+        ((__u32)data[3] << 24)
+    );
+    __u32 rodata_value = (__u32)(
+        (__u32)data[4] |
+        ((__u32)data[5] << 8) |
+        ((__u32)data[6] << 16) |
+        ((__u32)data[7] << 24)
+    );
+    __u32 data_before = (__u32)(
+        (__u32)data[8] |
+        ((__u32)data[9] << 8) |
+        ((__u32)data[10] << 16) |
+        ((__u32)data[11] << 24)
+    );
+    __u32 data_after = (__u32)(
+        (__u32)data[12] |
+        ((__u32)data[13] << 8) |
+        ((__u32)data[14] << 16) |
+        ((__u32)data[15] << 24)
+    );
+    __u32 bss_before = (__u32)(
+        (__u32)data[16] |
+        ((__u32)data[17] << 8) |
+        ((__u32)data[18] << 16) |
+        ((__u32)data[19] << 24)
+    );
+    __u32 bss_after = (__u32)(
+        (__u32)data[20] |
+        ((__u32)data[21] << 8) |
+        ((__u32)data[22] << 16) |
+        ((__u32)data[23] << 24)
+    );
 
     char wake_name[] = "wake_index";
     emit_reading(wake_name, 10, (__s64)wake_index);

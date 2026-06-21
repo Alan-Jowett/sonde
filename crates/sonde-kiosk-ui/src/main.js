@@ -22,6 +22,9 @@ const APP_STATE = {
   metricCharts: {},
   telemetryNotice: 'Waiting for live telemetry refresh.',
   telemetryStatusKind: 'info',
+  // This tranche only reuses live telemetry within the current process. The
+  // persistent cross-restart cache from KA-0401 is implemented in a later
+  // tranche alongside offline startup behavior.
   telemetryCache: new Map(),
   refreshGeneration: 0,
   refreshTimer: null,
@@ -234,11 +237,11 @@ function buildDashboardOverlay(environment, activeDashboardIndex) {
   return `${dashboard.name} (${activeDashboardIndex + 1}/${environment.dashboards.length})`;
 }
 
-function renderDashboardFrame(runtime, environment, activeDashboardIndex, statusMessage) {
+function renderDashboardFrame(runtime, environment, activeDashboardIndex) {
   const dashboard = environment.dashboards[activeDashboardIndex];
   return `
     <div class="dashboard-frame">
-      <div class="dashboard-page-status text-muted">${statusMessage}</div>
+      <div class="dashboard-page-status text-muted"></div>
       ${runtime.renderReadOnlyDashboardPage(dashboard)}
     </div>
   `;
@@ -251,13 +254,17 @@ function setTelemetryNotice(text, kind = 'info') {
   const status = document.getElementById('dashboard-status');
   if (status) {
     status.textContent = text;
-    status.className = `status-pill status-pill--${kind}`;
+    status.className = kind === 'info'
+      ? 'status-pill'
+      : `status-pill status-pill--${kind}`;
   }
 
   const pageStatus = document.querySelector?.('.dashboard-page-status');
   if (pageStatus) {
     pageStatus.textContent = text;
-    pageStatus.className = `dashboard-page-status dashboard-page-status--${kind}`;
+    pageStatus.className = kind === 'info'
+      ? 'dashboard-page-status text-muted'
+      : `dashboard-page-status dashboard-page-status--${kind}`;
   }
 }
 
@@ -308,7 +315,7 @@ function buildDashboardRefreshRequest(environment, dashboard, runtime, nowMs = D
   const variables = [];
 
   for (const variable of dashboard.variables) {
-    const sourceKey = `${variable.nodeId}\n${variable.readingType}`;
+    const sourceKey = JSON.stringify([variable.nodeId, variable.readingType]);
     if (seenSources.has(sourceKey)) {
       continue;
     }
@@ -427,9 +434,8 @@ async function renderActiveDashboard(deps = APP_STATE.dependencies) {
   destroyDashboardCharts();
   overlay.classList.remove('hidden');
   overlay.textContent = buildDashboardOverlay(environment, APP_STATE.activeDashboardIndex);
-  status.className = `status-pill status-pill--${APP_STATE.telemetryStatusKind}`;
-  status.textContent = APP_STATE.telemetryNotice;
-  pageHost.innerHTML = renderDashboardFrame(runtime, environment, APP_STATE.activeDashboardIndex, APP_STATE.telemetryNotice);
+  pageHost.innerHTML = renderDashboardFrame(runtime, environment, APP_STATE.activeDashboardIndex);
+  setTelemetryNotice(APP_STATE.telemetryNotice, APP_STATE.telemetryStatusKind);
 
   const dashboard = environment.dashboards[APP_STATE.activeDashboardIndex];
   if (dashboard.charts.length > 0) {
@@ -760,6 +766,7 @@ if (typeof module !== 'undefined' && module.exports) {
     interpretDashboardGesture,
     loadSharedDashboardRuntime,
     renderDashboardFrame,
+    setTelemetryNotice,
     startBackgroundRefreshLoop,
     triggerDashboardRefresh,
     validateEnvironmentFields,

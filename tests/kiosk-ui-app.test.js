@@ -109,7 +109,7 @@ test('renderDashboardFrame keeps kiosk dashboards read-only', () => {
   }, {
     sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
     validateExpressionFn: runtime.validateExpression,
-  }), 0, 'Read-only');
+  }), 0);
 
   assert.match(html, /dashboard-page--read-only/);
   assert.doesNotMatch(html, /Add Chart/);
@@ -120,6 +120,7 @@ test('renderDashboardFrame keeps kiosk dashboards read-only', () => {
   assert.doesNotMatch(html, /id="dashboard-time-range"/);
   assert.doesNotMatch(html, /type="datetime-local"/);
   assert.match(html, /Last 24 Hours/);
+  assert.doesNotMatch(html, /Read-only/);
 });
 
 test('buildDashboardRefreshRequest preserves the imported dashboard time range', () => {
@@ -192,6 +193,48 @@ test('cacheTelemetryRefreshResponse reuses telemetry across dashboards sharing a
     { timestampMs: 2_000, value: 21.5 },
     { timestampMs: 7_000, value: 22.0 },
   ]);
+});
+
+test('buildDashboardRefreshRequest de-duplicates sources without delimiter collisions', () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Overview',
+      variables: [
+        { name: 'A', nodeId: 'node\none', readingType: 'temp' },
+        { name: 'B', nodeId: 'node', readingType: 'one\ntemp' },
+      ],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  const request = kiosk.buildDashboardRefreshRequest(environment, environment.dashboards[0], runtime, 50_000);
+  assert.deepEqual(request.variables, [
+    { nodeId: 'node\none', readingType: 'temp' },
+    { nodeId: 'node', readingType: 'one\ntemp' },
+  ]);
+});
+
+test('setTelemetryNotice preserves muted dashboard status styling for info notices', () => {
+  const dashboardStatus = makeElement();
+  const pageStatus = makeElement();
+  global.document.getElementById = (id) => (id === 'dashboard-status' ? dashboardStatus : makeElement());
+  global.document.querySelector = (selector) => (selector === '.dashboard-page-status' ? pageStatus : null);
+
+  kiosk.setTelemetryNotice('Waiting for live telemetry refresh.', 'info');
+
+  assert.equal(dashboardStatus.className, 'status-pill');
+  assert.equal(pageStatus.className, 'dashboard-page-status text-muted');
+  assert.equal(pageStatus.textContent, 'Waiting for live telemetry refresh.');
 });
 
 test('triggerDashboardRefresh caches live telemetry from the injected fetcher', async () => {

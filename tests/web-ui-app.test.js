@@ -109,6 +109,7 @@ global.atob = (value) => Buffer.from(value, 'base64').toString('binary');
 global.btoa = (value) => Buffer.from(value, 'binary').toString('base64');
 
 const app = require(path.resolve(__dirname, '..', 'deploy', 'web-ui', 'app.js'));
+const dashboardRuntime = require(path.resolve(__dirname, '..', 'deploy', 'web-ui', 'dashboard-runtime.js'));
 
 test.beforeEach(() => {
   resetStorages();
@@ -916,6 +917,49 @@ test('buildEnvironmentExportData omits dashboard validation annotations', () => 
   }]);
 });
 
+test('dashboard-runtime module normalizes and exports environments with the same SPA semantics', () => {
+  const env = {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: {
+      viewMode: 'table',
+      timeRange: '7d',
+      selectedSeries: ['new-series'],
+      selectedSeriesInitialized: true,
+      seriesOverrides: {
+        'new-series': {
+          displayName: 'Imported',
+          scaleDivisor: 1000,
+          unitSuffix: '°C',
+        },
+      },
+    },
+    dashboards: [{
+      name: 'Imported Dashboard',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      metrics: [{ id: 'metric-1', displayName: 'Temp', expression: 'TEMP / 1000', color: '#123456' }],
+      timeRange: { preset: '24h', start: null, end: null },
+    }],
+  };
+
+  const deps = {
+    sanitizeSensorDataPreferences: app.sanitizeSensorDataPreferences,
+    validateExpressionFn: app.validateExpression,
+  };
+
+  assert.deepEqual(
+    dashboardRuntime.normalizeEnvironmentRecord(env, deps),
+    app.normalizeEnvironmentRecord(env),
+  );
+  assert.deepEqual(
+    dashboardRuntime.buildEnvironmentExportData(env, deps),
+    app.buildEnvironmentExportData(env),
+  );
+});
+
 test('renderDashboardContent defaults the Variables pane to expanded', () => {
   const html = app.renderDashboardContent({
     name: 'Dashboard',
@@ -937,6 +981,15 @@ test('renderChartCard keeps the graph visible when Metrics pane is collapsed', (
   assert.doesNotMatch(html, /data-chart-metrics-pane="0" open/);
   assert.match(html, /class="metric-chart-container"/);
   assert.match(html, /data-add-metric="0"/);
+});
+
+test('renderDashboardTabs gives the add button an explicit button type and accessible name', () => {
+  const html = dashboardRuntime.renderDashboardTabs([{ name: 'Dashboard 1' }], 0);
+
+  assert.match(html, /id="add-dashboard-btn"/);
+  assert.match(html, /type="button"/);
+  assert.match(html, /aria-label="Add dashboard"/);
+  assert.match(html, /title="Add dashboard"/);
 });
 
 test('activateEnvironmentState loads saved Sensor Data preferences for the selected environment', () => {
@@ -1045,6 +1098,25 @@ test('buildEnvironmentExportData and import validation distinguish omitted and e
 
 test('validateVariableName rejects blocked object keys', () => {
   const validation = app.validateVariableName('__proto__', []);
+  assert.equal(validation.valid, false);
+  assert.match(validation.error, /reserved/i);
+});
+
+test('validateVariableName preserves SPA wording without depending on runtime message text', () => {
+  const validation = app.validateVariableName('1bad', []);
+  assert.deepEqual(validation, {
+    valid: false,
+    error: 'Variable name must be a valid JavaScript identifier',
+  });
+});
+
+test('dashboard runtime validateVariableName accepts underscore-leading identifiers', () => {
+  const validation = dashboardRuntime.validateVariableName('_TEMP', []);
+  assert.deepEqual(validation, { valid: true });
+});
+
+test('dashboard runtime validateVariableName rejects blocked object keys directly', () => {
+  const validation = dashboardRuntime.validateVariableName('constructor', []);
   assert.equal(validation.valid, false);
   assert.match(validation.error, /reserved/i);
 });
@@ -1723,6 +1795,38 @@ test('evaluateMetricTimeSeries computes time-series points from real fetched dat
   ]);
 });
 
+test('evaluateMetricTimeSeries fetches only variables referenced by the expression', async () => {
+  const requestedVariables = [];
+  const result = await app.evaluateMetricTimeSeries({
+    expression: 'TEMP / 1000',
+  }, [
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+    { name: 'UNUSED', nodeId: 'MISSING_NODE', readingType: 'bad_reading' },
+  ], { preset: '24h' }, {
+    parserFactory: () => ({
+      parse() {
+        return {
+          variables() { return ['TEMP']; },
+          evaluate(context) { return context.TEMP / 1000; },
+        };
+      },
+    }),
+    fetchVariableDataFn: async (variables) => {
+      requestedVariables.push(...variables.map((variable) => variable.name));
+      return {
+        data: {
+          TEMP: [{ timestamp: 1000, value: 25000 }],
+        },
+        errors: [],
+      };
+    },
+  });
+
+  assert.deepEqual(requestedVariables, ['TEMP']);
+  assert.deepEqual(result.points, [{ timestamp: 1000, value: 25 }]);
+  assert.equal(result.error, undefined);
+});
+
 test('evaluateMetricTimeSeries reports parser construction failures as expression errors', async () => {
   const result = await app.evaluateMetricTimeSeries({
     expression: 'TEMP / 1000',
@@ -1762,6 +1866,30 @@ test('evaluateMetricTimeSeries reports undefined variables explicitly', async ()
 
   assert.equal(result.error, 'Undefined variables: UNKNOWN');
   assert.deepEqual(result.points, []);
+});
+
+test('dashboard runtime evaluateMetricTimeSeries isolates prototype-sensitive variable names', async () => {
+  const result = await dashboardRuntime.evaluateMetricTimeSeries({
+    expression: '__proto__',
+  }, [
+    { name: '__proto__', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '24h' }, {
+    parserFactory: () => ({
+      parse() {
+        return {
+          variables() { return ['__proto__']; },
+          evaluate(context) { return context['__proto__']; },
+        };
+      },
+    }),
+    fetchVariableDataFn: async () => {
+      const data = Object.create(null);
+      data['__proto__'] = [{ timestamp: 1000, value: 25 }];
+      return data;
+    },
+  });
+
+  assert.deepEqual(result, { points: [{ timestamp: 1000, value: 25 }] });
 });
 
 test('renderMetricCharts shows a no-data message when evaluation yields zero points', async () => {

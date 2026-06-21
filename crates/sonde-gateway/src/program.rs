@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::Write;
 
@@ -17,6 +18,7 @@ use prevail::ir::program::Program as PrevailProgram;
 use prevail::ir::unmarshal;
 use prevail::printing;
 use prevail::spec::config::EbpfVerifierOptions;
+use prevail::spec::type_descriptors::EbpfMapDescriptor;
 use sonde_protocol::{MapDef, ProgramImage, Sha256Provider};
 
 /// Program verification profile.
@@ -114,6 +116,14 @@ const GLOBAL_DATA_SECTION_NAMES: &[&str] = &[".rodata", ".data", ".bss"];
 
 /// ELF section type for sections with data (SHT_PROGBITS).
 const SHT_PROGBITS: u32 = 1;
+/// ELF section type for symbol tables (SHT_SYMTAB).
+const SHT_SYMTAB: u32 = 2;
+/// ELF section type for RELA relocation tables.
+const SHT_RELA: u32 = 4;
+/// ELF section type for REL relocation tables.
+const SHT_REL: u32 = 9;
+/// eBPF `LD_DW_IMM` opcode.
+const BPF_LD_DW_IMM: u8 = 0x18;
 
 /// Lightweight check for ELF64 LE sections that produce BPF maps.
 ///
@@ -450,6 +460,308 @@ fn extract_global_section_data(data: &[u8]) -> Vec<(Vec<u8>, bool)> {
     sections
 }
 
+/// Rewrite ELF global-data relocations into `LD_DW_IMM src=1` map loads.
+///
+/// The CBOR `ProgramImage` stores only raw bytecode, not ELF relocation
+/// metadata. Any `.rodata`, `.data`, or `.bss` reference therefore has to be
+/// converted from an ELF relocation into the runtime form expected by the node
+/// and decoder interpreters: `LD_DW_IMM` with `src=1` and `imm=<map index>`.
+fn rewrite_global_data_relocations(
+    elf_bytes: &[u8],
+    target_section_name: &str,
+    bytecode: &mut [u8],
+    map_descriptors: &[EbpfMapDescriptor],
+) -> Result<(), ProgramError> {
+    if elf_bytes.len() < 64 {
+        return Err(ProgramError::ElfParseError("ELF too short".into()));
+    }
+    if elf_bytes[0..4] != [0x7f, b'E', b'L', b'F'] || elf_bytes[4] != 2 || elf_bytes[5] != 1 {
+        return Err(ProgramError::ElfParseError("invalid ELF header".into()));
+    }
+    let e_machine = u16::from_le_bytes([elf_bytes[18], elf_bytes[19]]);
+    if e_machine != 0x00F7 {
+        return Err(ProgramError::ElfParseError("ELF is not EM_BPF".into()));
+    }
+
+    let read_u16 = |off: usize| u16::from_le_bytes([elf_bytes[off], elf_bytes[off + 1]]);
+    let read_u32 = |off: usize| {
+        u32::from_le_bytes([
+            elf_bytes[off],
+            elf_bytes[off + 1],
+            elf_bytes[off + 2],
+            elf_bytes[off + 3],
+        ])
+    };
+    let read_u64 = |off: usize| {
+        u64::from_le_bytes([
+            elf_bytes[off],
+            elf_bytes[off + 1],
+            elf_bytes[off + 2],
+            elf_bytes[off + 3],
+            elf_bytes[off + 4],
+            elf_bytes[off + 5],
+            elf_bytes[off + 6],
+            elf_bytes[off + 7],
+        ])
+    };
+
+    let sh_off = read_u64(40) as usize;
+    let sh_entsize = read_u16(58) as usize;
+    let sh_num = read_u16(60) as usize;
+    let sh_strndx = read_u16(62) as usize;
+    if sh_strndx >= sh_num || sh_entsize < 64 {
+        return Err(ProgramError::ElfParseError(
+            "invalid section header table".into(),
+        ));
+    }
+
+    let str_sh = sh_off
+        .checked_add(
+            sh_strndx
+                .checked_mul(sh_entsize)
+                .ok_or_else(|| ProgramError::ElfParseError("section offset overflow".into()))?,
+        )
+        .ok_or_else(|| ProgramError::ElfParseError("section offset overflow".into()))?;
+    if str_sh + 40 > elf_bytes.len() {
+        return Err(ProgramError::ElfParseError(
+            "section name table header out of bounds".into(),
+        ));
+    }
+    let strtab_off = read_u64(str_sh + 24) as usize;
+    let strtab_size = read_u64(str_sh + 32) as usize;
+    let strtab_end = strtab_off
+        .checked_add(strtab_size)
+        .ok_or_else(|| ProgramError::ElfParseError("section name table overflow".into()))?;
+    if strtab_end > elf_bytes.len() {
+        return Err(ProgramError::ElfParseError(
+            "section name table out of bounds".into(),
+        ));
+    }
+    let shstrtab = &elf_bytes[strtab_off..strtab_end];
+
+    let section_name = |hdr: usize| -> Result<&str, ProgramError> {
+        let name_off = read_u32(hdr) as usize;
+        if name_off >= shstrtab.len() {
+            return Err(ProgramError::ElfParseError(
+                "section name offset out of bounds".into(),
+            ));
+        }
+        let name_end = shstrtab[name_off..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(shstrtab.len(), |p| name_off + p);
+        std::str::from_utf8(&shstrtab[name_off..name_end])
+            .map_err(|_| ProgramError::ElfParseError("section name is not valid UTF-8".into()))
+    };
+
+    let global_map_indices: Vec<u32> = map_descriptors
+        .iter()
+        .enumerate()
+        .filter_map(|(i, md)| (md.map_type == 0).then_some(i as u32))
+        .collect();
+    let mut next_global_map = 0usize;
+    let mut target_section_index = None;
+    let mut section_to_global_map: HashMap<u16, u32> = HashMap::new();
+
+    for i in 0..sh_num {
+        let hdr = sh_off
+            .checked_add(
+                i.checked_mul(sh_entsize)
+                    .ok_or_else(|| ProgramError::ElfParseError("section offset overflow".into()))?,
+            )
+            .ok_or_else(|| ProgramError::ElfParseError("section offset overflow".into()))?;
+        if hdr + sh_entsize > elf_bytes.len() {
+            return Err(ProgramError::ElfParseError(
+                "section header out of bounds".into(),
+            ));
+        }
+        let name = section_name(hdr)?;
+        if name == target_section_name {
+            target_section_index = Some(i);
+        }
+        let is_global = GLOBAL_DATA_SECTION_NAMES.iter().any(|prefix| {
+            name == *prefix
+                || name
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        });
+        if is_global {
+            let Some(&map_index) = global_map_indices.get(next_global_map) else {
+                return Err(ProgramError::ElfParseError(format!(
+                    "missing map descriptor for global section `{name}`"
+                )));
+            };
+            section_to_global_map.insert(i as u16, map_index);
+            next_global_map += 1;
+        }
+    }
+
+    if next_global_map != global_map_indices.len() {
+        return Err(ProgramError::ElfParseError(format!(
+            "global section count mismatch while rewriting relocations: ELF has {} sections but image has {} global maps",
+            next_global_map,
+            global_map_indices.len()
+        )));
+    }
+
+    let Some(target_section_index) = target_section_index else {
+        return Ok(());
+    };
+
+    for i in 0..sh_num {
+        let hdr = sh_off
+            .checked_add(
+                i.checked_mul(sh_entsize)
+                    .ok_or_else(|| ProgramError::ElfParseError("section offset overflow".into()))?,
+            )
+            .ok_or_else(|| ProgramError::ElfParseError("section offset overflow".into()))?;
+        if hdr + sh_entsize > elf_bytes.len() {
+            return Err(ProgramError::ElfParseError(
+                "section header out of bounds".into(),
+            ));
+        }
+
+        let sh_type = read_u32(hdr + 4);
+        if sh_type != SHT_REL && sh_type != SHT_RELA {
+            continue;
+        }
+        let rel_target_index = read_u32(hdr + 44) as usize;
+        if rel_target_index != target_section_index {
+            continue;
+        }
+
+        let rel_off = read_u64(hdr + 24) as usize;
+        let rel_size = read_u64(hdr + 32) as usize;
+        let rel_entsize = read_u64(hdr + 56) as usize;
+        let rel_end = rel_off
+            .checked_add(rel_size)
+            .ok_or_else(|| ProgramError::ElfParseError("relocation table overflow".into()))?;
+        if rel_end > elf_bytes.len() {
+            return Err(ProgramError::ElfParseError(
+                "relocation table out of bounds".into(),
+            ));
+        }
+        let entry_size = match sh_type {
+            SHT_REL => 16,
+            SHT_RELA => 24,
+            _ => unreachable!(),
+        };
+        let stride = if rel_entsize == 0 {
+            entry_size
+        } else if rel_entsize >= entry_size {
+            rel_entsize
+        } else {
+            return Err(ProgramError::ElfParseError(
+                "relocation entry size is too small".into(),
+            ));
+        };
+
+        let symtab_index = read_u32(hdr + 40) as usize;
+        if symtab_index >= sh_num {
+            return Err(ProgramError::ElfParseError(
+                "relocation section has invalid symtab link".into(),
+            ));
+        }
+        let sym_hdr = sh_off
+            .checked_add(
+                symtab_index
+                    .checked_mul(sh_entsize)
+                    .ok_or_else(|| ProgramError::ElfParseError("section offset overflow".into()))?,
+            )
+            .ok_or_else(|| ProgramError::ElfParseError("section offset overflow".into()))?;
+        if sym_hdr + sh_entsize > elf_bytes.len() {
+            return Err(ProgramError::ElfParseError(
+                "symbol table header out of bounds".into(),
+            ));
+        }
+        if read_u32(sym_hdr + 4) != SHT_SYMTAB {
+            return Err(ProgramError::ElfParseError(
+                "relocation section does not link to a symbol table".into(),
+            ));
+        }
+        let sym_off = read_u64(sym_hdr + 24) as usize;
+        let sym_size = read_u64(sym_hdr + 32) as usize;
+        let sym_entsize = read_u64(sym_hdr + 56) as usize;
+        if sym_entsize < 24 {
+            return Err(ProgramError::ElfParseError(
+                "symbol table entry size is too small".into(),
+            ));
+        }
+        let sym_end = sym_off
+            .checked_add(sym_size)
+            .ok_or_else(|| ProgramError::ElfParseError("symbol table overflow".into()))?;
+        if sym_end > elf_bytes.len() {
+            return Err(ProgramError::ElfParseError(
+                "symbol table out of bounds".into(),
+            ));
+        }
+
+        let rel_data = &elf_bytes[rel_off..rel_end];
+        for entry_off in (0..rel_data.len()).step_by(stride) {
+            if entry_off + entry_size > rel_data.len() {
+                break;
+            }
+            let r_offset = u64::from_le_bytes([
+                rel_data[entry_off],
+                rel_data[entry_off + 1],
+                rel_data[entry_off + 2],
+                rel_data[entry_off + 3],
+                rel_data[entry_off + 4],
+                rel_data[entry_off + 5],
+                rel_data[entry_off + 6],
+                rel_data[entry_off + 7],
+            ]) as usize;
+            let r_info = u64::from_le_bytes([
+                rel_data[entry_off + 8],
+                rel_data[entry_off + 9],
+                rel_data[entry_off + 10],
+                rel_data[entry_off + 11],
+                rel_data[entry_off + 12],
+                rel_data[entry_off + 13],
+                rel_data[entry_off + 14],
+                rel_data[entry_off + 15],
+            ]);
+            let sym_index = (r_info >> 32) as usize;
+            let sym_entry =
+                sym_off
+                    .checked_add(sym_index.checked_mul(sym_entsize).ok_or_else(|| {
+                        ProgramError::ElfParseError("symbol offset overflow".into())
+                    })?)
+                    .ok_or_else(|| ProgramError::ElfParseError("symbol offset overflow".into()))?;
+            if sym_entry + 8 > sym_end {
+                return Err(ProgramError::ElfParseError(
+                    "relocation symbol out of bounds".into(),
+                ));
+            }
+            let st_shndx = u16::from_le_bytes([elf_bytes[sym_entry + 6], elf_bytes[sym_entry + 7]]);
+            let Some(&map_index) = section_to_global_map.get(&st_shndx) else {
+                continue;
+            };
+
+            if r_offset + 16 > bytecode.len() {
+                return Err(ProgramError::ElfParseError(format!(
+                    "relocation at byte offset {} exceeds section `{}` size {}",
+                    r_offset,
+                    target_section_name,
+                    bytecode.len()
+                )));
+            }
+            if bytecode[r_offset] != BPF_LD_DW_IMM {
+                return Err(ProgramError::ElfParseError(format!(
+                    "relocation at byte offset {} in section `{}` does not target LD_DW_IMM",
+                    r_offset, target_section_name
+                )));
+            }
+
+            bytecode[r_offset + 1] = (bytecode[r_offset + 1] & 0x0f) | 0x10;
+            bytecode[r_offset + 4..r_offset + 8].copy_from_slice(&map_index.to_le_bytes());
+            bytecode[r_offset + 12..r_offset + 16].copy_from_slice(&0u32.to_le_bytes());
+        }
+    }
+
+    Ok(())
+}
+
 /// Program library: stores verified programs and serves chunks.
 #[derive(Clone)]
 pub struct ProgramLibrary {
@@ -750,6 +1062,13 @@ impl ProgramLibrary {
             )));
         }
 
+        rewrite_global_data_relocations(
+            elf_bytes,
+            "sonde",
+            &mut bytecode,
+            &first.info.map_descriptors,
+        )?;
+
         let image = ProgramImage {
             bytecode,
             maps,
@@ -923,6 +1242,13 @@ impl ProgramLibrary {
                  but Prevail reports {type0_count} map_type==0 descriptors"
             )));
         }
+
+        rewrite_global_data_relocations(
+            elf_bytes,
+            "decoder",
+            &mut bytecode,
+            &decoder_prog.info.map_descriptors,
+        )?;
 
         let decoder_image = ProgramImage {
             bytecode,
@@ -2047,5 +2373,189 @@ mod tests {
         // not the .text section (mov r0, 1).
         let image = ProgramImage::decode(&record.image).unwrap();
         assert_eq!(image.bytecode, sonde_code);
+    }
+
+    /// Build a small ELF with one executable section, one global data section,
+    /// and a relocation that references that global section from the first
+    /// `LD_DW_IMM` in the executable section.
+    fn make_bpf_elf_with_global_data_relocation(
+        target_section_name: &str,
+        global_section_name: &str,
+    ) -> Vec<u8> {
+        let section_code: [u8; 24] = [
+            0x18, 0x01, 0x00, 0x00, 0, 0, 0, 0, // ldimm64 r1, 0 (to be relocated)
+            0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0, 0, 0, 0, // exit
+        ];
+        let global_data: [u8; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
+        let strtab: &[u8] = b"\0";
+        let rel_name = format!(".rel{target_section_name}");
+        let shstrtab = format!(
+            "\0{target}\0{global}\0{rel}\0.strtab\0.symtab\0.shstrtab\0",
+            target = target_section_name,
+            global = global_section_name,
+            rel = rel_name
+        )
+        .into_bytes();
+
+        let target_name_off = 1u32;
+        let global_name_off = target_name_off + target_section_name.len() as u32 + 1;
+        let rel_name_off = global_name_off + global_section_name.len() as u32 + 1;
+        let strtab_name_off = rel_name_off + rel_name.len() as u32 + 1;
+        let symtab_name_off = strtab_name_off + ".strtab".len() as u32 + 1;
+        let shstrtab_name_off = symtab_name_off + ".symtab".len() as u32 + 1;
+
+        let target_offset: u64 = 64;
+        let global_offset: u64 = target_offset + section_code.len() as u64;
+        let rel_offset: u64 = global_offset + global_data.len() as u64;
+        let strtab_offset: u64 = rel_offset + 16;
+        let symtab_offset: u64 = strtab_offset + strtab.len() as u64;
+        let shstrtab_offset: u64 = symtab_offset + 48;
+        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
+
+        let mut elf = Vec::new();
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+        elf.push(2);
+        elf.push(1);
+        elf.push(1);
+        elf.extend_from_slice(&[0; 9]);
+        elf.extend_from_slice(&1u16.to_le_bytes());
+        elf.extend_from_slice(&247u16.to_le_bytes());
+        elf.extend_from_slice(&1u32.to_le_bytes());
+        elf.extend_from_slice(&0u64.to_le_bytes());
+        elf.extend_from_slice(&0u64.to_le_bytes());
+        elf.extend_from_slice(&shdr_offset.to_le_bytes());
+        elf.extend_from_slice(&0u32.to_le_bytes());
+        elf.extend_from_slice(&64u16.to_le_bytes());
+        elf.extend_from_slice(&0u16.to_le_bytes());
+        elf.extend_from_slice(&0u16.to_le_bytes());
+        elf.extend_from_slice(&64u16.to_le_bytes());
+        elf.extend_from_slice(&7u16.to_le_bytes());
+        elf.extend_from_slice(&6u16.to_le_bytes());
+
+        elf.extend_from_slice(&section_code);
+        elf.extend_from_slice(&global_data);
+
+        // One ELF64_Rel entry: offset=0, symbol=1, type=1.
+        elf.extend_from_slice(&0u64.to_le_bytes());
+        elf.extend_from_slice(&((1u64 << 32) | 1u64).to_le_bytes());
+
+        elf.extend_from_slice(strtab);
+
+        // [0] null symbol
+        elf.extend_from_slice(&[0u8; 24]);
+        // [1] section symbol for the global data section
+        let mut sym = [0u8; 24];
+        sym[4] = 0x03; // STT_SECTION
+        sym[6..8].copy_from_slice(&2u16.to_le_bytes()); // target the global data section
+        elf.extend_from_slice(&sym);
+
+        elf.extend_from_slice(&shstrtab);
+
+        // [0] null section header
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] target executable section
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&target_name_off.to_le_bytes());
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes());
+        sh[8..16].copy_from_slice(&0x6u64.to_le_bytes());
+        sh[24..32].copy_from_slice(&target_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(section_code.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [2] global data section
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&global_name_off.to_le_bytes());
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes());
+        sh[8..16].copy_from_slice(&0x2u64.to_le_bytes());
+        sh[24..32].copy_from_slice(&global_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(global_data.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&4u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [3] relocation section
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&rel_name_off.to_le_bytes());
+        sh[4..8].copy_from_slice(&SHT_REL.to_le_bytes());
+        sh[24..32].copy_from_slice(&rel_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&16u64.to_le_bytes());
+        sh[40..44].copy_from_slice(&5u32.to_le_bytes()); // linked .symtab section
+        sh[44..48].copy_from_slice(&1u32.to_le_bytes()); // relocates section [1]
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes());
+        sh[56..64].copy_from_slice(&16u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [4] .strtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&strtab_name_off.to_le_bytes());
+        sh[4..8].copy_from_slice(&3u32.to_le_bytes());
+        sh[24..32].copy_from_slice(&strtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(strtab.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&1u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [5] .symtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&symtab_name_off.to_le_bytes());
+        sh[4..8].copy_from_slice(&SHT_SYMTAB.to_le_bytes());
+        sh[24..32].copy_from_slice(&symtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&48u64.to_le_bytes());
+        sh[40..44].copy_from_slice(&4u32.to_le_bytes()); // linked .strtab section
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes());
+        sh[56..64].copy_from_slice(&24u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [6] .shstrtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&shstrtab_name_off.to_le_bytes());
+        sh[4..8].copy_from_slice(&3u32.to_le_bytes());
+        sh[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&1u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        elf
+    }
+
+    #[test]
+    fn rewrite_global_data_relocations_rewrites_lddw_to_map_index() {
+        let elf = make_bpf_elf_with_global_data_relocation("sonde", ".data");
+        let mut bytecode = vec![
+            0x18, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
+            0, 0, 0,
+        ];
+        let map_descriptors = vec![
+            EbpfMapDescriptor {
+                original_fd: 1,
+                map_type: 0,
+                key_size: 4,
+                value_size: 4,
+                max_entries: 1,
+                inner_map_fd: 0,
+            },
+            EbpfMapDescriptor {
+                original_fd: 2,
+                map_type: 1,
+                key_size: 4,
+                value_size: 4,
+                max_entries: 1,
+                inner_map_fd: 0,
+            },
+        ];
+
+        rewrite_global_data_relocations(&elf, "sonde", &mut bytecode, &map_descriptors).unwrap();
+
+        assert_eq!(bytecode[0], BPF_LD_DW_IMM);
+        assert_eq!(bytecode[1], 0x11, "src nibble should be rewritten to 1");
+        assert_eq!(
+            u32::from_le_bytes([bytecode[4], bytecode[5], bytecode[6], bytecode[7]]),
+            0,
+            "the first global section should map to map index 0"
+        );
+        assert_eq!(
+            u32::from_le_bytes([bytecode[12], bytecode[13], bytecode[14], bytecode[15]]),
+            0
+        );
     }
 }

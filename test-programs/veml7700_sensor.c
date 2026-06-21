@@ -8,19 +8,30 @@
  * 0x10. Per the datasheet (`84286`), register words are transferred little-
  * endian on the bus (low byte first, then high byte).
  *
- * This program uses the requested default sensitivity profile:
- *   - ALS gain x1
- *   - ALS integration time 100 ms
- *   - Interrupts disabled
- *   - Normal power-on mode (ALS_SD = 0)
+ * This program uses two sensitivity profiles with hysteresis:
+ *   - Normal profile: ALS gain x1, ALS integration time 100 ms
+ *   - Low-light profile: ALS gain x2, ALS integration time 800 ms
+ *
+ * A writable `.bss` global keeps the three most recent lux readings and the
+ * currently selected profile across wake cycles. Before each measurement, the
+ * program averages the stored readings:
+ *   - if avg < 200 mLux, switch to the low-light profile
+ *   - if avg > 1000 mLux, switch back to the normal profile
+ *
+ * This adds hysteresis so the program does not flap around the threshold, and
+ * it uses the high-sensitivity profile only when recent readings justify it.
  *
  * Each wake cycle:
  *   1. Read the ID register and verify the fixed device ID byte (0x81).
- *   2. Write ALS_CONF_0 = 0x0000 to power on the ALS with gain x1 / 100 ms.
- *   3. Wait slightly longer than the 100 ms integration time.
- *   4. Read the ALS and WHITE 16-bit result registers.
- *   5. Convert the ALS count to millilux using 0.0576 lx/count:
- *        lux_ml = als_counts * 57.6 mLux/count = als_counts * 576 / 10
+ *   2. Choose the profile from the rolling average of the last three readings.
+ *   3. Write ALS_CONF_0 for the chosen profile.
+ *   4. Wait slightly longer than the selected integration time.
+ *   5. Read the ALS and WHITE 16-bit result registers.
+ *   6. Convert the ALS count to millilux using the selected profile:
+ *        x1 / 100 ms: lux_ml = als_counts * 57.6 mLux/count
+ *        x2 / 800 ms: lux_ml = als_counts * 3.6 mLux/count
+ *   7. Clamp the reported lux value to a minimum of 1 mLux.
+ *   8. Store the new reading in the three-sample rolling history.
  *
  * Payload (18 bytes, queued with send_async):
  *   [0..7]   timestamp (little-endian u64, ms since epoch)
@@ -45,10 +56,25 @@
 
 /* gain x1, integration time 100 ms, interrupt disabled, ALS power on */
 #define VEML7700_ALS_CONF_0_DEFAULT  0x0000u
+/* gain x2, integration time 800 ms, interrupt disabled, ALS power on */
+#define VEML7700_ALS_CONF_0_LOWLIGHT 0x08C0u
 #define VEML7700_ALS_CONF_0_SHUTDOWN 0x0001u
 
-/* Integration time is 100 ms; wait with margin before reading. */
-#define VEML7700_CONVERSION_US 120000u
+#define VEML7700_LUX_LOW_ML  200u
+#define VEML7700_LUX_HIGH_ML 1000u
+
+/* Wait slightly longer than the selected integration time. */
+#define VEML7700_CONVERSION_US_DEFAULT  120000u
+#define VEML7700_CONVERSION_US_LOWLIGHT 900000u
+
+struct veml7700_state {
+    __u32 recent_lux_ml[3];
+    __u16 current_conf;
+    __u8 recent_count;
+    __u8 recent_index;
+};
+
+static struct veml7700_state state;
 
 /* Set to 1 while debugging sensor bring-up to enable error trace logs. */
 #ifndef VEML7700_ENABLE_TRACE
@@ -87,6 +113,73 @@ static __noinline int veml7700_read_word(__u8 reg, __u16 *value_out)
     return 0;
 }
 
+static __noinline __u32 veml7700_conversion_us(__u16 conf)
+{
+    if (conf == VEML7700_ALS_CONF_0_LOWLIGHT)
+        return VEML7700_CONVERSION_US_LOWLIGHT;
+
+    return VEML7700_CONVERSION_US_DEFAULT;
+}
+
+static __noinline __u32 veml7700_counts_to_lux_ml(__u16 conf, __u16 als_counts)
+{
+    __u32 lux_ml;
+
+    if (conf == VEML7700_ALS_CONF_0_LOWLIGHT)
+        lux_ml = (__u32)als_counts * 36u / 10u;
+    else
+        lux_ml = (__u32)als_counts * 576u / 10u;
+
+    if (lux_ml == 0u)
+        return 1u;
+
+    return lux_ml;
+}
+
+static __noinline __u16 veml7700_select_conf(void)
+{
+    __u16 conf = state.current_conf;
+
+    if (state.recent_count == 0) {
+        if (conf == VEML7700_ALS_CONF_0_LOWLIGHT)
+            return conf;
+        return VEML7700_ALS_CONF_0_DEFAULT;
+    }
+
+    __u32 sum = state.recent_lux_ml[0];
+    if (state.recent_count >= 2u)
+        sum += state.recent_lux_ml[1];
+    if (state.recent_count >= 3u)
+        sum += state.recent_lux_ml[2];
+
+    __u32 avg = sum / (__u32)state.recent_count;
+    if (avg < VEML7700_LUX_LOW_ML)
+        conf = VEML7700_ALS_CONF_0_LOWLIGHT;
+    else if (avg > VEML7700_LUX_HIGH_ML)
+        conf = VEML7700_ALS_CONF_0_DEFAULT;
+    else if (conf != VEML7700_ALS_CONF_0_LOWLIGHT)
+        conf = VEML7700_ALS_CONF_0_DEFAULT;
+
+    return conf;
+}
+
+static __noinline void veml7700_record_lux_ml(__u32 lux_ml)
+{
+    __u8 index = state.recent_index;
+
+    if (index >= 3u)
+        index = 0u;
+    state.recent_index = index;
+
+    state.recent_lux_ml[index] = lux_ml;
+    if (index >= 2u)
+        state.recent_index = 0u;
+    else
+        state.recent_index = index + 1u;
+    if (state.recent_count < 3u)
+        state.recent_count += 1u;
+}
+
 SEC("sonde")
 int program(struct sonde_context *ctx)
 {
@@ -101,13 +194,16 @@ int program(struct sonde_context *ctx)
         return 0;
     }
 
-    rc = veml7700_write_word(VEML7700_REG_ALS_CONF_0, VEML7700_ALS_CONF_0_DEFAULT);
+    __u16 conf = veml7700_select_conf();
+    state.current_conf = conf;
+
+    rc = veml7700_write_word(VEML7700_REG_ALS_CONF_0, conf);
     if (rc < 0) {
         VEML7700_TRACE("veml7700: config write failed\n");
         return 0;
     }
 
-    rc = delay_us(VEML7700_CONVERSION_US);
+    rc = delay_us(veml7700_conversion_us(conf));
     if (rc < 0) {
         VEML7700_TRACE("veml7700: delay failed\n");
         return 0;
@@ -127,10 +223,10 @@ int program(struct sonde_context *ctx)
         return 0;
     }
 
-    __u32 lux_ml = ((__u32)als_counts * 576u) / 10u;
+    __u32 lux_ml = veml7700_counts_to_lux_ml(conf, als_counts);
+    veml7700_record_lux_ml(lux_ml);
     __u8 payload[18];
     __u64 ts = ctx->timestamp;
-    __u16 conf = VEML7700_ALS_CONF_0_DEFAULT;
 
     payload[0]  = (__u8)(ts);
     payload[1]  = (__u8)(ts >> 8);

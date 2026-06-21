@@ -1778,6 +1778,38 @@ test('evaluateMetricTimeSeries computes time-series points from real fetched dat
   ]);
 });
 
+test('evaluateMetricTimeSeries fetches only variables referenced by the expression', async () => {
+  const requestedVariables = [];
+  const result = await app.evaluateMetricTimeSeries({
+    expression: 'TEMP / 1000',
+  }, [
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+    { name: 'UNUSED', nodeId: 'MISSING_NODE', readingType: 'bad_reading' },
+  ], { preset: '24h' }, {
+    parserFactory: () => ({
+      parse() {
+        return {
+          variables() { return ['TEMP']; },
+          evaluate(context) { return context.TEMP / 1000; },
+        };
+      },
+    }),
+    fetchVariableDataFn: async (variables) => {
+      requestedVariables.push(...variables.map((variable) => variable.name));
+      return {
+        data: {
+          TEMP: [{ timestamp: 1000, value: 25000 }],
+        },
+        errors: [],
+      };
+    },
+  });
+
+  assert.deepEqual(requestedVariables, ['TEMP']);
+  assert.deepEqual(result.points, [{ timestamp: 1000, value: 25 }]);
+  assert.equal(result.error, undefined);
+});
+
 test('evaluateMetricTimeSeries reports parser construction failures as expression errors', async () => {
   const result = await app.evaluateMetricTimeSeries({
     expression: 'TEMP / 1000',

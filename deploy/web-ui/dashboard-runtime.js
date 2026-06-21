@@ -784,10 +784,11 @@
         error: 'Expression uses no variables',
       };
     }
+    const usedVariables = variables.filter((variable) => usedVars.includes(variable.name));
 
     let variableData;
     try {
-      variableData = await fetchVariableDataFn(variables, timeRange, deps);
+      variableData = await fetchVariableDataFn(usedVariables, timeRange, deps);
     } catch (error) {
       return {
         points: [],

@@ -71,6 +71,9 @@ def decode_item(data, index):
     if major == 0:
         value, index = decode_uint(info, data, index)
         return value, index
+    if major == 1:
+        value, index = decode_uint(info, data, index)
+        return -1 - value, index
     if major == 2:
         length, index = decode_uint(info, data, index)
         return data[index:index + length], index + length
@@ -110,6 +113,8 @@ def encode_uint(major, value):
 
 def encode_item(value):
     if isinstance(value, int):
+        if value < 0:
+            return encode_uint(1, -1 - value)
         return encode_uint(0, value)
     if isinstance(value, bytes):
         return encode_uint(2, len(value)) + value

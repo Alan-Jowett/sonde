@@ -856,6 +856,13 @@ pub unsafe fn execute_program(
                                 len: maps[idx].value_size as usize,
                             },
                         )?;
+                        if value_base < maps[idx].data_start || value_end > maps[idx].data_end {
+                            return Err(BpfError::MemoryAccessViolation {
+                                pc: pc - 2,
+                                addr: value_base,
+                                len: maps[idx].value_size as usize,
+                            });
+                        }
                         if value_addr < value_base || value_addr >= value_end {
                             return Err(BpfError::MemoryAccessViolation {
                                 pc: pc - 2,

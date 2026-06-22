@@ -255,7 +255,7 @@ At program start, three registers carry pointer provenance:
 
 For src=1, the interpreter resolves the map index and loads the relocated map pointer.  The `imm` field is a signed `i32` in the instruction encoding (see `ebpf.rs`); negative values are invalid and must be rejected with `InvalidMapIndex` before any cast or indexing.  After validation, the non-negative `imm` is used as the index into the `maps` slice.  The result is tagged `MapDescriptor` — it is an opaque handle, valid only as an argument to `map_lookup_elem` or `map_update_elem`.  It is **not dereferenceable**.
 
-For src=6, the interpreter also resolves `imm` as a map index, but instead of producing a `MapDescriptor`, it computes a direct pointer into entry 0's value region.  The caller supplies the value-region layout through `MapRegion`: `data_start` points at the start of the backing allocation for entry 0, and `key_size` tells the interpreter how many bytes to skip to reach the first value byte.  The high 32 bits carried in the second wide-instruction slot (`next.imm`) are treated as a signed constant offset from that value base.  The resulting pointer must stay within `[value_base, value_base + value_size)`; a one-past-end pointer is rejected with `MemoryAccessViolation`.
+For src=6, the interpreter also resolves `imm` as a map index, but instead of producing a `MapDescriptor`, it computes a direct pointer into entry 0's value region.  The caller supplies the value-region layout through `MapRegion`: `data_start` points at the start of the backing allocation for entry 0, and `key_size` tells the interpreter how many bytes to skip to reach the first value byte.  The high 32 bits carried in the second wide-instruction slot (`next.imm`) are treated as a signed constant offset from that value base.  The computed entry 0 value region itself must fit within the caller-provided backing range `[data_start, data_end)` before any pointer is tagged.  The resulting pointer must then stay within `[value_base, value_base + value_size)`; a one-past-end pointer is rejected with `MemoryAccessViolation`.
 
 **Bounds-check pseudocode for src=1:**
 
@@ -286,6 +286,9 @@ let value_base = maps[index].data_start.checked_add(maps[index].key_size as u64)
     .ok_or(MemoryAccessViolation { pc, addr: maps[index].data_start, len: maps[index].key_size as usize })?;
 let value_end = value_base.checked_add(maps[index].value_size as u64)
     .ok_or(MemoryAccessViolation { pc, addr: value_base, len: maps[index].value_size as usize })?;
+if value_base < maps[index].data_start || value_end > maps[index].data_end {
+    return Err(MemoryAccessViolation { pc, addr: value_base, len: maps[index].value_size as usize });
+}
 let value_addr = value_base.checked_add_signed(next.imm as i64)
     .ok_or(MemoryAccessViolation { pc, addr: value_base, len: maps[index].value_size as usize })?;
 if value_addr < value_base || value_addr >= value_end {

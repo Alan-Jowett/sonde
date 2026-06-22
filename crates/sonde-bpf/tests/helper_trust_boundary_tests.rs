@@ -182,6 +182,35 @@ fn test_ld_dw_imm_src6_rejects_one_past_end_offset() {
     );
 }
 
+#[test]
+fn test_ld_dw_imm_src6_rejects_value_region_past_backing_end() {
+    // LD_DW_IMM src=6 must reject inconsistent MapRegion metadata where the
+    // declared value region would extend beyond the caller-provided backing
+    // allocation. This preserves the same trust boundary enforced for helper
+    // return pointers.
+    let mut backing = vec![0u8; 8];
+    let ptr = backing.as_mut_ptr() as u64;
+    let map = MapRegion {
+        relocated_ptr: ptr,
+        key_size: 4,
+        value_size: 8,
+        data_start: ptr,
+        data_end: ptr + backing.len() as u64,
+    };
+    let prog = prog_from(&[
+        insn(ebpf::LD_DW_IMM, 1, 6, 0, 0), // r1 = map_value_by_idx(0)
+        insn(0, 0, 0, 0, 0),               // off = 0
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut ctx = [];
+    let result =
+        unsafe { execute_program(&prog, &mut ctx, &[], &[map], false, UNLIMITED_BUDGET, &[]) };
+    assert!(
+        matches!(result, Err(BpfError::MemoryAccessViolation { .. })),
+        "direct relocation must reject value regions beyond data_end, got: {result:?}"
+    );
+}
+
 // ── §5.2  MapValueOrNull — NULL return → scalar ─────────────────────
 
 #[test]

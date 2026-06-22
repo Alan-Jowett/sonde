@@ -20,6 +20,7 @@ import sys
 DATA = 0x01
 DATA_REPLY = 0x81
 LOG = 0x82
+INVALID_MESSAGE = object()
 
 KEY_MSG_TYPE = 1
 KEY_REQUEST_ID = 2
@@ -39,7 +40,10 @@ def read_message():
     payload = sys.stdin.buffer.read(length)
     if len(payload) < length:
         return None
-    return decode_cbor_map(payload)
+    try:
+        return decode_cbor_map(payload)
+    except (ValueError, IndexError, UnicodeDecodeError):
+        return INVALID_MESSAGE
 
 
 def write_message(message):
@@ -170,6 +174,8 @@ def main():
         message = read_message()
         if message is None:
             break
+        if message is INVALID_MESSAGE:
+            continue
 
         if message.get(KEY_MSG_TYPE) != DATA:
             continue

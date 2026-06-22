@@ -240,6 +240,12 @@ The setup identity contract is:
 4. its non-secret client metadata is surfaced to kiosk onboarding so the app
    does not hard-code a third-party public-client identity.
 
+Implementation note: the current kiosk certificate lifecycle flow patches the
+shared runtime app's `keyCredentials` through Microsoft Graph. The setup public
+client therefore carries the delegated Graph scope set required for that
+operation, and bootstrap/operator documentation must treat that consent as an
+explicit trust boundary for kiosk setup, renewal, and reset cleanup.
+
 ### 4.5  Azure handler Function App identity
 
 The Azure handler Function App uses its own system-assigned managed identity. It

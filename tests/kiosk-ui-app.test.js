@@ -107,6 +107,17 @@ test('validateImportedEnvironmentJson prompts for a missing environment name', (
   assert.equal(environment.name, 'Imported Name');
 });
 
+test('validateImportedEnvironmentJson rejects imports missing function app metadata', () => {
+  assert.throws(() => kiosk.validateImportedEnvironmentJson(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    dashboards: [],
+  }), runtime), /Function App Name is required/);
+});
+
 test('renderDashboardFrame keeps kiosk dashboards read-only', () => {
   const html = kiosk.renderDashboardFrame(runtime, runtime.normalizeEnvironmentRecord({
     name: 'prod',
@@ -334,6 +345,7 @@ test('triggerDashboardRefresh caches live telemetry from the injected fetcher', 
       assert.equal(request.storageAccount, 'prodstorage');
       assert.deepEqual(request.variables, [{ nodeId: 'NODE_001', readingType: 'temp_mc' }]);
       return {
+        complete: true,
         refreshedAtMs: 9_000,
         series: [{
           nodeId: 'NODE_001',
@@ -347,6 +359,50 @@ test('triggerDashboardRefresh caches live telemetry from the injected fetcher', 
   const cached = kiosk.buildCachedVariableData(runtime, environment, environment.dashboards[0], 9_000);
   assert.deepEqual(cached.TEMP, [{ timestampMs: 8_000, value: 20.25 }]);
   assert.match(kiosk.APP_STATE.telemetryNotice, /Live data refreshed/);
+});
+
+test('triggerDashboardRefresh marks partial telemetry refreshes without claiming full coverage', async () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache.clear();
+
+  await kiosk.triggerDashboardRefresh('manual', {
+    nowFn: () => 9_000,
+    fetchDashboardVariableDataFn: async () => ({
+      complete: false,
+      refreshedAtMs: 9_000,
+      series: [{
+        nodeId: 'NODE_001',
+        readingType: 'temp_mc',
+        points: [{ timestampMs: 8_000, value: 20.25 }],
+      }],
+    }),
+  });
+
+  const [[cacheKey, cacheEntry]] = Array.from(kiosk.APP_STATE.telemetryCache.entries());
+  assert.match(cacheKey, /NODE_001/);
+  assert.equal(cacheEntry.coverageStartMs, null);
+  assert.equal(cacheEntry.coverageEndMs, null);
+  assert.match(kiosk.APP_STATE.telemetryNotice, /Partial live data refreshed/);
 });
 
 test('triggerDashboardRefresh rejects invalid telemetry payloads', async () => {

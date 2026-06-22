@@ -7,7 +7,7 @@
 //! certificate lifecycle, and exposes the telemetry/auth seams used by the
 //! frontend shell.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -20,7 +20,8 @@ use p256::pkcs8::DecodePrivateKey;
 use p256::pkcs8::EncodePublicKey;
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ECDSA_P256_SHA256};
 use reqwest::StatusCode;
-use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "android")]
 use std::sync::OnceLock;
@@ -42,7 +43,13 @@ const IDENTITY_STATE_FILE_NAME: &str = "identity-state.json";
 const PRIVATE_KEY_FILE_NAME: &str = "kiosk-private-key.pem";
 const SHARED_DASHBOARD_RUNTIME_SOURCE: &str =
     include_str!("../../../../deploy/web-ui/dashboard-runtime.js");
+const ACTUAL_STATE_TABLE_NAME: &str = "actualstate";
+const SENSOR_DATA_TABLE_NAME: &str = "sensordata";
+const AZURE_TABLES_API_VERSION: &str = "2019-02-02";
 const STORAGE_TOKEN_SCOPE: &str = "https://storage.azure.com/.default";
+// The setup public-client flow patches `keyCredentials` on the shared runtime
+// app registration, so it requests the delegated Graph scope set provisioned
+// for kiosk certificate lifecycle operations.
 const GRAPH_SCOPE: &str = "Application.ReadWrite.All offline_access openid profile";
 const CLIENT_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
@@ -50,6 +57,9 @@ const CLIENT_ASSERTION_LIFETIME_SECS: i64 = 600;
 const KIOSK_CERTIFICATE_VALIDITY_DAYS: i64 = 730;
 const KIOSK_RENEWAL_THRESHOLD_DAYS: i64 = 30;
 const GRAPH_APP_SELECT_QUERY: &str = "$select=id,appId,keyCredentials";
+const MAX_TABLE_QUERY_PAGES: usize = 10;
+const SENSOR_DATA_TOP_PER_PAGE: usize = 1000;
+const JS_MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
 #[cfg(target_os = "android")]
 const KEYRING_SERVICE_NAME: &str = "sonde-kiosk-ui";
 #[cfg(target_os = "android")]
@@ -72,7 +82,6 @@ struct FetchDashboardVariableDataRequest {
     client_id: String,
     tenant_id: String,
     storage_account: String,
-    function_app_name: String,
     start_ms: i64,
     end_ms: i64,
     variables: Vec<DashboardVariableRequest>,
@@ -96,6 +105,7 @@ struct DashboardVariableSeries {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct FetchDashboardVariableDataResponse {
+    complete: bool,
     refreshed_at_ms: i64,
     series: Vec<DashboardVariableSeries>,
 }
@@ -129,6 +139,12 @@ struct KioskIdentitySummary {
     not_before_ms: i64,
     not_after_ms: i64,
     renewal_required: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct PersistedEnvironmentMetadata {
+    storage_account: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -323,6 +339,78 @@ struct RuntimeCredentialState {
     login_endpoint: String,
     certificate_pem: String,
     private_key_pem: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AzureTableQueryResponse<T> {
+    value: Vec<T>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ActualStateEntity {
+    #[serde(rename = "PartitionKey")]
+    partition_key: String,
+    #[serde(rename = "RowKey")]
+    row_key: String,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    node_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SensorDataEntity {
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    decoded_readings: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_i64_from_string_or_number"
+    )]
+    timestamp_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TableQueryOptions {
+    require_complete: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TableQueryResult<T> {
+    entities: Vec<T>,
+    complete: bool,
+}
+
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(value)) => Some(value),
+        Some(other) => Some(other.to_string()),
+    })
+}
+
+fn deserialize_optional_i64_from_string_or_number<'de, D>(
+    deserializer: D,
+) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(value)) => value
+            .parse::<i64>()
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        Some(serde_json::Value::Number(value)) => value
+            .as_i64()
+            .ok_or_else(|| serde::de::Error::custom("expected a signed 64-bit integer"))
+            .map(Some),
+        Some(other) => Err(serde::de::Error::custom(format!(
+            "expected string or number for integer field, got {other}"
+        ))),
+    }
 }
 
 fn app_data_file_path(app: &tauri::AppHandle, file_name: &str) -> Result<PathBuf, String> {
@@ -675,6 +763,84 @@ fn normalize_guid(value: &str, field_name: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+fn normalize_storage_account(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Storage account is required.".into());
+    }
+    if !(3..=24).contains(&trimmed.len())
+        || !trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return Err("Storage account must be 3–24 lowercase alphanumeric characters.".into());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_dashboard_variable_request(
+    variable: DashboardVariableRequest,
+    index: usize,
+) -> Result<DashboardVariableRequest, String> {
+    let node_id = variable.node_id.trim();
+    if node_id.is_empty() {
+        return Err(format!(
+            "Dashboard variable {} is missing a node ID.",
+            index + 1
+        ));
+    }
+    let reading_type = variable.reading_type.trim();
+    if reading_type.is_empty() {
+        return Err(format!(
+            "Dashboard variable {} is missing a reading type.",
+            index + 1
+        ));
+    }
+    Ok(DashboardVariableRequest {
+        node_id: node_id.to_string(),
+        reading_type: reading_type.to_string(),
+    })
+}
+
+fn normalize_fetch_dashboard_variable_data_request(
+    request: FetchDashboardVariableDataRequest,
+) -> Result<FetchDashboardVariableDataRequest, String> {
+    if request.start_ms < 0 || request.end_ms < 0 {
+        return Err("Telemetry refresh time bounds must be non-negative.".into());
+    }
+    if request.end_ms < request.start_ms {
+        return Err(
+            "Telemetry refresh end time must be greater than or equal to the start time.".into(),
+        );
+    }
+    if request.variables.is_empty() {
+        return Err("Telemetry refresh requires at least one dashboard variable.".into());
+    }
+    let variables = request
+        .variables
+        .into_iter()
+        .enumerate()
+        .map(|(index, variable)| normalize_dashboard_variable_request(variable, index))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut seen_sources = HashSet::new();
+    for variable in &variables {
+        if !seen_sources.insert((variable.node_id.as_str(), variable.reading_type.as_str())) {
+            return Err(format!(
+                "Telemetry refresh contains duplicate dashboard source {} / {}.",
+                variable.node_id, variable.reading_type
+            ));
+        }
+    }
+    Ok(FetchDashboardVariableDataRequest {
+        client_id: normalize_guid(&request.client_id, "Client ID")?,
+        tenant_id: normalize_guid(&request.tenant_id, "Tenant ID")?,
+        storage_account: normalize_storage_account(&request.storage_account)?,
+        start_ms: request.start_ms,
+        end_ms: request.end_ms,
+        variables,
+    })
+}
+
 fn renewal_required(not_after_ms: i64, now_ms: i64) -> bool {
     not_after_ms - now_ms <= KIOSK_RENEWAL_THRESHOLD_DAYS * 24 * 60 * 60 * 1000
 }
@@ -723,6 +889,24 @@ fn parse_identity_state(json: &str) -> Result<KioskIdentityStateFile, String> {
     state.key_id = normalize_guid(&state.key_id, "Kiosk key ID")?;
     state.login_endpoint = normalize_login_endpoint(&state.login_endpoint)?;
     Ok(state)
+}
+
+fn parse_persisted_environment_metadata(
+    json: &str,
+) -> Result<PersistedEnvironmentMetadata, String> {
+    let mut environment = serde_json::from_str::<PersistedEnvironmentMetadata>(json)
+        .map_err(|error| format!("failed to parse persisted kiosk environment: {error}"))?;
+    environment.storage_account = normalize_storage_account(&environment.storage_account)?;
+    Ok(environment)
+}
+
+fn load_persisted_environment_metadata(
+    app: &tauri::AppHandle,
+) -> Result<Option<PersistedEnvironmentMetadata>, String> {
+    let Some(json) = read_optional_file_to_string(&environment_file_path(app)?)? else {
+        return Ok(None);
+    };
+    parse_persisted_environment_metadata(&json).map(Some)
 }
 
 fn load_identity_state(app: &tauri::AppHandle) -> Result<Option<KioskIdentityStateFile>, String> {
@@ -940,7 +1124,7 @@ fn build_client_assertion(
 
 async fn fetch_application_access_token(
     runtime_state: &RuntimeCredentialState,
-) -> Result<(), String> {
+) -> Result<String, String> {
     validate_certificate_matches_private_key(
         &runtime_state.certificate_pem,
         &runtime_state.private_key_pem,
@@ -982,13 +1166,11 @@ async fn fetch_application_access_token(
             "application sign-in failed: token endpoint returned {status}: {body}"
         ));
     }
-    let _ = response
+    response
         .json::<OAuthTokenResponse>()
         .await
-        .map_err(|error| {
-            format!("application sign-in returned an invalid token payload: {error}")
-        })?;
-    Ok(())
+        .map_err(|error| format!("application sign-in returned an invalid token payload: {error}"))
+        .map(|payload| payload.access_token)
 }
 
 fn build_runtime_state(
@@ -1002,6 +1184,334 @@ fn build_runtime_state(
         certificate_pem: identity_state.certificate_pem.clone(),
         private_key_pem,
     }
+}
+
+fn escape_odata_string_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn reverse_timestamp_hex(timestamp_ms: i64) -> Result<String, String> {
+    let timestamp_ms = u64::try_from(timestamp_ms)
+        .map_err(|_| "Telemetry refresh time bounds must be non-negative.".to_string())?;
+    Ok(format!("{:016x}", u64::MAX - timestamp_ms))
+}
+
+fn history_table_filter(partition_key: &str, start_ms: i64, end_ms: i64) -> Result<String, String> {
+    let row_key_start = reverse_timestamp_hex(end_ms)?;
+    let row_key_end = reverse_timestamp_hex(start_ms)?;
+    Ok(format!(
+        "PartitionKey eq '{}' and RowKey ge '{}' and RowKey le '{}~'",
+        escape_odata_string_literal(partition_key),
+        row_key_start,
+        row_key_end
+    ))
+}
+
+fn node_partition_filter() -> &'static str {
+    "PartitionKey ge 'n:' and PartitionKey lt 'n;'"
+}
+
+fn table_query_url(storage_account: &str, table_name: &str) -> String {
+    format!("https://{storage_account}.table.core.windows.net/{table_name}()")
+}
+
+async fn query_table_entities<T>(
+    access_token: &str,
+    storage_account: &str,
+    table_name: &str,
+    filter: Option<&str>,
+    top: Option<usize>,
+    max_pages: usize,
+    options: TableQueryOptions,
+) -> Result<TableQueryResult<T>, String>
+where
+    T: DeserializeOwned,
+{
+    let client = http_client()?;
+    let mut entities = Vec::new();
+    let mut next_partition_key: Option<String> = None;
+    let mut next_row_key: Option<String> = None;
+    let mut seen_continuation_tokens = HashSet::new();
+
+    for page in 0..max_pages {
+        let mut url = reqwest::Url::parse(&table_query_url(storage_account, table_name))
+            .map_err(|error| format!("failed to build Azure Tables URL: {error}"))?;
+        if let Some(filter) = filter {
+            if !filter.is_empty() {
+                url.query_pairs_mut().append_pair("$filter", filter);
+            }
+        }
+        if let Some(top) = top {
+            url.query_pairs_mut().append_pair("$top", &top.to_string());
+        }
+        if let Some(partition_key) = &next_partition_key {
+            url.query_pairs_mut()
+                .append_pair("NextPartitionKey", partition_key);
+            if let Some(row_key) = &next_row_key {
+                url.query_pairs_mut().append_pair("NextRowKey", row_key);
+            }
+        }
+
+        let response = client
+            .get(url)
+            .header("Accept", "application/json;odata=nometadata")
+            .bearer_auth(access_token)
+            .header("x-ms-version", AZURE_TABLES_API_VERSION)
+            .send()
+            .await
+            .map_err(|error| format!("Azure Tables query failed for {table_name}: {error}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_else(|error| {
+                format!("<failed to read Azure Tables error response body: {error}>")
+            });
+            return Err(format!(
+                "Azure Tables query failed for {table_name}: service returned {status}: {body}"
+            ));
+        }
+
+        next_partition_key = response
+            .headers()
+            .get("x-ms-continuation-NextPartitionKey")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        next_row_key = response
+            .headers()
+            .get("x-ms-continuation-NextRowKey")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+
+        let payload = response
+            .json::<AzureTableQueryResponse<T>>()
+            .await
+            .map_err(|error| {
+                format!("Azure Tables returned an invalid {table_name} payload: {error}")
+            })?;
+        entities.extend(payload.value);
+
+        if next_partition_key.is_none() {
+            break;
+        }
+
+        let continuation_token = format!(
+            "{}\n{}",
+            next_partition_key.as_deref().unwrap_or_default(),
+            next_row_key.as_deref().unwrap_or_default()
+        );
+        if !seen_continuation_tokens.insert(continuation_token) {
+            return Err(format!(
+                "Azure Tables query for {table_name} returned a repeated continuation token on page {}.",
+                page + 1
+            ));
+        }
+    }
+
+    ensure_query_completion(
+        next_partition_key.as_deref(),
+        table_name,
+        max_pages,
+        options,
+    )?;
+
+    Ok(TableQueryResult {
+        complete: next_partition_key.is_none(),
+        entities,
+    })
+}
+
+fn ensure_query_completion(
+    next_partition_key: Option<&str>,
+    table_name: &str,
+    max_pages: usize,
+    options: TableQueryOptions,
+) -> Result<(), String> {
+    if options.require_complete && next_partition_key.is_some() {
+        return Err(format!(
+            "Azure Tables query for {table_name} exceeded the maximum of {max_pages} page(s)."
+        ));
+    }
+    Ok(())
+}
+
+fn is_node_partition_key(partition_key: &str) -> bool {
+    partition_key.starts_with("n:")
+}
+
+fn latest_node_partition_map(rows: Vec<ActualStateEntity>) -> HashMap<String, String> {
+    let mut latest_by_partition = HashMap::<String, ActualStateEntity>::new();
+    for row in rows {
+        if !is_node_partition_key(&row.partition_key) {
+            continue;
+        }
+        let Some(node_id) = row.node_id.as_ref().map(|value| value.trim()) else {
+            continue;
+        };
+        if node_id.is_empty() {
+            continue;
+        }
+        match latest_by_partition.get(&row.partition_key) {
+            Some(existing) if existing.row_key <= row.row_key => {}
+            _ => {
+                latest_by_partition.insert(row.partition_key.clone(), row);
+            }
+        }
+    }
+
+    latest_by_partition
+        .into_values()
+        .filter_map(|row| {
+            row.node_id
+                .map(|node_id| (node_id.trim().to_string(), row.partition_key))
+        })
+        .filter(|(node_id, _)| !node_id.is_empty())
+        .collect()
+}
+
+fn parse_sensor_readings(
+    decoded_readings: &str,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    serde_json::from_str::<serde_json::Value>(decoded_readings)
+        .ok()?
+        .as_object()
+        .cloned()
+}
+
+fn to_plottable_number(value: &serde_json::Value) -> Option<f64> {
+    match value {
+        serde_json::Value::Number(value) => value.as_f64().filter(|value| value.is_finite()),
+        serde_json::Value::String(value) => {
+            let parsed = value.parse::<f64>().ok()?;
+            if parsed.is_finite() && parsed.abs() <= JS_MAX_SAFE_INTEGER_F64 {
+                Some(parsed)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn extract_series_for_partition(
+    rows: Vec<SensorDataEntity>,
+    variables: &[DashboardVariableRequest],
+) -> HashMap<(String, String), Vec<TelemetryPoint>> {
+    let mut series = HashMap::<(String, String), Vec<TelemetryPoint>>::new();
+    for row in rows {
+        let Some(timestamp_ms) = row.timestamp_ms else {
+            continue;
+        };
+        let Some(decoded_readings) = row.decoded_readings.as_deref() else {
+            continue;
+        };
+        let Some(readings) = parse_sensor_readings(decoded_readings) else {
+            continue;
+        };
+
+        for variable in variables {
+            let Some(value) = readings
+                .get(&variable.reading_type)
+                .and_then(to_plottable_number)
+            else {
+                continue;
+            };
+            series
+                .entry((variable.node_id.clone(), variable.reading_type.clone()))
+                .or_default()
+                .push(TelemetryPoint {
+                    timestamp_ms,
+                    value,
+                });
+        }
+    }
+
+    for points in series.values_mut() {
+        points.sort_by_key(|point| point.timestamp_ms);
+    }
+    series
+}
+
+async fn fetch_live_dashboard_variable_series(
+    access_token: &str,
+    request: &FetchDashboardVariableDataRequest,
+) -> Result<FetchDashboardVariableDataResponse, String> {
+    let actual_state_rows = query_table_entities::<ActualStateEntity>(
+        access_token,
+        &request.storage_account,
+        ACTUAL_STATE_TABLE_NAME,
+        Some(node_partition_filter()),
+        None,
+        MAX_TABLE_QUERY_PAGES,
+        TableQueryOptions {
+            require_complete: true,
+        },
+    )
+    .await?;
+    let node_partitions = latest_node_partition_map(actual_state_rows.entities);
+
+    let mut variables_by_partition = HashMap::<String, Vec<DashboardVariableRequest>>::new();
+    let mut missing_node_ids = Vec::new();
+    for variable in &request.variables {
+        let Some(partition_key) = node_partitions.get(&variable.node_id) else {
+            missing_node_ids.push(variable.node_id.clone());
+            continue;
+        };
+        variables_by_partition
+            .entry(partition_key.clone())
+            .or_default()
+            .push(variable.clone());
+    }
+
+    if !missing_node_ids.is_empty() {
+        missing_node_ids.sort();
+        missing_node_ids.dedup();
+        return Err(format!(
+            "Telemetry refresh could not resolve node ID(s) from actualstate: {}.",
+            missing_node_ids.join(", ")
+        ));
+    }
+
+    let mut points_by_series = HashMap::<(String, String), Vec<TelemetryPoint>>::new();
+    let mut complete = true;
+    for (partition_key, variables) in variables_by_partition {
+        let rows = query_table_entities::<SensorDataEntity>(
+            access_token,
+            &request.storage_account,
+            SENSOR_DATA_TABLE_NAME,
+            Some(&history_table_filter(
+                &partition_key,
+                request.start_ms,
+                request.end_ms,
+            )?),
+            Some(SENSOR_DATA_TOP_PER_PAGE),
+            MAX_TABLE_QUERY_PAGES,
+            TableQueryOptions {
+                require_complete: false,
+            },
+        )
+        .await?;
+        complete = complete && rows.complete;
+
+        for (series_key, points) in extract_series_for_partition(rows.entities, &variables) {
+            points_by_series.insert(series_key, points);
+        }
+    }
+
+    Ok(FetchDashboardVariableDataResponse {
+        complete,
+        refreshed_at_ms: current_time_ms(),
+        series: request
+            .variables
+            .iter()
+            .map(|variable| DashboardVariableSeries {
+                node_id: variable.node_id.clone(),
+                reading_type: variable.reading_type.clone(),
+                points: points_by_series
+                    .get(&(variable.node_id.clone(), variable.reading_type.clone()))
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+            .collect(),
+    })
 }
 
 fn generate_certificate_bundle() -> Result<GeneratedCertificateBundle, String> {
@@ -1557,7 +2067,8 @@ async fn sign_in_kiosk_application(
         .ok_or_else(|| "kiosk identity is not configured yet".to_string())?;
     let private_key_pem = load_private_key_secret(&app)?
         .ok_or_else(|| "kiosk private key is missing from secure storage".to_string())?;
-    fetch_application_access_token(&build_runtime_state(&identity_state, private_key_pem)).await?;
+    let _ = fetch_application_access_token(&build_runtime_state(&identity_state, private_key_pem))
+        .await?;
     Ok(KioskApplicationSignInResult {
         summary: to_identity_summary(&identity_state),
         message: if renewal_required(identity_state.not_after_ms, current_time_ms()) {
@@ -1742,11 +2253,37 @@ async fn reset_kiosk_app_state(
 }
 
 #[tauri::command]
-fn fetch_dashboard_variable_data(
+async fn fetch_dashboard_variable_data(
+    app: tauri::AppHandle,
     request: FetchDashboardVariableDataRequest,
 ) -> Result<FetchDashboardVariableDataResponse, String> {
-    let _ = request;
-    Err("Application-authenticated telemetry refresh is not configured yet.".into())
+    let request = normalize_fetch_dashboard_variable_data_request(request)?;
+    let environment = load_persisted_environment_metadata(&app)?
+        .ok_or_else(|| "kiosk environment is not configured yet".to_string())?;
+    let identity_state = load_identity_state(&app)?
+        .ok_or_else(|| "kiosk identity is not configured yet".to_string())?;
+    if request.client_id != identity_state.shared_app_client_id {
+        return Err(
+            "Telemetry refresh client ID does not match the configured kiosk identity.".into(),
+        );
+    }
+    if request.tenant_id != identity_state.tenant_id {
+        return Err(
+            "Telemetry refresh tenant ID does not match the configured kiosk identity.".into(),
+        );
+    }
+    if request.storage_account != environment.storage_account {
+        return Err(
+            "Telemetry refresh storage account does not match the configured kiosk environment."
+                .into(),
+        );
+    }
+    let private_key_pem = load_private_key_secret(&app)?
+        .ok_or_else(|| "kiosk private key is missing from secure storage".to_string())?;
+    let access_token =
+        fetch_application_access_token(&build_runtime_state(&identity_state, private_key_pem))
+            .await?;
+    fetch_live_dashboard_variable_series(&access_token, &request).await
 }
 
 pub fn run() {
@@ -1855,6 +2392,19 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("Shared app client ID must be a valid GUID"));
+    }
+
+    #[test]
+    fn parse_persisted_environment_metadata_validates_storage_account() {
+        let environment = parse_persisted_environment_metadata(
+            r#"{"storageAccount":"prodstorage","functionAppName":"prod-func"}"#,
+        )
+        .unwrap();
+        assert_eq!(environment.storage_account, "prodstorage");
+
+        let error = parse_persisted_environment_metadata(r#"{"storageAccount":"ProdStorage"}"#)
+            .unwrap_err();
+        assert!(error.contains("lowercase alphanumeric"));
     }
 
     #[test]
@@ -1998,6 +2548,196 @@ mod tests {
             Some(token_endpoint)
         );
         assert!(claims.get("jti").and_then(|value| value.as_str()).is_some());
+    }
+
+    #[test]
+    fn normalize_fetch_dashboard_variable_data_request_validates_fields() {
+        let error =
+            normalize_fetch_dashboard_variable_data_request(FetchDashboardVariableDataRequest {
+                client_id: "11111111-1111-1111-1111-111111111111".into(),
+                tenant_id: "22222222-2222-2222-2222-222222222222".into(),
+                storage_account: "ProdStorage".into(),
+                start_ms: 100,
+                end_ms: 90,
+                variables: vec![DashboardVariableRequest {
+                    node_id: "NODE_001".into(),
+                    reading_type: "temp_mc".into(),
+                }],
+            })
+            .unwrap_err();
+        assert!(error.contains("greater than or equal"));
+
+        let error =
+            normalize_fetch_dashboard_variable_data_request(FetchDashboardVariableDataRequest {
+                client_id: "11111111-1111-1111-1111-111111111111".into(),
+                tenant_id: "22222222-2222-2222-2222-222222222222".into(),
+                storage_account: "ProdStorage".into(),
+                start_ms: 90,
+                end_ms: 100,
+                variables: vec![DashboardVariableRequest {
+                    node_id: "NODE_001".into(),
+                    reading_type: "temp_mc".into(),
+                }],
+            })
+            .unwrap_err();
+        assert!(error.contains("lowercase alphanumeric"));
+
+        let error =
+            normalize_fetch_dashboard_variable_data_request(FetchDashboardVariableDataRequest {
+                client_id: "11111111-1111-1111-1111-111111111111".into(),
+                tenant_id: "22222222-2222-2222-2222-222222222222".into(),
+                storage_account: "prodstorage".into(),
+                start_ms: 90,
+                end_ms: 100,
+                variables: vec![
+                    DashboardVariableRequest {
+                        node_id: "NODE_001".into(),
+                        reading_type: "temp_mc".into(),
+                    },
+                    DashboardVariableRequest {
+                        node_id: "NODE_001".into(),
+                        reading_type: "temp_mc".into(),
+                    },
+                ],
+            })
+            .unwrap_err();
+        assert!(error.contains("duplicate dashboard source"));
+    }
+
+    #[test]
+    fn history_table_filter_matches_spa_row_key_range_shape() {
+        assert_eq!(
+            history_table_filter("n:abc", 0, 15).unwrap(),
+            "PartitionKey eq 'n:abc' and RowKey ge 'fffffffffffffff0' and RowKey le 'ffffffffffffffff~'"
+        );
+    }
+
+    #[test]
+    fn node_partition_filter_matches_prefix_range_contract() {
+        assert_eq!(
+            node_partition_filter(),
+            "PartitionKey ge 'n:' and PartitionKey lt 'n;'"
+        );
+    }
+
+    #[test]
+    fn ensure_query_completion_allows_partial_results_when_not_required() {
+        ensure_query_completion(
+            Some("next-partition"),
+            SENSOR_DATA_TABLE_NAME,
+            MAX_TABLE_QUERY_PAGES,
+            TableQueryOptions {
+                require_complete: false,
+            },
+        )
+        .unwrap();
+
+        let error = ensure_query_completion(
+            Some("next-partition"),
+            SENSOR_DATA_TABLE_NAME,
+            MAX_TABLE_QUERY_PAGES,
+            TableQueryOptions {
+                require_complete: true,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("exceeded the maximum"));
+    }
+
+    #[test]
+    fn latest_node_partition_map_keeps_latest_row_per_partition() {
+        let node_partitions = latest_node_partition_map(vec![
+            ActualStateEntity {
+                partition_key: "n:001".into(),
+                row_key: "fff5".into(),
+                node_id: Some("NODE_A".into()),
+            },
+            ActualStateEntity {
+                partition_key: "n:001".into(),
+                row_key: "fff0".into(),
+                node_id: Some("NODE_A_NEW".into()),
+            },
+            ActualStateEntity {
+                partition_key: "g:001".into(),
+                row_key: "0001".into(),
+                node_id: Some("GATEWAY".into()),
+            },
+            ActualStateEntity {
+                partition_key: "n:002".into(),
+                row_key: "fff1".into(),
+                node_id: Some("NODE_B".into()),
+            },
+        ]);
+        assert_eq!(
+            node_partitions.get("NODE_A_NEW"),
+            Some(&"n:001".to_string())
+        );
+        assert_eq!(node_partitions.get("NODE_B"), Some(&"n:002".to_string()));
+        assert!(!node_partitions.contains_key("NODE_A"));
+        assert!(!node_partitions.contains_key("GATEWAY"));
+    }
+
+    #[test]
+    fn extract_series_for_partition_matches_spa_numeric_rules() {
+        let rows = vec![
+            SensorDataEntity {
+                decoded_readings: Some(
+                    r#"{"temp_mc":21.5,"humidity_pct":"48.2","too_big":"9007199254740992"}"#.into(),
+                ),
+                timestamp_ms: Some(2_000),
+            },
+            SensorDataEntity {
+                decoded_readings: Some(r#"{"temp_mc":"20.5","humidity_pct":"bad"}"#.into()),
+                timestamp_ms: Some(1_000),
+            },
+            SensorDataEntity {
+                decoded_readings: Some("not-json".into()),
+                timestamp_ms: Some(500),
+            },
+        ];
+        let variables = vec![
+            DashboardVariableRequest {
+                node_id: "NODE_001".into(),
+                reading_type: "temp_mc".into(),
+            },
+            DashboardVariableRequest {
+                node_id: "NODE_001".into(),
+                reading_type: "humidity_pct".into(),
+            },
+            DashboardVariableRequest {
+                node_id: "NODE_001".into(),
+                reading_type: "too_big".into(),
+            },
+        ];
+
+        let series = extract_series_for_partition(rows, &variables);
+        assert_eq!(
+            series
+                .get(&("NODE_001".to_string(), "temp_mc".to_string()))
+                .cloned()
+                .unwrap(),
+            vec![
+                TelemetryPoint {
+                    timestamp_ms: 1_000,
+                    value: 20.5,
+                },
+                TelemetryPoint {
+                    timestamp_ms: 2_000,
+                    value: 21.5,
+                },
+            ]
+        );
+        assert_eq!(
+            series
+                .get(&("NODE_001".to_string(), "humidity_pct".to_string()))
+                .cloned()
+                .unwrap(),
+            vec![TelemetryPoint {
+                timestamp_ms: 2_000,
+                value: 48.2,
+            }]
+        );
+        assert!(!series.contains_key(&("NODE_001".to_string(), "too_big".to_string())));
     }
 
     #[test]

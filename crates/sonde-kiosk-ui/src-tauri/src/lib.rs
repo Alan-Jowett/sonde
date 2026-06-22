@@ -82,7 +82,6 @@ struct FetchDashboardVariableDataRequest {
     client_id: String,
     tenant_id: String,
     storage_account: String,
-    function_app_name: String,
     start_ms: i64,
     end_ms: i64,
     variables: Vec<DashboardVariableRequest>,
@@ -761,33 +760,6 @@ fn normalize_storage_account(value: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn normalize_function_app_name(value: &str) -> Result<String, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("Function app name is required.".into());
-    }
-    if !(2..=60).contains(&trimmed.len()) {
-        return Err(
-            "Function app name must be 2–60 alphanumeric characters with optional hyphens.".into(),
-        );
-    }
-    let bytes = trimmed.as_bytes();
-    if !bytes[0].is_ascii_alphanumeric() || !bytes[bytes.len() - 1].is_ascii_alphanumeric() {
-        return Err(
-            "Function app name must be 2–60 alphanumeric characters with optional hyphens.".into(),
-        );
-    }
-    if !bytes
-        .iter()
-        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
-    {
-        return Err(
-            "Function app name must be 2–60 alphanumeric characters with optional hyphens.".into(),
-        );
-    }
-    Ok(trimmed.to_string())
-}
-
 fn normalize_dashboard_variable_request(
     variable: DashboardVariableRequest,
     index: usize,
@@ -830,7 +802,6 @@ fn normalize_fetch_dashboard_variable_data_request(
         client_id: normalize_guid(&request.client_id, "Client ID")?,
         tenant_id: normalize_guid(&request.tenant_id, "Tenant ID")?,
         storage_account: normalize_storage_account(&request.storage_account)?,
-        function_app_name: normalize_function_app_name(&request.function_app_name)?,
         start_ms: request.start_ms,
         end_ms: request.end_ms,
         variables: request
@@ -2492,7 +2463,6 @@ mod tests {
                 client_id: "11111111-1111-1111-1111-111111111111".into(),
                 tenant_id: "22222222-2222-2222-2222-222222222222".into(),
                 storage_account: "ProdStorage".into(),
-                function_app_name: "prod-func".into(),
                 start_ms: 100,
                 end_ms: 90,
                 variables: vec![DashboardVariableRequest {
@@ -2508,7 +2478,6 @@ mod tests {
                 client_id: "11111111-1111-1111-1111-111111111111".into(),
                 tenant_id: "22222222-2222-2222-2222-222222222222".into(),
                 storage_account: "ProdStorage".into(),
-                function_app_name: "prod-func".into(),
                 start_ms: 90,
                 end_ms: 100,
                 variables: vec![DashboardVariableRequest {

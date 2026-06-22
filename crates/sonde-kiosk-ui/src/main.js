@@ -435,7 +435,6 @@ function buildDashboardRefreshRequest(environment, dashboard, runtime, nowMs = D
     clientId: environment.clientId,
     tenantId: environment.tenantId,
     storageAccount: environment.storageAccount,
-    functionAppName: environment.functionAppName,
     startMs,
     endMs,
     variables,

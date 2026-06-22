@@ -259,6 +259,7 @@ test('cacheTelemetryRefreshResponse reuses telemetry across dashboards sharing a
   kiosk.cacheTelemetryRefreshResponse(environment, {
     startMs: 1_000,
     endMs: 9_000,
+    variables: [{ nodeId: 'NODE_001', readingType: 'temp_mc' }],
   }, {
     refreshedAtMs: 2_000,
     series: [{
@@ -293,7 +294,11 @@ test('cacheTelemetryRefreshResponse ignores malformed series identifiers', () =>
   });
 
   kiosk.APP_STATE.telemetryCache.clear();
-  kiosk.cacheTelemetryRefreshResponse(environment, { startMs: 1_000, endMs: 9_000 }, {
+  kiosk.cacheTelemetryRefreshResponse(environment, {
+    startMs: 1_000,
+    endMs: 9_000,
+    variables: [{ nodeId: 'NODE_001', readingType: 'temp_mc' }],
+  }, {
     refreshedAtMs: 2_000,
     series: [{ nodeId: 'NODE_001', points: [{ timestampMs: 2_000, value: 1 }] }],
   });
@@ -316,7 +321,11 @@ test('cacheTelemetryRefreshResponse reports how many usable series were cached',
   });
 
   kiosk.APP_STATE.telemetryCache.clear();
-  const cachedSeriesCount = kiosk.cacheTelemetryRefreshResponse(environment, { startMs: 1_000, endMs: 9_000 }, {
+  const cachedSeriesCount = kiosk.cacheTelemetryRefreshResponse(environment, {
+    startMs: 1_000,
+    endMs: 9_000,
+    variables: [{ nodeId: 'NODE_001', readingType: 'temp_mc' }],
+  }, {
     refreshedAtMs: 2_000,
     series: [
       { nodeId: 'NODE_001', readingType: 'temp_mc', points: [{ timestampMs: 2_000, value: 1 }] },
@@ -325,6 +334,39 @@ test('cacheTelemetryRefreshResponse reports how many usable series were cached',
   });
 
   assert.equal(cachedSeriesCount, 1);
+});
+
+test('cacheTelemetryRefreshResponse ignores unrequested telemetry series', () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  kiosk.APP_STATE.telemetryCache.clear();
+  const cachedSeriesCount = kiosk.cacheTelemetryRefreshResponse(environment, {
+    startMs: 1_000,
+    endMs: 9_000,
+    variables: [{ nodeId: 'NODE_001', readingType: 'temp_mc' }],
+  }, {
+    refreshedAtMs: 2_000,
+    series: [
+      { nodeId: 'NODE_001', readingType: 'temp_mc', points: [{ timestampMs: 2_000, value: 1 }] },
+      { nodeId: 'NODE_999', readingType: 'temp_mc', points: [{ timestampMs: 2_000, value: 9 }] },
+    ],
+  });
+
+  assert.equal(cachedSeriesCount, 1);
+  assert.equal(kiosk.APP_STATE.telemetryCache.size, 1);
+  assert.equal(kiosk.APP_STATE.telemetryCache.has(buildCacheKey(environment, 'NODE_001', 'temp_mc')), true);
+  assert.equal(kiosk.APP_STATE.telemetryCache.has(buildCacheKey(environment, 'NODE_999', 'temp_mc')), false);
 });
 
 test('cacheTelemetryRefreshResponse preserves the active refresh when it exceeds the base series cap', () => {
@@ -365,6 +407,10 @@ test('cacheTelemetryRefreshResponse preserves the active refresh when it exceeds
   const cachedSeriesCount = kiosk.cacheTelemetryRefreshResponse(environment, {
     startMs: 1_000,
     endMs: 9_000,
+    variables: variables.map((variable) => ({
+      nodeId: variable.nodeId,
+      readingType: variable.readingType,
+    })),
   }, {
     refreshedAtMs: 9_000,
     series: variables.map((variable, index) => ({

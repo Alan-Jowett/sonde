@@ -518,6 +518,15 @@ function cacheTelemetryRefreshResponse(environment, request, response) {
   const complete = response?.complete !== false;
   let cachedSeriesCount = 0;
   const refreshedCacheKeys = new Set();
+  const requestedCacheKeys = new Set();
+  for (const variable of request?.variables ?? []) {
+    if (typeof variable !== 'object' || variable === null
+      || typeof variable.nodeId !== 'string'
+      || typeof variable.readingType !== 'string') {
+      continue;
+    }
+    requestedCacheKeys.add(buildTelemetrySourceCacheKey(environment, variable));
+  }
   for (const series of response?.series ?? []) {
     if (typeof series !== 'object' || series === null
       || typeof series.nodeId !== 'string'
@@ -529,6 +538,9 @@ function cacheTelemetryRefreshResponse(environment, request, response) {
       nodeId: series.nodeId,
       readingType: series.readingType,
     });
+    if (!requestedCacheKeys.has(key)) {
+      continue;
+    }
     refreshedCacheKeys.add(key);
     APP_STATE.telemetryCache.set(key, {
       points: normalizeTelemetryPoints(series.points),

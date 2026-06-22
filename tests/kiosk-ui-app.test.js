@@ -881,6 +881,45 @@ test('initKioskApp falls back to cached dashboard mode when startup sign-in fail
   ]);
 });
 
+test('initKioskApp normalizes non-Error sign-in failures when cached startup fallback is unavailable', async () => {
+  createDomFixture();
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  });
+
+  await kiosk.initKioskApp({
+    runtime,
+    invoke: async (command) => {
+      if (command === 'get_telemetry_cache_json') {
+        return JSON.stringify({ version: 1, entries: [] });
+      }
+      if (command === 'get_environment_json') {
+        return JSON.stringify(environment);
+      }
+      if (command === 'get_kiosk_identity_summary') {
+        return {
+          tenantId: environment.tenantId,
+          sharedAppClientId: environment.clientId,
+          renewalRequired: false,
+        };
+      }
+      if (command === 'sign_in_kiosk_application') {
+        throw 'network down';
+      }
+      return null;
+    },
+    setIntervalFn: () => 42,
+    clearIntervalFn() {},
+  });
+
+  assert.match(kiosk.APP_STATE.setupStatusMessage, /Application sign-in failed: network down/);
+});
+
 test('validateSetupLoginMetadata accepts additive kiosk setup fields', () => {
   const result = kiosk.validateSetupLoginMetadata(buildEnvironment());
 

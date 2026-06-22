@@ -1233,12 +1233,13 @@ async function initKioskApp(deps = {}) {
         await signInAndShowDashboard(deps);
         return;
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
         const initialDashboard = storedEnvironment.dashboards[0];
         if (initialDashboard && hasUsableCachedDashboardData(runtime, storedEnvironment, initialDashboard)) {
-          setTelemetryNotice(`Showing cached data while reconnecting. Application sign-in failed: ${error.message}`, 'error');
+          setTelemetryNotice(`Showing cached data while reconnecting. Application sign-in failed: ${message}`, 'error');
           await showDashboardMode(deps);
         } else {
-          showSetupMode(`Application sign-in failed: ${error.message}`);
+          showSetupMode(`Application sign-in failed: ${message}`);
         }
         return;
       }

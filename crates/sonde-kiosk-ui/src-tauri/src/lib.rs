@@ -105,6 +105,7 @@ struct DashboardVariableSeries {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct FetchDashboardVariableDataResponse {
+    complete: bool,
     refreshed_at_ms: i64,
     series: Vec<DashboardVariableSeries>,
 }
@@ -363,6 +364,12 @@ struct SensorDataEntity {
 #[derive(Debug, Clone, Copy)]
 struct TableQueryOptions {
     require_complete: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TableQueryResult<T> {
+    entities: Vec<T>,
+    complete: bool,
 }
 
 fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -1192,7 +1199,7 @@ async fn query_table_entities<T>(
     top: Option<usize>,
     max_pages: usize,
     options: TableQueryOptions,
-) -> Result<Vec<T>, String>
+) -> Result<TableQueryResult<T>, String>
 where
     T: DeserializeOwned,
 {
@@ -1282,7 +1289,10 @@ where
         options,
     )?;
 
-    Ok(entities)
+    Ok(TableQueryResult {
+        complete: next_partition_key.is_none(),
+        entities,
+    })
 }
 
 fn ensure_query_completion(
@@ -1399,7 +1409,7 @@ fn extract_series_for_partition(
 async fn fetch_live_dashboard_variable_series(
     access_token: &str,
     request: &FetchDashboardVariableDataRequest,
-) -> Result<Vec<DashboardVariableSeries>, String> {
+) -> Result<FetchDashboardVariableDataResponse, String> {
     let actual_state_rows = query_table_entities::<ActualStateEntity>(
         access_token,
         &request.storage_account,
@@ -1408,11 +1418,11 @@ async fn fetch_live_dashboard_variable_series(
         None,
         MAX_TABLE_QUERY_PAGES,
         TableQueryOptions {
-            require_complete: false,
+            require_complete: true,
         },
     )
     .await?;
-    let node_partitions = latest_node_partition_map(actual_state_rows);
+    let node_partitions = latest_node_partition_map(actual_state_rows.entities);
 
     let mut variables_by_partition = HashMap::<String, Vec<DashboardVariableRequest>>::new();
     let mut missing_node_ids = Vec::new();
@@ -1437,6 +1447,7 @@ async fn fetch_live_dashboard_variable_series(
     }
 
     let mut points_by_series = HashMap::<(String, String), Vec<TelemetryPoint>>::new();
+    let mut complete = true;
     for (partition_key, variables) in variables_by_partition {
         let rows = query_table_entities::<SensorDataEntity>(
             access_token,
@@ -1454,24 +1465,29 @@ async fn fetch_live_dashboard_variable_series(
             },
         )
         .await?;
+        complete = complete && rows.complete;
 
-        for (series_key, points) in extract_series_for_partition(rows, &variables) {
+        for (series_key, points) in extract_series_for_partition(rows.entities, &variables) {
             points_by_series.insert(series_key, points);
         }
     }
 
-    Ok(request
-        .variables
-        .iter()
-        .map(|variable| DashboardVariableSeries {
-            node_id: variable.node_id.clone(),
-            reading_type: variable.reading_type.clone(),
-            points: points_by_series
-                .get(&(variable.node_id.clone(), variable.reading_type.clone()))
-                .cloned()
-                .unwrap_or_default(),
-        })
-        .collect())
+    Ok(FetchDashboardVariableDataResponse {
+        complete,
+        refreshed_at_ms: current_time_ms(),
+        series: request
+            .variables
+            .iter()
+            .map(|variable| DashboardVariableSeries {
+                node_id: variable.node_id.clone(),
+                reading_type: variable.reading_type.clone(),
+                points: points_by_series
+                    .get(&(variable.node_id.clone(), variable.reading_type.clone()))
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+            .collect(),
+    })
 }
 
 fn generate_certificate_bundle() -> Result<GeneratedCertificateBundle, String> {
@@ -2235,11 +2251,7 @@ async fn fetch_dashboard_variable_data(
     let access_token =
         fetch_application_access_token(&build_runtime_state(&identity_state, private_key_pem))
             .await?;
-    let series = fetch_live_dashboard_variable_series(&access_token, &request).await?;
-    Ok(FetchDashboardVariableDataResponse {
-        refreshed_at_ms: current_time_ms(),
-        series,
-    })
+    fetch_live_dashboard_variable_series(&access_token, &request).await
 }
 
 pub fn run() {

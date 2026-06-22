@@ -453,6 +453,7 @@ function normalizeTelemetryPoints(points) {
 }
 
 function cacheTelemetryRefreshResponse(environment, request, response) {
+  const complete = response?.complete !== false;
   let cachedSeriesCount = 0;
   for (const series of response?.series ?? []) {
     if (typeof series !== 'object' || series === null
@@ -467,8 +468,8 @@ function cacheTelemetryRefreshResponse(environment, request, response) {
     });
     APP_STATE.telemetryCache.set(key, {
       points: normalizeTelemetryPoints(series.points),
-      coverageStartMs: request.startMs,
-      coverageEndMs: request.endMs,
+      coverageStartMs: complete ? request.startMs : null,
+      coverageEndMs: complete ? request.endMs : null,
       refreshedAtMs: Number.isFinite(response.refreshedAtMs) ? Number(response.refreshedAtMs) : Date.now(),
     });
     cachedSeriesCount += 1;
@@ -494,6 +495,9 @@ function validateFetchDashboardVariableDataResponse(response) {
     throw new Error('Telemetry refresh returned an invalid response payload.');
   }
   if (!Array.isArray(response.series)) {
+    throw new Error('Telemetry refresh returned an invalid response payload.');
+  }
+  if ('complete' in response && typeof response.complete !== 'boolean') {
     throw new Error('Telemetry refresh returned an invalid response payload.');
   }
   return response;
@@ -676,7 +680,11 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
       const refreshedAtMs = Number.isFinite(response?.refreshedAtMs)
         ? Number(response.refreshedAtMs)
         : nowFn();
-      setTelemetryNotice(`Live data refreshed at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
+      if (response.complete === false) {
+        setTelemetryNotice(`Partial live data refreshed at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
+      } else {
+        setTelemetryNotice(`Live data refreshed at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
+      }
       await renderActiveDashboard(deps);
     } catch (error) {
       if (refreshGeneration !== APP_STATE.refreshGeneration

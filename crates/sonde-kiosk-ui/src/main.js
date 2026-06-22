@@ -16,6 +16,8 @@ const PULL_TO_REFRESH_THRESHOLD_PX = 90;
 const PULL_TO_REFRESH_MAX_HORIZONTAL_DRIFT_PX = 40;
 const BACKGROUND_REFRESH_INTERVAL_MS = 60 * 1000;
 const DEVICE_CODE_POLL_FALLBACK_MS = 5000;
+const TELEMETRY_CACHE_MAX_SERIES = 128;
+const TELEMETRY_CACHE_MAX_POINTS_PER_SERIES = 2048;
 
 const APP_STATE = {
   runtime: null,
@@ -321,6 +323,7 @@ function clearTelemetryCache() {
 
 function replaceTelemetryCache(entries) {
   APP_STATE.telemetryCache = entries instanceof Map ? entries : new Map();
+  enforceTelemetryCacheBounds();
 }
 
 function getActiveDashboard() {
@@ -352,12 +355,20 @@ function buildCachedVariableData(runtime, environment, dashboard, nowMs = Date.n
   for (const variable of dashboard.variables) {
     const cacheKey = buildTelemetrySourceCacheKey(environment, variable);
     const cached = APP_STATE.telemetryCache.get(cacheKey);
+    if (cached) {
+      cached.lastAccessedAtMs = nowMs;
+    }
     result[variable.name] = cached
       ? filterTelemetryPointsToRange(cached.points, startMs, endMs)
       : [];
   }
 
   return result;
+}
+
+function hasUsableCachedDashboardData(runtime, environment, dashboard, nowMs = Date.now()) {
+  const cachedVariableData = buildCachedVariableData(runtime, environment, dashboard, nowMs);
+  return Object.values(cachedVariableData).some((points) => Array.isArray(points) && points.length > 0);
 }
 
 function normalizeTelemetryCacheRecord(record) {
@@ -368,11 +379,15 @@ function normalizeTelemetryCacheRecord(record) {
   const coverageStartMs = Number(record.coverageStartMs);
   const coverageEndMs = Number(record.coverageEndMs);
   const refreshedAtMs = Number(record.refreshedAtMs);
+  const lastAccessedAtMs = Number(record.lastAccessedAtMs);
   return {
     points: normalizeTelemetryPoints(record.points),
     coverageStartMs: Number.isFinite(coverageStartMs) ? coverageStartMs : null,
     coverageEndMs: Number.isFinite(coverageEndMs) ? coverageEndMs : null,
     refreshedAtMs: Number.isFinite(refreshedAtMs) ? refreshedAtMs : null,
+    lastAccessedAtMs: Number.isFinite(lastAccessedAtMs)
+      ? lastAccessedAtMs
+      : (Number.isFinite(refreshedAtMs) ? refreshedAtMs : null),
   };
 }
 
@@ -412,6 +427,49 @@ function parseTelemetryCacheJson(text) {
     cache.set(entry.key, normalizeTelemetryCacheRecord(entry));
   }
   return cache;
+}
+
+function enforceTelemetryCacheBounds(options = {}) {
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const minimumSeries = Number.isFinite(options.minimumSeries) && options.minimumSeries > 0
+    ? Math.floor(options.minimumSeries)
+    : 0;
+  const protectedKeys = options.protectedKeys instanceof Set ? options.protectedKeys : new Set();
+  const maxSeries = Math.max(TELEMETRY_CACHE_MAX_SERIES, minimumSeries);
+
+  for (const entry of APP_STATE.telemetryCache.values()) {
+    entry.points = normalizeTelemetryPoints(entry.points)
+      .slice(-TELEMETRY_CACHE_MAX_POINTS_PER_SERIES);
+    if (!Number.isFinite(entry.lastAccessedAtMs)) {
+      entry.lastAccessedAtMs = Number.isFinite(entry.refreshedAtMs) ? entry.refreshedAtMs : nowMs;
+    }
+  }
+
+  if (APP_STATE.telemetryCache.size <= maxSeries) {
+    return;
+  }
+
+  const evictionOrder = Array.from(APP_STATE.telemetryCache.entries())
+    .sort(([leftKey, left], [rightKey, right]) => {
+      const leftProtected = protectedKeys.has(leftKey) ? 1 : 0;
+      const rightProtected = protectedKeys.has(rightKey) ? 1 : 0;
+      if (leftProtected !== rightProtected) {
+        return leftProtected - rightProtected;
+      }
+      const leftAccess = Number.isFinite(left.lastAccessedAtMs) ? left.lastAccessedAtMs : -Infinity;
+      const rightAccess = Number.isFinite(right.lastAccessedAtMs) ? right.lastAccessedAtMs : -Infinity;
+      if (leftAccess !== rightAccess) {
+        return leftAccess - rightAccess;
+      }
+      const leftRefresh = Number.isFinite(left.refreshedAtMs) ? left.refreshedAtMs : -Infinity;
+      const rightRefresh = Number.isFinite(right.refreshedAtMs) ? right.refreshedAtMs : -Infinity;
+      return leftRefresh - rightRefresh;
+    });
+
+  for (let index = 0; APP_STATE.telemetryCache.size > maxSeries && index < evictionOrder.length; index += 1) {
+    const [cacheKey] = evictionOrder[index];
+    APP_STATE.telemetryCache.delete(cacheKey);
+  }
 }
 
 function buildDashboardRefreshRequest(environment, dashboard, runtime, nowMs = Date.now()) {
@@ -459,6 +517,16 @@ function normalizeTelemetryPoints(points) {
 function cacheTelemetryRefreshResponse(environment, request, response) {
   const complete = response?.complete !== false;
   let cachedSeriesCount = 0;
+  const refreshedCacheKeys = new Set();
+  const requestedCacheKeys = new Set();
+  for (const variable of request?.variables ?? []) {
+    if (typeof variable !== 'object' || variable === null
+      || typeof variable.nodeId !== 'string'
+      || typeof variable.readingType !== 'string') {
+      continue;
+    }
+    requestedCacheKeys.add(buildTelemetrySourceCacheKey(environment, variable));
+  }
   for (const series of response?.series ?? []) {
     if (typeof series !== 'object' || series === null
       || typeof series.nodeId !== 'string'
@@ -470,14 +538,23 @@ function cacheTelemetryRefreshResponse(environment, request, response) {
       nodeId: series.nodeId,
       readingType: series.readingType,
     });
+    if (!requestedCacheKeys.has(key)) {
+      continue;
+    }
+    refreshedCacheKeys.add(key);
     APP_STATE.telemetryCache.set(key, {
       points: normalizeTelemetryPoints(series.points),
       coverageStartMs: complete ? request.startMs : null,
       coverageEndMs: complete ? request.endMs : null,
       refreshedAtMs: Number.isFinite(response.refreshedAtMs) ? Number(response.refreshedAtMs) : Date.now(),
+      lastAccessedAtMs: Date.now(),
     });
     cachedSeriesCount += 1;
   }
+  enforceTelemetryCacheBounds({
+    minimumSeries: refreshedCacheKeys.size,
+    protectedKeys: refreshedCacheKeys,
+  });
   return cachedSeriesCount;
 }
 
@@ -697,7 +774,11 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      setTelemetryNotice(`Live refresh unavailable: ${message}`, 'error');
+      if (hasUsableCachedDashboardData(runtime, environment, dashboard, nowFn())) {
+        setTelemetryNotice(`Showing cached data. Live refresh unavailable: ${message}`, 'error');
+      } else {
+        setTelemetryNotice(`Live refresh unavailable: ${message}`, 'error');
+      }
     } finally {
       if (APP_STATE.refreshInFlightPromise === refreshPromise) {
         APP_STATE.refreshInFlightPromise = null;
@@ -1164,7 +1245,14 @@ async function initKioskApp(deps = {}) {
         await signInAndShowDashboard(deps);
         return;
       } catch (error) {
-        showSetupMode(`Application sign-in failed: ${error.message}`);
+        const message = error instanceof Error ? error.message : String(error);
+        const initialDashboard = storedEnvironment.dashboards[0];
+        if (initialDashboard && hasUsableCachedDashboardData(runtime, storedEnvironment, initialDashboard)) {
+          setTelemetryNotice(`Showing cached data while reconnecting. Application sign-in failed: ${message}`, 'error');
+          await showDashboardMode(deps);
+        } else {
+          showSetupMode(`Application sign-in failed: ${message}`);
+        }
         return;
       }
     }
@@ -1190,11 +1278,13 @@ if (typeof module !== 'undefined' && module.exports) {
     cacheTelemetryRefreshResponse,
     clearStoredTelemetryCache,
     fetchDashboardVariableData,
+    hasUsableCachedDashboardData,
     importEnvironmentFromText,
     initKioskApp,
     interpretDashboardGesture,
     loadStoredTelemetryCache,
     loadSharedDashboardRuntime,
+    enforceTelemetryCacheBounds,
     parseTelemetryCacheJson,
     pollUntilDeviceCodeComplete,
     persistTelemetryCache,

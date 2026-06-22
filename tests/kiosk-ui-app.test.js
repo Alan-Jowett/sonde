@@ -12,11 +12,65 @@ function makeElement() {
     value: '',
     files: [],
     src: '',
+    className: '',
+    href: '',
+    disabled: false,
     classList: { add() {}, remove() {}, toggle() {} },
     addEventListener() {},
     appendChild() {},
     click() {},
   };
+}
+
+function createTrackedElement() {
+  const element = makeElement();
+  const classes = new Set();
+  element.classList = {
+    add(...names) {
+      for (const name of names) {
+        classes.add(name);
+      }
+      element.className = Array.from(classes).join(' ');
+    },
+    remove(...names) {
+      for (const name of names) {
+        classes.delete(name);
+      }
+      element.className = Array.from(classes).join(' ');
+    },
+    toggle(name, force) {
+      if (force === undefined ? !classes.has(name) : force) {
+        classes.add(name);
+      } else {
+        classes.delete(name);
+      }
+      element.className = Array.from(classes).join(' ');
+    },
+  };
+  return element;
+}
+
+function createDomFixture() {
+  const elements = new Map();
+  const ensureElement = (id) => {
+    if (!elements.has(id)) {
+      elements.set(id, createTrackedElement());
+    }
+    return elements.get(id);
+  };
+  const pageStatus = createTrackedElement();
+  global.document.getElementById = (id) => ensureElement(id);
+  global.document.querySelector = (selector) => (selector === '.dashboard-page-status' ? pageStatus : null);
+  return { elements, pageStatus };
+}
+
+function buildCacheKey(environment, nodeId, readingType) {
+  return JSON.stringify({
+    clientId: environment.clientId,
+    storageAccount: environment.storageAccount,
+    nodeId,
+    readingType,
+  });
 }
 
 global.window = {
@@ -273,6 +327,60 @@ test('cacheTelemetryRefreshResponse reports how many usable series were cached',
   assert.equal(cachedSeriesCount, 1);
 });
 
+test('cacheTelemetryRefreshResponse preserves the active refresh when it exceeds the base series cap', () => {
+  const variables = Array.from({ length: 129 }, (_unused, index) => ({
+    name: `TEMP_${index}`,
+    nodeId: `NODE_${index.toString().padStart(3, '0')}`,
+    readingType: 'temp_mc',
+  }));
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Overview',
+      variables,
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'STALE_NODE', 'temp_mc'),
+    {
+      points: [{ timestampMs: 100, value: 1 }],
+      coverageStartMs: 0,
+      coverageEndMs: 100,
+      refreshedAtMs: 100,
+      lastAccessedAtMs: 100,
+    },
+  ]]);
+
+  const cachedSeriesCount = kiosk.cacheTelemetryRefreshResponse(environment, {
+    startMs: 1_000,
+    endMs: 9_000,
+  }, {
+    refreshedAtMs: 9_000,
+    series: variables.map((variable, index) => ({
+      nodeId: variable.nodeId,
+      readingType: variable.readingType,
+      points: [{ timestampMs: 8_000 + index, value: index }],
+    })),
+  });
+
+  assert.equal(cachedSeriesCount, 129);
+  assert.equal(kiosk.APP_STATE.telemetryCache.size, 129);
+  assert.equal(kiosk.APP_STATE.telemetryCache.has(buildCacheKey(environment, 'STALE_NODE', 'temp_mc')), false);
+  assert.equal(kiosk.APP_STATE.telemetryCache.has(buildCacheKey(environment, 'NODE_000', 'temp_mc')), true);
+  assert.equal(kiosk.APP_STATE.telemetryCache.has(buildCacheKey(environment, 'NODE_128', 'temp_mc')), true);
+});
+
 test('buildDashboardRefreshRequest de-duplicates sources without delimiter collisions', () => {
   const environment = runtime.normalizeEnvironmentRecord({
     name: 'prod',
@@ -472,6 +580,49 @@ test('triggerDashboardRefresh rejects refreshes with no usable telemetry series'
   assert.match(kiosk.APP_STATE.telemetryNotice, /no usable series/i);
 });
 
+test('triggerDashboardRefresh reports cached offline status when live refresh fails but cached data exists', async () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 9_000,
+      refreshedAtMs: 9_000,
+      lastAccessedAtMs: 9_000,
+    },
+  ]]);
+
+  await kiosk.triggerDashboardRefresh('manual', {
+    nowFn: () => 9_000,
+    fetchDashboardVariableDataFn: async () => {
+      throw new Error('network down');
+    },
+  });
+
+  assert.match(kiosk.APP_STATE.telemetryNotice, /Showing cached data\. Live refresh unavailable: network down/);
+});
+
 test('triggerDashboardRefresh does not persist telemetry after reset clears the active environment', async () => {
   const environment = runtime.normalizeEnvironmentRecord({
     name: 'prod',
@@ -610,6 +761,7 @@ test('telemetry cache JSON round-trips through parse and serialize helpers', () 
       coverageStartMs: 1_000,
       coverageEndMs: 9_000,
       refreshedAtMs: 9_000,
+      lastAccessedAtMs: 8_500,
     }],
   ]);
 
@@ -621,8 +773,34 @@ test('telemetry cache JSON round-trips through parse and serialize helpers', () 
       coverageStartMs: 1_000,
       coverageEndMs: 9_000,
       refreshedAtMs: 9_000,
+      lastAccessedAtMs: 8_500,
     },
   ]]);
+});
+
+test('enforceTelemetryCacheBounds trims old points and evicts least recently used series', () => {
+  kiosk.APP_STATE.telemetryCache = new Map();
+  for (let index = 0; index < 130; index += 1) {
+    kiosk.APP_STATE.telemetryCache.set(`NODE_${index}\ntemp_mc`, {
+      points: Array.from({ length: 2100 }, (_unused, pointIndex) => ({
+        timestampMs: pointIndex,
+        value: pointIndex,
+      })),
+      coverageStartMs: 0,
+      coverageEndMs: 2_099,
+      refreshedAtMs: index,
+      lastAccessedAtMs: index,
+    });
+  }
+
+  kiosk.enforceTelemetryCacheBounds();
+
+  assert.equal(kiosk.APP_STATE.telemetryCache.size, 128);
+  assert.equal(kiosk.APP_STATE.telemetryCache.has('NODE_0\ntemp_mc'), false);
+  assert.equal(kiosk.APP_STATE.telemetryCache.has('NODE_1\ntemp_mc'), false);
+  const retainedEntry = kiosk.APP_STATE.telemetryCache.get('NODE_129\ntemp_mc');
+  assert.equal(retainedEntry.points.length, 2048);
+  assert.deepEqual(retainedEntry.points[0], { timestampMs: 52, value: 52 });
 });
 
 test('loadStoredTelemetryCache clears corrupted persisted cache and recovers with an empty map', async () => {
@@ -639,6 +817,68 @@ test('loadStoredTelemetryCache clears corrupted persisted cache and recovers wit
 
   assert.equal(cache.size, 0);
   assert.deepEqual(invoked, ['get_telemetry_cache_json', 'clear_telemetry_cache_json']);
+});
+
+test('initKioskApp falls back to cached dashboard mode when startup sign-in fails', async () => {
+  createDomFixture();
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  });
+
+  const persistedCache = JSON.stringify({
+    version: 1,
+    entries: [{
+      key: buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 9_000,
+      refreshedAtMs: 9_000,
+      lastAccessedAtMs: 9_000,
+    }],
+  });
+  const invoked = [];
+
+  await kiosk.initKioskApp({
+    runtime,
+    invoke: async (command) => {
+      invoked.push(command);
+      if (command === 'get_telemetry_cache_json') {
+        return persistedCache;
+      }
+      if (command === 'get_environment_json') {
+        return JSON.stringify(environment);
+      }
+      if (command === 'get_kiosk_identity_summary') {
+        return {
+          tenantId: environment.tenantId,
+          sharedAppClientId: environment.clientId,
+          renewalRequired: false,
+        };
+      }
+      if (command === 'sign_in_kiosk_application') {
+        throw new Error('network down');
+      }
+      if (command === 'fetch_dashboard_variable_data') {
+        throw new Error('network down');
+      }
+      return null;
+    },
+    setIntervalFn: () => 42,
+    clearIntervalFn() {},
+  });
+
+  assert.equal(kiosk.APP_STATE.activeEnvironment?.name, 'prod');
+  assert.match(kiosk.APP_STATE.telemetryNotice, /Showing cached data\. Live refresh unavailable: network down/);
+  assert.deepEqual(invoked.slice(0, 3), [
+    'get_telemetry_cache_json',
+    'get_environment_json',
+    'get_kiosk_identity_summary',
+  ]);
 });
 
 test('validateSetupLoginMetadata accepts additive kiosk setup fields', () => {

@@ -20,7 +20,10 @@
  *
  * The paired `SEC("decoder")` section emits named readings so a gateway-side
  * handler can log an operator-friendly pass/fail summary.
- */
+ *
+ * Note: this decoder uses `ctx->input_data` / `ctx->input_end` loads as real
+ * pointers, so it requires the gateway decoder runtime to tag those context
+ * fields as pointer regions (it will not work if those loads are treated as scalars).
 
 #include "include/sonde_helpers.h"
 

@@ -557,13 +557,13 @@ fn rewrite_global_data_relocations(
     };
     let compute_lddw_reloc_offset_imm = |sym_entry: usize,
                                          addend: i64,
-                                         has_explicit_addend: bool,
+                                         relocation_kind: u32,
                                          lo_inst_imm: i32|
      -> Result<i32, ProgramError> {
         let st_info = elf_bytes[sym_entry + 4];
         let st_type = st_info & 0x0f;
         if st_type == STT_SECTION {
-            if has_explicit_addend {
+            if relocation_kind == SHT_RELA {
                 i32::try_from(addend).map_err(|_| {
                     ProgramError::ElfParseError(format!(
                         "global relocation addend {addend} does not fit in i32"
@@ -574,7 +574,7 @@ fn rewrite_global_data_relocations(
             }
         } else {
             let st_value = i128::from(read_u64(sym_entry + 8));
-            let effective_addend = if has_explicit_addend {
+            let effective_addend = if relocation_kind == SHT_RELA {
                 i128::from(addend)
             } else {
                 i128::from(lo_inst_imm)
@@ -755,8 +755,7 @@ fn rewrite_global_data_relocations(
                 rel_data[entry_off + 14],
                 rel_data[entry_off + 15],
             ]);
-            let has_explicit_addend = sh_type == SHT_RELA;
-            let addend = if has_explicit_addend {
+            let addend = if sh_type == SHT_RELA {
                 i64::from_le_bytes([
                     rel_data[entry_off + 16],
                     rel_data[entry_off + 17],
@@ -777,7 +776,10 @@ fn rewrite_global_data_relocations(
                         ProgramError::ElfParseError("symbol offset overflow".into())
                     })?)
                     .ok_or_else(|| ProgramError::ElfParseError("symbol offset overflow".into()))?;
-            if sym_entry + 8 > sym_end {
+            let sym_entry_end = sym_entry
+                .checked_add(sym_entsize)
+                .ok_or_else(|| ProgramError::ElfParseError("symbol offset overflow".into()))?;
+            if sym_entry_end > sym_end {
                 return Err(ProgramError::ElfParseError(
                     "relocation symbol out of bounds".into(),
                 ));
@@ -809,7 +811,7 @@ fn rewrite_global_data_relocations(
                 bytecode[r_offset + 7],
             ]);
             let offset_imm =
-                compute_lddw_reloc_offset_imm(sym_entry, addend, has_explicit_addend, lo_inst_imm)?;
+                compute_lddw_reloc_offset_imm(sym_entry, addend, sh_type, lo_inst_imm)?;
             bytecode[r_offset + 1] = (bytecode[r_offset + 1] & 0x0f) | 0x60;
             bytecode[r_offset + 4..r_offset + 8].copy_from_slice(&map_index.to_le_bytes());
             bytecode[r_offset + 12..r_offset + 16].copy_from_slice(&offset_imm.to_le_bytes());
@@ -2766,6 +2768,35 @@ mod tests {
             i32::from_le_bytes([bytecode[12], bytecode[13], bytecode[14], bytecode[15]]),
             0,
             "explicit RELA addend 0 must remain 0 rather than falling back to the low imm"
+        );
+    }
+
+    #[test]
+    fn rewrite_global_data_relocations_rejects_truncated_symbol_entries() {
+        let mut elf =
+            make_bpf_elf_with_global_data_relocation("sonde", ".data", STT_SECTION, 0, false, 0, 0);
+        let shoff = usize::try_from(u64::from_le_bytes(elf[40..48].try_into().unwrap())).unwrap();
+        let symtab_sh = shoff + (5 * 64);
+        elf[symtab_sh + 32..symtab_sh + 40].copy_from_slice(&32u64.to_le_bytes());
+
+        let mut bytecode = vec![
+            0x18, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
+            0, 0, 0,
+        ];
+        let map_descriptors = vec![EbpfMapDescriptor {
+            original_fd: 1,
+            map_type: 0,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+            inner_map_fd: 0,
+        }];
+
+        let err = rewrite_global_data_relocations(&elf, "sonde", &mut bytecode, &map_descriptors)
+            .unwrap_err();
+        assert!(
+            matches!(err, ProgramError::ElfParseError(ref msg) if msg == "relocation symbol out of bounds"),
+            "expected truncated symbol table to return structured ElfParseError, got {err:?}"
         );
     }
 }

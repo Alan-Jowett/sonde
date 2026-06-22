@@ -360,6 +360,11 @@ struct SensorDataEntity {
     timestamp_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TableQueryOptions {
+    require_complete: bool,
+}
+
 fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -798,18 +803,28 @@ fn normalize_fetch_dashboard_variable_data_request(
     if request.variables.is_empty() {
         return Err("Telemetry refresh requires at least one dashboard variable.".into());
     }
+    let variables = request
+        .variables
+        .into_iter()
+        .enumerate()
+        .map(|(index, variable)| normalize_dashboard_variable_request(variable, index))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut seen_sources = HashSet::new();
+    for variable in &variables {
+        if !seen_sources.insert((variable.node_id.as_str(), variable.reading_type.as_str())) {
+            return Err(format!(
+                "Telemetry refresh contains duplicate dashboard source {} / {}.",
+                variable.node_id, variable.reading_type
+            ));
+        }
+    }
     Ok(FetchDashboardVariableDataRequest {
         client_id: normalize_guid(&request.client_id, "Client ID")?,
         tenant_id: normalize_guid(&request.tenant_id, "Tenant ID")?,
         storage_account: normalize_storage_account(&request.storage_account)?,
         start_ms: request.start_ms,
         end_ms: request.end_ms,
-        variables: request
-            .variables
-            .into_iter()
-            .enumerate()
-            .map(|(index, variable)| normalize_dashboard_variable_request(variable, index))
-            .collect::<Result<Vec<_>, _>>()?,
+        variables,
     })
 }
 
@@ -1176,6 +1191,7 @@ async fn query_table_entities<T>(
     filter: Option<&str>,
     top: Option<usize>,
     max_pages: usize,
+    options: TableQueryOptions,
 ) -> Result<Vec<T>, String>
 where
     T: DeserializeOwned,
@@ -1259,13 +1275,28 @@ where
         }
     }
 
-    if next_partition_key.is_some() {
+    ensure_query_completion(
+        next_partition_key.as_deref(),
+        table_name,
+        max_pages,
+        options,
+    )?;
+
+    Ok(entities)
+}
+
+fn ensure_query_completion(
+    next_partition_key: Option<&str>,
+    table_name: &str,
+    max_pages: usize,
+    options: TableQueryOptions,
+) -> Result<(), String> {
+    if options.require_complete && next_partition_key.is_some() {
         return Err(format!(
             "Azure Tables query for {table_name} exceeded the maximum of {max_pages} page(s)."
         ));
     }
-
-    Ok(entities)
+    Ok(())
 }
 
 fn is_node_partition_key(partition_key: &str) -> bool {
@@ -1376,6 +1407,9 @@ async fn fetch_live_dashboard_variable_series(
         Some(node_partition_filter()),
         None,
         MAX_TABLE_QUERY_PAGES,
+        TableQueryOptions {
+            require_complete: false,
+        },
     )
     .await?;
     let node_partitions = latest_node_partition_map(actual_state_rows);
@@ -1415,6 +1449,9 @@ async fn fetch_live_dashboard_variable_series(
             )?),
             Some(SENSOR_DATA_TOP_PER_PAGE),
             MAX_TABLE_QUERY_PAGES,
+            TableQueryOptions {
+                require_complete: false,
+            },
         )
         .await?;
 
@@ -2487,6 +2524,27 @@ mod tests {
             })
             .unwrap_err();
         assert!(error.contains("lowercase alphanumeric"));
+
+        let error =
+            normalize_fetch_dashboard_variable_data_request(FetchDashboardVariableDataRequest {
+                client_id: "11111111-1111-1111-1111-111111111111".into(),
+                tenant_id: "22222222-2222-2222-2222-222222222222".into(),
+                storage_account: "prodstorage".into(),
+                start_ms: 90,
+                end_ms: 100,
+                variables: vec![
+                    DashboardVariableRequest {
+                        node_id: "NODE_001".into(),
+                        reading_type: "temp_mc".into(),
+                    },
+                    DashboardVariableRequest {
+                        node_id: "NODE_001".into(),
+                        reading_type: "temp_mc".into(),
+                    },
+                ],
+            })
+            .unwrap_err();
+        assert!(error.contains("duplicate dashboard source"));
     }
 
     #[test]
@@ -2503,6 +2561,30 @@ mod tests {
             node_partition_filter(),
             "PartitionKey ge 'n:' and PartitionKey lt 'n;'"
         );
+    }
+
+    #[test]
+    fn ensure_query_completion_allows_partial_results_when_not_required() {
+        ensure_query_completion(
+            Some("next-partition"),
+            SENSOR_DATA_TABLE_NAME,
+            MAX_TABLE_QUERY_PAGES,
+            TableQueryOptions {
+                require_complete: false,
+            },
+        )
+        .unwrap();
+
+        let error = ensure_query_completion(
+            Some("next-partition"),
+            SENSOR_DATA_TABLE_NAME,
+            MAX_TABLE_QUERY_PAGES,
+            TableQueryOptions {
+                require_complete: true,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("exceeded the maximum"));
     }
 
     #[test]

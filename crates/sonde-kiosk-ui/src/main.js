@@ -5,7 +5,6 @@ const invoke = globalThis.window?.__TAURI__?.core?.invoke;
 
 const ENV_GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ENV_STORAGE_ACCOUNT_PATTERN = /^[a-z0-9]{3,24}$/;
-const ENV_FUNCTION_APP_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$/;
 const HTTPS_AUTHORITY_PATTERN = /^https:\/\/[^/\s?#@]+$/i;
 const SENSOR_VIEW_MODES = new Set(['graph', 'table']);
 const SENSOR_TIME_RANGES = new Set(['1h', '24h', '7d']);
@@ -134,11 +133,9 @@ function validateEnvironmentFields(fields) {
   if (!fields.clientId || typeof fields.clientId !== 'string') return 'Client ID is required.';
   if (!fields.tenantId || typeof fields.tenantId !== 'string') return 'Tenant ID is required.';
   if (!fields.storageAccount || typeof fields.storageAccount !== 'string') return 'Storage Account is required.';
-  if (!fields.functionAppName || typeof fields.functionAppName !== 'string') return 'Function App Name is required.';
   if (!ENV_GUID_PATTERN.test(fields.clientId)) return 'Client ID must be a valid GUID.';
   if (!ENV_GUID_PATTERN.test(fields.tenantId)) return 'Tenant ID must be a valid GUID.';
   if (!ENV_STORAGE_ACCOUNT_PATTERN.test(fields.storageAccount)) return 'Storage Account must be 3–24 lowercase alphanumeric characters.';
-  if (!ENV_FUNCTION_APP_PATTERN.test(fields.functionAppName) || fields.functionAppName.length < 2) return 'Function App Name must be 2–60 alphanumeric characters with optional hyphens.';
   return null;
 }
 
@@ -239,7 +236,6 @@ function validateImportedEnvironmentJson(text, runtime, deps = {}) {
     clientId: typeof data.clientId === 'string' ? data.clientId.trim() : '',
     tenantId: typeof data.tenantId === 'string' ? data.tenantId.trim() : '',
     storageAccount: typeof data.storageAccount === 'string' ? data.storageAccount.trim() : '',
-    functionAppName: typeof data.functionAppName === 'string' ? data.functionAppName.trim() : '',
   };
   const validationError = validateEnvironmentFields(fields);
   if (validationError) {

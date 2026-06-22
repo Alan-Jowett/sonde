@@ -143,6 +143,12 @@ struct KioskIdentitySummary {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+struct PersistedEnvironmentMetadata {
+    storage_account: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 struct StartDeviceCodeSignInRequest {
     purpose: String,
     tenant_id: String,
@@ -883,6 +889,24 @@ fn parse_identity_state(json: &str) -> Result<KioskIdentityStateFile, String> {
     state.key_id = normalize_guid(&state.key_id, "Kiosk key ID")?;
     state.login_endpoint = normalize_login_endpoint(&state.login_endpoint)?;
     Ok(state)
+}
+
+fn parse_persisted_environment_metadata(
+    json: &str,
+) -> Result<PersistedEnvironmentMetadata, String> {
+    let mut environment = serde_json::from_str::<PersistedEnvironmentMetadata>(json)
+        .map_err(|error| format!("failed to parse persisted kiosk environment: {error}"))?;
+    environment.storage_account = normalize_storage_account(&environment.storage_account)?;
+    Ok(environment)
+}
+
+fn load_persisted_environment_metadata(
+    app: &tauri::AppHandle,
+) -> Result<Option<PersistedEnvironmentMetadata>, String> {
+    let Some(json) = read_optional_file_to_string(&environment_file_path(app)?)? else {
+        return Ok(None);
+    };
+    parse_persisted_environment_metadata(&json).map(Some)
 }
 
 fn load_identity_state(app: &tauri::AppHandle) -> Result<Option<KioskIdentityStateFile>, String> {
@@ -2234,6 +2258,8 @@ async fn fetch_dashboard_variable_data(
     request: FetchDashboardVariableDataRequest,
 ) -> Result<FetchDashboardVariableDataResponse, String> {
     let request = normalize_fetch_dashboard_variable_data_request(request)?;
+    let environment = load_persisted_environment_metadata(&app)?
+        .ok_or_else(|| "kiosk environment is not configured yet".to_string())?;
     let identity_state = load_identity_state(&app)?
         .ok_or_else(|| "kiosk identity is not configured yet".to_string())?;
     if request.client_id != identity_state.shared_app_client_id {
@@ -2244,6 +2270,12 @@ async fn fetch_dashboard_variable_data(
     if request.tenant_id != identity_state.tenant_id {
         return Err(
             "Telemetry refresh tenant ID does not match the configured kiosk identity.".into(),
+        );
+    }
+    if request.storage_account != environment.storage_account {
+        return Err(
+            "Telemetry refresh storage account does not match the configured kiosk environment."
+                .into(),
         );
     }
     let private_key_pem = load_private_key_secret(&app)?
@@ -2360,6 +2392,19 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("Shared app client ID must be a valid GUID"));
+    }
+
+    #[test]
+    fn parse_persisted_environment_metadata_validates_storage_account() {
+        let environment = parse_persisted_environment_metadata(
+            r#"{"storageAccount":"prodstorage","functionAppName":"prod-func"}"#,
+        )
+        .unwrap();
+        assert_eq!(environment.storage_account, "prodstorage");
+
+        let error = parse_persisted_environment_metadata(r#"{"storageAccount":"ProdStorage"}"#)
+            .unwrap_err();
+        assert!(error.contains("lowercase alphanumeric"));
     }
 
     #[test]

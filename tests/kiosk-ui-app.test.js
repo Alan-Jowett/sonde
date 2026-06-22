@@ -107,18 +107,15 @@ test('validateImportedEnvironmentJson prompts for a missing environment name', (
   assert.equal(environment.name, 'Imported Name');
 });
 
-test('validateImportedEnvironmentJson accepts kiosk imports without function app metadata', () => {
-  const environment = kiosk.validateImportedEnvironmentJson(JSON.stringify({
+test('validateImportedEnvironmentJson rejects imports missing function app metadata', () => {
+  assert.throws(() => kiosk.validateImportedEnvironmentJson(JSON.stringify({
     version: 1,
     name: 'prod',
     clientId: '11111111-1111-1111-1111-111111111111',
     tenantId: '22222222-2222-2222-2222-222222222222',
     storageAccount: 'prodstorage',
     dashboards: [],
-  }), runtime);
-
-  assert.equal(environment.storageAccount, 'prodstorage');
-  assert.equal(environment.functionAppName, '');
+  }), runtime), /Function App Name is required/);
 });
 
 test('renderDashboardFrame keeps kiosk dashboards read-only', () => {

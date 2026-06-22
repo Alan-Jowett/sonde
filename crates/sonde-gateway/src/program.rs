@@ -124,6 +124,8 @@ const SHT_RELA: u32 = 4;
 const SHT_REL: u32 = 9;
 /// eBPF `LD_DW_IMM` opcode.
 const BPF_LD_DW_IMM: u8 = 0x18;
+/// ELF symbol type for section symbols.
+const STT_SECTION: u8 = 3;
 
 /// Lightweight check for ELF64 LE sections that produce BPF maps.
 ///
@@ -553,6 +555,30 @@ fn rewrite_global_data_relocations(
         std::str::from_utf8(&shstrtab[name_off..name_end])
             .map_err(|_| ProgramError::ElfParseError("section name is not valid UTF-8".into()))
     };
+    let compute_lddw_reloc_offset_imm =
+        |sym_entry: usize, addend: i64, lo_inst_imm: i32| -> Result<i32, ProgramError> {
+            let st_info = elf_bytes[sym_entry + 4];
+            let st_type = st_info & 0x0f;
+            if st_type == STT_SECTION {
+                if addend != 0 {
+                    i32::try_from(addend).map_err(|_| {
+                        ProgramError::ElfParseError(format!(
+                            "global relocation addend {addend} does not fit in i32"
+                        ))
+                    })
+                } else {
+                    Ok(lo_inst_imm)
+                }
+            } else {
+                let st_value = i128::from(read_u64(sym_entry + 8));
+                let offset = st_value + i128::from(addend);
+                i32::try_from(offset).map_err(|_| {
+                    ProgramError::ElfParseError(format!(
+                        "global relocation offset {offset} does not fit in i32"
+                    ))
+                })
+            }
+        };
 
     let global_map_indices: Vec<u32> = map_descriptors
         .iter()
@@ -721,6 +747,20 @@ fn rewrite_global_data_relocations(
                 rel_data[entry_off + 14],
                 rel_data[entry_off + 15],
             ]);
+            let addend = if sh_type == SHT_RELA {
+                i64::from_le_bytes([
+                    rel_data[entry_off + 16],
+                    rel_data[entry_off + 17],
+                    rel_data[entry_off + 18],
+                    rel_data[entry_off + 19],
+                    rel_data[entry_off + 20],
+                    rel_data[entry_off + 21],
+                    rel_data[entry_off + 22],
+                    rel_data[entry_off + 23],
+                ])
+            } else {
+                0
+            };
             let sym_index = (r_info >> 32) as usize;
             let sym_entry =
                 sym_off
@@ -753,11 +793,18 @@ fn rewrite_global_data_relocations(
                 )));
             }
 
+            let lo_inst_imm = i32::from_le_bytes([
+                bytecode[r_offset + 4],
+                bytecode[r_offset + 5],
+                bytecode[r_offset + 6],
+                bytecode[r_offset + 7],
+            ]);
+            let offset_imm = compute_lddw_reloc_offset_imm(sym_entry, addend, lo_inst_imm)?;
             bytecode[r_offset + 1] = (bytecode[r_offset + 1] & 0x0f) | 0x60;
             bytecode[r_offset + 4..r_offset + 8].copy_from_slice(&map_index.to_le_bytes());
+            bytecode[r_offset + 12..r_offset + 16].copy_from_slice(&offset_imm.to_le_bytes());
         }
     }
-
     Ok(())
 }
 
@@ -2380,14 +2427,48 @@ mod tests {
     fn make_bpf_elf_with_global_data_relocation(
         target_section_name: &str,
         global_section_name: &str,
+        symbol_type: u8,
+        symbol_value: u64,
+        addend: i64,
+        lo_inst_imm: i32,
     ) -> Vec<u8> {
         let section_code: [u8; 24] = [
-            0x18, 0x01, 0x00, 0x00, 0, 0, 0, 0, // ldimm64 r1, 0 (to be relocated)
-            0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0, 0, 0, 0, // exit
+            0x18,
+            0x01,
+            0x00,
+            0x00,
+            lo_inst_imm.to_le_bytes()[0],
+            lo_inst_imm.to_le_bytes()[1],
+            lo_inst_imm.to_le_bytes()[2],
+            lo_inst_imm.to_le_bytes()[3], // ldimm64 r1, imm (to be relocated)
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0x95,
+            0x00,
+            0x00,
+            0x00,
+            0,
+            0,
+            0,
+            0, // exit
         ];
         let global_data: [u8; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
-        let strtab: &[u8] = b"\0";
-        let rel_name = format!(".rel{target_section_name}");
+        let strtab: &[u8] = if symbol_type == STT_SECTION {
+            b"\0"
+        } else {
+            b"\0global_value\0"
+        };
+        let rel_name = if addend == 0 {
+            format!(".rel{target_section_name}")
+        } else {
+            format!(".rela{target_section_name}")
+        };
         let shstrtab = format!(
             "\0{target}\0{global}\0{rel}\0.strtab\0.symtab\0.shstrtab\0",
             target = target_section_name,
@@ -2405,8 +2486,9 @@ mod tests {
 
         let target_offset: u64 = 64;
         let global_offset: u64 = target_offset + section_code.len() as u64;
+        let rel_entry_size = if addend == 0 { 16u64 } else { 24u64 };
         let rel_offset: u64 = global_offset + global_data.len() as u64;
-        let strtab_offset: u64 = rel_offset + 16;
+        let strtab_offset: u64 = rel_offset + rel_entry_size;
         let symtab_offset: u64 = strtab_offset + strtab.len() as u64;
         let shstrtab_offset: u64 = symtab_offset + 48;
         let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
@@ -2434,9 +2516,12 @@ mod tests {
         elf.extend_from_slice(&section_code);
         elf.extend_from_slice(&global_data);
 
-        // One ELF64_Rel entry: offset=0, symbol=1, type=1.
+        // One relocation entry: offset=0, symbol=1, type=1.
         elf.extend_from_slice(&0u64.to_le_bytes());
         elf.extend_from_slice(&((1u64 << 32) | 1u64).to_le_bytes());
+        if addend != 0 {
+            elf.extend_from_slice(&addend.to_le_bytes());
+        }
 
         elf.extend_from_slice(strtab);
 
@@ -2444,8 +2529,11 @@ mod tests {
         elf.extend_from_slice(&[0u8; 24]);
         // [1] section symbol for the global data section
         let mut sym = [0u8; 24];
-        sym[4] = 0x03; // STT_SECTION
+        sym[0..4]
+            .copy_from_slice(&(if symbol_type == STT_SECTION { 0 } else { 1u32 }).to_le_bytes());
+        sym[4] = symbol_type; // STT_SECTION or STT_OBJECT
         sym[6..8].copy_from_slice(&2u16.to_le_bytes()); // target the global data section
+        sym[8..16].copy_from_slice(&symbol_value.to_le_bytes());
         elf.extend_from_slice(&sym);
 
         elf.extend_from_slice(&shstrtab);
@@ -2476,13 +2564,13 @@ mod tests {
         // [3] relocation section
         let mut sh = [0u8; 64];
         sh[0..4].copy_from_slice(&rel_name_off.to_le_bytes());
-        sh[4..8].copy_from_slice(&SHT_REL.to_le_bytes());
+        sh[4..8].copy_from_slice(&(if addend == 0 { SHT_REL } else { SHT_RELA }).to_le_bytes());
         sh[24..32].copy_from_slice(&rel_offset.to_le_bytes());
-        sh[32..40].copy_from_slice(&16u64.to_le_bytes());
+        sh[32..40].copy_from_slice(&rel_entry_size.to_le_bytes());
         sh[40..44].copy_from_slice(&5u32.to_le_bytes()); // linked .symtab section
         sh[44..48].copy_from_slice(&1u32.to_le_bytes()); // relocates section [1]
         sh[48..56].copy_from_slice(&8u64.to_le_bytes());
-        sh[56..64].copy_from_slice(&16u64.to_le_bytes());
+        sh[56..64].copy_from_slice(&rel_entry_size.to_le_bytes());
         elf.extend_from_slice(&sh);
 
         // [4] .strtab
@@ -2519,7 +2607,7 @@ mod tests {
 
     #[test]
     fn rewrite_global_data_relocations_rewrites_lddw_to_map_value_index() {
-        let elf = make_bpf_elf_with_global_data_relocation("sonde", ".data");
+        let elf = make_bpf_elf_with_global_data_relocation("sonde", ".data", STT_SECTION, 0, 0, 0);
         let mut bytecode = vec![
             0x18, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
             0, 0, 0,
@@ -2555,6 +2643,63 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes([bytecode[12], bytecode[13], bytecode[14], bytecode[15]]),
             0
+        );
+    }
+
+    #[test]
+    fn rewrite_global_data_relocations_preserves_symbol_offset_within_section() {
+        let elf = make_bpf_elf_with_global_data_relocation("sonde", ".rodata", 0x01, 4, 0, 0);
+        let mut bytecode = vec![
+            0x18, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
+            0, 0, 0,
+        ];
+        let map_descriptors = vec![EbpfMapDescriptor {
+            original_fd: 1,
+            map_type: 0,
+            key_size: 4,
+            value_size: 8,
+            max_entries: 1,
+            inner_map_fd: 0,
+        }];
+
+        rewrite_global_data_relocations(&elf, "sonde", &mut bytecode, &map_descriptors).unwrap();
+
+        assert_eq!(bytecode[1], 0x61, "src nibble should be rewritten to 6");
+        assert_eq!(
+            u32::from_le_bytes([bytecode[4], bytecode[5], bytecode[6], bytecode[7]]),
+            0,
+            "the .rodata section should still map to global map index 0"
+        );
+        assert_eq!(
+            i32::from_le_bytes([bytecode[12], bytecode[13], bytecode[14], bytecode[15]]),
+            4,
+            "the second LDDW slot must carry the referenced global's in-section offset"
+        );
+    }
+
+    #[test]
+    fn rewrite_global_data_relocations_uses_rela_addend_for_section_symbols() {
+        let elf = make_bpf_elf_with_global_data_relocation("sonde", ".data", STT_SECTION, 0, 6, 0);
+        let mut bytecode = vec![
+            0x18, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
+            0, 0, 0,
+        ];
+        let map_descriptors = vec![EbpfMapDescriptor {
+            original_fd: 1,
+            map_type: 0,
+            key_size: 4,
+            value_size: 16,
+            max_entries: 1,
+            inner_map_fd: 0,
+        }];
+
+        rewrite_global_data_relocations(&elf, "sonde", &mut bytecode, &map_descriptors).unwrap();
+
+        assert_eq!(bytecode[1], 0x61, "src nibble should be rewritten to 6");
+        assert_eq!(
+            i32::from_le_bytes([bytecode[12], bytecode[13], bytecode[14], bytecode[15]]),
+            6,
+            "section-symbol RELA relocations must preserve the explicit addend as the value offset"
         );
     }
 }

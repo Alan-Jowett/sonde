@@ -883,6 +883,38 @@ test('buildEnvironmentExportData includes environment-scoped Sensor Data prefere
   );
 });
 
+test('buildEnvironmentExportData preserves additive kiosk setup login metadata', () => {
+  assert.deepEqual(
+    app.buildEnvironmentExportData({
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      loginEndpoint: 'https://login.microsoftonline.us',
+      kioskSetupClientId: '33333333-3333-3333-3333-333333333333',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+      sensorData: app.createDefaultSensorDataPreferences(),
+      dashboards: [],
+    }),
+    {
+      version: 1,
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      loginEndpoint: 'https://login.microsoftonline.us',
+      kioskSetupClientId: '33333333-3333-3333-3333-333333333333',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+      sensorData: {
+        viewMode: 'graph',
+        timeRange: '24h',
+        seriesOverrides: {},
+      },
+      dashboards: [],
+    },
+  );
+});
+
 test('buildEnvironmentExportData omits dashboard validation annotations', () => {
   const exported = app.buildEnvironmentExportData({
     name: 'prod',

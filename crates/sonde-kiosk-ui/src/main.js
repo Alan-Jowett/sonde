@@ -6,6 +6,7 @@ const invoke = globalThis.window?.__TAURI__?.core?.invoke;
 const ENV_GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ENV_STORAGE_ACCOUNT_PATTERN = /^[a-z0-9]{3,24}$/;
 const ENV_FUNCTION_APP_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$/;
+const HTTPS_AUTHORITY_PATTERN = /^https:\/\/[^/\s?#@]+$/i;
 const SENSOR_VIEW_MODES = new Set(['graph', 'table']);
 const SENSOR_TIME_RANGES = new Set(['1h', '24h', '7d']);
 const BLOCKED_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -14,6 +15,7 @@ const HORIZONTAL_SWIPE_THRESHOLD_PX = 50;
 const PULL_TO_REFRESH_THRESHOLD_PX = 90;
 const PULL_TO_REFRESH_MAX_HORIZONTAL_DRIFT_PX = 40;
 const BACKGROUND_REFRESH_INTERVAL_MS = 60 * 1000;
+const DEVICE_CODE_POLL_FALLBACK_MS = 5000;
 
 const APP_STATE = {
   runtime: null,
@@ -29,6 +31,9 @@ const APP_STATE = {
   refreshInFlightPromise: null,
   operatorPanelOpen: false,
   operatorPressTimer: null,
+  identitySummary: null,
+  deviceCodeSession: null,
+  setupStatusMessage: 'No environment imported yet.',
   dependencies: {},
 };
 
@@ -137,6 +142,48 @@ function validateEnvironmentFields(fields) {
   return null;
 }
 
+function normalizeOptionalGuid(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeOptionalLoginEndpoint(value) {
+  return typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '';
+}
+
+function validateSetupLoginMetadata(metadata) {
+  const loginEndpoint = normalizeOptionalLoginEndpoint(metadata?.loginEndpoint);
+  const kioskSetupClientId = normalizeOptionalGuid(metadata?.kioskSetupClientId);
+  if (!loginEndpoint || !kioskSetupClientId) {
+    return {
+      valid: false,
+      loginEndpoint,
+      kioskSetupClientId,
+      error: 'This environment is missing kiosk setup login metadata. Re-export it after Azure provisioning adds the kiosk setup client.',
+    };
+  }
+  if (!ENV_GUID_PATTERN.test(kioskSetupClientId)) {
+    return {
+      valid: false,
+      loginEndpoint,
+      kioskSetupClientId,
+      error: 'Kiosk Setup Client ID must be a valid GUID.',
+    };
+  }
+  if (!HTTPS_AUTHORITY_PATTERN.test(loginEndpoint)) {
+    return {
+      valid: false,
+      loginEndpoint,
+      kioskSetupClientId,
+      error: 'Login endpoint must be a valid HTTPS authority URL.',
+    };
+  }
+  return {
+    valid: true,
+    loginEndpoint,
+    kioskSetupClientId,
+  };
+}
+
 async function loadSharedDashboardRuntime(deps = {}) {
   if (deps.runtime) {
     APP_STATE.runtime = deps.runtime;
@@ -222,6 +269,8 @@ function validateImportedEnvironmentJson(text, runtime, deps = {}) {
   return runtime.normalizeEnvironmentRecord({
     name,
     ...fields,
+    loginEndpoint: normalizeOptionalLoginEndpoint(data.loginEndpoint),
+    kioskSetupClientId: normalizeOptionalGuid(data.kioskSetupClientId),
     sensorData,
     dashboards,
   }, {
@@ -653,6 +702,8 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
 }
 
 async function showDashboardMode(deps = APP_STATE.dependencies) {
+  APP_STATE.setupStatusMessage = '';
+  APP_STATE.deviceCodeSession = null;
   document.getElementById('setup-screen')?.classList.add('hidden');
   document.getElementById('dashboard-screen')?.classList.remove('hidden');
   await renderActiveDashboard(deps);
@@ -660,20 +711,65 @@ async function showDashboardMode(deps = APP_STATE.dependencies) {
   await triggerDashboardRefresh('initial', deps);
 }
 
-function showSetupMode(message) {
+function renderSetupScreen() {
+  const status = document.getElementById('setup-status');
+  const importButton = document.getElementById('import-button');
+  const authButton = document.getElementById('setup-auth-button');
+  const deviceCodePanel = document.getElementById('device-code-panel');
+  const deviceCodeValue = document.getElementById('device-code-value');
+  const deviceCodeLink = document.getElementById('device-code-link');
+  const setupContext = document.getElementById('setup-context');
+  if (status) {
+    status.textContent = APP_STATE.setupStatusMessage;
+  }
+  if (setupContext) {
+    setupContext.textContent = APP_STATE.activeEnvironment
+      ? `Environment: ${APP_STATE.activeEnvironment.name}`
+      : 'Import an environment JSON exported from the SPA to start kiosk dashboard mode.';
+  }
+  if (importButton) {
+    importButton.textContent = APP_STATE.activeEnvironment
+      ? 'Import Replacement Environment JSON'
+      : 'Import Environment JSON';
+  }
+  if (authButton) {
+    const metadata = validateSetupLoginMetadata(APP_STATE.activeEnvironment);
+    const showButton = APP_STATE.activeEnvironment && !APP_STATE.deviceCodeSession;
+    authButton.classList.toggle('hidden', !showButton);
+    authButton.disabled = !metadata.valid;
+    authButton.textContent = APP_STATE.identitySummary
+      ? 'Renew Kiosk Certificate'
+      : 'Start Device Code Sign-In';
+  }
+  if (deviceCodePanel) {
+    const activeSession = APP_STATE.deviceCodeSession;
+    deviceCodePanel.classList.toggle('hidden', !activeSession);
+    if (deviceCodeValue) {
+      deviceCodeValue.textContent = activeSession?.userCode || '';
+    }
+    if (deviceCodeLink) {
+      const href = activeSession?.verificationUriComplete || activeSession?.verificationUri || '#';
+      deviceCodeLink.textContent = activeSession?.verificationUri || '';
+      deviceCodeLink.href = href;
+    }
+  }
+}
+
+function showSetupMode(message, options = {}) {
   stopBackgroundRefreshLoop();
   destroyDashboardCharts();
-  APP_STATE.activeEnvironment = null;
-  APP_STATE.activeDashboardIndex = 0;
+  if (options.clearEnvironment === true) {
+    APP_STATE.activeEnvironment = null;
+    APP_STATE.identitySummary = null;
+  }
+  APP_STATE.deviceCodeSession = null;
+  APP_STATE.setupStatusMessage = message;
   APP_STATE.refreshGeneration = 0;
   APP_STATE.refreshInFlightPromise = null;
   document.getElementById('dashboard-screen')?.classList.add('hidden');
   document.getElementById('setup-screen')?.classList.remove('hidden');
   document.getElementById('dashboard-overlay')?.classList.add('hidden');
-  const status = document.getElementById('setup-status');
-  if (status) {
-    status.textContent = message;
-  }
+  renderSetupScreen();
 }
 
 async function loadStoredEnvironment(deps = {}) {
@@ -709,6 +805,155 @@ async function clearStoredEnvironment(deps = {}) {
     throw new Error('Tauri invoke bridge is unavailable.');
   }
   await invokeFn('clear_environment_json');
+}
+
+async function loadKioskIdentitySummary(deps = {}) {
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    return null;
+  }
+  return invokeFn('get_kiosk_identity_summary');
+}
+
+async function clearStoredKioskIdentity(deps = {}) {
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    throw new Error('Tauri invoke bridge is unavailable.');
+  }
+  await invokeFn('clear_kiosk_identity_local_state');
+}
+
+async function startDeviceCodeSignIn(request, deps = {}) {
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    throw new Error('Tauri invoke bridge is unavailable.');
+  }
+  return invokeFn('start_device_code_sign_in', { request });
+}
+
+async function pollDeviceCodeSignIn(sessionId, deps = {}) {
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    throw new Error('Tauri invoke bridge is unavailable.');
+  }
+  return invokeFn('poll_device_code_sign_in', { request: { sessionId } });
+}
+
+async function completeKioskSetup(sessionId, deps = {}) {
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    throw new Error('Tauri invoke bridge is unavailable.');
+  }
+  const environment = APP_STATE.activeEnvironment;
+  return invokeFn('complete_kiosk_setup', {
+    request: {
+      sessionId,
+      sharedAppClientId: environment.clientId,
+      tenantId: environment.tenantId,
+      loginEndpoint: environment.loginEndpoint,
+      setupClientId: environment.kioskSetupClientId,
+    },
+  });
+}
+
+async function signInKioskApplication(deps = {}) {
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    throw new Error('Tauri invoke bridge is unavailable.');
+  }
+  return invokeFn('sign_in_kiosk_application');
+}
+
+async function renewKioskCertificate(sessionId, deps = {}) {
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    throw new Error('Tauri invoke bridge is unavailable.');
+  }
+  return invokeFn('renew_kiosk_certificate', { request: { sessionId } });
+}
+
+async function resetKioskAppState(sessionId, deps = {}) {
+  const invokeFn = deps.invoke || invoke;
+  if (typeof invokeFn !== 'function') {
+    throw new Error('Tauri invoke bridge is unavailable.');
+  }
+  return invokeFn('reset_kiosk_app_state', { request: { sessionId: sessionId ?? null } });
+}
+
+async function beginDeviceCodeFlow(purpose, deps = {}) {
+  const environment = APP_STATE.activeEnvironment;
+  if (!environment) {
+    throw new Error('Import an environment before starting kiosk setup.');
+  }
+  const metadata = validateSetupLoginMetadata(environment);
+  if (!metadata.valid) {
+    throw new Error(metadata.error);
+  }
+  APP_STATE.setupStatusMessage = purpose === 'renew'
+    ? 'Starting operator device-code sign-in for certificate renewal…'
+    : purpose === 'reset'
+      ? 'Starting operator device-code sign-in for reset cleanup…'
+      : 'Starting operator device-code sign-in for kiosk setup…';
+  showSetupMode(APP_STATE.setupStatusMessage);
+  APP_STATE.deviceCodeSession = await startDeviceCodeSignIn({
+    purpose,
+    tenantId: environment.tenantId,
+    loginEndpoint: metadata.loginEndpoint,
+    setupClientId: metadata.kioskSetupClientId,
+  }, deps);
+  renderSetupScreen();
+  await pollUntilDeviceCodeComplete(purpose, deps);
+}
+
+async function pollUntilDeviceCodeComplete(purpose, deps = {}) {
+  const setTimeoutFn = deps.setTimeoutFn || globalThis.setTimeout;
+  while (APP_STATE.deviceCodeSession) {
+    const sessionId = APP_STATE.deviceCodeSession.sessionId;
+    const response = await pollDeviceCodeSignIn(sessionId, deps);
+    if (response.status === 'pending') {
+      APP_STATE.setupStatusMessage = response.message || 'Waiting for operator sign-in to complete…';
+      renderSetupScreen();
+      const pollDelayMs = Number.isFinite(response.pollIntervalSeconds) && response.pollIntervalSeconds > 0
+        ? response.pollIntervalSeconds * 1000
+        : DEVICE_CODE_POLL_FALLBACK_MS;
+      await new Promise((resolve) => {
+        setTimeoutFn(resolve, pollDelayMs);
+      });
+      continue;
+    }
+    APP_STATE.setupStatusMessage = response.message || '';
+    APP_STATE.deviceCodeSession = null;
+    renderSetupScreen();
+    if (response.status !== 'complete') {
+      throw new Error(response.message || 'Operator sign-in failed.');
+    }
+    if (purpose === 'renew') {
+      const result = await renewKioskCertificate(sessionId, deps);
+      APP_STATE.identitySummary = result.summary;
+      setTelemetryNotice(result.message, result.cleanupStatus === 'removed_previous' ? 'info' : 'error');
+      await signInAndShowDashboard(deps);
+      return;
+    }
+    if (purpose === 'reset') {
+      const result = await resetKioskAppState(sessionId, deps);
+      APP_STATE.identitySummary = null;
+      clearTelemetryCache();
+      showSetupMode(result.message, { clearEnvironment: true });
+      return;
+    }
+    const result = await completeKioskSetup(sessionId, deps);
+    APP_STATE.identitySummary = result.summary;
+    setTelemetryNotice(result.message, 'info');
+    await signInAndShowDashboard(deps);
+    return;
+  }
+}
+
+async function signInAndShowDashboard(deps = {}) {
+  const result = await signInKioskApplication(deps);
+  APP_STATE.identitySummary = result.summary;
+  setTelemetryNotice(result.message, result.summary.renewalRequired ? 'info' : 'live');
+  await showDashboardMode(deps);
 }
 
 function moveDashboard(delta, deps = APP_STATE.dependencies) {
@@ -774,6 +1019,7 @@ function installSwipeNavigation(host, deps = APP_STATE.dependencies) {
 function installOperatorControls(fileInput, deps = APP_STATE.dependencies) {
   const hotspot = document.getElementById('operator-hotspot');
   const reimport = document.getElementById('operator-reimport');
+  const renew = document.getElementById('operator-renew');
   const reset = document.getElementById('operator-reset');
   const close = document.getElementById('operator-close');
 
@@ -798,12 +1044,28 @@ function installOperatorControls(fileInput, deps = APP_STATE.dependencies) {
     hideOperatorPanel();
     fileInput.click();
   });
-  reset?.addEventListener('click', async () => {
-    await clearStoredEnvironment(deps);
-    await clearStoredTelemetryCache(deps);
-    clearTelemetryCache();
+  renew?.addEventListener('click', async () => {
     hideOperatorPanel();
-    showSetupMode('Imported environment cleared. Import a new SPA environment JSON to resume kiosk mode.');
+    document.getElementById('dashboard-screen')?.classList.add('hidden');
+    document.getElementById('setup-screen')?.classList.remove('hidden');
+    try {
+      await beginDeviceCodeFlow('renew', deps);
+    } catch (error) {
+      showSetupMode(`Certificate renewal failed: ${error.message}`);
+    }
+  });
+  reset?.addEventListener('click', async () => {
+    hideOperatorPanel();
+    document.getElementById('dashboard-screen')?.classList.add('hidden');
+    document.getElementById('setup-screen')?.classList.remove('hidden');
+    try {
+      await beginDeviceCodeFlow('reset', deps);
+    } catch (error) {
+      const result = await resetKioskAppState(null, deps);
+      APP_STATE.identitySummary = null;
+      clearTelemetryCache();
+      showSetupMode(`${result.message} Reset fallback detail: ${error.message}`, { clearEnvironment: true });
+    }
   });
   close?.addEventListener('click', hideOperatorPanel);
 }
@@ -814,13 +1076,22 @@ async function importEnvironmentFromText(text, deps = {}) {
     throw new Error('Shared dashboard runtime is not loaded.');
   }
   const environment = validateImportedEnvironmentJson(text, runtime, deps);
+  if (APP_STATE.identitySummary) {
+    await clearStoredKioskIdentity(deps);
+    APP_STATE.identitySummary = null;
+  }
   await persistEnvironment(environment, deps);
   clearTelemetryCache();
   await clearStoredTelemetryCache(deps);
   setTelemetryNotice('Waiting for live telemetry refresh.', 'info');
   APP_STATE.activeEnvironment = environment;
   APP_STATE.activeDashboardIndex = 0;
-  await showDashboardMode(deps);
+  const metadata = validateSetupLoginMetadata(environment);
+  showSetupMode(
+    metadata.valid
+      ? 'Environment imported. Complete operator sign-in to provision the kiosk certificate.'
+      : metadata.error,
+  );
 }
 
 async function initKioskApp(deps = {}) {
@@ -831,9 +1102,10 @@ async function initKioskApp(deps = {}) {
 
   const fileInput = document.getElementById('import-file');
   const importButton = document.getElementById('import-button');
+  const setupAuthButton = document.getElementById('setup-auth-button');
   const pageHost = document.getElementById('dashboard-page-host');
 
-  if (!fileInput || !importButton || !pageHost) {
+  if (!fileInput || !importButton || !pageHost || !setupAuthButton) {
     throw new Error('Kiosk UI is missing required DOM elements.');
   }
 
@@ -849,6 +1121,14 @@ async function initKioskApp(deps = {}) {
       showSetupMode(`Import failed: ${error.message}`);
     } finally {
       fileInput.value = '';
+    }
+  });
+  setupAuthButton.addEventListener('click', async () => {
+    const purpose = APP_STATE.identitySummary ? 'renew' : 'initial';
+    try {
+      await beginDeviceCodeFlow(purpose, deps);
+    } catch (error) {
+      showSetupMode(`${purpose === 'renew' ? 'Certificate renewal' : 'Kiosk setup'} failed: ${error.message}`);
     }
   });
 
@@ -870,9 +1150,23 @@ async function initKioskApp(deps = {}) {
 
   const storedEnvironment = await loadStoredEnvironment({ ...deps, runtime });
   if (storedEnvironment) {
-    setTelemetryNotice('Waiting for live telemetry refresh.', 'info');
     APP_STATE.activeEnvironment = storedEnvironment;
-    await showDashboardMode(deps);
+    APP_STATE.identitySummary = await loadKioskIdentitySummary(deps);
+    if (APP_STATE.identitySummary) {
+      try {
+        await signInAndShowDashboard(deps);
+        return;
+      } catch (error) {
+        showSetupMode(`Application sign-in failed: ${error.message}`);
+        return;
+      }
+    }
+    const metadata = validateSetupLoginMetadata(storedEnvironment);
+    showSetupMode(
+      metadata.valid
+        ? 'Environment imported. Complete operator sign-in to provision the kiosk certificate.'
+        : metadata.error,
+    );
   } else {
     showSetupMode('No environment imported yet.');
   }
@@ -882,17 +1176,20 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     APP_STATE,
     BACKGROUND_REFRESH_INTERVAL_MS,
+    beginDeviceCodeFlow,
     createDefaultSensorDataPreferences,
     buildCachedVariableData,
     buildDashboardRefreshRequest,
     cacheTelemetryRefreshResponse,
     clearStoredTelemetryCache,
     fetchDashboardVariableData,
+    importEnvironmentFromText,
     initKioskApp,
     interpretDashboardGesture,
     loadStoredTelemetryCache,
     loadSharedDashboardRuntime,
     parseTelemetryCacheJson,
+    pollUntilDeviceCodeComplete,
     persistTelemetryCache,
     replaceTelemetryCache,
     renderDashboardFrame,
@@ -904,6 +1201,7 @@ if (typeof module !== 'undefined' && module.exports) {
     validateEnvironmentFields,
     validateImportedEnvironmentJson,
     validateImportedSensorDataPreferences,
+    validateSetupLoginMetadata,
   };
 }
 

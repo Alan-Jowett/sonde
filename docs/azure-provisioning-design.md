@@ -166,7 +166,7 @@ without hardcoding a public-cloud URL.
 
 ## 4  Runtime identity provisioning
 
-> **Requirements:** AZP-0200, AZP-0201, AZP-0202, AZP-0204
+> **Requirements:** AZP-0200, AZP-0201, AZP-0202, AZP-0204, AZP-0205
 
 The current Azure companion runtime design uses a certificate-authenticated
 Entra application/service principal rather than managed identity. The
@@ -175,13 +175,15 @@ resource-plane Bicep modules.
 
 ### 4.1  Identity model
 
-The runtime identity consists of:
+The provisioning identity surface consists of:
 
-1. an Entra application registration,
+1. an Entra application registration for the shared runtime identity,
 2. its corresponding service principal,
-3. a certificate credential bound to that application identity, and
+3. a certificate credential bound to that runtime identity,
 4. Storage Queue permissions aligned with the bridge's upstream send and
-   downstream receive/settle behavior.
+   downstream receive/settle behavior,
+5. additive read-only Azure Table permissions for kiosk dashboard reads, and
+6. a distinct public-client Entra app for kiosk operator device-code sign-in.
 
 ### 4.2  Bicep boundary
 
@@ -222,7 +224,23 @@ scenarios:
 This preserves the existing queue-bridge model while allowing the kiosk app to
 perform unattended application-authenticated reads after setup.
 
-### 4.4  Azure handler Function App identity
+### 4.4  Kiosk setup public-client identity
+
+For the additive kiosk dashboard app, bootstrap also provisions a separate
+public-client setup identity. This setup identity exists only to obtain
+delegated Microsoft Graph access during kiosk certificate attachment, renewal,
+and removal flows. It is intentionally not reused for unattended runtime reads.
+
+The setup identity contract is:
+
+1. it is provisioned or configured as a public client suitable for device-code sign-in,
+2. it is distinct from the shared certificate-authenticated runtime app,
+3. it has the delegated Microsoft Graph scope/permission set needed to manage
+   credentials on the shared runtime app, and
+4. its non-secret client metadata is surfaced to kiosk onboarding so the app
+   does not hard-code a third-party public-client identity.
+
+### 4.5  Azure handler Function App identity
 
 The Azure handler Function App uses its own system-assigned managed identity. It
 is not reused as the Azure companion runtime identity, because the two
@@ -262,8 +280,9 @@ The handoff contract includes:
 
 | Value | Consumer |
 |-------|----------|
-| Entra tenant ID | `service-principal.json` |
+| Entra tenant ID | `service-principal.json` and kiosk onboarding metadata |
 | Entra client ID | `service-principal.json` |
+| Kiosk setup public-client ID | kiosk onboarding metadata |
 | Login endpoint | `service-principal.json` — authority host URL for the target cloud (e.g., `https://login.microsoftonline.com`), used to construct OAuth token endpoints |
 | Certificate reference or exported PEM | certificate PEM material used by the runtime |
 | Private-key reference or exported PEM | private-key PEM material used by the runtime |
@@ -280,8 +299,10 @@ translated into the local runtime artifact shape already defined by the Azure
 companion specs:
 
 1. `service-principal.json`,
-2. certificate PEM, and
-3. private-key PEM.
+2. certificate PEM,
+3. private-key PEM, and
+4. additive non-secret kiosk setup-login metadata that can be carried into the
+   SPA-exported environment JSON used for kiosk onboarding.
 
 This document does not require the Bicep deployment itself to write those files
 onto the gateway host. It does require the design to define how the deployment

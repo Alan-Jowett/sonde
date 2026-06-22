@@ -107,6 +107,25 @@ body {
   flex-direction: column;
 }
 
+.device-code-panel {
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.device-code-value {
+  margin: 12px 0;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.device-code-link {
+  color: #7dd3fc;
+}
+
 button {
   appearance: none;
   border: 1px solid rgba(56, 189, 248, 0.3);

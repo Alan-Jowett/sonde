@@ -27,6 +27,7 @@
 | **Azure provisioning workflow** | The repository-owned deployment workflow that creates the Azure resources and identity material required by the Azure companion architecture. |
 | **Bicep root deployment** | The top-level Bicep entrypoint under `deploy/bicep/` that composes the provisioning modules for this workflow. |
 | **Runtime identity bundle** | The Entra tenant/client identity plus certificate-authenticated service-principal material required for the Azure companion runtime after bootstrap completes. |
+| **Kiosk setup login app** | A Sonde-managed public-client Entra application used only for kiosk operator device-code sign-in during certificate lifecycle operations. |
 | **Bootstrap handoff contract** | The defined set of outputs and artifact locations that lets bootstrap materialize `service-principal.json`, certificate PEM, and private-key PEM for `sonde-azure-companion`. |
 | **Azure handler Function App** | Azure Function hosting resources used by the Sonde cloud-side handler. This document covers the hosting surface and identity, not the handler's runtime logic. |
 | **Storage resources** | The Azure Storage Account and Table resources used by the Azure handler. This document covers only provisioning and RBAC, not the logical table schema. |
@@ -250,7 +251,7 @@ and private-key PEM.
 **Acceptance criteria:**
 
 1. The workflow documents which values and artifacts must be handed off to bootstrap for runtime starts.
-2. The handoff contract includes the tenant ID, client ID, login endpoint, certificate reference or material, private-key reference or material, Storage Queue endpoint/queue configuration, and the Function App / deployment-target values needed for package deployment and activation checks.
+2. The handoff contract includes the tenant ID, client ID, login endpoint, certificate reference or material, private-key reference or material, kiosk setup public-client metadata for device-code onboarding, Storage Queue endpoint/queue configuration, and the Function App / deployment-target values needed for package deployment and activation checks.
 3. The handoff contract is compatible with the current Azure companion runtime expectations in `azure-companion-requirements.md`.
 
 ---
@@ -275,6 +276,31 @@ requirements.
    permission solely for kiosk dashboard viewing.
 3. The documented dashboard-read permissions remain narrower than general
    administrator or owner privileges.
+
+---
+
+### AZP-0205  Kiosk setup public-client provisioning
+
+**Priority:** Must
+**Source:** kiosk-app-requirements.md KA-0209
+
+**Description:**
+The provisioning workflow MUST create or configure a Sonde-managed public-client
+Entra application for kiosk operator device-code sign-in. This setup identity is
+used only for delegated certificate-management operations and is distinct from
+the shared certificate-authenticated runtime app.
+
+**Acceptance criteria:**
+
+1. The workflow provisions or documents a public-client Entra app suitable for
+   device-code sign-in.
+2. The setup-login app is distinct from the shared certificate-authenticated
+   runtime app used for unattended kiosk and Azure companion operation.
+3. The setup-login app is configured with the delegated Microsoft Graph access
+   needed to add, replace, and remove credentials on the shared runtime app.
+4. The workflow surfaces the non-secret setup-login metadata needed by the kiosk
+   app, including at least the public-client ID and authority-host/login-endpoint
+   information.
 
 ---
 

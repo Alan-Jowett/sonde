@@ -466,8 +466,8 @@ function enforceTelemetryCacheBounds(options = {}) {
       return leftRefresh - rightRefresh;
     });
 
-  while (APP_STATE.telemetryCache.size > maxSeries && evictionOrder.length > 0) {
-    const [cacheKey] = evictionOrder.shift();
+  for (let index = 0; APP_STATE.telemetryCache.size > maxSeries && index < evictionOrder.length; index += 1) {
+    const [cacheKey] = evictionOrder[index];
     APP_STATE.telemetryCache.delete(cacheKey);
   }
 }

@@ -2853,7 +2853,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N509 | `test_wake_reason_early`, `test_wake_reason` (sleep.rs) | wake_cycle.rs, sleep.rs |
 | T-N510 | `test_post_update_immediate_execution` | wake_cycle.rs |
 | T-N600 | `test_helper_i2c_read` | bpf_dispatch.rs |
-| T-N600a | `test_veml7700_sensor_program_queues_payload_with_documented_registers`, `test_veml7700_sensor_program_suppresses_payload_on_i2c_error`, `test_veml7700_sensor_program_switches_to_lowlight_after_low_reading` | bpf_dispatch.rs |
+| T-N600a | `test_veml7700_sensor_program_queues_payload_with_documented_registers`, `test_veml7700_sensor_program_suppresses_payload_on_i2c_error`, `test_veml7700_sensor_program_suppresses_payload_on_i2c_write_error`, `test_veml7700_sensor_program_does_not_persist_conf_on_i2c_error`, `test_veml7700_sensor_program_switches_to_lowlight_after_low_reading`, `test_veml7700_sensor_program_switches_back_to_default_after_bright_history` | bpf_dispatch.rs |
 | T-N601 | `test_helper_i2c_error` | bpf_dispatch.rs |
 | T-N602 | `test_helper_spi_transfer` | bpf_dispatch.rs |
 | T-N603 | `test_helper_gpio_and_adc` | bpf_dispatch.rs |

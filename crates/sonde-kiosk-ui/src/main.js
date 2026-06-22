@@ -6,7 +6,7 @@ const invoke = globalThis.window?.__TAURI__?.core?.invoke;
 const ENV_GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ENV_STORAGE_ACCOUNT_PATTERN = /^[a-z0-9]{3,24}$/;
 const ENV_FUNCTION_APP_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$/;
-const HTTPS_URL_PATTERN = /^https:\/\/[^/\s]+(?:\/.*)?$/i;
+const HTTPS_AUTHORITY_PATTERN = /^https:\/\/[^/\s?#@]+$/i;
 const SENSOR_VIEW_MODES = new Set(['graph', 'table']);
 const SENSOR_TIME_RANGES = new Set(['1h', '24h', '7d']);
 const BLOCKED_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -169,12 +169,12 @@ function validateSetupLoginMetadata(metadata) {
       error: 'Kiosk Setup Client ID must be a valid GUID.',
     };
   }
-  if (!HTTPS_URL_PATTERN.test(loginEndpoint)) {
+  if (!HTTPS_AUTHORITY_PATTERN.test(loginEndpoint)) {
     return {
       valid: false,
       loginEndpoint,
       kioskSetupClientId,
-      error: 'Login endpoint must be a valid HTTPS URL.',
+      error: 'Login endpoint must be a valid HTTPS authority URL.',
     };
   }
   return {

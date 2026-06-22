@@ -22,8 +22,11 @@ use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ECDSA_P2
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "android")]
+use std::sync::OnceLock;
 use tauri::Manager;
 use time::{Duration as TimeDuration, OffsetDateTime};
+use tracing::warn;
 use uuid::Uuid;
 use x509_cert::der::{Decode, Encode};
 use x509_cert::Certificate;
@@ -229,6 +232,13 @@ struct DeviceCodeSession {
     access_token: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct DeviceCodePollResult {
+    response: PollDeviceCodeSignInResponse,
+    access_token: Option<String>,
+    clear_session: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ClientAssertionClaims {
     aud: String,
@@ -351,6 +361,16 @@ fn read_optional_file_to_string(path: &Path) -> Result<Option<String>, String> {
 }
 
 fn write_string_to_path(path: &Path, contents: &str) -> Result<(), String> {
+    create_parent_dir(path)?;
+    fs::write(path, contents).map_err(|error| {
+        format!(
+            "failed to write kiosk app data to {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn create_parent_dir(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -359,12 +379,7 @@ fn write_string_to_path(path: &Path, contents: &str) -> Result<(), String> {
             )
         })?;
     }
-    fs::write(path, contents).map_err(|error| {
-        format!(
-            "failed to write kiosk app data to {}: {error}",
-            path.display()
-        )
-    })
+    Ok(())
 }
 
 fn remove_optional_file_at_path(path: &Path) -> Result<(), String> {
@@ -378,15 +393,257 @@ fn remove_optional_file_at_path(path: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(unix)]
+fn write_private_key_file_securely(path: &Path, contents: &str) -> Result<(), String> {
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    create_parent_dir(path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "failed to open private key file {}: {error}",
+                path.display()
+            )
+        })?;
+    file.write_all(contents.as_bytes()).map_err(|error| {
+        format!(
+            "failed to write private key file {}: {error}",
+            path.display()
+        )
+    })?;
+    file.flush().map_err(|error| {
+        format!(
+            "failed to flush private key file {}: {error}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(windows)]
+fn wide_null(value: &std::ffi::OsStr) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    value.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+unsafe fn null_terminated_wide_to_string(value: std::ptr::NonNull<u16>) -> String {
+    use std::slice;
+
+    let value = value.as_ptr();
+    let mut len = 0usize;
+    while *value.add(len) != 0 {
+        len += 1;
+    }
+    String::from_utf16_lossy(slice::from_raw_parts(value, len))
+}
+
+#[cfg(windows)]
+fn sid_to_string(sid: windows_sys::Win32::Security::PSID) -> Result<String, String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+
+    let mut sid_wide = std::ptr::null_mut();
+    if unsafe { ConvertSidToStringSidW(sid, &mut sid_wide) } == 0 {
+        return Err(format!(
+            "failed to convert current user SID to text: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let sid_string = unsafe {
+        null_terminated_wide_to_string(
+            std::ptr::NonNull::new(sid_wide)
+                .ok_or_else(|| "ConvertSidToStringSidW returned a null SID string".to_string())?,
+        )
+    };
+    unsafe {
+        let _ = LocalFree(sid_wide.cast());
+    }
+    Ok(sid_string)
+}
+
+#[cfg(windows)]
+fn current_user_sid_string() -> Result<String, String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(format!(
+            "failed to open current process token: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let result = {
+        let mut required_len = 0;
+        let _ = unsafe {
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required_len)
+        };
+        if required_len == 0 {
+            Err(format!(
+                "failed to size current user token information: {}",
+                std::io::Error::last_os_error()
+            ))
+        } else {
+            let mut buffer = vec![0u8; required_len as usize];
+            if unsafe {
+                GetTokenInformation(
+                    token,
+                    TokenUser,
+                    buffer.as_mut_ptr().cast(),
+                    required_len,
+                    &mut required_len,
+                )
+            } == 0
+            {
+                Err(format!(
+                    "failed to read current user token information: {}",
+                    std::io::Error::last_os_error()
+                ))
+            } else {
+                let token_user =
+                    unsafe { std::ptr::read_unaligned(buffer.as_ptr().cast::<TOKEN_USER>()) };
+                sid_to_string(token_user.User.Sid)
+            }
+        }
+    };
+
+    unsafe {
+        let _ = CloseHandle(token);
+    }
+
+    result
+}
+
+#[cfg(windows)]
+fn current_user_private_key_sddl() -> Result<String, String> {
+    Ok(format!("D:P(A;;FA;;;{})", current_user_sid_string()?))
+}
+
+#[cfg(windows)]
+fn write_private_key_file_securely(path: &Path, contents: &str) -> Result<(), String> {
+    use std::fs::File;
+    use std::io::Write as _;
+    use std::os::windows::io::FromRawHandle;
+
+    use windows_sys::Win32::Foundation::{LocalFree, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE,
+    };
+
+    create_parent_dir(path)?;
+    let private_key_sddl = current_user_private_key_sddl()?;
+    let private_key_sddl_wide = wide_null(std::ffi::OsStr::new(&private_key_sddl));
+    let mut security_descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            private_key_sddl_wide.as_ptr(),
+            1,
+            &mut security_descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(format!(
+            "failed to build private key security descriptor: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let path_wide = wide_null(path.as_os_str());
+    let security_attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: security_descriptor,
+        bInheritHandle: 0,
+    };
+
+    let result: Result<(), String> = {
+        let handle = unsafe {
+            CreateFileW(
+                path_wide.as_ptr(),
+                FILE_GENERIC_WRITE,
+                0,
+                &security_attributes,
+                CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            Err(format!(
+                "failed to open private key file {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            ))
+        } else {
+            let mut file = unsafe { File::from_raw_handle(handle) };
+            file.write_all(contents.as_bytes()).map_err(|error| {
+                format!(
+                    "failed to write private key file {}: {error}",
+                    path.display()
+                )
+            })?;
+            file.flush().map_err(|error| {
+                format!(
+                    "failed to flush private key file {}: {error}",
+                    path.display()
+                )
+            })?;
+            Ok(())
+        }
+    };
+
+    unsafe {
+        let _ = LocalFree(security_descriptor.cast());
+    }
+
+    if let Err(error) = result {
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(all(not(target_os = "android"), not(unix), not(windows)))]
+fn write_private_key_file_securely(path: &Path, _contents: &str) -> Result<(), String> {
+    Err(format!(
+        "secure private key storage is not implemented on this platform for {}",
+        path.display()
+    ))
+}
+
 fn normalize_login_endpoint(value: &str) -> Result<String, String> {
     let trimmed = value.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return Err("Login endpoint is required.".into());
     }
     let parsed = reqwest::Url::parse(trimmed)
-        .map_err(|error| format!("Login endpoint must be a valid HTTPS URL: {error}"))?;
+        .map_err(|error| format!("Login endpoint must be a valid HTTPS authority URL: {error}"))?;
     if parsed.scheme() != "https" {
         return Err("Login endpoint must use HTTPS.".into());
+    }
+    if parsed.host_str().is_none() {
+        return Err("Login endpoint must include a host.".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Login endpoint must not include userinfo.".into());
+    }
+    if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(
+            "Login endpoint must be an HTTPS authority URL without path, query, or fragment."
+                .into(),
+        );
     }
     Ok(trimmed.to_string())
 }
@@ -513,7 +770,7 @@ fn load_private_key_secret(app: &tauri::AppHandle) -> Result<Option<String>, Str
 
 #[cfg(not(target_os = "android"))]
 fn store_private_key_secret(app: &tauri::AppHandle, private_key_pem: &str) -> Result<(), String> {
-    write_string_to_path(&private_key_file_path(app)?, private_key_pem)
+    write_private_key_file_securely(&private_key_file_path(app)?, private_key_pem)
 }
 
 #[cfg(not(target_os = "android"))]
@@ -846,19 +1103,27 @@ async fn begin_device_code_sign_in_with_client(
 async fn poll_device_code_sign_in_with_client(
     session: &DeviceCodeSession,
     client: &reqwest::Client,
-) -> Result<PollDeviceCodeSignInResponse, String> {
+) -> Result<DeviceCodePollResult, String> {
     if session.access_token.is_some() {
-        return Ok(PollDeviceCodeSignInResponse {
-            status: "complete".into(),
-            poll_interval_seconds: session.poll_interval_seconds,
-            message: Some("Operator sign-in complete.".into()),
+        return Ok(DeviceCodePollResult {
+            response: PollDeviceCodeSignInResponse {
+                status: "complete".into(),
+                poll_interval_seconds: session.poll_interval_seconds,
+                message: Some("Operator sign-in complete.".into()),
+            },
+            access_token: None,
+            clear_session: false,
         });
     }
-    if session.expires_at_ms <= OffsetDateTime::now_utc().unix_timestamp() * 1000 {
-        return Ok(PollDeviceCodeSignInResponse {
-            status: "error".into(),
-            poll_interval_seconds: session.poll_interval_seconds,
-            message: Some("The device-code sign-in request has expired.".into()),
+    if session.expires_at_ms <= current_time_ms() {
+        return Ok(DeviceCodePollResult {
+            response: PollDeviceCodeSignInResponse {
+                status: "error".into(),
+                poll_interval_seconds: session.poll_interval_seconds,
+                message: Some("The device-code sign-in request has expired.".into()),
+            },
+            access_token: None,
+            clear_session: true,
         });
     }
     let response = client
@@ -877,14 +1142,19 @@ async fn poll_device_code_sign_in_with_client(
         .map_err(|error| format!("failed to poll device-code sign-in: {error}"))?;
     let status = response.status();
     if status.is_success() {
-        let _ = response
+        let access_token = response
             .json::<OAuthTokenResponse>()
             .await
-            .map_err(|error| format!("device-code token response was invalid: {error}"))?;
-        return Ok(PollDeviceCodeSignInResponse {
-            status: "complete".into(),
-            poll_interval_seconds: session.poll_interval_seconds,
-            message: Some("Operator sign-in complete.".into()),
+            .map_err(|error| format!("device-code token response was invalid: {error}"))?
+            .access_token;
+        return Ok(DeviceCodePollResult {
+            response: PollDeviceCodeSignInResponse {
+                status: "complete".into(),
+                poll_interval_seconds: session.poll_interval_seconds,
+                message: Some("Operator sign-in complete.".into()),
+            },
+            access_token: Some(access_token),
+            clear_session: false,
         });
     }
     let error_payload = response
@@ -892,66 +1162,45 @@ async fn poll_device_code_sign_in_with_client(
         .await
         .map_err(|error| format!("device-code error response was invalid: {error}"))?;
     match error_payload.error.as_str() {
-        "authorization_pending" => Ok(PollDeviceCodeSignInResponse {
-            status: "pending".into(),
-            poll_interval_seconds: session.poll_interval_seconds,
-            message: error_payload.error_description,
+        "authorization_pending" => Ok(DeviceCodePollResult {
+            response: PollDeviceCodeSignInResponse {
+                status: "pending".into(),
+                poll_interval_seconds: session.poll_interval_seconds,
+                message: error_payload.error_description,
+            },
+            access_token: None,
+            clear_session: false,
         }),
-        "slow_down" => Ok(PollDeviceCodeSignInResponse {
-            status: "pending".into(),
-            poll_interval_seconds: session.poll_interval_seconds.saturating_add(5),
-            message: error_payload.error_description,
+        "slow_down" => Ok(DeviceCodePollResult {
+            response: PollDeviceCodeSignInResponse {
+                status: "pending".into(),
+                poll_interval_seconds: session.poll_interval_seconds.saturating_add(5),
+                message: error_payload.error_description,
+            },
+            access_token: None,
+            clear_session: false,
         }),
-        "expired_token" => Ok(PollDeviceCodeSignInResponse {
-            status: "error".into(),
-            poll_interval_seconds: session.poll_interval_seconds,
-            message: Some("The device-code sign-in request has expired.".into()),
+        "expired_token" => Ok(DeviceCodePollResult {
+            response: PollDeviceCodeSignInResponse {
+                status: "error".into(),
+                poll_interval_seconds: session.poll_interval_seconds,
+                message: Some("The device-code sign-in request has expired.".into()),
+            },
+            access_token: None,
+            clear_session: true,
         }),
-        _ => {
-            Ok(PollDeviceCodeSignInResponse {
+        _ => Ok(DeviceCodePollResult {
+            response: PollDeviceCodeSignInResponse {
                 status: "error".into(),
                 poll_interval_seconds: session.poll_interval_seconds,
                 message: Some(error_payload.error_description.unwrap_or_else(|| {
                     format!("Device-code sign-in failed: {}", error_payload.error)
                 })),
-            })
-        }
+            },
+            access_token: None,
+            clear_session: true,
+        }),
     }
-}
-
-async fn exchange_device_code_access_token(
-    session: &DeviceCodeSession,
-    client: &reqwest::Client,
-) -> Result<String, String> {
-    let response = client
-        .post(format!(
-            "{}/{}/oauth2/v2.0/token",
-            normalize_login_endpoint(&session.login_endpoint)?,
-            session.tenant_id
-        ))
-        .form(&[
-            ("grant_type", DEVICE_CODE_GRANT_TYPE),
-            ("client_id", session.setup_client_id.as_str()),
-            ("device_code", session.device_code.as_str()),
-        ])
-        .send()
-        .await
-        .map_err(|error| format!("failed to complete device-code sign-in: {error}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        let payload = response
-            .json::<OAuthErrorResponse>()
-            .await
-            .map_err(|error| format!("device-code error response was invalid: {error}"))?;
-        return Err(payload
-            .error_description
-            .unwrap_or_else(|| format!("device-code sign-in failed: {}", payload.error)));
-    }
-    response
-        .json::<OAuthTokenResponse>()
-        .await
-        .map(|payload| payload.access_token)
-        .map_err(|error| format!("device-code token response was invalid: {error}"))
 }
 
 fn ensure_device_code_session_purpose(
@@ -965,6 +1214,20 @@ fn ensure_device_code_session_purpose(
         ));
     }
     Ok(())
+}
+
+fn validate_device_code_purpose(purpose: &str) -> Result<(), String> {
+    match purpose {
+        "initial" | "renew" | "reset" => Ok(()),
+        _ => Err(format!(
+            "unsupported device-code sign-in purpose: {purpose}"
+        )),
+    }
+}
+
+fn prune_expired_device_code_sessions(sessions: &mut HashMap<String, DeviceCodeSession>) {
+    let now_ms = current_time_ms();
+    sessions.retain(|_, session| session.expires_at_ms > now_ms);
 }
 
 fn current_time_ms() -> i64 {
@@ -1010,7 +1273,18 @@ fn clear_telemetry_cache_json(app: tauri::AppHandle) -> Result<(), String> {
 fn get_kiosk_identity_summary(
     app: tauri::AppHandle,
 ) -> Result<Option<KioskIdentitySummary>, String> {
-    load_identity_state(&app).map(|state| state.as_ref().map(to_identity_summary))
+    match load_identity_state(&app) {
+        Ok(state) => Ok(state.as_ref().map(to_identity_summary)),
+        Err(error) => {
+            warn!("clearing corrupted kiosk identity state: {error}");
+            clear_identity_local_state(&app).map_err(|clear_error| {
+                format!(
+                    "failed to clear corrupted kiosk identity state after {error}: {clear_error}"
+                )
+            })?;
+            Ok(None)
+        }
+    }
 }
 
 #[tauri::command]
@@ -1023,6 +1297,7 @@ async fn start_device_code_sign_in(
     state: tauri::State<'_, AppState>,
     request: StartDeviceCodeSignInRequest,
 ) -> Result<DeviceCodeSignInSessionResponse, String> {
+    validate_device_code_purpose(&request.purpose)?;
     let response = begin_device_code_sign_in_with_client(&request, &http_client()?).await?;
     let session_id = Uuid::new_v4().to_string();
     let session = DeviceCodeSession {
@@ -1038,8 +1313,11 @@ async fn start_device_code_sign_in(
     state
         .device_code_sessions
         .lock()
-        .map_err(|_| "device-code session store was poisoned".to_string())?
-        .insert(session_id.clone(), session);
+        .map_err(|_| "device-code session store was poisoned".to_string())
+        .map(|mut sessions| {
+            prune_expired_device_code_sessions(&mut sessions);
+            sessions.insert(session_id.clone(), session);
+        })?;
     Ok(DeviceCodeSignInSessionResponse {
         session_id,
         purpose: request.purpose,
@@ -1068,8 +1346,7 @@ async fn poll_device_code_sign_in(
     };
     let client = http_client()?;
     let result = poll_device_code_sign_in_with_client(&session, &client).await?;
-    if result.status == "complete" {
-        let access_token = exchange_device_code_access_token(&session, &client).await?;
+    if let Some(access_token) = result.access_token.clone() {
         if let Some(stored) = state
             .device_code_sessions
             .lock()
@@ -1078,8 +1355,8 @@ async fn poll_device_code_sign_in(
         {
             stored.access_token = Some(access_token);
         }
-    } else if result.status == "pending"
-        && result.poll_interval_seconds != session.poll_interval_seconds
+    } else if result.response.status == "pending"
+        && result.response.poll_interval_seconds != session.poll_interval_seconds
     {
         if let Some(stored) = state
             .device_code_sessions
@@ -1087,10 +1364,17 @@ async fn poll_device_code_sign_in(
             .map_err(|_| "device-code session store was poisoned".to_string())?
             .get_mut(&request.session_id)
         {
-            stored.poll_interval_seconds = result.poll_interval_seconds;
+            stored.poll_interval_seconds = result.response.poll_interval_seconds;
         }
     }
-    Ok(result)
+    if result.clear_session {
+        state
+            .device_code_sessions
+            .lock()
+            .map_err(|_| "device-code session store was poisoned".to_string())?
+            .remove(&request.session_id);
+    }
+    Ok(result.response)
 }
 
 #[tauri::command]
@@ -1523,5 +1807,18 @@ mod tests {
             normalize_login_endpoint("https://login.microsoftonline.com/").unwrap(),
             "https://login.microsoftonline.com"
         );
+    }
+
+    #[test]
+    fn normalize_login_endpoint_rejects_paths() {
+        let error =
+            normalize_login_endpoint("https://login.microsoftonline.com/common").unwrap_err();
+        assert!(error.contains("authority URL"));
+    }
+
+    #[test]
+    fn validate_device_code_purpose_rejects_unknown_values() {
+        let error = validate_device_code_purpose("unexpected").unwrap_err();
+        assert!(error.contains("unsupported device-code sign-in purpose"));
     }
 }

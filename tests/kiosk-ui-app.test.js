@@ -602,6 +602,15 @@ test('validateSetupLoginMetadata rejects incomplete kiosk setup metadata', () =>
   assert.match(result.error, /missing kiosk setup login metadata/i);
 });
 
+test('validateSetupLoginMetadata rejects login endpoints with paths', () => {
+  const result = kiosk.validateSetupLoginMetadata(
+    buildEnvironment({ loginEndpoint: 'https://login.microsoftonline.com/common' }),
+  );
+
+  assert.equal(result.valid, false);
+  assert.match(result.error, /authority url/i);
+});
+
 test('importEnvironmentFromText clears prior kiosk identity and stays in setup mode', async () => {
   const calls = [];
   kiosk.APP_STATE.runtime = runtime;

@@ -611,6 +611,45 @@ test('validateSetupLoginMetadata rejects login endpoints with paths', () => {
   assert.match(result.error, /authority url/i);
 });
 
+test('setup auth flow uses renewal when identity already exists', async () => {
+  const calls = [];
+  kiosk.APP_STATE.activeEnvironment = buildEnvironment();
+  kiosk.APP_STATE.identitySummary = {
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    sharedAppClientId: '11111111-1111-1111-1111-111111111111',
+    renewalRequired: true,
+  };
+  kiosk.APP_STATE.deviceCodeSession = null;
+
+  await kiosk.beginDeviceCodeFlow('renew', {
+    invoke: async (command, payload) => {
+      calls.push({ command, payload });
+      if (command === 'start_device_code_sign_in') {
+        return {
+          sessionId: 'renew-1',
+          purpose: 'renew',
+          userCode: 'ABCDEF',
+          verificationUri: 'https://microsoft.com/devicelogin',
+          verificationUriComplete: null,
+          pollIntervalSeconds: 0,
+          expiresAtMs: 9_999,
+          message: 'Use code ABCDEF',
+        };
+      }
+      if (command === 'poll_device_code_sign_in') {
+        return { status: 'error', message: 'stop after start' };
+      }
+      throw new Error(`unexpected command ${command}`);
+    },
+    setTimeoutFn: (fn) => fn(),
+  }).catch((error) => {
+    assert.match(error.message, /stop after start/i);
+  });
+
+  assert.equal(calls[0].command, 'start_device_code_sign_in');
+  assert.equal(calls[0].payload.request.purpose, 'renew');
+});
+
 test('importEnvironmentFromText clears prior kiosk identity and stays in setup mode', async () => {
   const calls = [];
   kiosk.APP_STATE.runtime = runtime;

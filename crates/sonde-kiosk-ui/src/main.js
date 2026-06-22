@@ -734,9 +734,12 @@ function renderSetupScreen() {
   }
   if (authButton) {
     const metadata = validateSetupLoginMetadata(APP_STATE.activeEnvironment);
-    const showButton = APP_STATE.activeEnvironment && !APP_STATE.identitySummary && !APP_STATE.deviceCodeSession;
+    const showButton = APP_STATE.activeEnvironment && !APP_STATE.deviceCodeSession;
     authButton.classList.toggle('hidden', !showButton);
     authButton.disabled = !metadata.valid;
+    authButton.textContent = APP_STATE.identitySummary
+      ? 'Renew Kiosk Certificate'
+      : 'Start Device Code Sign-In';
   }
   if (deviceCodePanel) {
     const activeSession = APP_STATE.deviceCodeSession;
@@ -1118,10 +1121,11 @@ async function initKioskApp(deps = {}) {
     }
   });
   setupAuthButton.addEventListener('click', async () => {
+    const purpose = APP_STATE.identitySummary ? 'renew' : 'initial';
     try {
-      await beginDeviceCodeFlow('initial', deps);
+      await beginDeviceCodeFlow(purpose, deps);
     } catch (error) {
-      showSetupMode(`Kiosk setup failed: ${error.message}`);
+      showSetupMode(`${purpose === 'renew' ? 'Certificate renewal' : 'Kiosk setup'} failed: ${error.message}`);
     }
   });
 

@@ -397,7 +397,7 @@ fn remove_optional_file_at_path(path: &Path) -> Result<(), String> {
 fn write_private_key_file_securely(path: &Path, contents: &str) -> Result<(), String> {
     use std::fs::OpenOptions;
     use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     create_parent_dir(path)?;
     let mut file = OpenOptions::new()
@@ -421,6 +421,12 @@ fn write_private_key_file_securely(path: &Path, contents: &str) -> Result<(), St
     file.flush().map_err(|error| {
         format!(
             "failed to flush private key file {}: {error}",
+            path.display()
+        )
+    })?;
+    fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|error| {
+        format!(
+            "failed to tighten private key permissions on {}: {error}",
             path.display()
         )
     })
@@ -648,6 +654,16 @@ fn normalize_login_endpoint(value: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+fn normalize_guid(value: &str, field_name: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{field_name} is required."));
+    }
+    Uuid::parse_str(trimmed)
+        .map_err(|error| format!("{field_name} must be a valid GUID: {error}"))?;
+    Ok(trimmed.to_string())
+}
+
 fn renewal_required(not_after_ms: i64, now_ms: i64) -> bool {
     not_after_ms - now_ms <= KIOSK_RENEWAL_THRESHOLD_DAYS * 24 * 60 * 60 * 1000
 }
@@ -671,7 +687,7 @@ fn to_identity_summary(state: &KioskIdentityStateFile) -> KioskIdentitySummary {
 }
 
 fn parse_identity_state(json: &str) -> Result<KioskIdentityStateFile, String> {
-    let state = serde_json::from_str::<KioskIdentityStateFile>(json)
+    let mut state = serde_json::from_str::<KioskIdentityStateFile>(json)
         .map_err(|error| format!("failed to parse kiosk identity state: {error}"))?;
     if state.version != 1 {
         return Err(format!(
@@ -689,6 +705,12 @@ fn parse_identity_state(json: &str) -> Result<KioskIdentityStateFile, String> {
     {
         return Err("kiosk identity state is missing required fields".into());
     }
+    state.shared_app_client_id =
+        normalize_guid(&state.shared_app_client_id, "Shared app client ID")?;
+    state.tenant_id = normalize_guid(&state.tenant_id, "Tenant ID")?;
+    state.setup_client_id = normalize_guid(&state.setup_client_id, "Setup client ID")?;
+    state.key_id = normalize_guid(&state.key_id, "Kiosk key ID")?;
+    state.login_endpoint = normalize_login_endpoint(&state.login_endpoint)?;
     Ok(state)
 }
 
@@ -1298,13 +1320,23 @@ async fn start_device_code_sign_in(
     request: StartDeviceCodeSignInRequest,
 ) -> Result<DeviceCodeSignInSessionResponse, String> {
     validate_device_code_purpose(&request.purpose)?;
-    let response = begin_device_code_sign_in_with_client(&request, &http_client()?).await?;
+    let tenant_id = normalize_guid(&request.tenant_id, "Tenant ID")?;
+    let login_endpoint = normalize_login_endpoint(&request.login_endpoint)?;
+    let setup_client_id = normalize_guid(&request.setup_client_id, "Setup client ID")?;
+    let validated_request = StartDeviceCodeSignInRequest {
+        purpose: request.purpose.clone(),
+        tenant_id: tenant_id.clone(),
+        login_endpoint: login_endpoint.clone(),
+        setup_client_id: setup_client_id.clone(),
+    };
+    let response =
+        begin_device_code_sign_in_with_client(&validated_request, &http_client()?).await?;
     let session_id = Uuid::new_v4().to_string();
     let session = DeviceCodeSession {
         purpose: request.purpose.clone(),
-        tenant_id: request.tenant_id,
-        login_endpoint: normalize_login_endpoint(&request.login_endpoint)?,
-        setup_client_id: request.setup_client_id,
+        tenant_id,
+        login_endpoint,
+        setup_client_id,
         device_code: response.device_code,
         expires_at_ms: current_time_ms() + response.expires_in * 1000,
         poll_interval_seconds: response.interval.unwrap_or(5),
@@ -1737,6 +1769,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_identity_state_rejects_invalid_guid_and_login_endpoint() {
+        let error = parse_identity_state(
+            r#"{"version":1,"sharedAppClientId":"not-a-guid","tenantId":"22222222-2222-2222-2222-222222222222","loginEndpoint":"https://login.microsoftonline.com/common","setupClientId":"33333333-3333-3333-3333-333333333333","certificatePem":"pem","keyId":"44444444-4444-4444-4444-444444444444","certificateThumbprint":"thumb","certificateDisplayName":"display","notBeforeMs":0,"notAfterMs":0}"#,
+        )
+        .unwrap_err();
+        assert!(error.contains("Shared app client ID must be a valid GUID"));
+    }
+
+    #[test]
     fn renewal_required_uses_thirty_day_threshold() {
         let now_ms = 1_000_000;
         assert!(renewal_required(
@@ -1814,6 +1855,12 @@ mod tests {
         let error =
             normalize_login_endpoint("https://login.microsoftonline.com/common").unwrap_err();
         assert!(error.contains("authority URL"));
+    }
+
+    #[test]
+    fn normalize_guid_rejects_invalid_values() {
+        let error = normalize_guid("not-a-guid", "Tenant ID").unwrap_err();
+        assert!(error.contains("Tenant ID must be a valid GUID"));
     }
 
     #[test]

@@ -73,6 +73,7 @@ fn t_bpf_002_store_via_map_descriptor() {
     let map_ptr = map_buf.as_ptr() as u64;
     let maps = [MapRegion {
         relocated_ptr: map_ptr,
+        key_size: 0,
         value_size: 64,
         data_start: map_ptr,
         data_end: map_ptr + 64,
@@ -234,6 +235,7 @@ fn t_bpf_009_map_descriptor_add() {
     let map_ptr = map_buf.as_ptr() as u64;
     let maps = [MapRegion {
         relocated_ptr: map_ptr,
+        key_size: 0,
         value_size: 64,
         data_start: map_ptr,
         data_end: map_ptr + 64,
@@ -549,6 +551,7 @@ fn t_bpf_024_map_value_or_null_returns_null() {
     let map_ptr = map_buf.as_ptr() as u64;
     let maps = [MapRegion {
         relocated_ptr: map_ptr,
+        key_size: 0,
         value_size: 64,
         data_start: map_ptr,
         data_end: map_ptr + 64,
@@ -598,6 +601,7 @@ fn t_bpf_025_map_value_or_null_returns_valid() {
     let mut ctx = [0x42u8; 16];
     let maps = [MapRegion {
         relocated_ptr: map_ptr,
+        key_size: 0,
         value_size: 64,
         data_start: map_ptr,
         data_end: map_ptr + 64,
@@ -644,6 +648,7 @@ fn t_bpf_026_helper_returns_oob_pointer() {
     let mut ctx = [0x42u8; 16];
     let maps = [MapRegion {
         relocated_ptr: map_ptr,
+        key_size: 0,
         value_size: 64,
         data_start: map_ptr,
         data_end: map_ptr + 64,
@@ -691,6 +696,7 @@ fn t_bpf_027_helper_expects_map_descriptor_gets_scalar() {
     let map_ptr = map_buf.as_ptr() as u64;
     let maps = [MapRegion {
         relocated_ptr: map_ptr,
+        key_size: 0,
         value_size: 64,
         data_start: map_ptr,
         data_end: map_ptr + 64,
@@ -734,6 +740,7 @@ fn t_bpf_028_ld_dw_imm_negative_map_index() {
     let map_ptr = map_buf.as_ptr() as u64;
     let maps = [MapRegion {
         relocated_ptr: map_ptr,
+        key_size: 0,
         value_size: 64,
         data_start: map_ptr,
         data_end: map_ptr + 64,
@@ -764,12 +771,14 @@ fn t_bpf_029_ld_dw_imm_out_of_bounds_map_index() {
     let maps = [
         MapRegion {
             relocated_ptr: map_ptr_0,
+            key_size: 0,
             value_size: 64,
             data_start: map_ptr_0,
             data_end: map_ptr_0 + 64,
         },
         MapRegion {
             relocated_ptr: map_ptr_1,
+            key_size: 0,
             value_size: 64,
             data_start: map_ptr_1,
             data_end: map_ptr_1 + 64,
@@ -810,6 +819,7 @@ fn t_bpf_030_ld_dw_imm_map_descriptor_happy_path() {
     let mut ctx = [0x42u8; 16];
     let maps = [MapRegion {
         relocated_ptr: map_ptr,
+        key_size: 0,
         value_size: 64,
         data_start: map_ptr,
         data_end: map_ptr + 64,

@@ -251,8 +251,11 @@ At program start, three registers carry pointer provenance:
 |-------------|-----------|------------|
 | 0 | Load 64-bit immediate | Scalar |
 | 1 | Map descriptor relocation | `MapDescriptor { map_index: imm as u32 }` (after rejecting negative `imm`) |
+| 6 | Direct map-value relocation (`entry 0 value base + next.imm`) | `MapValue { value_size }` |
 
 For src=1, the interpreter resolves the map index and loads the relocated map pointer.  The `imm` field is a signed `i32` in the instruction encoding (see `ebpf.rs`); negative values are invalid and must be rejected with `InvalidMapIndex` before any cast or indexing.  After validation, the non-negative `imm` is used as the index into the `maps` slice.  The result is tagged `MapDescriptor` — it is an opaque handle, valid only as an argument to `map_lookup_elem` or `map_update_elem`.  It is **not dereferenceable**.
+
+For src=6, the interpreter also resolves `imm` as a map index, but instead of producing a `MapDescriptor`, it computes a direct pointer into entry 0's value region.  The caller supplies the value-region layout through `MapRegion`: `data_start` points at the start of the backing allocation for entry 0, and `key_size` tells the interpreter how many bytes to skip to reach the first value byte.  The high 32 bits carried in the second wide-instruction slot (`next.imm`) are treated as a signed constant offset from that value base.  The computed entry 0 value region itself must fit within the caller-provided backing range `[data_start, data_end)` before any pointer is tagged.  The resulting pointer must then stay within `[value_base, value_base + value_size)`; a one-past-end pointer is rejected with `MemoryAccessViolation`.
 
 **Bounds-check pseudocode for src=1:**
 
@@ -266,6 +269,32 @@ if index >= maps.len() {
     return Err(InvalidMapIndex { pc, index: imm });
 }
 // index is valid — proceed with relocation
+```
+
+**Bounds-check pseudocode for src=6:**
+
+```
+let imm = insn.imm;                          // i32 map index
+if imm < 0 {
+    return Err(InvalidMapIndex { pc, index: imm });
+}
+let index = imm as usize;
+if index >= maps.len() {
+    return Err(InvalidMapIndex { pc, index: imm });
+}
+let value_base = maps[index].data_start.checked_add(maps[index].key_size as u64)
+    .ok_or(MemoryAccessViolation { pc, addr: maps[index].data_start, len: maps[index].key_size as usize })?;
+let value_end = value_base.checked_add(maps[index].value_size as u64)
+    .ok_or(MemoryAccessViolation { pc, addr: value_base, len: maps[index].value_size as usize })?;
+if value_base < maps[index].data_start || value_end > maps[index].data_end {
+    return Err(MemoryAccessViolation { pc, addr: value_base, len: maps[index].value_size as usize });
+}
+let value_addr = value_base.checked_add_signed(next.imm as i64)
+    .ok_or(MemoryAccessViolation { pc, addr: value_base, len: maps[index].value_size as usize })?;
+if value_addr < value_base || value_addr >= value_end {
+    return Err(MemoryAccessViolation { pc, addr: value_addr, len: 0 });
+}
+// value_addr is valid — tag as MapValue over [value_base, value_end)
 ```
 
 > **Note:** `LD_DW_IMM` is a wide instruction occupying two instruction slots.  In the implementation, the `pc` reported in `InvalidMapIndex` refers to the first slot of the pair (i.e., `pc - 2` relative to the loop counter after consuming both slots).  The pseudocode above uses `pc` abstractly; implementations must adjust for their PC tracking convention.
@@ -539,7 +568,7 @@ pub enum BpfError {
     /// (e.g., pointer + pointer, bitwise op on pointer).
     InvalidPointerArithmetic { pc: usize },
 
-    /// LD_DW_IMM src=1 referenced a map index that is out of range
+    /// LD_DW_IMM src=1 or src=6 referenced a map index that is out of range
     /// of the provided `maps` slice, or the `imm` field is negative.
     InvalidMapIndex { pc: usize, index: i32 },
 }
@@ -622,7 +651,7 @@ The `mem` parameter is renamed to `ctx` and retains `&mut [u8]` so that both rea
 
 1. Change `mem` → `ctx` at call sites (type remains `&mut [u8]`).
 2. Replace `&[(u32, Helper)]` with `&[HelperDescriptor]`, adding `ret: HelperReturn::Scalar` for most helpers and `ret: HelperReturn::MapValueOrNull { map_arg: 1 }` for `map_lookup_elem`.
-3. Provide a `maps: &[MapRegion]` slice with relocated pointer, value size, and backing storage bounds for each map.
+3. Provide a `maps: &[MapRegion]` slice with relocated pointer, key/value layout metadata, and backing storage bounds for each map.
 4. Add `read_only_ctx: true` for contexts that must be immutable (e.g., `sonde_context`), or `false` for writable input regions.
 5. Add `instruction_budget` (e.g., `UNLIMITED_BUDGET` to opt out).
 6. Update tests that rely on R1–R5 surviving helper calls (§4.6 behavioral change).
@@ -633,6 +662,10 @@ Where `MapRegion` provides the metadata needed to tag LD_DW_IMM relocations and 
 struct MapRegion {
     /// Relocated pointer value (matches the value loaded by LD_DW_IMM src=1).
     relocated_ptr: u64,
+    /// Bytes from the start of an entry to the start of its value payload.
+    /// Use 0 when the backing allocation stores values densely with no key
+    /// prefix (for example, decoder-only map backing).
+    key_size: u32,
     /// Size of each value in this map.
     value_size: u32,
     /// Inclusive start of the map's backing storage.
@@ -642,13 +675,14 @@ struct MapRegion {
 }
 ```
 
-The `data_start` / `data_end` fields define the bounds of the map's allocated memory.  They are used to validate helper return pointers (§5.2) before tagging — a returned pointer that falls outside `[data_start, data_end)` is rejected as a fatal error.  This closes the trust boundary: helpers do not need to be in the trusted computing base for memory safety.
+The `data_start` / `data_end` fields define the bounds of the map's allocated memory.  They are used to validate helper return pointers (§5.2) before tagging — a returned pointer that falls outside `[data_start, data_end)` is rejected as a fatal error.  The `key_size` field defines where entry 0's value bytes begin for direct relocations (`LD_DW_IMM src=6`).  This closes the trust boundary: helpers do not need to be in the trusted computing base for memory safety, and direct relocations cannot fabricate out-of-bounds `MapValue` pointers.
 
 The `maps` slice is indexed by `map_index` — the same index used in the LD_DW_IMM instruction's `imm` field and stored in the `MapDescriptor { map_index }` tag.  The mapping is:
 
 - LD_DW_IMM src=1, imm=*i* (where *i* ≥ 0) → `maps[i as usize].relocated_ptr` is loaded into the register value, tagged as `MapDescriptor { map_index: i as u32 }`.
+- LD_DW_IMM src=6, imm=*i* (where *i* ≥ 0) → `maps[i as usize].data_start + maps[i as usize].key_size + next.imm` is loaded into the register value, tagged as `MapValue`, provided the computed pointer stays within the entry 0 value range.
 - Helper return resolution (§5.2) → `maps[reg[map_arg].region.tag.map_index].value_size` gives the value size.
-- Out-of-bounds `map_index` (≥ `maps.len()`) is a fatal `InvalidMapIndex` error at LD_DW_IMM time.
+- Out-of-bounds `map_index` (≥ `maps.len()`) is a fatal `InvalidMapIndex` error at LD_DW_IMM time for both src=1 and src=6.
 
 ### 10.2  Helper registration
 

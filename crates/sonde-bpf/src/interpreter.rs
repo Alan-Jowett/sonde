@@ -153,6 +153,7 @@ pub struct HelperDescriptor {
 #[derive(Clone, Copy, Debug)]
 pub struct MapRegion {
     pub relocated_ptr: u64,
+    pub key_size: u32,
     pub value_size: u32,
     pub data_start: u64,
     pub data_end: u64,
@@ -815,6 +816,68 @@ pub unsafe fn execute_program(
                                 },
                                 base: 0,
                                 end: 0,
+                            }),
+                        };
+                    }
+                    6 => {
+                        // Direct map value relocation (entry 0 + constant offset).
+                        if insn.imm < 0 {
+                            return Err(BpfError::InvalidMapIndex {
+                                pc: pc - 2,
+                                index: insn.imm,
+                            });
+                        }
+                        let idx = insn.imm as u32 as usize;
+                        if idx >= maps.len() {
+                            return Err(BpfError::InvalidMapIndex {
+                                pc: pc - 2,
+                                index: insn.imm,
+                            });
+                        }
+                        let value_base = maps[idx]
+                            .data_start
+                            .checked_add(maps[idx].key_size as u64)
+                            .ok_or(BpfError::MemoryAccessViolation {
+                                pc: pc - 2,
+                                addr: maps[idx].data_start,
+                                len: maps[idx].key_size as usize,
+                            })?;
+                        let value_addr = value_base.checked_add_signed(next.imm as i64).ok_or(
+                            BpfError::MemoryAccessViolation {
+                                pc: pc - 2,
+                                addr: value_base,
+                                len: maps[idx].value_size as usize,
+                            },
+                        )?;
+                        let value_end = value_base.checked_add(maps[idx].value_size as u64).ok_or(
+                            BpfError::MemoryAccessViolation {
+                                pc: pc - 2,
+                                addr: value_base,
+                                len: maps[idx].value_size as usize,
+                            },
+                        )?;
+                        if value_base < maps[idx].data_start || value_end > maps[idx].data_end {
+                            return Err(BpfError::MemoryAccessViolation {
+                                pc: pc - 2,
+                                addr: value_base,
+                                len: maps[idx].value_size as usize,
+                            });
+                        }
+                        if value_addr < value_base || value_addr >= value_end {
+                            return Err(BpfError::MemoryAccessViolation {
+                                pc: pc - 2,
+                                addr: value_addr,
+                                len: 0,
+                            });
+                        }
+                        reg[dst] = TaggedReg {
+                            value: value_addr,
+                            region: Some(Region {
+                                tag: RegionTag::MapValue {
+                                    value_size: maps[idx].value_size,
+                                },
+                                base: value_base,
+                                end: value_end,
                             }),
                         };
                     }

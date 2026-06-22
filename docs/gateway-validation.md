@@ -4095,6 +4095,25 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1903e  Decoder-enriched diagnostic readings can be surfaced through handler LOG messages
+
+**Traces to:** GW-0508, GW-1903 (AC-1, AC-3, AC-6)
+
+**Preconditions:** Ingested `globals_diagnostic_program` ELF with a paired decoder that converts the fixed-width diagnostic payload into named readings such as `wake_index`, `rodata_value`, `data_before`, `data_after`, `bss_before`, and `bss_after`. A test handler is configured to emit a LOG message summarizing those readings.
+
+**Steps:**
+1. Assign the program to a test node.
+2. Simulate two APP_DATA messages carrying the first-wake and second-wake diagnostic payloads.
+3. Inspect the DATA messages forwarded to the handler.
+4. Inspect gateway log output.
+
+**Expected:**
+1. Each DATA message includes the decoder-produced `readings` field alongside the raw `data` blob.
+2. The handler emits one LOG message per diagnostic payload using the decoded readings rather than reparsing the raw blob.
+3. The gateway log contains the handler-emitted diagnostic summaries for both wakes.
+
+---
+
 ### T-1904  emit_reading helper captures readings
 
 **Traces to:** GW-1904 (AC-2, AC-3, AC-4)
@@ -4777,7 +4796,7 @@ by existing handler tests.
 | GW-1900 | T-1900, T-1900a, T-1900b, T-1900c, T-1900d |
 | GW-1901 | T-1901, T-1901a, T-1901b |
 | GW-1902 | T-1902, T-1902a, T-1902b |
-| GW-1903 | T-1903, T-1903a, T-1903b, T-1903c, T-1903d |
+| GW-1903 | T-1903, T-1903a, T-1903b, T-1903c, T-1903d, T-1903e |
 | GW-1904 | T-1904, T-1904a, T-1904b, T-1904c, T-1904d, T-1904e, T-1904f, T-1904g |
 | GW-1905 | T-1900a, T-1903a |
 | GW-1906 | T-1906 |

@@ -706,6 +706,47 @@ fn t1904d_map_lookup_reads_rodata() {
     );
 }
 
+#[test]
+fn t1904d_direct_map_value_relocation_reads_entry_zero_value() {
+    // Decoder program: load map[0] entry 0's value directly via src=6,
+    // read the first u32, and emit it as reading "g".
+    //
+    // The decoder runtime stores map values densely without key padding, so
+    // this must read bytes 0..4 from the backing store rather than skipping
+    // the first 4 bytes as if a u32 key prefix were present.
+    let mut bytecode = Vec::new();
+    bytecode.extend_from_slice(&bpf_insn(0x18, 0x61, 0, 0));
+    bytecode.extend_from_slice(&[0u8; 8]);
+    bytecode.extend_from_slice(&bpf_insn(0x61, 0x13, 0, 0)); // r3 = *(u32 *)(r1 + 0)
+    bytecode.extend_from_slice(&st_mem_b(10, -8, b'g' as i32));
+    bytecode.extend_from_slice(&mov_reg(1, 10));
+    bytecode.extend_from_slice(&add_imm(1, -8));
+    bytecode.extend_from_slice(&mov_imm(2, 1));
+    bytecode.extend_from_slice(&call_helper(18));
+    bytecode.extend_from_slice(&mov_imm(0, 0));
+    bytecode.extend_from_slice(&exit_insn());
+
+    let image = sonde_protocol::ProgramImage {
+        bytecode,
+        maps: vec![sonde_protocol::MapDef {
+            map_type: 0,
+            key_size: 4,
+            value_size: 8,
+            max_entries: 1,
+        }],
+        map_initial_data: vec![vec![0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55]],
+        map_readonly: vec![true],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+
+    let readings = unsafe { decoder::execute_decoder(&cbor, &[0u8; 4]) }.unwrap();
+    assert_eq!(
+        readings.get("g"),
+        Some(&0x11223344i64),
+        "direct decoder relocations must point at entry 0's value bytes"
+    );
+}
+
 // T-1904e: map_update_elem on .rodata returns error
 #[test]
 fn t1904e_map_update_rodata_rejected() {

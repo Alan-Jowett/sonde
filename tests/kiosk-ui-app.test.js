@@ -753,3 +753,36 @@ test('pollUntilDeviceCodeComplete reuses the completed session id for renewal', 
     ['session-123'],
   );
 });
+
+test('pollUntilDeviceCodeComplete falls back to default poll delay when interval is missing', async () => {
+  const delays = [];
+  kiosk.APP_STATE.deviceCodeSession = {
+    sessionId: 'session-456',
+    userCode: 'UVWXYZ',
+    verificationUri: 'https://microsoft.com/devicelogin',
+    verificationUriComplete: null,
+    message: 'Use code UVWXYZ',
+  };
+
+  let pollCount = 0;
+  await kiosk.pollUntilDeviceCodeComplete('initial', {
+    setTimeoutFn: (fn, delay) => {
+      delays.push(delay);
+      fn();
+    },
+    invoke: async (command) => {
+      if (command === 'poll_device_code_sign_in') {
+        pollCount += 1;
+        if (pollCount === 1) {
+          return { status: 'pending', message: 'keep waiting' };
+        }
+        return { status: 'error', message: 'stop test' };
+      }
+      throw new Error(`unexpected command ${command}`);
+    },
+  }).catch((error) => {
+    assert.match(error.message, /stop test/i);
+  });
+
+  assert.deepEqual(delays, [5000]);
+});

@@ -894,7 +894,7 @@ async function beginDeviceCodeFlow(purpose, deps = {}) {
     : purpose === 'reset'
       ? 'Starting operator device-code sign-in for reset cleanup…'
       : 'Starting operator device-code sign-in for kiosk setup…';
-  renderSetupScreen();
+  showSetupMode(APP_STATE.setupStatusMessage);
   APP_STATE.deviceCodeSession = await startDeviceCodeSignIn({
     purpose,
     tenantId: environment.tenantId,
@@ -913,8 +913,11 @@ async function pollUntilDeviceCodeComplete(purpose, deps = {}) {
     if (response.status === 'pending') {
       APP_STATE.setupStatusMessage = response.message || 'Waiting for operator sign-in to complete…';
       renderSetupScreen();
+      const pollDelayMs = Number.isFinite(response.pollIntervalSeconds) && response.pollIntervalSeconds > 0
+        ? response.pollIntervalSeconds * 1000
+        : DEVICE_CODE_POLL_FALLBACK_MS;
       await new Promise((resolve) => {
-        setTimeoutFn(resolve, Math.max(1, response.pollIntervalSeconds || 0) * 1000 || DEVICE_CODE_POLL_FALLBACK_MS);
+        setTimeoutFn(resolve, pollDelayMs);
       });
       continue;
     }

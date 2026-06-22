@@ -1415,6 +1415,11 @@ async fn complete_kiosk_setup(
     state: tauri::State<'_, AppState>,
     request: CompleteKioskSetupRequest,
 ) -> Result<KioskSetupResult, String> {
+    let shared_app_client_id =
+        normalize_guid(&request.shared_app_client_id, "Shared app client ID")?;
+    let tenant_id = normalize_guid(&request.tenant_id, "Tenant ID")?;
+    let login_endpoint = normalize_login_endpoint(&request.login_endpoint)?;
+    let setup_client_id = normalize_guid(&request.setup_client_id, "Setup client ID")?;
     let session = {
         state
             .device_code_sessions
@@ -1429,25 +1434,20 @@ async fn complete_kiosk_setup(
         .access_token
         .clone()
         .ok_or_else(|| "operator sign-in is not complete yet".to_string())?;
-    let app_state = fetch_graph_application(&access_token, &request.shared_app_client_id).await?;
-    if app_state.app_id != request.shared_app_client_id {
+    let app_state = fetch_graph_application(&access_token, &shared_app_client_id).await?;
+    if app_state.app_id != shared_app_client_id {
         return Err("shared Entra app lookup returned the wrong application".into());
     }
     let bundle = generate_certificate_bundle()?;
     let key_credentials = append_certificate_key(app_state.key_credentials, &bundle);
-    patch_graph_application_keys(
-        &access_token,
-        &request.shared_app_client_id,
-        key_credentials,
-    )
-    .await?;
+    patch_graph_application_keys(&access_token, &shared_app_client_id, key_credentials).await?;
 
     let identity_state = KioskIdentityStateFile {
         version: 1,
-        shared_app_client_id: request.shared_app_client_id.clone(),
-        tenant_id: request.tenant_id.clone(),
-        login_endpoint: normalize_login_endpoint(&request.login_endpoint)?,
-        setup_client_id: request.setup_client_id.clone(),
+        shared_app_client_id,
+        tenant_id,
+        login_endpoint,
+        setup_client_id,
         certificate_pem: bundle.certificate_pem.clone(),
         key_id: bundle.key_id.clone(),
         certificate_thumbprint: bundle.thumbprint.clone(),

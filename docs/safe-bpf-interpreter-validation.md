@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases unless noted otherwise.  The interpreter is fully testable in isolation — construct bytecode in-memory, allocate context/stack/map buffers, and call `execute_program(...)`.  There are **33 test cases** total, organized into nine categories that cover the tagged-register safety model end-to-end.
+All tests in this document are pure Rust `#[test]` cases unless noted otherwise.  The interpreter is fully testable in isolation — construct bytecode in-memory, allocate context/stack/map buffers, and call `execute_program(...)`.  There are **34 test cases** total, organized into nine categories that cover the tagged-register safety model end-to-end.
 
 **Notation:** Each test references the relevant section of [safe-bpf-interpreter.md](safe-bpf-interpreter.md) (abbreviated **§N.M**) or [bpf-environment.md](bpf-environment.md).
 
@@ -389,6 +389,18 @@ Use clearly non-zero test keys (e.g., `[0x42u8; 32]`) and non-trivial buffer con
 
 ---
 
+### T-BPF-030a  LD_DW_IMM src=6 one-past-end offset → `MemoryAccessViolation`
+
+**Validates:** safe-bpf-interpreter.md §4.2
+
+**Procedure:**
+1. Construct bytecode: `LD_DW_IMM r1, src=6, imm=0` with the second wide-instruction slot carrying `next.imm == value_size`.
+2. Provide one valid map definition whose `MapRegion` describes entry 0's layout with explicit `key_size` and `value_size`.
+3. Execute with `execute_program(...)`.
+4. Assert: result is `Err(BpfError::MemoryAccessViolation { .. })` — the relocation is rejected before the one-past-end pointer can be tagged as `MapValue`.
+
+---
+
 ## 10  End-to-end / integration tests
 
 > **Note:** These tests exercise the interpreter within the broader node firmware stack. They run in `crates/sonde-e2e/tests/` or `crates/sonde-node/` integration tests (not `sonde-bpf` unit tests) and require the mock gateway, mock HAL, and test program library described in [node-validation.md](node-validation.md) §2.
@@ -441,7 +453,7 @@ Use clearly non-zero test keys (e.g., `[0x42u8; 32]`) and non-trivial buffer con
 | safe-bpf-interpreter.md §3.2 (`mem_store`) | T-BPF-002 | Pointer dereference |
 | safe-bpf-interpreter.md §3.3 (`mem_atomic`) | T-BPF-004, T-BPF-005 | Pointer dereference |
 | safe-bpf-interpreter.md §4.1 (Initialization) | T-BPF-017 | Tag propagation |
-| safe-bpf-interpreter.md §4.2 (LD_DW_IMM) | T-BPF-028, T-BPF-029, T-BPF-030 | Map relocation |
+| safe-bpf-interpreter.md §4.2 (LD_DW_IMM) | T-BPF-028, T-BPF-029, T-BPF-030, T-BPF-030a | Map relocation |
 | safe-bpf-interpreter.md §4.3 (ALU / pointer arithmetic) | T-BPF-006 – T-BPF-014, T-BPF-015 | Pointer arithmetic, tag propagation |
 | safe-bpf-interpreter.md §4.6 (CALL / EXIT) | T-BPF-016 | Tag propagation |
 | safe-bpf-interpreter.md §5.2 (Helper return) | T-BPF-024, T-BPF-025, T-BPF-026, T-BPF-027 | Helper validation |

@@ -408,6 +408,31 @@ ALL 32-bit ALU operations MUST unconditionally clear the pointer tag on the dest
 4. `LD_DW_IMM src=0` → scalar with 64-bit immediate value.
 5. Unknown src values → `UnknownOpcode`.
 
+#### SBPF-0501  Direct map-value relocation
+
+**Priority:** Must
+**Source:** safe-bpf-interpreter.md §4.2, interpreter.rs `LD_DW_IMM src=6`
+**Confidence:** High
+
+**Description:**
+`LD_DW_IMM` with `src=6` MUST perform direct map-value relocation:
+1. The `imm` field (signed i32) MUST be validated exactly like `src=1`: negative values and indices ≥ `maps.len()` MUST be rejected with `InvalidMapIndex`.
+2. The interpreter MUST compute `value_base = maps[imm].data_start + maps[imm].key_size` using checked arithmetic.
+3. The interpreter MUST compute `value_end = value_base + maps[imm].value_size` using checked arithmetic.
+4. The second wide-instruction slot's `imm` field MUST be treated as a signed constant offset from `value_base`.
+5. The computed pointer MUST satisfy `value_base <= value_addr < value_end`; one-past-end pointers MUST be rejected with `MemoryAccessViolation`.
+6. On success, the destination register MUST be tagged `MapValue { value_size }` over the range `[value_base, value_end)`.
+
+`MapRegion.key_size` therefore becomes part of the runtime contract: callers that store key/value entries contiguously MUST set it to the number of key bytes to skip, while callers that store value bytes densely with no key prefix MUST set it to 0.
+
+**Acceptance criteria:**
+
+1. `LD_DW_IMM src=6, imm=-1` → `InvalidMapIndex { index: -1 }`.
+2. `LD_DW_IMM src=6, imm=N` where N ≥ maps.len() → `InvalidMapIndex`.
+3. `LD_DW_IMM src=6` with `next.imm == 0` and a valid map → register tagged `MapValue`, value = `data_start + key_size`.
+4. `LD_DW_IMM src=6` with `next.imm == value_size` → `MemoryAccessViolation`.
+5. `LD_DW_IMM src=6` with a dense backing layout (`key_size == 0`) reads from the first value byte, not an assumed key prefix.
+
 ---
 
 ### 5.6  Helper Integration
@@ -650,7 +675,7 @@ The following error variants MUST be supported:
 | `InvalidHelperArgument` | Helper expects MapDescriptor but register has wrong tag |
 | `ReadOnlyWrite` | Reserved for future hard write-rejection |
 | `InvalidPointerArithmetic` | Pointer arithmetic rule violation |
-| `InvalidMapIndex` | LD_DW_IMM src=1 with negative or out-of-bounds index |
+| `InvalidMapIndex` | LD_DW_IMM src=1 or src=6 with negative or out-of-bounds index |
 | `InstructionBudgetExceeded` | Instruction count exceeds budget |
 
 **Acceptance criteria:**

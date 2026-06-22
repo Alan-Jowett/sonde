@@ -293,6 +293,7 @@ struct GraphKeyCredential {
     key: Option<String>,
     key_id: String,
     start_date_time: String,
+    #[serde(rename = "type")]
     credential_type: String,
     usage: String,
 }
@@ -549,6 +550,16 @@ fn write_private_key_file_securely(path: &Path, contents: &str) -> Result<(), St
     };
 
     create_parent_dir(path)?;
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "failed to replace existing private key file {}: {error}",
+                path.display()
+            ));
+        }
+    }
     let private_key_sddl = current_user_private_key_sddl()?;
     let private_key_sddl_wide = wide_null(std::ffi::OsStr::new(&private_key_sddl));
     let mut security_descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
@@ -730,6 +741,37 @@ fn persist_identity_state(
         &serde_json::to_string_pretty(state)
             .map_err(|error| format!("failed to serialize kiosk identity state: {error}"))?,
     )
+}
+
+fn persist_private_key_and_identity_state(
+    app: &tauri::AppHandle,
+    identity_state: &KioskIdentityStateFile,
+    private_key_pem: &str,
+    rollback_private_key_pem: Option<&str>,
+) -> Result<(), String> {
+    store_private_key_secret(app, private_key_pem)?;
+    if let Err(error) = persist_identity_state(app, identity_state) {
+        match rollback_private_key_pem {
+            Some(previous_private_key_pem) => {
+                store_private_key_secret(app, previous_private_key_pem).map_err(
+                    |rollback_error| {
+                        format!(
+                            "failed to persist kiosk identity state after updating the private key: {error}; failed to restore previous private key: {rollback_error}"
+                        )
+                    },
+                )?;
+            }
+            None => {
+                clear_private_key_secret(app).map_err(|rollback_error| {
+                    format!(
+                        "failed to persist kiosk identity state after storing the private key: {error}; failed to clear orphaned private key: {rollback_error}"
+                    )
+                })?;
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "android")]
@@ -1455,8 +1497,7 @@ async fn complete_kiosk_setup(
         not_before_ms: bundle.not_before_ms,
         not_after_ms: bundle.not_after_ms,
     };
-    store_private_key_secret(&app, &bundle.private_key_pem)?;
-    persist_identity_state(&app, &identity_state)?;
+    persist_private_key_and_identity_state(&app, &identity_state, &bundle.private_key_pem, None)?;
     fetch_application_access_token(&build_runtime_state(
         &identity_state,
         bundle.private_key_pem,
@@ -1516,6 +1557,8 @@ async fn renew_kiosk_certificate(
         .ok_or_else(|| "operator sign-in is not complete yet".to_string())?;
     let previous_state = load_identity_state(&app)?
         .ok_or_else(|| "kiosk identity is not configured yet".to_string())?;
+    let previous_private_key_pem = load_private_key_secret(&app)?
+        .ok_or_else(|| "kiosk private key is not configured yet".to_string())?;
     let app_state =
         fetch_graph_application(&access_token, &previous_state.shared_app_client_id).await?;
     let bundle = generate_certificate_bundle()?;
@@ -1540,8 +1583,12 @@ async fn renew_kiosk_certificate(
         not_before_ms: bundle.not_before_ms,
         not_after_ms: bundle.not_after_ms,
     };
-    store_private_key_secret(&app, &bundle.private_key_pem)?;
-    persist_identity_state(&app, &next_state)?;
+    persist_private_key_and_identity_state(
+        &app,
+        &next_state,
+        &bundle.private_key_pem,
+        Some(&previous_private_key_pem),
+    )?;
     fetch_application_access_token(&build_runtime_state(&next_state, bundle.private_key_pem))
         .await?;
 
@@ -1840,6 +1887,26 @@ mod tests {
         let filtered = remove_certificate_key(keys, "drop");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].key_id, "keep");
+    }
+
+    #[test]
+    fn graph_key_credential_uses_graph_type_field_name() {
+        let value = serde_json::to_value(GraphKeyCredential {
+            custom_key_identifier: None,
+            display_name: Some("display".into()),
+            end_date_time: "2026-01-01T00:00:00Z".into(),
+            key: Some("ABC".into()),
+            key_id: "11111111-1111-1111-1111-111111111111".into(),
+            start_date_time: "2025-01-01T00:00:00Z".into(),
+            credential_type: "AsymmetricX509Cert".into(),
+            usage: "Verify".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            value.get("type").and_then(|field| field.as_str()),
+            Some("AsymmetricX509Cert")
+        );
+        assert!(value.get("credentialType").is_none());
     }
 
     #[test]

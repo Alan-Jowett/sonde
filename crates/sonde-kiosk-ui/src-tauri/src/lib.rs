@@ -1459,9 +1459,9 @@ async fn complete_kiosk_setup(
 ) -> Result<KioskSetupResult, String> {
     let shared_app_client_id =
         normalize_guid(&request.shared_app_client_id, "Shared app client ID")?;
-    let tenant_id = normalize_guid(&request.tenant_id, "Tenant ID")?;
-    let login_endpoint = normalize_login_endpoint(&request.login_endpoint)?;
-    let setup_client_id = normalize_guid(&request.setup_client_id, "Setup client ID")?;
+    let request_tenant_id = normalize_guid(&request.tenant_id, "Tenant ID")?;
+    let request_login_endpoint = normalize_login_endpoint(&request.login_endpoint)?;
+    let request_setup_client_id = normalize_guid(&request.setup_client_id, "Setup client ID")?;
     let session = {
         state
             .device_code_sessions
@@ -1472,6 +1472,15 @@ async fn complete_kiosk_setup(
             .ok_or_else(|| "device-code session not found".to_string())?
     };
     ensure_device_code_session_purpose(&session, "initial")?;
+    if request_tenant_id != session.tenant_id {
+        return Err("setup tenant ID does not match the active device-code session".into());
+    }
+    if request_login_endpoint != session.login_endpoint {
+        return Err("setup login endpoint does not match the active device-code session".into());
+    }
+    if request_setup_client_id != session.setup_client_id {
+        return Err("setup client ID does not match the active device-code session".into());
+    }
     let access_token = session
         .access_token
         .clone()
@@ -1487,9 +1496,9 @@ async fn complete_kiosk_setup(
     let identity_state = KioskIdentityStateFile {
         version: 1,
         shared_app_client_id,
-        tenant_id,
-        login_endpoint,
-        setup_client_id,
+        tenant_id: session.tenant_id.clone(),
+        login_endpoint: session.login_endpoint.clone(),
+        setup_client_id: session.setup_client_id.clone(),
         certificate_pem: bundle.certificate_pem.clone(),
         key_id: bundle.key_id.clone(),
         certificate_thumbprint: bundle.thumbprint.clone(),
@@ -1497,7 +1506,31 @@ async fn complete_kiosk_setup(
         not_before_ms: bundle.not_before_ms,
         not_after_ms: bundle.not_after_ms,
     };
-    persist_private_key_and_identity_state(&app, &identity_state, &bundle.private_key_pem, None)?;
+    if let Err(error) =
+        persist_private_key_and_identity_state(&app, &identity_state, &bundle.private_key_pem, None)
+    {
+        let rollback_keys = remove_certificate_key(
+            fetch_graph_application(&access_token, &identity_state.shared_app_client_id)
+                .await?
+                .key_credentials,
+            &bundle.key_id,
+        );
+        if let Err(rollback_error) = patch_graph_application_keys(
+            &access_token,
+            &identity_state.shared_app_client_id,
+            rollback_keys,
+        )
+        .await
+        {
+            return Err(format!(
+                "failed to persist kiosk identity locally after adding the remote credential: {error}; best-effort remote rollback for key {} also failed: {rollback_error}",
+                bundle.key_id
+            ));
+        }
+        return Err(format!(
+            "failed to persist kiosk identity locally after adding the remote credential: {error}; the remote credential was rolled back"
+        ));
+    }
     fetch_application_access_token(&build_runtime_state(
         &identity_state,
         bundle.private_key_pem,
@@ -1907,6 +1940,64 @@ mod tests {
             Some("AsymmetricX509Cert")
         );
         assert!(value.get("credentialType").is_none());
+    }
+
+    #[test]
+    fn build_client_assertion_signs_expected_header_and_claims() {
+        let bundle = generate_certificate_bundle().unwrap();
+        let thumbprint = certificate_thumbprint_from_pem(&bundle.certificate_pem).unwrap();
+        let token_endpoint = "https://login.microsoftonline.com/tenant/oauth2/v2.0/token";
+        let client_id = "11111111-1111-1111-1111-111111111111";
+        let (algorithm, signing_key) =
+            load_signing_key_from_pem(bundle.private_key_pem.as_bytes()).unwrap();
+        let assertion = build_client_assertion(
+            client_id,
+            token_endpoint,
+            algorithm,
+            &signing_key,
+            &thumbprint,
+        )
+        .unwrap();
+
+        let mut parts = assertion.split('.');
+        let header_segment = parts.next().unwrap();
+        let claims_segment = parts.next().unwrap();
+        assert!(parts.next().is_some());
+
+        let header: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(header_segment)
+                .unwrap(),
+        )
+        .unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(claims_segment)
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            header.get("alg").and_then(|value| value.as_str()),
+            Some("ES256")
+        );
+        assert_eq!(
+            header.get("x5t#S256").and_then(|value| value.as_str()),
+            Some(thumbprint.as_str())
+        );
+        assert_eq!(
+            claims.get("iss").and_then(|value| value.as_str()),
+            Some(client_id)
+        );
+        assert_eq!(
+            claims.get("sub").and_then(|value| value.as_str()),
+            Some(client_id)
+        );
+        assert_eq!(
+            claims.get("aud").and_then(|value| value.as_str()),
+            Some(token_endpoint)
+        );
+        assert!(claims.get("jti").and_then(|value| value.as_str()).is_some());
     }
 
     #[test]

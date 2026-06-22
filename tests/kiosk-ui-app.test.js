@@ -42,6 +42,24 @@ global.Blob = class Blob {
 const runtime = require(path.resolve(__dirname, '..', 'deploy', 'web-ui', 'dashboard-runtime.js'));
 const kiosk = require(path.resolve(__dirname, '..', 'crates', 'sonde-kiosk-ui', 'src', 'main.js'));
 
+function buildEnvironment(overrides = {}) {
+  return runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    loginEndpoint: 'https://login.microsoftonline.com',
+    kioskSetupClientId: '33333333-3333-3333-3333-333333333333',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [],
+    ...overrides,
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+}
+
 test('validateImportedEnvironmentJson accepts SPA-style environment imports', () => {
   const environment = kiosk.validateImportedEnvironmentJson(JSON.stringify({
     version: 1,
@@ -565,4 +583,125 @@ test('loadStoredTelemetryCache clears corrupted persisted cache and recovers wit
 
   assert.equal(cache.size, 0);
   assert.deepEqual(invoked, ['get_telemetry_cache_json', 'clear_telemetry_cache_json']);
+});
+
+test('validateSetupLoginMetadata accepts additive kiosk setup fields', () => {
+  const result = kiosk.validateSetupLoginMetadata(buildEnvironment());
+
+  assert.deepEqual(result, {
+    valid: true,
+    loginEndpoint: 'https://login.microsoftonline.com',
+    kioskSetupClientId: '33333333-3333-3333-3333-333333333333',
+  });
+});
+
+test('validateSetupLoginMetadata rejects incomplete kiosk setup metadata', () => {
+  const result = kiosk.validateSetupLoginMetadata(buildEnvironment({ kioskSetupClientId: '' }));
+
+  assert.equal(result.valid, false);
+  assert.match(result.error, /missing kiosk setup login metadata/i);
+});
+
+test('importEnvironmentFromText clears prior kiosk identity and stays in setup mode', async () => {
+  const calls = [];
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.identitySummary = { clientId: 'old-client' };
+  kiosk.APP_STATE.activeEnvironment = null;
+
+  await kiosk.importEnvironmentFromText(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    loginEndpoint: 'https://login.microsoftonline.com',
+    kioskSetupClientId: '33333333-3333-3333-3333-333333333333',
+    dashboards: [],
+  }), {
+    runtime,
+    invoke: async (command, payload) => {
+      calls.push({ command, payload });
+      return null;
+    },
+  });
+
+  assert.equal(kiosk.APP_STATE.identitySummary, null);
+  assert.equal(kiosk.APP_STATE.activeEnvironment?.name, 'prod');
+  assert.equal(kiosk.APP_STATE.activeDashboardIndex, 0);
+  assert.equal(kiosk.APP_STATE.deviceCodeSession, null);
+  assert.match(kiosk.APP_STATE.setupStatusMessage, /complete operator sign-in/i);
+  assert.deepEqual(calls.map(({ command }) => command), [
+    'clear_kiosk_identity_local_state',
+    'save_environment_json',
+    'clear_telemetry_cache_json',
+  ]);
+});
+
+test('pollUntilDeviceCodeComplete reuses the completed session id for renewal', async () => {
+  const calls = [];
+  kiosk.APP_STATE.activeEnvironment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [],
+      charts: [],
+      timeRange: { preset: '24h', start: null, end: null },
+    }],
+  });
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.deviceCodeSession = {
+    sessionId: 'session-123',
+    userCode: 'ABCDEF',
+    verificationUri: 'https://microsoft.com/devicelogin',
+    verificationUriComplete: 'https://microsoft.com/devicelogin?code=ABCDEF',
+    pollIntervalSeconds: 0,
+    message: 'Use code ABCDEF',
+  };
+
+  await kiosk.pollUntilDeviceCodeComplete('renew', {
+    setTimeoutFn: (fn) => fn(),
+    setIntervalFn: () => 1,
+    clearIntervalFn() {},
+    invoke: async (command, payload) => {
+      calls.push({ command, payload });
+      if (command === 'poll_device_code_sign_in') {
+        return { status: 'complete', message: 'Signed in.' };
+      }
+      if (command === 'renew_kiosk_certificate') {
+        return {
+          message: 'Renewed.',
+          cleanupStatus: 'removed_previous',
+          summary: {
+            tenantId: '22222222-2222-2222-2222-222222222222',
+            sharedAppClientId: '11111111-1111-1111-1111-111111111111',
+            registeredAt: '2026-06-21T00:00:00Z',
+            expiresAt: '2026-12-21T00:00:00Z',
+            renewalRequired: false,
+          },
+        };
+      }
+      if (command === 'sign_in_kiosk_application') {
+        return {
+          message: 'Application sign-in succeeded.',
+          summary: {
+            tenantId: '22222222-2222-2222-2222-222222222222',
+            sharedAppClientId: '11111111-1111-1111-1111-111111111111',
+            registeredAt: '2026-06-21T00:00:00Z',
+            expiresAt: '2026-12-21T00:00:00Z',
+            renewalRequired: false,
+          },
+        };
+      }
+      if (command === 'fetch_dashboard_variable_data') {
+        return { refreshedAtMs: 9_000, series: [] };
+      }
+      throw new Error(`unexpected command ${command}`);
+    },
+  });
+
+  assert.equal(kiosk.APP_STATE.deviceCodeSession, null);
+  assert.deepEqual(
+    calls.filter(({ command }) => command === 'renew_kiosk_certificate').map(({ payload }) => payload.request.sessionId),
+    ['session-123'],
+  );
 });

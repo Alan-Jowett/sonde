@@ -317,6 +317,29 @@ manual cleanup can target the correct remote credential unambiguously.
 
 ---
 
+### KA-0209  Setup login metadata for device-code sign-in
+
+**Priority:** Must  
+**Source:** implementation discovery: kiosk device-code setup requires a repository-owned public-client identity rather than an implicit third-party client
+
+**Description:**  
+The kiosk app MUST receive the non-secret login metadata needed for one-time
+operator device-code sign-in from Sonde-managed provisioning outputs rather than
+hard-coding a third-party public-client identity.
+
+**Acceptance criteria:**
+
+1. Kiosk onboarding has access to a Sonde-managed public-client Entra app client
+   ID suitable for device-code sign-in during setup, renewal, and reset cleanup.
+2. The device-code setup client is distinct from the shared
+   certificate-authenticated runtime app used for unattended dashboard reads.
+3. The kiosk app has the authority-host metadata needed to target the correct
+   tenant/cloud during device-code sign-in.
+4. The setup-login metadata is additive to the existing SPA environment JSON
+   contract rather than requiring a kiosk-only environment schema fork.
+
+---
+
 ## 5  Dashboard presentation
 
 ### KA-0300  Dashboard-only full-screen navigation

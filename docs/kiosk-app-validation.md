@@ -46,6 +46,7 @@ full device UX.
 | KA-0206 | T-KA-206 |
 | KA-0207 | T-KA-208 |
 | KA-0208 | T-KA-209 |
+| KA-0209 | T-KA-210 |
 | KA-0300 | T-KA-300 |
 | KA-0301 | T-KA-301 |
 | KA-0302 | T-KA-302 |
@@ -256,6 +257,23 @@ full device UX.
 4. Trigger reset with remote cleanup failure.
 5. Assert: the app retains or reports enough non-secret identifying metadata for
    manual cleanup follow-up without exposing the private key.
+
+---
+
+### T-KA-210  Device-code setup uses Sonde-managed login metadata
+
+**Validates:** KA-0209
+
+**Procedure:**
+1. Import an environment JSON containing additive kiosk setup-login metadata such
+   as `kioskSetupClientId` and `loginEndpoint`.
+2. Start the operator sign-in flow.
+3. Assert: the device-code request uses the imported/publicly provisioned setup
+   client rather than the shared certificate-authenticated runtime app client ID.
+4. Assert: the setup flow targets the imported authority host for the tenant/cloud.
+5. Repeat with the setup-login metadata omitted.
+6. Assert: the kiosk app reports an actionable configuration error rather than
+   silently falling back to an unrelated third-party public client.
 
 ---
 

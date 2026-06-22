@@ -113,7 +113,7 @@ The kiosk setup flow is:
 ```text
 Reset
   -> ImportEnvironment
-  -> UserSignIn
+  -> UserDeviceCodeSignIn
   -> GenerateKioskCertificate
   -> AttachCertificateToSharedApp
   -> UserSignOut
@@ -132,8 +132,14 @@ LoadEnvironmentAndCredential
 
 ### 3.2  Shared Entra app model
 
-Azure bootstrap remains the owner of the shared Entra app registration and
-service principal. The kiosk app does **not** create a new app registration.
+Azure bootstrap remains the owner of:
+
+1. the shared Entra app registration/service principal used for unattended
+   certificate-authenticated dashboard reads, and
+2. a separate public-client Entra app used only for operator device-code sign-in
+   during setup, renewal, and reset cleanup.
+
+The kiosk app does **not** create a new app registration during setup.
 
 Each kiosk installation instead:
 
@@ -153,6 +159,8 @@ absent, the kiosk app fails explicitly with an actionable operator-facing error.
 The kiosk backend stores:
 
 - imported environment metadata,
+- non-secret setup-login metadata such as the device-code public-client ID and
+  authority host,
 - non-secret remote-correlation metadata for the kiosk certificate credential
   (for example thumbprint, key ID, or credential object ID),
 - a local kiosk credential identifier sufficient to target later cleanup,
@@ -368,9 +376,12 @@ adaptive, but it must:
 ### 6.1  Bootstrap dependency
 
 The kiosk app depends on Azure bootstrap having already created the shared Entra
-app/service principal and granted the read access required for dashboard data.
-The imported environment JSON identifies that shared app via `clientId` and
-`tenantId`.
+app/service principal, the setup public-client app, and the read access required
+for dashboard data. The imported environment JSON identifies:
+
+1. the shared runtime app via `clientId` and `tenantId`, and
+2. the setup-login path via additive non-secret metadata such as
+   `kioskSetupClientId` and `loginEndpoint`.
 
 ### 6.2  Application-authenticated telemetry reads
 
@@ -397,7 +408,7 @@ used to attach the credential is an implementation detail, but the contract is:
 | KA-0100, KA-0102 | §§1, 2 |
 | KA-0101 | §2.2 |
 | KA-0200, KA-0201 | §§3.1, 4.1 |
-| KA-0202, KA-0203, KA-0204, KA-0205, KA-0206, KA-0207, KA-0208 | §§3, 6 |
+| KA-0202, KA-0203, KA-0204, KA-0205, KA-0206, KA-0207, KA-0208, KA-0209 | §§3, 6 |
 | KA-0300, KA-0301, KA-0302, KA-0303 | §4 |
 | KA-0400, KA-0401, KA-0402, KA-0403, KA-0404, KA-0405, KA-0407 | §5, §6 |
 | KA-0406 | §4.5 |
@@ -409,6 +420,7 @@ used to attach the credential is an implementation detail, but the contract is:
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-20 | evolve skill | Added setup-login public-client metadata for kiosk device-code sign-in and clarified that bootstrap owns both the shared runtime app and the setup-login app. |
 | 2026-06-19 | evolve skill | Clarified kiosk certificate lifecycle, permission-failure reporting, certificate identity persistence, offline restart behavior, implementation-defined refresh cadence, and optional future Lock Task support. |
 | 2026-06-19 | evolve skill | Added optional kiosk design coverage for offline cached presentation, guarded operator-only controls, and bounded cache eviction. |
 | 2026-06-19 | evolve skill | Added initial kiosk dashboard app design covering shared dashboard-runtime extraction, one-time setup/user sign-in, per-kiosk certificate attachment to the shared Entra app, app-authenticated reads, persistent telemetry caching, and swipe/pull-to-refresh UX. |

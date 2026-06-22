@@ -148,7 +148,7 @@
 1. Run the provisioning workflow.
 2. Collect the documented outputs and artifacts from the handoff contract.
 3. Compare them against the runtime-state inputs expected by `sonde-azure-companion`.
-4. Assert: the handoff includes tenant ID, client ID, login endpoint, certificate material or reference, private-key material or reference, Storage Queue endpoint/queue values, and the Function App / deployment-target values needed by bootstrap package deployment.
+4. Assert: the handoff includes tenant ID, client ID, login endpoint, certificate material or reference, private-key material or reference, kiosk setup public-client metadata for device-code onboarding, Storage Queue endpoint/queue values, and the Function App / deployment-target values needed by bootstrap package deployment.
 5. Assert: the handoff can be translated into `service-principal.json`, certificate PEM, and private-key PEM without inventing extra undocumented values.
 
 ---
@@ -184,6 +184,24 @@
    kiosk dashboard viewing.
 5. Assert: the documented permissions remain narrower than general owner or
    administrator privileges.
+
+---
+
+### T-AZP-0205  Kiosk setup public client is provisioned and surfaced
+
+**Validates:** AZP-0205
+
+**Procedure:**
+1. Run the provisioning workflow.
+2. Inspect the Entra application registrations or documented identity outputs.
+3. Assert: a public-client setup app suitable for device-code sign-in exists and
+   is distinct from the shared certificate-authenticated runtime app.
+4. Inspect the delegated Microsoft Graph permission configuration for the setup app.
+5. Assert: the setup app has the delegated credential-management access needed
+   for kiosk certificate add/replace/remove flows.
+6. Inspect the documented handoff or environment-export metadata.
+7. Assert: the kiosk-facing outputs include at least the setup public-client ID
+   and authority-host/login-endpoint metadata.
 
 ---
 

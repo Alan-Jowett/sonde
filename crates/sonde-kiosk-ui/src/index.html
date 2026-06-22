@@ -22,9 +22,16 @@
       <div class="card">
         <h2>Setup</h2>
         <p class="lead">Import an environment JSON exported from the SPA to start kiosk dashboard mode.</p>
+        <div id="setup-context" class="status-text">Import an environment JSON exported from the SPA to start kiosk dashboard mode.</div>
         <div id="setup-status" class="status-text">No environment imported yet.</div>
         <div class="button-row">
           <button type="button" id="import-button">Import Environment JSON</button>
+          <button type="button" id="setup-auth-button" class="hidden">Start Device Code Sign-In</button>
+        </div>
+        <div id="device-code-panel" class="device-code-panel hidden">
+          <p class="lead">Complete Microsoft sign-in with this device code:</p>
+          <div id="device-code-value" class="device-code-value"></div>
+          <a id="device-code-link" class="device-code-link" href="#" target="_blank" rel="noreferrer noopener"></a>
         </div>
         <input id="import-file" type="file" accept=".json,application/json" class="hidden" />
       </div>
@@ -54,6 +61,7 @@
       <h2 id="operator-panel-title">Operator Controls</h2>
       <p class="lead">Use these controls to replace the imported environment or clear local kiosk state.</p>
       <div class="button-column">
+        <button type="button" id="operator-renew">Renew Kiosk Certificate</button>
         <button type="button" id="operator-reimport">Import Replacement Environment</button>
         <button type="button" id="operator-reset" class="danger-button">Reset Imported Environment</button>
         <button type="button" id="operator-close">Close</button>

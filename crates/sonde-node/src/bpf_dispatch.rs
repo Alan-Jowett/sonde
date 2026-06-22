@@ -752,20 +752,48 @@ pub fn register_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::async_queue::AsyncQueue;
+    use crate::bpf_runtime::BpfInterpreter;
     use crate::error::NodeResult;
     use crate::hal::Hal;
     use crate::map_storage::MapStorage;
     use crate::sleep::{SleepManager, WakeReason};
     use crate::traits::{Clock, Transport};
+    use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget};
     use sonde_protocol::{MapDef, NodeMessage, MSG_APP_DATA};
-
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
     // -- Test mocks ---------------------------------------------------------
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum I2cEvent {
+        Write { handle: u32, data: Vec<u8> },
+        WriteRead { handle: u32, write: Vec<u8> },
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum I2cExpectation {
+        Write {
+            handle: u32,
+            data: Vec<u8>,
+            rc: i32,
+        },
+        WriteRead {
+            handle: u32,
+            write: Vec<u8>,
+            read: Vec<u8>,
+            rc: i32,
+        },
+    }
 
     struct TestHal {
         /// Data returned by i2c_read.
         i2c_read_data: Vec<u8>,
         /// Return code for i2c operations (-1 = NACK).
         i2c_return: i32,
+        strict_i2c: bool,
+        i2c_events: Vec<I2cEvent>,
+        i2c_expectations: VecDeque<I2cExpectation>,
         gpio_states: [i32; 32],
         adc_values: [i32; 8],
     }
@@ -775,9 +803,29 @@ mod tests {
             Self {
                 i2c_read_data: vec![0x1A, 0x2B],
                 i2c_return: 0,
+                strict_i2c: false,
+                i2c_events: Vec::new(),
+                i2c_expectations: VecDeque::new(),
                 gpio_states: [0; 32],
                 adc_values: [0; 8],
             }
+        }
+
+        fn expect_i2c_write(&mut self, handle: u32, data: &[u8], rc: i32) {
+            self.i2c_expectations.push_back(I2cExpectation::Write {
+                handle,
+                data: data.to_vec(),
+                rc,
+            });
+        }
+
+        fn expect_i2c_write_read(&mut self, handle: u32, write: &[u8], read: &[u8], rc: i32) {
+            self.i2c_expectations.push_back(I2cExpectation::WriteRead {
+                handle,
+                write: write.to_vec(),
+                read: read.to_vec(),
+                rc,
+            });
         }
     }
 
@@ -790,10 +838,68 @@ mod tests {
             buf[..copy_len].copy_from_slice(&self.i2c_read_data[..copy_len]);
             0
         }
-        fn i2c_write(&mut self, _handle: u32, _data: &[u8]) -> i32 {
+        fn i2c_write(&mut self, handle: u32, data: &[u8]) -> i32 {
+            self.i2c_events.push(I2cEvent::Write {
+                handle,
+                data: data.to_vec(),
+            });
+            if let Some(expectation) = self.i2c_expectations.pop_front() {
+                match expectation {
+                    I2cExpectation::Write {
+                        handle: expected_handle,
+                        data: expected_data,
+                        rc,
+                    } if expected_handle == handle && expected_data == data => {
+                        return rc;
+                    }
+                    other => {
+                        self.i2c_expectations.push_front(other);
+                        return -1;
+                    }
+                }
+            }
+            if self.strict_i2c {
+                return -1;
+            }
             self.i2c_return
         }
-        fn i2c_write_read(&mut self, _handle: u32, _w: &[u8], buf: &mut [u8]) -> i32 {
+        fn i2c_write_read(&mut self, handle: u32, w: &[u8], buf: &mut [u8]) -> i32 {
+            self.i2c_events.push(I2cEvent::WriteRead {
+                handle,
+                write: w.to_vec(),
+            });
+            if let Some(expectation) = self.i2c_expectations.pop_front() {
+                match expectation {
+                    I2cExpectation::WriteRead {
+                        handle: expected_handle,
+                        write: expected_write,
+                        read,
+                        rc,
+                    } if expected_handle == handle && expected_write == w => {
+                        if rc == 0 {
+                            if self.strict_i2c {
+                                assert_eq!(
+                                    read.len(),
+                                    buf.len(),
+                                    "strict i2c expectation length mismatch: expected {} bytes, program requested {}",
+                                    read.len(),
+                                    buf.len()
+                                );
+                            }
+                            let copy_len = buf.len().min(read.len());
+                            buf[..copy_len].copy_from_slice(&read[..copy_len]);
+                        }
+                        return rc;
+                    }
+                    other => {
+                        self.i2c_expectations.push_front(other);
+                        return -1;
+                    }
+                }
+            }
+            if self.strict_i2c {
+                return -1;
+            }
             if self.i2c_return != 0 {
                 return self.i2c_return;
             }
@@ -860,6 +966,78 @@ mod tests {
         fn delay_ms(&self, _ms: u32) {}
     }
 
+    struct RecordingClock {
+        elapsed_ms: u64,
+        delays_ms: RefCell<Vec<u32>>,
+        delays_us: RefCell<Vec<u32>>,
+    }
+
+    impl RecordingClock {
+        fn new(elapsed_ms: u64) -> Self {
+            Self {
+                elapsed_ms,
+                delays_ms: RefCell::new(Vec::new()),
+                delays_us: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Clock for RecordingClock {
+        fn elapsed_ms(&self) -> u64 {
+            self.elapsed_ms
+        }
+
+        fn delay_ms(&self, ms: u32) {
+            self.delays_ms.borrow_mut().push(ms);
+        }
+
+        fn delay_us(&self, us: u32) {
+            self.delays_us.borrow_mut().push(us);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_recording_clock_test_context_and_queue<F, R>(
+        hal: &mut TestHal,
+        transport: &mut TestTransport,
+        map_storage: &mut MapStorage,
+        sleep_mgr: &mut SleepManager,
+        clock: &RecordingClock,
+        identity: &NodeIdentity,
+        seq: &mut u64,
+        program_class: ProgramClass,
+        trace_log: &mut Vec<String>,
+        async_queue: &mut AsyncQueue,
+        f: F,
+    ) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let aead = crate::node_aead::NodeAead;
+        let sha = crate::crypto::SoftwareSha256;
+        unsafe {
+            install(
+                hal as *mut TestHal as *mut dyn Hal,
+                transport as *mut TestTransport as *mut dyn Transport,
+                map_storage as *mut MapStorage,
+                sleep_mgr as *mut SleepManager,
+                clock as *const RecordingClock as *const dyn Clock,
+                identity as *const NodeIdentity,
+                seq as *mut u64,
+                program_class,
+                trace_log as *mut Vec<String>,
+                async_queue as *mut AsyncQueue,
+                1_710_000_000_000,
+                100,
+                3300,
+                &aead,
+                &sha,
+            );
+        }
+        let _guard = DispatchGuard;
+        f()
+    }
+
     /// Install the dispatch context for the test, run `f`, then clear.
     #[allow(clippy::too_many_arguments)]
     fn with_test_context<F, R>(
@@ -878,6 +1056,38 @@ mod tests {
         F: FnOnce() -> R,
     {
         let mut queue = AsyncQueue::new();
+        with_test_clock_context_and_queue(
+            hal,
+            transport,
+            map_storage,
+            sleep_mgr,
+            clock,
+            identity,
+            seq,
+            program_class,
+            trace_log,
+            &mut queue,
+            f,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_test_clock_context_and_queue<F, R>(
+        hal: &mut TestHal,
+        transport: &mut TestTransport,
+        map_storage: &mut MapStorage,
+        sleep_mgr: &mut SleepManager,
+        clock: &TestClock,
+        identity: &NodeIdentity,
+        seq: &mut u64,
+        program_class: ProgramClass,
+        trace_log: &mut Vec<String>,
+        async_queue: &mut AsyncQueue,
+        f: F,
+    ) -> R
+    where
+        F: FnOnce() -> R,
+    {
         let aead = crate::node_aead::NodeAead;
         let sha = crate::crypto::SoftwareSha256;
         unsafe {
@@ -891,7 +1101,7 @@ mod tests {
                 seq as *mut u64,
                 program_class,
                 trace_log as *mut Vec<String>,
-                &mut queue as *mut AsyncQueue,
+                async_queue as *mut AsyncQueue,
                 1_710_000_000_000,
                 100,
                 3300,
@@ -903,11 +1113,155 @@ mod tests {
         f()
     }
 
+    // Pre-compiled BPF ELF for `test-programs/veml7700_sensor.c`
+    // (`clang -target bpf -O2 -Wall -Wextra -DSONDE_DISABLE_DECODER=1`).
+    // Embedding avoids a runtime clang dependency in host/CI tests.
+    const VEML7700_SENSOR_ELF_HEX: &str = include_str!("veml7700_sensor_elf.hex");
+
+    fn decode_veml7700_sensor_elf() -> Vec<u8> {
+        let hex = VEML7700_SENSOR_ELF_HEX.trim();
+        assert!(
+            hex.len().is_multiple_of(2),
+            "embedded VEML7700 ELF hex should contain an even number of digits"
+        );
+
+        let mut bytes = Vec::with_capacity(hex.len() / 2);
+        for i in (0..hex.len()).step_by(2) {
+            let byte = u8::from_str_radix(&hex[i..i + 2], 16)
+                .expect("embedded VEML7700 ELF hex should be valid");
+            bytes.push(byte);
+        }
+        bytes
+    }
+
+    fn compile_veml7700_program_image() -> sonde_protocol::ProgramImage {
+        const VEML7700_STATE_SIZE: u32 = 16;
+        const STATE_MAP_TYPE: u32 = 1;
+        const STATE_MAP_DEF_SIZE: u64 = 32;
+
+        let elf = decode_veml7700_sensor_elf();
+        let file = object::File::parse(&*elf).expect("compiled ELF should parse");
+        let maps_section = file
+            .section_by_name(".maps")
+            .expect("compiled ELF should contain a .maps section");
+        assert_eq!(
+            maps_section
+                .data()
+                .expect(".maps section bytes should be readable")
+                .len() as u64,
+            STATE_MAP_DEF_SIZE,
+            "embedded ELF .maps section size should match the single-entry state_map definition"
+        );
+        let state_map_symbol = file
+            .symbols()
+            .find(|symbol| symbol.name().ok() == Some("state_map"))
+            .expect("compiled ELF should define the state_map symbol");
+        assert_eq!(
+            state_map_symbol.size(),
+            STATE_MAP_DEF_SIZE,
+            "embedded ELF state_map symbol size should match the expected map-definition layout"
+        );
+        let section = file
+            .section_by_name("sonde")
+            .expect("compiled ELF should contain a sonde section");
+        let mut bytecode = section
+            .data()
+            .expect("sonde section bytes should be readable")
+            .to_vec();
+        let relocations: Vec<usize> = section
+            .relocations()
+            .filter_map(|(offset, relocation)| {
+                let RelocationTarget::Symbol(symbol_index) = relocation.target() else {
+                    return None;
+                };
+                let symbol = file
+                    .symbol_by_index(symbol_index)
+                    .expect("relocation symbol should be readable");
+                let symbol_name = symbol.name().expect("relocation symbol should be named");
+                if symbol_name != "state_map" {
+                    return None;
+                }
+                Some(relocation_lldw_start(
+                    &bytecode,
+                    offset as usize,
+                    symbol_name,
+                ))
+            })
+            .collect();
+        assert!(
+            !relocations.is_empty(),
+            "compiled ELF should contain at least one state_map relocation"
+        );
+
+        let mut patched_offsets = Vec::new();
+        for offset in relocations {
+            if patched_offsets.contains(&offset) {
+                continue;
+            }
+            patched_offsets.push(offset);
+            bytecode[offset + 1] = (bytecode[offset + 1] & 0x0f) | 0x10;
+            bytecode[offset + 4..offset + 8].copy_from_slice(&0i32.to_le_bytes());
+            bytecode[offset + 12..offset + 16].copy_from_slice(&0i32.to_le_bytes());
+        }
+
+        sonde_protocol::ProgramImage {
+            bytecode,
+            maps: vec![MapDef {
+                // Must match `state_map` in `test-programs/veml7700_sensor.c`
+                // and `BPF_MAP_TYPE_ARRAY` in `include/sonde_helpers.h`.
+                map_type: STATE_MAP_TYPE,
+                key_size: 4,
+                // Kept in sync with the C source by the compile-time assertion
+                // `veml7700_state_size_must_be_16`.
+                value_size: VEML7700_STATE_SIZE,
+                max_entries: 1,
+            }],
+            map_initial_data: vec![Vec::new()],
+            map_readonly: vec![false],
+        }
+    }
+
+    fn relocation_lldw_start(
+        bytecode: &[u8],
+        relocation_offset: usize,
+        symbol_name: &str,
+    ) -> usize {
+        for candidate in [relocation_offset, relocation_offset.saturating_sub(4)] {
+            let Some(opcode) = bytecode.get(candidate).copied() else {
+                continue;
+            };
+            if opcode == 0x18 && relocation_offset >= candidate && relocation_offset < candidate + 8
+            {
+                return candidate;
+            }
+        }
+
+        panic!(
+            "relocation for {symbol_name} at byte offset {relocation_offset} does not point to an LDDW instruction"
+        );
+    }
+
     fn default_identity() -> NodeIdentity {
         NodeIdentity {
             key_hint: 1,
             psk: [0xAA; 32],
         }
+    }
+
+    fn encode_veml7700_state(
+        recent_lux_ml: [u32; 3],
+        current_conf: u16,
+        recent_count: u8,
+        recent_index: u8,
+    ) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(&recent_lux_ml[0].to_le_bytes());
+        bytes[4..8].copy_from_slice(&recent_lux_ml[1].to_le_bytes());
+        bytes[8..12].copy_from_slice(&recent_lux_ml[2].to_le_bytes());
+        bytes[12..14].copy_from_slice(&current_conf.to_le_bytes());
+        bytes[14] = recent_count;
+        bytes[15] = recent_index;
+        bytes
     }
 
     // -- Tests --------------------------------------------------------------
@@ -2370,11 +2724,544 @@ mod tests {
                 &sha as *const _ as *const dyn sonde_protocol::Sha256Provider,
             );
         }
+
         let _guard = DispatchGuard;
 
         let data = [0x42u8; 4];
         let result = helper_send_async(data.as_ptr() as u64, data.len() as u64, 0, 0, 0);
         assert_eq!(result as i64, -1, "queue full should return -1");
+    }
+
+    #[test]
+    fn test_veml7700_sensor_program_queues_payload_with_documented_registers() {
+        let image = compile_veml7700_program_image();
+        let handle = crate::hal::i2c_handle(0, 0x10);
+        let als_counts = 0x1234u16;
+        let white_counts = 0x5678u16;
+        let expected_lux_ml = u32::from(als_counts) * 576u32 / 10u32;
+
+        let mut hal = TestHal::new();
+        hal.strict_i2c = true;
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x00], 0);
+        hal.expect_i2c_write_read(handle, &[0x04], &als_counts.to_le_bytes(), 0);
+        hal.expect_i2c_write_read(handle, &[0x05], &white_counts.to_le_bytes(), 0);
+        hal.expect_i2c_write(handle, &[0x00, 0x01, 0x00], 0);
+
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        maps.allocate(&image.maps).unwrap();
+        maps.apply_initial_data(&image.map_initial_data);
+
+        let clock = RecordingClock::new(0);
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let mut queue = AsyncQueue::new();
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let mut interpreter = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
+        register_all(&mut interpreter).unwrap();
+        interpreter
+            .load(&image.bytecode, maps.map_pointers(), &image.maps)
+            .unwrap();
+
+        with_recording_clock_test_context_and_queue(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            &mut queue,
+            || {
+                let ctx = crate::bpf_helpers::SondeContext {
+                    timestamp: 0x0102_0304_0506_0708,
+                    battery_mv: 3300,
+                    firmware_abi_version: crate::FIRMWARE_ABI_VERSION as u16,
+                    wake_reason: 0,
+                    _padding: [0; 3],
+                    data_start: 0,
+                    data_end: 0,
+                };
+                let result = interpreter
+                    .execute(
+                        (&ctx as *const crate::bpf_helpers::SondeContext) as u64,
+                        100_000,
+                    )
+                    .unwrap();
+                assert_eq!(result, 0);
+            },
+        );
+
+        assert!(
+            hal.i2c_expectations.is_empty(),
+            "all expected VEML7700 transactions should be consumed"
+        );
+        assert_eq!(
+            hal.i2c_events,
+            vec![
+                I2cEvent::Write {
+                    handle,
+                    data: vec![0x00, 0x00, 0x00],
+                },
+                I2cEvent::WriteRead {
+                    handle,
+                    write: vec![0x04],
+                },
+                I2cEvent::WriteRead {
+                    handle,
+                    write: vec![0x05],
+                },
+                I2cEvent::Write {
+                    handle,
+                    data: vec![0x00, 0x01, 0x00],
+                },
+            ]
+        );
+        assert_eq!(*clock.delays_us.borrow(), vec![120_000]);
+        assert!(transport.outbound.is_empty());
+        assert_eq!(queue.len(), 1);
+
+        let queued = queue.drain();
+        assert_eq!(queued.len(), 1);
+        let payload = &queued[0];
+        assert_eq!(payload.len(), 18);
+        assert_eq!(&payload[0..8], &0x0102_0304_0506_0708u64.to_le_bytes());
+        assert_eq!(u16::from_le_bytes([payload[8], payload[9]]), 0x0000);
+        assert_eq!(u16::from_le_bytes([payload[10], payload[11]]), als_counts);
+        assert_eq!(u16::from_le_bytes([payload[12], payload[13]]), white_counts);
+        assert_eq!(
+            u32::from_le_bytes([payload[14], payload[15], payload[16], payload[17]]),
+            expected_lux_ml
+        );
+    }
+
+    #[test]
+    fn test_veml7700_sensor_program_suppresses_payload_on_i2c_error() {
+        let image = compile_veml7700_program_image();
+        let handle = crate::hal::i2c_handle(0, 0x10);
+
+        let mut hal = TestHal::new();
+        hal.strict_i2c = true;
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x00], 0);
+        hal.expect_i2c_write_read(handle, &[0x04], &[], -1);
+
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        maps.allocate(&image.maps).unwrap();
+        maps.apply_initial_data(&image.map_initial_data);
+
+        let clock = RecordingClock::new(0);
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let mut queue = AsyncQueue::new();
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let mut interpreter = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
+        register_all(&mut interpreter).unwrap();
+        interpreter
+            .load(&image.bytecode, maps.map_pointers(), &image.maps)
+            .unwrap();
+
+        with_recording_clock_test_context_and_queue(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            &mut queue,
+            || {
+                let ctx = crate::bpf_helpers::SondeContext {
+                    timestamp: 1234,
+                    battery_mv: 3300,
+                    firmware_abi_version: crate::FIRMWARE_ABI_VERSION as u16,
+                    wake_reason: 0,
+                    _padding: [0; 3],
+                    data_start: 0,
+                    data_end: 0,
+                };
+                let result = interpreter
+                    .execute(
+                        (&ctx as *const crate::bpf_helpers::SondeContext) as u64,
+                        100_000,
+                    )
+                    .unwrap();
+                assert_eq!(result, 0);
+            },
+        );
+
+        assert!(
+            hal.i2c_expectations.is_empty(),
+            "configured failure path should be exercised"
+        );
+        assert_eq!(
+            hal.i2c_events,
+            vec![
+                I2cEvent::Write {
+                    handle,
+                    data: vec![0x00, 0x00, 0x00],
+                },
+                I2cEvent::WriteRead {
+                    handle,
+                    write: vec![0x04],
+                },
+            ]
+        );
+        assert_eq!(*clock.delays_us.borrow(), vec![120_000]);
+        assert!(transport.outbound.is_empty());
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_veml7700_sensor_program_suppresses_payload_on_i2c_write_error() {
+        let image = compile_veml7700_program_image();
+        let handle = crate::hal::i2c_handle(0, 0x10);
+
+        let mut hal = TestHal::new();
+        hal.strict_i2c = true;
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x00], -1);
+
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        maps.allocate(&image.maps).unwrap();
+        maps.apply_initial_data(&image.map_initial_data);
+
+        let clock = RecordingClock::new(0);
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let mut queue = AsyncQueue::new();
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let mut interpreter = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
+        register_all(&mut interpreter).unwrap();
+        interpreter
+            .load(&image.bytecode, maps.map_pointers(), &image.maps)
+            .unwrap();
+
+        with_recording_clock_test_context_and_queue(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            &mut queue,
+            || {
+                let ctx = crate::bpf_helpers::SondeContext {
+                    timestamp: 1234,
+                    battery_mv: 3300,
+                    firmware_abi_version: crate::FIRMWARE_ABI_VERSION as u16,
+                    wake_reason: 0,
+                    _padding: [0; 3],
+                    data_start: 0,
+                    data_end: 0,
+                };
+                let result = interpreter
+                    .execute(
+                        (&ctx as *const crate::bpf_helpers::SondeContext) as u64,
+                        100_000,
+                    )
+                    .unwrap();
+                assert_eq!(result, 0);
+            },
+        );
+
+        assert!(hal.i2c_expectations.is_empty());
+        assert_eq!(
+            hal.i2c_events,
+            vec![I2cEvent::Write {
+                handle,
+                data: vec![0x00, 0x00, 0x00],
+            }]
+        );
+        assert!(clock.delays_us.borrow().is_empty());
+        assert!(transport.outbound.is_empty());
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_veml7700_sensor_program_does_not_persist_conf_on_i2c_error() {
+        let image = compile_veml7700_program_image();
+        let handle = crate::hal::i2c_handle(0, 0x10);
+
+        let mut hal = TestHal::new();
+        hal.strict_i2c = true;
+        hal.expect_i2c_write(handle, &[0x00, 0xC0, 0x08], 0);
+        hal.expect_i2c_write_read(handle, &[0x04], &[], -1);
+
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        maps.allocate(&image.maps).unwrap();
+        maps.apply_initial_data(&image.map_initial_data);
+        maps.get_mut(0)
+            .unwrap()
+            .update(0, &encode_veml7700_state([150, 180, 190], 0x0000, 3, 0))
+            .unwrap();
+
+        let clock = RecordingClock::new(0);
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let mut queue = AsyncQueue::new();
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let mut interpreter = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
+        register_all(&mut interpreter).unwrap();
+        interpreter
+            .load(&image.bytecode, maps.map_pointers(), &image.maps)
+            .unwrap();
+
+        with_recording_clock_test_context_and_queue(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            &mut queue,
+            || {
+                let ctx = crate::bpf_helpers::SondeContext {
+                    timestamp: 1234,
+                    battery_mv: 3300,
+                    firmware_abi_version: crate::FIRMWARE_ABI_VERSION as u16,
+                    wake_reason: 0,
+                    _padding: [0; 3],
+                    data_start: 0,
+                    data_end: 0,
+                };
+                let result = interpreter
+                    .execute(
+                        (&ctx as *const crate::bpf_helpers::SondeContext) as u64,
+                        100_000,
+                    )
+                    .unwrap();
+                assert_eq!(result, 0);
+            },
+        );
+
+        assert!(hal.i2c_expectations.is_empty());
+        assert_eq!(
+            hal.i2c_events,
+            vec![
+                I2cEvent::Write {
+                    handle,
+                    data: vec![0x00, 0xC0, 0x08],
+                },
+                I2cEvent::WriteRead {
+                    handle,
+                    write: vec![0x04],
+                },
+            ]
+        );
+        assert_eq!(*clock.delays_us.borrow(), vec![900_000]);
+        assert!(transport.outbound.is_empty());
+        assert!(queue.is_empty());
+
+        let state = maps.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(state.len(), 16);
+        assert_eq!(u16::from_le_bytes([state[12], state[13]]), 0x0000);
+        assert_eq!(state[14], 3);
+        assert_eq!(state[15], 0);
+    }
+
+    #[test]
+    fn test_veml7700_sensor_program_switches_to_lowlight_after_low_reading() {
+        let image = compile_veml7700_program_image();
+        let handle = crate::hal::i2c_handle(0, 0x10);
+        let first_als_counts = 1u16;
+        let first_white_counts = 2u16;
+        let second_als_counts = 20u16;
+        let second_white_counts = 40u16;
+
+        let mut hal = TestHal::new();
+        hal.strict_i2c = true;
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x00], 0);
+        hal.expect_i2c_write_read(handle, &[0x04], &first_als_counts.to_le_bytes(), 0);
+        hal.expect_i2c_write_read(handle, &[0x05], &first_white_counts.to_le_bytes(), 0);
+        hal.expect_i2c_write(handle, &[0x00, 0x01, 0x00], 0);
+        hal.expect_i2c_write(handle, &[0x00, 0xC0, 0x08], 0);
+        hal.expect_i2c_write_read(handle, &[0x04], &second_als_counts.to_le_bytes(), 0);
+        hal.expect_i2c_write_read(handle, &[0x05], &second_white_counts.to_le_bytes(), 0);
+        hal.expect_i2c_write(handle, &[0x00, 0x01, 0x00], 0);
+
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        maps.allocate(&image.maps).unwrap();
+        maps.apply_initial_data(&image.map_initial_data);
+
+        let clock = RecordingClock::new(0);
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let mut queue = AsyncQueue::new();
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let mut interpreter = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
+        register_all(&mut interpreter).unwrap();
+        interpreter
+            .load(&image.bytecode, maps.map_pointers(), &image.maps)
+            .unwrap();
+
+        for timestamp in [111u64, 222u64] {
+            with_recording_clock_test_context_and_queue(
+                &mut hal,
+                &mut transport,
+                &mut maps,
+                &mut sleep,
+                &clock,
+                &identity,
+                &mut seq,
+                ProgramClass::Resident,
+                &mut trace,
+                &mut queue,
+                || {
+                    let ctx = crate::bpf_helpers::SondeContext {
+                        timestamp,
+                        battery_mv: 3300,
+                        firmware_abi_version: crate::FIRMWARE_ABI_VERSION as u16,
+                        wake_reason: 0,
+                        _padding: [0; 3],
+                        data_start: 0,
+                        data_end: 0,
+                    };
+                    let result = interpreter
+                        .execute(
+                            (&ctx as *const crate::bpf_helpers::SondeContext) as u64,
+                            100_000,
+                        )
+                        .unwrap();
+                    assert_eq!(result, 0);
+                },
+            );
+        }
+
+        assert!(hal.i2c_expectations.is_empty());
+        assert_eq!(*clock.delays_us.borrow(), vec![120_000, 900_000]);
+        assert!(transport.outbound.is_empty());
+
+        let queued = queue.drain();
+        assert_eq!(queued.len(), 2);
+        assert_eq!(u16::from_le_bytes([queued[0][8], queued[0][9]]), 0x0000);
+        assert_eq!(
+            u32::from_le_bytes([queued[0][14], queued[0][15], queued[0][16], queued[0][17]]),
+            57
+        );
+        assert_eq!(u16::from_le_bytes([queued[1][8], queued[1][9]]), 0x08C0);
+        assert_eq!(
+            u32::from_le_bytes([queued[1][14], queued[1][15], queued[1][16], queued[1][17]]),
+            72
+        );
+    }
+
+    #[test]
+    fn test_veml7700_sensor_program_switches_back_to_default_after_bright_history() {
+        let image = compile_veml7700_program_image();
+        let handle = crate::hal::i2c_handle(0, 0x10);
+        let als_counts = 50u16;
+        let white_counts = 60u16;
+        let expected_lux_ml = u32::from(als_counts) * 576u32 / 10u32;
+
+        let mut hal = TestHal::new();
+        hal.strict_i2c = true;
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x00], 0);
+        hal.expect_i2c_write_read(handle, &[0x04], &als_counts.to_le_bytes(), 0);
+        hal.expect_i2c_write_read(handle, &[0x05], &white_counts.to_le_bytes(), 0);
+        hal.expect_i2c_write(handle, &[0x00, 0x01, 0x00], 0);
+
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        maps.allocate(&image.maps).unwrap();
+        maps.apply_initial_data(&image.map_initial_data);
+        maps.get_mut(0)
+            .unwrap()
+            .update(0, &encode_veml7700_state([1200, 1300, 1400], 0x08C0, 3, 0))
+            .unwrap();
+
+        let clock = RecordingClock::new(0);
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let mut queue = AsyncQueue::new();
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let mut interpreter = crate::sonde_bpf_adapter::SondeBpfInterpreter::new();
+        register_all(&mut interpreter).unwrap();
+        interpreter
+            .load(&image.bytecode, maps.map_pointers(), &image.maps)
+            .unwrap();
+
+        with_recording_clock_test_context_and_queue(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            &mut queue,
+            || {
+                let ctx = crate::bpf_helpers::SondeContext {
+                    timestamp: 333,
+                    battery_mv: 3300,
+                    firmware_abi_version: crate::FIRMWARE_ABI_VERSION as u16,
+                    wake_reason: 0,
+                    _padding: [0; 3],
+                    data_start: 0,
+                    data_end: 0,
+                };
+                let result = interpreter
+                    .execute(
+                        (&ctx as *const crate::bpf_helpers::SondeContext) as u64,
+                        100_000,
+                    )
+                    .unwrap();
+                assert_eq!(result, 0);
+            },
+        );
+
+        assert!(hal.i2c_expectations.is_empty());
+        assert_eq!(
+            hal.i2c_events,
+            vec![
+                I2cEvent::Write {
+                    handle,
+                    data: vec![0x00, 0x00, 0x00],
+                },
+                I2cEvent::WriteRead {
+                    handle,
+                    write: vec![0x04],
+                },
+                I2cEvent::WriteRead {
+                    handle,
+                    write: vec![0x05],
+                },
+                I2cEvent::Write {
+                    handle,
+                    data: vec![0x00, 0x01, 0x00],
+                },
+            ]
+        );
+        assert_eq!(*clock.delays_us.borrow(), vec![120_000]);
+        assert!(transport.outbound.is_empty());
+
+        let queued = queue.drain();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(u16::from_le_bytes([queued[0][8], queued[0][9]]), 0x0000);
+        assert_eq!(
+            u32::from_le_bytes([queued[0][14], queued[0][15], queued[0][16], queued[0][17]]),
+            expected_lux_ml
+        );
     }
 
     #[test]

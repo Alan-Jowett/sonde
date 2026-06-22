@@ -47,6 +47,9 @@ const ACTUAL_STATE_TABLE_NAME: &str = "actualstate";
 const SENSOR_DATA_TABLE_NAME: &str = "sensordata";
 const AZURE_TABLES_API_VERSION: &str = "2019-02-02";
 const STORAGE_TOKEN_SCOPE: &str = "https://storage.azure.com/.default";
+// The setup public-client flow patches `keyCredentials` on the shared runtime
+// app registration, so it requests the delegated Graph scope set provisioned
+// for kiosk certificate lifecycle operations.
 const GRAPH_SCOPE: &str = "Application.ReadWrite.All offline_access openid profile";
 const CLIENT_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
@@ -1187,6 +1190,10 @@ fn history_table_filter(partition_key: &str, start_ms: i64, end_ms: i64) -> Resu
     ))
 }
 
+fn node_partition_filter() -> &'static str {
+    "PartitionKey ge 'n:' and PartitionKey lt 'n;'"
+}
+
 fn table_query_url(storage_account: &str, table_name: &str) -> String {
     format!("https://{storage_account}.table.core.windows.net/{table_name}()")
 }
@@ -1395,7 +1402,7 @@ async fn fetch_live_dashboard_variable_series(
         access_token,
         &request.storage_account,
         ACTUAL_STATE_TABLE_NAME,
-        None,
+        Some(node_partition_filter()),
         None,
         MAX_TABLE_QUERY_PAGES,
     )
@@ -2518,6 +2525,14 @@ mod tests {
         assert_eq!(
             history_table_filter("n:abc", 0, 15).unwrap(),
             "PartitionKey eq 'n:abc' and RowKey ge 'fffffffffffffff0' and RowKey le 'ffffffffffffffff~'"
+        );
+    }
+
+    #[test]
+    fn node_partition_filter_matches_prefix_range_contract() {
+        assert_eq!(
+            node_partition_filter(),
+            "PartitionKey ge 'n:' and PartitionKey lt 'n;'"
         );
     }
 

@@ -2187,6 +2187,109 @@ async fn globals_diagnostic_handler_drops_malformed_cbor_and_continues() {
     assert!(status.success(), "handler exited with {status}");
 }
 
+/// Diagnostic handler artifact: short pipe reads must be accumulated until the
+/// whole framed message arrives so streamed writes do not look like EOF.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn globals_diagnostic_handler_accumulates_short_pipe_reads() {
+    use sonde_gateway::HandlerMessage;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::thread;
+    use std::time::Duration;
+
+    require_python!();
+
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("test-programs")
+        .join("globals_diagnostic_handler.py");
+    assert!(
+        script.is_file(),
+        "expected handler script at {}",
+        script.display()
+    );
+
+    let mut cmd = std::process::Command::new(python_cmd());
+    for arg in python_args() {
+        cmd.arg(arg);
+    }
+    cmd.arg("-u")
+        .arg(&script)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn().expect("spawn globals diagnostic handler");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let mut stdout = child.stdout.take().expect("child stdout");
+
+    let readings = BTreeMap::from([
+        ("wake_index".to_string(), 2i64),
+        ("rodata_value".to_string(), 0x13579BDFi64),
+        ("data_before".to_string(), 0x2468ACE2i64),
+        ("data_after".to_string(), 0x2468ACE3i64),
+        ("bss_before".to_string(), 1i64),
+        ("bss_after".to_string(), 2i64),
+    ]);
+    let msg = HandlerMessage::Data {
+        request_id: 12,
+        node_id: "diag-node".to_string(),
+        program_hash: vec![0x66; 32],
+        data: vec![0; 24],
+        timestamp: 1_700_000_003,
+        readings: Some(readings),
+    };
+    let payload = msg.encode().expect("encode handler DATA");
+    let frame_len = (payload.len() as u32).to_be_bytes();
+
+    for byte in frame_len {
+        stdin.write_all(&[byte]).expect("write frame length byte");
+        thread::sleep(Duration::from_millis(10));
+    }
+    for byte in payload {
+        stdin.write_all(&[byte]).expect("write frame payload byte");
+        thread::sleep(Duration::from_millis(1));
+    }
+    drop(stdin);
+
+    fn read_child_message(stdout: &mut dyn Read) -> HandlerMessage {
+        let mut len_buf = [0u8; 4];
+        stdout.read_exact(&mut len_buf).expect("read frame length");
+        let len = u32::from_be_bytes(len_buf) as usize;
+        let mut payload = vec![0u8; len];
+        stdout.read_exact(&mut payload).expect("read frame payload");
+        HandlerMessage::decode(&payload).expect("decode handler message")
+    }
+
+    let log_msg = read_child_message(&mut stdout);
+    let reply_msg = read_child_message(&mut stdout);
+
+    match log_msg {
+        HandlerMessage::Log { level, message } => {
+            assert_eq!(level, "info");
+            assert!(
+                message.contains("globals_diagnostic PASS"),
+                "expected PASS summary after byte-wise streaming, got: {message}"
+            );
+        }
+        other => panic!("expected LOG message, got {:?}", other),
+    }
+
+    match reply_msg {
+        HandlerMessage::DataReply {
+            request_id, data, ..
+        } => {
+            assert_eq!(request_id, 12);
+            assert!(data.is_empty(), "expected empty DATA_REPLY payload");
+        }
+        other => panic!("expected DATA_REPLY message, got {:?}", other),
+    }
+
+    let status = child.wait().expect("wait for handler");
+    assert!(status.success(), "handler exited with {status}");
+}
+
 /// T-0503b: Long-running handler persists across multiple messages without
 /// respawn. The handler maintains a counter that increments with each DATA
 /// message. If the handler were respawned, the counter would reset.

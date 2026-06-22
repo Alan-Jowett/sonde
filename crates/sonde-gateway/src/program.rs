@@ -804,14 +804,14 @@ fn rewrite_global_data_relocations(
                 )));
             }
 
-            let lo_inst_imm = i32::from_le_bytes([
-                bytecode[r_offset + 4],
-                bytecode[r_offset + 5],
-                bytecode[r_offset + 6],
-                bytecode[r_offset + 7],
+            let next_slot_imm = i32::from_le_bytes([
+                bytecode[r_offset + 12],
+                bytecode[r_offset + 13],
+                bytecode[r_offset + 14],
+                bytecode[r_offset + 15],
             ]);
             let offset_imm =
-                compute_lddw_reloc_offset_imm(sym_entry, addend, sh_type, lo_inst_imm)?;
+                compute_lddw_reloc_offset_imm(sym_entry, addend, sh_type, next_slot_imm)?;
             bytecode[r_offset + 1] = (bytecode[r_offset + 1] & 0x0f) | 0x60;
             bytecode[r_offset + 4..r_offset + 8].copy_from_slice(&map_index.to_le_bytes());
             bytecode[r_offset + 12..r_offset + 16].copy_from_slice(&offset_imm.to_le_bytes());
@@ -2443,25 +2443,26 @@ mod tests {
         symbol_value: u64,
         use_rela: bool,
         addend: i64,
-        lo_inst_imm: i32,
+        slot_imms: [i32; 2],
     ) -> Vec<u8> {
+        let [first_slot_imm, second_slot_imm] = slot_imms;
         let section_code: [u8; 24] = [
             0x18,
             0x01,
             0x00,
             0x00,
-            lo_inst_imm.to_le_bytes()[0],
-            lo_inst_imm.to_le_bytes()[1],
-            lo_inst_imm.to_le_bytes()[2],
-            lo_inst_imm.to_le_bytes()[3], // ldimm64 r1, imm (to be relocated)
+            first_slot_imm.to_le_bytes()[0],
+            first_slot_imm.to_le_bytes()[1],
+            first_slot_imm.to_le_bytes()[2],
+            first_slot_imm.to_le_bytes()[3], // first LDDW slot (Prevail rewrites this to the map index)
             0,
             0,
             0,
             0,
-            0,
-            0,
-            0,
-            0,
+            second_slot_imm.to_le_bytes()[0],
+            second_slot_imm.to_le_bytes()[1],
+            second_slot_imm.to_le_bytes()[2],
+            second_slot_imm.to_le_bytes()[3], // second LDDW slot (REL addend / offset)
             0x95,
             0x00,
             0x00,
@@ -2620,8 +2621,15 @@ mod tests {
 
     #[test]
     fn rewrite_global_data_relocations_rewrites_lddw_to_map_value_index() {
-        let elf =
-            make_bpf_elf_with_global_data_relocation("sonde", ".data", STT_SECTION, 0, false, 0, 0);
+        let elf = make_bpf_elf_with_global_data_relocation(
+            "sonde",
+            ".data",
+            STT_SECTION,
+            0,
+            false,
+            0,
+            [0, 0],
+        );
         let mut bytecode = vec![
             0x18, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
             0, 0, 0,
@@ -2663,7 +2671,7 @@ mod tests {
     #[test]
     fn rewrite_global_data_relocations_preserves_symbol_offset_within_section() {
         let elf =
-            make_bpf_elf_with_global_data_relocation("sonde", ".rodata", 0x01, 4, false, 0, 0);
+            make_bpf_elf_with_global_data_relocation("sonde", ".rodata", 0x01, 4, false, 0, [0, 0]);
         let mut bytecode = vec![
             0x18, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
             0, 0, 0,
@@ -2694,8 +2702,15 @@ mod tests {
 
     #[test]
     fn rewrite_global_data_relocations_uses_rela_addend_for_section_symbols() {
-        let elf =
-            make_bpf_elf_with_global_data_relocation("sonde", ".data", STT_SECTION, 0, true, 6, 0);
+        let elf = make_bpf_elf_with_global_data_relocation(
+            "sonde",
+            ".data",
+            STT_SECTION,
+            0,
+            true,
+            6,
+            [0, 0],
+        );
         let mut bytecode = vec![
             0x18, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
             0, 0, 0,
@@ -2721,9 +2736,10 @@ mod tests {
 
     #[test]
     fn rewrite_global_data_relocations_uses_rel_low_imm_addend_for_named_globals() {
-        let elf = make_bpf_elf_with_global_data_relocation("sonde", ".data", 0x01, 4, false, 0, 3);
+        let elf =
+            make_bpf_elf_with_global_data_relocation("sonde", ".data", 0x01, 4, false, 0, [99, 3]);
         let mut bytecode = vec![
-            0x18, 0x01, 0x00, 0x00, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
+            0x18, 0x01, 0x00, 0x00, 99, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
             0, 0, 0,
         ];
         let map_descriptors = vec![EbpfMapDescriptor {
@@ -2746,9 +2762,49 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_global_data_relocations_uses_rel_second_slot_addend_for_section_symbols() {
+        let elf = make_bpf_elf_with_global_data_relocation(
+            "sonde",
+            ".data",
+            STT_SECTION,
+            0,
+            false,
+            0,
+            [77, 6],
+        );
+        let mut bytecode = vec![
+            0x18, 0x01, 0x00, 0x00, 77, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
+            0, 0, 0,
+        ];
+        let map_descriptors = vec![EbpfMapDescriptor {
+            original_fd: 1,
+            map_type: 0,
+            key_size: 4,
+            value_size: 16,
+            max_entries: 1,
+            inner_map_fd: 0,
+        }];
+
+        rewrite_global_data_relocations(&elf, "sonde", &mut bytecode, &map_descriptors).unwrap();
+
+        assert_eq!(
+            i32::from_le_bytes([bytecode[12], bytecode[13], bytecode[14], bytecode[15]]),
+            6,
+            "section-symbol REL relocations must use the second LDDW slot addend, not the first-slot map index"
+        );
+    }
+
+    #[test]
     fn rewrite_global_data_relocations_uses_zero_rela_addend_without_falling_back() {
-        let elf =
-            make_bpf_elf_with_global_data_relocation("sonde", ".data", STT_SECTION, 0, true, 0, 5);
+        let elf = make_bpf_elf_with_global_data_relocation(
+            "sonde",
+            ".data",
+            STT_SECTION,
+            0,
+            true,
+            0,
+            [5, 0],
+        );
         let mut bytecode = vec![
             0x18, 0x01, 0x00, 0x00, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
             0, 0, 0,
@@ -2773,8 +2829,15 @@ mod tests {
 
     #[test]
     fn rewrite_global_data_relocations_rejects_truncated_symbol_entries() {
-        let mut elf =
-            make_bpf_elf_with_global_data_relocation("sonde", ".data", STT_SECTION, 0, false, 0, 0);
+        let mut elf = make_bpf_elf_with_global_data_relocation(
+            "sonde",
+            ".data",
+            STT_SECTION,
+            0,
+            false,
+            0,
+            [0, 0],
+        );
         let shoff = usize::try_from(u64::from_le_bytes(elf[40..48].try_into().unwrap())).unwrap();
         let symtab_sh = shoff + (5 * 64);
         elf[symtab_sh + 32..symtab_sh + 40].copy_from_slice(&32u64.to_le_bytes());

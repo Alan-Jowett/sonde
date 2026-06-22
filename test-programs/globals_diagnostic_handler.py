@@ -20,6 +20,7 @@ import sys
 DATA = 0x01
 DATA_REPLY = 0x81
 LOG = 0x82
+MAX_MESSAGE_SIZE = 1_048_576
 INVALID_MESSAGE = object()
 
 KEY_MSG_TYPE = 1
@@ -32,14 +33,42 @@ RODATA_INIT = 0x13579BDF
 DATA_INIT = 0x2468ACE0
 
 
+def read_exact(length):
+    chunks = bytearray()
+    while len(chunks) < length:
+        chunk = sys.stdin.buffer.read(length - len(chunks))
+        if not chunk:
+            return None if not chunks else INVALID_MESSAGE
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def discard_exact(length):
+    remaining = length
+    while remaining > 0:
+        chunk = sys.stdin.buffer.read(min(remaining, 4096))
+        if not chunk:
+            return False
+        remaining -= len(chunk)
+    return True
+
+
 def read_message():
-    header = sys.stdin.buffer.read(4)
-    if len(header) < 4:
+    header = read_exact(4)
+    if header is None:
         return None
+    if header is INVALID_MESSAGE:
+        return INVALID_MESSAGE
     length = struct.unpack(">I", header)[0]
-    payload = sys.stdin.buffer.read(length)
-    if len(payload) < length:
+    if length > MAX_MESSAGE_SIZE:
+        if not discard_exact(length):
+            return INVALID_MESSAGE
+        return INVALID_MESSAGE
+    payload = read_exact(length)
+    if payload is None:
         return None
+    if payload is INVALID_MESSAGE:
+        return INVALID_MESSAGE
     try:
         return decode_cbor_map(payload)
     except (ValueError, IndexError, UnicodeDecodeError):

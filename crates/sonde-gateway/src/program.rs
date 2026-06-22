@@ -571,7 +571,12 @@ fn rewrite_global_data_relocations(
                 }
             } else {
                 let st_value = i128::from(read_u64(sym_entry + 8));
-                let offset = st_value + i128::from(addend);
+                let effective_addend = if addend != 0 {
+                    i128::from(addend)
+                } else {
+                    i128::from(lo_inst_imm)
+                };
+                let offset = st_value + effective_addend;
                 i32::try_from(offset).map_err(|_| {
                     ProgramError::ElfParseError(format!(
                         "global relocation offset {offset} does not fit in i32"
@@ -2700,6 +2705,32 @@ mod tests {
             i32::from_le_bytes([bytecode[12], bytecode[13], bytecode[14], bytecode[15]]),
             6,
             "section-symbol RELA relocations must preserve the explicit addend as the value offset"
+        );
+    }
+
+    #[test]
+    fn rewrite_global_data_relocations_uses_rel_low_imm_addend_for_named_globals() {
+        let elf = make_bpf_elf_with_global_data_relocation("sonde", ".data", 0x01, 4, 0, 3);
+        let mut bytecode = vec![
+            0x18, 0x01, 0x00, 0x00, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x95, 0x00, 0x00, 0x00, 0,
+            0, 0, 0,
+        ];
+        let map_descriptors = vec![EbpfMapDescriptor {
+            original_fd: 1,
+            map_type: 0,
+            key_size: 4,
+            value_size: 16,
+            max_entries: 1,
+            inner_map_fd: 0,
+        }];
+
+        rewrite_global_data_relocations(&elf, "sonde", &mut bytecode, &map_descriptors).unwrap();
+
+        assert_eq!(bytecode[1], 0x61, "src nibble should be rewritten to 6");
+        assert_eq!(
+            i32::from_le_bytes([bytecode[12], bytecode[13], bytecode[14], bytecode[15]]),
+            7,
+            "named-global REL relocations must preserve the in-place low-imm addend"
         );
     }
 }

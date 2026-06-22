@@ -426,7 +426,10 @@ pub unsafe fn execute_decoder(
 
         map_regions.push(MapRegion {
             relocated_ptr: base_ptr,
-            key_size: map_def.key_size,
+            // Decoder backing stores value bytes densely without per-entry key
+            // prefixes, so direct map-value relocations must treat data_start
+            // as the start of entry 0's value region.
+            key_size: 0,
             value_size: map_def.value_size,
             data_start: base_ptr,
             data_end: end_ptr,

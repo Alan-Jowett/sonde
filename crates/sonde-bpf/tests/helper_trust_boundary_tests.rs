@@ -153,6 +153,35 @@ fn test_ld_dw_imm_src1_zero_maps() {
     );
 }
 
+#[test]
+fn test_ld_dw_imm_src6_rejects_one_past_end_offset() {
+    // LD_DW_IMM src=6 loads a direct pointer into entry 0's value region.
+    // An offset exactly equal to value_size points one byte past the end and
+    // must be rejected at relocation time rather than tagged as a valid
+    // MapValue pointer.
+    let mut backing = vec![0u8; 12];
+    let ptr = backing.as_mut_ptr() as u64;
+    let map = MapRegion {
+        relocated_ptr: ptr,
+        key_size: 4,
+        value_size: 8,
+        data_start: ptr,
+        data_end: ptr + backing.len() as u64,
+    };
+    let prog = prog_from(&[
+        insn(ebpf::LD_DW_IMM, 1, 6, 0, 0), // r1 = map_value_by_idx(0) + off
+        insn(0, 0, 0, 0, 8),               // off = value_size => one-past-end
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut ctx = [];
+    let result =
+        unsafe { execute_program(&prog, &mut ctx, &[], &[map], false, UNLIMITED_BUDGET, &[]) };
+    assert!(
+        matches!(result, Err(BpfError::MemoryAccessViolation { .. })),
+        "one-past-end direct relocation must be rejected, got: {result:?}"
+    );
+}
+
 // ── §5.2  MapValueOrNull — NULL return → scalar ─────────────────────
 
 #[test]

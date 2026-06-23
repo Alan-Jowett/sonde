@@ -1366,6 +1366,11 @@ impl Default for ProgramLibrary {
 mod tests {
     use super::*;
 
+    const GLOBALS_DIAGNOSTIC_ELF: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-programs/globals_diagnostic.o"
+    ));
+
     #[test]
     fn ingest_elf_empty_bytes_rejected() {
         let lib = ProgramLibrary::new();
@@ -2431,6 +2436,29 @@ mod tests {
         // not the .text section (mov r0, 1).
         let image = ProgramImage::decode(&record.image).unwrap();
         assert_eq!(image.bytecode, sonde_code);
+    }
+
+    #[test]
+    fn ingest_elf_decoder_globals_object_succeeds_without_linux_platform() {
+        let lib = ProgramLibrary::new();
+        let record = lib
+            .ingest_elf(GLOBALS_DIAGNOSTIC_ELF, VerificationProfile::Resident)
+            .expect("decoder/global-map ELF should ingest without LinuxPlatform");
+
+        assert!(
+            record.decoder_image.is_some(),
+            "decoder image should be stored"
+        );
+        let image = ProgramImage::decode(&record.image).unwrap();
+        assert!(
+            image.maps.iter().any(|map| map.map_type == 0),
+            "node image should include global-variable maps"
+        );
+        let decoder = ProgramImage::decode(record.decoder_image.as_ref().unwrap()).unwrap();
+        assert!(
+            decoder.maps.iter().any(|map| map.map_type == 0),
+            "decoder image should include global-variable maps"
+        );
     }
 
     /// Build a small ELF with one executable section, one global data section,

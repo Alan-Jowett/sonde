@@ -188,6 +188,14 @@ test('kiosk tauri backend keeps explicit default capability and android launcher
   assert.equal(fs.existsSync(androidLauncherPath), true);
 });
 
+test('kiosk android manifest requests internet access', () => {
+  const manifestPath = path.resolve(__dirname, '..', 'crates', 'sonde-kiosk-ui', 'android', 'AndroidManifest.xml');
+  const manifest = fs.readFileSync(manifestPath, 'utf8');
+
+  assert.match(manifest, /android\.permission\.INTERNET/);
+  assert.match(manifest, /androidx\.core\.content\.FileProvider/);
+});
+
 test('android workflow builds the kiosk tauri app', () => {
   const workflowPath = path.resolve(__dirname, '..', '.github', 'workflows', 'tauri-android.yml');
   const workflow = fs.readFileSync(workflowPath, 'utf8');
@@ -203,14 +211,21 @@ test('android workflow builds the kiosk tauri app', () => {
 
   assert.match(debugJob, /working-directory: crates\/sonde-kiosk-ui/);
   assert.match(debugJob, /cargo tauri android init/);
+  assert.match(debugJob, /crates\/sonde-kiosk-ui\/android\/AndroidManifest\.xml/);
   assert.match(debugJob, /cargo tauri android build --debug/);
   assert.match(debugJob, /crates\/sonde-kiosk-ui\/src-tauri\/icons\/android/);
   assert.match(debugJob, /androidx\.security:security-crypto:1\.1\.0-alpha06/);
 
   assert.match(releaseJob, /working-directory: crates\/sonde-kiosk-ui/);
   assert.match(releaseJob, /cargo tauri android init/);
+  assert.match(releaseJob, /crates\/sonde-kiosk-ui\/android\/AndroidManifest\.xml/);
   assert.match(releaseJob, /cargo tauri android build/);
   assert.match(releaseJob, /sonde-kiosk-android-release/);
+});
+
+test('describeError surfaces string rejections from the Tauri bridge', () => {
+  assert.equal(kiosk.describeError('bridge failure'), 'bridge failure');
+  assert.equal(kiosk.describeError(new Error('typed failure')), 'typed failure');
 });
 
 test('kiosk tauri backend defines the mobile entry point required for Android builds', () => {

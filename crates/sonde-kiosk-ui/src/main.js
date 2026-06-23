@@ -152,6 +152,13 @@ function normalizeOptionalLoginEndpoint(value) {
   return typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '';
 }
 
+function describeError(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
 function validateSetupLoginMetadata(metadata) {
   const loginEndpoint = normalizeOptionalLoginEndpoint(metadata?.loginEndpoint);
   const kioskSetupClientId = normalizeOptionalGuid(metadata?.kioskSetupClientId);
@@ -163,6 +170,7 @@ function validateSetupLoginMetadata(metadata) {
       error: 'This environment is missing kiosk setup login metadata. Re-export it after Azure provisioning adds the kiosk setup client.',
     };
   }
+
   if (!ENV_GUID_PATTERN.test(kioskSetupClientId)) {
     return {
       valid: false,
@@ -773,7 +781,7 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
         || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex) {
         return;
       }
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeError(error);
       if (hasUsableCachedDashboardData(runtime, environment, dashboard, nowFn())) {
         setTelemetryNotice(`Showing cached data. Live refresh unavailable: ${message}`, 'error');
       } else {
@@ -1055,7 +1063,7 @@ function moveDashboard(delta, deps = APP_STATE.dependencies) {
   APP_STATE.activeDashboardIndex = nextIndex;
   renderActiveDashboard(deps)
     .then(() => triggerDashboardRefresh('switch', deps))
-    .catch((error) => showSetupMode(error.message));
+    .catch((error) => showSetupMode(describeError(error)));
 }
 
 function hideOperatorPanel() {
@@ -1139,7 +1147,7 @@ function installOperatorControls(fileInput, deps = APP_STATE.dependencies) {
     try {
       await beginDeviceCodeFlow('renew', deps);
     } catch (error) {
-      showSetupMode(`Certificate renewal failed: ${error.message}`);
+      showSetupMode(`Certificate renewal failed: ${describeError(error)}`);
     }
   });
   reset?.addEventListener('click', async () => {
@@ -1152,7 +1160,7 @@ function installOperatorControls(fileInput, deps = APP_STATE.dependencies) {
       const result = await resetKioskAppState(null, deps);
       APP_STATE.identitySummary = null;
       clearTelemetryCache();
-      showSetupMode(`${result.message} Reset fallback detail: ${error.message}`, { clearEnvironment: true });
+      showSetupMode(`${result.message} Reset fallback detail: ${describeError(error)}`, { clearEnvironment: true });
     }
   });
   close?.addEventListener('click', hideOperatorPanel);
@@ -1206,7 +1214,7 @@ async function initKioskApp(deps = {}) {
     try {
       await importEnvironmentFromText(await file.text(), deps);
     } catch (error) {
-      showSetupMode(`Import failed: ${error.message}`);
+      showSetupMode(`Import failed: ${describeError(error)}`);
     } finally {
       fileInput.value = '';
     }
@@ -1216,7 +1224,7 @@ async function initKioskApp(deps = {}) {
     try {
       await beginDeviceCodeFlow(purpose, deps);
     } catch (error) {
-      showSetupMode(`${purpose === 'renew' ? 'Certificate renewal' : 'Kiosk setup'} failed: ${error.message}`);
+      showSetupMode(`${purpose === 'renew' ? 'Certificate renewal' : 'Kiosk setup'} failed: ${describeError(error)}`);
     }
   });
 
@@ -1245,7 +1253,7 @@ async function initKioskApp(deps = {}) {
         await signInAndShowDashboard(deps);
         return;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeError(error);
         const initialDashboard = storedEnvironment.dashboards[0];
         if (initialDashboard && hasUsableCachedDashboardData(runtime, storedEnvironment, initialDashboard)) {
           setTelemetryNotice(`Showing cached data while reconnecting. Application sign-in failed: ${message}`, 'error');
@@ -1273,6 +1281,7 @@ if (typeof module !== 'undefined' && module.exports) {
     BACKGROUND_REFRESH_INTERVAL_MS,
     beginDeviceCodeFlow,
     createDefaultSensorDataPreferences,
+    describeError,
     buildCachedVariableData,
     buildDashboardRefreshRequest,
     cacheTelemetryRefreshResponse,
@@ -1304,6 +1313,6 @@ if (typeof module !== 'undefined' && module.exports) {
 
 document.addEventListener('DOMContentLoaded', () => {
   initKioskApp().catch((error) => {
-    showSetupMode(`Kiosk startup failed: ${error.message}`);
+    showSetupMode(`Kiosk startup failed: ${describeError(error)}`);
   });
 });

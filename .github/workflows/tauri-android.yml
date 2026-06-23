@@ -240,6 +240,9 @@ jobs:
       - name: Patch Gradle for kiosk Android resources
         working-directory: crates/sonde-kiosk-ui/src-tauri/gen/android
         run: |
+          # Restore custom AndroidManifest.xml with kiosk network permissions.
+          cp ../../../../../crates/sonde-kiosk-ui/android/AndroidManifest.xml app/src/main/AndroidManifest.xml
+
           # Replace generated stock Android launcher icons with the Sonde-branded kiosk set.
           cp -R ../../../../../crates/sonde-kiosk-ui/src-tauri/icons/android/* app/src/main/res/
 
@@ -317,6 +320,9 @@ jobs:
         if: steps.kiosk-signing.outputs.available == 'true'
         working-directory: crates/sonde-kiosk-ui/src-tauri/gen/android
         run: |
+          # Restore custom AndroidManifest.xml with kiosk network permissions.
+          cp ../../../../../crates/sonde-kiosk-ui/android/AndroidManifest.xml app/src/main/AndroidManifest.xml
+
           # Replace generated stock Android launcher icons with the Sonde-branded kiosk set.
           cp -R ../../../../../crates/sonde-kiosk-ui/src-tauri/icons/android/* app/src/main/res/
 

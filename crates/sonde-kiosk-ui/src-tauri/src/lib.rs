@@ -80,31 +80,46 @@ pub extern "system" fn Java_io_crates_keyring_Keyring_00024Companion_initializeN
     _class: JObject,
     context: JObject,
 ) {
-    static REF: OnceLock<Option<Global<JObject<'static>>>> = OnceLock::new();
-    REF.get_or_init(|| {
-        match env
-            .with_env(|env| {
-                let reference = env.new_global_ref(&context)?;
-                let vm = env.get_java_vm()?;
-                let vm = vm.get_raw() as *mut c_void;
-                unsafe {
-                    ndk_context::initialize_android_context(vm, reference.as_obj().as_raw() as _);
-                }
-                Ok(Some(reference))
-            })
-            .into_outcome()
-        {
-            jni::Outcome::Ok(reference) => reference,
-            jni::Outcome::Err(error) => {
-                error!(%error, "failed to initialize Android keyring context");
-                None
-            }
-            jni::Outcome::Panic(_) => {
-                error!("failed to initialize Android keyring context due to panic");
-                None
-            }
+    static REF: OnceLock<Mutex<Option<Global<JObject<'static>>>>> = OnceLock::new();
+    if context.is_null() {
+        error!("failed to initialize Android keyring context: null context");
+        return;
+    }
+
+    let reference = REF.get_or_init(|| Mutex::new(None));
+    let mut reference = match reference.lock() {
+        Ok(reference) => reference,
+        Err(error) => {
+            error!(%error, "failed to lock Android keyring context reference");
+            return;
         }
-    });
+    };
+    if reference.is_some() {
+        return;
+    }
+
+    match env
+        .with_env(|env| {
+            let reference = env.new_global_ref(&context)?;
+            let vm = env.get_java_vm()?;
+            let vm = vm.get_raw() as *mut c_void;
+            unsafe {
+                ndk_context::initialize_android_context(vm, reference.as_obj().as_raw() as _);
+            }
+            Ok(reference)
+        })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(initialized_reference) => {
+            *reference = Some(initialized_reference);
+        }
+        jni::Outcome::Err(error) => {
+            error!(%error, "failed to initialize Android keyring context");
+        }
+        jni::Outcome::Panic(_) => {
+            error!("failed to initialize Android keyring context due to panic");
+        }
+    }
 }
 
 struct AppState {

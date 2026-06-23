@@ -243,6 +243,9 @@ jobs:
           # Restore custom AndroidManifest.xml with kiosk network permissions.
           cp ../../../../../crates/sonde-kiosk-ui/android/AndroidManifest.xml app/src/main/AndroidManifest.xml
 
+          # Restore custom Android activity and keyring bootstrap sources.
+          cp -R ../../../../../crates/sonde-kiosk-ui/android/src/main/java/* app/src/main/java/
+
           # Replace generated stock Android launcher icons with the Sonde-branded kiosk set.
           cp -R ../../../../../crates/sonde-kiosk-ui/src-tauri/icons/android/* app/src/main/res/
 
@@ -322,6 +325,9 @@ jobs:
         run: |
           # Restore custom AndroidManifest.xml with kiosk network permissions.
           cp ../../../../../crates/sonde-kiosk-ui/android/AndroidManifest.xml app/src/main/AndroidManifest.xml
+
+          # Restore custom Android activity and keyring bootstrap sources.
+          cp -R ../../../../../crates/sonde-kiosk-ui/android/src/main/java/* app/src/main/java/
 
           # Replace generated stock Android launcher icons with the Sonde-branded kiosk set.
           cp -R ../../../../../crates/sonde-kiosk-ui/src-tauri/icons/android/* app/src/main/res/

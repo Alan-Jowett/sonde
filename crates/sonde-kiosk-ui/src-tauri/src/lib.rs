@@ -36,7 +36,13 @@ use x509_cert::Certificate;
 #[cfg(target_os = "android")]
 use android_native_keyring_store::Store as AndroidKeyringStore;
 #[cfg(target_os = "android")]
+use jni::objects::{GlobalRef, JObject};
+#[cfg(target_os = "android")]
+use jni::JNIEnv;
+#[cfg(target_os = "android")]
 use keyring_core::Entry;
+#[cfg(target_os = "android")]
+use std::ffi::c_void;
 
 const ENVIRONMENT_FILE_NAME: &str = "environment.json";
 const TELEMETRY_CACHE_FILE_NAME: &str = "telemetry-cache.json";
@@ -65,6 +71,31 @@ const JS_MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
 const KEYRING_SERVICE_NAME: &str = "sonde-kiosk-ui";
 #[cfg(target_os = "android")]
 const KEYRING_USER_NAME: &str = "kiosk-private-key";
+
+#[cfg(target_os = "android")]
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_crates_keyring_Keyring_00024Companion_initializeNdkContext(
+    env: JNIEnv,
+    _class: JObject,
+    context: JObject,
+) {
+    static REF: OnceLock<Option<GlobalRef>> = OnceLock::new();
+    REF.get_or_init(|| match env.new_global_ref(&context) {
+        Ok(reference) => {
+            let vm = env.get_java_vm().unwrap();
+            let vm = vm.get_java_vm_pointer() as *mut c_void;
+            unsafe {
+                ndk_context::initialize_android_context(vm, reference.as_obj().as_raw() as _);
+            }
+            Some(reference)
+        }
+        Err(error) => {
+            error!(%error, "failed to create Android global reference for keyring context");
+            None
+        }
+    });
+}
 
 struct AppState {
     device_code_sessions: Mutex<HashMap<String, DeviceCodeSession>>,

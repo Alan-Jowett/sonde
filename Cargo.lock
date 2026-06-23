@@ -6662,8 +6662,10 @@ version = "0.8.0"
 dependencies = [
  "android-native-keyring-store",
  "base64 0.22.1",
+ "jni 0.22.4",
  "jsonwebtoken",
  "keyring-core",
+ "ndk-context",
  "p256",
  "rcgen",
  "reqwest 0.12.28",

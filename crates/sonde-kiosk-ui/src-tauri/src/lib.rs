@@ -1204,10 +1204,9 @@ async fn fetch_application_access_token(
         .map_err(|error| format!("application sign-in failed: {error}"))?;
     let status = response.status();
     if !status.is_success() {
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|error| format!("<failed to read token error response body: {error}>"));
+        let body = response.text().await.unwrap_or_else(|error| {
+            format!("<failed to read device-code error response body: {error}>")
+        });
         return Err(format!(
             "application sign-in failed: token endpoint returned {status}: {body}"
         ));

@@ -3,6 +3,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 
 function makeElement() {
@@ -144,6 +145,72 @@ test('validateImportedEnvironmentJson accepts SPA-style environment imports', ()
   assert.equal(environment.dashboards.length, 1);
   assert.equal(environment.dashboards[0].charts[0].metrics[0].expression, 'TEMP / 1000');
   assert.deepEqual(environment.sensorData.selectedSeries, ['series-a']);
+});
+
+test('kiosk tauri config uses kiosk-owned icon assets', () => {
+  const tauriConfigPath = path.resolve(__dirname, '..', 'crates', 'sonde-kiosk-ui', 'src-tauri', 'tauri.conf.json');
+  const tauriConfig = JSON.parse(fs.readFileSync(tauriConfigPath, 'utf8'));
+
+  assert.deepEqual(tauriConfig.bundle.icon, [
+    'icons/icon.png',
+    'icons/32x32.png',
+    'icons/128x128.png',
+    'icons/128x128@2x.png',
+    'icons/icon.icns',
+    'icons/icon.ico',
+  ]);
+
+  for (const iconPath of tauriConfig.bundle.icon) {
+    assert.equal(
+      fs.existsSync(path.resolve(path.dirname(tauriConfigPath), iconPath)),
+      true,
+      `missing kiosk icon asset: ${iconPath}`,
+    );
+  }
+});
+
+test('kiosk tauri backend keeps explicit default capability and android launcher assets', () => {
+  const srcTauriPath = path.resolve(__dirname, '..', 'crates', 'sonde-kiosk-ui', 'src-tauri');
+  const capabilityPath = path.join(srcTauriPath, 'capabilities', 'default.json');
+  const capability = JSON.parse(fs.readFileSync(capabilityPath, 'utf8'));
+
+  assert.equal(capability.identifier, 'default');
+  assert.deepEqual(capability.windows, ['main']);
+  assert.deepEqual(capability.permissions, ['core:default']);
+
+  const androidLauncherPath = path.join(
+    srcTauriPath,
+    'icons',
+    'android',
+    'mipmap-anydpi-v26',
+    'ic_launcher.xml',
+  );
+  assert.equal(fs.existsSync(androidLauncherPath), true);
+});
+
+test('android workflow builds the kiosk tauri app', () => {
+  const workflowPath = path.resolve(__dirname, '..', '.github', 'workflows', 'tauri-android.yml');
+  const workflow = fs.readFileSync(workflowPath, 'utf8');
+  const debugJobMatch = workflow.match(/build-kiosk-debug-apk:[\s\S]*?(?=\n  build-kiosk-release-apk:)/);
+  const releaseJobMatch = workflow.match(/build-kiosk-release-apk:[\s\S]*$/);
+
+  assert.match(workflow, /crates\/sonde-kiosk-ui\/\*\*/);
+  assert.ok(debugJobMatch, 'missing build-kiosk-debug-apk job');
+  assert.ok(releaseJobMatch, 'missing build-kiosk-release-apk job');
+
+  const debugJob = debugJobMatch[0];
+  const releaseJob = releaseJobMatch[0];
+
+  assert.match(debugJob, /working-directory: crates\/sonde-kiosk-ui/);
+  assert.match(debugJob, /cargo tauri android init/);
+  assert.match(debugJob, /cargo tauri android build --debug/);
+  assert.match(debugJob, /crates\/sonde-kiosk-ui\/src-tauri\/icons\/android/);
+  assert.match(debugJob, /androidx\.security:security-crypto:1\.1\.0-alpha06/);
+
+  assert.match(releaseJob, /working-directory: crates\/sonde-kiosk-ui/);
+  assert.match(releaseJob, /cargo tauri android init/);
+  assert.match(releaseJob, /cargo tauri android build/);
+  assert.match(releaseJob, /sonde-kiosk-android-release/);
 });
 
 test('validateImportedEnvironmentJson prompts for a missing environment name', () => {

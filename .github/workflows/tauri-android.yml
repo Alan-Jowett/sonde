@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
 #
-# Tauri Android APK CI: build sonde-pair-ui for Android (aarch64).
+# Tauri Android APK CI: build Sonde's Tauri Android apps (aarch64).
 # Debug and release APKs are built as parallel jobs to minimize
-# wall-clock time. The release job bails early when signing secrets
-# are not configured. See docs/android-signing.md.
+# wall-clock time. Release jobs bail early when signing secrets are
+# not configured. See docs/android-signing.md.
 
 name: Tauri Android APK
 
@@ -14,6 +14,7 @@ on:
     paths:
       - 'crates/sonde-pair/**'
       - 'crates/sonde-pair-ui/**'
+      - 'crates/sonde-kiosk-ui/**'
       - 'crates/sonde-protocol/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -23,6 +24,7 @@ on:
     paths:
       - 'crates/sonde-pair/**'
       - 'crates/sonde-pair-ui/**'
+      - 'crates/sonde-kiosk-ui/**'
       - 'crates/sonde-protocol/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -206,5 +208,159 @@ jobs:
         with:
           name: sonde-pair-android-release
           path: crates/sonde-pair-ui/src-tauri/gen/android/**/outputs/**/release/**/*.apk
+          retention-days: 7
+          if-no-files-found: error
+
+  build-kiosk-debug-apk:
+    name: Build Kiosk Android APK (debug)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    container:
+      image: ghcr.io/alan-jowett/sonde-android-dev:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Cache Rust build artefacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          workspaces: ". -> target"
+          key: android-aarch64-kiosk-debug-${{ hashFiles('crates/sonde-kiosk-ui/src-tauri/Cargo.toml', '.github/docker/Dockerfile.android-dev') }}
+
+      - name: Initialize Android project
+        working-directory: crates/sonde-kiosk-ui
+        run: |
+          rm -rf src-tauri/gen/android
+          cargo tauri android init
+
+      - name: Patch Gradle for kiosk Android resources
+        working-directory: crates/sonde-kiosk-ui/src-tauri/gen/android
+        run: |
+          # Replace generated stock Android launcher icons with the Sonde-branded kiosk set.
+          cp -R ../../../../../crates/sonde-kiosk-ui/src-tauri/icons/android/* app/src/main/res/
+
+          # Add security-crypto dependency required by Android secure key storage.
+          GRADLE="app/build.gradle.kts"
+          python3 -c "
+          with open('$GRADLE') as f:
+              txt = f.read()
+          txt = txt.replace(
+              'implementation(\"androidx.appcompat:appcompat',
+              'implementation(\"androidx.security:security-crypto:1.1.0-alpha06\")\n    implementation(\"androidx.appcompat:appcompat'
+          )
+          with open('$GRADLE', 'w') as f:
+              f.write(txt)
+          "
+          grep 'security-crypto' "$GRADLE"
+
+      - name: Build kiosk Android APK (debug)
+        working-directory: crates/sonde-kiosk-ui
+        run: cargo tauri android build --debug
+
+      - name: Upload kiosk debug APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonde-kiosk-android-debug
+          path: crates/sonde-kiosk-ui/src-tauri/gen/android/**/outputs/**/debug/**/*.apk
+          retention-days: 7
+          if-no-files-found: error
+
+  build-kiosk-release-apk:
+    name: Build Kiosk Android APK (release)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    container:
+      image: ghcr.io/alan-jowett/sonde-android-dev:latest
+
+    steps:
+      - name: Validate signing secrets
+        id: kiosk-signing
+        run: |
+          if [ -n "$KEYSTORE" ] && [ -n "$STORE_PASS" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASS" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Kiosk release APK skipped — signing secrets not configured"
+          fi
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Checkout
+        if: steps.kiosk-signing.outputs.available == 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Cache Rust build artefacts
+        if: steps.kiosk-signing.outputs.available == 'true'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          workspaces: ". -> target"
+          key: android-aarch64-kiosk-release-${{ hashFiles('crates/sonde-kiosk-ui/src-tauri/Cargo.toml', '.github/docker/Dockerfile.android-dev') }}
+
+      - name: Initialize Android project
+        if: steps.kiosk-signing.outputs.available == 'true'
+        working-directory: crates/sonde-kiosk-ui
+        run: |
+          rm -rf src-tauri/gen/android
+          cargo tauri android init
+
+      - name: Patch Gradle for kiosk Android resources
+        if: steps.kiosk-signing.outputs.available == 'true'
+        working-directory: crates/sonde-kiosk-ui/src-tauri/gen/android
+        run: |
+          # Replace generated stock Android launcher icons with the Sonde-branded kiosk set.
+          cp -R ../../../../../crates/sonde-kiosk-ui/src-tauri/icons/android/* app/src/main/res/
+
+          # Add security-crypto dependency required by Android secure key storage.
+          GRADLE="app/build.gradle.kts"
+          python3 -c "
+          with open('$GRADLE') as f:
+              txt = f.read()
+          txt = txt.replace(
+              'implementation(\"androidx.appcompat:appcompat',
+              'implementation(\"androidx.security:security-crypto:1.1.0-alpha06\")\n    implementation(\"androidx.appcompat:appcompat'
+          )
+          with open('$GRADLE', 'w') as f:
+              f.write(txt)
+          "
+          grep 'security-crypto' "$GRADLE"
+
+      - name: Decode kiosk release keystore
+        if: steps.kiosk-signing.outputs.available == 'true'
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE" | base64 --decode > /tmp/sonde-kiosk-release.jks
+          chmod 600 /tmp/sonde-kiosk-release.jks
+
+      - name: Build kiosk Android APK (release)
+        if: steps.kiosk-signing.outputs.available == 'true'
+        working-directory: crates/sonde-kiosk-ui
+        env:
+          ORG_GRADLE_PROJECT_android.injected.signing.store.file: /tmp/sonde-kiosk-release.jks
+          ORG_GRADLE_PROJECT_android.injected.signing.store.password: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_android.injected.signing.key.alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_android.injected.signing.key.password: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: cargo tauri android build
+
+      - name: Clean up kiosk keystore
+        if: always()
+        run: rm -f /tmp/sonde-kiosk-release.jks
+
+      - name: Upload kiosk release APK
+        if: steps.kiosk-signing.outputs.available == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonde-kiosk-android-release
+          path: crates/sonde-kiosk-ui/src-tauri/gen/android/**/outputs/**/release/**/*.apk
           retention-days: 7
           if-no-files-found: error

@@ -8,6 +8,7 @@
 //! frontend shell.
 
 use std::collections::{HashMap, HashSet};
+use std::error::Error as StdError;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -27,7 +28,7 @@ use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 use tauri::Manager;
 use time::{Duration as TimeDuration, OffsetDateTime};
-use tracing::warn;
+use tracing::{error, info, warn};
 use uuid::Uuid;
 use x509_cert::der::{Decode, Encode};
 use x509_cert::Certificate;
@@ -1039,6 +1040,51 @@ fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|error| format!("failed to build HTTP client: {error}"))
 }
 
+fn format_error_chain(error: &(dyn StdError + 'static)) -> String {
+    let mut chain = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(inner) = source {
+        chain.push(inner.to_string());
+        source = inner.source();
+    }
+    chain.join(": ")
+}
+
+fn describe_reqwest_error(error: &reqwest::Error) -> String {
+    let mut details = Vec::new();
+    if error.is_builder() {
+        details.push("kind=builder".to_string());
+    }
+    if error.is_connect() {
+        details.push("kind=connect".to_string());
+    }
+    if error.is_timeout() {
+        details.push("kind=timeout".to_string());
+    }
+    if error.is_request() {
+        details.push("kind=request".to_string());
+    }
+    if error.is_body() {
+        details.push("kind=body".to_string());
+    }
+    if error.is_decode() {
+        details.push("kind=decode".to_string());
+    }
+    if let Some(status) = error.status() {
+        details.push(format!("status={status}"));
+    }
+    if let Some(url) = error.url() {
+        details.push(format!("url={url}"));
+    }
+
+    let chain = format_error_chain(error);
+    if details.is_empty() {
+        chain
+    } else {
+        format!("{chain} [{}]", details.join(", "))
+    }
+}
+
 fn certificate_thumbprint_from_pem(certificate_pem: &str) -> Result<String, String> {
     let mut reader = std::io::BufReader::new(certificate_pem.as_bytes());
     let certificate = rustls_pemfile::certs(&mut reader)
@@ -1158,10 +1204,9 @@ async fn fetch_application_access_token(
         .map_err(|error| format!("application sign-in failed: {error}"))?;
     let status = response.status();
     if !status.is_success() {
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|error| format!("<failed to read token error response body: {error}>"));
+        let body = response.text().await.unwrap_or_else(|error| {
+            format!("<failed to read device-code error response body: {error}>")
+        });
         return Err(format!(
             "application sign-in failed: token endpoint returned {status}: {body}"
         ));
@@ -1646,26 +1691,57 @@ async fn begin_device_code_sign_in_with_client(
     client: &reqwest::Client,
 ) -> Result<DeviceCodeResponse, String> {
     let login_endpoint = normalize_login_endpoint(&request.login_endpoint)?;
+    let device_code_url = format!(
+        "{}/{}/oauth2/v2.0/devicecode",
+        login_endpoint, request.tenant_id
+    );
+    info!(
+        purpose = %request.purpose,
+        tenant_id = %request.tenant_id,
+        setup_client_id = %request.setup_client_id,
+        login_endpoint = %login_endpoint,
+        url = %device_code_url,
+        "starting kiosk device-code sign-in request"
+    );
     let response = client
-        .post(format!(
-            "{}/{}/oauth2/v2.0/devicecode",
-            login_endpoint, request.tenant_id
-        ))
+        .post(&device_code_url)
         .form(&[
             ("client_id", request.setup_client_id.as_str()),
             ("scope", GRAPH_SCOPE),
         ])
         .send()
         .await
-        .map_err(|error| format!("failed to start device-code sign-in: {error}"))?;
+        .map_err(|error| {
+            let detail = describe_reqwest_error(&error);
+            error!(
+                purpose = %request.purpose,
+                tenant_id = %request.tenant_id,
+                setup_client_id = %request.setup_client_id,
+                login_endpoint = %login_endpoint,
+                url = %device_code_url,
+                error = %detail,
+                "kiosk device-code sign-in request failed"
+            );
+            format!("failed to start device-code sign-in: {detail}")
+        })?;
     let status = response.status();
     if !status.is_success() {
         let body = response
             .text()
             .await
             .unwrap_or_else(|error| format!("<failed to read token error response body: {error}>"));
+        error!(
+            purpose = %request.purpose,
+            tenant_id = %request.tenant_id,
+            setup_client_id = %request.setup_client_id,
+            login_endpoint = %login_endpoint,
+            url = %device_code_url,
+            status = %status,
+            response_body = %body,
+            "kiosk device-code sign-in returned a non-success status"
+        );
         return Err(format!(
-            "failed to start device-code sign-in: token endpoint returned {status}: {body}"
+            "failed to start device-code sign-in: device-code endpoint returned {status}: {body}"
         ));
     }
     response
@@ -1700,12 +1776,10 @@ async fn poll_device_code_sign_in_with_client(
             clear_session: true,
         });
     }
+    let login_endpoint = normalize_login_endpoint(&session.login_endpoint)?;
+    let token_url = format!("{}/{}/oauth2/v2.0/token", login_endpoint, session.tenant_id);
     let response = client
-        .post(format!(
-            "{}/{}/oauth2/v2.0/token",
-            normalize_login_endpoint(&session.login_endpoint)?,
-            session.tenant_id
-        ))
+        .post(&token_url)
         .form(&[
             ("grant_type", DEVICE_CODE_GRANT_TYPE),
             ("client_id", session.setup_client_id.as_str()),
@@ -1713,7 +1787,19 @@ async fn poll_device_code_sign_in_with_client(
         ])
         .send()
         .await
-        .map_err(|error| format!("failed to poll device-code sign-in: {error}"))?;
+        .map_err(|error| {
+            let detail = describe_reqwest_error(&error);
+            error!(
+                purpose = %session.purpose,
+                tenant_id = %session.tenant_id,
+                setup_client_id = %session.setup_client_id,
+                login_endpoint = %login_endpoint,
+                url = %token_url,
+                error = %detail,
+                "kiosk device-code poll request failed"
+            );
+            format!("failed to poll device-code sign-in: {detail}")
+        })?;
     let status = response.status();
     if status.is_success() {
         let access_token = response
@@ -1735,6 +1821,17 @@ async fn poll_device_code_sign_in_with_client(
         .json::<OAuthErrorResponse>()
         .await
         .map_err(|error| format!("device-code error response was invalid: {error}"))?;
+    error!(
+        purpose = %session.purpose,
+        tenant_id = %session.tenant_id,
+        setup_client_id = %session.setup_client_id,
+        login_endpoint = %login_endpoint,
+        url = %token_url,
+        status = %status,
+        oauth_error = %error_payload.error,
+        oauth_error_description = ?error_payload.error_description,
+        "kiosk device-code poll returned an OAuth error"
+    );
     match error_payload.error.as_str() {
         "authorization_pending" => Ok(DeviceCodePollResult {
             response: PollDeviceCodeSignInResponse {
@@ -2771,5 +2868,33 @@ mod tests {
     fn validate_device_code_purpose_rejects_unknown_values() {
         let error = validate_device_code_purpose("unexpected").unwrap_err();
         assert!(error.contains("unsupported device-code sign-in purpose"));
+    }
+
+    #[test]
+    fn format_error_chain_includes_nested_sources() {
+        #[derive(Debug)]
+        struct OuterError {
+            source: std::io::Error,
+        }
+
+        impl std::fmt::Display for OuterError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "request failed")
+            }
+        }
+
+        impl StdError for OuterError {
+            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+                Some(&self.source)
+            }
+        }
+
+        let error = OuterError {
+            source: std::io::Error::new(ErrorKind::TimedOut, "dns lookup timed out"),
+        };
+        assert_eq!(
+            format_error_chain(&error),
+            "request failed: dns lookup timed out"
+        );
     }
 }

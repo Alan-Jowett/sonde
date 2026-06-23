@@ -196,6 +196,44 @@ test('kiosk android manifest requests internet access', () => {
   assert.match(manifest, /androidx\.core\.content\.FileProvider/);
 });
 
+test('kiosk android startup initializes the keyring ndk context', () => {
+  const mainActivityPath = path.resolve(
+    __dirname,
+    '..',
+    'crates',
+    'sonde-kiosk-ui',
+    'android',
+    'src',
+    'main',
+    'java',
+    'com',
+    'sonde',
+    'kiosk',
+    'MainActivity.kt',
+  );
+  const keyringPath = path.resolve(
+    __dirname,
+    '..',
+    'crates',
+    'sonde-kiosk-ui',
+    'android',
+    'src',
+    'main',
+    'java',
+    'io',
+    'crates',
+    'keyring',
+    'Keyring.kt',
+  );
+  const mainActivity = fs.readFileSync(mainActivityPath, 'utf8');
+  const keyringSource = fs.readFileSync(keyringPath, 'utf8');
+
+  assert.match(mainActivity, /class MainActivity : TauriActivity\(\)/);
+  assert.match(mainActivity, /Keyring\.initializeNdkContext\(applicationContext\)/);
+  assert.match(keyringSource, /System\.loadLibrary\("sonde_kiosk_ui_backend"\)/);
+  assert.match(keyringSource, /external fun initializeNdkContext\(context: Context\)/);
+});
+
 test('android workflow builds the kiosk tauri app', () => {
   const workflowPath = path.resolve(__dirname, '..', '.github', 'workflows', 'tauri-android.yml');
   const workflow = fs.readFileSync(workflowPath, 'utf8');
@@ -212,6 +250,7 @@ test('android workflow builds the kiosk tauri app', () => {
   assert.match(debugJob, /working-directory: crates\/sonde-kiosk-ui/);
   assert.match(debugJob, /cargo tauri android init/);
   assert.match(debugJob, /crates\/sonde-kiosk-ui\/android\/AndroidManifest\.xml/);
+  assert.match(debugJob, /crates\/sonde-kiosk-ui\/android\/src\/main\/java/);
   assert.match(debugJob, /cargo tauri android build --debug/);
   assert.match(debugJob, /crates\/sonde-kiosk-ui\/src-tauri\/icons\/android/);
   assert.match(debugJob, /androidx\.security:security-crypto:1\.1\.0-alpha06/);
@@ -219,6 +258,7 @@ test('android workflow builds the kiosk tauri app', () => {
   assert.match(releaseJob, /working-directory: crates\/sonde-kiosk-ui/);
   assert.match(releaseJob, /cargo tauri android init/);
   assert.match(releaseJob, /crates\/sonde-kiosk-ui\/android\/AndroidManifest\.xml/);
+  assert.match(releaseJob, /crates\/sonde-kiosk-ui\/android\/src\/main\/java/);
   assert.match(releaseJob, /cargo tauri android build/);
   assert.match(releaseJob, /sonde-kiosk-android-release/);
 });

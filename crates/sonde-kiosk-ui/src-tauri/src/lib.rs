@@ -99,15 +99,17 @@ pub extern "system" fn Java_io_crates_keyring_Keyring_00024Companion_initializeN
     }
 
     match env
-        .with_env(|env| {
-            let reference = env.new_global_ref(&context)?;
-            let vm = env.get_java_vm()?;
-            let vm = vm.get_raw() as *mut c_void;
-            unsafe {
-                ndk_context::initialize_android_context(vm, reference.as_obj().as_raw() as _);
-            }
-            Ok(reference)
-        })
+        .with_env(
+            |env| -> Result<Global<JObject<'static>>, jni::errors::Error> {
+                let reference = env.new_global_ref(&context)?;
+                let vm = env.get_java_vm()?;
+                let vm = vm.get_raw() as *mut c_void;
+                unsafe {
+                    ndk_context::initialize_android_context(vm, reference.as_obj().as_raw() as _);
+                }
+                Ok(reference)
+            },
+        )
         .into_outcome()
     {
         jni::Outcome::Ok(initialized_reference) => {

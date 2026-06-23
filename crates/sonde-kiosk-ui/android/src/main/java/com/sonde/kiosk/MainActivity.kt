@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
 package com.sonde.kiosk
 
 import android.os.Bundle

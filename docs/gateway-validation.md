@@ -416,13 +416,16 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-0410  Sonde verifier platform — no LinuxPlatform
+### T-0410  Sonde verifier platform — no LinuxPlatform dependency
 
 **Validates:** GW-0404
 
 **Procedure:**
 1. Confirm that `ingest_elf()` constructs a `SondePlatform` (not `LinuxPlatform`) for verification.
-2. Assert: `ingest_elf()` passes `SondePlatform` (not `LinuxPlatform`) to the verifier / helper-prototype engine; any `LinuxPlatform` usage is encapsulated inside `SondePlatform` (e.g., for ELF/map parsing), not passed directly to Prevail.
+2. Assert: `ingest_elf()` passes `SondePlatform` (not `LinuxPlatform`) to the verifier / helper-prototype engine.
+3. Assert: `SondePlatform` does not embed, compose, or delegate to `LinuxPlatform` for map parsing, descriptor lookup, or conformance-group behavior.
+4. Ingest a valid resident ELF that declares explicit maps (or global-variable maps) on a non-Linux host.
+5. Assert: ingestion succeeds without panicking or requiring Linux-specific map creation paths.
 
 ---
 
@@ -3930,15 +3933,17 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1901  Decoder verification with DecoderPlatform
 
-**Traces to:** GW-1901 (AC-1)
+**Traces to:** GW-1901 (AC-1, AC-5, AC-6)
 
 **Preconditions:** A decoder program that calls only permitted helpers (`emit_reading`, `map_lookup_elem`, `bpf_trace_printk`).
 
 **Steps:**
 1. Ingest the ELF with valid sonde and decoder sections.
+2. Repeat with a decoder that declares maps or global-variable sections on a non-Linux host.
 
 **Expected:**
 1. Verification passes, decoder image stored.
+2. Decoder verification succeeds without panicking or requiring Linux-specific platform code paths.
 
 ---
 

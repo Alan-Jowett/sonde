@@ -1366,6 +1366,24 @@ impl Default for ProgramLibrary {
 mod tests {
     use super::*;
 
+    const GLOBALS_DIAGNOSTIC_ELF_HEX: &str = include_str!("globals_diagnostic_elf.hex");
+
+    fn decode_embedded_elf(hex: &str) -> Vec<u8> {
+        let hex = hex.trim();
+        assert!(
+            hex.len().is_multiple_of(2),
+            "embedded ELF hex should contain an even number of digits"
+        );
+
+        let mut bytes = Vec::with_capacity(hex.len() / 2);
+        for i in (0..hex.len()).step_by(2) {
+            let byte =
+                u8::from_str_radix(&hex[i..i + 2], 16).expect("embedded ELF hex should be valid");
+            bytes.push(byte);
+        }
+        bytes
+    }
+
     #[test]
     fn ingest_elf_empty_bytes_rejected() {
         let lib = ProgramLibrary::new();
@@ -2431,6 +2449,30 @@ mod tests {
         // not the .text section (mov r0, 1).
         let image = ProgramImage::decode(&record.image).unwrap();
         assert_eq!(image.bytecode, sonde_code);
+    }
+
+    #[test]
+    fn ingest_elf_decoder_globals_object_succeeds_without_linux_platform() {
+        let lib = ProgramLibrary::new();
+        let elf = decode_embedded_elf(GLOBALS_DIAGNOSTIC_ELF_HEX);
+        let record = lib
+            .ingest_elf(&elf, VerificationProfile::Resident)
+            .expect("decoder/global-map ELF should ingest without LinuxPlatform");
+
+        assert!(
+            record.decoder_image.is_some(),
+            "decoder image should be stored"
+        );
+        let image = ProgramImage::decode(&record.image).unwrap();
+        assert!(
+            image.maps.iter().any(|map| map.map_type == 0),
+            "node image should include global-variable maps"
+        );
+        let decoder = ProgramImage::decode(record.decoder_image.as_ref().unwrap()).unwrap();
+        assert!(
+            decoder.maps.iter().any(|map| map.map_type == 0),
+            "decoder image should include global-variable maps"
+        );
     }
 
     /// Build a small ELF with one executable section, one global data section,

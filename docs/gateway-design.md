@@ -464,7 +464,7 @@ after the verification profile when `has_decoder` is true.
 1. Accept pre-compiled BPF ELF (GW-0400).
 2. Reject ephemeral programs that declare maps — ephemeral programs are stateless and must not carry map definitions (GW-0401 criterion 5). Detected via a lightweight scan of ELF section headers for map-backed sections (`.maps`/`maps`, `.rodata`, `.data`, `.bss`) before invoking prevail. The scan also validates `e_machine == EM_BPF` to avoid false positives on non-BPF ELFs.
 3. Extract programs from the `sonde` ELF section only — `elf.get_programs("sonde", "", &mut platform)` filters to the `SEC("sonde")` section, ignoring helper functions or other code in unrelated sections (GW-0401 criterion 6).
-4. Verify with `prevail-rust` using `SondePlatform` — a custom Prevail platform that defines helper prototypes for sonde helpers 1–16 (GW-0401, GW-0404). Prevail's loader resolves ELF map relocations to `LDDW src=1, imm=<map_index>`. When verification fails, per-instruction diagnostic notes are collected and included in the `IngestProgram` gRPC error message (GW-1305). The first line after the summary is always the output of `find_first_error()` (so clients can reliably extract it), followed by any unmarshal-stage notes, then as much of the invariant state from `print_invariants()` as fits within the gRPC trailer size limit. When truncation is required, the gateway appends an explicit truncation marker to the diagnostics so clients can detect that the invariant dump was cut off.
+4. Verify with `prevail-rust` using `SondePlatform` — a custom Prevail platform that defines helper prototypes for sonde helpers 1–17 (GW-0401, GW-0404). `SondePlatform` owns the gateway-side verifier integration for helper semantics, map parsing, and descriptor lookup; it does not wrap or delegate to `LinuxPlatform`. Prevail's loader resolves ELF map relocations to `LDDW src=1, imm=<map_index>`. When verification fails, per-instruction diagnostic notes are collected and included in the `IngestProgram` gRPC error message (GW-1305). The first line after the summary is always the output of `find_first_error()` (so clients can reliably extract it), followed by any unmarshal-stage notes, then as much of the invariant state from `print_invariants()` as fits within the gRPC trailer size limit. When truncation is required, the gateway appends an explicit truncation marker to the diagnostics so clients can detect that the invariant dump was cut off.
 5. Extract bytecode and map definitions from the matched program.
 6. Extract initial data for global variable maps (GW-0405): scan ELF section headers for `.rodata`, `.data`, and `.bss` in section-header order.  For `SHT_PROGBITS` sections (`.rodata`, `.data`), copy the section content; for `SHT_NOBITS` sections (`.bss`), emit empty data (maps are zero-initialized by the node). The ordering matches the `map_type == 0` descriptors produced by Prevail's `add_global_variable_maps()`, so initial data entries correspond 1:1 to map definitions.
 7. Encode as CBOR program image using `sonde_protocol::ProgramImage::encode_deterministic()`. Each map definition with non-empty initial data includes `initial_data` (key 5) in its CBOR map. See [protocol-crate-design.md §7](protocol-crate-design.md) and [protocol.md § Program image format](protocol.md#program-image-format).
@@ -479,11 +479,11 @@ after the verification profile when `has_decoder` is true.
 
 The gateway uses a custom Prevail platform (`SondePlatform`) instead of `LinuxPlatform` for BPF program verification (GW-0404). Sonde assigns different semantics to helper IDs 1–16 than Linux BPF does, so using `LinuxPlatform` causes programs that call sonde helpers to fail verification or be verified under incorrect (Linux) helper semantics.
 
-`SondePlatform` wraps `LinuxPlatform` via composition — it delegates ELF map parsing, map descriptor management, and conformance group handling to the inner `LinuxPlatform`, and overrides helper-related methods with sonde-specific prototypes.
+`SondePlatform` is fully sonde-owned. It implements helper semantics, map-section parsing, map descriptor storage, map-type mapping, and conformance-group reporting without embedding or delegating to `LinuxPlatform`. This keeps verifier behavior aligned to the sonde model rather than host-OS-specific Linux BPF integration details.
 
 **Module:** `crate::sonde_platform` (`crates/sonde-gateway/src/sonde_platform.rs`)
 
-**Helper prototypes (IDs 1–16):** each prototype declares its name, return type, argument types (up to 5), and whether any argument is a pointer to readable or writable memory. The prototypes match the signatures defined in `test-programs/include/sonde_helpers.h`.
+**Helper prototypes (IDs 1–17):** each prototype declares its name, return type, argument types (up to 5), and whether any argument is a pointer to readable or writable memory. The prototypes match the signatures defined in `test-programs/include/sonde_helpers.h`.
 
 | ID | Name | Return | Args |
 |----|------|--------|------|
@@ -503,6 +503,7 @@ The gateway uses a custom Prevail platform (`SondePlatform`) instead of `LinuxPl
 | 14 | `delay_us` | `Integer` | `(microseconds)` |
 | 15 | `set_next_wake` | `Integer` | `(seconds)` |
 | 16 | `bpf_trace_printk` | `Integer` | `(*readable, size)` |
+| 17 | `send_async` | `Integer` | `(*readable, size)` |
 
 **Program type:** all ELF sections are treated as `"sonde"` program type with a 16-byte context descriptor matching `struct sonde_context`.
 
@@ -512,15 +513,15 @@ The gateway uses a custom Prevail platform (`SondePlatform`) instead of `LinuxPl
 
 `prevail-rust` promotes `.rodata`, `.data`, and `.bss` ELF sections to map descriptors (map_type 0) during `ElfObject::get_programs`. These descriptors are added to the ELF loader's internal state via `add_global_variable_maps()`, but are **not** propagated through `parse_maps_section` to the platform. As a result, `SondePlatform::get_map_descriptor()` returns `None` for global variable map FDs, causing the verifier to type `LDDW`-loaded registers as `ctx` instead of `shared` — which leads to spurious verification failures.
 
-**Workaround:** after calling `get_programs`, the gateway copies the full set of map descriptors from `RawProgram.info.map_descriptors` into `SondePlatform` via `sync_map_descriptors(&[EbpfMapDescriptor])`. `SondePlatform` maintains a mirror `Vec<EbpfMapDescriptor>` that is checked first in `get_map_descriptor()`, falling back to the inner `LinuxPlatform` for maps parsed via `parse_maps_section`.
+**Handling:** after calling `get_programs`, the gateway copies the full set of map descriptors from `RawProgram.info.map_descriptors` into `SondePlatform` via `sync_map_descriptors(&[EbpfMapDescriptor])`. `SondePlatform` maintains the authoritative descriptor table used by `get_map_descriptor()`, including explicit `.maps` entries and global-variable maps. No fallback to `LinuxPlatform` is permitted.
 
 **Section name prefix matching:** the initial data extraction (step 5 above) uses prefix matching rather than exact equality for global data section names. Prevail promotes sections such as `.rodata.str1.1` and `.data.rel.ro` — not just `.rodata` and `.data` — so the scanner matches any section whose name equals or starts with a known global data prefix followed by `.`.
 
 ### 8.2.2  Decoder verifier platform (`DecoderPlatform`)
 
 The gateway defines a separate `DecoderPlatform` for Prevail verification of
-decoder BPF programs (GW-1901). Like `SondePlatform`, it wraps `LinuxPlatform`
-via composition.
+decoder BPF programs (GW-1901). Like `SondePlatform`, it is fully sonde-owned
+and does not wrap or delegate to `LinuxPlatform`.
 
 **Module:** `crate::decoder_platform` (`crates/sonde-gateway/src/decoder_platform.rs`)
 
@@ -546,11 +547,13 @@ All other helper IDs (1–9, 12–15, 17) return `None` from
 them. Note: ID 17 (`send_async`) is a valid node helper defined in
 `SondePlatform` (§8.2.1) but is explicitly excluded from the decoder set.
 
-**Map type mapping:** Same as `SondePlatform` (§8.2.1) — reuses the existing
-array/global-variable map semantics.
+**Map type mapping:** Same as `SondePlatform` (§8.2.1) — decoder verification
+uses the same sonde-owned array/global-variable map semantics.
 
 **Global variable map sync:** Same `sync_map_descriptors` pattern as
-`SondePlatform` (§8.2.1.1).
+`SondePlatform` (§8.2.1.1). `DecoderPlatform` owns its descriptor table and
+must not fall back to any Linux-specific platform implementation for explicit
+maps or global-variable maps.
 
 ### 8.3  Chunk serving
 

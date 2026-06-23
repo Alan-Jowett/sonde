@@ -3,19 +3,24 @@
 
 //! Sonde-specific Prevail verifier platform (GW-0404).
 //!
-//! Defines helper prototypes for sonde BPF helpers (IDs 1–16) so that the
+//! Defines helper prototypes for sonde BPF helpers (IDs 1–17) so that the
 //! Prevail verifier understands the call signatures used by sonde programs.
 //! Without this, the gateway would use `LinuxPlatform` which assigns
 //! different semantics to the same helper IDs.
 
+use std::collections::BTreeMap;
+
+use crate::verifier_maps::{
+    find_map_descriptor, legacy_map_record_size, parse_legacy_maps_section,
+    resolve_inner_map_references, SUPPORTED_CONFORMANCE_GROUPS,
+};
 use prevail::elf_loader::UnmarshalError;
-use prevail::linux::linux_platform::LinuxPlatform;
 use prevail::linux::spec_prototypes::HelperPrototype;
 use prevail::platform::EbpfPlatform;
 use prevail::spec::config::EbpfVerifierOptions;
 use prevail::spec::ebpf_base::{EbpfArgumentType, EbpfContextDescriptor, EbpfReturnType};
 use prevail::spec::type_descriptors::{
-    EbpfMapDescriptor, EbpfMapType, EbpfMapValueType, EbpfProgramType,
+    EbpfMapDescriptor, EbpfMapType, EbpfMapValueType, EbpfProgramType, EquivalenceKey,
 };
 
 use EbpfArgumentType as Arg;
@@ -289,26 +294,23 @@ static SONDE_HELPERS: [HelperPrototype; 17] = [
 
 /// Sonde BPF verifier platform.
 ///
-/// Wraps `LinuxPlatform` for ELF/map parsing and overrides helper prototypes
-/// and program type resolution with sonde-specific definitions.
-///
-/// Also maintains a mirror of all map descriptors (including global variable
-/// maps from .rodata/.data) so that `get_map_descriptor` can find them.
-/// This works around a prevail-rust issue where global variable map
-/// descriptors are added to the ELF loader's state but never propagated
-/// to the platform's internal map store.
+/// Owns Sonde-specific helper prototypes, map parsing, and descriptor lookup.
+/// Synthetic map FDs are assigned deterministically from map-equivalence keys,
+/// which is sufficient for verifier analysis without depending on Linux-only
+/// map creation paths.
 pub struct SondePlatform {
-    inner: LinuxPlatform,
     /// Mirror of map descriptors populated via `sync_map_descriptors` after
     /// program/ELF parsing (including global variable maps from .rodata/.data).
     map_descriptors: Vec<EbpfMapDescriptor>,
+    /// Cache for deterministic synthetic map-FD allocation.
+    cache: BTreeMap<EquivalenceKey, i32>,
 }
 
 impl SondePlatform {
     pub fn new() -> Self {
         Self {
-            inner: LinuxPlatform::new(),
             map_descriptors: Vec::new(),
+            cache: BTreeMap::new(),
         }
     }
 
@@ -322,6 +324,34 @@ impl SondePlatform {
     /// `RawProgram.info.map_descriptors`.
     pub fn sync_map_descriptors(&mut self, descriptors: &[EbpfMapDescriptor]) {
         self.map_descriptors = descriptors.to_vec();
+    }
+
+    fn map_type(platform_specific_type: u32) -> EbpfMapType {
+        match platform_specific_type {
+            // Map type 0: global variable maps (.rodata, .data, .bss).
+            // Prevail promotes ELF data sections to map descriptors with
+            // map_type == 0. These must be array-typed so that LDDW
+            // references produce shared-typed value pointers.
+            0 => EbpfMapType {
+                platform_specific_type: 0,
+                name: "global".to_string(),
+                is_array: true,
+                value_type: EbpfMapValueType::Any,
+            },
+            // Sonde BPF_MAP_TYPE_ARRAY = 1 (differs from Linux's value of 2).
+            1 => EbpfMapType {
+                platform_specific_type: 1,
+                name: "array".to_string(),
+                is_array: true,
+                value_type: EbpfMapValueType::Any,
+            },
+            other => EbpfMapType {
+                platform_specific_type: other,
+                name: format!("map_type_{other}"),
+                is_array: false,
+                value_type: EbpfMapValueType::Any,
+            },
+        }
     }
 }
 
@@ -355,7 +385,7 @@ impl EbpfPlatform for SondePlatform {
     }
 
     fn map_record_size(&self) -> usize {
-        self.inner.map_record_size()
+        legacy_map_record_size()
     }
 
     fn parse_maps_section(
@@ -364,62 +394,35 @@ impl EbpfPlatform for SondePlatform {
         data: &[u8],
         record_size: usize,
         count: usize,
-        options: &EbpfVerifierOptions,
+        _options: &EbpfVerifierOptions,
     ) {
-        self.inner
-            .parse_maps_section(descriptors, data, record_size, count, options);
+        parse_legacy_maps_section(
+            descriptors,
+            data,
+            record_size,
+            count,
+            &mut self.cache,
+            Self::map_type,
+        );
     }
 
     fn resolve_inner_map_references(
         &self,
         descriptors: &mut Vec<EbpfMapDescriptor>,
     ) -> Result<(), UnmarshalError> {
-        self.inner.resolve_inner_map_references(descriptors)
+        resolve_inner_map_references(descriptors)
     }
 
     fn get_map_descriptor(&self, map_fd: i32) -> Option<&EbpfMapDescriptor> {
-        // First check our mirror (includes global variable maps).
-        if let Some(desc) = self
-            .map_descriptors
-            .iter()
-            .find(|d| d.original_fd == map_fd)
-        {
-            return Some(desc);
-        }
-        // Fall back to the inner platform for maps parsed via parse_maps_section.
-        self.inner.get_map_descriptor(map_fd)
+        find_map_descriptor(&self.map_descriptors, map_fd)
     }
 
     fn get_map_type(&self, platform_specific_type: u32) -> EbpfMapType {
-        match platform_specific_type {
-            // Map type 0: global variable maps (.rodata, .data, .bss).
-            // Prevail promotes ELF data sections to map descriptors with
-            // map_type == 0. These must be array-typed so that LDDW
-            // references produce shared-typed value pointers.
-            0 => EbpfMapType {
-                platform_specific_type: 0,
-                name: "global".to_string(),
-                is_array: true,
-                value_type: EbpfMapValueType::Any,
-            },
-            // Sonde BPF_MAP_TYPE_ARRAY = 1 (differs from Linux's value of 2).
-            1 => EbpfMapType {
-                platform_specific_type: 1,
-                name: "array".to_string(),
-                is_array: true,
-                value_type: EbpfMapValueType::Any,
-            },
-            other => EbpfMapType {
-                platform_specific_type: other,
-                name: format!("map_type_{other}"),
-                is_array: false,
-                value_type: EbpfMapValueType::Any,
-            },
-        }
+        Self::map_type(platform_specific_type)
     }
 
     fn supported_conformance_groups(&self) -> u32 {
-        self.inner.supported_conformance_groups()
+        SUPPORTED_CONFORMANCE_GROUPS
     }
 }
 
@@ -531,6 +534,36 @@ mod tests {
         assert_eq!(found.original_fd, 42);
         assert_eq!(found.value_size, 128);
         assert_eq!(found.map_type, 0);
+    }
+
+    #[test]
+    fn parse_maps_section_assigns_descriptor_without_linux_platform() {
+        let mut platform = SondePlatform::new();
+        let mut descriptors = Vec::new();
+        let options = EbpfVerifierOptions::default();
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&1u32.to_ne_bytes());
+        raw.extend_from_slice(&4u32.to_ne_bytes());
+        raw.extend_from_slice(&16u32.to_ne_bytes());
+        raw.extend_from_slice(&1u32.to_ne_bytes());
+        raw.extend_from_slice(&0u32.to_ne_bytes());
+        raw.extend_from_slice(&0u32.to_ne_bytes());
+        raw.extend_from_slice(&0u32.to_ne_bytes());
+
+        platform.parse_maps_section(
+            &mut descriptors,
+            &raw,
+            platform.map_record_size(),
+            1,
+            &options,
+        );
+
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].original_fd, 1);
+        assert_eq!(descriptors[0].map_type, 1);
+        assert_eq!(descriptors[0].key_size, 4);
+        assert_eq!(descriptors[0].value_size, 16);
+        assert_eq!(descriptors[0].max_entries, 1);
     }
 
     /// Verify `spi_transfer` (helper #4) has a verifiable ptr+size pairing.

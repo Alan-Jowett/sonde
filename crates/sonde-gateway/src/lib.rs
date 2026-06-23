@@ -27,6 +27,7 @@ pub mod state_bundle;
 pub mod storage;
 pub mod transient_display;
 pub mod transport;
+mod verifier_maps;
 
 pub use admin::AdminService;
 pub use aead::GatewayAead;

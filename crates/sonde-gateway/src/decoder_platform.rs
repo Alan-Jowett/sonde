@@ -7,14 +7,19 @@
 //! (IDs 10, 11, 16, 18) so that the Prevail verifier rejects decoder
 //! programs that reference hardware or network helpers.
 
+use std::collections::BTreeMap;
+
+use crate::verifier_maps::{
+    find_map_descriptor, legacy_map_record_size, parse_legacy_maps_section,
+    resolve_inner_map_references, SUPPORTED_CONFORMANCE_GROUPS,
+};
 use prevail::elf_loader::UnmarshalError;
-use prevail::linux::linux_platform::LinuxPlatform;
 use prevail::linux::spec_prototypes::HelperPrototype;
 use prevail::platform::EbpfPlatform;
 use prevail::spec::config::EbpfVerifierOptions;
 use prevail::spec::ebpf_base::{EbpfArgumentType, EbpfContextDescriptor, EbpfReturnType};
 use prevail::spec::type_descriptors::{
-    EbpfMapDescriptor, EbpfMapType, EbpfMapValueType, EbpfProgramType,
+    EbpfMapDescriptor, EbpfMapType, EbpfMapValueType, EbpfProgramType, EquivalenceKey,
 };
 
 use EbpfArgumentType as Arg;
@@ -111,23 +116,22 @@ static DECODER_EMIT_READING: HelperPrototype = HelperPrototype {
 
 /// Decoder BPF verifier platform (GW-1901).
 ///
-/// Wraps `LinuxPlatform` for ELF/map parsing and overrides helper prototypes
-/// and program type resolution with decoder-specific definitions.
-///
-/// Only helpers 10 (`map_lookup_elem`), 11 (`map_update_elem`),
-/// 16 (`bpf_trace_printk`), and 18 (`emit_reading`) are permitted.
-/// All other helper IDs are rejected by the verifier.
+/// Owns decoder-specific helper prototypes, map parsing, and descriptor
+/// lookup. Only helpers 10 (`map_lookup_elem`), 11 (`map_update_elem`),
+/// 16 (`bpf_trace_printk`), and 18 (`emit_reading`) are permitted; all other
+/// helper IDs are rejected by the verifier.
 pub struct DecoderPlatform {
-    inner: LinuxPlatform,
     /// Mirror of map descriptors populated via `sync_map_descriptors`.
     map_descriptors: Vec<EbpfMapDescriptor>,
+    /// Cache for deterministic synthetic map-FD allocation.
+    cache: BTreeMap<EquivalenceKey, i32>,
 }
 
 impl DecoderPlatform {
     pub fn new() -> Self {
         Self {
-            inner: LinuxPlatform::new(),
             map_descriptors: Vec::new(),
+            cache: BTreeMap::new(),
         }
     }
 
@@ -137,6 +141,29 @@ impl DecoderPlatform {
     /// Same pattern as [`SondePlatform::sync_map_descriptors`].
     pub fn sync_map_descriptors(&mut self, descriptors: &[EbpfMapDescriptor]) {
         self.map_descriptors = descriptors.to_vec();
+    }
+
+    fn map_type(platform_specific_type: u32) -> EbpfMapType {
+        match platform_specific_type {
+            0 => EbpfMapType {
+                platform_specific_type: 0,
+                name: "global".to_string(),
+                is_array: true,
+                value_type: EbpfMapValueType::Any,
+            },
+            1 => EbpfMapType {
+                platform_specific_type: 1,
+                name: "array".to_string(),
+                is_array: true,
+                value_type: EbpfMapValueType::Any,
+            },
+            other => EbpfMapType {
+                platform_specific_type: other,
+                name: format!("map_type_{other}"),
+                is_array: false,
+                value_type: EbpfMapValueType::Any,
+            },
+        }
     }
 }
 
@@ -172,7 +199,7 @@ impl EbpfPlatform for DecoderPlatform {
     }
 
     fn map_record_size(&self) -> usize {
-        self.inner.map_record_size()
+        legacy_map_record_size()
     }
 
     fn parse_maps_section(
@@ -181,54 +208,69 @@ impl EbpfPlatform for DecoderPlatform {
         data: &[u8],
         record_size: usize,
         count: usize,
-        options: &EbpfVerifierOptions,
+        _options: &EbpfVerifierOptions,
     ) {
-        self.inner
-            .parse_maps_section(descriptors, data, record_size, count, options);
+        parse_legacy_maps_section(
+            descriptors,
+            data,
+            record_size,
+            count,
+            &mut self.cache,
+            Self::map_type,
+        );
     }
 
     fn resolve_inner_map_references(
         &self,
         descriptors: &mut Vec<EbpfMapDescriptor>,
     ) -> Result<(), UnmarshalError> {
-        self.inner.resolve_inner_map_references(descriptors)
+        resolve_inner_map_references(descriptors)
     }
 
     fn get_map_descriptor(&self, map_fd: i32) -> Option<&EbpfMapDescriptor> {
-        if let Some(desc) = self
-            .map_descriptors
-            .iter()
-            .find(|d| d.original_fd == map_fd)
-        {
-            return Some(desc);
-        }
-        self.inner.get_map_descriptor(map_fd)
+        find_map_descriptor(&self.map_descriptors, map_fd)
     }
 
     fn get_map_type(&self, platform_specific_type: u32) -> EbpfMapType {
-        match platform_specific_type {
-            0 => EbpfMapType {
-                platform_specific_type: 0,
-                name: "global".to_string(),
-                is_array: true,
-                value_type: EbpfMapValueType::Any,
-            },
-            1 => EbpfMapType {
-                platform_specific_type: 1,
-                name: "array".to_string(),
-                is_array: true,
-                value_type: EbpfMapValueType::Any,
-            },
-            other => EbpfMapType {
-                platform_specific_type: other,
-                name: format!("map_type_{other}"),
-                is_array: false,
-                value_type: EbpfMapValueType::Any,
-            },
-        }
+        Self::map_type(platform_specific_type)
     }
 
     fn supported_conformance_groups(&self) -> u32 {
-        self.inner.supported_conformance_groups()
+        SUPPORTED_CONFORMANCE_GROUPS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_maps_section_assigns_descriptor_without_linux_platform() {
+        let mut platform = DecoderPlatform::new();
+        let mut descriptors = Vec::new();
+        let options = EbpfVerifierOptions::default();
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&1u32.to_ne_bytes());
+        raw.extend_from_slice(&4u32.to_ne_bytes());
+        raw.extend_from_slice(&32u32.to_ne_bytes());
+        raw.extend_from_slice(&1u32.to_ne_bytes());
+        raw.extend_from_slice(&0u32.to_ne_bytes());
+        raw.extend_from_slice(&0u32.to_ne_bytes());
+        raw.extend_from_slice(&0u32.to_ne_bytes());
+
+        platform.parse_maps_section(
+            &mut descriptors,
+            &raw,
+            platform.map_record_size(),
+            1,
+            &options,
+        );
+
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].original_fd, 1);
+        assert_eq!(descriptors[0].map_type, 1);
+        assert_eq!(descriptors[0].key_size, 4);
+        assert_eq!(descriptors[0].value_size, 32);
+        assert_eq!(descriptors[0].max_entries, 1);
     }
 }

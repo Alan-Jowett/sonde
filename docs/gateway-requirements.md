@@ -342,16 +342,17 @@ The gateway SHOULD enforce maximum program sizes: 4 KB for resident programs and
 **Source:** Design decision — #474
 
 **Description:**  
-The gateway MUST use a custom Prevail verifier platform (`SondePlatform`) that defines helper prototypes for all sonde BPF helpers (IDs 1–16 as defined in `test-programs/include/sonde_helpers.h`). The platform MUST NOT use the default Linux BPF helper semantics, as sonde assigns different meanings to helper IDs 1–16 than Linux does (e.g., Linux helper 1 = `map_lookup_elem`; sonde helper 1 = `i2c_read`). Using `LinuxPlatform` causes programs that call sonde-specific helpers to fail verification or be verified under incorrect semantics.
+The gateway MUST use a custom Prevail verifier platform (`SondePlatform`) that defines helper prototypes for all sonde BPF helpers (IDs 1–17 as defined in `test-programs/include/sonde_helpers.h`). The platform MUST NOT use the default Linux BPF helper semantics, as sonde assigns different meanings to helper IDs 1–17 than Linux does (e.g., Linux helper 1 = `map_lookup_elem`; sonde helper 1 = `i2c_read`). `SondePlatform` is a sonde-owned verifier integration layer: it MUST NOT embed, compose, delegate to, or otherwise depend on `LinuxPlatform` for gateway-side verification behavior, including map-section parsing and descriptor management. Using `LinuxPlatform` causes programs that call sonde-specific helpers to fail verification or be verified under incorrect semantics, and it introduces host-OS-dependent behavior for map-backed ELFs that is outside the sonde model.
 
 **Acceptance criteria:**
 
-1. The verifier platform defines prototypes for helpers 1–16 matching the signatures in `sonde_helpers.h`.
+1. The verifier platform defines prototypes for helpers 1–17 matching the signatures in `sonde_helpers.h`.
 2. Each prototype specifies the correct return type, argument count, and argument types (including whether arguments are pointers to readable or writable memory).
 3. Programs using sonde-specific helpers (`i2c_read`, `gpio_write`, `send`, etc.) pass verification when the call signatures match the defined prototypes.
-4. The gateway does not pass `LinuxPlatform` directly as the verifier platform and does not use Linux BPF helper semantics; it uses `SondePlatform` with sonde helper prototypes for program verification (it may still reuse `LinuxPlatform` components for ELF/map parsing).
+4. The gateway does not pass `LinuxPlatform` directly as the verifier platform, does not use Linux BPF helper semantics, and does not embed or delegate to `LinuxPlatform` inside `SondePlatform`; it uses a sonde-owned `SondePlatform` implementation for program verification.
 5. The platform MUST support global variable maps (map_type 0) from `.rodata`, `.data`, and `.bss` ELF sections. `get_map_type(0)` MUST return an array-typed map descriptor so that `LDDW` references to global variable maps produce `shared`-typed value pointers, not `ctx`.
 6. `get_map_descriptor` MUST return a valid descriptor for global variable map FDs. Because `prevail-rust` adds global variable map descriptors to the ELF loader's internal state but does not propagate them through `parse_maps_section` to the platform, `SondePlatform` MUST mirror descriptors from the ELF loader after program loading (via `sync_map_descriptors`).
+7. Map-backed resident ELFs MUST verify consistently on supported gateway host platforms; verifier behavior for `.maps`, `.rodata`, `.data`, and `.bss` sections MUST NOT depend on Linux-only platform code paths.
 
 ---
 
@@ -2392,6 +2393,7 @@ The gateway MUST define a separate `DecoderPlatform` for Prevail verification of
 - A context descriptor for the decoder input: `struct decoder_context { const uint64_t input_data; const uint64_t input_end; }` (16 bytes, 8-byte aligned — see bpf-environment.md §4.2). Uses the standard BPF data/data_end pointer pair pattern for verifier compatibility.
 - Helper prototypes for the decoder-permitted helpers only: `emit_reading` (ID 18), `map_lookup_elem` (ID 10), `map_update_elem` (ID 11), `bpf_trace_printk` (ID 16).
 - No hardware helpers (no I2C, SPI, GPIO, ADC, send, recv, delay, etc.).
+- A sonde-owned verifier integration layer for decoder map parsing, descriptor management, and map-type interpretation; it MUST NOT embed, compose, delegate to, or otherwise depend on `LinuxPlatform`.
 
 **Acceptance criteria:**
 
@@ -2399,6 +2401,8 @@ The gateway MUST define a separate `DecoderPlatform` for Prevail verification of
 2. Decoder programs that call hardware helpers (e.g., `i2c_read`, `send`) fail verification with a descriptive error.
 3. The decoder context descriptor accurately models the `{ input_data, input_end }` struct using the Prevail verifier's data/end pointer pair mechanism.
 4. The `DecoderPlatform` is distinct from `SondePlatform` — changing one does not affect the other.
+5. The gateway does not use `LinuxPlatform` directly or indirectly inside `DecoderPlatform`; decoder verification uses a decoder-owned platform implementation.
+6. Decoder programs that declare maps or rely on global-variable maps verify consistently on supported gateway host platforms without Linux-only platform code paths.
 
 ---
 

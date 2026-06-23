@@ -4,6 +4,8 @@
 # Build sonde BPF test programs.
 #
 # Requirements: clang with BPF target support (version 14 or later).
+# Debug info is enabled so clang emits BTF map metadata for `.maps`
+# declarations using the libbpf-style `__uint` / `__type` macros.
 #
 # Usage:
 #   make          -- compile all .c files to BPF ELF object files
@@ -25,7 +27,7 @@
 # custom tool, then use sonde-admin to upload the resulting CBOR image.
 
 CLANG  ?= clang
-CFLAGS := -target bpf -O2 -Wall -Wextra -I.
+CFLAGS := -target bpf -g -O2 -Wall -Wextra -I.
 
 SRCS   := nop.c \
           send.c \

@@ -36,13 +36,7 @@ use x509_cert::Certificate;
 #[cfg(target_os = "android")]
 use android_native_keyring_store::Store as AndroidKeyringStore;
 #[cfg(target_os = "android")]
-use jni::objects::{Global, JObject};
-#[cfg(target_os = "android")]
-use jni::EnvUnowned;
-#[cfg(target_os = "android")]
 use keyring_core::Entry;
-#[cfg(target_os = "android")]
-use std::ffi::c_void;
 
 const ENVIRONMENT_FILE_NAME: &str = "environment.json";
 const TELEMETRY_CACHE_FILE_NAME: &str = "telemetry-cache.json";
@@ -71,58 +65,6 @@ const JS_MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
 const KEYRING_SERVICE_NAME: &str = "sonde-kiosk-ui";
 #[cfg(target_os = "android")]
 const KEYRING_USER_NAME: &str = "kiosk-private-key";
-
-#[cfg(target_os = "android")]
-#[allow(non_snake_case)]
-#[no_mangle]
-pub extern "system" fn Java_io_crates_keyring_Keyring_00024Companion_initializeNdkContext(
-    mut env: EnvUnowned,
-    _class: JObject,
-    context: JObject,
-) {
-    static REF: OnceLock<Mutex<Option<Global<JObject<'static>>>>> = OnceLock::new();
-    if context.is_null() {
-        error!("failed to initialize Android keyring context: null context");
-        return;
-    }
-
-    let reference = REF.get_or_init(|| Mutex::new(None));
-    let mut reference = match reference.lock() {
-        Ok(reference) => reference,
-        Err(error) => {
-            error!(%error, "failed to lock Android keyring context reference");
-            return;
-        }
-    };
-    if reference.is_some() {
-        return;
-    }
-
-    match env
-        .with_env(
-            |env| -> Result<Global<JObject<'static>>, jni::errors::Error> {
-                let reference = env.new_global_ref(&context)?;
-                let vm = env.get_java_vm()?;
-                let vm = vm.get_raw() as *mut c_void;
-                unsafe {
-                    ndk_context::initialize_android_context(vm, reference.as_obj().as_raw() as _);
-                }
-                Ok(reference)
-            },
-        )
-        .into_outcome()
-    {
-        jni::Outcome::Ok(initialized_reference) => {
-            *reference = Some(initialized_reference);
-        }
-        jni::Outcome::Err(error) => {
-            error!(%error, "failed to initialize Android keyring context");
-        }
-        jni::Outcome::Panic(_) => {
-            error!("failed to initialize Android keyring context due to panic");
-        }
-    }
-}
 
 struct AppState {
     device_code_sessions: Mutex<HashMap<String, DeviceCodeSession>>,

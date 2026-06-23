@@ -273,7 +273,6 @@ test('kiosk tauri backend defines the mobile entry point required for Android bu
   const backendSource = fs.readFileSync(backendPath, 'utf8');
 
   assert.match(backendSource, /#\[cfg\(mobile\)\]\s*#\[tauri::mobile_entry_point\]\s*fn main\(\)\s*\{\s*run\(\);/s);
-  assert.match(backendSource, /Java_io_crates_keyring_Keyring_00024Companion_initializeNdkContext/);
 });
 
 test('validateImportedEnvironmentJson prompts for a missing environment name', () => {

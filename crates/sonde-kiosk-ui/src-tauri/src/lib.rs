@@ -74,7 +74,7 @@ const KEYRING_USER_NAME: &str = "kiosk-private-key";
 
 #[cfg(target_os = "android")]
 #[allow(non_snake_case)]
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub extern "system" fn Java_io_crates_keyring_Keyring_00024Companion_initializeNdkContext(
     mut env: EnvUnowned,
     _class: JObject,

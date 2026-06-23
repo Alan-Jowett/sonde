@@ -1742,7 +1742,7 @@ async fn begin_device_code_sign_in_with_client(
             "kiosk device-code sign-in returned a non-success status"
         );
         return Err(format!(
-            "failed to start device-code sign-in: token endpoint returned {status}: {body}"
+            "failed to start device-code sign-in: device-code endpoint returned {status}: {body}"
         ));
     }
     response

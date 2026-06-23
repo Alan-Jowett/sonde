@@ -36,9 +36,9 @@ use x509_cert::Certificate;
 #[cfg(target_os = "android")]
 use android_native_keyring_store::Store as AndroidKeyringStore;
 #[cfg(target_os = "android")]
-use jni::objects::{GlobalRef, JObject};
+use jni::objects::{Global, JObject};
 #[cfg(target_os = "android")]
-use jni::JNIEnv;
+use jni::EnvUnowned;
 #[cfg(target_os = "android")]
 use keyring_core::Entry;
 #[cfg(target_os = "android")]
@@ -76,23 +76,33 @@ const KEYRING_USER_NAME: &str = "kiosk-private-key";
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_crates_keyring_Keyring_00024Companion_initializeNdkContext(
-    env: JNIEnv,
+    mut env: EnvUnowned,
     _class: JObject,
     context: JObject,
 ) {
-    static REF: OnceLock<Option<GlobalRef>> = OnceLock::new();
-    REF.get_or_init(|| match env.new_global_ref(&context) {
-        Ok(reference) => {
-            let vm = env.get_java_vm().unwrap();
-            let vm = vm.get_java_vm_pointer() as *mut c_void;
-            unsafe {
-                ndk_context::initialize_android_context(vm, reference.as_obj().as_raw() as _);
+    static REF: OnceLock<Option<Global<JObject<'static>>>> = OnceLock::new();
+    REF.get_or_init(|| {
+        match env
+            .with_env(|env| {
+                let reference = env.new_global_ref(&context)?;
+                let vm = env.get_java_vm()?;
+                let vm = vm.get_java_vm_pointer() as *mut c_void;
+                unsafe {
+                    ndk_context::initialize_android_context(vm, reference.as_obj().as_raw() as _);
+                }
+                Ok(Some(reference))
+            })
+            .into_outcome()
+        {
+            jni::Outcome::Ok(reference) => reference,
+            jni::Outcome::Err(error) => {
+                error!(%error, "failed to initialize Android keyring context");
+                None
             }
-            Some(reference)
-        }
-        Err(error) => {
-            error!(%error, "failed to create Android global reference for keyring context");
-            None
+            jni::Outcome::Panic(_) => {
+                error!("failed to initialize Android keyring context due to panic");
+                None
+            }
         }
     });
 }

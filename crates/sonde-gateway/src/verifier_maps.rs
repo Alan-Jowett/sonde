@@ -12,7 +12,9 @@
 use std::collections::BTreeMap;
 
 use prevail::elf_loader::UnmarshalError;
-use prevail::spec::type_descriptors::{EbpfMapDescriptor, EbpfMapType, EquivalenceKey};
+use prevail::spec::type_descriptors::{
+    EbpfMapDescriptor, EbpfMapType, EbpfMapValueType, EquivalenceKey,
+};
 
 const CONFORMANCE_BASE32: u32 = 0x01;
 const CONFORMANCE_BASE64: u32 = 0x02;
@@ -21,6 +23,7 @@ const CONFORMANCE_ATOMIC64: u32 = 0x08;
 const CONFORMANCE_DIVMUL32: u32 = 0x10;
 const CONFORMANCE_DIVMUL64: u32 = 0x20;
 const CONFORMANCE_PACKET: u32 = 0x40;
+const NO_INNER_MAP_FD: i32 = -1;
 
 /// Supported instruction-conformance groups for sonde verification.
 pub(crate) const SUPPORTED_CONFORMANCE_GROUPS: u32 = CONFORMANCE_BASE32
@@ -69,6 +72,11 @@ pub(crate) fn parse_legacy_maps_section<F>(
 
     for def in &mapdefs {
         let map_type = map_type_for(def.map_type);
+        let inner_map_fd = if map_type.value_type == EbpfMapValueType::Map {
+            def.inner_map_idx as i32
+        } else {
+            NO_INNER_MAP_FD
+        };
         let original_fd = create_synthetic_map_fd(
             &map_type,
             def.key_size,
@@ -82,8 +90,9 @@ pub(crate) fn parse_legacy_maps_section<F>(
             key_size: def.key_size,
             value_size: def.value_size,
             max_entries: def.max_entries,
-            // Filled with the referenced map index until the resolve pass runs.
-            inner_map_fd: def.inner_map_idx as i32,
+            // For map-of-maps, this holds the referenced map index until the
+            // resolve pass runs. Ordinary maps carry no inner-map reference.
+            inner_map_fd,
         });
     }
 }
@@ -95,6 +104,9 @@ pub(crate) fn resolve_inner_map_references(
     let len = map_descriptors.len();
     for i in 0..len {
         let inner = map_descriptors[i].inner_map_fd;
+        if inner == NO_INNER_MAP_FD {
+            continue;
+        }
         if inner < 0 || (inner as usize) >= len {
             return Err(UnmarshalError(format!(
                 "bad inner map index {} for map {}",
@@ -196,5 +208,22 @@ mod tests {
         assert_eq!(descriptors[0].value_size, 16);
         assert_eq!(descriptors[0].max_entries, 2);
         assert_eq!(descriptors[0].original_fd, 1);
+        assert_eq!(descriptors[0].inner_map_fd, NO_INNER_MAP_FD);
+    }
+
+    #[test]
+    fn resolve_inner_map_references_leaves_ordinary_maps_without_inner_map() {
+        let mut descriptors = vec![EbpfMapDescriptor {
+            original_fd: 7,
+            map_type: 1,
+            key_size: 4,
+            value_size: 16,
+            max_entries: 1,
+            inner_map_fd: NO_INNER_MAP_FD,
+        }];
+
+        resolve_inner_map_references(&mut descriptors).unwrap();
+
+        assert_eq!(descriptors[0].inner_map_fd, NO_INNER_MAP_FD);
     }
 }

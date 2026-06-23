@@ -2286,6 +2286,12 @@ async fn fetch_dashboard_variable_data(
     fetch_live_dashboard_variable_series(&access_token, &request).await
 }
 
+#[cfg(mobile)]
+#[tauri::mobile_entry_point]
+fn main() {
+    run();
+}
+
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter({

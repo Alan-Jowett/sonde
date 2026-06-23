@@ -213,6 +213,13 @@ test('android workflow builds the kiosk tauri app', () => {
   assert.match(releaseJob, /sonde-kiosk-android-release/);
 });
 
+test('kiosk tauri backend defines the mobile entry point required for Android builds', () => {
+  const backendPath = path.resolve(__dirname, '..', 'crates', 'sonde-kiosk-ui', 'src-tauri', 'src', 'lib.rs');
+  const backendSource = fs.readFileSync(backendPath, 'utf8');
+
+  assert.match(backendSource, /#\[cfg\(mobile\)\]\s*#\[tauri::mobile_entry_point\]\s*fn main\(\)\s*\{\s*run\(\);/s);
+});
+
 test('validateImportedEnvironmentJson prompts for a missing environment name', () => {
   const environment = kiosk.validateImportedEnvironmentJson(JSON.stringify({
     version: 1,

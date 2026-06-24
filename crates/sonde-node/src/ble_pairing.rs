@@ -206,10 +206,12 @@ pub fn handle_node_provision<S: PlatformStorage>(provision: &NodeProvision, stor
         return NODE_ACK_STORAGE_ERROR;
     }
 
-    // Persist the RF channel last among the critical fields so a failure
-    // in any earlier write does not leave a stale channel value that could
-    // leak across pairing attempts (ND-0908). Pin config (below) is
-    // best-effort and non-fatal, so it is written after the channel.
+    // Persist the RF channel after the other credential writes so a failure
+    // earlier in provisioning does not leave a stale channel value that could
+    // leak across pairing attempts (ND-0908). A later board-layout write can
+    // still fail, so we snapshot and restore the previous channel below.
+    // Pin config is best-effort and non-fatal, so it is written after the
+    // fatal provisioning state.
     let previous_channel = storage.read_channel();
     if storage.write_channel(provision.rf_channel).is_err() {
         let _ = storage.erase_key();

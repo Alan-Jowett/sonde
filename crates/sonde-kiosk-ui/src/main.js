@@ -337,7 +337,7 @@ function getActiveChartPage(environment = APP_STATE.activeEnvironment) {
   };
 }
 
-function buildDashboardOverlay(environment, activeDashboardIndex, activeChartIndex = 0) {
+function buildChartOverlayText(environment, activeDashboardIndex, activeChartIndex = 0) {
   const pages = buildChartPages(environment);
   const pageIndex = pages.findIndex((page) => page.dashboardIndex === activeDashboardIndex
     && page.chartIndex === activeChartIndex);
@@ -806,7 +806,7 @@ async function renderActiveDashboard(deps = APP_STATE.dependencies) {
   if (!pageHost) {
     return;
   }
-  const { page, pageIndex } = getActiveChartPage(environment);
+  const { page } = getActiveChartPage(environment);
 
   destroyDashboardCharts();
   pageHost.innerHTML = renderDashboardFrame(
@@ -818,7 +818,7 @@ async function renderActiveDashboard(deps = APP_STATE.dependencies) {
   if (!page) {
     return;
   }
-  showIdentityOverlay(buildDashboardOverlay(
+  showIdentityOverlay(buildChartOverlayText(
     environment,
     APP_STATE.activeDashboardIndex,
     APP_STATE.activeChartIndex,

@@ -400,7 +400,7 @@ fn deserialize_optional_i64_from_string_or_number<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    const MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
+    const MAX_SAFE_INTEGER_F64: f64 = JS_MAX_SAFE_INTEGER_F64;
 
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
     match value {

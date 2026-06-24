@@ -344,26 +344,28 @@ hard-coding a third-party public-client identity.
 
 ## 5  Dashboard presentation
 
-### KA-0300  Dashboard-only full-screen navigation
+### KA-0300  Chart-first full-screen navigation
 
 **Priority:** Must  
-**Source:** USER-REQUEST: "It shouldn't show the other 'Dashboard', 'Desired State', 'Programs', 'Sensor Data' tabs, just the dashboards, as top level tabs." + follow-up review approving full-screen swipeable pages without a persistent tab strip
+**Source:** USER-REQUEST: "It shouldn't show the other 'Dashboard', 'Desired State', 'Programs', 'Sensor Data' tabs, just the dashboards, as top level tabs." + follow-up review approving full-screen swipeable pages without a persistent tab strip + follow-up review: "the intent was for the graph to fill the full screen" and "nothing persistent; only transient overlays on touch/swipe"
 
 **Description:**  
-The kiosk app MUST expose only imported dashboards as the kiosk's top-level
-navigation destinations, rendered as full-screen swipeable pages rather than a
-persistent navigation tab strip.
+The kiosk app MUST expose imported dashboard content as a chart-first kiosk
+presentation. In steady-state kiosk mode, the active chart fills the available
+viewport and is not persistently surrounded by SPA-style page chrome.
 
 **Acceptance criteria:**
 
-1. Each imported dashboard appears as a full-screen page in the kiosk UI.
+1. The active chart appears as a full-screen kiosk page that fills the
+   available viewport in steady-state presentation.
 2. The kiosk UI does not expose SPA tabs for `Dashboard`, `Desired State`,
    `Programs`, or `Sensor Data`.
-3. When the imported environment contains multiple dashboards, the operator can
-   navigate among them without entering an edit mode or relying on a persistent
-   tab strip.
-4. The kiosk UI may show a lightweight transient dashboard title/position
-   indicator, but it does not dedicate persistent chart area to a tab bar.
+3. The kiosk UI does not dedicate persistent chart area to a product header,
+   status row, dashboard metadata panel, variables table, chart-details pane,
+   or persistent tab strip.
+4. The kiosk UI may show lightweight transient overlays for chart identity or
+   refresh state, but those overlays are not persistently visible in the
+   steady-state display.
 
 ---
 
@@ -382,6 +384,9 @@ The kiosk app MUST treat imported dashboard configuration as read-only.
 2. Dashboard layout, variables, chart membership, metric expressions, and chart
    labels are derived entirely from the imported environment JSON.
 3. Rendering a dashboard does not mutate its imported configuration.
+4. Reuse of the SPA dashboard runtime does not require exposing steady-state
+   SPA read-only chrome such as variables panes, chart metric cards, or
+   dashboard metadata panels on the kiosk surface.
 
 ---
 
@@ -403,21 +408,61 @@ configuration.
 
 ---
 
-### KA-0303  Swipe-first dashboard navigation
+### KA-0303  Swipe-first chart navigation
 
 **Priority:** Should  
-**Source:** USER input: "optimize for fast graph switching via left/right swipes"
+**Source:** USER input: "optimize for fast graph switching via left/right swipes" + follow-up review selecting one primary chart full-screen at a time
 
 **Description:**  
-The kiosk app SHOULD optimize dashboard switching for left/right swipe gestures
-on touch devices.
+The kiosk app SHOULD optimize chart switching for left/right swipe gestures on
+touch devices.
 
 **Acceptance criteria:**
 
-1. A left swipe moves to the next dashboard page when one exists.
-2. A right swipe moves to the previous dashboard page when one exists.
-3. Gesture-based navigation preserves the active dashboard's rendered state
-   until the new dashboard is ready to display.
+1. A left swipe moves to the next chart page when one exists.
+2. A right swipe moves to the previous chart page when one exists.
+3. Gesture-based navigation preserves the active chart's rendered state until
+   the new chart is ready to display.
+
+---
+
+### KA-0304  Deterministic chart sequencing
+
+**Priority:** Must  
+**Source:** follow-up review selecting one primary chart full-screen at a time
+
+**Description:**  
+The kiosk app MUST derive a deterministic full-screen chart sequence from the
+imported dashboards so swipe navigation remains predictable.
+
+**Acceptance criteria:**
+
+1. Imported dashboards are ordered according to the imported environment JSON.
+2. Within each dashboard, charts are ordered according to their imported order.
+3. The kiosk's full-screen chart sequence traverses imported dashboards in
+   dashboard order and charts within each dashboard in chart order.
+4. When a transient overlay is shown, it identifies enough dashboard/chart
+   context for an operator to understand where the active chart came from.
+
+---
+
+### KA-0305  Orientation-aware chart layout
+
+**Priority:** Must  
+**Source:** USER-REQUEST: "It doesn't handle portrait vs landscape rotation"
+
+**Description:**  
+The kiosk app MUST auto-rotate and adapt the steady-state chart presentation for
+both portrait and landscape device orientations.
+
+**Acceptance criteria:**
+
+1. Rotating the device between portrait and landscape updates the active kiosk
+   chart layout without requiring app restart or re-entry into setup.
+2. In both orientations, the active chart remains legible and fills the
+   available viewport without requiring operator zoom gestures.
+3. Orientation changes do not reveal persistent non-chart chrome on the
+   steady-state kiosk surface.
 
 ---
 
@@ -468,14 +513,14 @@ reduce startup latency and improve dashboard-switch responsiveness.
 **Source:** USER input: "data refresh in the background"
 
 **Description:**  
-The kiosk app MUST refresh dashboard data in the background while preserving an
-interactive dashboard display.
+The kiosk app MUST refresh chart data in the background while preserving an
+interactive kiosk display.
 
 **Acceptance criteria:**
 
 1. The app refreshes data without requiring the operator to re-enter setup or
    manually reload each dashboard.
-2. The currently displayed dashboard remains visible while background refresh is
+2. The currently displayed chart remains visible while background refresh is
    in progress.
 3. Refresh completion updates subsequent renders without requiring app restart.
 4. Background refresh runs on an implementation-defined cadence that does not
@@ -490,31 +535,31 @@ interactive dashboard display.
 
 **Description:**  
 The kiosk app SHOULD provide an intentional downward swipe gesture that triggers
-an immediate dashboard refresh.
+an immediate chart refresh.
 
 **Acceptance criteria:**
 
 1. The app distinguishes intentional pull-to-refresh from ordinary vertical scroll behavior.
-2. Triggering the gesture starts an immediate refresh of the active dashboard's data scope.
+2. Triggering the gesture starts an immediate refresh of the active chart page's dashboard data scope.
 3. The UI indicates when a manual refresh is in progress.
 
 ---
 
-### KA-0404  Fast dashboard switching from shared cache
+### KA-0404  Fast chart switching from shared cache
 
 **Priority:** Should  
 **Source:** USER input: "optimize for fast graph switching"
 
 **Description:**  
-The kiosk app SHOULD prefer fast dashboard switching by reusing locally cached
-telemetry across dashboards in the same environment whenever their data scopes
+The kiosk app SHOULD prefer fast chart switching by reusing locally cached
+telemetry across chart pages in the same environment whenever their data scopes
 overlap.
 
 **Acceptance criteria:**
 
-1. Switching between previously viewed dashboards does not require discarding the
-   entire local cache.
-2. Shared telemetry needed by multiple dashboards is reused when valid local
+1. Switching between previously viewed chart pages does not require discarding
+   the entire local cache.
+2. Shared telemetry needed by multiple chart pages is reused when valid local
    coverage exists.
 3. Cache reuse does not change the imported dashboard semantics.
 
@@ -527,19 +572,19 @@ overlap.
 
 **Description:**  
 When network connectivity or Azure service access is unavailable, the kiosk app
-SHOULD continue presenting the most recent locally cached dashboard data while
+SHOULD continue presenting the most recent locally cached chart data while
 clearly indicating that live refresh is unavailable.
 
 **Acceptance criteria:**
 
-1. If cached dashboard data exists, the kiosk app continues rendering it while
+1. If cached chart data exists, the kiosk app continues rendering it while
    network or Azure reads are unavailable.
 2. The kiosk UI distinguishes cached/offline presentation from fresh live data.
 3. Background refresh failures caused by offline conditions do not force the app
-   out of dashboard mode when usable cached data exists.
+   out of kiosk presentation mode when usable cached data exists.
 4. If no cached data exists and live fetch is unavailable, the app surfaces an
    actionable offline or connectivity error.
-5. After app restart in offline conditions, cached dashboards still render when
+5. After app restart in offline conditions, cached chart pages still render when
    usable cached telemetry exists.
 
 ---
@@ -555,7 +600,7 @@ guarded path to reset or re-import configuration.
 
 **Acceptance criteria:**
 
-1. Normal dashboard presentation does not dedicate persistent screen space to a
+1. Normal kiosk chart presentation does not dedicate persistent screen space to a
    settings toolbar or administrator menu.
 2. A guarded operator-only affordance exists for reset and re-import actions.
 3. The guarded affordance requires an intentional gesture sequence or equivalent
@@ -577,9 +622,31 @@ storage.
 
 1. The cache implementation defines a bounded retention or size policy.
 2. Eviction prefers removing the least valuable historical data before more
-   recently used dashboard data.
-3. Eviction preserves enough recent data to support warm startup and fast
-   dashboard switching under normal kiosk use.
+   recently used chart data.
+3. Eviction preserves enough recent data to support warm startup and fast chart
+   switching under normal kiosk use.
+
+---
+
+### KA-0408  Explicit chart data visibility states
+
+**Priority:** Must  
+**Source:** USER-REQUEST: "Graph is busted" + follow-up review: "The chart shows the legend but no data points / no graph."
+
+**Description:**  
+The kiosk app MUST not present a success-shaped but effectively empty chart
+surface when the active chart lacks visible plotted data.
+
+**Acceptance criteria:**
+
+1. If usable telemetry exists for the active chart and imported time range, the
+   kiosk renders visible plotted data for that chart.
+2. If usable telemetry does not exist, the kiosk surfaces an explicit no-data,
+   offline, or error state instead of a legend-only or otherwise misleading
+   empty graph shell.
+3. The same visible-data-versus-explicit-empty-state rule applies on initial
+   render, background refresh completion, and swipe navigation to another chart
+   page.
 
 ---
 
@@ -587,6 +654,7 @@ storage.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-24 | evolve skill | Revised kiosk presentation requirements from dashboard-first pages to chart-first full-screen pages, added deterministic chart sequencing and orientation-aware layout, and required explicit chart data visibility states. |
 | 2026-06-23 | maintain skill | Clarified that device-code setup tears down local operator-session state after provisioning rather than requiring an explicit kiosk-owned user sign-out step. |
 | 2026-06-19 | evolve skill | Added optional kiosk hardening requirements for offline behavior, guarded minimal operator UI, and bounded telemetry cache eviction. |
 | 2026-06-19 | evolve skill | Added initial Android kiosk dashboard app requirements for static imported dashboards, one-time user setup, per-kiosk certificate credentials, app-authenticated reads, persistent telemetry cache, swipe navigation, and additive-only scope. |

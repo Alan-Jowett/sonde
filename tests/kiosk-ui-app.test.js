@@ -312,7 +312,7 @@ test('validateImportedEnvironmentJson rejects imports missing function app metad
   }), runtime), /Function App Name is required/);
 });
 
-test('renderDashboardFrame keeps kiosk dashboards read-only', () => {
+test('renderDashboardFrame renders only the active kiosk chart surface', () => {
   const html = kiosk.renderDashboardFrame(runtime, runtime.normalizeEnvironmentRecord({
     name: 'prod',
     clientId: '11111111-1111-1111-1111-111111111111',
@@ -320,30 +320,83 @@ test('renderDashboardFrame keeps kiosk dashboards read-only', () => {
     storageAccount: 'prodstorage',
     functionAppName: 'prod-func',
     sensorData: kiosk.createDefaultSensorDataPreferences(),
-    dashboards: [{
-      name: 'Overview',
-      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
-      charts: [{
-        name: 'Primary',
-        metrics: [{ id: 'metric-1', displayName: 'Temperature', expression: 'TEMP / 1000', color: '#123456' }],
-      }],
-      timeRange: { preset: '24h', start: null, end: null },
-    }],
+    dashboards: [
+      {
+        name: 'Overview',
+        variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+        charts: [{
+          name: 'Primary',
+          metrics: [{ id: 'metric-1', displayName: 'Temperature', expression: 'TEMP / 1000', color: '#123456' }],
+        }, {
+          name: 'Secondary',
+          metrics: [{ id: 'metric-2', displayName: 'Humidity', expression: 'TEMP / 2000', color: '#654321' }],
+        }],
+        timeRange: { preset: '24h', start: null, end: null },
+      },
+      {
+        name: 'Diagnostics',
+        variables: [{ name: 'VBAT', nodeId: 'NODE_001', readingType: 'vbat_mv' }],
+        charts: [{
+          name: 'Battery',
+          metrics: [{ id: 'metric-3', displayName: 'Battery', expression: 'VBAT / 1000', color: '#00ff00' }],
+        }],
+        timeRange: { preset: '24h', start: null, end: null },
+      },
+    ],
   }, {
     sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
     validateExpressionFn: runtime.validateExpression,
-  }), 0);
+  }), 0, 1);
 
-  assert.match(html, /dashboard-page--read-only/);
-  assert.doesNotMatch(html, /Add Chart/);
-  assert.doesNotMatch(html, /Add Variable/);
-  assert.doesNotMatch(html, /Rename/);
-  assert.doesNotMatch(html, /Edit/);
-  assert.doesNotMatch(html, /Delete/);
-  assert.doesNotMatch(html, /id="dashboard-time-range"/);
-  assert.doesNotMatch(html, /type="datetime-local"/);
-  assert.match(html, /Last 24 Hours/);
-  assert.doesNotMatch(html, /Read-only/);
+  assert.match(html, /kiosk-chart-page/);
+  assert.match(html, /id="metric-chart-0"/);
+  assert.doesNotMatch(html, /variables-table/);
+  assert.doesNotMatch(html, /Last 24 Hours/);
+  assert.doesNotMatch(html, /Secondary/);
+  assert.doesNotMatch(html, /Battery/);
+});
+
+test('buildChartPages follows imported dashboard and chart order', () => {
+  const environment = buildEnvironment({
+    dashboards: [
+      {
+        name: 'Overview',
+        variables: [],
+        charts: [
+          { name: 'First', metrics: [{ id: 'm1', expression: '1', color: '#111111' }] },
+          { name: 'Second', metrics: [{ id: 'm2', expression: '1', color: '#222222' }] },
+        ],
+        timeRange: { preset: '24h', start: null, end: null },
+      },
+      {
+        name: 'Diagnostics',
+        variables: [],
+        charts: [
+          { name: 'Third', metrics: [{ id: 'm3', expression: '1', color: '#333333' }] },
+        ],
+        timeRange: { preset: '24h', start: null, end: null },
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    kiosk.buildChartPages(environment).map((page) => [page.dashboardIndex, page.chartIndex, page.dashboard.name, page.chart.name]),
+    [
+      [0, 0, 'Overview', 'First'],
+      [0, 1, 'Overview', 'Second'],
+      [1, 0, 'Diagnostics', 'Third'],
+    ],
+  );
+});
+
+test('convertCachedPointsToRuntimeTimeSeries maps timestampMs points into runtime timestamps', () => {
+  assert.deepEqual(
+    kiosk.convertCachedPointsToRuntimeTimeSeries([
+      { timestampMs: 8_000, value: 20.25 },
+      { timestampMs: 'bad', value: 5 },
+    ]),
+    [{ timestamp: 8_000, value: 20.25 }],
+  );
 });
 
 test('buildDashboardRefreshRequest preserves the imported dashboard time range', () => {
@@ -596,17 +649,20 @@ test('buildDashboardRefreshRequest de-duplicates sources without delimiter colli
   ]);
 });
 
-test('setTelemetryNotice preserves muted dashboard status styling for info notices', () => {
+test('setTelemetryNotice preserves muted status styling for info notices', () => {
   const dashboardStatus = makeElement();
-  const pageStatus = makeElement();
-  global.document.getElementById = (id) => (id === 'dashboard-status' ? dashboardStatus : makeElement());
-  global.document.querySelector = (selector) => (selector === '.dashboard-page-status' ? pageStatus : null);
+  const statusOverlay = makeElement();
+  global.document.getElementById = (id) => {
+    if (id === 'dashboard-status') return dashboardStatus;
+    if (id === 'dashboard-status-overlay') return statusOverlay;
+    return makeElement();
+  };
 
   kiosk.setTelemetryNotice('Waiting for live telemetry refresh.', 'info');
 
   assert.equal(dashboardStatus.className, 'status-pill');
-  assert.equal(pageStatus.className, 'dashboard-page-status text-muted');
-  assert.equal(pageStatus.textContent, 'Waiting for live telemetry refresh.');
+  assert.equal(statusOverlay.className, 'dashboard-status-overlay');
+  assert.equal(statusOverlay.textContent, 'Waiting for live telemetry refresh.');
 });
 
 test('triggerDashboardRefresh caches live telemetry from the injected fetcher', async () => {

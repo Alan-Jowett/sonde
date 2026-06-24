@@ -2068,6 +2068,34 @@ test('renderMetricCharts prefers errors over no-data fallback messages', async (
   }
 });
 
+test('renderMetricCharts falls back to no-data when evaluated points lack plottable timestamps', async () => {
+  const originalGetElementById = global.document.getElementById;
+  const parent = makeElement();
+  const canvas = makeElement();
+  canvas.parentElement = parent;
+  global.document.getElementById = (id) => {
+    if (id === 'metric-chart-0') return canvas;
+    return makeElement();
+  };
+
+  try {
+    await app.renderMetricCharts({
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [{ name: 'Chart 1', metrics: [{ displayName: 'Temp', expression: 'TEMP / 1000' }] }],
+      timeRange: { preset: '24h' },
+    }, {
+      evaluateMetricTimeSeriesFn: async () => ({ points: [{ timestamp: undefined, value: 1 }] }),
+      chartFactory: () => {
+        throw new Error('chartFactory should not run for non-plottable points');
+      },
+    });
+
+    assert.match(parent.innerHTML, /No data in selected time range\./);
+  } finally {
+    global.document.getElementById = originalGetElementById;
+  }
+});
+
 test('renderMetricCharts downsamples dashboard datasets to 500 points before charting', async () => {
   const originalGetElementById = global.document.getElementById;
   const parent = makeElement();

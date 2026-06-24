@@ -51,6 +51,8 @@ full device UX.
 | KA-0301 | T-KA-301 |
 | KA-0302 | T-KA-302 |
 | KA-0303 | T-KA-303 |
+| KA-0304 | T-KA-304 |
+| KA-0305 | T-KA-305 |
 | KA-0400 | T-KA-400 |
 | KA-0401 | T-KA-401 |
 | KA-0402 | T-KA-402 |
@@ -59,6 +61,7 @@ full device UX.
 | KA-0405 | T-KA-405 |
 | KA-0406 | T-KA-406 |
 | KA-0407 | T-KA-407 |
+| KA-0408 | T-KA-408 |
 
 ---
 
@@ -280,17 +283,19 @@ full device UX.
 
 ## 5  Dashboard UX tests
 
-### T-KA-300  Only imported dashboards appear as full-screen navigation pages
+### T-KA-300  Only imported chart pages appear in steady-state kiosk navigation
 
 **Validates:** KA-0101, KA-0300
 
 **Procedure:**
-1. Import an environment JSON containing multiple dashboards.
+1. Import an environment JSON containing multiple dashboards and charts.
 2. Open dashboard mode.
-3. Assert: each imported dashboard appears as a full-screen navigation page.
+3. Assert: the active kiosk surface is a full-screen chart page rather than a
+   full dashboard document with persistent supporting chrome.
 4. Assert: the UI does not expose `Dashboard`, `Desired State`, `Programs`, or
    `Sensor Data` tabs.
-5. Assert: the kiosk UI does not dedicate persistent chart area to a tab strip.
+5. Assert: the kiosk UI does not dedicate persistent chart area to a product
+   header, status row, variables pane, chart-details pane, or tab strip.
 
 ---
 
@@ -303,6 +308,8 @@ full device UX.
 2. Inspect the UI for dashboard, variable, chart, and metric actions.
 3. Assert: no add/edit/delete/reorder controls are present.
 4. Assert: rendering the dashboard does not mutate the imported configuration.
+5. Assert: reuse of the shared dashboard runtime does not force steady-state
+   SPA read-only chrome to remain persistently visible.
 
 ---
 
@@ -318,17 +325,53 @@ full device UX.
 
 ---
 
-### T-KA-303  Horizontal swipe switches dashboards
+### T-KA-303  Horizontal swipe switches chart pages
 
 **Validates:** KA-0303
 
 **Procedure:**
-1. Import an environment with at least three dashboards.
-2. Open the first dashboard page.
+1. Import an environment with at least three chart pages in the derived kiosk
+   sequence.
+2. Open the first chart page.
 3. Swipe left.
-4. Assert: the second dashboard page becomes active.
+4. Assert: the second chart page becomes active.
 5. Swipe right.
-6. Assert: the first dashboard page becomes active again.
+6. Assert: the first chart page becomes active again.
+
+---
+
+### T-KA-304  Chart sequencing follows imported dashboard and chart order
+
+**Validates:** KA-0304
+
+**Procedure:**
+1. Import an environment JSON with multiple dashboards and multiple charts in at
+   least one dashboard.
+2. Open the first kiosk chart page.
+3. Swipe through the sequence.
+4. Assert: the kiosk visits charts in imported dashboard order and chart order
+   within each dashboard.
+5. Trigger the transient identity overlay.
+6. Assert: the overlay identifies enough dashboard/chart context to explain the
+   active page.
+
+---
+
+### T-KA-305  Rotation preserves full-screen chart usability in portrait and landscape
+
+**Validates:** KA-0305
+
+**Procedure:**
+1. Open a chart page with live or cached data.
+2. Render it in landscape orientation.
+3. Assert: the active chart fills the available viewport without persistent
+   non-chart chrome appearing.
+4. Rotate the device to portrait.
+5. Assert: the same chart remains active, reflows without restart, and remains
+   legible without operator zoom.
+6. Rotate back to landscape.
+7. Assert: the kiosk returns to the landscape chart layout without losing the
+   active page.
 
 ---
 
@@ -362,14 +405,14 @@ full device UX.
 
 ---
 
-### T-KA-402  Background refresh updates dashboards without blocking display
+### T-KA-402  Background refresh updates charts without blocking display
 
 **Validates:** KA-0402
 
 **Procedure:**
-1. Open a dashboard with cached data.
+1. Open a chart page with cached data.
 2. Trigger or wait for background refresh.
-3. Assert: the dashboard remains visible while refresh is in progress.
+3. Assert: the chart remains visible while refresh is in progress.
 4. Assert: refreshed data is incorporated after the fetch completes.
 5. Assert: the refresh uses the dashboard's imported fixed time range rather
    than an operator-edited or ad hoc range.
@@ -378,45 +421,45 @@ full device UX.
 
 ---
 
-### T-KA-403  Pull-to-refresh triggers immediate active-dashboard refresh
+### T-KA-403  Pull-to-refresh triggers immediate active-chart refresh
 
 **Validates:** KA-0403
 
 **Procedure:**
-1. Open a dashboard.
+1. Open a chart page.
 2. Perform the intentional downward swipe gesture.
-3. Assert: an immediate refresh starts for the active dashboard scope.
+3. Assert: an immediate refresh starts for the active chart page's dashboard data scope.
 4. Assert: the UI indicates refresh progress.
 5. Assert: the refresh uses the dashboard's imported fixed time range.
 
 ---
 
-### T-KA-404  Shared cache accelerates dashboard switching
+### T-KA-404  Shared cache accelerates chart switching
 
 **Validates:** KA-0404
 
 **Procedure:**
-1. Import an environment with dashboards that share telemetry sources.
-2. Open dashboard A and allow its data to populate the local cache.
-3. Switch to dashboard B.
+1. Import an environment with chart pages that share telemetry sources.
+2. Open chart page A and allow its data to populate the local cache.
+3. Switch to chart page B.
 4. Assert: shared telemetry is reused from cache when valid local coverage exists.
 5. Assert: switching does not require dropping the entire environment cache.
 
 ---
 
-### T-KA-405  Offline mode renders cached dashboards with stale-data indication
+### T-KA-405  Offline mode renders cached chart pages with stale-data indication
 
 **Validates:** KA-0405
 
 **Procedure:**
-1. Populate the kiosk cache for a dashboard.
+1. Populate the kiosk cache for a chart page.
 2. Simulate network or Azure read failure.
-3. Open or refresh the dashboard.
-4. Assert: the dashboard continues rendering from cached data.
+3. Open or refresh the chart page.
+4. Assert: the chart page continues rendering from cached data.
 5. Assert: the UI indicates cached/offline status rather than implying a fresh
    live refresh succeeded.
 6. Restart the app while still offline.
-7. Assert: the dashboard still renders from cached data after restart.
+7. Assert: the chart page still renders from cached data after restart.
 8. Repeat with no cache present.
 9. Assert: the app shows an actionable offline or connectivity error.
 
@@ -436,7 +479,7 @@ full device UX.
 
 ---
 
-### T-KA-407  Telemetry cache eviction preserves recent dashboard usefulness
+### T-KA-407  Telemetry cache eviction preserves recent chart usefulness
 
 **Validates:** KA-0407
 
@@ -445,10 +488,27 @@ full device UX.
 2. Insert additional telemetry until eviction is required.
 3. Assert: cache growth remains bounded.
 4. Assert: older or less recently used historical telemetry is evicted before
-   recently used dashboard data.
+   recently used chart data.
 5. Restart the app.
 6. Assert: enough recent data remains to support warm startup for recently used
-   dashboards.
+   chart pages.
+
+---
+
+### T-KA-408  Charts either plot visible data or show an explicit empty/error state
+
+**Validates:** KA-0408
+
+**Procedure:**
+1. Open a chart page with usable telemetry in the imported time range.
+2. Assert: the chart renders visible plotted data rather than only legend or
+   framing chrome.
+3. Open a chart page with no usable telemetry or force a refresh path that
+   yields no usable points.
+4. Assert: the kiosk surfaces an explicit no-data, offline, or error state
+   rather than a misleading legend-only empty graph shell.
+5. Repeat the same checks for initial render, post-refresh render, and swipe
+   navigation to another chart page.
 
 ---
 
@@ -456,6 +516,7 @@ full device UX.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-24 | evolve skill | Revised kiosk UX validation for chart-first full-screen navigation, deterministic chart sequencing, portrait/landscape rotation, and explicit visible-data versus empty-state chart behavior. |
 | 2026-06-23 | maintain skill | Updated setup-flow validation to check local operator-session teardown after provisioning instead of an explicit kiosk-owned user sign-out step. |
 | 2026-06-19 | evolve skill | Added optional kiosk validation coverage for offline cached presentation, guarded operator controls, and bounded cache eviction. |
 | 2026-06-19 | evolve skill | Added initial kiosk dashboard app validation coverage for setup flow, shared-app certificate attachment, dashboard-only UI, fixed imported layouts, persistent telemetry cache, background refresh, pull-to-refresh, and swipe navigation. |

@@ -1633,8 +1633,8 @@ function selectCachedSensorRows(partitionKey, startMs, endMs) {
   const cache = getSensorPartitionCache(partitionKey);
   const rows = [];
   for (const row of cache.rowsByKey.values()) {
-    const timestampMs = Number(row.timestamp_ms);
-    if (Number.isFinite(timestampMs) && timestampMs >= startMs && timestampMs <= endMs) {
+    const timestampMs = parseTelemetryTimestampMs(row.timestamp_ms);
+    if (timestampMs != null && timestampMs >= startMs && timestampMs <= endMs) {
       rows.push(row);
     }
   }
@@ -2742,6 +2742,11 @@ function parseSensorReadings(decodedReadings) {
   }
 }
 
+function parseTelemetryTimestampMs(timestampMs) {
+  const value = Number(timestampMs);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
 function toPlottableNumber(value) {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -2774,8 +2779,8 @@ function extractSeries(rows, nodeIdMap) {
 
     const nodeId = nodeIdMap.get(row.PartitionKey) || row.PartitionKey;
     const programHash = row.program_hash || '';
-    const timestampMs = Number(row.timestamp_ms);
-    if (!Number.isFinite(timestampMs)) continue;
+    const timestampMs = parseTelemetryTimestampMs(row.timestamp_ms);
+    if (timestampMs == null) continue;
 
     for (const [readingName, value] of Object.entries(readings)) {
       const key = `${row.PartitionKey}|${programHash}|${readingName}`;
@@ -2940,14 +2945,14 @@ function renderSensorChart(allSeries) {
 
 function renderSensorTable(rows, nodeIdMap) {
   const sorted = [...rows].sort((a, b) => {
-    const ta = Number(a.timestamp_ms) || 0;
-    const tb = Number(b.timestamp_ms) || 0;
+    const ta = parseTelemetryTimestampMs(a.timestamp_ms) ?? 0;
+    const tb = parseTelemetryTimestampMs(b.timestamp_ms) ?? 0;
     return tb - ta;
   });
 
   const rowsHtml = sorted.map((row) => {
-    const ts = Number(row.timestamp_ms);
-    const timeStr = Number.isFinite(ts) ? new Date(ts).toLocaleString() : '—';
+    const ts = parseTelemetryTimestampMs(row.timestamp_ms);
+    const timeStr = ts != null ? new Date(ts).toLocaleString() : '—';
     const nodeId = nodeIdMap.get(row.PartitionKey) || row.PartitionKey;
     const readings = parseSensorReadings(row.decoded_readings);
     let readingsDisplay = '—';
@@ -3578,8 +3583,8 @@ async function fetchVariableData(variables, timeRange, deps = {}) {
       
       // Extract requested readings from each row
       for (const row of rows) {
-        const timestampMs = Number(row.timestamp_ms);
-        if (!Number.isFinite(timestampMs)) continue;
+        const timestampMs = parseTelemetryTimestampMs(row.timestamp_ms);
+        if (timestampMs == null) continue;
         
         const readings = parseSensorReadings(row.decoded_readings);
         if (!readings) continue;

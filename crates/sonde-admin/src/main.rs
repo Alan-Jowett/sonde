@@ -964,6 +964,9 @@ fn validate_rotation_code(rotation_code: &str) -> Result<String, String> {
     if trimmed.is_empty() {
         return Err("rotation code must not be empty".into());
     }
+    if trimmed.len() != 6 {
+        return Err("rotation code must be exactly 6 characters".into());
+    }
     if !trimmed.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
         return Err("rotation code must contain only A-Z and 0-9".into());
     }
@@ -1402,6 +1405,12 @@ mod tests {
     #[test]
     fn rotation_code_invalid_characters_rejected() {
         let result = validate_rotation_code("AB-12");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rotation_code_wrong_length_rejected() {
+        let result = validate_rotation_code("ABC12");
         assert!(result.is_err());
     }
 

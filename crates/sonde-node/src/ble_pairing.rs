@@ -210,6 +210,7 @@ pub fn handle_node_provision<S: PlatformStorage>(provision: &NodeProvision, stor
     // in any earlier write does not leave a stale channel value that could
     // leak across pairing attempts (ND-0908). Pin config (below) is
     // best-effort and non-fatal, so it is written after the channel.
+    let previous_channel = storage.read_channel();
     if storage.write_channel(provision.rf_channel).is_err() {
         let _ = storage.erase_key();
         let _ = storage.erase_peer_payload();
@@ -223,6 +224,11 @@ pub fn handle_node_provision<S: PlatformStorage>(provision: &NodeProvision, stor
                 if let Some(previous_layout) = previous_layout {
                     let _ = storage.write_board_layout(&previous_layout);
                 }
+                if let Some(previous_channel) = previous_channel {
+                    let _ = storage.write_channel(previous_channel);
+                } else {
+                    let _ = storage.erase_channel();
+                }
                 let _ = storage.erase_key();
                 let _ = storage.erase_peer_payload();
                 return NODE_ACK_STORAGE_ERROR;
@@ -234,6 +240,11 @@ pub fn handle_node_provision<S: PlatformStorage>(provision: &NodeProvision, stor
                     .write_board_layout(&BoardLayout::LEGACY_COMPAT)
                     .is_err()
             {
+                if let Some(previous_channel) = previous_channel {
+                    let _ = storage.write_channel(previous_channel);
+                } else {
+                    let _ = storage.erase_channel();
+                }
                 let _ = storage.erase_key();
                 let _ = storage.erase_peer_payload();
                 return NODE_ACK_STORAGE_ERROR;
@@ -640,6 +651,10 @@ mod tests {
                 return Err(NodeError::StorageError("injected write_channel failure"));
             }
             self.channel = Some(channel);
+            Ok(())
+        }
+        fn erase_channel(&mut self) -> NodeResult<()> {
+            self.channel = None;
             Ok(())
         }
         fn read_peer_payload(&self) -> Option<Vec<u8>> {
@@ -1234,6 +1249,25 @@ mod tests {
         assert_eq!(status, NODE_ACK_STORAGE_ERROR);
         assert!(storage.read_key().is_none());
         assert!(storage.read_peer_payload().is_none());
+        assert!(storage.read_channel().is_none());
+    }
+
+    #[test]
+    fn handle_provision_board_layout_write_failure_restores_previous_channel() {
+        let mut storage = MockStorage::new();
+        storage.channel = Some(11);
+        storage.fail_write_board_layout = true;
+        let provision = NodeProvision {
+            key_hint: 0x0001,
+            psk: [0x42u8; 32],
+            rf_channel: 6,
+            encrypted_payload: vec![0xAA],
+            board_layout: ProvisionedBoardLayout::Provided(BoardLayout::SONDE_SENSOR_NODE_REV_A),
+        };
+
+        let status = handle_node_provision(&provision, &mut storage);
+        assert_eq!(status, NODE_ACK_STORAGE_ERROR);
+        assert_eq!(storage.read_channel(), Some(11));
     }
 
     /// Layout absent with no stored layout → legacy compatibility layout is synthesized.

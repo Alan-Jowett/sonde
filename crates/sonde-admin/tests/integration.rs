@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tokio::sync::RwLock;
 
@@ -19,6 +19,7 @@ use sonde_admin::grpc_client::AdminClient;
 use sonde_gateway::admin::AdminService;
 use sonde_gateway::engine::PendingCommand;
 use sonde_gateway::gateway_identity::GatewayIdentity;
+use sonde_gateway::phone_trust::{PhonePskRecord, PhonePskStatus};
 use sonde_gateway::program::{ProgramRecord, VerificationProfile};
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
@@ -189,6 +190,21 @@ async fn seed_program(
         })
         .await
         .unwrap();
+}
+
+async fn seed_phone_psk(storage: &Arc<InMemoryStorage>, key_hint: u16, label: &str) -> u32 {
+    storage
+        .store_phone_psk(&PhonePskRecord {
+            phone_id: 0,
+            phone_key_hint: key_hint,
+            psk: Zeroizing::new([0x33; 32]),
+            label: label.to_string(),
+            issued_at: SystemTime::UNIX_EPOCH,
+            status: PhonePskStatus::Active,
+            key_version: 1,
+        })
+        .await
+        .unwrap()
 }
 
 #[cfg(debug_assertions)]
@@ -491,6 +507,67 @@ async fn grpc_list_phones_empty() {
     assert!(phones.is_empty(), "empty gateway should have no phones");
 }
 
+/// Test: `pairing list-phones` renders an empty table and empty JSON array.
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_list_phones_empty() {
+    let endpoint = start_server("cli_list_phones_empty").await;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args(["--socket", &endpoint, "pairing", "list-phones"])
+        .output()
+        .expect("failed to run sonde-admin pairing list-phones");
+
+    assert!(output.status.success(), "CLI list-phones should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "empty list should only print the table header"
+    );
+    assert!(lines[0].contains("ID"));
+    assert!(lines[0].contains("Key Hint"));
+    assert!(lines[0].contains("Label"));
+    assert!(lines[0].contains("Status"));
+
+    let json_output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args([
+            "--socket",
+            &endpoint,
+            "--format",
+            "json",
+            "pairing",
+            "list-phones",
+        ])
+        .output()
+        .expect("failed to run sonde-admin pairing list-phones --format json");
+
+    assert!(json_output.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&json_output.stdout))
+            .expect("stdout must be valid JSON");
+    assert_eq!(parsed, serde_json::json!([]));
+}
+
+/// Test: `pairing list-phones` renders seeded phone metadata.
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_list_phones_shows_seeded_phone() {
+    let (endpoint, storage) = start_server_with_storage("cli_list_phones_shows_seeded_phone").await;
+    let phone_id = seed_phone_psk(&storage, 0x1234, "Alice phone").await;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args(["--socket", &endpoint, "pairing", "list-phones"])
+        .output()
+        .expect("failed to run sonde-admin pairing list-phones");
+
+    assert!(output.status.success(), "CLI list-phones should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(&phone_id.to_string()));
+    assert!(stdout.contains("0x1234"));
+    assert!(stdout.contains("Alice phone"));
+    assert!(stdout.contains("active"));
+}
+
 /// Test: close BLE pairing when not open (may error — not an operational concern).
 #[tokio::test]
 async fn grpc_close_ble_pairing_when_not_open() {
@@ -500,12 +577,60 @@ async fn grpc_close_ble_pairing_when_not_open() {
     let _ = client.close_ble_pairing().await;
 }
 
+/// Test: `pairing stop` refuses to run non-interactively without `--yes`.
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_pairing_stop_requires_yes_noninteractive() {
+    let endpoint = start_server("cli_pairing_stop_requires_yes_noninteractive").await;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args(["--socket", &endpoint, "pairing", "stop"])
+        .output()
+        .expect("failed to run sonde-admin pairing stop");
+
+    assert!(
+        !output.status.success(),
+        "pairing stop should refuse non-interactive confirmation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("refusing to proceed without confirmation"));
+    assert!(!stderr.contains("Close BLE pairing window? [y/N]:"));
+}
+
 /// Test: revoke a non-existent phone returns an error.
 #[tokio::test]
 async fn grpc_revoke_nonexistent_phone() {
     let mut client = start_server_and_connect("revoke_nonexistent").await;
     let result = client.revoke_phone(999).await;
     assert!(result.is_err(), "revoking non-existent phone should fail");
+}
+
+/// Test: `pairing revoke-phone --yes` updates status and prints the result.
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_pairing_revoke_phone_with_yes() {
+    let (endpoint, storage) = start_server_with_storage("cli_pairing_revoke_phone_with_yes").await;
+    let phone_id = seed_phone_psk(&storage, 0x4567, "Revokable phone").await;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sonde-admin"))
+        .args([
+            "--socket",
+            &endpoint,
+            "--yes",
+            "pairing",
+            "revoke-phone",
+            &phone_id.to_string(),
+        ])
+        .output()
+        .expect("failed to run sonde-admin pairing revoke-phone");
+
+    assert!(output.status.success(), "CLI revoke-phone should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(&format!("Phone {phone_id} revoked")));
+
+    let mut client = AdminClient::connect(&endpoint).await.unwrap();
+    let phones = client.list_phones().await.unwrap();
+    assert_eq!(phones.len(), 1);
+    assert_eq!(phones[0].phone_id, phone_id);
+    assert_eq!(phones[0].status, "revoked");
 }
 
 /// Test: transient modem display fails cleanly when no modem transport exists.

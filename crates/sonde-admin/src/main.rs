@@ -959,6 +959,20 @@ fn validate_passphrase(passphrase: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_rotation_code(rotation_code: &str) -> Result<String, String> {
+    let normalized = rotation_code.trim().to_uppercase();
+    if normalized.is_empty() {
+        return Err("rotation code must not be empty".into());
+    }
+    if !normalized
+        .bytes()
+        .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+    {
+        return Err("rotation code must contain only A-Z and 0-9".into());
+    }
+    Ok(normalized)
+}
+
 /// Build a `RotationPayloadV1` binary envelope per `evolve-962-specification.md` §2.6.1.
 ///
 /// Returns the serialized payload suitable for `SubmitRotation`.
@@ -1135,10 +1149,7 @@ async fn key_rotate(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn s
     std::io::stdin()
         .read_line(&mut rotation_code)
         .map_err(|e| format!("failed to read rotation code: {e}"))?;
-    let rotation_code = rotation_code.trim().to_uppercase();
-    if rotation_code.is_empty() {
-        return Err("rotation code must not be empty".into());
-    }
+    let rotation_code = validate_rotation_code(&rotation_code)?;
 
     // Step 4: Prompt for passphrase (masked).
     eprint!("Passphrase: ");
@@ -1375,6 +1386,24 @@ mod tests {
     fn passphrase_19_chars_5_words_rejected() {
         // 19 chars, 5 words → both below threshold → rejected.
         let result = validate_passphrase("abc def ghi jkl mno");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rotation_code_empty_rejected() {
+        let result = validate_rotation_code("   ");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rotation_code_lowercase_is_normalized() {
+        let result = validate_rotation_code("ab12cd").unwrap();
+        assert_eq!(result, "AB12CD");
+    }
+
+    #[test]
+    fn rotation_code_invalid_characters_rejected() {
+        let result = validate_rotation_code("AB-12");
         assert!(result.is_err());
     }
 

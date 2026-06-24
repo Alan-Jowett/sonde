@@ -1517,6 +1517,36 @@ test('actualstate delta refresh returns the active environment cache after an en
   assert.equal(app.SESSION_TELEMETRY_CACHE.environmentName, staging.name);
   assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.rowsByKey.size, 0);
 });
+
+test('fetchActualStateNodes ignores fractional timestamps when advancing the delta watermark', async () => {
+  const filters = [];
+  let queryCount = 0;
+  const queryTableFn = async (_tableName, filter) => {
+    filters.push(filter);
+    queryCount += 1;
+    if (queryCount === 1) {
+      return [{
+        PartitionKey: 'n:abc123',
+        RowKey: 'ffff',
+        node_id: 'NODE_001',
+        timestamp_ms: 1000.5,
+      }];
+    }
+    return [];
+  };
+
+  await app.fetchActualStateNodes({
+    nowFn: () => 1_500,
+    queryTableFn,
+  });
+  await app.fetchActualStateNodes({
+    nowFn: () => 2_000,
+    queryTableFn,
+  });
+
+  assert.equal(filters[0], '');
+  assert.match(filters[1], /^RowKey ge '[0-9a-f]{16}' and RowKey le '[0-9a-f]{16}~'$/);
+});
 test('getCachedSensorDataRows fetches only uncovered historical intervals', async () => {
   const calls = [];
   const rowsByCall = [

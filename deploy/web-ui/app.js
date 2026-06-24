@@ -1495,8 +1495,8 @@ function mergeActualStateRowsIntoCache(rows, fallbackWatermarkMs = null) {
       cache.latestByPartition.set(row.PartitionKey, row);
     }
 
-    const timestampMs = Number(row.timestamp_ms);
-    if (Number.isFinite(timestampMs) && (maxTimestampMs == null || timestampMs > maxTimestampMs)) {
+    const timestampMs = parseTelemetryTimestampMs(row.timestamp_ms);
+    if (timestampMs != null && (maxTimestampMs == null || timestampMs > maxTimestampMs)) {
       maxTimestampMs = timestampMs;
     }
   }

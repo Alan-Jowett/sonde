@@ -440,6 +440,7 @@ impl crate::traits::PlatformStorage for NvsStorage {
     fn erase_channel(&mut self) -> NodeResult<()> {
         self.nvs
             .remove("channel")
+            .map(|_| ())
             .map_err(|_| NodeError::StorageError("channel erase failed"))
     }
 

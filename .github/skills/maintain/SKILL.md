@@ -33,13 +33,26 @@ read the repository artifacts.
 **Project**: Sonde
 
 **Existing Spec Artifacts**:
-- Requirements: docs/<component>-requirements.md
-- Design: docs/<component>-design.md
-- Validation: docs/<component>-validation.md
+- Requirements usually live in `docs/*-requirements.md`
+- Design usually lives in `docs/*-design.md`
+- Validation usually lives in `docs/*-validation.md`
+- Some components also depend on supplementary specs such as
+  `protocol.md`, `security.md`, `gateway-api.md`, `modem-protocol.md`,
+  `ble-pairing-protocol.md`, `safe-bpf-interpreter.md`,
+  `pairing-tool-ui-redesign.md`, and component-specific audit docs in
+  `docs/audits/`
 
-**Implementation**: crates/sonde-<component>/src
+**Implementation**:
+- Core Rust components usually live in `crates/sonde-<component>/src`
+- Tauri app backends live in `crates/sonde-<component>/src-tauri/src`
+- Browser/UI surfaces may live outside crates (for example
+  `deploy/web-ui`)
 
-**Verification**: crates/sonde-<component>/tests (or crates/sonde-e2e for integration tests)
+**Verification**:
+- Rust integration tests usually live in `crates/sonde-<component>/tests`
+- Cross-component validation may live in `crates/sonde-e2e`
+- Browser/UI validation may live in repository-level tests such as
+  `tests/*.js`
 
 **Focus Areas**: <specify focus areas or "full audit" for comprehensive check>
 
@@ -49,7 +62,8 @@ a gateway-controlled mesh of battery-powered IoT devices (ESP32-C3/S3) running
 static firmware that executes dynamic BPF programs delivered over-the-air without
 firmware updates.
 
-Architecture — Rust 2021 workspace (resolver = 2) with 9 crates:
+Architecture — Rust 2021 workspace (resolver = 2) plus deployed UI
+surfaces. The current repository includes these active components:
 - sonde-protocol (no_std): wire format, CBOR messages, frame codec, AES-256-GCM AEAD
 - sonde-gateway (tokio): async gateway service, program distribution, handler routing, gRPC admin API
 - sonde-node (ESP32): firmware wake cycle, BPF dispatch, persistent storage, ESP-NOW radio
@@ -57,27 +71,50 @@ Architecture — Rust 2021 workspace (resolver = 2) with 9 crates:
 - sonde-bpf (no_std): zero-alloc RFC 9669 BPF interpreter with tagged registers
 - sonde-admin: CLI admin tool, gRPC client
 - sonde-pair: BLE pairing core library (AES-256-GCM, SHA-256)
-- sonde-pair-ui: Tauri v2 desktop/Android pairing app (in progress)
+- sonde-pair-ui: Tauri v2 desktop/Android pairing UI
+- sonde-kiosk-ui: Tauri v2 kiosk application
+- sonde-kicad: KiCad export and validation tooling
+- sonde-azure-companion: Azure companion service
+- sonde-azure-handler: Azure handler process
+- sonde-tmp102-handler: TMP102 sample handler
+- sonde-sht40-handler: SHT40 sample handler
 - sonde-e2e: end-to-end integration tests
+- deploy/web-ui: zero-build browser UI surface
 
 Existing specification documents (in docs/):
-Requirements: gateway, node, modem, ble-pairing-tool, hw
-Design: gateway, node, modem, ble-pairing-tool, hw, hw-schematic, protocol-crate
-Validation: gateway, node, modem, ble-pairing-tool, e2e, protocol-crate, safe-bpf-interpreter
+Requirements: gateway, node, modem, ble-pairing-tool, admin,
+  azure-companion, azure-handler, azure-provisioning, kiosk-app,
+  kicad-export, safe-bpf-interpreter, web-ui
+Design: gateway, node, modem, ble-pairing-tool, admin,
+  azure-companion, azure-handler, azure-provisioning, kiosk-app,
+  kicad-export, protocol-crate, web-ui
+Validation: gateway, node, modem, ble-pairing-tool, admin,
+  azure-companion, azure-handler, azure-provisioning, e2e, kiosk-app,
+  kicad-export, protocol-crate, safe-bpf-interpreter, web-ui
 Supplementary: protocol.md, bpf-environment.md, security.md, gateway-api.md,
-  modem-protocol.md, ble-pairing-protocol.md, safe-bpf-interpreter.md
+  modem-protocol.md, ble-pairing-protocol.md, safe-bpf-interpreter.md,
+  pairing-tool-ui-redesign.md
 Previous audits: docs/audits/ (trifecta, code-compliance, test-compliance per component)
 
 Component-to-artifact mapping:
-| Component | Requirements | Design | Validation | Crate |
-|-----------|-------------|--------|------------|-------|
+| Component | Requirements | Design | Validation | Implementation surface |
+|-----------|-------------|--------|------------|------------------------|
 | Gateway | gateway-requirements.md | gateway-design.md | gateway-validation.md | crates/sonde-gateway |
 | Node | node-requirements.md | node-design.md | node-validation.md | crates/sonde-node |
 | Modem | modem-requirements.md | modem-design.md | modem-validation.md | crates/sonde-modem |
-| BLE Pairing | ble-pairing-tool-requirements.md | ble-pairing-tool-design.md | ble-pairing-tool-validation.md | crates/sonde-pair + pairing-tool |
+| Admin CLI | admin-requirements.md | admin-design.md | admin-validation.md | crates/sonde-admin |
+| BLE Pairing Core | ble-pairing-tool-requirements.md | ble-pairing-tool-design.md | ble-pairing-tool-validation.md | crates/sonde-pair |
+| Pairing UI | ble-pairing-tool-requirements.md + pairing-tool-ui-redesign.md | ble-pairing-tool-design.md | ble-pairing-tool-validation.md | crates/sonde-pair-ui |
 | Protocol | — | protocol-crate-design.md | protocol-crate-validation.md | crates/sonde-protocol |
-| BPF Interpreter | — | — | safe-bpf-interpreter-validation.md | crates/sonde-bpf |
-| Hardware | hw-requirements.md | hw-design.md + hw-schematic-design.md | — | hw/ |
+| BPF Interpreter | safe-bpf-interpreter-requirements.md | safe-bpf-interpreter.md | safe-bpf-interpreter-validation.md | crates/sonde-bpf |
+| Kiosk UI | kiosk-app-requirements.md | kiosk-app-design.md | kiosk-app-validation.md | crates/sonde-kiosk-ui |
+| Web UI | web-ui-requirements.md | web-ui-design.md | web-ui-validation.md | deploy/web-ui + tests/web-ui-app.test.js |
+| Azure Companion | azure-companion-requirements.md | azure-companion-design.md | azure-companion-validation.md | crates/sonde-azure-companion |
+| Azure Handler | azure-handler-requirements.md | azure-handler-design.md | azure-handler-validation.md | crates/sonde-azure-handler |
+| Azure Provisioning | azure-provisioning-requirements.md | azure-provisioning-design.md | azure-provisioning-validation.md | Audit the repository surfaces that implement the documented provisioning flow; treat missing implementation as potential drift, not automatic exclusion |
+| KiCad Export | kicad-export-requirements.md | kicad-export-design.md | kicad-export-validation.md | crates/sonde-kicad |
+| TMP102 Handler | Use the governing gateway / handler API specs and any component-specific docs discovered during audit | Use the governing gateway / handler API specs and any component-specific docs discovered during audit | Trace to gateway validation or explicitly report missing validation artifacts | crates/sonde-tmp102-handler |
+| SHT40 Handler | Use the governing gateway / handler API specs and any component-specific docs discovered during audit | Use the governing gateway / handler API specs and any component-specific docs discovered during audit | Trace to gateway validation or explicitly report missing validation artifacts | crates/sonde-sht40-handler |
 | E2E | — | — | e2e-validation.md | crates/sonde-e2e |
 
 Conventions:

@@ -1347,6 +1347,10 @@ mod tests {
             self.channel = Some(ch);
             Ok(())
         }
+        fn erase_channel(&mut self) -> NodeResult<()> {
+            self.channel = None;
+            Ok(())
+        }
         fn read_peer_payload(&self) -> Option<Vec<u8>> {
             self.peer_payload.clone()
         }

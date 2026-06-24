@@ -146,6 +146,11 @@ pub trait PlatformStorage {
         Ok(())
     }
 
+    /// Erase the stored WiFi channel.
+    fn erase_channel(&mut self) -> NodeResult<()> {
+        Ok(())
+    }
+
     // --- BLE pairing artifacts (ND-0916) ---
 
     /// Read the encrypted peer payload stored during BLE provisioning.

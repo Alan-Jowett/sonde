@@ -437,6 +437,13 @@ impl crate::traits::PlatformStorage for NvsStorage {
             .map_err(|_| NodeError::StorageError("channel write failed"))
     }
 
+    fn erase_channel(&mut self) -> NodeResult<()> {
+        self.nvs
+            .remove("channel")
+            .map(|_| ())
+            .map_err(|_| NodeError::StorageError("channel erase failed"))
+    }
+
     // --- BLE pairing artifacts (ND-0916) ---
 
     fn read_peer_payload(&self) -> Option<Vec<u8>> {

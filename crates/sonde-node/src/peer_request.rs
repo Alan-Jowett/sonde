@@ -245,6 +245,9 @@ mod tests {
         fn write_channel(&mut self, _: u8) -> NodeResult<()> {
             Ok(())
         }
+        fn erase_channel(&mut self) -> NodeResult<()> {
+            Ok(())
+        }
         fn read_peer_payload(&self) -> Option<Vec<u8>> {
             self.peer_payload.clone()
         }

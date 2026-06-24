@@ -959,6 +959,24 @@ fn validate_passphrase(passphrase: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_rotation_code(rotation_code: &str) -> Result<String, String> {
+    let trimmed = rotation_code.trim();
+    if trimmed.is_empty() {
+        return Err("rotation code must not be empty".into());
+    }
+    if !trimmed.is_ascii() || !trimmed.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return Err(
+            "rotation code must contain only ASCII letters and digits (lowercase is normalized)"
+                .into(),
+        );
+    }
+    if trimmed.len() != 6 {
+        return Err("rotation code must be exactly 6 characters".into());
+    }
+    let normalized = trimmed.to_ascii_uppercase();
+    Ok(normalized)
+}
+
 /// Build a `RotationPayloadV1` binary envelope per `evolve-962-specification.md` §2.6.1.
 ///
 /// Returns the serialized payload suitable for `SubmitRotation`.
@@ -1135,10 +1153,7 @@ async fn key_rotate(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn s
     std::io::stdin()
         .read_line(&mut rotation_code)
         .map_err(|e| format!("failed to read rotation code: {e}"))?;
-    let rotation_code = rotation_code.trim().to_uppercase();
-    if rotation_code.is_empty() {
-        return Err("rotation code must not be empty".into());
-    }
+    let rotation_code = validate_rotation_code(&rotation_code)?;
 
     // Step 4: Prompt for passphrase (masked).
     eprint!("Passphrase: ");
@@ -1376,6 +1391,39 @@ mod tests {
         // 19 chars, 5 words → both below threshold → rejected.
         let result = validate_passphrase("abc def ghi jkl mno");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rotation_code_empty_rejected() {
+        let result = validate_rotation_code("   ");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rotation_code_lowercase_is_normalized() {
+        let result = validate_rotation_code("ab12cd").unwrap();
+        assert_eq!(result, "AB12CD");
+    }
+
+    #[test]
+    fn rotation_code_invalid_characters_rejected() {
+        let result = validate_rotation_code("AB-12");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rotation_code_wrong_length_rejected() {
+        let result = validate_rotation_code("ABC12");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rotation_code_non_ascii_rejected() {
+        let err = validate_rotation_code("ß12").unwrap_err();
+        assert_eq!(
+            err,
+            "rotation code must contain only ASCII letters and digits (lowercase is normalized)"
+        );
     }
 
     // ── CBOR encoding ───────────────────────────────────────────────────

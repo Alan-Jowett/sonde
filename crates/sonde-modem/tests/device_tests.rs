@@ -26,7 +26,7 @@ use sonde_protocol::modem::{
     encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, SendFrame,
     MODEM_ERR_CHANNEL_SET_FAILED,
 };
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -277,6 +277,52 @@ fn t0206_scan_channels() {
     }
 }
 
+/// T-0203: peer table LRU eviction does not prevent later sends.
+#[test]
+fn t0203_peer_table_lru_eviction() {
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut port) = open_modem() else {
+        return;
+    };
+    reset_and_wait(&mut *port);
+
+    for i in 0..21u8 {
+        let peer = [0x02, 0x00, 0x00, 0x00, 0x00, i];
+        send(
+            &mut *port,
+            &ModemMessage::SendFrame(SendFrame {
+                peer_mac: peer,
+                frame_data: vec![i],
+            }),
+        );
+    }
+    std::thread::sleep(Duration::from_millis(200));
+
+    send(&mut *port, &ModemMessage::GetStatus);
+    let msg = recv_one(&mut *port, Duration::from_secs(2));
+    match msg {
+        ModemMessage::Status(s) => assert_eq!(s.tx_count, 21, "all sends should be attempted"),
+        other => panic!("expected Status, got {:?}", other),
+    }
+
+    let first_peer = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00];
+    send(
+        &mut *port,
+        &ModemMessage::SendFrame(SendFrame {
+            peer_mac: first_peer,
+            frame_data: vec![0xAA],
+        }),
+    );
+    std::thread::sleep(Duration::from_millis(100));
+
+    send(&mut *port, &ModemMessage::GetStatus);
+    let msg = recv_one(&mut *port, Duration::from_secs(2));
+    match msg {
+        ModemMessage::Status(s) => assert_eq!(s.tx_count, 22, "peer should be re-registered"),
+        other => panic!("expected Status, got {:?}", other),
+    }
+}
+
 /// T-0300: RESET clears state (channel, counters).
 #[test]
 fn t0300_reset_clears_state() {
@@ -351,6 +397,49 @@ fn t0303_repeated_reset() {
             i
         );
     }
+}
+
+/// T-0301: dropping and reopening the serial link yields a fresh MODEM_READY.
+#[test]
+fn t0301_usb_cdc_serial_link_drop_and_reconnection() {
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let port_name = match std::env::var("MODEM_PORT") {
+        Ok(p) if !p.is_empty() => p,
+        _ => {
+            eprintln!("MODEM_PORT not set — skipping device test");
+            return;
+        }
+    };
+
+    {
+        let mut port = serialport::new(&port_name, 115200)
+            .timeout(Duration::from_millis(500))
+            .open()
+            .unwrap_or_else(|e| panic!("failed to open {}: {}", port_name, e));
+        reset_and_wait(&mut *port);
+    }
+
+    std::thread::sleep(Duration::from_secs(2));
+
+    let mut reopened = serialport::new(&port_name, 115200)
+        .timeout(Duration::from_millis(500))
+        .open()
+        .unwrap_or_else(|e| panic!("failed to reopen {}: {}", port_name, e));
+
+    let msgs = recv(&mut *reopened, Duration::from_secs(3));
+    assert!(
+        msgs.iter()
+            .any(|msg| matches!(msg, ModemMessage::ModemReady(_))),
+        "MODEM_READY not received after reopening serial link (got {:?})",
+        msgs
+    );
+
+    send(&mut *reopened, &ModemMessage::GetStatus);
+    let msg = recv_one(&mut *reopened, Duration::from_secs(2));
+    assert!(
+        matches!(msg, ModemMessage::Status(_)),
+        "modem should remain operational after reconnect"
+    );
 }
 
 /// T-0401: SET_CHANNEL with invalid channel returns ERROR.

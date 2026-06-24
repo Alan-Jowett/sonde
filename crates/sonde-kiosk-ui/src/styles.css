@@ -41,9 +41,10 @@ body {
   transform: translateX(-50%);
   background: rgba(15, 23, 42, 0.82);
   border: 1px solid rgba(56, 189, 248, 0.25);
-  border-radius: 14px;
+  border-radius: 999px;
   padding: 10px 16px;
-  font-size: 14px;
+  font-size: 16px;
+  font-weight: 600;
   color: var(--text);
   z-index: 2;
   max-width: min(90vw, 520px);

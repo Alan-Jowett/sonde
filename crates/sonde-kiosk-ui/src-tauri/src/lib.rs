@@ -277,6 +277,8 @@ struct OAuthTokenResponse {
 struct OAuthErrorResponse {
     error: String,
     error_description: Option<String>,
+    #[serde(default)]
+    error_codes: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1219,11 +1221,26 @@ async fn fetch_application_access_token(
         .map(|payload| payload.access_token)
 }
 
+fn parse_application_sign_in_oauth_error(error: &str) -> Option<OAuthErrorResponse> {
+    let json_start = error.find('{')?;
+    serde_json::from_str::<OAuthErrorResponse>(&error[json_start..]).ok()
+}
+
 fn should_retry_application_sign_in_error(error: &str) -> bool {
-    error.contains("\"error\":\"invalid_client\"")
-        && (error.contains("\"error_codes\":[700027]")
-            || error.contains("[700027]")
-            || error.contains("The key was not found"))
+    let oauth_error = match parse_application_sign_in_oauth_error(error) {
+        Some(oauth_error) => oauth_error,
+        None => return false,
+    };
+    oauth_error.error == "invalid_client"
+        && (oauth_error.error_codes.contains(&700027)
+            || oauth_error
+                .error_description
+                .as_deref()
+                .is_some_and(|description| description.contains("AADSTS700027"))
+            || oauth_error
+                .error_description
+                .as_deref()
+                .is_some_and(|description| description.contains("The key was not found")))
 }
 
 async fn wait_for_application_sign_in_retry(delay: Duration) -> Result<(), String> {
@@ -2928,6 +2945,12 @@ mod tests {
     #[test]
     fn application_sign_in_retry_classifier_matches_entra_propagation_errors() {
         let error = r#"application sign-in failed: token endpoint returned 401 Unauthorized: {"error":"invalid_client","error_description":"AADSTS700027: The certificate with identifier used to sign the client assertion is not registered on application. [Reason - The key was not found.]","error_codes":[700027]}"#;
+        assert!(should_retry_application_sign_in_error(error));
+    }
+
+    #[test]
+    fn application_sign_in_retry_classifier_matches_spaced_json_errors() {
+        let error = r#"application sign-in failed: token endpoint returned 401 Unauthorized: { "error": "invalid_client", "error_description": "AADSTS700027: The certificate with identifier used to sign the client assertion is not registered on application. [Reason - The key was not found.]", "error_codes": [700027] }"#;
         assert!(should_retry_application_sign_in_error(error));
     }
 

@@ -1517,6 +1517,36 @@ test('actualstate delta refresh returns the active environment cache after an en
   assert.equal(app.SESSION_TELEMETRY_CACHE.environmentName, staging.name);
   assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.rowsByKey.size, 0);
 });
+
+test('fetchActualStateNodes ignores fractional timestamps when advancing the delta watermark', async () => {
+  const filters = [];
+  let queryCount = 0;
+  const queryTableFn = async (_tableName, filter) => {
+    filters.push(filter);
+    queryCount += 1;
+    if (queryCount === 1) {
+      return [{
+        PartitionKey: 'n:abc123',
+        RowKey: 'ffff',
+        node_id: 'NODE_001',
+        timestamp_ms: 1000.5,
+      }];
+    }
+    return [];
+  };
+
+  await app.fetchActualStateNodes({
+    nowFn: () => 1_500,
+    queryTableFn,
+  });
+  await app.fetchActualStateNodes({
+    nowFn: () => 2_000,
+    queryTableFn,
+  });
+
+  assert.equal(filters[0], '');
+  assert.match(filters[1], /^RowKey ge '[0-9a-f]{16}' and RowKey le '[0-9a-f]{16}~'$/);
+});
 test('getCachedSensorDataRows fetches only uncovered historical intervals', async () => {
   const calls = [];
   const rowsByCall = [
@@ -1731,6 +1761,47 @@ test('fetchVariableData reuses one cached sensor fetch for overlapping variables
   assert.equal(queryCount, 1);
   assert.deepEqual(result.data.TEMP, [{ timestamp: 40_000_000 - 1000, value: 25000 }]);
   assert.deepEqual(result.data.PRESS, [{ timestamp: 40_000_000 - 1000, value: 92500 }]);
+});
+
+test('fetchVariableData accepts Azure-style integral float timestamps', async () => {
+  const deps = {
+    nowFn: () => 40_000_000,
+    fetchActualStateNodesFn: async () => [
+      { nodeId: 'NODE_001', partitionKey: 'n:abc123' },
+    ],
+    querySensorDataRangeFn: async () => [{
+      PartitionKey: 'n:abc123',
+      RowKey: 'row-1',
+      timestamp_ms: 39_999_000.0,
+      decoded_readings: '{"temp_mc":25000}',
+    }],
+  };
+
+  const result = await app.fetchVariableData([
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '6h' }, deps);
+
+  assert.deepEqual(result.data.TEMP, [{ timestamp: 39_999_000, value: 25000 }]);
+});
+
+test('fetchVariableData rejects fractional Azure-style float timestamps', async () => {
+  const result = await app.fetchVariableData([
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '6h' }, {
+    nowFn: () => 40_000_000,
+    fetchActualStateNodesFn: async () => [
+      { nodeId: 'NODE_001', partitionKey: 'n:abc123' },
+    ],
+    querySensorDataRangeFn: async () => [{
+      PartitionKey: 'n:abc123',
+      RowKey: 'row-1',
+      timestamp_ms: 39_999_000.5,
+      decoded_readings: '{"temp_mc":25000}',
+    }],
+  });
+
+  assert.deepEqual(result.data.TEMP ?? [], []);
+  assert.deepEqual(result.errors, []);
 });
 
 test('concurrent dashboard metric consumers share one in-flight cold-session telemetry fetch', async () => {

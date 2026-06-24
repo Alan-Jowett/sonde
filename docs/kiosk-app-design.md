@@ -116,7 +116,7 @@ Reset
   -> UserDeviceCodeSignIn
   -> GenerateKioskCertificate
   -> AttachCertificateToSharedApp
-  -> UserSignOut
+  -> ClearLocalOperatorSession
   -> ApplicationSignIn
   -> WarmCacheAndShowDashboards
 ```
@@ -153,6 +153,12 @@ certificate credentials.
 The setup and renewal flows assume the signed-in operator has enough permission
 to add or replace credentials on that shared Entra app. When that permission is
 absent, the kiosk app fails explicitly with an actionable operator-facing error.
+
+Because operator setup uses device-code sign-in, the kiosk app is not the owner
+of a browser-authenticated user session in the same way as an embedded web app.
+After provisioning succeeds, the kiosk therefore clears its local operator
+session state and proceeds to unattended application sign-in rather than
+requiring a stronger kiosk-owned logout primitive.
 
 ### 3.3  Credential material
 
@@ -420,6 +426,7 @@ used to attach the credential is an implementation detail, but the contract is:
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-23 | maintain skill | Replaced the explicit `UserSignOut` state with local operator-session teardown to match the kiosk device-code architecture. |
 | 2026-06-20 | evolve skill | Added setup-login public-client metadata for kiosk device-code sign-in and clarified that bootstrap owns both the shared runtime app and the setup-login app. |
 | 2026-06-19 | evolve skill | Clarified kiosk certificate lifecycle, permission-failure reporting, certificate identity persistence, offline restart behavior, implementation-defined refresh cadence, and optional future Lock Task support. |
 | 2026-06-19 | evolve skill | Added optional kiosk design coverage for offline cached presentation, guarded operator-only controls, and bounded cache eviction. |

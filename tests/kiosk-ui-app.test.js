@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 function makeElement() {
+  const listeners = new Map();
   return {
     innerHTML: '',
     textContent: '',
@@ -17,7 +18,17 @@ function makeElement() {
     href: '',
     disabled: false,
     classList: { add() {}, remove() {}, toggle() {} },
-    addEventListener() {},
+    addEventListener(type, listener) {
+      if (!listeners.has(type)) {
+        listeners.set(type, []);
+      }
+      listeners.get(type).push(listener);
+    },
+    dispatch(type, event = {}) {
+      for (const listener of listeners.get(type) || []) {
+        listener(event);
+      }
+    },
     appendChild() {},
     click() {},
   };
@@ -1261,6 +1272,206 @@ test('pollUntilDeviceCodeComplete reuses the completed session id for renewal', 
   assert.deepEqual(
     calls.filter(({ command }) => command === 'renew_kiosk_certificate').map(({ payload }) => payload.request.sessionId),
     ['session-123'],
+  );
+});
+
+test('pollUntilDeviceCodeComplete reports reset remote cleanup results and clears kiosk state', async () => {
+  const { elements } = createDomFixture();
+  kiosk.APP_STATE.activeEnvironment = buildEnvironment();
+  kiosk.APP_STATE.identitySummary = { sharedAppClientId: 'old-client' };
+  kiosk.APP_STATE.telemetryCache = new Map([[buildCacheKey(buildEnvironment(), 'NODE_001', 'temp_mc'), {
+    points: [{ timestampMs: 8_000, value: 20.25 }],
+    coverageStartMs: 1_000,
+    coverageEndMs: 9_000,
+    refreshedAtMs: 9_000,
+    lastAccessedAtMs: 9_000,
+  }]]);
+  kiosk.APP_STATE.deviceCodeSession = {
+    sessionId: 'session-reset',
+    userCode: 'RESET01',
+    verificationUri: 'https://microsoft.com/devicelogin',
+    verificationUriComplete: null,
+    pollIntervalSeconds: 0,
+    message: 'Use code RESET01',
+  };
+
+  await kiosk.pollUntilDeviceCodeComplete('reset', {
+    invoke: async (command, payload) => {
+      if (command === 'poll_device_code_sign_in') {
+        return { status: 'complete', message: 'Signed in.' };
+      }
+      if (command === 'reset_kiosk_app_state') {
+        assert.equal(payload.request.sessionId, 'session-reset');
+        return {
+          message: 'Kiosk state cleared and the remote kiosk certificate was removed.',
+          remoteCleanupStatus: 'removed',
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    },
+  });
+
+  assert.equal(kiosk.APP_STATE.identitySummary, null);
+  assert.equal(kiosk.APP_STATE.activeEnvironment, null);
+  assert.equal(kiosk.APP_STATE.telemetryCache.size, 0);
+  assert.match(elements.get('setup-status').textContent, /remote kiosk certificate was removed/i);
+});
+
+test('pollUntilDeviceCodeComplete surfaces certificate renewal failures without continuing', async () => {
+  kiosk.APP_STATE.activeEnvironment = buildEnvironment();
+  kiosk.APP_STATE.deviceCodeSession = {
+    sessionId: 'session-renew-fail',
+    userCode: 'RENEW1',
+    verificationUri: 'https://microsoft.com/devicelogin',
+    verificationUriComplete: null,
+    pollIntervalSeconds: 0,
+    message: 'Use code RENEW1',
+  };
+
+  await assert.rejects(
+    kiosk.pollUntilDeviceCodeComplete('renew', {
+      invoke: async (command) => {
+        if (command === 'poll_device_code_sign_in') {
+          return { status: 'complete', message: 'Signed in.' };
+        }
+        if (command === 'renew_kiosk_certificate') {
+          throw new Error('permission denied to rotate credentials');
+        }
+        if (command === 'sign_in_kiosk_application') {
+          throw new Error('should not continue to application sign-in');
+        }
+        throw new Error(`unexpected command ${command}`);
+      },
+    }),
+    /permission denied to rotate credentials/i,
+  );
+});
+
+test('setup, renewal, and reset permission failures remain actionable', async () => {
+  const permissionError = 'permission denied on shared app credentials';
+  const { elements } = createDomFixture();
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.activeEnvironment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [],
+      charts: [],
+      timeRange: { preset: '24h', start: null, end: null },
+    }],
+  });
+
+  kiosk.APP_STATE.deviceCodeSession = {
+    sessionId: 'session-initial',
+    userCode: 'INIT01',
+    verificationUri: 'https://microsoft.com/devicelogin',
+    verificationUriComplete: null,
+    pollIntervalSeconds: 0,
+    message: 'Use code INIT01',
+  };
+  await assert.rejects(
+    kiosk.pollUntilDeviceCodeComplete('initial', {
+      invoke: async (command) => {
+        if (command === 'poll_device_code_sign_in') {
+          return { status: 'complete', message: 'Signed in.' };
+        }
+        if (command === 'complete_kiosk_setup') {
+          throw new Error(permissionError);
+        }
+        throw new Error(`unexpected command ${command}`);
+      },
+    }),
+    /permission denied on shared app credentials/i,
+  );
+
+  kiosk.showSetupMode(`Kiosk setup failed: ${permissionError}`);
+  assert.match(elements.get('setup-status').textContent, /permission denied on shared app credentials/i);
+
+  kiosk.showSetupMode(`Certificate renewal failed: ${permissionError}`);
+  assert.match(elements.get('setup-status').textContent, /Certificate renewal failed: permission denied on shared app credentials/i);
+
+  kiosk.showSetupMode(`Kiosk state cleared. Reset fallback detail: ${permissionError}`, { clearEnvironment: true });
+  assert.match(elements.get('setup-status').textContent, /Reset fallback detail: permission denied on shared app credentials/i);
+});
+
+test('operator controls require a long press and stay hidden on a short press', async () => {
+  const { elements } = createDomFixture();
+  const previousSetTimeout = global.setTimeout;
+  const previousClearTimeout = global.clearTimeout;
+  const pendingTimeouts = [];
+  global.setTimeout = (fn) => {
+    pendingTimeouts.push(fn);
+    return pendingTimeouts.length;
+  };
+  global.clearTimeout = () => {};
+  try {
+    elements.set('operator-panel', createTrackedElement());
+    elements.get('operator-panel').classList.add('hidden');
+    await kiosk.initKioskApp({
+      runtime,
+      invoke: async (command) => {
+        if (command === 'get_telemetry_cache_json') {
+          return JSON.stringify({ version: 1, entries: [] });
+        }
+        return null;
+      },
+      setIntervalFn: () => 42,
+      clearIntervalFn() {},
+    });
+    const hotspot = elements.get('operator-hotspot');
+    const panel = elements.get('operator-panel');
+    assert.ok(hotspot, 'expected operator hotspot');
+    assert.ok(panel, 'expected operator panel');
+    assert.match(panel.className, /hidden/);
+
+    hotspot.dispatch('pointerdown', {});
+    hotspot.dispatch('pointerup', {});
+    assert.match(panel.className, /hidden/);
+
+    hotspot.dispatch('pointerdown', {});
+    pendingTimeouts[pendingTimeouts.length - 1]();
+    assert.doesNotMatch(panel.className, /hidden/);
+  } finally {
+    global.setTimeout = previousSetTimeout;
+    global.clearTimeout = previousClearTimeout;
+  }
+});
+
+test('cache eviction preserves recent dashboard usefulness across restart-style reload', () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  });
+  kiosk.APP_STATE.telemetryCache = new Map();
+  for (let index = 0; index < 130; index += 1) {
+    kiosk.APP_STATE.telemetryCache.set(buildCacheKey(environment, `NODE_${index}`, 'temp_mc'), {
+      points: [{ timestampMs: 8_000 + index, value: index }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 9_000,
+      refreshedAtMs: index,
+      lastAccessedAtMs: index,
+    });
+  }
+  kiosk.APP_STATE.telemetryCache.set(buildCacheKey(environment, 'NODE_001', 'temp_mc'), {
+    points: [{ timestampMs: 8_000, value: 20.25 }],
+    coverageStartMs: 1_000,
+    coverageEndMs: 9_000,
+    refreshedAtMs: 9_000,
+    lastAccessedAtMs: 99_999,
+  });
+
+  kiosk.enforceTelemetryCacheBounds({
+    protectedKeys: new Set([buildCacheKey(environment, 'NODE_001', 'temp_mc')]),
+  });
+
+  const reloaded = kiosk.parseTelemetryCacheJson(kiosk.serializeTelemetryCache());
+  kiosk.replaceTelemetryCache(reloaded);
+  assert.equal(
+    kiosk.hasUsableCachedDashboardData(runtime, environment, environment.dashboards[0], 9_000),
+    true,
   );
 });
 

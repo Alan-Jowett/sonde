@@ -180,7 +180,9 @@ state machine.
 3. Setup then prompts for interactive user sign-in.
 4. After user sign-in succeeds, the app provisions a kiosk certificate and
    attaches it to the shared Entra app.
-5. The app signs the user out after certificate provisioning succeeds.
+5. The app tears down the local operator sign-in session state after certificate
+   provisioning succeeds so subsequent dashboard reads do not depend on the
+   operator session.
 6. The app then signs in as the shared Entra app using the kiosk certificate.
 7. The dashboard view is entered only after application sign-in succeeds.
 8. On later restarts, the app signs in as the application and proceeds directly
@@ -585,5 +587,6 @@ storage.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-23 | maintain skill | Clarified that device-code setup tears down local operator-session state after provisioning rather than requiring an explicit kiosk-owned user sign-out step. |
 | 2026-06-19 | evolve skill | Added optional kiosk hardening requirements for offline behavior, guarded minimal operator UI, and bounded telemetry cache eviction. |
 | 2026-06-19 | evolve skill | Added initial Android kiosk dashboard app requirements for static imported dashboards, one-time user setup, per-kiosk certificate credentials, app-authenticated reads, persistent telemetry cache, swipe navigation, and additive-only scope. |

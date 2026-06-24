@@ -1300,6 +1300,7 @@ if (typeof module !== 'undefined' && module.exports) {
     replaceTelemetryCache,
     renderDashboardFrame,
     serializeTelemetryCache,
+    showSetupMode,
     setTelemetryNotice,
     startBackgroundRefreshLoop,
     triggerDashboardRefresh,

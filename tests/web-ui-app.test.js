@@ -1733,6 +1733,27 @@ test('fetchVariableData reuses one cached sensor fetch for overlapping variables
   assert.deepEqual(result.data.PRESS, [{ timestamp: 40_000_000 - 1000, value: 92500 }]);
 });
 
+test('fetchVariableData accepts Azure-style integral float timestamps', async () => {
+  const deps = {
+    nowFn: () => 40_000_000,
+    fetchActualStateNodesFn: async () => [
+      { nodeId: 'NODE_001', partitionKey: 'n:abc123' },
+    ],
+    querySensorDataRangeFn: async () => [{
+      PartitionKey: 'n:abc123',
+      RowKey: 'row-1',
+      timestamp_ms: 39_999_000.0,
+      decoded_readings: '{"temp_mc":25000}',
+    }],
+  };
+
+  const result = await app.fetchVariableData([
+    { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+  ], { preset: '6h' }, deps);
+
+  assert.deepEqual(result.data.TEMP, [{ timestamp: 39_999_000, value: 25000 }]);
+});
+
 test('concurrent dashboard metric consumers share one in-flight cold-session telemetry fetch', async () => {
   const deferred = createDeferred();
   let queryCount = 0;

@@ -153,7 +153,8 @@ full device UX.
 2. Import a valid environment JSON.
 3. Complete user sign-in.
 4. Complete kiosk certificate provisioning.
-5. Assert: the app signs the user out.
+5. Assert: the app clears the local operator sign-in session state after
+   provisioning and does not continue dashboard reads on the operator session.
 6. Assert: the app signs in as the application.
 7. Assert: dashboards are shown only after application sign-in succeeds.
 
@@ -455,5 +456,6 @@ full device UX.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-23 | maintain skill | Updated setup-flow validation to check local operator-session teardown after provisioning instead of an explicit kiosk-owned user sign-out step. |
 | 2026-06-19 | evolve skill | Added optional kiosk validation coverage for offline cached presentation, guarded operator controls, and bounded cache eviction. |
 | 2026-06-19 | evolve skill | Added initial kiosk dashboard app validation coverage for setup flow, shared-app certificate attachment, dashboard-only UI, fixed imported layouts, persistent telemetry cache, background refresh, pull-to-refresh, and swipe navigation. |

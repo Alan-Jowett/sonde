@@ -400,6 +400,8 @@ fn deserialize_optional_i64_from_string_or_number<'de, D>(
 where
     D: Deserializer<'de>,
 {
+    const MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
+
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
     match value {
         None | Some(serde_json::Value::Null) => Ok(None),
@@ -414,10 +416,12 @@ where
             let value = value
                 .as_f64()
                 .ok_or_else(|| serde::de::Error::custom("expected a signed 64-bit integer"))?;
+            // `serde_json` float numbers have already been rounded to `f64`, so only
+            // accept the IEEE-754 safe integer range where the parsed float still
+            // identifies a unique integer value.
             if !value.is_finite()
                 || value.fract() != 0.0
-                || value < i64::MIN as f64
-                || value > i64::MAX as f64
+                || !(-MAX_SAFE_INTEGER_F64..=MAX_SAFE_INTEGER_F64).contains(&value)
             {
                 return Err(serde::de::Error::custom(format!(
                     "timestamp_ms {value} is not a valid i64"
@@ -2952,6 +2956,16 @@ mod tests {
         let json = serde_json::json!({
             "decoded_readings": "{\"temp_mc\":25000}",
             "timestamp_ms": 1782276791050.5_f64
+        });
+        let error = serde_json::from_value::<SensorDataEntity>(json).unwrap_err();
+        assert!(error.to_string().contains("not a valid i64"));
+    }
+
+    #[test]
+    fn deserialize_sensor_data_entity_rejects_integral_f64_outside_safe_integer_range() {
+        let json = serde_json::json!({
+            "decoded_readings": "{\"temp_mc\":25000}",
+            "timestamp_ms": 9_007_199_254_740_992.0_f64
         });
         let error = serde_json::from_value::<SensorDataEntity>(json).unwrap_err();
         assert!(error.to_string().contains("not a valid i64"));

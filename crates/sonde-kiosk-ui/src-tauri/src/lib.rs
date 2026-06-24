@@ -1226,12 +1226,9 @@ fn parse_application_sign_in_oauth_error(error: &str) -> Option<OAuthErrorRespon
     serde_json::from_str::<OAuthErrorResponse>(&error[json_start..]).ok()
 }
 
-fn should_retry_application_sign_in_error(error: &str) -> bool {
-    let oauth_error = match parse_application_sign_in_oauth_error(error) {
-        Some(oauth_error) => oauth_error,
-        None => return false,
-    };
-    oauth_error.error == "invalid_client"
+fn classify_application_sign_in_retry_error(error: &str) -> Option<OAuthErrorResponse> {
+    let oauth_error = parse_application_sign_in_oauth_error(error)?;
+    (oauth_error.error == "invalid_client"
         && (oauth_error.error_codes.contains(&700027)
             || oauth_error
                 .error_description
@@ -1240,7 +1237,12 @@ fn should_retry_application_sign_in_error(error: &str) -> bool {
             || oauth_error
                 .error_description
                 .as_deref()
-                .is_some_and(|description| description.contains("The key was not found")))
+                .is_some_and(|description| description.contains("The key was not found"))))
+    .then_some(oauth_error)
+}
+
+fn should_retry_application_sign_in_error(error: &str) -> bool {
+    classify_application_sign_in_retry_error(error).is_some()
 }
 
 async fn wait_for_application_sign_in_retry(delay: Duration) -> Result<(), String> {
@@ -1260,18 +1262,24 @@ async fn fetch_application_access_token_with_propagation_retry(
     {
         match fetch_application_access_token(runtime_state).await {
             Ok(access_token) => return Ok(access_token),
-            Err(error) if should_retry_application_sign_in_error(&error) => {
+            Err(error) => {
+                let Some(oauth_error) = classify_application_sign_in_retry_error(&error) else {
+                    return Err(error);
+                };
                 warn!(
                     attempt = attempt_index + 1,
                     delay_secs,
                     client_id = %runtime_state.client_id,
                     tenant_id = %runtime_state.tenant_id,
+                    oauth_error = %oauth_error.error,
+                    oauth_error_description = ?oauth_error.error_description,
+                    oauth_error_codes = ?oauth_error.error_codes,
+                    error = %error,
                     "retrying kiosk application sign-in after Entra key propagation delay"
                 );
                 debug_assert!(should_retry_application_sign_in_error(&error));
                 wait_for_application_sign_in_retry(Duration::from_secs(delay_secs)).await?;
             }
-            Err(error) => return Err(error),
         }
     }
 

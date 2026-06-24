@@ -57,6 +57,7 @@ const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_co
 const CLIENT_ASSERTION_LIFETIME_SECS: i64 = 600;
 const KIOSK_CERTIFICATE_VALIDITY_DAYS: i64 = 730;
 const KIOSK_RENEWAL_THRESHOLD_DAYS: i64 = 30;
+const APPLICATION_SIGN_IN_PROPAGATION_RETRY_DELAYS_SECS: &[u64] = &[1, 2, 4, 8];
 const GRAPH_APP_SELECT_QUERY: &str = "$select=id,appId,keyCredentials";
 const MAX_TABLE_QUERY_PAGES: usize = 10;
 const SENSOR_DATA_TOP_PER_PAGE: usize = 1000;
@@ -1218,6 +1219,57 @@ async fn fetch_application_access_token(
         .map(|payload| payload.access_token)
 }
 
+fn should_retry_application_sign_in_error(error: &str) -> bool {
+    error.contains("\"error\":\"invalid_client\"")
+        && (error.contains("\"error_codes\":[700027]")
+            || error.contains("[700027]")
+            || error.contains("The key was not found"))
+}
+
+async fn wait_for_application_sign_in_retry(delay: Duration) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || std::thread::sleep(delay))
+        .await
+        .map_err(|error| format!("application sign-in retry wait failed: {error}"))?;
+    Ok(())
+}
+
+async fn fetch_application_access_token_with_propagation_retry(
+    runtime_state: &RuntimeCredentialState,
+) -> Result<String, String> {
+    for (attempt_index, delay_secs) in APPLICATION_SIGN_IN_PROPAGATION_RETRY_DELAYS_SECS
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        match fetch_application_access_token(runtime_state).await {
+            Ok(access_token) => return Ok(access_token),
+            Err(error) if should_retry_application_sign_in_error(&error) => {
+                warn!(
+                    attempt = attempt_index + 1,
+                    delay_secs,
+                    client_id = %runtime_state.client_id,
+                    tenant_id = %runtime_state.tenant_id,
+                    "retrying kiosk application sign-in after Entra key propagation delay"
+                );
+                debug_assert!(should_retry_application_sign_in_error(&error));
+                wait_for_application_sign_in_retry(Duration::from_secs(delay_secs)).await?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    match fetch_application_access_token(runtime_state).await {
+        Ok(access_token) => Ok(access_token),
+        Err(error) if should_retry_application_sign_in_error(&error) => Err(format!(
+            "{error}; retried for {} seconds waiting for Entra key propagation",
+            APPLICATION_SIGN_IN_PROPAGATION_RETRY_DELAYS_SECS
+                .iter()
+                .sum::<u64>()
+        )),
+        Err(error) => Err(error),
+    }
+}
+
 fn build_runtime_state(
     identity_state: &KioskIdentityStateFile,
     private_key_pem: String,
@@ -2138,7 +2190,7 @@ async fn complete_kiosk_setup(
             "failed to persist kiosk identity locally after adding the remote credential: {error}; the remote credential was rolled back"
         ));
     }
-    fetch_application_access_token(&build_runtime_state(
+    fetch_application_access_token_with_propagation_retry(&build_runtime_state(
         &identity_state,
         bundle.private_key_pem,
     ))
@@ -2230,8 +2282,11 @@ async fn renew_kiosk_certificate(
         &bundle.private_key_pem,
         Some(&previous_private_key_pem),
     )?;
-    fetch_application_access_token(&build_runtime_state(&next_state, bundle.private_key_pem))
-        .await?;
+    fetch_application_access_token_with_propagation_retry(&build_runtime_state(
+        &next_state,
+        bundle.private_key_pem,
+    ))
+    .await?;
 
     let refreshed_app_state =
         fetch_graph_application(&access_token, &previous_state.shared_app_client_id).await?;
@@ -2868,6 +2923,18 @@ mod tests {
     fn validate_device_code_purpose_rejects_unknown_values() {
         let error = validate_device_code_purpose("unexpected").unwrap_err();
         assert!(error.contains("unsupported device-code sign-in purpose"));
+    }
+
+    #[test]
+    fn application_sign_in_retry_classifier_matches_entra_propagation_errors() {
+        let error = r#"application sign-in failed: token endpoint returned 401 Unauthorized: {"error":"invalid_client","error_description":"AADSTS700027: The certificate with identifier used to sign the client assertion is not registered on application. [Reason - The key was not found.]","error_codes":[700027]}"#;
+        assert!(should_retry_application_sign_in_error(error));
+    }
+
+    #[test]
+    fn application_sign_in_retry_classifier_ignores_other_invalid_client_errors() {
+        let error = r#"application sign-in failed: token endpoint returned 401 Unauthorized: {"error":"invalid_client","error_description":"AADSTS7000215: Invalid client secret is provided.","error_codes":[7000215]}"#;
+        assert!(!should_retry_application_sign_in_error(error));
     }
 
     #[test]

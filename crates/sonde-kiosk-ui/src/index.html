@@ -9,16 +9,8 @@
   <script src="https://cdn.jsdelivr.net/npm/expr-eval@2.0.2/dist/bundle.min.js" integrity="sha384-/4W8jQ+DhKy3zhz8s0HRh/l4kEliBAJQmAWqrrtJr7BAuODvB2MKsjR8h5MGefjl" crossorigin="anonymous"></script>
 </head>
 <body>
-  <header class="app-header">
-    <div>
-      <h1>Sonde Dashboard Kiosk</h1>
-      <p class="app-subtitle">Read-only dashboard presentation</p>
-    </div>
-    <div id="dashboard-overlay" class="dashboard-overlay hidden" aria-live="polite"></div>
-  </header>
-
   <main class="app-main">
-    <section id="setup-screen" class="screen">
+    <section id="setup-screen" class="screen screen--setup">
       <div class="card">
         <h2>Setup</h2>
         <p class="lead">Import an environment JSON exported from the SPA to start kiosk dashboard mode.</p>
@@ -37,14 +29,10 @@
       </div>
     </section>
 
-    <section id="dashboard-screen" class="screen hidden">
-      <div class="dashboard-shell">
-        <div class="dashboard-status-row">
-          <div id="dashboard-status" class="status-pill">Rendering imported dashboards.</div>
-          <div class="dashboard-hint">Swipe left/right to switch dashboards.</div>
-        </div>
-        <div id="dashboard-page-host" class="dashboard-page-host"></div>
-      </div>
+    <section id="dashboard-screen" class="screen screen--dashboard hidden">
+      <div id="dashboard-overlay" class="dashboard-overlay hidden" aria-live="polite"></div>
+      <div id="dashboard-status-overlay" class="dashboard-status-overlay hidden" aria-live="polite"></div>
+      <div id="dashboard-page-host" class="dashboard-page-host"></div>
     </section>
   </main>
 

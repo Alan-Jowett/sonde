@@ -727,9 +727,18 @@
           continue;
         }
 
+        const plottedPoints = downsamplePointsFn(
+          result.points.filter((point) => Number.isFinite(point.timestamp) && Number.isFinite(point.value)),
+          500,
+        ).map((point) => ({ x: point.timestamp, y: point.value }));
+        if (plottedPoints.length === 0) {
+          setFallback('No data in selected time range.', 'text-muted', 1);
+          continue;
+        }
+
         datasets.push({
           label: metric.displayName || metric.expression,
-          data: downsamplePointsFn(result.points, 500).map((point) => ({ x: point.timestamp, y: point.value })),
+          data: plottedPoints,
           borderColor: metric.color || '#007bff',
           backgroundColor: metric.color || '#007bff',
           fill: false,

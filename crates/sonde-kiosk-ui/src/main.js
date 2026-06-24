@@ -18,11 +18,15 @@ const BACKGROUND_REFRESH_INTERVAL_MS = 60 * 1000;
 const DEVICE_CODE_POLL_FALLBACK_MS = 5000;
 const TELEMETRY_CACHE_MAX_SERIES = 128;
 const TELEMETRY_CACHE_MAX_POINTS_PER_SERIES = 2048;
+const OVERLAY_AUTO_HIDE_MS = 2200;
+const STATUS_AUTO_HIDE_MS = 3200;
+const STATUS_ERROR_AUTO_HIDE_MS = 5200;
 
 const APP_STATE = {
   runtime: null,
   activeEnvironment: null,
   activeDashboardIndex: 0,
+  activeChartIndex: 0,
   metricCharts: {},
   telemetryNotice: 'Waiting for live telemetry refresh.',
   telemetryStatusKind: 'info',
@@ -33,6 +37,8 @@ const APP_STATE = {
   refreshInFlightPromise: null,
   operatorPanelOpen: false,
   operatorPressTimer: null,
+  overlayHideTimer: null,
+  statusHideTimer: null,
   identitySummary: null,
   deviceCodeSession: null,
   setupStatusMessage: 'No environment imported yet.',
@@ -289,19 +295,127 @@ function validateImportedEnvironmentJson(text, runtime, deps = {}) {
   });
 }
 
-function buildDashboardOverlay(environment, activeDashboardIndex) {
-  const dashboard = environment.dashboards[activeDashboardIndex];
-  return `${dashboard.name} (${activeDashboardIndex + 1}/${environment.dashboards.length})`;
+function buildChartPages(environment) {
+  if (!environment || !Array.isArray(environment.dashboards)) {
+    return [];
+  }
+  const pages = [];
+  environment.dashboards.forEach((dashboard, dashboardIndex) => {
+    if (!dashboard || !Array.isArray(dashboard.charts)) {
+      return;
+    }
+    dashboard.charts.forEach((chart, chartIndex) => {
+      pages.push({
+        dashboardIndex,
+        chartIndex,
+        dashboard,
+        chart,
+      });
+    });
+  });
+  return pages;
 }
 
-function renderDashboardFrame(runtime, environment, activeDashboardIndex) {
-  const dashboard = environment.dashboards[activeDashboardIndex];
+function getActiveChartPage(environment = APP_STATE.activeEnvironment) {
+  const pages = buildChartPages(environment);
+  if (pages.length === 0) {
+    return {
+      pages,
+      page: null,
+      pageIndex: -1,
+    };
+  }
+  let pageIndex = pages.findIndex((page) => page.dashboardIndex === APP_STATE.activeDashboardIndex
+    && page.chartIndex === APP_STATE.activeChartIndex);
+  if (pageIndex < 0) {
+    pageIndex = 0;
+  }
+  return {
+    pages,
+    page: pages[pageIndex],
+    pageIndex,
+  };
+}
+
+function buildChartOverlayText(environment, activeDashboardIndex, activeChartIndex = 0) {
+  const pages = buildChartPages(environment);
+  const pageIndex = pages.findIndex((page) => page.dashboardIndex === activeDashboardIndex
+    && page.chartIndex === activeChartIndex);
+  const activePage = pageIndex >= 0 ? pages[pageIndex] : pages[0];
+  if (!activePage) {
+    return '';
+  }
+  return `${activePage.dashboard.name} — ${activePage.chart.name} (${(pageIndex >= 0 ? pageIndex : 0) + 1}/${pages.length})`;
+}
+
+function buildChartRenderDashboard(page) {
+  if (!page) {
+    return null;
+  }
+  return {
+    name: page.dashboard.name,
+    variables: page.dashboard.variables,
+    charts: [page.chart],
+    timeRange: page.dashboard.timeRange,
+  };
+}
+
+function renderDashboardFrame(runtime, environment, activeDashboardIndex, activeChartIndex = 0) {
+  const pages = buildChartPages(environment);
+  const activePage = pages.find((page) => page.dashboardIndex === activeDashboardIndex
+    && page.chartIndex === activeChartIndex) ?? pages[0];
+  if (!activePage) {
+    return `
+      <div class="kiosk-chart-page">
+        <div class="kiosk-chart-frame">
+          <div class="kiosk-empty-state">No charts are defined in the imported dashboards.</div>
+        </div>
+      </div>
+    `;
+  }
+  if (!Array.isArray(activePage.chart.metrics) || activePage.chart.metrics.length === 0) {
+    return `
+      <div class="kiosk-chart-page">
+        <div class="kiosk-chart-frame">
+          <div class="kiosk-empty-state">No metrics are defined for this chart.</div>
+        </div>
+      </div>
+    `;
+  }
   return `
-    <div class="dashboard-frame">
-      <div class="dashboard-page-status text-muted"></div>
-      ${runtime.renderReadOnlyDashboardPage(dashboard)}
+    <div class="kiosk-chart-page">
+      <div class="kiosk-chart-frame">
+        <div class="metric-chart-container">
+          <canvas id="metric-chart-0"></canvas>
+        </div>
+      </div>
     </div>
   `;
+}
+
+function clearOverlayTimers() {
+  if (APP_STATE.overlayHideTimer != null) {
+    clearTimeout(APP_STATE.overlayHideTimer);
+    APP_STATE.overlayHideTimer = null;
+  }
+  if (APP_STATE.statusHideTimer != null) {
+    clearTimeout(APP_STATE.statusHideTimer);
+    APP_STATE.statusHideTimer = null;
+  }
+}
+
+function showIdentityOverlay(text) {
+  const overlay = document.getElementById('dashboard-overlay');
+  if (!overlay || !text) {
+    return;
+  }
+  clearTimeout(APP_STATE.overlayHideTimer);
+  overlay.textContent = text;
+  overlay.classList.remove('hidden');
+  APP_STATE.overlayHideTimer = setTimeout(() => {
+    overlay.classList.add('hidden');
+    APP_STATE.overlayHideTimer = null;
+  }, OVERLAY_AUTO_HIDE_MS);
 }
 
 function setTelemetryNotice(text, kind = 'info') {
@@ -316,12 +430,21 @@ function setTelemetryNotice(text, kind = 'info') {
       : `status-pill status-pill--${kind}`;
   }
 
-  const pageStatus = document.querySelector?.('.dashboard-page-status');
-  if (pageStatus) {
-    pageStatus.textContent = text;
-    pageStatus.className = kind === 'info'
-      ? 'dashboard-page-status text-muted'
-      : `dashboard-page-status dashboard-page-status--${kind}`;
+  const overlay = document.getElementById('dashboard-status-overlay');
+  if (overlay) {
+    clearTimeout(APP_STATE.statusHideTimer);
+    overlay.textContent = text;
+    overlay.className = kind === 'info'
+      ? 'dashboard-status-overlay'
+      : `dashboard-status-overlay dashboard-status-overlay--${kind}`;
+    overlay.classList.remove('hidden');
+    if (kind !== 'refreshing') {
+      const hideDelay = kind === 'error' ? STATUS_ERROR_AUTO_HIDE_MS : STATUS_AUTO_HIDE_MS;
+      APP_STATE.statusHideTimer = setTimeout(() => {
+        overlay.classList.add('hidden');
+        APP_STATE.statusHideTimer = null;
+      }, hideDelay);
+    }
   }
 }
 
@@ -338,7 +461,9 @@ function getActiveDashboard() {
   if (!APP_STATE.activeEnvironment) {
     return null;
   }
-  return APP_STATE.activeEnvironment.dashboards[APP_STATE.activeDashboardIndex] ?? null;
+  return getActiveChartPage().page?.dashboard
+    ?? APP_STATE.activeEnvironment.dashboards[APP_STATE.activeDashboardIndex]
+    ?? null;
 }
 
 function buildTelemetrySourceCacheKey(environment, source) {
@@ -372,6 +497,18 @@ function buildCachedVariableData(runtime, environment, dashboard, nowMs = Date.n
   }
 
   return result;
+}
+
+function convertCachedPointsToRuntimeTimeSeries(points) {
+  return Array.isArray(points)
+    ? points
+      .filter((point) => typeof point === 'object' && point !== null)
+      .map((point) => ({
+        timestamp: Number(point.timestampMs),
+        value: Number(point.value),
+      }))
+      .filter((point) => Number.isFinite(point.timestamp) && Number.isFinite(point.value))
+    : [];
 }
 
 function hasUsableCachedDashboardData(runtime, environment, dashboard, nowMs = Date.now()) {
@@ -632,7 +769,7 @@ function createCachedMetricEvaluator(runtime, environment, dashboard, nowMs = Da
       const result = Object.create(null);
       for (const variable of usedVariables) {
         result[variable.name] = cachedVariableData[variable.name]
-          ? [...cachedVariableData[variable.name]]
+          ? convertCachedPointsToRuntimeTimeSeries(cachedVariableData[variable.name])
           : [];
       }
       return result;
@@ -666,40 +803,52 @@ async function renderActiveDashboard(deps = APP_STATE.dependencies) {
     return;
   }
   const pageHost = document.getElementById('dashboard-page-host');
-  const overlay = document.getElementById('dashboard-overlay');
-  const status = document.getElementById('dashboard-status');
-  if (!pageHost || !overlay || !status) {
+  if (!pageHost) {
     return;
   }
+  const { page } = getActiveChartPage(environment);
 
   destroyDashboardCharts();
-  overlay.classList.remove('hidden');
-  overlay.textContent = buildDashboardOverlay(environment, APP_STATE.activeDashboardIndex);
-  pageHost.innerHTML = renderDashboardFrame(runtime, environment, APP_STATE.activeDashboardIndex);
+  pageHost.innerHTML = renderDashboardFrame(
+    runtime,
+    environment,
+    APP_STATE.activeDashboardIndex,
+    APP_STATE.activeChartIndex,
+  );
+  if (!page) {
+    return;
+  }
+  showIdentityOverlay(buildChartOverlayText(
+    environment,
+    APP_STATE.activeDashboardIndex,
+    APP_STATE.activeChartIndex,
+  ));
   setTelemetryNotice(APP_STATE.telemetryNotice, APP_STATE.telemetryStatusKind);
 
-  const dashboard = environment.dashboards[APP_STATE.activeDashboardIndex];
-  if (dashboard.charts.length > 0) {
-    await runtime.renderMetricCharts(dashboard, {
-      document,
-      destroyChartFn: (chartIndex) => {
-        const chart = APP_STATE.metricCharts[chartIndex];
-        if (chart && typeof chart.destroy === 'function') {
-          chart.destroy();
-        }
-        delete APP_STATE.metricCharts[chartIndex];
-      },
-      storeChartInstanceFn: (chartIndex, chart) => {
-        APP_STATE.metricCharts[chartIndex] = chart;
-      },
-      evaluateMetricTimeSeriesFn: createCachedMetricEvaluator(
-        runtime,
-        environment,
-        dashboard,
-        (deps.nowFn || Date.now)(),
-      ),
-    });
+  const dashboard = page.dashboard;
+  const renderDashboard = buildChartRenderDashboard(page);
+  if (!renderDashboard || !renderDashboard.charts.length) {
+    return;
   }
+  await runtime.renderMetricCharts(renderDashboard, {
+    document,
+    destroyChartFn: (chartIndex) => {
+      const chart = APP_STATE.metricCharts[chartIndex];
+      if (chart && typeof chart.destroy === 'function') {
+        chart.destroy();
+      }
+      delete APP_STATE.metricCharts[chartIndex];
+    },
+    storeChartInstanceFn: (chartIndex, chart) => {
+      APP_STATE.metricCharts[chartIndex] = chart;
+    },
+    evaluateMetricTimeSeriesFn: createCachedMetricEvaluator(
+      runtime,
+      environment,
+      dashboard,
+      (deps.nowFn || Date.now)(),
+    ),
+  });
 }
 
 function stopBackgroundRefreshLoop(deps = APP_STATE.dependencies) {
@@ -744,11 +893,12 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
   }
   const refreshGeneration = ++APP_STATE.refreshGeneration;
   const dashboardIndexAtStart = APP_STATE.activeDashboardIndex;
+  const chartIndexAtStart = APP_STATE.activeChartIndex;
   const refreshingMessage = reason === 'manual'
     ? 'Manual refresh in progress…'
     : reason === 'switch'
-      ? 'Loading live data for this dashboard…'
-      : 'Refreshing live dashboard data…';
+      ? 'Loading live data for this chart…'
+      : 'Refreshing live chart data…';
   setTelemetryNotice(refreshingMessage, 'refreshing');
 
   const refreshPromise = (async () => {
@@ -758,7 +908,8 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
       );
       if (refreshGeneration !== APP_STATE.refreshGeneration
         || environment !== APP_STATE.activeEnvironment
-        || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex) {
+        || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex
+        || chartIndexAtStart !== APP_STATE.activeChartIndex) {
         return;
       }
       const cachedSeriesCount = cacheTelemetryRefreshResponse(environment, refreshRequest, response);
@@ -778,7 +929,8 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
     } catch (error) {
       if (refreshGeneration !== APP_STATE.refreshGeneration
         || environment !== APP_STATE.activeEnvironment
-        || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex) {
+        || dashboardIndexAtStart !== APP_STATE.activeDashboardIndex
+        || chartIndexAtStart !== APP_STATE.activeChartIndex) {
         return;
       }
       const message = describeError(error);
@@ -854,8 +1006,11 @@ function renderSetupScreen() {
 function showSetupMode(message, options = {}) {
   stopBackgroundRefreshLoop();
   destroyDashboardCharts();
+  clearOverlayTimers();
   if (options.clearEnvironment === true) {
     APP_STATE.activeEnvironment = null;
+    APP_STATE.activeDashboardIndex = 0;
+    APP_STATE.activeChartIndex = 0;
     APP_STATE.identitySummary = null;
   }
   APP_STATE.deviceCodeSession = null;
@@ -865,6 +1020,7 @@ function showSetupMode(message, options = {}) {
   document.getElementById('dashboard-screen')?.classList.add('hidden');
   document.getElementById('setup-screen')?.classList.remove('hidden');
   document.getElementById('dashboard-overlay')?.classList.add('hidden');
+  document.getElementById('dashboard-status-overlay')?.classList.add('hidden');
   renderSetupScreen();
 }
 
@@ -1053,14 +1209,16 @@ async function signInAndShowDashboard(deps = {}) {
 }
 
 function moveDashboard(delta, deps = APP_STATE.dependencies) {
-  if (!APP_STATE.activeEnvironment || !APP_STATE.activeEnvironment.dashboards.length) {
+  const { pages, pageIndex } = getActiveChartPage();
+  if (!pages.length || pageIndex < 0) {
     return;
   }
-  const nextIndex = APP_STATE.activeDashboardIndex + delta;
-  if (nextIndex < 0 || nextIndex >= APP_STATE.activeEnvironment.dashboards.length) {
+  const nextPage = pages[pageIndex + delta];
+  if (!nextPage) {
     return;
   }
-  APP_STATE.activeDashboardIndex = nextIndex;
+  APP_STATE.activeDashboardIndex = nextPage.dashboardIndex;
+  APP_STATE.activeChartIndex = nextPage.chartIndex;
   renderActiveDashboard(deps)
     .then(() => triggerDashboardRefresh('switch', deps))
     .catch((error) => showSetupMode(describeError(error)));
@@ -1182,6 +1340,7 @@ async function importEnvironmentFromText(text, deps = {}) {
   setTelemetryNotice('Waiting for live telemetry refresh.', 'info');
   APP_STATE.activeEnvironment = environment;
   APP_STATE.activeDashboardIndex = 0;
+  APP_STATE.activeChartIndex = 0;
   const metadata = validateSetupLoginMetadata(environment);
   showSetupMode(
     metadata.valid
@@ -1247,6 +1406,8 @@ async function initKioskApp(deps = {}) {
   const storedEnvironment = await loadStoredEnvironment({ ...deps, runtime });
   if (storedEnvironment) {
     APP_STATE.activeEnvironment = storedEnvironment;
+    APP_STATE.activeDashboardIndex = 0;
+    APP_STATE.activeChartIndex = 0;
     APP_STATE.identitySummary = await loadKioskIdentitySummary(deps);
     if (APP_STATE.identitySummary) {
       try {
@@ -1254,7 +1415,8 @@ async function initKioskApp(deps = {}) {
         return;
       } catch (error) {
         const message = describeError(error);
-        const initialDashboard = storedEnvironment.dashboards[0];
+        const initialDashboard = buildChartPages(storedEnvironment)[0]?.dashboard
+          ?? storedEnvironment.dashboards[0];
         if (initialDashboard && hasUsableCachedDashboardData(runtime, storedEnvironment, initialDashboard)) {
           setTelemetryNotice(`Showing cached data while reconnecting. Application sign-in failed: ${message}`, 'error');
           await showDashboardMode(deps);
@@ -1280,7 +1442,10 @@ if (typeof module !== 'undefined' && module.exports) {
     APP_STATE,
     BACKGROUND_REFRESH_INTERVAL_MS,
     beginDeviceCodeFlow,
+    buildChartPages,
     createDefaultSensorDataPreferences,
+    createCachedMetricEvaluator,
+    convertCachedPointsToRuntimeTimeSeries,
     describeError,
     buildCachedVariableData,
     buildDashboardRefreshRequest,

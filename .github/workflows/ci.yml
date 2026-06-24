@@ -67,7 +67,7 @@ jobs:
         run: cargo clippy --workspace --all-targets ${{ matrix.profile == 'release' && '--release' || '' }} -- -D warnings
 
       - name: Test
-        run: cargo test --workspace ${{ matrix.profile == 'release' && '--release' || '' }}
+        run: cargo test --workspace ${{ matrix.profile == 'release' && '--release' || '' }} -- --skip t_azc_0100_container_image_smoke
 
       - name: Test gateway (Python handler tests)
         if: matrix.profile == 'debug'
@@ -92,6 +92,24 @@ jobs:
             target/release/sonde-admin
           if-no-files-found: error
           retention-days: 7
+
+  azure-companion-container-smoke:
+    name: Azure companion container smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          key: azure-companion-container-smoke
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Test Azure companion container smoke
+        run: cargo test -p sonde-azure-companion --test bootstrap_unix t_azc_0100_container_image_smoke -- --exact
 
   gateway-windows:
     name: Build gateway (Windows)

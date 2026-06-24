@@ -43,16 +43,16 @@ The kiosk app uses a Tauri split similar to the existing pairing tool:
 ┌─────────────────────────────────────────────────────────────┐
 │ Frontend shell (HTML/CSS/JS in Tauri WebView)              │
 │ - setup wizard                                              │
-│ - full-screen dashboard pager                               │
+│ - full-screen chart pager                                   │
 │ - swipe / pull-to-refresh gesture handling                  │
-│ - cached/live status surfaces                               │
+│ - transient cached/live status overlays                     │
 ├─────────────────────────────────────────────────────────────┤
 │ Shared dashboard runtime                                    │
 │ - environment import validation                             │
 │ - dashboard normalization                                   │
 │ - metric evaluation                                         │
 │ - chart rendering                                           │
-│ - dashboard page/view composition                           │
+│ - chart/page composition primitives                         │
 ├─────────────────────────────────────────────────────────────┤
 │ Kiosk app backend (Rust/Tauri commands)                     │
 │ - secure storage                                             │
@@ -86,7 +86,7 @@ a mandatory bundler or build pipeline for the existing SPA.
 The shared module owns:
 
 - imported environment/dashboard normalization,
-- full-screen dashboard page composition for imported dashboards,
+- shared chart/page composition primitives for imported dashboards,
 - metric-expression evaluation,
 - chart rendering and refresh coordination, and
 - any dashboard-level empty/error states that remain valid in read-only mode.
@@ -219,11 +219,11 @@ The kiosk frontend has two major modes:
    - provisioning progress,
    - application sign-in progress.
 2. **Dashboard mode**
-   - full-screen dashboard pages derived from imported dashboards,
-   - active dashboard chart view,
-   - swipe navigation,
+   - full-screen chart pages derived from imported dashboards,
+   - active chart view,
+   - swipe navigation across the derived chart sequence,
    - pull-to-refresh,
-   - lightweight cached/live/refresh status indicator,
+   - transient overlays for chart identity or refresh state,
    - guarded reset/re-import action.
 
 The kiosk frontend intentionally omits SPA editing surfaces:
@@ -233,38 +233,59 @@ The kiosk frontend intentionally omits SPA editing surfaces:
 - no Dashboard / Desired State / Programs / Sensor Data tabs,
 - no dashboard time-range editor.
 
-### 4.2  Full-screen dashboard pages
+### 4.2  Full-screen chart pages
 
 Unlike the SPA, where dashboards live under a single `Dashboards` tab, the
-kiosk app promotes each imported dashboard to a full-screen page in a horizontal
-pager. Page order is derived entirely from imported dashboard order.
+kiosk app promotes imported chart content to full-screen chart pages in a
+horizontal pager. Page order is derived from imported dashboard order and chart
+order within each dashboard.
 
-The kiosk does not keep a persistent tab strip on screen. Instead, it may show
-a lightweight transient overlay containing:
+The kiosk does not keep persistent chart-area chrome on screen. In steady-state
+presentation, the active chart fills the available viewport without a
+persistent product header, status row, variables pane, chart-details pane, or
+tab strip.
 
-1. the active dashboard name, and
-2. the current dashboard position within the imported sequence.
+When needed, the kiosk may show a lightweight transient overlay containing:
+
+1. the active dashboard and chart identity, and
+2. the current chart position within the imported sequence.
 
 ### 4.3  Fixed time-range rendering
 
 The shared dashboard runtime still interprets the same `timeRange` structure as
 the SPA, but the kiosk shell does not expose controls that mutate it. Refresh
-operations reuse the imported `timeRange` for the active dashboard.
+operations reuse the imported `timeRange` for the active chart's source
+dashboard.
 
 ### 4.4  Gesture handling
 
 The kiosk frontend adds two mobile gestures:
 
-1. **Horizontal swipe** — moves between adjacent dashboard pages.
+1. **Horizontal swipe** — moves between adjacent chart pages.
 2. **Intentional pull-to-refresh** — triggers immediate refresh for the active
-   dashboard scope.
+   chart page's dashboard data scope.
 
 The gesture layer is orthogonal to the shared dashboard runtime and must not
 change imported dashboard semantics.
 
-### 4.5  Guarded operator controls
+### 4.5  Orientation adaptation
 
-The kiosk frontend keeps operator controls off the steady-state dashboard
+The kiosk frontend treats both portrait and landscape as first-class
+presentations. Rotation does not change what dashboard or chart is active; it
+only changes how the active chart occupies the viewport.
+
+The chart-first shell therefore:
+
+1. reflows the active chart to consume the available viewport in either
+   orientation,
+2. avoids introducing persistent non-chart chrome as a fallback for portrait
+   layouts, and
+3. updates the active page in place when device orientation changes rather than
+   restarting the view flow.
+
+### 4.6  Guarded operator controls
+
+The kiosk frontend keeps operator controls off the steady-state chart
 surface. Reset and re-import remain available through a guarded entrypoint such
 as a hidden gesture, long-press corner affordance, or similarly deliberate
 interaction.
@@ -277,7 +298,7 @@ The guarded operator entrypoint must:
 3. lead to the minimal operator actions needed for reset, re-import, and setup
    recovery.
 
-### 4.6  Optional future Lock Task support
+### 4.7  Optional future Lock Task support
 
 The initial kiosk design does not require Android Lock Task Mode or full
 managed-device deployment. However, the frontend and backend split should avoid
@@ -289,23 +310,24 @@ unnecessary assumptions that would block a future managed-device deployment mode
 
 ### 5.1  Read path
 
-For a given dashboard render:
+For a given active chart render:
 
 1. load normalized imported dashboard configuration,
-2. determine the dashboard's variable bindings and fixed time range,
+2. identify the active chart plus its source dashboard's variable bindings and
+   fixed time range,
 3. query the persistent telemetry cache for local coverage,
 4. render from cache immediately when suitable data exists,
 5. issue background Azure reads for uncovered or stale intervals,
 6. merge refreshed rows into the persistent cache, and
-7. re-render the active dashboard from the merged cache result.
+7. re-render the active chart page from the merged cache result.
 
 ### 5.2  Persistent telemetry cache
 
 The kiosk cache is environment-scoped and survives restart. It is optimized for:
 
 1. warm startup,
-2. reuse across multiple dashboards in one environment, and
-3. low-latency dashboard switching.
+2. reuse across multiple dashboards and chart pages in one environment, and
+3. low-latency chart switching.
 
 The cache stores Azure-fetched telemetry rows plus enough metadata to reason
 about freshness and partial coverage for each environment scope.
@@ -316,11 +338,11 @@ On restart, the kiosk app:
 
 1. loads the active environment,
 2. re-establishes application sign-in,
-3. renders the dashboard from persisted cache if available, and
+3. renders the active chart page from persisted cache if available, and
 4. refreshes in the background.
 
-This allows dashboards to appear quickly even when a network refresh is still in
-flight.
+This allows the kiosk's primary chart presentation to appear quickly even when a
+network refresh is still in flight.
 
 ### 5.4  Refresh triggers
 
@@ -328,10 +350,10 @@ Refresh is triggered by:
 
 1. initial entry into dashboard mode,
 2. background refresh cadence,
-3. active-dashboard switching when needed, and
+3. active-chart switching when needed, and
 4. explicit pull-to-refresh.
 
-The frontend keeps the current dashboard visible while refresh is in progress.
+The frontend keeps the current chart visible while refresh is in progress.
 
 ### 5.5  Offline presentation
 
@@ -341,13 +363,15 @@ data exists.
 
 In that case the frontend:
 
-1. continues rendering the most recent cached dashboard state,
-2. marks the display as cached/offline rather than silently implying fresh data,
+1. continues rendering the most recent cached chart state,
+2. marks the display through a transient overlay or explicit state rather than
+   silently implying fresh data,
    and
 3. continues retrying through the normal background or manual refresh paths.
 
 If no usable cache exists, the kiosk shows an actionable connectivity or
-authentication error rather than an empty success-shaped dashboard.
+authentication error or explicit no-data state rather than an empty
+success-shaped chart shell.
 
 After app restart under offline conditions, the same cached-first behavior
 applies before any successful live refresh is available.
@@ -359,11 +383,11 @@ an LRU-like policy, time-window trimming, or a hybrid policy, but it must
 preserve the kiosk goals of:
 
 1. warm startup after restart,
-2. fast switching among recently viewed dashboards, and
+2. fast switching among recently viewed chart pages, and
 3. bounded local storage growth during long-lived kiosk operation.
 
 Eviction therefore targets older or less recently used historical telemetry
-before more recent data that is likely to support the active dashboard set.
+before more recent data that is likely to support the active chart set.
 
 ### 5.7  Background refresh cadence
 
@@ -372,7 +396,7 @@ operator-configured in the kiosk UI. The scheduler may be fixed-interval or
 adaptive, but it must:
 
 1. operate without user interaction,
-2. preserve the active dashboard display while refresh work runs, and
+2. preserve the active chart display while refresh work runs, and
 3. avoid changing imported dashboard time-range semantics.
 
 ---
@@ -415,10 +439,10 @@ used to attach the credential is an implementation detail, but the contract is:
 | KA-0101 | §2.2 |
 | KA-0200, KA-0201 | §§3.1, 4.1 |
 | KA-0202, KA-0203, KA-0204, KA-0205, KA-0206, KA-0207, KA-0208, KA-0209 | §§3, 6 |
-| KA-0300, KA-0301, KA-0302, KA-0303 | §4 |
-| KA-0400, KA-0401, KA-0402, KA-0403, KA-0404, KA-0405, KA-0407 | §5, §6 |
-| KA-0406 | §4.5 |
-| KA-0103 | §4.6 |
+| KA-0300, KA-0301, KA-0302, KA-0303, KA-0304, KA-0305 | §4 |
+| KA-0400, KA-0401, KA-0402, KA-0403, KA-0404, KA-0405, KA-0407, KA-0408 | §5, §6 |
+| KA-0406 | §4.6 |
+| KA-0103 | §4.7 |
 
 ---
 
@@ -426,6 +450,7 @@ used to attach the credential is an implementation detail, but the contract is:
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-24 | evolve skill | Revised the kiosk frontend design around full-screen chart pages, deterministic chart sequencing, transient overlays, orientation-aware layout, and explicit empty-chart states. |
 | 2026-06-23 | maintain skill | Replaced the explicit `UserSignOut` state with local operator-session teardown to match the kiosk device-code architecture. |
 | 2026-06-20 | evolve skill | Added setup-login public-client metadata for kiosk device-code sign-in and clarified that bootstrap owns both the shared runtime app and the setup-login app. |
 | 2026-06-19 | evolve skill | Clarified kiosk certificate lifecycle, permission-failure reporting, certificate identity persistence, offline restart behavior, implementation-defined refresh cadence, and optional future Lock Task support. |

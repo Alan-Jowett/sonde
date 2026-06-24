@@ -964,11 +964,11 @@ fn validate_rotation_code(rotation_code: &str) -> Result<String, String> {
     if trimmed.is_empty() {
         return Err("rotation code must not be empty".into());
     }
+    if !trimmed.is_ascii() || !trimmed.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return Err("rotation code must contain only A-Z and 0-9".into());
+    }
     if trimmed.len() != 6 {
         return Err("rotation code must be exactly 6 characters".into());
-    }
-    if !trimmed.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
-        return Err("rotation code must contain only A-Z and 0-9".into());
     }
     let normalized = trimmed.to_ascii_uppercase();
     Ok(normalized)
@@ -1416,8 +1416,8 @@ mod tests {
 
     #[test]
     fn rotation_code_non_ascii_rejected() {
-        let result = validate_rotation_code("ß12");
-        assert!(result.is_err());
+        let err = validate_rotation_code("ß12").unwrap_err();
+        assert_eq!(err, "rotation code must contain only A-Z and 0-9");
     }
 
     // ── CBOR encoding ───────────────────────────────────────────────────

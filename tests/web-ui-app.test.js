@@ -454,6 +454,311 @@ test('queryActualStateRange follows continuation tokens until a partition is exh
   }
 });
 
+test('queryTable honors caller-supplied maxPages during complete pagination', async () => {
+  const originalFetch = global.fetch;
+  app.CONFIG.storageAccount = 'exampleacct';
+  app.APP.account = { username: 'test@example.com' };
+  app.APP.msalApp = {
+    async acquireTokenSilent() {
+      return { accessToken: 'token-123' };
+    },
+    setActiveAccount() {},
+  };
+
+  const urls = [];
+  global.fetch = async (url) => {
+    urls.push(url);
+    const parsed = new URL(url);
+    const nextPartitionKey = parsed.searchParams.get('NextPartitionKey');
+    const page = nextPartitionKey ? Number(nextPartitionKey.split('-')[1]) : 1;
+    const nextPage = page + 1;
+    return {
+      ok: true,
+      async json() {
+        return { value: [{ PartitionKey: `n:page-${page}`, RowKey: `row-${page}`, node_id: `NODE_${page}` }] };
+      },
+      async text() {
+        return '';
+      },
+      headers: {
+        get(name) {
+          if (name === 'x-ms-continuation-NextPartitionKey') return `page-${nextPage}`;
+          if (name === 'x-ms-continuation-NextRowKey') return `row-${nextPage}`;
+          return null;
+        },
+      },
+    };
+  };
+
+  try {
+    const rows = await app.queryTable('actualstate', '', { requireComplete: true, maxPages: 3 });
+
+    assert.equal(rows.length, 3);
+    assert.equal(urls.length, 3);
+    assert.equal(new URL(urls[2]).searchParams.get('NextPartitionKey'), 'page-3');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('getCachedActualStateRows follows continuation tokens beyond ten pages during cold-session hydration', async () => {
+  const originalFetch = global.fetch;
+  app.CONFIG.storageAccount = 'exampleacct';
+  app.APP.account = { username: 'test@example.com' };
+  app.APP.msalApp = {
+    async acquireTokenSilent() {
+      return { accessToken: 'token-123' };
+    },
+    setActiveAccount() {},
+  };
+
+  const urls = [];
+  global.fetch = async (url) => {
+    urls.push(url);
+    const parsed = new URL(url);
+    const nextPartitionKey = parsed.searchParams.get('NextPartitionKey');
+    const page = nextPartitionKey ? Number(nextPartitionKey.split('-')[1]) : 1;
+    const nextPage = page + 1;
+    return {
+      ok: true,
+      async json() {
+        return {
+          value: [{
+            PartitionKey: `n:page-${page.toString().padStart(2, '0')}`,
+            RowKey: `row-${page.toString().padStart(2, '0')}`,
+            node_id: `NODE_${page.toString().padStart(3, '0')}`,
+            timestamp_ms: String(page * 1000),
+          }],
+        };
+      },
+      async text() {
+        return '';
+      },
+      headers: {
+        get(name) {
+          if (page >= 11) {
+            return null;
+          }
+          if (name === 'x-ms-continuation-NextPartitionKey') return `page-${nextPage}`;
+          if (name === 'x-ms-continuation-NextRowKey') return `row-${nextPage}`;
+          return null;
+        },
+      },
+    };
+  };
+
+  try {
+    const rows = await app.getCachedActualStateRows({ nowFn: () => 20_000 });
+
+    assert.equal(urls.length, 11);
+    assert.equal(rows.length, 11);
+    assert.equal(new URL(urls[10]).searchParams.get('NextPartitionKey'), 'page-11');
+    assert.equal(new URL(urls[10]).searchParams.get('NextRowKey'), 'row-11');
+    assert.equal(
+      rows.some((row) => row.node_id === 'NODE_011' && row.PartitionKey === 'n:page-11'),
+      true,
+    );
+    assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.loaded, true);
+    assert.equal(app.SESSION_TELEMETRY_CACHE.actualState.latestByPartition.size, 11);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('fetchActualStateNodes includes nodes that appear only on later continuation pages', async () => {
+  const originalFetch = global.fetch;
+  app.CONFIG.storageAccount = 'exampleacct';
+  app.APP.account = { username: 'test@example.com' };
+  app.APP.msalApp = {
+    async acquireTokenSilent() {
+      return { accessToken: 'token-123' };
+    },
+    setActiveAccount() {},
+  };
+
+  global.fetch = async (url) => {
+    const parsed = new URL(url);
+    const nextPartitionKey = parsed.searchParams.get('NextPartitionKey');
+    if (!nextPartitionKey) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            value: [{
+              PartitionKey: 'n:first',
+              RowKey: 'ffff',
+              node_id: 'FIRST_NODE',
+              timestamp_ms: '1000',
+            }],
+          };
+        },
+        async text() {
+          return '';
+        },
+        headers: {
+          get(name) {
+            if (name === 'x-ms-continuation-NextPartitionKey') return 'page-2';
+            if (name === 'x-ms-continuation-NextRowKey') return 'row-2';
+            return null;
+          },
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          value: [{
+            PartitionKey: 'n:later',
+            RowKey: 'fffe',
+            node_id: 'LATER_NODE',
+            timestamp_ms: '2000',
+          }],
+        };
+      },
+      async text() {
+        return '';
+      },
+      headers: { get() { return null; } },
+    };
+  };
+
+  try {
+    const nodes = await app.fetchActualStateNodes({ nowFn: () => 5_000 });
+    assert.deepEqual(nodes, [
+      { partitionKey: 'n:first', nodeId: 'FIRST_NODE' },
+      { partitionKey: 'n:later', nodeId: 'LATER_NODE' },
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('actualstate delta refresh retains bounded pagination after complete cold-session hydration', async () => {
+  const originalFetch = global.fetch;
+  app.CONFIG.storageAccount = 'exampleacct';
+  app.APP.account = { username: 'test@example.com' };
+  app.APP.msalApp = {
+    async acquireTokenSilent() {
+      return { accessToken: 'token-123' };
+    },
+    setActiveAccount() {},
+  };
+
+  const urls = [];
+  let phase = 'initial';
+  global.fetch = async (url) => {
+    urls.push(url);
+    const parsed = new URL(url);
+    const nextPartitionKey = parsed.searchParams.get('NextPartitionKey');
+
+    if (phase === 'initial') {
+      phase = 'delta';
+      return {
+        ok: true,
+        async json() {
+          return {
+            value: [{
+              PartitionKey: 'n:initial',
+              RowKey: 'ffff',
+              node_id: 'INITIAL_NODE',
+              timestamp_ms: '1000',
+            }],
+          };
+        },
+        async text() {
+          return '';
+        },
+        headers: { get() { return null; } },
+      };
+    }
+
+    const page = nextPartitionKey ? Number(nextPartitionKey.split('-')[1]) : 1;
+    const nextPage = page + 1;
+    return {
+      ok: true,
+      async json() {
+        return {
+          value: [{
+            PartitionKey: `n:delta-${page.toString().padStart(2, '0')}`,
+            RowKey: `row-${page.toString().padStart(2, '0')}`,
+            node_id: `DELTA_NODE_${page.toString().padStart(2, '0')}`,
+            timestamp_ms: String(1000 + page),
+          }],
+        };
+      },
+      async text() {
+        return '';
+      },
+      headers: {
+        get(name) {
+          if (name === 'x-ms-continuation-NextPartitionKey') return `page-${nextPage}`;
+          if (name === 'x-ms-continuation-NextRowKey') return `row-${nextPage}`;
+          return null;
+        },
+      },
+    };
+  };
+
+  try {
+    await app.getCachedActualStateRows({ nowFn: () => 1_500 });
+    const rows = await app.getCachedActualStateRows({ nowFn: () => 2_000 });
+
+    assert.equal(urls.length, 11);
+    assert.equal(new URL(urls[10]).searchParams.get('NextPartitionKey'), 'page-10');
+    assert.equal(rows.some((row) => row.node_id === 'DELTA_NODE_10'), true);
+    assert.equal(rows.some((row) => row.node_id === 'DELTA_NODE_11'), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('getCachedActualStateRows rejects repeated continuation tokens during cold-session hydration', async () => {
+  const originalFetch = global.fetch;
+  app.CONFIG.storageAccount = 'exampleacct';
+  app.APP.account = { username: 'test@example.com' };
+  app.APP.msalApp = {
+    async acquireTokenSilent() {
+      return { accessToken: 'token-123' };
+    },
+    setActiveAccount() {},
+  };
+
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        value: [{
+          PartitionKey: 'n:abc123',
+          RowKey: 'ffff',
+          node_id: 'NODE_001',
+          timestamp_ms: '1000',
+        }],
+      };
+    },
+    async text() {
+      return '';
+    },
+    headers: {
+      get(name) {
+        if (name === 'x-ms-continuation-NextPartitionKey') return 'page-2';
+        if (name === 'x-ms-continuation-NextRowKey') return 'row-2';
+        return null;
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => app.getCachedActualStateRows({ nowFn: () => 5_000 }),
+      /repeated continuation token/i,
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('querySensorDataRange rejects repeated continuation tokens for complete exports', async () => {
   const originalFetch = global.fetch;
   app.CONFIG.storageAccount = 'exampleacct';

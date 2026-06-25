@@ -46,6 +46,9 @@ deploy/web-ui/
 ## 4. Node Dashboard (WEB-0100)
 
 - Queries `actualstate` Azure Table via REST API.
+- When the dashboard performs a broad initial node-discovery read, it follows
+  Azure Table continuation tokens until the requested discovery scope is
+  exhausted before deduplicating node partitions.
 - Groups entities by `PartitionKey` (one per node), displays most recent row (smallest `RowKey` due to reverse-timestamp ordering).
 - Cross-references `desiredstate` table to compute divergence indicators:
   - **Program divergence**: When a desired-state row exists for the node, divergence is flagged if the desired program hash differs from the actual current program hash. Missing, null, or empty `desired_assigned_program_hash` is treated as "no program desired" — so a node that still reports a current program hash is diverged until it confirms clearing. When no desired-state row exists at all, program divergence is not flagged (node is unmanaged).
@@ -96,6 +99,9 @@ new Azure table.
 
 - Form: Node ID (dropdown), Schedule Interval (number, seconds), Program Hash (dropdown from `programs` table).
 - **Node ID dropdown (WEB-0206):** The Node ID field is a `<select>` populated from nodes that have reported actual state (i.e., rows in the `actualstate` table, deduplicated via `latestByPartition`). A placeholder `<option>` prompts the operator to select a node. Free-text entry is not supported — only nodes known to the gateway appear; arbitrary node IDs cannot be entered or submitted.
+- The backing `actualstate` discovery read for the dropdown follows Azure Table
+  continuation tokens until the active discovery scope is exhausted before the
+  options are derived, so later pages cannot silently hide live nodes.
 - **Auto-populate on selection (WEB-0206, WEB-0207):** When the operator selects a node, the Schedule Interval and Program Hash fields are pre-populated. The latest row per node is used (same `latestByPartition` dedup as the dashboard). Priority order:
   1. **Existing desired state** for the selected node (latest row from `desiredstate` table) — `desired_schedule_interval_s` and `desired_assigned_program_hash`.
   2. **Last reported actual state** — `observed_schedule_interval_s` and `observed_assigned_program_hash`.
@@ -539,6 +545,9 @@ semantics, does not become a new source of truth, and is not persisted to
   refresh window).
 - Initial session hydration may query `actualstate` broadly enough to discover
   the current node set.
+- While that broad hydration is in progress, follow Azure Table continuation
+  tokens until the requested discovery scope is complete before marking the
+  cache loaded or deriving the global latest-by-partition view.
 - If another consumer requests the same `actualstate` scope while that fetch is
   still running, return the existing in-flight promise instead of starting a
   second Azure Table request.

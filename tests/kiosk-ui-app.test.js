@@ -852,6 +852,53 @@ test('triggerDashboardRefresh caches live telemetry from the injected fetcher', 
   assert.match(kiosk.APP_STATE.telemetryNotice, /Live data refreshed/);
 });
 
+test('triggerDashboardRefresh accepts empty telemetry series for a valid no-data refresh', async () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  kiosk.APP_STATE.runtime = {
+    ...runtime,
+    renderMetricCharts: async () => {},
+  };
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache.clear();
+
+  await kiosk.triggerDashboardRefresh('manual', {
+    nowFn: () => 9_000,
+    fetchDashboardVariableDataFn: async () => ({
+      complete: true,
+      refreshedAtMs: 9_000,
+      series: [{
+        nodeId: 'NODE_001',
+        readingType: 'temp_mc',
+        points: [],
+      }],
+    }),
+  });
+
+  const cacheEntry = kiosk.APP_STATE.telemetryCache.get(buildCacheKey(environment, 'NODE_001', 'temp_mc'));
+  assert.deepEqual(cacheEntry.points, []);
+  assert.equal(cacheEntry.coverageStartMs, 1_000);
+  assert.equal(cacheEntry.coverageEndMs, 9_000);
+  assert.doesNotMatch(kiosk.APP_STATE.telemetryNotice, /no usable series/i);
+});
+
 test('triggerDashboardRefresh marks partial telemetry refreshes without claiming full coverage', async () => {
   const environment = runtime.normalizeEnvironmentRecord({
     name: 'prod',

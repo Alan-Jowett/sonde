@@ -757,7 +757,8 @@ function cacheTelemetryRefreshResponse(environment, request, response) {
     }
     const key = buildTelemetrySourceCacheKey(environment, variable);
     const existing = APP_STATE.telemetryCache.get(key);
-    const incomingPoints = responseSeriesByKey.get(key) ?? [];
+    const responseIncludedSeries = responseSeriesByKey.has(key);
+    const incomingPoints = responseIncludedSeries ? responseSeriesByKey.get(key) : [];
     const preserveExistingPoints = request.incremental !== true
       && incomingPoints.length === 0
       && existing
@@ -783,7 +784,7 @@ function cacheTelemetryRefreshResponse(environment, request, response) {
       lastAccessedAtMs: Date.now(),
     });
     refreshedCacheKeys.add(key);
-    if (mergedPoints.length > 0) {
+    if (responseIncludedSeries || mergedPoints.length > 0) {
       cachedSeriesCount += 1;
     }
   }

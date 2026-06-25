@@ -454,6 +454,53 @@ test('queryActualStateRange follows continuation tokens until a partition is exh
   }
 });
 
+test('queryTable honors caller-supplied maxPages during complete pagination', async () => {
+  const originalFetch = global.fetch;
+  app.CONFIG.storageAccount = 'exampleacct';
+  app.APP.account = { username: 'test@example.com' };
+  app.APP.msalApp = {
+    async acquireTokenSilent() {
+      return { accessToken: 'token-123' };
+    },
+    setActiveAccount() {},
+  };
+
+  const urls = [];
+  global.fetch = async (url) => {
+    urls.push(url);
+    const parsed = new URL(url);
+    const nextPartitionKey = parsed.searchParams.get('NextPartitionKey');
+    const page = nextPartitionKey ? Number(nextPartitionKey.split('-')[1]) : 1;
+    const nextPage = page + 1;
+    return {
+      ok: true,
+      async json() {
+        return { value: [{ PartitionKey: `n:page-${page}`, RowKey: `row-${page}`, node_id: `NODE_${page}` }] };
+      },
+      async text() {
+        return '';
+      },
+      headers: {
+        get(name) {
+          if (name === 'x-ms-continuation-NextPartitionKey') return `page-${nextPage}`;
+          if (name === 'x-ms-continuation-NextRowKey') return `row-${nextPage}`;
+          return null;
+        },
+      },
+    };
+  };
+
+  try {
+    const rows = await app.queryTable('actualstate', '', { requireComplete: true, maxPages: 3 });
+
+    assert.equal(rows.length, 3);
+    assert.equal(urls.length, 3);
+    assert.equal(new URL(urls[2]).searchParams.get('NextPartitionKey'), 'page-3');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('getCachedActualStateRows follows continuation tokens beyond ten pages during cold-session hydration', async () => {
   const originalFetch = global.fetch;
   app.CONFIG.storageAccount = 'exampleacct';

@@ -1433,14 +1433,17 @@ async function fetchJson(url, options) {
   return payload;
 }
 
-async function queryTable(tableName, filter, { top, requireComplete = false, maxPages = 10 } = {}) {
+async function queryTable(tableName, filter, { top, requireComplete = false, maxPages } = {}) {
   const token = await getToken();
   let allEntities = [];
   let nextPartitionKey = null;
   let nextRowKey = null;
   const seenContinuationTokens = requireComplete ? new Set() : null;
+  const pageLimit = requireComplete
+    ? (maxPages ?? Number.POSITIVE_INFINITY)
+    : (maxPages ?? 10);
 
-  for (let page = 0; requireComplete || page < maxPages; page++) {
+  for (let page = 0; page < pageLimit; page++) {
     const url = new URL(tableQueryUrl(tableName));
     if (filter) url.searchParams.set('$filter', filter);
     if (top != null) url.searchParams.set('$top', String(top));
@@ -4526,6 +4529,7 @@ if (typeof module !== 'undefined' && module.exports) {
     actualStateFilter,
     queryActualStateRange,
     querySensorDataRange,
+    queryTable,
     getCachedActualStateRows,
     getCachedSensorDataRows,
     buildEnvironmentExportData,

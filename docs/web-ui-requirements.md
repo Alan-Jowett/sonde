@@ -815,6 +815,8 @@ The SPA MUST render a time-series graph where each unique
 4. Data is downsampled client-side to a maximum of 500 points per series.
 5. Hover tooltip shows timestamp, series label, and value.
 6. String-encoded int64 values above `Number.MAX_SAFE_INTEGER` are displayed as strings; in-range values render as numbers.
+7. When the chart shows a legend, the legend is positioned below the plotted
+   graph area.
 
 ---
 
@@ -1709,6 +1711,8 @@ evaluated with variable values from that timestamp.
 9. When the selected dashboard time range exceeds 24 hours, each chart's X-axis
    tick labels display both calendar date and time. For dashboard time ranges
    of 24 hours or less, X-axis tick labels may remain time-only.
+10. When a dashboard chart shows a legend, the legend is positioned below the
+    plotted graph area.
 
 ---
 
@@ -1894,7 +1898,7 @@ authentication (authorization code flow + PKCE).
 ### DEP-002  Chart.js
 
 Chart.js 4.4.9 loaded from `cdn.jsdelivr.net` with SRI hash. Provides
-time-series charting for the Sensor Data tab.
+time-series charting for the Sensor Data tab and dashboard charts.
 
 ### DEP-003  Azure Storage Tables REST API
 
@@ -1964,6 +1968,7 @@ storage.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-25 | evolve skill | Required bottom-positioned legends for Sensor Data and dashboard charts and aligned the Chart.js dependency description with both chart surfaces. |
 | 2026-06-18 | evolve skill | Tightened WEB-0706 session telemetry cache requirements to include in-flight request coalescing and aligned Dashboard, Sensor Data, and Dashboards acceptance criteria with shared cold-session fetches. |
 | 2026-06-18 | evolve skill | Added WEB-0706 session telemetry cache requirements and aligned Dashboard, Sensor Data, and Dashboards requirements with cache-backed rendering semantics. |
 | 2026-06-17 | evolve skill | Added collapsible Variables and per-chart Metrics pane requirements, including persisted pane state and accessibility expectations. |

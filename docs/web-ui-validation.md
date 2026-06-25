@@ -249,6 +249,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-0701b | WEB-0700 | Loading indicator displayed while fetching sensor data | Manual/E2E | Planned |
 | T-WEB-0702 | WEB-0701 | Time-series graph renders lines per (node, program, reading) | Manual/E2E | Planned |
 | T-WEB-0702b | WEB-0701 | X-axis is time (from `timestamp_ms`); Y-axis is reading value | Manual/E2E | Planned |
+| T-WEB-0702c | WEB-0701 | Sensor Data chart legend renders below the plotted graph area when shown | Manual | Planned |
 | T-WEB-0703 | WEB-0701 | Time range selector filters data correctly | Manual/E2E | Planned |
 | T-WEB-0703b | WEB-0701 | Default time range is 24h | Manual/E2E | Planned |
 | T-WEB-0704 | WEB-0702 | Table view shows all sensor data columns | Manual/E2E | Planned |
@@ -479,6 +480,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-1120c | WEB-1104 | Multiple metrics assigned to the same chart render on one shared graph | Integration: Add two metrics to one chart, verify one canvas with two datasets | Not Started |
 | T-WEB-1120d | WEB-1104 | Multiple charts in one dashboard render as separate graphs sharing one dashboard time range | Integration: Add two charts, verify two canvases and shared range controls | Not Started |
 | T-WEB-1120e | WEB-1104 | Dashboard chart X-axis labels show date + time for time ranges longer than 24 hours and time-only labels for 24 hours or less | Integration: Mock 24h, 7d, and custom >24h ranges; inspect tick label formatter output | Not Started |
+| T-WEB-1120f | WEB-1104 | Dashboard chart legends render below the plotted graph area when shown | Integration: Mock a chart with multiple metrics, inspect chart options for bottom-positioned legend | Not Started |
 | T-WEB-1121 | WEB-1105 | Malformed expression prevents charting and shows error | Manual: Enter `(x + / 10`, verify chart not rendered, error shown | Not Started |
 | T-WEB-1122 | WEB-1105 | Missing variable data skips timestamp (gap in chart) | Integration: Mock partial data, verify gaps | Not Started |
 | T-WEB-1123 | WEB-1105 | Runtime error (e.g., log(-5)) skips point, logs to console | Integration: Mock negative value, verify point skipped | Not Started |
@@ -516,6 +518,7 @@ and verifies one or more acceptance criteria.
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-25 | evolve skill | Added validation coverage for bottom-positioned legends on Sensor Data and dashboard charts. |
 | 2026-06-18 | evolve skill | Added WEB-0706 validation coverage for in-flight request coalescing across actualstate hydration, sensordata cold fetches, and overlapping dashboard metric consumers. |
 | 2026-06-18 | evolve skill | Added WEB-0706 session telemetry cache traceability and validation cases for reuse, delta refresh, uncovered historical backfill, environment isolation, and dashboard metric fetch deduplication. |
 | 2026-06-17 | evolve skill | Added validation coverage for collapsible Variables and per-chart Metrics panes, including persistence, default state, and accessibility checks. |

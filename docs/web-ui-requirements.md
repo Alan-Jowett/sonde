@@ -106,6 +106,10 @@ Table. Each node is represented by the most recent row per `PartitionKey`
 2. Nodes are deduplicated to one row per `PartitionKey` (latest only).
 3. Nodes are sorted alphabetically by `node_id`.
 4. An empty table displays "No node state found."
+5. When the active discovery scope spans multiple Azure Table continuation
+   pages, the initial `actualstate` load follows continuation tokens until that
+   discovery scope is exhausted before determining which node partitions are
+   present.
 
 ---
 
@@ -313,7 +317,9 @@ nodes that have reported actual state. Arbitrary node IDs MUST NOT be accepted.
 **Acceptance criteria:**
 
 1. The Node ID field is a `<select>` element (not a text input).
-2. Options are populated from the `actualstate` table, deduplicated to one per `PartitionKey`.
+2. Options are populated from the `actualstate` table, deduplicated to one per
+   `PartitionKey`, after the active discovery scope has consumed all Azure
+   Table continuation pages needed to enumerate the currently reporting nodes.
 3. A placeholder option ("Select a node…") is shown by default and is not submittable.
 4. Free-text entry is not supported.
 
@@ -951,16 +957,20 @@ for correctness.
    or the same `sensordata` partition/range/options while the first request is
    still in flight, the SPA issues exactly one Azure Table request for that
    scope and shares the in-flight result across those consumers.
-4. When the requested time range is already covered by the cache, refreshes
+4. During cold-session `actualstate` hydration for broad node discovery, the
+   SPA follows Azure Table continuation tokens until the requested discovery
+   scope is complete before marking that scope loaded and deriving the cache's
+   latest-by-partition view.
+5. When the requested time range is already covered by the cache, refreshes
    fetch only rows newer than the cached watermark when possible, merge them
    into the in-memory cache, and deduplicate rows by stable table row identity.
-5. When the operator widens the requested time range beyond cached historical
+6. When the operator widens the requested time range beyond cached historical
    coverage, the SPA fetches only the uncovered older interval(s) needed to
    satisfy the new range before rendering.
-6. New nodes that publish `actualstate` rows newer than the cached watermark are
+7. New nodes that publish `actualstate` rows newer than the cached watermark are
    discovered by the next global `actualstate` delta refresh and become
    available to downstream normal-rendering consumers in the same session.
-7. Switching environments or otherwise resetting the active runtime environment
+8. Switching environments or otherwise resetting the active runtime environment
    clears or isolates the telemetry cache so rows from one environment do not
    leak into another.
 

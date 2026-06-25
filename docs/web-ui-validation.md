@@ -143,6 +143,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-0101 | WEB-0101 | SPA renders node table from `actualstate` query | Manual/E2E | Planned |
 | T-WEB-0101b | WEB-0101 | Nodes sorted alphabetically by `node_id` | Manual/E2E | Planned |
 | T-WEB-0101c | WEB-0101 | Empty `actualstate` table displays "No node state found." | Manual/E2E | Planned |
+| T-WEB-0101d | WEB-0101 | Initial broad `actualstate` discovery follows Azure Table continuation tokens so a live node that appears only on a later page is still shown in the dashboard | Unit (JS) | Pass |
 | T-WEB-0102 | WEB-0102 | All ten required columns displayed | Manual/E2E | Planned |
 | T-WEB-0102b | WEB-0102 | Program hashes truncated to 8-char hex with full-hash tooltip | Manual/E2E | Planned |
 | T-WEB-0102c | WEB-0102 | "Last Seen" shows relative time (e.g., "5m ago") | Manual/E2E | Planned |
@@ -175,6 +176,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-0204b | WEB-0204 | SHA-256 hash input is the UTF-8 encoding of `node_id` | Unit (JS) | Planned |
 | T-WEB-0205 | WEB-0205 | `timestamp_ms` stored as `Edm.Int64` | Integration | Planned |
 | T-WEB-0206 | WEB-0206 | Node ID field is a dropdown-only control populated from latest `actualstate` nodes; arbitrary node IDs cannot be entered or submitted | Manual/E2E | Planned |
+| T-WEB-0206b | WEB-0206 | Node dropdown discovery consumes all Azure Table continuation pages in scope before deriving options, so later-page live nodes remain selectable | Unit (JS) | Pass |
 | T-WEB-0207 | WEB-0207 | Selecting a node pre-populates Schedule and Program Hash (desired state preferred over actual state) | Manual/E2E | Planned |
 | T-WEB-0207b | WEB-0207 | Pre-populated hash not in dropdown defaults to "No program target" | Manual/E2E | Planned |
 
@@ -284,6 +286,7 @@ and verifies one or more acceptance criteria.
 | T-WEB-0734 | WEB-0706 | Dashboard cold-session node-state loads and identical dashboard auto-refresh `actualstate` reads in one environment share a single in-flight Azure Table request during hydration and during identical delta refreshes | Unit (JS) | Pass |
 | T-WEB-0735 | WEB-0706 | Concurrent identical `sensordata` consumers for one partition/range/options share a single in-flight Azure Table request during cold-session fetch | Unit (JS) | Pass |
 | T-WEB-0736 | WEB-0706 | Multiple dashboard metric consumers that request the same cold-session telemetry scope before the first fetch resolves observe one shared in-flight request and receive identical results | Unit (JS) | Pass |
+| T-WEB-0737 | WEB-0706 | Cold-session broad `actualstate` hydration follows Azure Table continuation tokens to completion before marking the cache loaded and computing the latest-by-partition view | Unit (JS) | Pass |
 
 ### 5.8  Environment Manager
 

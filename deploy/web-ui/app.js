@@ -1433,14 +1433,14 @@ async function fetchJson(url, options) {
   return payload;
 }
 
-async function queryTable(tableName, filter, { top } = {}) {
+async function queryTable(tableName, filter, { top, requireComplete = false, maxPages = 10 } = {}) {
   const token = await getToken();
   let allEntities = [];
   let nextPartitionKey = null;
   let nextRowKey = null;
-  const maxPages = 10;
+  const seenContinuationTokens = requireComplete ? new Set() : null;
 
-  for (let page = 0; page < maxPages; page++) {
+  for (let page = 0; requireComplete || page < maxPages; page++) {
     const url = new URL(tableQueryUrl(tableName));
     if (filter) url.searchParams.set('$filter', filter);
     if (top != null) url.searchParams.set('$top', String(top));
@@ -1472,6 +1472,15 @@ async function queryTable(tableName, filter, { top } = {}) {
     nextRowKey = response.headers.get('x-ms-continuation-NextRowKey');
     if (!nextPartitionKey) break;
     if (top != null && allEntities.length >= top) break;
+    if (seenContinuationTokens) {
+      const continuationToken = `${nextPartitionKey}\n${nextRowKey || ''}`;
+      if (seenContinuationTokens.has(continuationToken)) {
+        throw new Error(
+          `Table query failed: Azure Tables returned a repeated continuation token while querying ${tableName}.`
+        );
+      }
+      seenContinuationTokens.add(continuationToken);
+    }
   }
 
   return allEntities;
@@ -1541,7 +1550,7 @@ async function getCachedActualStateRows(deps = {}) {
 
   if (!cache.loaded) {
     await getOrStartSharedTelemetryRequest(cache.inFlightRequests, 'initial-full-scan', async () => {
-      const rows = await queryTableFn(CONFIG.actualStateTable, '');
+      const rows = await queryTableFn(CONFIG.actualStateTable, '', { requireComplete: true });
       if (SESSION_TELEMETRY_CACHE.generation === generationAtStart) {
         mergeActualStateRowsIntoCache(rows, nowMs);
       }

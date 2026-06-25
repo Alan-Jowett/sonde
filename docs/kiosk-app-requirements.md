@@ -363,9 +363,9 @@ viewport and is not persistently surrounded by SPA-style page chrome.
 3. The kiosk UI does not dedicate persistent chart area to a product header,
    status row, dashboard metadata panel, variables table, chart-details pane,
    or persistent tab strip.
-4. The kiosk UI may show lightweight transient overlays for chart identity or
-   refresh state, but those overlays are not persistently visible in the
-   steady-state display.
+4. The kiosk UI may keep a lightweight persistent dashboard-name overlay on
+   screen, but it does not reintroduce SPA-style navigation chrome or editing
+   controls.
 
 ---
 
@@ -441,8 +441,9 @@ imported dashboards so swipe navigation remains predictable.
 2. Within each dashboard, charts are ordered according to their imported order.
 3. The kiosk's full-screen chart sequence traverses imported dashboards in
    dashboard order and charts within each dashboard in chart order.
-4. When a transient overlay is shown, it identifies enough dashboard/chart
-   context for an operator to understand where the active chart came from.
+4. Deterministic chart sequencing does not depend on a transient identity
+   overlay; operators can still follow the active chart using the persistent
+   dashboard title and the imported swipe order.
 
 ---
 
@@ -463,6 +464,26 @@ both portrait and landscape device orientations.
    available viewport without requiring operator zoom gestures.
 3. Orientation changes do not reveal persistent non-chart chrome on the
    steady-state kiosk surface.
+
+---
+
+### KA-0306  Persistent dashboard title
+
+**Priority:** Must  
+**Source:** USER-REQUEST: "Graphs should display the title, not just as a temporary popup when swiping, but all the time"
+
+**Description:**  
+The kiosk app MUST show the active dashboard name persistently during
+steady-state chart presentation.
+
+**Acceptance criteria:**
+
+1. Normal dashboard presentation keeps the active dashboard name visible without
+   requiring a swipe-triggered transient overlay.
+2. When swipe navigation changes to a chart from a different dashboard, the
+   persistent title updates to the newly active dashboard name.
+3. The persistent title does not reintroduce a persistent tab strip or editing
+   controls.
 
 ---
 
@@ -510,11 +531,12 @@ reduce startup latency and improve dashboard-switch responsiveness.
 ### KA-0402  Background refresh
 
 **Priority:** Must  
-**Source:** USER input: "data refresh in the background"
+**Source:** USER input: "data refresh in the background" + USER-REQUEST: "Background refresh should be closer to 900 seconds, not 60" + USER-REQUEST: "Background refresh should not display anything when its running"
 
 **Description:**  
-The kiosk app MUST refresh chart data in the background while preserving an
-interactive kiosk display.
+The kiosk app MUST refresh environment telemetry in the background every 900
+seconds while preserving an interactive dashboard display and without surfacing
+success-path refresh chrome.
 
 **Acceptance criteria:**
 
@@ -523,8 +545,10 @@ interactive kiosk display.
 2. The currently displayed chart remains visible while background refresh is
    in progress.
 3. Refresh completion updates subsequent renders without requiring app restart.
-4. Background refresh runs on an implementation-defined cadence that does not
-   require user interaction.
+4. Background refresh runs on a fixed 900-second cadence that does not require
+   user interaction.
+5. Successful background refresh does not show an in-progress or success status
+   message that displaces the steady-state dashboard presentation.
 
 ---
 
@@ -535,33 +559,39 @@ interactive kiosk display.
 
 **Description:**  
 The kiosk app SHOULD provide an intentional downward swipe gesture that triggers
-an immediate chart refresh.
+an immediate environment refresh for the shared telemetry cache.
 
 **Acceptance criteria:**
 
 1. The app distinguishes intentional pull-to-refresh from ordinary vertical scroll behavior.
-2. Triggering the gesture starts an immediate refresh of the active chart page's dashboard data scope.
+2. Triggering the gesture starts an immediate refresh of the shared telemetry
+   cache scope used by the active dashboard.
 3. The UI indicates when a manual refresh is in progress.
 
 ---
 
 ### KA-0404  Fast chart switching from shared cache
 
-**Priority:** Should  
-**Source:** USER input: "optimize for fast graph switching"
+**Priority:** Must  
+**Source:** USER input: "optimize for fast graph switching" + USER-REQUEST: "There should be a common cache of the sensordata table that all graphs pull from (not one per graph)"
 
 **Description:**  
-The kiosk app SHOULD prefer fast chart switching by reusing locally cached
-telemetry across chart pages in the same environment whenever their data scopes
-overlap.
+The kiosk app MUST use one shared environment-scoped telemetry cache and one
+environment-scoped refresh fetch plan so that dashboards reuse the same sensor
+data table rather than refreshing per dashboard or per series.
 
 **Acceptance criteria:**
 
 1. Switching between previously viewed chart pages does not require discarding
    the entire local cache.
-2. Shared telemetry needed by multiple chart pages is reused when valid local
-   coverage exists.
-3. Cache reuse does not change the imported dashboard semantics.
+2. Shared telemetry needed by multiple dashboards and chart pages is reused from
+   the same local cache when valid local coverage exists.
+3. A cold or catch-up refresh fetches the union of telemetry sources required by
+   the imported dashboards using the largest imported dashboard time range.
+4. After an initial successful fetch, subsequent background refreshes request
+   only telemetry newer than the last successful environment refresh.
+5. The shared refresh path does not perform separate network fetches per series.
+6. Cache reuse does not change the imported dashboard semantics.
 
 ---
 
@@ -654,7 +684,7 @@ surface when the active chart lacks visible plotted data.
 
 | Date | Author | Description |
 |------|--------|-------------|
-| 2026-06-24 | evolve skill | Revised kiosk presentation requirements from dashboard-first pages to chart-first full-screen pages, added deterministic chart sequencing and orientation-aware layout, and required explicit chart data visibility states. |
+| 2026-06-24 | evolve skill | Revised kiosk presentation around chart-first full-screen pages, added deterministic chart sequencing and orientation-aware layout, fixed background refresh at 900 seconds with silent success-path behavior, specified a shared environment-scoped telemetry refresh/cache model, and required a persistent dashboard title. |
 | 2026-06-23 | maintain skill | Clarified that device-code setup tears down local operator-session state after provisioning rather than requiring an explicit kiosk-owned user sign-out step. |
 | 2026-06-19 | evolve skill | Added optional kiosk hardening requirements for offline behavior, guarded minimal operator UI, and bounded telemetry cache eviction. |
 | 2026-06-19 | evolve skill | Added initial Android kiosk dashboard app requirements for static imported dashboards, one-time user setup, per-kiosk certificate credentials, app-authenticated reads, persistent telemetry cache, swipe navigation, and additive-only scope. |

@@ -351,9 +351,8 @@ full device UX.
 3. Swipe through the sequence.
 4. Assert: the kiosk visits charts in imported dashboard order and chart order
    within each dashboard.
-5. Trigger the transient identity overlay.
-6. Assert: the overlay identifies enough dashboard/chart context to explain the
-   active page.
+5. Assert: the persistent dashboard title remains consistent with the imported
+   dashboard sequence as the active chart page changes.
 
 ---
 
@@ -372,6 +371,22 @@ full device UX.
 6. Rotate back to landscape.
 7. Assert: the kiosk returns to the landscape chart layout without losing the
    active page.
+
+---
+
+### T-KA-306  Persistent dashboard title follows the active dashboard
+
+**Validates:** KA-0306
+
+**Procedure:**
+1. Import an environment with at least two dashboards.
+2. Open kiosk chart mode in steady-state presentation.
+3. Assert: the active dashboard name remains visible without relying on a
+   transient swipe overlay.
+4. Swipe to a chart from the next dashboard.
+5. Assert: the persistent title updates to the newly active dashboard name.
+6. Assert: the title surface does not expose a persistent tab strip or editing
+   controls.
 
 ---
 
@@ -414,23 +429,30 @@ full device UX.
 2. Trigger or wait for background refresh.
 3. Assert: the chart remains visible while refresh is in progress.
 4. Assert: refreshed data is incorporated after the fetch completes.
-5. Assert: the refresh uses the dashboard's imported fixed time range rather
-   than an operator-edited or ad hoc range.
-6. Assert: the refresh path runs on an implementation-defined cadence without
+5. Assert: the refresh scheduler runs on a fixed 900-second cadence without
    requiring user interaction.
+6. Assert: successful background refresh does not show transient in-progress or
+   success status chrome.
+7. Assert: the shared refresh request covers the union of imported dashboard
+   telemetry sources using the largest imported dashboard time range.
+8. After one successful refresh, trigger the next background cycle.
+9. Assert: the follow-up background request fetches only telemetry newer than
+   the last successful environment refresh.
 
 ---
 
-### T-KA-403  Pull-to-refresh triggers immediate active-chart refresh
+### T-KA-403  Pull-to-refresh triggers immediate shared-cache refresh
 
 **Validates:** KA-0403
 
 **Procedure:**
 1. Open a chart page.
 2. Perform the intentional downward swipe gesture.
-3. Assert: an immediate refresh starts for the active chart page's dashboard data scope.
+3. Assert: an immediate environment refresh starts for the shared telemetry
+   cache scope.
 4. Assert: the UI indicates refresh progress.
-5. Assert: the refresh uses the dashboard's imported fixed time range.
+5. Assert: the refresh preserves imported dashboard time-range semantics for the
+   currently displayed dashboard.
 
 ---
 
@@ -440,10 +462,13 @@ full device UX.
 
 **Procedure:**
 1. Import an environment with chart pages that share telemetry sources.
-2. Open chart page A and allow its data to populate the local cache.
+2. Open chart page A and allow the shared environment refresh to populate the
+   local cache.
 3. Switch to chart page B.
 4. Assert: shared telemetry is reused from cache when valid local coverage exists.
 5. Assert: switching does not require dropping the entire environment cache.
+6. Assert: the cache is populated by one shared sensor-data fetch plan rather
+   than separate per-series fetches.
 
 ---
 
@@ -516,7 +541,7 @@ full device UX.
 
 | Date | Author | Description |
 |------|--------|-------------|
-| 2026-06-24 | evolve skill | Revised kiosk UX validation for chart-first full-screen navigation, deterministic chart sequencing, portrait/landscape rotation, and explicit visible-data versus empty-state chart behavior. |
+| 2026-06-24 | evolve skill | Revised kiosk UX validation for chart-first full-screen navigation, deterministic chart sequencing, portrait/landscape rotation, explicit visible-data versus empty-state chart behavior, persistent dashboard titles, and the 900-second silent background refresh plus shared environment-scoped telemetry refresh/cache plan. |
 | 2026-06-23 | maintain skill | Updated setup-flow validation to check local operator-session teardown after provisioning instead of an explicit kiosk-owned user sign-out step. |
 | 2026-06-19 | evolve skill | Added optional kiosk validation coverage for offline cached presentation, guarded operator controls, and bounded cache eviction. |
 | 2026-06-19 | evolve skill | Added initial kiosk dashboard app validation coverage for setup flow, shared-app certificate attachment, dashboard-only UI, fixed imported layouts, persistent telemetry cache, background refresh, pull-to-refresh, and swipe navigation. |

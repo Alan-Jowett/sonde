@@ -245,25 +245,27 @@ presentation, the active chart fills the available viewport without a
 persistent product header, status row, variables pane, chart-details pane, or
 tab strip.
 
-When needed, the kiosk may show a lightweight transient overlay containing:
-
-1. the active dashboard and chart identity, and
-2. the current chart position within the imported sequence.
+The one deliberate exception is a lightweight persistent title overlay that
+shows the active dashboard name. Optional transient overlays may still be used
+for chart identity, chart position, or refresh status without becoming the
+primary title surface.
 
 ### 4.3  Fixed time-range rendering
 
 The shared dashboard runtime still interprets the same `timeRange` structure as
 the SPA, but the kiosk shell does not expose controls that mutate it. Refresh
-operations reuse the imported `timeRange` for the active chart's source
-dashboard.
+operations preserve imported dashboard time ranges; when a shared environment
+refresh serves multiple dashboards, the fetch horizon is derived from the
+largest imported dashboard time range and each active chart still renders only
+its source dashboard's imported window.
 
 ### 4.4  Gesture handling
 
 The kiosk frontend adds two mobile gestures:
 
 1. **Horizontal swipe** — moves between adjacent chart pages.
-2. **Intentional pull-to-refresh** — triggers immediate refresh for the active
-   chart page's dashboard data scope.
+2. **Intentional pull-to-refresh** — triggers an immediate environment refresh
+   that repopulates the shared telemetry cache used by the active chart page.
 
 The gesture layer is orthogonal to the shared dashboard runtime and must not
 change imported dashboard semantics.
@@ -315,9 +317,10 @@ For a given active chart render:
 1. load normalized imported dashboard configuration,
 2. identify the active chart plus its source dashboard's variable bindings and
    fixed time range,
-3. query the persistent telemetry cache for local coverage,
+3. query the persistent environment-scoped telemetry cache for local coverage,
 4. render from cache immediately when suitable data exists,
-5. issue background Azure reads for uncovered or stale intervals,
+5. issue shared Azure reads for uncovered or stale environment telemetry
+   intervals,
 6. merge refreshed rows into the persistent cache, and
 7. re-render the active chart page from the merged cache result.
 
@@ -329,8 +332,11 @@ The kiosk cache is environment-scoped and survives restart. It is optimized for:
 2. reuse across multiple dashboards and chart pages in one environment, and
 3. low-latency chart switching.
 
-The cache stores Azure-fetched telemetry rows plus enough metadata to reason
-about freshness and partial coverage for each environment scope.
+The cache stores Azure-fetched telemetry rows in one logical sensor-data table
+per environment, keyed so multiple dashboards can read the same source rows
+without per-dashboard duplication. It also stores enough metadata to reason
+about freshness, incremental append boundaries, and partial coverage for each
+environment scope.
 
 ### 5.3  Cache-backed startup
 
@@ -353,7 +359,19 @@ Refresh is triggered by:
 3. active-chart switching when needed, and
 4. explicit pull-to-refresh.
 
+Each trigger feeds the same environment-scoped refresh planner. That planner:
+
+1. computes the union of telemetry sources referenced by imported dashboards,
+2. uses the largest imported dashboard time range as the cold-start fetch
+   horizon,
+3. reuses the persisted environment cache for render-time filtering, and
+4. after a successful fetch, requests only telemetry newer than the last
+   successful environment refresh.
+
 The frontend keeps the current chart visible while refresh is in progress.
+Successful background refreshes do not replace the steady-state title or status
+surface with transient progress or success chrome; failure states may still
+surface cached/offline or actionable error messaging.
 
 ### 5.5  Offline presentation
 
@@ -391,13 +409,14 @@ before more recent data that is likely to support the active chart set.
 
 ### 5.7  Background refresh cadence
 
-The background refresh scheduler is implementation-defined rather than
-operator-configured in the kiosk UI. The scheduler may be fixed-interval or
-adaptive, but it must:
+The background refresh scheduler is fixed at 900 seconds and is not
+operator-configured in the kiosk UI. It must:
 
 1. operate without user interaction,
-2. preserve the active chart display while refresh work runs, and
-3. avoid changing imported dashboard time-range semantics.
+2. preserve the active chart display while refresh work runs,
+3. avoid changing imported dashboard time-range semantics, and
+4. use the shared environment refresh planner rather than per-dashboard or
+   per-series polling.
 
 ---
 
@@ -439,7 +458,7 @@ used to attach the credential is an implementation detail, but the contract is:
 | KA-0101 | §2.2 |
 | KA-0200, KA-0201 | §§3.1, 4.1 |
 | KA-0202, KA-0203, KA-0204, KA-0205, KA-0206, KA-0207, KA-0208, KA-0209 | §§3, 6 |
-| KA-0300, KA-0301, KA-0302, KA-0303, KA-0304, KA-0305 | §4 |
+| KA-0300, KA-0301, KA-0302, KA-0303, KA-0304, KA-0305, KA-0306 | §4 |
 | KA-0400, KA-0401, KA-0402, KA-0403, KA-0404, KA-0405, KA-0407, KA-0408 | §5, §6 |
 | KA-0406 | §4.6 |
 | KA-0103 | §4.7 |
@@ -450,7 +469,7 @@ used to attach the credential is an implementation detail, but the contract is:
 
 | Date | Author | Description |
 |------|--------|-------------|
-| 2026-06-24 | evolve skill | Revised the kiosk frontend design around full-screen chart pages, deterministic chart sequencing, transient overlays, orientation-aware layout, and explicit empty-chart states. |
+| 2026-06-24 | evolve skill | Revised the kiosk frontend design around full-screen chart pages, deterministic chart sequencing, orientation-aware layout, persistent dashboard-name titling, a 900-second silent-success refresh cadence, an environment-scoped shared telemetry refresh/cache plan, and explicit empty-chart states. |
 | 2026-06-23 | maintain skill | Replaced the explicit `UserSignOut` state with local operator-session teardown to match the kiosk device-code architecture. |
 | 2026-06-20 | evolve skill | Added setup-login public-client metadata for kiosk device-code sign-in and clarified that bootstrap owns both the shared runtime app and the setup-login app. |
 | 2026-06-19 | evolve skill | Clarified kiosk certificate lifecycle, permission-failure reporting, certificate identity persistence, offline restart behavior, implementation-defined refresh cadence, and optional future Lock Task support. |

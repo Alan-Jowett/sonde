@@ -399,7 +399,7 @@ test('convertCachedPointsToRuntimeTimeSeries maps timestampMs points into runtim
   );
 });
 
-test('buildDashboardRefreshRequest preserves the imported dashboard time range', () => {
+test('buildEnvironmentRefreshRequest uses the largest imported dashboard time range', () => {
   const environment = runtime.normalizeEnvironmentRecord({
     name: 'prod',
     clientId: '11111111-1111-1111-1111-111111111111',
@@ -407,21 +407,35 @@ test('buildDashboardRefreshRequest preserves the imported dashboard time range',
     storageAccount: 'prodstorage',
     functionAppName: 'prod-func',
     sensorData: kiosk.createDefaultSensorDataPreferences(),
-    dashboards: [{
-      name: 'Overview',
-      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
-      charts: [],
-      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
-    }],
+    dashboards: [
+      {
+        name: 'Overview',
+        variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+        charts: [],
+        timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+      },
+      {
+        name: 'Detail',
+        variables: [{ name: 'HUMID', nodeId: 'NODE_002', readingType: 'rh_mpermille' }],
+        charts: [],
+        timeRange: { preset: 'custom', start: 500, end: 15_000 },
+      },
+    ],
   }, {
     sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
     validateExpressionFn: runtime.validateExpression,
   });
 
-  const request = kiosk.buildDashboardRefreshRequest(environment, environment.dashboards[0], runtime, 50_000);
-  assert.equal(request.startMs, 1_000);
-  assert.equal(request.endMs, 9_000);
-  assert.deepEqual(request.variables, [{ nodeId: 'NODE_001', readingType: 'temp_mc' }]);
+  const request = kiosk.buildEnvironmentRefreshRequest(environment, runtime, 50_000);
+  assert.equal(request.startMs, 500);
+  assert.equal(request.endMs, 15_000);
+  assert.equal(request.fullStartMs, 500);
+  assert.equal(request.fullEndMs, 15_000);
+  assert.equal(request.incremental, false);
+  assert.deepEqual(request.variables, [
+    { nodeId: 'NODE_001', readingType: 'temp_mc' },
+    { nodeId: 'NODE_002', readingType: 'rh_mpermille' },
+  ]);
 });
 
 test('cacheTelemetryRefreshResponse reuses telemetry across dashboards sharing a source', () => {
@@ -496,7 +510,11 @@ test('cacheTelemetryRefreshResponse ignores malformed series identifiers', () =>
     series: [{ nodeId: 'NODE_001', points: [{ timestampMs: 2_000, value: 1 }] }],
   });
 
-  assert.equal(kiosk.APP_STATE.telemetryCache.size, 0);
+  assert.equal(kiosk.APP_STATE.telemetryCache.size, 1);
+  assert.deepEqual(
+    kiosk.APP_STATE.telemetryCache.get(buildCacheKey(environment, 'NODE_001', 'temp_mc')).points,
+    [],
+  );
 });
 
 test('cacheTelemetryRefreshResponse reports how many usable series were cached', () => {
@@ -620,7 +638,52 @@ test('cacheTelemetryRefreshResponse preserves the active refresh when it exceeds
   assert.equal(kiosk.APP_STATE.telemetryCache.has(buildCacheKey(environment, 'NODE_128', 'temp_mc')), true);
 });
 
-test('buildDashboardRefreshRequest de-duplicates sources without delimiter collisions', () => {
+test('cacheTelemetryRefreshResponse appends incremental telemetry without dropping cached history', () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  });
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 9_000,
+      refreshedAtMs: 9_000,
+      lastAccessedAtMs: 9_000,
+    },
+  ]]);
+
+  kiosk.cacheTelemetryRefreshResponse(environment, {
+    startMs: 9_000,
+    endMs: 10_000,
+    fullStartMs: 1_000,
+    fullEndMs: 10_000,
+    incremental: true,
+    variables: [{ nodeId: 'NODE_001', readingType: 'temp_mc' }],
+  }, {
+    refreshedAtMs: 10_000,
+    series: [{
+      nodeId: 'NODE_001',
+      readingType: 'temp_mc',
+      points: [{ timestampMs: 9_500, value: 20.5 }],
+    }],
+  });
+
+  const cached = kiosk.APP_STATE.telemetryCache.get(buildCacheKey(environment, 'NODE_001', 'temp_mc'));
+  assert.deepEqual(cached.points, [
+    { timestampMs: 8_000, value: 20.25 },
+    { timestampMs: 9_500, value: 20.5 },
+  ]);
+  assert.equal(cached.coverageStartMs, 1_000);
+  assert.equal(cached.coverageEndMs, 10_000);
+});
+
+test('buildEnvironmentRefreshRequest de-duplicates sources without delimiter collisions', () => {
   const environment = runtime.normalizeEnvironmentRecord({
     name: 'prod',
     clientId: '11111111-1111-1111-1111-111111111111',
@@ -628,28 +691,182 @@ test('buildDashboardRefreshRequest de-duplicates sources without delimiter colli
     storageAccount: 'prodstorage',
     functionAppName: 'prod-func',
     sensorData: kiosk.createDefaultSensorDataPreferences(),
-    dashboards: [{
-      name: 'Overview',
-      variables: [
-        { name: 'A', nodeId: 'node\none', readingType: 'temp' },
-        { name: 'B', nodeId: 'node', readingType: 'one\ntemp' },
-      ],
-      charts: [],
-      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
-    }],
+    dashboards: [
+      {
+        name: 'Overview',
+        variables: [
+          { name: 'A', nodeId: 'node\none', readingType: 'temp' },
+          { name: 'B', nodeId: 'node', readingType: 'one\ntemp' },
+        ],
+        charts: [],
+        timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+      },
+      {
+        name: 'Detail',
+        variables: [
+          { name: 'C', nodeId: 'node\none', readingType: 'temp' },
+          { name: 'D', nodeId: 'node', readingType: 'one\ntemp' },
+        ],
+        charts: [],
+        timeRange: { preset: 'custom', start: 2_000, end: 8_000 },
+      },
+    ],
   }, {
     sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
     validateExpressionFn: runtime.validateExpression,
   });
 
-  const request = kiosk.buildDashboardRefreshRequest(environment, environment.dashboards[0], runtime, 50_000);
+  const request = kiosk.buildEnvironmentRefreshRequest(environment, runtime, 50_000);
   assert.deepEqual(request.variables, [
     { nodeId: 'node\none', readingType: 'temp' },
     { nodeId: 'node', readingType: 'one\ntemp' },
   ]);
 });
 
-test('setTelemetryNotice preserves muted status styling for info notices', () => {
+test('buildEnvironmentRefreshRequest uses incremental refresh bounds when cache coverage exists', () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }, {
+      name: 'Detail',
+      variables: [{ name: 'HUMID', nodeId: 'NODE_002', readingType: 'rh_mpermille' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 2_000, end: 7_000 },
+    }],
+  });
+  kiosk.APP_STATE.telemetryCache = new Map([
+    [buildCacheKey(environment, 'NODE_001', 'temp_mc'), {
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 9_000,
+      refreshedAtMs: 9_000,
+      lastAccessedAtMs: 9_000,
+    }],
+    [buildCacheKey(environment, 'NODE_002', 'rh_mpermille'), {
+      points: [{ timestampMs: 8_500, value: 60 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 8_500,
+      refreshedAtMs: 8_500,
+      lastAccessedAtMs: 8_500,
+    }],
+  ]);
+
+  const request = kiosk.buildEnvironmentRefreshRequest(environment, runtime, 9_500);
+  assert.equal(request.incremental, true);
+  assert.equal(request.startMs, 8_500);
+  assert.equal(request.endMs, 9_000);
+});
+
+test('buildEnvironmentRefreshRequest falls back to a full refresh when cached coverage ends before the current horizon', () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 4_000, end: 9_000 },
+    }],
+  });
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 3_500, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 3_500,
+      refreshedAtMs: 3_500,
+      lastAccessedAtMs: 3_500,
+    },
+  ]]);
+
+  const request = kiosk.buildEnvironmentRefreshRequest(environment, runtime, 9_500);
+  assert.equal(request.incremental, false);
+  assert.equal(request.startMs, 4_000);
+  assert.equal(request.fullStartMs, 4_000);
+  assert.equal(request.endMs, 9_000);
+});
+
+test('buildEnvironmentRefreshRequest falls back to a full refresh when cached coverage extends past the current horizon', () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 4_000, end: 9_000 },
+    }],
+  });
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 9_500, value: 20.25 }],
+      coverageStartMs: 4_000,
+      coverageEndMs: 9_500,
+      refreshedAtMs: 9_500,
+      lastAccessedAtMs: 9_500,
+    },
+  ]]);
+
+  const request = kiosk.buildEnvironmentRefreshRequest(environment, runtime, 9_000);
+  assert.equal(request.incremental, false);
+  assert.equal(request.startMs, 4_000);
+  assert.equal(request.endMs, 9_000);
+});
+
+test('cacheTelemetryRefreshResponse keeps omitted series coverage incomplete for future refresh planning', () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [
+        { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+        { name: 'HUMID', nodeId: 'NODE_002', readingType: 'rh_mpermille' },
+      ],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  });
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_002', 'rh_mpermille'),
+    {
+      points: [{ timestampMs: 8_500, value: 60 }],
+      coverageStartMs: 4_000,
+      coverageEndMs: 8_500,
+      refreshedAtMs: 8_500,
+      lastAccessedAtMs: 8_500,
+    },
+  ]]);
+
+  const cachedSeriesCount = kiosk.cacheTelemetryRefreshResponse(environment, {
+    startMs: 1_000,
+    endMs: 9_000,
+    fullStartMs: 1_000,
+    fullEndMs: 9_000,
+    incremental: false,
+    variables: [
+      { nodeId: 'NODE_001', readingType: 'temp_mc' },
+      { nodeId: 'NODE_002', readingType: 'rh_mpermille' },
+    ],
+  }, {
+    complete: true,
+    refreshedAtMs: 9_000,
+    series: [{
+      nodeId: 'NODE_001',
+      readingType: 'temp_mc',
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+    }],
+  });
+
+  assert.equal(cachedSeriesCount, 2);
+  const missingSeries = kiosk.APP_STATE.telemetryCache.get(buildCacheKey(environment, 'NODE_002', 'rh_mpermille'));
+  assert.equal(missingSeries.coverageStartMs, 4_000);
+  assert.equal(missingSeries.coverageEndMs, 8_500);
+
+  const request = kiosk.buildEnvironmentRefreshRequest(environment, runtime, 9_500);
+  assert.equal(request.incremental, false);
+  assert.equal(request.startMs, 1_000);
+});
+
+test('setTelemetryNotice preserves muted dashboard status styling for info notices', () => {
   const dashboardStatus = makeElement();
   const statusOverlay = makeElement();
   global.document.getElementById = (id) => {
@@ -684,7 +901,10 @@ test('triggerDashboardRefresh caches live telemetry from the injected fetcher', 
     validateExpressionFn: runtime.validateExpression,
   });
 
-  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.runtime = {
+    ...runtime,
+    renderMetricCharts: async () => {},
+  };
   kiosk.APP_STATE.activeEnvironment = environment;
   kiosk.APP_STATE.activeDashboardIndex = 0;
   kiosk.APP_STATE.telemetryCache.clear();
@@ -711,6 +931,53 @@ test('triggerDashboardRefresh caches live telemetry from the injected fetcher', 
   assert.match(kiosk.APP_STATE.telemetryNotice, /Live data refreshed/);
 });
 
+test('triggerDashboardRefresh accepts empty telemetry series for a valid no-data refresh', async () => {
+  const environment = runtime.normalizeEnvironmentRecord({
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: kiosk.createDefaultSensorDataPreferences(),
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  }, {
+    sanitizeSensorDataPreferences: (preferences) => preferences ?? kiosk.createDefaultSensorDataPreferences(),
+    validateExpressionFn: runtime.validateExpression,
+  });
+
+  kiosk.APP_STATE.runtime = {
+    ...runtime,
+    renderMetricCharts: async () => {},
+  };
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache.clear();
+
+  await kiosk.triggerDashboardRefresh('manual', {
+    nowFn: () => 9_000,
+    fetchDashboardVariableDataFn: async () => ({
+      complete: true,
+      refreshedAtMs: 9_000,
+      series: [{
+        nodeId: 'NODE_001',
+        readingType: 'temp_mc',
+        points: [],
+      }],
+    }),
+  });
+
+  const cacheEntry = kiosk.APP_STATE.telemetryCache.get(buildCacheKey(environment, 'NODE_001', 'temp_mc'));
+  assert.deepEqual(cacheEntry.points, []);
+  assert.equal(cacheEntry.coverageStartMs, 1_000);
+  assert.equal(cacheEntry.coverageEndMs, 9_000);
+  assert.doesNotMatch(kiosk.APP_STATE.telemetryNotice, /no usable series/i);
+});
+
 test('triggerDashboardRefresh marks partial telemetry refreshes without claiming full coverage', async () => {
   const environment = runtime.normalizeEnvironmentRecord({
     name: 'prod',
@@ -730,7 +997,10 @@ test('triggerDashboardRefresh marks partial telemetry refreshes without claiming
     validateExpressionFn: runtime.validateExpression,
   });
 
-  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.runtime = {
+    ...runtime,
+    renderMetricCharts: async () => {},
+  };
   kiosk.APP_STATE.activeEnvironment = environment;
   kiosk.APP_STATE.activeDashboardIndex = 0;
   kiosk.APP_STATE.telemetryCache.clear();
@@ -774,7 +1044,10 @@ test('triggerDashboardRefresh rejects invalid telemetry payloads', async () => {
     validateExpressionFn: runtime.validateExpression,
   });
 
-  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.runtime = {
+    ...runtime,
+    renderMetricCharts: async () => {},
+  };
   kiosk.APP_STATE.activeEnvironment = environment;
   kiosk.APP_STATE.activeDashboardIndex = 0;
   kiosk.APP_STATE.telemetryCache.clear();
@@ -865,6 +1138,99 @@ test('triggerDashboardRefresh reports cached offline status when live refresh fa
   assert.match(kiosk.APP_STATE.telemetryNotice, /Showing cached data\. Live refresh unavailable: network down/);
 });
 
+test('triggerDashboardRefresh preserves warm cached telemetry when a full refresh returns no series', async () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }, {
+      name: 'Detail',
+      variables: [{ name: 'HUMID', nodeId: 'NODE_002', readingType: 'rh_mpermille' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 2_000, end: 7_000 },
+    }],
+  });
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 9_000,
+      refreshedAtMs: 9_000,
+      lastAccessedAtMs: 9_000,
+    },
+  ]]);
+
+  await kiosk.triggerDashboardRefresh('manual', {
+    nowFn: () => 9_000,
+    fetchDashboardVariableDataFn: async (request) => {
+      assert.equal(request.incremental, false);
+      return {
+        complete: true,
+        refreshedAtMs: 9_000,
+        series: [],
+      };
+    },
+  });
+
+  const cached = kiosk.buildCachedVariableData(runtime, environment, environment.dashboards[0], 9_000);
+  assert.deepEqual(cached.TEMP, [{ timestampMs: 8_000, value: 20.25 }]);
+  assert.match(kiosk.APP_STATE.telemetryNotice, /Live data refreshed at/);
+});
+
+test('triggerDashboardRefresh refreshes cache metadata when a full refresh returns an empty requested series', async () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  });
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_500,
+      coverageEndMs: 8_500,
+      refreshedAtMs: 8_500,
+      lastAccessedAtMs: 8_500,
+    },
+  ]]);
+
+  await kiosk.triggerDashboardRefresh('manual', {
+    nowFn: () => 9_000,
+    fetchDashboardVariableDataFn: async (request) => {
+      assert.equal(request.incremental, false);
+      return {
+        complete: true,
+        refreshedAtMs: 9_000,
+        series: [{
+          nodeId: 'NODE_001',
+          readingType: 'temp_mc',
+          points: [],
+        }],
+      };
+    },
+  });
+
+  const cacheEntry = kiosk.APP_STATE.telemetryCache.get(buildCacheKey(environment, 'NODE_001', 'temp_mc'));
+  assert.deepEqual(cacheEntry.points, [{ timestampMs: 8_000, value: 20.25 }]);
+  assert.equal(cacheEntry.coverageStartMs, 1_000);
+  assert.equal(cacheEntry.coverageEndMs, 9_000);
+  assert.equal(cacheEntry.refreshedAtMs, 9_000);
+  assert.equal(Number.isFinite(cacheEntry.lastAccessedAtMs), true);
+  assert.ok(cacheEntry.lastAccessedAtMs > 8_500);
+});
+
 test('triggerDashboardRefresh does not persist telemetry after reset clears the active environment', async () => {
   const environment = runtime.normalizeEnvironmentRecord({
     name: 'prod',
@@ -947,6 +1313,99 @@ test('startBackgroundRefreshLoop uses the kiosk refresh cadence', () => {
   assert.equal(kiosk.APP_STATE.refreshTimer, 42);
 });
 
+test('background refresh keeps the prior status text on success', async () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  });
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 9_000,
+      refreshedAtMs: 9_000,
+      lastAccessedAtMs: 9_000,
+    },
+  ]]);
+  kiosk.setTelemetryNotice('Showing cached data.', 'info');
+
+  await kiosk.triggerDashboardRefresh('background', {
+    nowFn: () => 10_000,
+    fetchDashboardVariableDataFn: async (request) => {
+      assert.equal(request.incremental, true);
+      return {
+        complete: true,
+        refreshedAtMs: 10_000,
+        series: [{
+          nodeId: 'NODE_001',
+          readingType: 'temp_mc',
+          points: [{ timestampMs: 9_500, value: 20.5 }],
+        }],
+      };
+    },
+  });
+
+  assert.equal(kiosk.APP_STATE.telemetryNotice, 'Showing cached data.');
+});
+
+test('background refresh keeps the status overlay hidden on success', async () => {
+  const { elements } = createDomFixture();
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [{ name: 'Primary', metrics: [{ id: 'm1', expression: '1', color: '#111111' }] }],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  });
+  elements.set('dashboard-page-host', createTrackedElement());
+  elements.set('dashboard-overlay', createTrackedElement());
+  elements.set('dashboard-status', createTrackedElement());
+  elements.set('dashboard-status-overlay', createTrackedElement());
+  kiosk.APP_STATE.runtime = {
+    ...runtime,
+    renderMetricCharts: async () => {},
+  };
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.activeChartIndex = 0;
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 9_000,
+      refreshedAtMs: 9_000,
+      lastAccessedAtMs: 9_000,
+    },
+  ]]);
+  kiosk.setTelemetryNotice('Showing cached data.', 'info');
+  elements.get('dashboard-status-overlay').classList.add('hidden');
+
+  await kiosk.triggerDashboardRefresh('background', {
+    nowFn: () => 10_000,
+    fetchDashboardVariableDataFn: async () => ({
+      complete: true,
+      refreshedAtMs: 10_000,
+      series: [{
+        nodeId: 'NODE_001',
+        readingType: 'temp_mc',
+        points: [{ timestampMs: 9_500, value: 20.5 }],
+      }],
+    }),
+  });
+
+  assert.match(elements.get('dashboard-status-overlay').className, /hidden/);
+});
+
 test('background refresh skips starting a second request while one is in flight', async () => {
   const environment = runtime.normalizeEnvironmentRecord({
     name: 'prod',
@@ -983,7 +1442,7 @@ test('background refresh skips starting a second request while one is in flight'
       });
       return {
         refreshedAtMs: 9_000,
-        series: [{ nodeId: 'NODE_001', readingType: 'temp_mc', points: [] }],
+        series: [{ nodeId: 'NODE_001', readingType: 'temp_mc', points: [{ timestampMs: 8_000, value: 20.25 }] }],
       };
     },
   };
@@ -994,6 +1453,33 @@ test('background refresh skips starting a second request while one is in flight'
 
   releaseRefresh();
   await Promise.all([firstRefresh, secondRefresh]);
+});
+
+test('renderActiveDashboard keeps the active dashboard name visible in the header title', async () => {
+  const { elements } = createDomFixture();
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [],
+      charts: [{ name: 'Primary', metrics: [{ id: 'm1', expression: '1', color: '#111111' }] }],
+      timeRange: { preset: '24h', start: null, end: null },
+    }],
+  });
+  elements.set('dashboard-page-host', createTrackedElement());
+  elements.set('dashboard-status', createTrackedElement());
+  elements.set('dashboard-overlay', createTrackedElement());
+  kiosk.APP_STATE.runtime = {
+    ...runtime,
+    renderMetricCharts: async () => {},
+  };
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.activeChartIndex = 0;
+
+  await kiosk.renderActiveDashboard({ nowFn: () => 10_000 });
+
+  assert.equal(elements.get('dashboard-overlay').textContent, 'Overview');
+  assert.doesNotMatch(elements.get('dashboard-overlay').className, /hidden/);
 });
 
 test('telemetry cache JSON round-trips through parse and serialize helpers', () => {

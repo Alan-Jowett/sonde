@@ -14,7 +14,7 @@ const OPERATOR_LONG_PRESS_MS = 800;
 const HORIZONTAL_SWIPE_THRESHOLD_PX = 50;
 const PULL_TO_REFRESH_THRESHOLD_PX = 90;
 const PULL_TO_REFRESH_MAX_HORIZONTAL_DRIFT_PX = 40;
-const BACKGROUND_REFRESH_INTERVAL_MS = 60 * 1000;
+const BACKGROUND_REFRESH_INTERVAL_MS = 900 * 1000;
 const DEVICE_CODE_POLL_FALLBACK_MS = 5000;
 const TELEMETRY_CACHE_MAX_SERIES = 128;
 const TELEMETRY_CACHE_MAX_POINTS_PER_SERIES = 2048;
@@ -345,7 +345,7 @@ function buildChartOverlayText(environment, activeDashboardIndex, activeChartInd
   if (!activePage) {
     return '';
   }
-  return `${activePage.dashboard.name} — ${activePage.chart.name} (${(pageIndex >= 0 ? pageIndex : 0) + 1}/${pages.length})`;
+  return activePage.dashboard.name;
 }
 
 function buildChartRenderDashboard(page) {
@@ -409,13 +409,8 @@ function showIdentityOverlay(text) {
   if (!overlay || !text) {
     return;
   }
-  clearTimeout(APP_STATE.overlayHideTimer);
   overlay.textContent = text;
   overlay.classList.remove('hidden');
-  APP_STATE.overlayHideTimer = setTimeout(() => {
-    overlay.classList.add('hidden');
-    APP_STATE.overlayHideTimer = null;
-  }, OVERLAY_AUTO_HIDE_MS);
 }
 
 function setTelemetryNotice(text, kind = 'info') {
@@ -473,6 +468,68 @@ function buildTelemetrySourceCacheKey(environment, source) {
     nodeId: source.nodeId,
     readingType: source.readingType,
   });
+}
+
+function collectEnvironmentTelemetrySources(environment) {
+  const seenSources = new Set();
+  const variables = [];
+
+  for (const dashboard of environment?.dashboards ?? []) {
+    for (const variable of dashboard?.variables ?? []) {
+      const sourceKey = JSON.stringify([variable?.nodeId, variable?.readingType]);
+      if (typeof variable?.nodeId !== 'string'
+        || typeof variable?.readingType !== 'string'
+        || seenSources.has(sourceKey)) {
+        continue;
+      }
+      seenSources.add(sourceKey);
+      variables.push({
+        nodeId: variable.nodeId,
+        readingType: variable.readingType,
+      });
+    }
+  }
+
+  return variables;
+}
+
+function getLargestDashboardTimeRange(environment, runtime, nowMs = Date.now()) {
+  let selectedRange = null;
+  let largestDurationMs = -Infinity;
+
+  for (const dashboard of environment?.dashboards ?? []) {
+    const { startMs, endMs } = runtime.getDashboardTimeRangeBounds(dashboard.timeRange, nowMs);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      continue;
+    }
+    const durationMs = endMs - startMs;
+    if (durationMs > largestDurationMs) {
+      largestDurationMs = durationMs;
+      selectedRange = { startMs, endMs };
+    }
+  }
+
+  return selectedRange ?? { startMs: nowMs, endMs: nowMs };
+}
+
+function computeIncrementalRefreshStartMs(environment, variables, fullStartMs) {
+  let incrementalStartMs = null;
+
+  for (const variable of variables) {
+    const cached = APP_STATE.telemetryCache.get(buildTelemetrySourceCacheKey(environment, variable));
+    if (!cached
+      || !Number.isFinite(cached.coverageStartMs)
+      || cached.coverageStartMs > fullStartMs
+      || !Number.isFinite(cached.coverageEndMs)
+      || cached.coverageEndMs < fullStartMs) {
+      return null;
+    }
+    if (incrementalStartMs == null || cached.coverageEndMs < incrementalStartMs) {
+      incrementalStartMs = cached.coverageEndMs;
+    }
+  }
+
+  return Number.isFinite(incrementalStartMs) ? incrementalStartMs : null;
 }
 
 function filterTelemetryPointsToRange(points, startMs, endMs) {
@@ -617,29 +674,23 @@ function enforceTelemetryCacheBounds(options = {}) {
   }
 }
 
-function buildDashboardRefreshRequest(environment, dashboard, runtime, nowMs = Date.now()) {
-  const { startMs, endMs } = runtime.getDashboardTimeRangeBounds(dashboard.timeRange, nowMs);
-  const seenSources = new Set();
-  const variables = [];
-
-  for (const variable of dashboard.variables) {
-    const sourceKey = JSON.stringify([variable.nodeId, variable.readingType]);
-    if (seenSources.has(sourceKey)) {
-      continue;
-    }
-    seenSources.add(sourceKey);
-    variables.push({
-      nodeId: variable.nodeId,
-      readingType: variable.readingType,
-    });
-  }
+function buildEnvironmentRefreshRequest(environment, runtime, nowMs = Date.now()) {
+  const { startMs: fullStartMs, endMs: fullEndMs } = getLargestDashboardTimeRange(environment, runtime, nowMs);
+  const variables = collectEnvironmentTelemetrySources(environment);
+  const incrementalStartMs = computeIncrementalRefreshStartMs(environment, variables, fullStartMs);
+  const effectiveIncrementalStartMs = Number.isFinite(incrementalStartMs) && incrementalStartMs <= fullEndMs
+    ? incrementalStartMs
+    : null;
 
   return {
     clientId: environment.clientId,
     tenantId: environment.tenantId,
     storageAccount: environment.storageAccount,
-    startMs,
-    endMs,
+    startMs: Number.isFinite(effectiveIncrementalStartMs) ? effectiveIncrementalStartMs : fullStartMs,
+    endMs: fullEndMs,
+    fullStartMs,
+    fullEndMs,
+    incremental: Number.isFinite(effectiveIncrementalStartMs),
     variables,
   };
 }
@@ -659,14 +710,27 @@ function normalizeTelemetryPoints(points) {
     .sort((left, right) => left.timestampMs - right.timestampMs);
 }
 
+function mergeTelemetryPoints(existingPoints, incomingPoints) {
+  const merged = new Map();
+  for (const point of normalizeTelemetryPoints(existingPoints)) {
+    merged.set(point.timestampMs, point);
+  }
+  for (const point of normalizeTelemetryPoints(incomingPoints)) {
+    merged.set(point.timestampMs, point);
+  }
+  return Array.from(merged.values()).sort((left, right) => left.timestampMs - right.timestampMs);
+}
+
 function cacheTelemetryRefreshResponse(environment, request, response) {
   const complete = response?.complete !== false;
   let cachedSeriesCount = 0;
   const refreshedCacheKeys = new Set();
   const requestedCacheKeys = new Set();
+  const responseSeriesByKey = new Map();
+  const refreshedAtMs = Number.isFinite(response?.refreshedAtMs) ? Number(response.refreshedAtMs) : Date.now();
   for (const variable of request?.variables ?? []) {
     if (typeof variable !== 'object' || variable === null
-      || typeof variable.nodeId !== 'string'
+    || typeof variable.nodeId !== 'string'
       || typeof variable.readingType !== 'string') {
       continue;
     }
@@ -686,15 +750,47 @@ function cacheTelemetryRefreshResponse(environment, request, response) {
     if (!requestedCacheKeys.has(key)) {
       continue;
     }
-    refreshedCacheKeys.add(key);
+    responseSeriesByKey.set(key, normalizeTelemetryPoints(series.points));
+  }
+  for (const variable of request?.variables ?? []) {
+    if (typeof variable !== 'object' || variable === null
+      || typeof variable.nodeId !== 'string'
+      || typeof variable.readingType !== 'string') {
+      continue;
+    }
+    const key = buildTelemetrySourceCacheKey(environment, variable);
+    const existing = APP_STATE.telemetryCache.get(key);
+    const responseIncludedSeries = responseSeriesByKey.has(key);
+    const incomingPoints = responseIncludedSeries ? responseSeriesByKey.get(key) : [];
+    const preserveExistingPoints = request.incremental !== true
+      && incomingPoints.length === 0
+      && existing
+      && existing.points.length > 0;
+    const seriesComplete = complete && responseIncludedSeries;
+    const mergedPoints = preserveExistingPoints
+      ? existing.points
+      : (request.incremental === true && existing
+      ? mergeTelemetryPoints(existing.points, incomingPoints)
+      : incomingPoints);
+    const coverageStartMs = seriesComplete
+      ? (request.incremental === true && existing && Number.isFinite(existing.coverageStartMs)
+        ? existing.coverageStartMs
+        : (Number.isFinite(request.fullStartMs) ? request.fullStartMs : request.startMs))
+      : (existing && Number.isFinite(existing.coverageStartMs) ? existing.coverageStartMs : null);
+    const coverageEndMs = seriesComplete
+      ? request.endMs
+      : (existing && Number.isFinite(existing.coverageEndMs) ? existing.coverageEndMs : null);
     APP_STATE.telemetryCache.set(key, {
-      points: normalizeTelemetryPoints(series.points),
-      coverageStartMs: complete ? request.startMs : null,
-      coverageEndMs: complete ? request.endMs : null,
-      refreshedAtMs: Number.isFinite(response.refreshedAtMs) ? Number(response.refreshedAtMs) : Date.now(),
+      points: mergedPoints,
+      coverageStartMs: Number.isFinite(coverageStartMs) ? coverageStartMs : null,
+      coverageEndMs: Number.isFinite(coverageEndMs) ? coverageEndMs : null,
+      refreshedAtMs,
       lastAccessedAtMs: Date.now(),
     });
-    cachedSeriesCount += 1;
+    refreshedCacheKeys.add(key);
+    if (responseIncludedSeries || mergedPoints.length > 0) {
+      cachedSeriesCount += 1;
+    }
   }
   enforceTelemetryCacheBounds({
     minimumSeries: refreshedCacheKeys.size,
@@ -823,7 +919,9 @@ async function renderActiveDashboard(deps = APP_STATE.dependencies) {
     APP_STATE.activeDashboardIndex,
     APP_STATE.activeChartIndex,
   ));
-  setTelemetryNotice(APP_STATE.telemetryNotice, APP_STATE.telemetryStatusKind);
+  if (deps.restoreTelemetryNotice !== false) {
+    setTelemetryNotice(APP_STATE.telemetryNotice, APP_STATE.telemetryStatusKind);
+  }
 
   const dashboard = page.dashboard;
   const renderDashboard = buildChartRenderDashboard(page);
@@ -886,20 +984,24 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
   }
 
   const nowFn = deps.nowFn || Date.now;
-  const refreshRequest = buildDashboardRefreshRequest(environment, dashboard, runtime, nowFn());
+  const refreshRequest = buildEnvironmentRefreshRequest(environment, runtime, nowFn());
   if (refreshRequest.variables.length === 0) {
-    setTelemetryNotice('No telemetry variables are defined for this dashboard.', 'info');
+    if (reason !== 'background') {
+      setTelemetryNotice('No telemetry variables are defined for this environment.', 'info');
+    }
     return;
   }
   const refreshGeneration = ++APP_STATE.refreshGeneration;
   const dashboardIndexAtStart = APP_STATE.activeDashboardIndex;
   const chartIndexAtStart = APP_STATE.activeChartIndex;
-  const refreshingMessage = reason === 'manual'
-    ? 'Manual refresh in progress…'
-    : reason === 'switch'
-      ? 'Loading live data for this chart…'
-      : 'Refreshing live chart data…';
-  setTelemetryNotice(refreshingMessage, 'refreshing');
+  if (reason !== 'background') {
+    const refreshingMessage = reason === 'manual'
+      ? 'Manual refresh in progress…'
+      : reason === 'switch'
+        ? 'Loading live data for this chart…'
+        : 'Refreshing live chart data…';
+    setTelemetryNotice(refreshingMessage, 'refreshing');
+  }
 
   const refreshPromise = (async () => {
     try {
@@ -913,19 +1015,26 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
         return;
       }
       const cachedSeriesCount = cacheTelemetryRefreshResponse(environment, refreshRequest, response);
-      if (cachedSeriesCount === 0) {
+      if (cachedSeriesCount === 0 && !hasUsableCachedDashboardData(runtime, environment, dashboard, nowFn())) {
         throw new Error('Telemetry refresh returned no usable series.');
       }
       await persistTelemetryCache(deps);
       const refreshedAtMs = Number.isFinite(response?.refreshedAtMs)
         ? Number(response.refreshedAtMs)
         : nowFn();
-      if (response.complete === false) {
-        setTelemetryNotice(`Partial live data refreshed at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
-      } else {
-        setTelemetryNotice(`Live data refreshed at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
+      if (reason !== 'background') {
+        if (response.complete === false) {
+          setTelemetryNotice(`Partial live data refreshed at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
+        } else if (cachedSeriesCount === 0) {
+          setTelemetryNotice(`Live data checked at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
+        } else {
+          setTelemetryNotice(`Live data refreshed at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
+        }
       }
-      await renderActiveDashboard(deps);
+      await renderActiveDashboard({
+        ...deps,
+        restoreTelemetryNotice: reason !== 'background',
+      });
     } catch (error) {
       if (refreshGeneration !== APP_STATE.refreshGeneration
         || environment !== APP_STATE.activeEnvironment
@@ -1219,8 +1328,16 @@ function moveDashboard(delta, deps = APP_STATE.dependencies) {
   }
   APP_STATE.activeDashboardIndex = nextPage.dashboardIndex;
   APP_STATE.activeChartIndex = nextPage.chartIndex;
+  const runtime = APP_STATE.runtime;
+  const environment = APP_STATE.activeEnvironment;
   renderActiveDashboard(deps)
-    .then(() => triggerDashboardRefresh('switch', deps))
+    .then(() => {
+      if (runtime && environment
+        && !hasUsableCachedDashboardData(runtime, environment, nextPage.dashboard, (deps.nowFn || Date.now)())) {
+        return triggerDashboardRefresh('switch', deps);
+      }
+      return null;
+    })
     .catch((error) => showSetupMode(describeError(error)));
 }
 
@@ -1443,14 +1560,15 @@ if (typeof module !== 'undefined' && module.exports) {
     BACKGROUND_REFRESH_INTERVAL_MS,
     beginDeviceCodeFlow,
     buildChartPages,
+    buildEnvironmentRefreshRequest,
     createDefaultSensorDataPreferences,
     createCachedMetricEvaluator,
     convertCachedPointsToRuntimeTimeSeries,
     describeError,
     buildCachedVariableData,
-    buildDashboardRefreshRequest,
     cacheTelemetryRefreshResponse,
     clearStoredTelemetryCache,
+    collectEnvironmentTelemetrySources,
     fetchDashboardVariableData,
     hasUsableCachedDashboardData,
     importEnvironmentFromText,
@@ -1463,6 +1581,7 @@ if (typeof module !== 'undefined' && module.exports) {
     pollUntilDeviceCodeComplete,
     persistTelemetryCache,
     replaceTelemetryCache,
+    renderActiveDashboard,
     renderDashboardFrame,
     serializeTelemetryCache,
     showSetupMode,

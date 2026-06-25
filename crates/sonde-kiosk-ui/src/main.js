@@ -763,19 +763,20 @@ function cacheTelemetryRefreshResponse(environment, request, response) {
       && incomingPoints.length === 0
       && existing
       && existing.points.length > 0;
+    const seriesComplete = complete && responseIncludedSeries;
     const mergedPoints = preserveExistingPoints
       ? existing.points
       : (request.incremental === true && existing
       ? mergeTelemetryPoints(existing.points, incomingPoints)
       : incomingPoints);
-    const coverageStartMs = complete
+    const coverageStartMs = seriesComplete
       ? (request.incremental === true && existing && Number.isFinite(existing.coverageStartMs)
         ? existing.coverageStartMs
         : (Number.isFinite(request.fullStartMs) ? request.fullStartMs : request.startMs))
-      : (request.incremental === true && existing ? existing.coverageStartMs : null);
-    const coverageEndMs = complete
+      : (existing && Number.isFinite(existing.coverageStartMs) ? existing.coverageStartMs : null);
+    const coverageEndMs = seriesComplete
       ? request.endMs
-      : (request.incremental === true && existing ? existing.coverageEndMs : null);
+      : (existing && Number.isFinite(existing.coverageEndMs) ? existing.coverageEndMs : null);
     APP_STATE.telemetryCache.set(key, {
       points: mergedPoints,
       coverageStartMs: Number.isFinite(coverageStartMs) ? coverageStartMs : null,

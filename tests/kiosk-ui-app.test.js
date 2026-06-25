@@ -787,6 +787,59 @@ test('buildEnvironmentRefreshRequest falls back to a full refresh when cached co
   assert.equal(request.endMs, 9_000);
 });
 
+test('cacheTelemetryRefreshResponse keeps omitted series coverage incomplete for future refresh planning', () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [
+        { name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' },
+        { name: 'HUMID', nodeId: 'NODE_002', readingType: 'rh_mpermille' },
+      ],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  });
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_002', 'rh_mpermille'),
+    {
+      points: [{ timestampMs: 8_500, value: 60 }],
+      coverageStartMs: 4_000,
+      coverageEndMs: 8_500,
+      refreshedAtMs: 8_500,
+      lastAccessedAtMs: 8_500,
+    },
+  ]]);
+
+  const cachedSeriesCount = kiosk.cacheTelemetryRefreshResponse(environment, {
+    startMs: 1_000,
+    endMs: 9_000,
+    fullStartMs: 1_000,
+    fullEndMs: 9_000,
+    incremental: false,
+    variables: [
+      { nodeId: 'NODE_001', readingType: 'temp_mc' },
+      { nodeId: 'NODE_002', readingType: 'rh_mpermille' },
+    ],
+  }, {
+    complete: true,
+    refreshedAtMs: 9_000,
+    series: [{
+      nodeId: 'NODE_001',
+      readingType: 'temp_mc',
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+    }],
+  });
+
+  assert.equal(cachedSeriesCount, 2);
+  const missingSeries = kiosk.APP_STATE.telemetryCache.get(buildCacheKey(environment, 'NODE_002', 'rh_mpermille'));
+  assert.equal(missingSeries.coverageStartMs, 4_000);
+  assert.equal(missingSeries.coverageEndMs, 8_500);
+
+  const request = kiosk.buildEnvironmentRefreshRequest(environment, runtime, 9_500);
+  assert.equal(request.incremental, false);
+  assert.equal(request.startMs, 1_000);
+});
+
 test('setTelemetryNotice preserves muted dashboard status styling for info notices', () => {
   const dashboardStatus = makeElement();
   const statusOverlay = makeElement();
@@ -1104,7 +1157,7 @@ test('triggerDashboardRefresh preserves warm cached telemetry when a full refres
   assert.match(kiosk.APP_STATE.telemetryNotice, /Live data refreshed at/);
 });
 
-test('triggerDashboardRefresh refreshes cache metadata when a full refresh returns no series', async () => {
+test('triggerDashboardRefresh refreshes cache metadata when a full refresh returns an empty requested series', async () => {
   const environment = buildEnvironment({
     dashboards: [{
       name: 'Overview',
@@ -1134,7 +1187,11 @@ test('triggerDashboardRefresh refreshes cache metadata when a full refresh retur
       return {
         complete: true,
         refreshedAtMs: 9_000,
-        series: [],
+        series: [{
+          nodeId: 'NODE_001',
+          readingType: 'temp_mc',
+          points: [],
+        }],
       };
     },
   });

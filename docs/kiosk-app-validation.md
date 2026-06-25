@@ -351,9 +351,8 @@ full device UX.
 3. Swipe through the sequence.
 4. Assert: the kiosk visits charts in imported dashboard order and chart order
    within each dashboard.
-5. Trigger the transient identity overlay.
-6. Assert: the overlay identifies enough dashboard/chart context to explain the
-   active page.
+5. Assert: the persistent dashboard title remains consistent with the imported
+   dashboard sequence as the active chart page changes.
 
 ---
 

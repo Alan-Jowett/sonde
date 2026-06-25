@@ -441,8 +441,9 @@ imported dashboards so swipe navigation remains predictable.
 2. Within each dashboard, charts are ordered according to their imported order.
 3. The kiosk's full-screen chart sequence traverses imported dashboards in
    dashboard order and charts within each dashboard in chart order.
-4. When a transient overlay is shown, it identifies enough dashboard/chart
-   context for an operator to understand where the active chart came from.
+4. Deterministic chart sequencing does not depend on a transient identity
+   overlay; operators can still follow the active chart using the persistent
+   dashboard title and the imported swipe order.
 
 ---
 

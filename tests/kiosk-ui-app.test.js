@@ -787,6 +787,32 @@ test('buildEnvironmentRefreshRequest falls back to a full refresh when cached co
   assert.equal(request.endMs, 9_000);
 });
 
+test('buildEnvironmentRefreshRequest falls back to a full refresh when cached coverage extends past the current horizon', () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 4_000, end: 9_000 },
+    }],
+  });
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 9_500, value: 20.25 }],
+      coverageStartMs: 4_000,
+      coverageEndMs: 9_500,
+      refreshedAtMs: 9_500,
+      lastAccessedAtMs: 9_500,
+    },
+  ]]);
+
+  const request = kiosk.buildEnvironmentRefreshRequest(environment, runtime, 9_000);
+  assert.equal(request.incremental, false);
+  assert.equal(request.startMs, 4_000);
+  assert.equal(request.endMs, 9_000);
+});
+
 test('cacheTelemetryRefreshResponse keeps omitted series coverage incomplete for future refresh planning', () => {
   const environment = buildEnvironment({
     dashboards: [{
@@ -1328,6 +1354,56 @@ test('background refresh keeps the prior status text on success', async () => {
   });
 
   assert.equal(kiosk.APP_STATE.telemetryNotice, 'Showing cached data.');
+});
+
+test('background refresh keeps the status overlay hidden on success', async () => {
+  const { elements } = createDomFixture();
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [{ name: 'Primary', metrics: [{ id: 'm1', expression: '1', color: '#111111' }] }],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  });
+  elements.set('dashboard-page-host', createTrackedElement());
+  elements.set('dashboard-overlay', createTrackedElement());
+  elements.set('dashboard-status', createTrackedElement());
+  elements.set('dashboard-status-overlay', createTrackedElement());
+  kiosk.APP_STATE.runtime = {
+    ...runtime,
+    renderMetricCharts: async () => {},
+  };
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.activeChartIndex = 0;
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 9_000,
+      refreshedAtMs: 9_000,
+      lastAccessedAtMs: 9_000,
+    },
+  ]]);
+  kiosk.setTelemetryNotice('Showing cached data.', 'info');
+  elements.get('dashboard-status-overlay').classList.add('hidden');
+
+  await kiosk.triggerDashboardRefresh('background', {
+    nowFn: () => 10_000,
+    fetchDashboardVariableDataFn: async () => ({
+      complete: true,
+      refreshedAtMs: 10_000,
+      series: [{
+        nodeId: 'NODE_001',
+        readingType: 'temp_mc',
+        points: [{ timestampMs: 9_500, value: 20.5 }],
+      }],
+    }),
+  });
+
+  assert.match(elements.get('dashboard-status-overlay').className, /hidden/);
 });
 
 test('background refresh skips starting a second request while one is in flight', async () => {

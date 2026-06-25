@@ -678,16 +678,19 @@ function buildEnvironmentRefreshRequest(environment, runtime, nowMs = Date.now()
   const { startMs: fullStartMs, endMs: fullEndMs } = getLargestDashboardTimeRange(environment, runtime, nowMs);
   const variables = collectEnvironmentTelemetrySources(environment);
   const incrementalStartMs = computeIncrementalRefreshStartMs(environment, variables, fullStartMs);
+  const effectiveIncrementalStartMs = Number.isFinite(incrementalStartMs) && incrementalStartMs <= fullEndMs
+    ? incrementalStartMs
+    : null;
 
   return {
     clientId: environment.clientId,
     tenantId: environment.tenantId,
     storageAccount: environment.storageAccount,
-    startMs: Number.isFinite(incrementalStartMs) ? incrementalStartMs : fullStartMs,
+    startMs: Number.isFinite(effectiveIncrementalStartMs) ? effectiveIncrementalStartMs : fullStartMs,
     endMs: fullEndMs,
     fullStartMs,
     fullEndMs,
-    incremental: Number.isFinite(incrementalStartMs),
+    incremental: Number.isFinite(effectiveIncrementalStartMs),
     variables,
   };
 }
@@ -916,7 +919,9 @@ async function renderActiveDashboard(deps = APP_STATE.dependencies) {
     APP_STATE.activeDashboardIndex,
     APP_STATE.activeChartIndex,
   ));
-  setTelemetryNotice(APP_STATE.telemetryNotice, APP_STATE.telemetryStatusKind);
+  if (deps.restoreTelemetryNotice !== false) {
+    setTelemetryNotice(APP_STATE.telemetryNotice, APP_STATE.telemetryStatusKind);
+  }
 
   const dashboard = page.dashboard;
   const renderDashboard = buildChartRenderDashboard(page);
@@ -1026,7 +1031,10 @@ async function triggerDashboardRefresh(reason = 'background', deps = APP_STATE.d
           setTelemetryNotice(`Live data refreshed at ${new Date(refreshedAtMs).toLocaleTimeString()}.`, 'live');
         }
       }
-      await renderActiveDashboard(deps);
+      await renderActiveDashboard({
+        ...deps,
+        restoreTelemetryNotice: reason !== 'background',
+      });
     } catch (error) {
       if (refreshGeneration !== APP_STATE.refreshGeneration
         || environment !== APP_STATE.activeEnvironment

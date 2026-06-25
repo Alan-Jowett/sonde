@@ -520,7 +520,8 @@ function computeIncrementalRefreshStartMs(environment, variables, fullStartMs) {
     if (!cached
       || !Number.isFinite(cached.coverageStartMs)
       || cached.coverageStartMs > fullStartMs
-      || !Number.isFinite(cached.coverageEndMs)) {
+      || !Number.isFinite(cached.coverageEndMs)
+      || cached.coverageEndMs < fullStartMs) {
       return null;
     }
     if (incrementalStartMs == null || cached.coverageEndMs < incrementalStartMs) {

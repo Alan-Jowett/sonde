@@ -760,6 +760,33 @@ test('buildEnvironmentRefreshRequest uses incremental refresh bounds when cache 
   assert.equal(request.endMs, 9_000);
 });
 
+test('buildEnvironmentRefreshRequest falls back to a full refresh when cached coverage ends before the current horizon', () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 4_000, end: 9_000 },
+    }],
+  });
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 3_500, value: 20.25 }],
+      coverageStartMs: 1_000,
+      coverageEndMs: 3_500,
+      refreshedAtMs: 3_500,
+      lastAccessedAtMs: 3_500,
+    },
+  ]]);
+
+  const request = kiosk.buildEnvironmentRefreshRequest(environment, runtime, 9_500);
+  assert.equal(request.incremental, false);
+  assert.equal(request.startMs, 4_000);
+  assert.equal(request.fullStartMs, 4_000);
+  assert.equal(request.endMs, 9_000);
+});
+
 test('setTelemetryNotice preserves muted dashboard status styling for info notices', () => {
   const dashboardStatus = makeElement();
   const statusOverlay = makeElement();

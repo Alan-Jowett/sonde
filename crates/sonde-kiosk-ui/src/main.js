@@ -757,14 +757,15 @@ function cacheTelemetryRefreshResponse(environment, request, response) {
     const key = buildTelemetrySourceCacheKey(environment, variable);
     const existing = APP_STATE.telemetryCache.get(key);
     const incomingPoints = responseSeriesByKey.get(key) ?? [];
-    if (request.incremental !== true && incomingPoints.length === 0 && existing && existing.points.length > 0) {
-      refreshedCacheKeys.add(key);
-      cachedSeriesCount += 1;
-      continue;
-    }
-    const mergedPoints = request.incremental === true && existing
+    const preserveExistingPoints = request.incremental !== true
+      && incomingPoints.length === 0
+      && existing
+      && existing.points.length > 0;
+    const mergedPoints = preserveExistingPoints
+      ? existing.points
+      : (request.incremental === true && existing
       ? mergeTelemetryPoints(existing.points, incomingPoints)
-      : incomingPoints;
+      : incomingPoints);
     const coverageStartMs = complete
       ? (request.incremental === true && existing && Number.isFinite(existing.coverageStartMs)
         ? existing.coverageStartMs

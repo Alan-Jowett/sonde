@@ -1030,6 +1030,50 @@ test('triggerDashboardRefresh preserves warm cached telemetry when a full refres
   assert.match(kiosk.APP_STATE.telemetryNotice, /Live data refreshed at/);
 });
 
+test('triggerDashboardRefresh refreshes cache metadata when a full refresh returns no series', async () => {
+  const environment = buildEnvironment({
+    dashboards: [{
+      name: 'Overview',
+      variables: [{ name: 'TEMP', nodeId: 'NODE_001', readingType: 'temp_mc' }],
+      charts: [],
+      timeRange: { preset: 'custom', start: 1_000, end: 9_000 },
+    }],
+  });
+  kiosk.APP_STATE.runtime = runtime;
+  kiosk.APP_STATE.activeEnvironment = environment;
+  kiosk.APP_STATE.activeDashboardIndex = 0;
+  kiosk.APP_STATE.telemetryCache = new Map([[
+    buildCacheKey(environment, 'NODE_001', 'temp_mc'),
+    {
+      points: [{ timestampMs: 8_000, value: 20.25 }],
+      coverageStartMs: 1_500,
+      coverageEndMs: 8_500,
+      refreshedAtMs: 8_500,
+      lastAccessedAtMs: 8_500,
+    },
+  ]]);
+
+  await kiosk.triggerDashboardRefresh('manual', {
+    nowFn: () => 9_000,
+    fetchDashboardVariableDataFn: async (request) => {
+      assert.equal(request.incremental, false);
+      return {
+        complete: true,
+        refreshedAtMs: 9_000,
+        series: [],
+      };
+    },
+  });
+
+  const cacheEntry = kiosk.APP_STATE.telemetryCache.get(buildCacheKey(environment, 'NODE_001', 'temp_mc'));
+  assert.deepEqual(cacheEntry.points, [{ timestampMs: 8_000, value: 20.25 }]);
+  assert.equal(cacheEntry.coverageStartMs, 1_000);
+  assert.equal(cacheEntry.coverageEndMs, 9_000);
+  assert.equal(cacheEntry.refreshedAtMs, 9_000);
+  assert.equal(Number.isFinite(cacheEntry.lastAccessedAtMs), true);
+  assert.ok(cacheEntry.lastAccessedAtMs > 8_500);
+});
+
 test('triggerDashboardRefresh does not persist telemetry after reset clears the active environment', async () => {
   const environment = runtime.normalizeEnvironmentRecord({
     name: 'prod',

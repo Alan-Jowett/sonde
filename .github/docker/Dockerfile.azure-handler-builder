@@ -12,7 +12,7 @@
 
 # ── Stage 1: build ──────────────────────────────────────────────────────────
 # rust:alpine — same base image used by the companion builder.
-FROM rust:alpine@sha256:ef7b340d4201444fa2757dfddfd4c03be9d2bde468de7b7a68b0e9fabb794334 AS builder
+FROM rust:alpine@sha256:f87aa870663e2b57ec8c69de82c7eedf7383bee987eef7612c0359635eaadb41 AS builder
 
 RUN apk add --no-cache build-base musl-dev openssl-dev openssl-libs-static protobuf pkgconf zip
 

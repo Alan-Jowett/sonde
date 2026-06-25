@@ -846,6 +846,19 @@ test('clearPersistedSelectedSeriesPreference restores default-selection semantic
   });
 });
 
+test('buildSensorChartConfig positions the Sensor Data legend below the plot', () => {
+  const config = app.buildSensorChartConfig([
+    {
+      label: 'Temperature',
+      unitSuffix: '°C',
+      data: [{ x: 1_781_692_819_928, y: 21.5 }],
+    },
+  ]);
+
+  assert.equal(config.options.plugins.legend.position, 'bottom');
+  assert.deepEqual(config.options.plugins.legend.labels, { boxWidth: 12, padding: 8 });
+});
+
 test('buildEnvironmentExportData includes environment-scoped Sensor Data preferences', () => {
   assert.deepEqual(
     app.buildEnvironmentExportData({
@@ -2214,6 +2227,8 @@ test('renderMetricCharts combines multiple metrics on the same chart into multip
     assert.ok(capturedConfig);
     assert.equal(capturedConfig.data.datasets.length, 2);
     assert.deepEqual(capturedConfig.data.datasets.map((dataset) => dataset.label), ['Temp', 'Press Derived']);
+    assert.equal(capturedConfig.options.plugins.legend.position, 'bottom');
+    assert.deepEqual(capturedConfig.options.plugins.legend.labels, { boxWidth: 12, padding: 8 });
   } finally {
     global.document.getElementById = originalGetElementById;
   }

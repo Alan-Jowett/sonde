@@ -375,6 +375,8 @@ separate line on a time-series chart. The X-axis is time (derived from
 - Hover tooltip: timestamp, node ID, reading name, value.
 - Series selector: checkboxes to choose which (node, program, reading)
   combinations to display.
+- Legend: rendered below the plotted graph area so the chart remains visually
+  separated from surrounding titles and controls.
 
 **Scale constraints:**
 - Maximum 20 concurrent lines on the graph. If more combinations exist,
@@ -1174,7 +1176,8 @@ Dashboards are stored as part of each environment's configuration:
 - Each chart shows:
   - Chart name as card header.
   - One shared line chart with time on X-axis and a single shared Y-axis.
-  - Legend entries for each metric assigned to the chart.
+  - Legend entries for each metric assigned to the chart, rendered below the
+    plotted graph area.
   - Metric expressions in the dataset editor/list, not as chart subtitles.
 - Metrics use auto-assigned colors unless operator specifies a color.
 
@@ -1258,6 +1261,7 @@ Dashboards are stored as part of each environment's configuration:
 
 | Date | Author | Description |
 |------|--------|-------------|
+| 2026-06-25 | evolve skill | Specified bottom-positioned legends for Sensor Data and dashboard charts to keep chart content visually separated from surrounding headers. |
 | 2026-06-18 | evolve skill | Extended §10.6 session telemetry cache design with in-flight request registries and consumer coalescing rules for duplicate cold-session Azure reads. |
 | 2026-06-18 | evolve skill | Added §10.6 session telemetry cache design and updated dashboard metric data-fetching to use shared in-memory coverage-aware telemetry reuse. |
 | 2026-06-17 | evolve skill | Added collapsible Variables and per-chart Metrics panes, including persisted pane state and accessibility requirements for dashboard configuration UI. |

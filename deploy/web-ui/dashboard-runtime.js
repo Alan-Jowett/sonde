@@ -415,6 +415,44 @@
     return `${hh}:${mm}`;
   }
 
+  function buildDashboardChartConfig(datasets, includeDateInAxisLabels) {
+    return {
+      type: 'line',
+      data: { datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            type: 'linear',
+            ticks: {
+              callback(value) {
+                return formatTimeAxisTick(value, includeDateInAxisLabels);
+              },
+            },
+          },
+          y: {
+            beginAtZero: false,
+          },
+        },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              title(items) {
+                if (!items.length) return '';
+                return formatChartTooltipTimestamp(items[0].parsed.x);
+              },
+            },
+          },
+          legend: {
+            position: 'bottom',
+            labels: { boxWidth: 12, padding: 8 },
+          },
+        },
+      },
+    };
+  }
+
   function escapeHtml(value) {
     return String(value ?? '')
       .replaceAll('&', '&amp;')
@@ -752,71 +790,14 @@
       }
 
       if (typeof deps.storeChartInstanceFn === 'function') {
-        deps.storeChartInstanceFn(chartIndex, chartFactory(canvas, {
-          type: 'line',
-          data: { datasets },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            scales: {
-              x: {
-                type: 'linear',
-                ticks: {
-                  callback(value) {
-                    return formatTimeAxisTick(value, includeDateInAxisLabels);
-                  },
-                },
-              },
-              y: {
-                beginAtZero: false,
-              },
-            },
-            plugins: {
-              tooltip: {
-                callbacks: {
-                  title(items) {
-                    if (!items.length) return '';
-                    return formatChartTooltipTimestamp(items[0].parsed.x);
-                  },
-                },
-              },
-            },
-          },
-        }));
+        deps.storeChartInstanceFn(
+          chartIndex,
+          chartFactory(canvas, buildDashboardChartConfig(datasets, includeDateInAxisLabels)),
+        );
         continue;
       }
 
-      chartFactory(canvas, {
-        type: 'line',
-        data: { datasets },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          scales: {
-            x: {
-              type: 'linear',
-              ticks: {
-                callback(value) {
-                  return formatTimeAxisTick(value, includeDateInAxisLabels);
-                },
-              },
-            },
-            y: {
-              beginAtZero: false,
-            },
-          },
-          plugins: {
-            tooltip: {
-              callbacks: {
-                title(items) {
-                  if (!items.length) return '';
-                  return formatChartTooltipTimestamp(items[0].parsed.x);
-                },
-              },
-            },
-          },
-        },
-      });
+      chartFactory(canvas, buildDashboardChartConfig(datasets, includeDateInAxisLabels));
     }
   }
 
@@ -915,6 +896,7 @@
     getDashboardMetrics,
     getDashboardTimeRangeBounds,
     isVariableUsedInExpression,
+    buildDashboardChartConfig,
     normalizeDashboard,
     normalizeDashboardCharts,
     normalizeDashboardTimeRange,

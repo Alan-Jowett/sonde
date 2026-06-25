@@ -602,6 +602,68 @@ function formatTimeAxisTick(timestampMs, includeDate) {
   return `${hh}:${mm}`;
 }
 
+function buildChartLegendOptions() {
+  return {
+    position: 'bottom',
+    labels: { boxWidth: 12, padding: 8 },
+  };
+}
+
+function buildSensorChartConfig(datasets) {
+  return {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      scales: {
+        x: {
+          type: 'linear',
+          title: { display: true, text: 'Time' },
+          ticks: {
+            callback(value) {
+              const d = new Date(value);
+              const hh = d.getHours().toString().padStart(2, '0');
+              const mm = d.getMinutes().toString().padStart(2, '0');
+              if (SENSOR_STATE.timeRange === '7d') {
+                return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+              }
+              return `${hh}:${mm}`;
+            },
+            maxTicksLimit: 12,
+          },
+        },
+        y: {
+          title: {
+            display: true,
+            text: (() => {
+              const suffixes = [...new Set(datasets.map((d) => d.unitSuffix))];
+              return suffixes.length === 1 && suffixes[0] ? `Value (${suffixes[0]})` : 'Value';
+            })(),
+          },
+        },
+      },
+      plugins: {
+        tooltip: {
+          callbacks: {
+            title(items) {
+              if (!items.length) return '';
+              return formatChartTooltipTimestamp(items[0].parsed.x);
+            },
+            label(item) {
+              const ds = item.dataset;
+              const suffix = ds.unitSuffix || '';
+              return `${ds.label}: ${item.parsed.y}${suffix}`;
+            },
+          },
+        },
+        legend: buildChartLegendOptions(),
+      },
+    },
+  };
+}
+
 function randomHex(bytes) {
   const data = new Uint8Array(bytes);
   crypto.getRandomValues(data);
@@ -2886,61 +2948,7 @@ function renderSensorChart(allSeries) {
     };
   });
 
-  APP.sensorChart = new Chart(canvas, {
-    type: 'line',
-    data: { datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'nearest', intersect: false },
-      scales: {
-        x: {
-          type: 'linear',
-          title: { display: true, text: 'Time' },
-          ticks: {
-            callback(value) {
-              const d = new Date(value);
-              const hh = d.getHours().toString().padStart(2, '0');
-              const mm = d.getMinutes().toString().padStart(2, '0');
-              if (SENSOR_STATE.timeRange === '7d') {
-                return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
-              }
-              return `${hh}:${mm}`;
-            },
-            maxTicksLimit: 12,
-          },
-        },
-        y: {
-          title: {
-            display: true,
-            text: (() => {
-              const suffixes = [...new Set(datasets.map((d) => d.unitSuffix))];
-              return suffixes.length === 1 && suffixes[0] ? `Value (${suffixes[0]})` : 'Value';
-            })(),
-          },
-        },
-      },
-      plugins: {
-        tooltip: {
-          callbacks: {
-            title(items) {
-              if (!items.length) return '';
-              return formatChartTooltipTimestamp(items[0].parsed.x);
-            },
-            label(item) {
-              const ds = item.dataset;
-              const suffix = ds.unitSuffix || '';
-              return `${ds.label}: ${item.parsed.y}${suffix}`;
-            },
-          },
-        },
-        legend: {
-          position: 'bottom',
-          labels: { boxWidth: 12, padding: 8 },
-        },
-      },
-    },
-  });
+  APP.sensorChart = new Chart(canvas, buildSensorChartConfig(datasets));
 }
 
 function renderSensorTable(rows, nodeIdMap) {
@@ -4533,6 +4541,7 @@ if (typeof module !== 'undefined' && module.exports) {
     sanitizeSensorDataPreferences,
     sensorDataFilter,
     SENSOR_STATE,
+    buildSensorChartConfig,
     saveSeriesOverrides,
     validateImportedSensorDataPreferences,
     // Dashboard functions for testing

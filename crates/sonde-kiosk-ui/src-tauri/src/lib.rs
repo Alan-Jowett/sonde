@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -44,7 +45,6 @@ const IDENTITY_STATE_FILE_NAME: &str = "identity-state.json";
 const PRIVATE_KEY_FILE_NAME: &str = "kiosk-private-key.pem";
 const SHARED_DASHBOARD_RUNTIME_SOURCE: &str =
     include_str!("../../../../deploy/web-ui/dashboard-runtime.js");
-const ACTUAL_STATE_TABLE_NAME: &str = "actualstate";
 const SENSOR_DATA_TABLE_NAME: &str = "sensordata";
 const AZURE_TABLES_API_VERSION: &str = "2019-02-02";
 const STORAGE_TOKEN_SCOPE: &str = "https://storage.azure.com/.default";
@@ -348,16 +348,6 @@ struct RuntimeCredentialState {
 #[derive(Debug, Clone, Deserialize)]
 struct AzureTableQueryResponse<T> {
     value: Vec<T>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ActualStateEntity {
-    #[serde(rename = "PartitionKey")]
-    partition_key: String,
-    #[serde(rename = "RowKey")]
-    row_key: String,
-    #[serde(default, deserialize_with = "deserialize_optional_string")]
-    node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1347,12 +1337,18 @@ fn history_table_filter(partition_key: &str, start_ms: i64, end_ms: i64) -> Resu
     ))
 }
 
-fn node_partition_filter() -> &'static str {
-    "PartitionKey ge 'n:' and PartitionKey lt 'n;'"
-}
-
 fn table_query_url(storage_account: &str, table_name: &str) -> String {
     format!("https://{storage_account}.table.core.windows.net/{table_name}()")
+}
+
+fn node_partition_key(node_id: &str) -> String {
+    let digest = Sha256::digest(node_id.as_bytes());
+    let mut partition_key = String::with_capacity(2 + digest.len() * 2);
+    partition_key.push_str("n:");
+    for byte in digest {
+        write!(&mut partition_key, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    partition_key
 }
 
 async fn query_table_entities<T>(
@@ -1473,40 +1469,6 @@ fn ensure_query_completion(
     Ok(())
 }
 
-fn is_node_partition_key(partition_key: &str) -> bool {
-    partition_key.starts_with("n:")
-}
-
-fn latest_node_partition_map(rows: Vec<ActualStateEntity>) -> HashMap<String, String> {
-    let mut latest_by_partition = HashMap::<String, ActualStateEntity>::new();
-    for row in rows {
-        if !is_node_partition_key(&row.partition_key) {
-            continue;
-        }
-        let Some(node_id) = row.node_id.as_ref().map(|value| value.trim()) else {
-            continue;
-        };
-        if node_id.is_empty() {
-            continue;
-        }
-        match latest_by_partition.get(&row.partition_key) {
-            Some(existing) if existing.row_key <= row.row_key => {}
-            _ => {
-                latest_by_partition.insert(row.partition_key.clone(), row);
-            }
-        }
-    }
-
-    latest_by_partition
-        .into_values()
-        .filter_map(|row| {
-            row.node_id
-                .map(|node_id| (node_id.trim().to_string(), row.partition_key))
-        })
-        .filter(|(node_id, _)| !node_id.is_empty())
-        .collect()
-}
-
 fn parse_sensor_readings(
     decoded_readings: &str,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
@@ -1574,40 +1536,12 @@ async fn fetch_live_dashboard_variable_series(
     access_token: &str,
     request: &FetchDashboardVariableDataRequest,
 ) -> Result<FetchDashboardVariableDataResponse, String> {
-    let actual_state_rows = query_table_entities::<ActualStateEntity>(
-        access_token,
-        &request.storage_account,
-        ACTUAL_STATE_TABLE_NAME,
-        Some(node_partition_filter()),
-        None,
-        MAX_TABLE_QUERY_PAGES,
-        TableQueryOptions {
-            require_complete: true,
-        },
-    )
-    .await?;
-    let node_partitions = latest_node_partition_map(actual_state_rows.entities);
-
     let mut variables_by_partition = HashMap::<String, Vec<DashboardVariableRequest>>::new();
-    let mut missing_node_ids = Vec::new();
     for variable in &request.variables {
-        let Some(partition_key) = node_partitions.get(&variable.node_id) else {
-            missing_node_ids.push(variable.node_id.clone());
-            continue;
-        };
         variables_by_partition
-            .entry(partition_key.clone())
+            .entry(node_partition_key(&variable.node_id))
             .or_default()
             .push(variable.clone());
-    }
-
-    if !missing_node_ids.is_empty() {
-        missing_node_ids.sort();
-        missing_node_ids.dedup();
-        return Err(format!(
-            "Telemetry refresh could not resolve node ID(s) from actualstate: {}.",
-            missing_node_ids.join(", ")
-        ));
     }
 
     let mut points_by_series = HashMap::<(String, String), Vec<TelemetryPoint>>::new();
@@ -2814,10 +2748,10 @@ mod tests {
     }
 
     #[test]
-    fn node_partition_filter_matches_prefix_range_contract() {
+    fn node_partition_key_matches_azure_table_hash_contract() {
         assert_eq!(
-            node_partition_filter(),
-            "PartitionKey ge 'n:' and PartitionKey lt 'n;'"
+            node_partition_key("NODE_001"),
+            "n:f9a5fc4b5f20100bc864a86d056702438be382f95f68b9d8934912a6998c3df4"
         );
     }
 
@@ -2843,39 +2777,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("exceeded the maximum"));
-    }
-
-    #[test]
-    fn latest_node_partition_map_keeps_latest_row_per_partition() {
-        let node_partitions = latest_node_partition_map(vec![
-            ActualStateEntity {
-                partition_key: "n:001".into(),
-                row_key: "fff5".into(),
-                node_id: Some("NODE_A".into()),
-            },
-            ActualStateEntity {
-                partition_key: "n:001".into(),
-                row_key: "fff0".into(),
-                node_id: Some("NODE_A_NEW".into()),
-            },
-            ActualStateEntity {
-                partition_key: "g:001".into(),
-                row_key: "0001".into(),
-                node_id: Some("GATEWAY".into()),
-            },
-            ActualStateEntity {
-                partition_key: "n:002".into(),
-                row_key: "fff1".into(),
-                node_id: Some("NODE_B".into()),
-            },
-        ]);
-        assert_eq!(
-            node_partitions.get("NODE_A_NEW"),
-            Some(&"n:001".to_string())
-        );
-        assert_eq!(node_partitions.get("NODE_B"), Some(&"n:002".to_string()));
-        assert!(!node_partitions.contains_key("NODE_A"));
-        assert!(!node_partitions.contains_key("GATEWAY"));
     }
 
     #[test]

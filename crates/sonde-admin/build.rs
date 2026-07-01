@@ -1,29 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-fn explicit_protoc_path() -> Option<std::ffi::OsString> {
-    std::env::var_os("PROTOC").filter(|value| !value.is_empty())
-}
-
-fn has_usable_protoc_on_path() -> bool {
-    std::process::Command::new("protoc")
-        .arg("--version")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| {
-            let version = String::from_utf8_lossy(&output.stdout);
-            version
-                .split_whitespace()
-                .nth(1)
-                .and_then(|raw| raw.split('.').next())
-                .and_then(|major| major.parse::<u32>().ok())
-        })
-        .map(|major| major >= 3)
-        .unwrap_or(false)
-}
+#[path = "../build_support/protoc.rs"]
+mod protoc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../sonde-gateway/proto");
@@ -32,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=PATH");
     #[cfg(windows)]
     println!("cargo:rerun-if-env-changed=Path");
-    if explicit_protoc_path().is_none() && !has_usable_protoc_on_path() {
+    if protoc::explicit_protoc_path().is_none() && !protoc::has_usable_protoc_on_path() {
         let protoc = protoc_bin_vendored::protoc_bin_path()?;
         std::env::set_var("PROTOC", protoc);
     }

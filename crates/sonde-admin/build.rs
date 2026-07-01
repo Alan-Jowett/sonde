@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+fn has_protoc_on_path() -> bool {
+    std::process::Command::new("protoc")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../sonde-gateway/proto");
     println!("cargo:rerun-if-changed=../sonde-gateway/proto/admin.proto");
     println!("cargo:rerun-if-env-changed=PROTOC");
-    if std::env::var_os("PROTOC").is_none() {
+    if std::env::var_os("PROTOC").is_none() && !has_protoc_on_path() {
         let protoc = protoc_bin_vendored::protoc_bin_path()?;
         std::env::set_var("PROTOC", protoc);
     }

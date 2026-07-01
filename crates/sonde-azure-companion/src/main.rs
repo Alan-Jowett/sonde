@@ -227,6 +227,10 @@ struct WebUiEnvironmentFile {
     client_id: String,
     #[serde(rename = "tenantId")]
     tenant_id: String,
+    #[serde(rename = "loginEndpoint")]
+    login_endpoint: String,
+    #[serde(rename = "kioskSetupClientId")]
+    kiosk_setup_client_id: String,
     #[serde(rename = "storageAccount")]
     storage_account: String,
     #[serde(rename = "functionAppName")]
@@ -283,6 +287,11 @@ struct BicepBootstrapValues {
         deserialize_with = "deserialize_bicep_string"
     )]
     storage_queue_endpoint: String,
+    #[serde(
+        rename = "kioskSetupClientId",
+        deserialize_with = "deserialize_bicep_string"
+    )]
+    kiosk_setup_client_id: String,
     #[serde(
         rename = "upstreamQueue",
         deserialize_with = "deserialize_bicep_string"
@@ -1385,7 +1394,7 @@ fn parse_bicep_outputs(json: &str) -> Result<BootstrapArtifacts, CompanionError>
     let sp = ServicePrincipalStateFile {
         tenant_id: bootstrap_values.tenant_id.clone(),
         client_id: bootstrap_values.client_id.clone(),
-        login_endpoint: Some(bootstrap_values.login_endpoint),
+        login_endpoint: Some(bootstrap_values.login_endpoint.clone()),
         certificate_path: CERT_PEM_FILENAME.to_string(),
         private_key_path: KEY_PEM_FILENAME.to_string(),
     };
@@ -1401,6 +1410,8 @@ fn parse_bicep_outputs(json: &str) -> Result<BootstrapArtifacts, CompanionError>
         name: String::new(),
         client_id: bootstrap_values.client_id,
         tenant_id: bootstrap_values.tenant_id,
+        login_endpoint: bootstrap_values.login_endpoint,
+        kiosk_setup_client_id: bootstrap_values.kiosk_setup_client_id,
         storage_account: bootstrap_values.storage_account_name,
         function_app_name: bootstrap_values.function_app_name,
     };
@@ -3929,6 +3940,7 @@ mod tests {
                     "tenantId": "11111111-1111-1111-1111-111111111111",
                     "clientId": "22222222-2222-2222-2222-222222222222",
                     "loginEndpoint": "https://login.microsoftonline.com/",
+                    "kioskSetupClientId": "33333333-3333-3333-3333-333333333333",
                     "storageQueueEndpoint": "https://example.queue.core.windows.net",
                     "upstreamQueue": "upstream",
                     "downstreamQueue": "downstream",
@@ -3964,6 +3976,8 @@ mod tests {
                 name: String::new(),
                 client_id: "22222222-2222-2222-2222-222222222222".to_string(),
                 tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                login_endpoint: "https://login.microsoftonline.com/".to_string(),
+                kiosk_setup_client_id: "33333333-3333-3333-3333-333333333333".to_string(),
                 storage_account: "examplestorage".to_string(),
                 function_app_name: "sonde-decoder-abc123".to_string(),
             }
@@ -3978,6 +3992,7 @@ mod tests {
                     "tenantId": { "value": "11111111-1111-1111-1111-111111111111" },
                     "clientId": { "value": "22222222-2222-2222-2222-222222222222" },
                     "loginEndpoint": { "value": "https://login.microsoftonline.com/" },
+                    "kioskSetupClientId": { "value": "33333333-3333-3333-3333-333333333333" },
                     "storageQueueEndpoint": { "value": "https://example.queue.core.windows.net" },
                     "upstreamQueue": { "value": "upstream" },
                     "downstreamQueue": { "value": "downstream" },
@@ -4006,6 +4021,14 @@ mod tests {
         );
         assert_eq!(artifacts.storage_queues.upstream_queue, "upstream");
         assert_eq!(artifacts.storage_queues.downstream_queue, "downstream");
+        assert_eq!(
+            artifacts.web_ui_environment.login_endpoint,
+            "https://login.microsoftonline.com/"
+        );
+        assert_eq!(
+            artifacts.web_ui_environment.kiosk_setup_client_id,
+            "33333333-3333-3333-3333-333333333333"
+        );
         assert_eq!(
             artifacts.web_ui_environment.storage_account,
             "examplestorage"
@@ -4041,12 +4064,37 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_bicep_outputs_rejects_missing_kiosk_setup_client_id() {
+        let json = r#"{
+            "companionBootstrapValues": {
+                "value": {
+                    "tenantId": "11111111-1111-1111-1111-111111111111",
+                    "clientId": "22222222-2222-2222-2222-222222222222",
+                    "loginEndpoint": "https://login.microsoftonline.com/",
+                    "storageQueueEndpoint": "https://example.queue.core.windows.net",
+                    "upstreamQueue": "upstream",
+                    "downstreamQueue": "downstream",
+                    "storageAccountName": "examplestorage",
+                    "functionAppName": "sonde-decoder-abc123"
+                }
+            }
+        }"#;
+
+        let err = parse_bicep_outputs(json).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("failed to parse companionBootstrapValues"));
+    }
+
+    #[test]
     fn test_web_ui_environment_file_round_trip() {
         let env = WebUiEnvironmentFile {
             version: 1,
             name: String::new(),
             client_id: "22222222-2222-2222-2222-222222222222".to_string(),
             tenant_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            login_endpoint: "https://login.microsoftonline.com/".to_string(),
+            kiosk_setup_client_id: "33333333-3333-3333-3333-333333333333".to_string(),
             storage_account: "examplestorage".to_string(),
             function_app_name: "sonde-decoder-abc123".to_string(),
         };
@@ -4057,6 +4105,8 @@ mod tests {
         assert!(json.contains(r#""name": """#));
         assert!(json.contains(r#""clientId":"#));
         assert!(json.contains(r#""tenantId":"#));
+        assert!(json.contains(r#""loginEndpoint":"#));
+        assert!(json.contains(r#""kioskSetupClientId":"#));
         assert!(json.contains(r#""storageAccount":"#));
         assert!(json.contains(r#""functionAppName":"#));
     }

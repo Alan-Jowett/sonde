@@ -33,6 +33,7 @@ Azure companion architecture.
 | `resource_group_name` | empty | Optional override for the resource group name |
 | `resourceGroupOwnerTag` | empty | Optional `sonde-ci-owner` tag value applied to the deployment resource group |
 | `companionClientId` | none | Entra application (client) ID, created via CLI before deployment |
+| `kioskSetupClientId` | none | Kiosk onboarding public-client Entra application (client) ID, created via CLI before deployment |
 | `companionServicePrincipalObjectId` | none | Entra service principal object ID, created via CLI before deployment |
 | `upstreamQueueName` | `connector-upstream` | Gateway-originated connector traffic queue |
 | `downstreamQueueName` | `desired-state` | Desired-state ingress queue |
@@ -53,9 +54,10 @@ deployments if you want a handler-specific resource name.
 
 ## Entra app registration
 
-The Entra application and service principal must be created **before** deploying
-the Bicep stack, because the Microsoft Graph Bicep extension does not reliably
-return server-generated read-only properties (`appId`) on first creation
+The runtime Entra application, the kiosk setup public-client application, and
+the runtime service principal must be created **before** deploying the Bicep
+stack, because the Microsoft Graph Bicep extension does not reliably return
+server-generated read-only properties (`appId`) on first creation
 ([microsoftgraph/msgraph-bicep-types#193](https://github.com/microsoftgraph/msgraph-bicep-types/issues/193)).
 
 Both the Azure Live CI workflow and `sonde-azure-companion bootstrap` handle
@@ -70,6 +72,7 @@ az deployment sub what-if `
   --location eastus `
   --template-file .\deploy\bicep\main.bicep `
   --parameters companionClientId=$appId `
+  --parameters kioskSetupClientId=$kioskSetupAppId `
   --parameters companionServicePrincipalObjectId=$spOid
 ```
 
@@ -80,6 +83,7 @@ az deployment sub create `
   --location eastus `
   --template-file .\deploy\bicep\main.bicep `
   --parameters companionClientId=$appId `
+  --parameters kioskSetupClientId=$kioskSetupAppId `
   --parameters companionServicePrincipalObjectId=$spOid
 ```
 

@@ -331,9 +331,10 @@ When bootstrap is required, the Azure companion performs this sequence:
     bootstrap container reports failure.
 15. Wait for the container to finish. On success, the bootstrap script produces
     JSON deployment outputs on stdout. The Rust companion captures and parses
-    the JSON outputs to extract `tenantId`, `clientId`, Storage Queue endpoint,
-    queue names, `storageAccountName`, `functionAppName`, and deployment
-    container values from the `companionBootstrapValues` output object.
+    the JSON outputs to extract `tenantId`, `clientId`, `loginEndpoint`,
+    `kioskSetupClientId`, Storage Queue endpoint, queue names,
+    `storageAccountName`, `functionAppName`, and deployment container values
+    from the `companionBootstrapValues` output object.
 16. Write `service-principal.json`, `storage-queues.json`, and
     `web-ui-environment.json` to the staging directory with the extracted values
     and relative paths to the certificate and private-key PEM files.
@@ -631,12 +632,16 @@ staging directory:
      "name": "",
      "clientId": "<from companionBootstrapValues.clientId>",
      "tenantId": "<from companionBootstrapValues.tenantId>",
+     "loginEndpoint": "<from companionBootstrapValues.loginEndpoint>",
+     "kioskSetupClientId": "<from companionBootstrapValues.kioskSetupClientId>",
      "storageAccount": "<from companionBootstrapValues.storageAccountName>",
      "functionAppName": "<from companionBootstrapValues.functionAppName>"
    }
    ```
-   This file is a convenience artifact for Web UI onboarding. It is NOT
-   required by `check-runtime-ready` or runtime startup.
+   This file is a convenience artifact for Web UI and kiosk onboarding. It is
+   NOT required by `check-runtime-ready` or runtime startup, but the additive
+   kiosk fields are preserved by SPA import/export so dashboard edits do not
+   discard them.
 
 Only after all staging writes succeed does the bootstrap atomically move the
 staged files into the state volume root, replacing any previous artifacts.

@@ -781,7 +781,7 @@ a failed re-bootstrap does not corrupt the existing working state.
 
 ### AZC-0408  Azure subscription selection
 
-**Priority:** Should
+**Priority:** Must
 **Source:** Discovery review
 
 **Description:**
@@ -937,11 +937,12 @@ variables; they are passed through for future use.
 **Source:** [issue #1074](https://github.com/Alan-Jowett/sonde/issues/1074)
 
 **Description:**
-After successful Bicep deployment, the unified `bootstrap` subcommand SHOULD
+After successful Bicep deployment, the unified `bootstrap` subcommand MUST
 write a `web-ui-environment.json` file to the staging directory alongside
 `service-principal.json` and `storage-queues.json`. The file contains the
 connection details needed to configure a Web UI environment without manual
-transcription.
+transcription and to preserve additive kiosk onboarding metadata through SPA
+import/export.
 
 The file uses a single-object schema with a `version` field for forward
 compatibility:
@@ -952,15 +953,20 @@ compatibility:
   "name": "",
   "clientId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "loginEndpoint": "https://login.microsoftonline.com",
+  "kioskSetupClientId": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
   "storageAccount": "mystorageaccount",
   "functionAppName": "sonde-handler-xxxx"
 }
 ```
 
 The `name` field MUST be an empty string — the Web UI prompts the user for a
-name during import. The `storageAccountName` and `functionAppName` values are
-extracted from the `companionBootstrapValues` Bicep output alongside the
-existing `tenantId` and `clientId` values.
+name during import. The `storageAccountName`, `functionAppName`,
+`loginEndpoint`, and `kioskSetupClientId` values are extracted from the
+`companionBootstrapValues` Bicep output alongside the existing `tenantId` and
+`clientId` values. The additive kiosk fields are preserved by the SPA
+environment import/export flow even though the SPA itself does not use them for
+its own sign-in.
 
 This file is a convenience artifact for Web UI onboarding. It is NOT required
 for bootstrap-complete state or `check-runtime-ready` validation.
@@ -968,7 +974,7 @@ for bootstrap-complete state or `check-runtime-ready` validation.
 **Acceptance criteria:**
 
 1. Bootstrap writes `web-ui-environment.json` to the staging directory after successful Bicep deployment.
-2. The file contains `version` (integer 1), `name` (empty string), `clientId`, `tenantId`, `storageAccount`, and `functionAppName`.
-3. The `clientId`, `tenantId`, `storageAccount`, and `functionAppName` values are extracted from the Bicep deployment outputs.
+2. The file contains `version` (integer 1), `name` (empty string), `clientId`, `tenantId`, `loginEndpoint`, `kioskSetupClientId`, `storageAccount`, and `functionAppName`.
+3. The `clientId`, `tenantId`, `loginEndpoint`, `kioskSetupClientId`, `storageAccount`, and `functionAppName` values are extracted from the Bicep deployment outputs.
 4. The file is committed to the state generation directory alongside other bootstrap artifacts.
 5. Absence of `web-ui-environment.json` does not affect `check-runtime-ready` or runtime startup.

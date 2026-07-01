@@ -236,7 +236,8 @@ The setup identity contract is:
 1. it is provisioned or configured as a public client suitable for device-code sign-in,
 2. it is distinct from the shared certificate-authenticated runtime app,
 3. it has the delegated Microsoft Graph scope/permission set needed to manage
-   credentials on the shared runtime app, and
+   credentials on the shared runtime app, including delegated
+   `Application.ReadWrite.All`, and
 4. its non-secret client metadata is surfaced to kiosk onboarding so the app
    does not hard-code a third-party public-client identity.
 
@@ -244,7 +245,10 @@ Implementation note: the current kiosk certificate lifecycle flow patches the
 shared runtime app's `keyCredentials` through Microsoft Graph. The setup public
 client therefore carries the delegated Graph scope set required for that
 operation, and bootstrap/operator documentation must treat that consent as an
-explicit trust boundary for kiosk setup, renewal, and reset cleanup.
+explicit trust boundary for kiosk setup, renewal, and reset cleanup. Because
+the kiosk setup client metadata is part of the kiosk onboarding contract,
+bootstrap fails closed if this app cannot be provisioned or its delegated Graph
+permission set cannot be configured.
 
 ### 4.5  Azure handler Function App identity
 

@@ -15,6 +15,9 @@ param resource_group_name string = ''
 @description('Entra application (client) ID for the Azure companion. Created via CLI before deployment because the Microsoft Graph Bicep extension does not reliably return server-generated read-only properties on first creation (microsoftgraph/msgraph-bicep-types#193).')
 param companionClientId string
 
+@description('Entra application (client) ID for the kiosk setup public client. Created via CLI before deployment.')
+param kioskSetupClientId string
+
 @description('Entra service principal object ID for the Azure companion.')
 param companionServicePrincipalObjectId string
 
@@ -143,6 +146,7 @@ output companionBootstrapValues object = {
   tenantId: tenant().tenantId
   clientId: companionClientId
   loginEndpoint: environment().authentication.loginEndpoint
+  kioskSetupClientId: kioskSetupClientId
   storageQueueEndpoint: stack.outputs.queueServiceUri
   upstreamQueue: stack.outputs.upstreamQueueName
   downstreamQueue: stack.outputs.downstreamQueueName

@@ -198,10 +198,14 @@
    is distinct from the shared certificate-authenticated runtime app.
 4. Inspect the delegated Microsoft Graph permission configuration for the setup app.
 5. Assert: the setup app has the delegated credential-management access needed
-   for kiosk certificate add/replace/remove flows.
+   for kiosk certificate add/replace/remove flows, including delegated
+   `Application.ReadWrite.All`.
 6. Inspect the documented handoff or environment-export metadata.
 7. Assert: the kiosk-facing outputs include at least the setup public-client ID
    and authority-host/login-endpoint metadata.
+8. Induce a setup-app provisioning or delegated-permission failure.
+9. Assert: bootstrap exits non-zero and does not emit success-shaped kiosk
+   onboarding metadata.
 
 ---
 

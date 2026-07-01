@@ -994,7 +994,8 @@ without redeployment. Environments are stored in `localStorage`.
 
 1. No deploy-time configuration file is required for normal operation.
 2. Each environment stores: name, clientId, tenantId, storageAccount,
-   functionAppName, and Sensor Data preferences.
+   functionAppName, optional additive kiosk onboarding metadata
+   (`loginEndpoint`, `kioskSetupClientId`), and Sensor Data preferences.
 3. Environments are persisted in `localStorage` under `sonde_environments`.
 4. Sensor Data preferences are scoped to their environment and do not leak
    across environment switches.
@@ -1014,7 +1015,10 @@ Adding an environment MUST persist all fields to `localStorage` under the
 **Acceptance criteria:**
 
 1. All environment fields, including Sensor Data preferences, are stored.
-2. The environment is retrievable after page reload.
+2. Persisting later environment-scoped updates such as dashboard edits or Sensor
+   Data preference changes preserves any existing recognized kiosk onboarding
+   metadata on that environment.
+3. The environment is retrievable after page reload.
 
 ---
 
@@ -1093,23 +1097,26 @@ when the `name` field is blank, and handles conflicts with existing environments
 1. An "Import" button is visible in both the environment manager panel and the first-load setup modal.
 2. Clicking Import opens a file picker accepting `.json` files.
 3. The file MUST contain `version` equal to integer `1`; files with missing, non-numeric, zero, or greater-than-1 version values are rejected with an error message.
-4. The four data fields (`clientId`, `tenantId`, `storageAccount`, `functionAppName`) are validated using the same rules as WEB-0802.
+4. The four required data fields (`clientId`, `tenantId`, `storageAccount`, `functionAppName`) are validated using the same rules as WEB-0802.
 5. If an optional `sensorData` object is present, `viewMode` is limited to
    `graph` or `table`, `timeRange` is limited to the supported preset values,
    `selectedSeries` is an array of strings, and each per-series override value
    has `displayName` string, finite numeric `scaleDivisor`, and `unitSuffix`
    string fields when present.
-6. If `sensorData` is absent, or if `sensorData.selectedSeries` is absent, the
+6. If optional kiosk onboarding metadata is present, `kioskSetupClientId` must
+   be a valid GUID and `loginEndpoint` must be a valid HTTPS authority URL.
+7. If `sensorData` is absent, or if `sensorData.selectedSeries` is absent, the
    imported environment uses default Sensor Data preferences for the missing
    portion.
-7. If `name` is blank or missing, a name prompt is shown before saving.
-8. If `name` conflicts with an existing environment, a prompt offers overwrite or rename.
-9. Importing over an existing environment replaces that environment's Sensor
+8. If `name` is blank or missing, a name prompt is shown before saving.
+9. If `name` conflicts with an existing environment, a prompt offers overwrite or rename.
+10. Importing over an existing environment replaces that environment's Sensor
    Data preferences with the imported values.
-10. Overwriting the active environment triggers the full re-initialization sequence defined by WEB-0806.
-11. Successfully imported environments appear in the environment list and are persisted to `localStorage`.
-12. Non-JSON files, files with missing required fields, and files with a top-level type other than object are rejected with a descriptive error message.
-13. Extra JSON properties beyond the defined schema are ignored.
+11. Overwriting the active environment triggers the full re-initialization sequence defined by WEB-0806.
+12. Successfully imported environments appear in the environment list and are persisted to `localStorage`.
+13. Non-JSON files, files with missing required fields, and files with a top-level type other than object are rejected with a descriptive error message.
+14. Recognized additive kiosk onboarding metadata is preserved in the stored environment record rather than discarded.
+15. Extra JSON properties beyond the defined schema are ignored.
 
 ---
 
@@ -1130,7 +1137,8 @@ import-compatible schema.
 2. Clicking Export triggers a browser download of a `.json` file.
 3. The filename is derived from the environment name with unsafe filesystem characters replaced; if the result is empty, the fallback filename `sonde-environment.json` is used.
 4. The exported file contains `version` (integer 1), the five environment
-   connection fields, and the environment's Sensor Data preferences.
+   connection fields, any recognized additive kiosk onboarding metadata present
+   on the environment, and the environment's Sensor Data preferences.
 5. The exported file is valid for re-import via WEB-0807.
 
 ---

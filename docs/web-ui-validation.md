@@ -295,7 +295,8 @@ and verifies one or more acceptance criteria.
 |---|---|---|---|---|
 | T-WEB-0801 | WEB-0803 | First load with no environments shows full-screen setup modal; main UI is inaccessible | Manual | Planned |
 | T-WEB-0801b | WEB-0803 | Setup modal cannot be closed without adding an environment (no Close button) | Manual | Planned |
-| T-WEB-0802 | WEB-0801 | Adding an environment persists all fields to `localStorage` under `sonde_environments` | Manual | Planned |
+| T-WEB-0802 | WEB-0801 | Adding an environment persists all fields, including optional kiosk onboarding metadata, to `localStorage` under `sonde_environments` | Manual | Planned |
+| T-WEB-0802c | WEB-0801 | After importing kiosk onboarding metadata, later dashboard or Sensor Data saves preserve `loginEndpoint` and `kioskSetupClientId` in `localStorage` and subsequent export output | Unit (JS) | Planned |
 | T-WEB-0802b | WEB-0800 | First run after upgrade migrates legacy `sonde_series_overrides` into the active environment's Sensor Data preferences | Manual | Planned |
 | T-WEB-0803 | WEB-0806 | Switching environment re-initializes MSAL, clears session, and refreshes active tab | Manual | Planned |
 | T-WEB-0803b | WEB-0806 | Auto-refresh timer cleared on environment switch | Manual | Planned |
@@ -320,16 +321,18 @@ and verifies one or more acceptance criteria.
 | T-WEB-0810 | WEB-0807 | Importing a valid `.json` file with all required connection fields adds the environment to the list | Manual | Planned |
 | T-WEB-0810b | WEB-0807 | Importing a valid `sensorData` object restores view mode, preset time range, selected series, and per-series overrides | Manual | Planned |
 | T-WEB-0810c | WEB-0807 | Importing a legacy environment file without `sensorData` succeeds and initializes default Sensor Data preferences | Manual | Planned |
+| T-WEB-0810d | WEB-0807 | Importing a file with valid additive kiosk onboarding metadata preserves `loginEndpoint` and `kioskSetupClientId` in the stored environment record | Manual | Planned |
 | T-WEB-0811 | WEB-0807 | Importing a file with blank `name` prompts user for a name before saving | Manual | Planned |
 | T-WEB-0812 | WEB-0807 | Importing a file with a name that conflicts with an existing environment offers overwrite or rename | Manual | Planned |
 | T-WEB-0813 | WEB-0807 | Importing a file with `version` other than `1` (missing, zero, greater) is rejected with error | Manual | Planned |
 | T-WEB-0814 | WEB-0807, WEB-0802 | Importing a file with invalid field values (bad GUID, wrong storage account format) is rejected | Manual | Planned |
+| T-WEB-0814b | WEB-0807 | Importing a file with invalid `kioskSetupClientId` or non-HTTPS `loginEndpoint` is rejected | Manual | Planned |
 | T-WEB-0815 | WEB-0807 | Overwriting the active environment via import triggers MSAL re-initialization | Manual | Planned |
 | T-WEB-0815b | WEB-0807 | Import overwrite replaces, rather than merges, the destination environment's saved Sensor Data preferences | Manual | Planned |
-| T-WEB-0816 | WEB-0808 | Export button downloads a `.json` file with `version: 1`, the five environment fields, and the `sensorData` object | Manual | Planned |
+| T-WEB-0816 | WEB-0808 | Export button downloads a `.json` file with `version: 1`, the five environment fields, any recognized kiosk onboarding metadata present on the environment, and the `sensorData` object | Manual | Planned |
 | T-WEB-0816b | WEB-0808 | Export of an environment with unsafe filename characters (slashes, colons) produces a sanitized filename | Manual | Planned |
 | T-WEB-0816c | WEB-0808 | Export of an environment whose sanitized name is empty uses fallback `sonde-environment.json` | Manual | Planned |
-| T-WEB-0817 | WEB-0807, WEB-0808 | Exported file round-trips through import: export → import into fresh browser → environment connection fields and Sensor Data preferences are preserved | Manual | Planned |
+| T-WEB-0817 | WEB-0807, WEB-0808 | Exported file round-trips through import: export → import into fresh browser → environment connection fields, additive kiosk onboarding metadata, and Sensor Data preferences are preserved | Manual | Planned |
 | T-WEB-0818 | WEB-0803 | First-load setup modal includes Import button and accepts environment file | Manual | Planned |
 | T-WEB-0819 | WEB-0807 | Importing a non-JSON file (e.g., plain text, binary) is rejected with a descriptive error | Manual | Planned |
 | T-WEB-0820 | WEB-0807 | Importing a JSON file with top-level array, null, or string is rejected | Manual | Planned |

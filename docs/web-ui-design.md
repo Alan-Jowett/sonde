@@ -619,6 +619,8 @@ Each environment is a JSON object stored in `localStorage`:
   "name": "production",
   "clientId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "loginEndpoint": "https://login.microsoftonline.com",
+  "kioskSetupClientId": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
   "storageAccount": "mystorageaccount",
   "functionAppName": "sonde-decoder-xxxx",
   "sensorData": {
@@ -630,6 +632,11 @@ Each environment is a JSON object stored in `localStorage`:
   }
 }
 ```
+
+`loginEndpoint` and `kioskSetupClientId` are optional additive kiosk-onboarding
+fields. On import, the SPA validates them and normalizes `loginEndpoint` by
+trimming and stripping trailing slashes before persisting/re-exporting them, but
+the SPA's own sign-in flow does not consume them.
 
 **Storage keys:**
 
@@ -649,6 +656,8 @@ for forward compatibility:
   "name": "production",
   "clientId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "loginEndpoint": "https://login.microsoftonline.com",
+  "kioskSetupClientId": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
   "storageAccount": "mystorageaccount",
   "functionAppName": "sonde-decoder-xxxx",
   "sensorData": {
@@ -668,12 +677,16 @@ output; when omitted, the SPA uses default Sensor Data preferences. Within
 selection has been saved yet, while an empty array preserves an intentional
 empty selection. The local-storage-only `selectedSeriesInitialized` flag is not
 serialized into the import/export file; omission versus presence of
-`selectedSeries` carries that distinction on the wire. Extra properties beyond
-the defined schema are silently ignored to allow forward-compatible extensions.
+`selectedSeries` carries that distinction on the wire. The optional
+`loginEndpoint` and `kioskSetupClientId` fields are preserved when present so
+kiosk onboarding metadata survives SPA edits. Extra properties beyond the
+defined schema are silently ignored to allow forward-compatible extensions.
 
 The Azure companion bootstrap emits this file as `web-ui-environment.json` with
 `name` set to empty string and no `sensorData` object — the SPA prompts the
-user for a name during import and fills in default Sensor Data preferences.
+user for a name during import and fills in default Sensor Data preferences. If
+bootstrap includes additive kiosk onboarding metadata, the SPA keeps those
+fields when importing and exporting the environment.
 
 ### 11.3 Authority Derivation
 

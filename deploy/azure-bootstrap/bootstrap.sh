@@ -227,6 +227,33 @@ if [ -z "$APP_ID" ]; then
     exit 1
 fi
 
+KIOSK_SETUP_APP_DISPLAY_NAME="${SONDE_AZURE_PROJECT_NAME:-sonde}-kiosk-setup"
+KIOSK_SETUP_APP_ID=""
+for _retry in $(seq 1 6); do
+    KIOSK_SETUP_APP_ID=$(az ad app list \
+        --filter "displayName eq '$KIOSK_SETUP_APP_DISPLAY_NAME'" \
+        --query '[0].appId' -o tsv 2>/dev/null || true)
+    if [ -n "$KIOSK_SETUP_APP_ID" ] && [ "$KIOSK_SETUP_APP_ID" != "None" ]; then
+        echo "Found existing kiosk setup Entra app registration $KIOSK_SETUP_APP_ID" >&2
+        break
+    fi
+    KIOSK_SETUP_APP_ID=""
+    KIOSK_SETUP_APP_ID=$(az rest --method POST \
+        --url "https://graph.microsoft.com/v1.0/applications" \
+        --headers "Content-Type=application/json" \
+        --body "$(jq -n -c \
+            --arg name "$KIOSK_SETUP_APP_DISPLAY_NAME" \
+            '{displayName: $name, signInAudience: "AzureADMyOrg", isFallbackPublicClient: true}')" \
+        --query appId -o tsv 2>/dev/null) && { echo "Created kiosk setup Entra app registration $KIOSK_SETUP_APP_ID" >&2; break; }
+    KIOSK_SETUP_APP_ID=""
+    echo "Waiting for kiosk setup Entra app (attempt $_retry/6)..." >&2
+    sleep 10
+done
+if [ -z "$KIOSK_SETUP_APP_ID" ]; then
+    echo "Failed to create or find kiosk setup Entra app '$KIOSK_SETUP_APP_DISPLAY_NAME'" >&2
+    exit 1
+fi
+
 # Register certificate credential and configure SPA redirect URIs.
 # After app creation, Entra ID may take a few seconds to replicate
 # the new app to all read replicas, so retry the lookup.
@@ -240,6 +267,23 @@ if [ -z "$APP_OID" ]; then
     echo "Failed to resolve Entra app object ID for $APP_ID after retries" >&2
     exit 1
 fi
+
+KIOSK_SETUP_APP_OID=""
+for _retry in $(seq 1 12); do
+    KIOSK_SETUP_APP_OID=$(az ad app show --id "$KIOSK_SETUP_APP_ID" --query id -o tsv 2>/dev/null) && break
+    echo "Waiting for kiosk setup Entra app replication (attempt $_retry/12)..." >&2
+    sleep 10
+done
+if [ -z "$KIOSK_SETUP_APP_OID" ]; then
+    echo "Failed to resolve kiosk setup Entra app object ID for $KIOSK_SETUP_APP_ID after retries" >&2
+    exit 1
+fi
+
+az rest --method PATCH \
+    --url "https://graph.microsoft.com/v1.0/applications/$KIOSK_SETUP_APP_OID" \
+    --headers "Content-Type=application/json" \
+    --body '{"isFallbackPublicClient":true}' >/dev/null
+echo "Configured kiosk setup public-client app" >&2
 
 # Build SPA redirect URIs from the same env vars that Bicep previously used.
 github_pages_origin="${SONDE_AZURE_GITHUB_PAGES_ORIGIN:-https://alan-jowett.github.io}"
@@ -294,6 +338,7 @@ deployment_outputs="$(az deployment sub create \
     --location "$SONDE_AZURE_LOCATION" \
     --template-file /opt/sonde/deploy/bicep/main.bicep \
     --parameters "companionClientId=$APP_ID" \
+                 "kioskSetupClientId=$KIOSK_SETUP_APP_ID" \
                  "companionServicePrincipalObjectId=$SP_OID" \
                  "location=$SONDE_AZURE_LOCATION" \
                  "project_name=$SONDE_AZURE_PROJECT_NAME" \
@@ -415,6 +460,41 @@ else
         --output none
     echo "Exposed api://$companion_client_id/user_impersonation scope" >&2
 fi
+
+graph_app_id="00000003-0000-0000-c000-000000000000"
+graph_permission_id="$(az ad sp show --id "$graph_app_id" \
+    --query "oauth2PermissionScopes[?value=='Application.ReadWrite.All'].id | [0]" \
+    --output tsv 2>/dev/null || true)"
+if [ -z "$graph_permission_id" ] || [ "$graph_permission_id" = "None" ]; then
+    echo "failed to resolve Microsoft Graph delegated permission ID for Application.ReadWrite.All" >&2
+    exit 1
+fi
+
+if az ad app permission list --id "$KIOSK_SETUP_APP_OID" --query "[?resourceAppId=='$graph_app_id'].resourceAccess[?id=='$graph_permission_id'] | [0]" --output tsv 2>/dev/null | grep -q .; then
+    echo "Kiosk setup app Application.ReadWrite.All permission already configured" >&2
+else
+    setup_perm_err="$(mktemp)"
+    if ! az ad app permission add --id "$KIOSK_SETUP_APP_OID" \
+        --api "$graph_app_id" \
+        --api-permissions "$graph_permission_id=Scope" 2>"$setup_perm_err"; then
+        cat "$setup_perm_err" >&2
+        rm -f "$setup_perm_err"
+        exit 1
+    fi
+    grep -v 'is needed to make the change effective' "$setup_perm_err" >&2 || true
+    rm -f "$setup_perm_err"
+    echo "Declared kiosk setup app Microsoft Graph Application.ReadWrite.All permission" >&2
+fi
+
+if ! az ad app permission grant \
+    --id "$KIOSK_SETUP_APP_ID" \
+    --api "$graph_app_id" \
+    --scope "Application.ReadWrite.All" \
+    --output none; then
+    echo "failed to grant kiosk setup app Microsoft Graph Application.ReadWrite.All permission" >&2
+    exit 1
+fi
+echo "Granted kiosk setup app Microsoft Graph Application.ReadWrite.All permission" >&2
 
 # Assign Storage Table Data Contributor to the deploying user so they can
 # access the programs table via the SPA immediately after bootstrap.

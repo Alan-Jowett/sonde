@@ -297,10 +297,14 @@ the shared certificate-authenticated runtime app.
 2. The setup-login app is distinct from the shared certificate-authenticated
    runtime app used for unattended kiosk and Azure companion operation.
 3. The setup-login app is configured with the delegated Microsoft Graph access
-   needed to add, replace, and remove credentials on the shared runtime app.
+   needed to add, replace, and remove credentials on the shared runtime app,
+   including `Application.ReadWrite.All` delegated consent.
 4. The workflow surfaces the non-secret setup-login metadata needed by the kiosk
    app, including at least the public-client ID and authority-host/login-endpoint
    information.
+5. If provisioning the setup-login app or configuring its delegated Graph access
+   fails, bootstrap fails closed rather than reporting success with kiosk
+   metadata omitted.
 
 ---
 

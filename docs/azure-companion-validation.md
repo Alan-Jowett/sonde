@@ -855,9 +855,9 @@
 **Validates:** AZC-0413
 
 **Procedure:**
-1. Run the bootstrap subcommand with device-flow stubbed to succeed and Bicep deployment stubbed to return known output values (tenantId, clientId, storageAccountName, functionAppName).
+1. Run the bootstrap subcommand with device-flow stubbed to succeed and Bicep deployment stubbed to return known output values (`tenantId`, `clientId`, `loginEndpoint`, `kioskSetupClientId`, `storageAccountName`, `functionAppName`).
 2. Assert: `web-ui-environment.json` exists in the state volume after bootstrap completes.
-3. Parse `web-ui-environment.json` and assert: it contains `version` (integer 1), `name` (empty string), `clientId`, `tenantId`, `storageAccount`, and `functionAppName`.
-4. Assert: `clientId`, `tenantId`, `storageAccount`, and `functionAppName` match the stubbed Bicep output values.
+3. Parse `web-ui-environment.json` and assert: it contains `version` (integer 1), `name` (empty string), `clientId`, `tenantId`, `loginEndpoint`, `kioskSetupClientId`, `storageAccount`, and `functionAppName`.
+4. Assert: `clientId`, `tenantId`, `loginEndpoint`, `kioskSetupClientId`, `storageAccount`, and `functionAppName` match the stubbed Bicep output values.
 5. Assert: `check-runtime-ready` does not depend on the presence of `web-ui-environment.json` (removing the file still passes the check).
 6. Assert: runtime startup (`sonde-azure-companion run`) does not depend on the presence of `web-ui-environment.json` (removing the file still proceeds to the runtime bridge path).

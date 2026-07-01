@@ -378,7 +378,14 @@ if [ "$#" -ge 3 ] && [ "$1" = "login" ] && [ "$2" = "--use-device-code" ] && [ "
   exit 0
 fi
 if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "app" ] && [ "$3" = "list" ]; then
-  printf 'client-456\n'
+  case "$*" in
+    *kiosk-setup*)
+      printf 'kiosk-client-789\n'
+      ;;
+    *)
+      printf 'client-456\n'
+      ;;
+  esac
   exit 0
 fi
 if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "app" ] && [ "$3" = "create" ]; then
@@ -386,7 +393,11 @@ if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "app" ] && [ "$3" = "create" ];
   exit 0
 fi
 if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "sp" ] && [ "$3" = "show" ]; then
-  printf 'sp-oid-999\n'
+  if [ "$4" = "--id" ] && [ "$5" = "00000003-0000-0000-c000-000000000000" ]; then
+    printf '06da0dbc-49e2-44d2-8312-53f166ab848a\n'
+  else
+    printf 'sp-oid-999\n'
+  fi
   exit 0
 fi
 if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "sp" ] && [ "$3" = "create" ]; then
@@ -414,7 +425,7 @@ if [ "$#" -ge 4 ] && [ "$1" = "deployment" ] && [ "$2" = "sub" ] && [ "$3" = "cr
   [ -n "$name" ] || exit 65
   [ "$query" = "properties.outputs" ] || exit 66
   cat <<'EOF'
-{{"resourceGroupName":{{"type":"String","value":"rg-sonde"}},"functionAppName":{{"type":"String","value":"func-sonde"}},"deploymentContainerName":{{"type":"String","value":"deploypkg"}},"deploymentContainerUrl":{{"type":"String","value":"https://example.blob.core.windows.net/deploypkg"}},"companionBootstrapValues":{{"type":"Object","value":{{"tenantId":"tenant-123","clientId":"client-456","serviceBusNamespace":"sonde.servicebus.windows.net","upstreamQueue":"connector-upstream","downstreamQueue":"desired-state"}}}}}}
+{{"resourceGroupName":{{"type":"String","value":"rg-sonde"}},"functionAppName":{{"type":"String","value":"func-sonde"}},"deploymentContainerName":{{"type":"String","value":"deploypkg"}},"deploymentContainerUrl":{{"type":"String","value":"https://example.blob.core.windows.net/deploypkg"}},"companionBootstrapValues":{{"type":"Object","value":{{"tenantId":"tenant-123","clientId":"client-456","loginEndpoint":"https://login.microsoftonline.com","kioskSetupClientId":"kiosk-client-789","serviceBusNamespace":"sonde.servicebus.windows.net","upstreamQueue":"connector-upstream","downstreamQueue":"desired-state"}}}}}}
 EOF
   exit 0
 fi
@@ -445,7 +456,14 @@ if [ "$#" -ge 4 ] && [ "$1" = "ad" ] && [ "$2" = "app" ] && [ "$3" = "show" ]; t
     esac
   done
   if [ "$query" = "id" ]; then
-    printf 'obj-id-789\n'
+    case "$*" in
+      *kiosk-client-789*)
+        printf 'kiosk-obj-321\n'
+        ;;
+      *)
+        printf 'obj-id-789\n'
+        ;;
+    esac
   elif [ "$query" = "spa.redirectUris" ]; then
     printf '[]\n'
   elif [ "$query" = "api.oauth2PermissionScopes" ]; then
@@ -571,6 +589,9 @@ esac
             || stderr.contains("API scope user_impersonation already exposed"),
         "bootstrap did not report API scope exposure: {stderr}"
     );
+    assert!(stderr.contains("Configured kiosk setup public-client app"));
+    assert!(stderr
+        .contains("Granted kiosk setup app Microsoft Graph Application.ReadWrite.All permission"));
     assert!(stderr.contains("Entra app configuration complete"));
 
     let az_calls = fs::read_to_string(az_log).unwrap();
@@ -580,6 +601,8 @@ esac
     assert!(az_calls.contains("functionapp function list"));
     assert!(az_calls.contains("ad app show"));
     assert!(az_calls.contains("ad app update") || az_calls.contains("ad app permission"));
+    assert!(az_calls.contains("kioskSetupClientId=kiosk-client-789"));
+    assert!(az_calls.contains("Application.ReadWrite.All"));
 }
 
 #[test]

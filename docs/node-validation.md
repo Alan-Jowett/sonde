@@ -673,7 +673,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
    - reject reads from undocumented register addresses.
 3. Execute one wake cycle with a mock gateway that accepts APP_DATA.
 4. Assert: the program's I2C traffic is limited to the documented VEML7700 registers needed for configuration and measurement.
-5. Assert: the program calls `delay_us()` with a duration consistent with the selected integration-time profile before reading result registers.
+5. Assert: the program calls `delay_us()` with a duration consistent with the selected autorange band before reading result registers.
 6. Assert: the program emits APP_DATA via `send_async()` or `send()` with a payload containing the written configuration word, the mocked ALS/WHITE counts, and the derived lux value.
 7. Assert: if the mock HAL injects an I2C error while writing the measurement configuration or reading the `ALS`/`WHITE` result registers, the program emits no APP_DATA for that wake cycle.
 
@@ -2852,7 +2852,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N509 | `test_wake_reason_early`, `test_wake_reason` (sleep.rs) | wake_cycle.rs, sleep.rs |
 | T-N510 | `test_post_update_immediate_execution` | wake_cycle.rs |
 | T-N600 | `test_helper_i2c_read` | bpf_dispatch.rs |
-| T-N600a | `test_veml7700_sensor_program_queues_payload_with_documented_registers`, `test_veml7700_sensor_program_suppresses_payload_on_i2c_error`, `test_veml7700_sensor_program_suppresses_payload_on_i2c_write_error`, `test_veml7700_sensor_program_does_not_persist_conf_on_i2c_error`, `test_veml7700_sensor_program_switches_to_lowlight_after_low_reading`, `test_veml7700_sensor_program_switches_back_to_default_after_bright_history` | bpf_dispatch.rs |
+| T-N600a | `test_veml7700_sensor_program_queues_payload_with_documented_registers`, `test_veml7700_sensor_program_suppresses_payload_on_i2c_error`, `test_veml7700_sensor_program_suppresses_payload_on_i2c_write_error`, `test_veml7700_sensor_program_does_not_persist_band_on_i2c_error`, `test_veml7700_sensor_program_steps_more_sensitive_after_low_reading`, `test_veml7700_sensor_program_steps_less_sensitive_after_high_reading`, `test_veml7700_sensor_program_uses_persisted_band_before_adjusting` | bpf_dispatch.rs |
 | T-N601 | `test_helper_i2c_error` | bpf_dispatch.rs |
 | T-N602 | `test_helper_spi_transfer` | bpf_dispatch.rs |
 | T-N603 | `test_helper_gpio_and_adc` | bpf_dispatch.rs |

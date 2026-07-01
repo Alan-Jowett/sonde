@@ -8,34 +8,37 @@
  * 0x10. Per the datasheet (`84286`), register words are transferred little-
  * endian on the bus (low byte first, then high byte).
  *
- * This program uses three sensitivity profiles with hysteresis:
- *   - Bright profile: ALS gain 1/8, ALS integration time 25 ms
- *   - Normal profile: ALS gain x1, ALS integration time 100 ms
- *   - Low-light profile: ALS gain x2, ALS integration time 800 ms
+ * This program uses a ten-band autoranging ladder. Each band is defined by a
+ * gain/integration-time pair, ordered from most sensitive to least sensitive:
+ *   - x2 / 800 ms  -> 3.6 mLux/count
+ *   - x2 / 400 ms  -> 7.2 mLux/count
+ *   - x2 / 200 ms  -> 14.4 mLux/count
+ *   - x2 / 100 ms  -> 28.8 mLux/count
+ *   - x2 / 50 ms   -> 57.6 mLux/count
+ *   - x2 / 25 ms   -> 115.2 mLux/count
+ *   - x1 / 25 ms   -> 230.4 mLux/count
+ *   - x1/4 / 50 ms -> 460.8 mLux/count
+ *   - x1/4 / 25 ms -> 921.6 mLux/count
+ *   - x1/8 / 25 ms -> 1843.2 mLux/count
  *
- * A single-entry array map keeps the three most recent lux readings and the
- * currently selected profile across wake cycles. Before each measurement, the
- * program averages the stored readings:
- *   - if avg < 200 mLux, switch to the low-light profile
- *   - if avg > 1000 mLux, switch from low-light back to the normal profile
- *   - if avg >= 3,000,000 mLux, switch to the bright profile
- *   - if avg < 2,000,000 mLux, switch from bright back to the normal profile
+ * That spans the datasheet endpoints from 3.6 mLux/count (x2 / 800 ms) up to
+ * 1843.2 mLux/count (x1/8 / 25 ms), for an effective full-scale range of about
+ * 0.0036 lux to 120.8 klux.
  *
- * This adds hysteresis so the program does not flap around the threshold, and
- * it uses the high-sensitivity profile only when recent readings justify it.
+ * A single-entry array map keeps the current band across wake cycles. After
+ * each measurement, the program uses the larger of ALS and WHITE counts to
+ * choose the band for the next wake cycle:
+ *   - if either count exceeds 75% of full scale, switch one band up
+ *   - if both counts are below 25% of full scale, switch one band down
  *
  * Each wake cycle:
- *   1. Choose the profile from the rolling average of the last three readings.
- *   2. Write ALS_CONF_0 for the chosen profile.
+ *   1. Select the current autorange band.
+ *   2. Write ALS_CONF_0 for that band.
  *   3. Wait slightly longer than the selected integration time.
  *   4. Read the ALS and WHITE 16-bit result registers.
- *   5. Convert the ALS count to millilux using the selected profile:
- *        x1/8 / 25 ms: lux_ml = als_counts * 1843.2 mLux/count
- *        x1 / 100 ms: lux_ml = als_counts * 57.6 mLux/count
- *        x2 / 800 ms: lux_ml = als_counts * 3.6 mLux/count
+ *   5. Convert the ALS count to millilux using the selected band.
  *   6. Clamp the reported lux value to a minimum of 1 mLux.
- *   7. Store the new reading in the three-sample rolling history.
- *   8. Persist the selected profile only after the measurement succeeds.
+ *   7. Persist the selected band for the next wake cycle.
  *
  * Payload (18 bytes, queued with send_async):
  *   [0..7]   timestamp (little-endian u64, ms since epoch)
@@ -54,32 +57,34 @@
 #define VEML7700_REG_ALS        0x04u
 #define VEML7700_REG_WHITE      0x05u
 
-/* gain 1/8, integration time 25 ms, interrupt disabled, ALS power on */
-#define VEML7700_ALS_CONF_0_BRIGHT   0x1300u
-/* gain x1, integration time 100 ms, interrupt disabled, ALS power on */
-#define VEML7700_ALS_CONF_0_DEFAULT  0x0000u
-/* gain x2, integration time 800 ms, interrupt disabled, ALS power on */
-#define VEML7700_ALS_CONF_0_LOWLIGHT 0x08C0u
 #define VEML7700_ALS_CONF_0_SHUTDOWN 0x0001u
 
-#define VEML7700_LUX_LOW_ML          200u
-#define VEML7700_LUX_DEFAULT_ML      1000u
-#define VEML7700_LUX_BRIGHT_EXIT_ML  2000000u
-#define VEML7700_LUX_BRIGHT_ENTER_ML 3000000u
+/* Raw-count hysteresis thresholds. */
+#define VEML7700_COUNTS_LOW_MAX   0x3FFFu
+#define VEML7700_COUNTS_HIGH_MIN  0xC000u
 
-/* Wait slightly longer than the selected integration time. */
-#define VEML7700_CONVERSION_US_BRIGHT   40000u
-#define VEML7700_CONVERSION_US_DEFAULT  120000u
-#define VEML7700_CONVERSION_US_LOWLIGHT 900000u
-
-struct veml7700_state {
-    __u32 recent_lux_ml[3];
-    __u16 current_conf;
-    __u8 recent_count;
-    __u8 recent_index;
+enum {
+    VEML7700_BAND_X2_800 = 0,
+    VEML7700_BAND_X2_400 = 1,
+    VEML7700_BAND_X2_200 = 2,
+    VEML7700_BAND_X2_100 = 3,
+    VEML7700_BAND_X2_50  = 4,
+    VEML7700_BAND_X2_25  = 5,
+    VEML7700_BAND_X1_25  = 6,
+    VEML7700_BAND_Q4_50  = 7,
+    VEML7700_BAND_Q4_25  = 8,
+    VEML7700_BAND_Q8_25  = 9,
+    VEML7700_BAND_COUNT  = 10,
+    VEML7700_BAND_DEFAULT = VEML7700_BAND_X2_50,
 };
 
-typedef char veml7700_state_size_must_be_16[(sizeof(struct veml7700_state) == 16u) ? 1 : -1];
+struct veml7700_state {
+    __u8 current_band;
+    __u8 initialized;
+    __u16 reserved;
+};
+
+typedef char veml7700_state_size_must_be_4[(sizeof(struct veml7700_state) == 4u) ? 1 : -1];
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -125,26 +130,106 @@ static int veml7700_read_word(__u8 reg, __u16 *value_out)
     return 0;
 }
 
-static __u32 veml7700_conversion_us(__u16 conf)
+static __u8 veml7700_select_band(const struct veml7700_state *state)
 {
-    if (conf == VEML7700_ALS_CONF_0_LOWLIGHT)
-        return VEML7700_CONVERSION_US_LOWLIGHT;
-    if (conf == VEML7700_ALS_CONF_0_BRIGHT)
-        return VEML7700_CONVERSION_US_BRIGHT;
+    if (state->initialized == 0u)
+        return VEML7700_BAND_DEFAULT;
+    if (state->current_band >= VEML7700_BAND_COUNT)
+        return VEML7700_BAND_DEFAULT;
 
-    return VEML7700_CONVERSION_US_DEFAULT;
+    return state->current_band;
 }
 
-static __u32 veml7700_counts_to_lux_ml(__u16 conf, __u16 als_counts)
+static __u16 veml7700_band_conf(__u8 band)
 {
-    __u32 lux_ml;
+    __u16 conf;
 
-    if (conf == VEML7700_ALS_CONF_0_LOWLIGHT)
-        lux_ml = (__u32)als_counts * 36u / 10u;
-    else if (conf == VEML7700_ALS_CONF_0_BRIGHT)
-        lux_ml = (__u32)als_counts * 18432u / 10u;
-    else
-        lux_ml = (__u32)als_counts * 576u / 10u;
+    switch (band) {
+    case VEML7700_BAND_X2_800:
+        conf = 0x08C0u;
+        break;
+    case VEML7700_BAND_X2_400:
+        conf = 0x0880u;
+        break;
+    case VEML7700_BAND_X2_200:
+        conf = 0x0840u;
+        break;
+    case VEML7700_BAND_X2_100:
+        conf = 0x0800u;
+        break;
+    case VEML7700_BAND_X2_50:
+        conf = 0x0A00u;
+        break;
+    case VEML7700_BAND_X2_25:
+        conf = 0x0B00u;
+        break;
+    case VEML7700_BAND_X1_25:
+        conf = 0x0300u;
+        break;
+    case VEML7700_BAND_Q4_50:
+        conf = 0x1A00u;
+        break;
+    case VEML7700_BAND_Q4_25:
+        conf = 0x1B00u;
+        break;
+    default:
+        conf = 0x1300u;
+        break;
+    }
+
+    return (__u16)(conf & ~VEML7700_ALS_CONF_0_SHUTDOWN);
+}
+
+static __u32 veml7700_conversion_us(__u8 band)
+{
+    switch (band) {
+    case VEML7700_BAND_X2_800:
+        return 900000u;
+    case VEML7700_BAND_X2_400:
+        return 500000u;
+    case VEML7700_BAND_X2_200:
+        return 250000u;
+    case VEML7700_BAND_X2_100:
+        return 120000u;
+    case VEML7700_BAND_X2_50:
+    case VEML7700_BAND_Q4_50:
+        return 70000u;
+    default:
+        return 40000u;
+    }
+}
+
+static __u32 veml7700_band_scale_tenths_ml(__u8 band)
+{
+    switch (band) {
+    case VEML7700_BAND_X2_800:
+        return 36u;
+    case VEML7700_BAND_X2_400:
+        return 72u;
+    case VEML7700_BAND_X2_200:
+        return 144u;
+    case VEML7700_BAND_X2_100:
+        return 288u;
+    case VEML7700_BAND_X2_50:
+        return 576u;
+    case VEML7700_BAND_X2_25:
+        return 1152u;
+    case VEML7700_BAND_X1_25:
+        return 2304u;
+    case VEML7700_BAND_Q4_50:
+        return 4608u;
+    case VEML7700_BAND_Q4_25:
+        return 9216u;
+    default:
+        return 18432u;
+    }
+}
+
+static __u32 veml7700_counts_to_lux_ml(__u8 band, __u16 als_counts)
+{
+    __u32 lux_ml = (__u32)als_counts * veml7700_band_scale_tenths_ml(band);
+
+    lux_ml /= 10u;
 
     if (lux_ml == 0u)
         return 1u;
@@ -152,54 +237,24 @@ static __u32 veml7700_counts_to_lux_ml(__u16 conf, __u16 als_counts)
     return lux_ml;
 }
 
-static __u16 veml7700_select_conf(const struct veml7700_state *state)
+static __u8 veml7700_adjust_band(__u8 band, __u16 als_counts, __u16 white_counts)
 {
-    __u16 conf = state->current_conf;
+    __u16 peak_counts = als_counts;
 
-    if (state->recent_count == 0) {
-        if (conf == VEML7700_ALS_CONF_0_LOWLIGHT)
-            return conf;
-        return VEML7700_ALS_CONF_0_DEFAULT;
+    if (white_counts > peak_counts)
+        peak_counts = white_counts;
+
+    if (peak_counts >= VEML7700_COUNTS_HIGH_MIN) {
+        if (band + 1u < VEML7700_BAND_COUNT)
+            return band + 1u;
+        return band;
+    }
+    if (peak_counts <= VEML7700_COUNTS_LOW_MAX) {
+        if (band > 0u)
+            return band - 1u;
     }
 
-    __u32 sum = state->recent_lux_ml[0];
-    if (state->recent_count >= 2u)
-        sum += state->recent_lux_ml[1];
-    if (state->recent_count >= 3u)
-        sum += state->recent_lux_ml[2];
-
-    __u32 avg = sum / (__u32)state->recent_count;
-    if (avg < VEML7700_LUX_LOW_ML)
-        conf = VEML7700_ALS_CONF_0_LOWLIGHT;
-    else if (avg >= VEML7700_LUX_BRIGHT_ENTER_ML)
-        conf = VEML7700_ALS_CONF_0_BRIGHT;
-    else if (conf == VEML7700_ALS_CONF_0_LOWLIGHT) {
-        if (avg > VEML7700_LUX_DEFAULT_ML)
-            conf = VEML7700_ALS_CONF_0_DEFAULT;
-    } else if (conf == VEML7700_ALS_CONF_0_BRIGHT) {
-        if (avg < VEML7700_LUX_BRIGHT_EXIT_ML)
-            conf = VEML7700_ALS_CONF_0_DEFAULT;
-    } else
-        conf = VEML7700_ALS_CONF_0_DEFAULT;
-
-    return conf;
-}
-
-static void veml7700_record_lux_ml(struct veml7700_state *state, __u32 lux_ml)
-{
-    __u8 index = state->recent_index;
-
-    if (index >= 3u)
-        index = 0u;
-    state->recent_index = index;
-
-    state->recent_lux_ml[index] = lux_ml;
-    if (index >= 2u)
-        state->recent_index = 0u;
-    else
-        state->recent_index = index + 1u;
-    if (state->recent_count < 3u)
-        state->recent_count += 1u;
+    return band;
 }
 
 SEC("sonde")
@@ -207,6 +262,7 @@ int program(struct sonde_context *ctx)
 {
     __u32 state_key = 0;
     struct veml7700_state *state = map_lookup_elem(&state_map, &state_key);
+    __u8 band;
     __u16 conf;
     int rc;
 
@@ -215,7 +271,8 @@ int program(struct sonde_context *ctx)
         return 0;
     }
 
-    conf = veml7700_select_conf(state);
+    band = veml7700_select_band(state);
+    conf = veml7700_band_conf(band);
 
     rc = veml7700_write_word(VEML7700_REG_ALS_CONF_0, conf);
     if (rc < 0) {
@@ -223,7 +280,7 @@ int program(struct sonde_context *ctx)
         return 0;
     }
 
-    rc = delay_us(veml7700_conversion_us(conf));
+    rc = delay_us(veml7700_conversion_us(band));
     if (rc < 0) {
         VEML7700_TRACE("veml7700: delay failed\n");
         return 0;
@@ -243,9 +300,9 @@ int program(struct sonde_context *ctx)
         return 0;
     }
 
-    state->current_conf = conf;
-    __u32 lux_ml = veml7700_counts_to_lux_ml(conf, als_counts);
-    veml7700_record_lux_ml(state, lux_ml);
+    __u32 lux_ml = veml7700_counts_to_lux_ml(band, als_counts);
+    state->current_band = veml7700_adjust_band(band, als_counts, white_counts);
+    state->initialized = 1u;
     __u8 payload[18];
     __u64 ts = ctx->timestamp;
 

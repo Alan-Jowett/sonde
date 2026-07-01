@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     fn compile_veml7700_program_image() -> sonde_protocol::ProgramImage {
-        const VEML7700_STATE_SIZE: u32 = 16;
+        const VEML7700_STATE_SIZE: u32 = 4;
         const STATE_MAP_TYPE: u32 = 1;
         const STATE_MAP_DEF_SIZE: u64 = 32;
 
@@ -1212,7 +1212,7 @@ mod tests {
                 map_type: STATE_MAP_TYPE,
                 key_size: 4,
                 // Kept in sync with the C source by the compile-time assertion
-                // `veml7700_state_size_must_be_16`.
+                // `veml7700_state_size_must_be_4`.
                 value_size: VEML7700_STATE_SIZE,
                 max_entries: 1,
             }],
@@ -1248,19 +1248,10 @@ mod tests {
         }
     }
 
-    fn encode_veml7700_state(
-        recent_lux_ml: [u32; 3],
-        current_conf: u16,
-        recent_count: u8,
-        recent_index: u8,
-    ) -> [u8; 16] {
-        let mut bytes = [0u8; 16];
-        bytes[0..4].copy_from_slice(&recent_lux_ml[0].to_le_bytes());
-        bytes[4..8].copy_from_slice(&recent_lux_ml[1].to_le_bytes());
-        bytes[8..12].copy_from_slice(&recent_lux_ml[2].to_le_bytes());
-        bytes[12..14].copy_from_slice(&current_conf.to_le_bytes());
-        bytes[14] = recent_count;
-        bytes[15] = recent_index;
+    fn encode_veml7700_state(current_band: u8, initialized: u8) -> [u8; 4] {
+        let mut bytes = [0u8; 4];
+        bytes[0] = current_band;
+        bytes[1] = initialized;
         bytes
     }
 
@@ -2742,7 +2733,7 @@ mod tests {
 
         let mut hal = TestHal::new();
         hal.strict_i2c = true;
-        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x00], 0);
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x0A], 0);
         hal.expect_i2c_write_read(handle, &[0x04], &als_counts.to_le_bytes(), 0);
         hal.expect_i2c_write_read(handle, &[0x05], &white_counts.to_le_bytes(), 0);
         hal.expect_i2c_write(handle, &[0x00, 0x01, 0x00], 0);
@@ -2804,7 +2795,7 @@ mod tests {
             vec![
                 I2cEvent::Write {
                     handle,
-                    data: vec![0x00, 0x00, 0x00],
+                    data: vec![0x00, 0x00, 0x0A],
                 },
                 I2cEvent::WriteRead {
                     handle,
@@ -2820,7 +2811,7 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(*clock.delays_us.borrow(), vec![120_000]);
+        assert_eq!(*clock.delays_us.borrow(), vec![70_000]);
         assert!(transport.outbound.is_empty());
         assert_eq!(queue.len(), 1);
 
@@ -2829,7 +2820,7 @@ mod tests {
         let payload = &queued[0];
         assert_eq!(payload.len(), 18);
         assert_eq!(&payload[0..8], &0x0102_0304_0506_0708u64.to_le_bytes());
-        assert_eq!(u16::from_le_bytes([payload[8], payload[9]]), 0x0000);
+        assert_eq!(u16::from_le_bytes([payload[8], payload[9]]), 0x0A00);
         assert_eq!(u16::from_le_bytes([payload[10], payload[11]]), als_counts);
         assert_eq!(u16::from_le_bytes([payload[12], payload[13]]), white_counts);
         assert_eq!(
@@ -2845,7 +2836,7 @@ mod tests {
 
         let mut hal = TestHal::new();
         hal.strict_i2c = true;
-        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x00], 0);
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x0A], 0);
         hal.expect_i2c_write_read(handle, &[0x04], &[], -1);
 
         let mut transport = TestTransport::new();
@@ -2905,7 +2896,7 @@ mod tests {
             vec![
                 I2cEvent::Write {
                     handle,
-                    data: vec![0x00, 0x00, 0x00],
+                    data: vec![0x00, 0x00, 0x0A],
                 },
                 I2cEvent::WriteRead {
                     handle,
@@ -2913,7 +2904,7 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(*clock.delays_us.borrow(), vec![120_000]);
+        assert_eq!(*clock.delays_us.borrow(), vec![70_000]);
         assert!(transport.outbound.is_empty());
         assert!(queue.is_empty());
     }
@@ -2925,7 +2916,7 @@ mod tests {
 
         let mut hal = TestHal::new();
         hal.strict_i2c = true;
-        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x00], -1);
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x0A], -1);
 
         let mut transport = TestTransport::new();
         let mut maps = MapStorage::new(4096);
@@ -2980,7 +2971,7 @@ mod tests {
             hal.i2c_events,
             vec![I2cEvent::Write {
                 handle,
-                data: vec![0x00, 0x00, 0x00],
+                data: vec![0x00, 0x00, 0x0A],
             }]
         );
         assert!(clock.delays_us.borrow().is_empty());
@@ -2989,7 +2980,7 @@ mod tests {
     }
 
     #[test]
-    fn test_veml7700_sensor_program_does_not_persist_conf_on_i2c_error() {
+    fn test_veml7700_sensor_program_does_not_persist_band_on_i2c_error() {
         let image = compile_veml7700_program_image();
         let handle = crate::hal::i2c_handle(0, 0x10);
 
@@ -3004,7 +2995,7 @@ mod tests {
         maps.apply_initial_data(&image.map_initial_data);
         maps.get_mut(0)
             .unwrap()
-            .update(0, &encode_veml7700_state([150, 180, 190], 0x0000, 3, 0))
+            .update(0, &encode_veml7700_state(0, 1))
             .unwrap();
 
         let clock = RecordingClock::new(0);
@@ -3069,14 +3060,14 @@ mod tests {
         assert!(queue.is_empty());
 
         let state = maps.get(0).unwrap().lookup(0).unwrap();
-        assert_eq!(state.len(), 16);
-        assert_eq!(u16::from_le_bytes([state[12], state[13]]), 0x0000);
-        assert_eq!(state[14], 3);
-        assert_eq!(state[15], 0);
+        assert_eq!(state.len(), 4);
+        assert_eq!(state[0], 0);
+        assert_eq!(state[1], 1);
+        assert_eq!(&state[2..4], &[0, 0]);
     }
 
     #[test]
-    fn test_veml7700_sensor_program_switches_to_lowlight_after_low_reading() {
+    fn test_veml7700_sensor_program_steps_more_sensitive_after_low_reading() {
         let image = compile_veml7700_program_image();
         let handle = crate::hal::i2c_handle(0, 0x10);
         let first_als_counts = 1u16;
@@ -3086,11 +3077,11 @@ mod tests {
 
         let mut hal = TestHal::new();
         hal.strict_i2c = true;
-        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x00], 0);
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x0A], 0);
         hal.expect_i2c_write_read(handle, &[0x04], &first_als_counts.to_le_bytes(), 0);
         hal.expect_i2c_write_read(handle, &[0x05], &first_white_counts.to_le_bytes(), 0);
         hal.expect_i2c_write(handle, &[0x00, 0x01, 0x00], 0);
-        hal.expect_i2c_write(handle, &[0x00, 0xC0, 0x08], 0);
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x08], 0);
         hal.expect_i2c_write_read(handle, &[0x04], &second_als_counts.to_le_bytes(), 0);
         hal.expect_i2c_write_read(handle, &[0x05], &second_white_counts.to_le_bytes(), 0);
         hal.expect_i2c_write(handle, &[0x00, 0x01, 0x00], 0);
@@ -3146,25 +3137,25 @@ mod tests {
         }
 
         assert!(hal.i2c_expectations.is_empty());
-        assert_eq!(*clock.delays_us.borrow(), vec![120_000, 900_000]);
+        assert_eq!(*clock.delays_us.borrow(), vec![70_000, 120_000]);
         assert!(transport.outbound.is_empty());
 
         let queued = queue.drain();
         assert_eq!(queued.len(), 2);
-        assert_eq!(u16::from_le_bytes([queued[0][8], queued[0][9]]), 0x0000);
+        assert_eq!(u16::from_le_bytes([queued[0][8], queued[0][9]]), 0x0A00);
         assert_eq!(
             u32::from_le_bytes([queued[0][14], queued[0][15], queued[0][16], queued[0][17]]),
             57
         );
-        assert_eq!(u16::from_le_bytes([queued[1][8], queued[1][9]]), 0x08C0);
+        assert_eq!(u16::from_le_bytes([queued[1][8], queued[1][9]]), 0x0800);
         assert_eq!(
             u32::from_le_bytes([queued[1][14], queued[1][15], queued[1][16], queued[1][17]]),
-            72
+            576
         );
     }
 
     #[test]
-    fn test_veml7700_sensor_program_switches_to_bright_after_saturated_reading() {
+    fn test_veml7700_sensor_program_steps_less_sensitive_after_high_reading() {
         let image = compile_veml7700_program_image();
         let handle = crate::hal::i2c_handle(0, 0x10);
         let first_als_counts = u16::MAX;
@@ -3174,11 +3165,11 @@ mod tests {
 
         let mut hal = TestHal::new();
         hal.strict_i2c = true;
-        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x00], 0);
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x0A], 0);
         hal.expect_i2c_write_read(handle, &[0x04], &first_als_counts.to_le_bytes(), 0);
         hal.expect_i2c_write_read(handle, &[0x05], &first_white_counts.to_le_bytes(), 0);
         hal.expect_i2c_write(handle, &[0x00, 0x01, 0x00], 0);
-        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x13], 0);
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x0B], 0);
         hal.expect_i2c_write_read(handle, &[0x04], &second_als_counts.to_le_bytes(), 0);
         hal.expect_i2c_write_read(handle, &[0x05], &second_white_counts.to_le_bytes(), 0);
         hal.expect_i2c_write(handle, &[0x00, 0x01, 0x00], 0);
@@ -3234,34 +3225,34 @@ mod tests {
         }
 
         assert!(hal.i2c_expectations.is_empty());
-        assert_eq!(*clock.delays_us.borrow(), vec![120_000, 40_000]);
+        assert_eq!(*clock.delays_us.borrow(), vec![70_000, 40_000]);
         assert!(transport.outbound.is_empty());
 
         let queued = queue.drain();
         assert_eq!(queued.len(), 2);
-        assert_eq!(u16::from_le_bytes([queued[0][8], queued[0][9]]), 0x0000);
+        assert_eq!(u16::from_le_bytes([queued[0][8], queued[0][9]]), 0x0A00);
         assert_eq!(
             u32::from_le_bytes([queued[0][14], queued[0][15], queued[0][16], queued[0][17]]),
             3_774_816
         );
-        assert_eq!(u16::from_le_bytes([queued[1][8], queued[1][9]]), 0x1300);
+        assert_eq!(u16::from_le_bytes([queued[1][8], queued[1][9]]), 0x0B00);
         assert_eq!(
             u32::from_le_bytes([queued[1][14], queued[1][15], queued[1][16], queued[1][17]]),
-            36_864
+            2_304
         );
     }
 
     #[test]
-    fn test_veml7700_sensor_program_switches_back_to_default_after_bright_history() {
+    fn test_veml7700_sensor_program_uses_persisted_band_before_adjusting() {
         let image = compile_veml7700_program_image();
         let handle = crate::hal::i2c_handle(0, 0x10);
         let als_counts = 50u16;
         let white_counts = 60u16;
-        let expected_lux_ml = u32::from(als_counts) * 576u32 / 10u32;
+        let expected_lux_ml = u32::from(als_counts) * 1152u32 / 10u32;
 
         let mut hal = TestHal::new();
         hal.strict_i2c = true;
-        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x00], 0);
+        hal.expect_i2c_write(handle, &[0x00, 0x00, 0x0B], 0);
         hal.expect_i2c_write_read(handle, &[0x04], &als_counts.to_le_bytes(), 0);
         hal.expect_i2c_write_read(handle, &[0x05], &white_counts.to_le_bytes(), 0);
         hal.expect_i2c_write(handle, &[0x00, 0x01, 0x00], 0);
@@ -3272,10 +3263,7 @@ mod tests {
         maps.apply_initial_data(&image.map_initial_data);
         maps.get_mut(0)
             .unwrap()
-            .update(
-                0,
-                &encode_veml7700_state([1_500_000, 1_600_000, 1_700_000], 0x1300, 3, 0),
-            )
+            .update(0, &encode_veml7700_state(5, 1))
             .unwrap();
 
         let clock = RecordingClock::new(0);
@@ -3327,7 +3315,7 @@ mod tests {
             vec![
                 I2cEvent::Write {
                     handle,
-                    data: vec![0x00, 0x00, 0x00],
+                    data: vec![0x00, 0x00, 0x0B],
                 },
                 I2cEvent::WriteRead {
                     handle,
@@ -3343,16 +3331,19 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(*clock.delays_us.borrow(), vec![120_000]);
+        assert_eq!(*clock.delays_us.borrow(), vec![40_000]);
         assert!(transport.outbound.is_empty());
 
         let queued = queue.drain();
         assert_eq!(queued.len(), 1);
-        assert_eq!(u16::from_le_bytes([queued[0][8], queued[0][9]]), 0x0000);
+        assert_eq!(u16::from_le_bytes([queued[0][8], queued[0][9]]), 0x0B00);
         assert_eq!(
             u32::from_le_bytes([queued[0][14], queued[0][15], queued[0][16], queued[0][17]]),
             expected_lux_ml
         );
+
+        let state = maps.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(state, encode_veml7700_state(4, 1));
     }
 
     #[test]

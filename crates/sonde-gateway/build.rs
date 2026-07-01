@@ -4,8 +4,8 @@
 fn has_protoc_on_path() -> bool {
     std::process::Command::new("protoc")
         .arg("--version")
-        .output()
-        .map(|output| output.status.success())
+        .status()
+        .map(|status| status.success())
         .unwrap_or(false)
 }
 

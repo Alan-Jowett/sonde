@@ -142,28 +142,42 @@ static __u8 veml7700_select_band(const struct veml7700_state *state)
 
 static __u16 veml7700_band_conf(__u8 band)
 {
+    __u16 conf;
+
     switch (band) {
     case VEML7700_BAND_X2_800:
-        return 0x08C0u;
+        conf = 0x08C0u;
+        break;
     case VEML7700_BAND_X2_400:
-        return 0x0880u;
+        conf = 0x0880u;
+        break;
     case VEML7700_BAND_X2_200:
-        return 0x0840u;
+        conf = 0x0840u;
+        break;
     case VEML7700_BAND_X2_100:
-        return 0x0800u;
+        conf = 0x0800u;
+        break;
     case VEML7700_BAND_X2_50:
-        return 0x0A00u;
+        conf = 0x0A00u;
+        break;
     case VEML7700_BAND_X2_25:
-        return 0x0B00u;
+        conf = 0x0B00u;
+        break;
     case VEML7700_BAND_X1_25:
-        return 0x0300u;
+        conf = 0x0300u;
+        break;
     case VEML7700_BAND_Q4_50:
-        return 0x1A00u;
+        conf = 0x1A00u;
+        break;
     case VEML7700_BAND_Q4_25:
-        return 0x1B00u;
+        conf = 0x1B00u;
+        break;
     default:
-        return 0x1300u;
+        conf = 0x1300u;
+        break;
     }
+
+    return (__u16)(conf & ~VEML7700_ALS_CONF_0_SHUTDOWN);
 }
 
 static __u32 veml7700_conversion_us(__u8 band)
@@ -185,11 +199,36 @@ static __u32 veml7700_conversion_us(__u8 band)
     }
 }
 
+static __u32 veml7700_band_scale_tenths_ml(__u8 band)
+{
+    switch (band) {
+    case VEML7700_BAND_X2_800:
+        return 36u;
+    case VEML7700_BAND_X2_400:
+        return 72u;
+    case VEML7700_BAND_X2_200:
+        return 144u;
+    case VEML7700_BAND_X2_100:
+        return 288u;
+    case VEML7700_BAND_X2_50:
+        return 576u;
+    case VEML7700_BAND_X2_25:
+        return 1152u;
+    case VEML7700_BAND_X1_25:
+        return 2304u;
+    case VEML7700_BAND_Q4_50:
+        return 4608u;
+    case VEML7700_BAND_Q4_25:
+        return 9216u;
+    default:
+        return 18432u;
+    }
+}
+
 static __u32 veml7700_counts_to_lux_ml(__u8 band, __u16 als_counts)
 {
-    __u32 lux_ml = (__u32)als_counts * 36u;
+    __u32 lux_ml = (__u32)als_counts * veml7700_band_scale_tenths_ml(band);
 
-    lux_ml <<= band;
     lux_ml /= 10u;
 
     if (lux_ml == 0u)

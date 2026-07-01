@@ -44,6 +44,7 @@ name = "sonde-gateway"
 path = "src/bin/gateway.rs"
 
 [build-dependencies]
+protoc-bin-vendored = "3"
 tonic-prost-build = "0.14"
 
 [target.'cfg(windows)'.dependencies]

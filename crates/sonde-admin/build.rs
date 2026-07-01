@@ -4,6 +4,11 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../sonde-gateway/proto");
     println!("cargo:rerun-if-changed=../sonde-gateway/proto/admin.proto");
+    println!("cargo:rerun-if-env-changed=PROTOC");
+    if std::env::var_os("PROTOC").is_none() {
+        let protoc = protoc_bin_vendored::protoc_bin_path()?;
+        std::env::set_var("PROTOC", protoc);
+    }
     tonic_prost_build::configure()
         .build_server(false)
         .build_client(true)

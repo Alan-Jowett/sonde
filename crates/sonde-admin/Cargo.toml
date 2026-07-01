@@ -32,8 +32,8 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 zeroize = "1.8.2"
 
 [build-dependencies]
+protoc-bin-vendored = "3"
 tonic-prost-build = "0.14"
 
 [dev-dependencies]
 sonde-gateway = { path = "../sonde-gateway" }
-

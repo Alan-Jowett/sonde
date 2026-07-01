@@ -1,9 +1,20 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+#[path = "../build_support/protoc.rs"]
+mod protoc;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../sonde-gateway/proto");
     println!("cargo:rerun-if-changed=../sonde-gateway/proto/admin.proto");
+    println!("cargo:rerun-if-env-changed=PROTOC");
+    println!("cargo:rerun-if-env-changed=PATH");
+    #[cfg(windows)]
+    println!("cargo:rerun-if-env-changed=Path");
+    if protoc::explicit_protoc_path().is_none() && !protoc::has_usable_protoc_on_path() {
+        let protoc = protoc_bin_vendored::protoc_bin_path()?;
+        std::env::set_var("PROTOC", protoc);
+    }
     tonic_prost_build::configure()
         .build_server(false)
         .build_client(true)

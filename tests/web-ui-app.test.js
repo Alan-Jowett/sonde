@@ -924,6 +924,60 @@ test('handleImportedJson initializes default sensorData preferences when omitted
   assert.deepEqual(app.loadEnvironments()[0].sensorData, app.createDefaultSensorDataPreferences());
 });
 
+test('handleImportedJson preserves additive kiosk setup login metadata when present', () => {
+  app.handleImportedJson(JSON.stringify({
+    version: 1,
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    loginEndpoint: 'https://login.microsoftonline.com/',
+    kioskSetupClientId: '33333333-3333-3333-3333-333333333333',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+  }));
+
+  assert.deepEqual(app.loadEnvironments()[0], {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    loginEndpoint: 'https://login.microsoftonline.com',
+    kioskSetupClientId: '33333333-3333-3333-3333-333333333333',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: app.createDefaultSensorDataPreferences(),
+    dashboards: [],
+  });
+});
+
+test('handleImportedJson rejects invalid kiosk setup login metadata', () => {
+  assert.throws(
+    () => app.handleImportedJson(JSON.stringify({
+      version: 1,
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      loginEndpoint: 'https://login.microsoftonline.com',
+      kioskSetupClientId: 'not-a-guid',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+    })),
+    /`kioskSetupClientId` must be a valid GUID\./,
+  );
+  assert.throws(
+    () => app.handleImportedJson(JSON.stringify({
+      version: 1,
+      name: 'prod',
+      clientId: '11111111-1111-1111-1111-111111111111',
+      tenantId: '22222222-2222-2222-2222-222222222222',
+      loginEndpoint: 'https://login.microsoftonline.com/common',
+      kioskSetupClientId: '33333333-3333-3333-3333-333333333333',
+      storageAccount: 'prodstorage',
+      functionAppName: 'prod-func',
+    })),
+    /`loginEndpoint` must be a valid HTTPS authority URL\./,
+  );
+});
+
 test('handleImportedJson preserves an explicit empty selectedSeries preference', () => {
   localStorage.setItem('sonde_environments', JSON.stringify([
     {
@@ -1231,6 +1285,40 @@ test('buildEnvironmentExportData preserves additive kiosk setup login metadata',
       dashboards: [],
     },
   );
+});
+
+test('persistActiveSensorDataPreferences preserves additive kiosk setup login metadata', () => {
+  const env = {
+    name: 'prod',
+    clientId: '11111111-1111-1111-1111-111111111111',
+    tenantId: '22222222-2222-2222-2222-222222222222',
+    loginEndpoint: 'https://login.microsoftonline.us',
+    kioskSetupClientId: '33333333-3333-3333-3333-333333333333',
+    storageAccount: 'prodstorage',
+    functionAppName: 'prod-func',
+    sensorData: app.createDefaultSensorDataPreferences(),
+    dashboards: [],
+  };
+  localStorage.setItem('sonde_environments', JSON.stringify([env]));
+  app.activateEnvironmentState(env.name, env);
+  app.SENSOR_STATE.viewMode = 'table';
+  app.SENSOR_STATE.timeRange = '7d';
+  app.SENSOR_STATE.selectedSeries = new Set(['series-a']);
+  app.SENSOR_STATE.seriesInitialized = true;
+
+  assert.equal(app.persistActiveSensorDataPreferences(), true);
+
+  assert.deepEqual(app.loadEnvironments()[0], {
+    ...env,
+    sensorData: {
+      viewMode: 'table',
+      timeRange: '7d',
+      selectedSeries: ['series-a'],
+      selectedSeriesInitialized: true,
+      seriesOverrides: {},
+    },
+    dashboards: [],
+  });
 });
 
 test('buildEnvironmentExportData omits dashboard validation annotations', () => {

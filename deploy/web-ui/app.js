@@ -337,6 +337,7 @@ const STORAGE_SCOPES = ['https://storage.azure.com/.default'];
 const ENV_GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ENV_STORAGE_ACCOUNT_PATTERN = /^[a-z0-9]{3,24}$/;
 const ENV_FUNCTION_APP_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$/;
+const HTTPS_AUTHORITY_PATTERN = /^https:\/\/[^/\s?#@]+$/i;
 
 function validateEnvironmentFields(fields) {
   if (!fields.clientId || typeof fields.clientId !== 'string') return 'Client ID is required.';
@@ -348,6 +349,32 @@ function validateEnvironmentFields(fields) {
   if (!ENV_STORAGE_ACCOUNT_PATTERN.test(fields.storageAccount)) return 'Storage Account must be 3–24 lowercase alphanumeric characters.';
   if (!ENV_FUNCTION_APP_PATTERN.test(fields.functionAppName) || fields.functionAppName.length < 2) return 'Function App Name must be 2–60 alphanumeric characters with optional hyphens.';
   return null;
+}
+
+function normalizeOptionalGuid(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeOptionalLoginEndpoint(value) {
+  return typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '';
+}
+
+function extractOptionalSetupLoginMetadata(data) {
+  const loginEndpoint = normalizeOptionalLoginEndpoint(data?.loginEndpoint);
+  const kioskSetupClientId = normalizeOptionalGuid(data?.kioskSetupClientId);
+  if (!loginEndpoint && !kioskSetupClientId) {
+    return {};
+  }
+  if (!loginEndpoint || !kioskSetupClientId) {
+    throw new Error('`loginEndpoint` and `kioskSetupClientId` must either both be present or both be omitted.');
+  }
+  if (!ENV_GUID_PATTERN.test(kioskSetupClientId)) {
+    throw new Error('`kioskSetupClientId` must be a valid GUID.');
+  }
+  if (!HTTPS_AUTHORITY_PATTERN.test(loginEndpoint)) {
+    throw new Error('`loginEndpoint` must be a valid HTTPS authority URL.');
+  }
+  return { loginEndpoint, kioskSetupClientId };
 }
 
 // 1c. Environment import/export
@@ -401,6 +428,7 @@ function handleImportedJson(text) {
   };
   const validationError = validateEnvironmentFields(fields);
   if (validationError) throw new Error(validationError);
+  const setupLoginMetadata = extractOptionalSetupLoginMetadata(data);
   const sensorData = validateImportedSensorDataPreferences(data.sensorData);
   
   // Validate and import dashboards
@@ -432,7 +460,7 @@ function handleImportedJson(text) {
     }
   }
 
-  const envData = { name, ...fields, sensorData, dashboards };
+  const envData = { name, ...fields, ...setupLoginMetadata, sensorData, dashboards };
   const idx = envs.findIndex((e) => e.name === name);
   if (idx >= 0) {
     envs[idx] = envData;
@@ -4496,6 +4524,8 @@ function showEnvironmentForm(existingEnv) {
       tenantId,
       storageAccount,
       functionAppName,
+      ...(existingEnv?.loginEndpoint ? { loginEndpoint: existingEnv.loginEndpoint } : {}),
+      ...(existingEnv?.kioskSetupClientId ? { kioskSetupClientId: existingEnv.kioskSetupClientId } : {}),
       sensorData: existingEnv?.sensorData || createDefaultSensorDataPreferences(),
       dashboards: existingEnv?.dashboards || createDefaultDashboardsArray(),
     };

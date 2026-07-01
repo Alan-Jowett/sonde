@@ -164,6 +164,33 @@ jobs:
           fi
           echo "Entra app client ID: $APP_ID"
 
+          KIOSK_SETUP_APP_DISPLAY_NAME="${SONDE_AZURE_CI_PROJECT_NAME}-kiosk-setup"
+          KIOSK_SETUP_APP_ID=""
+          for i in $(seq 1 6); do
+            KIOSK_SETUP_APP_ID=$(az ad app list \
+              --filter "displayName eq '$KIOSK_SETUP_APP_DISPLAY_NAME'" \
+              --query '[0].appId' -o tsv 2>/dev/null || true)
+            if [ -n "$KIOSK_SETUP_APP_ID" ] && [ "$KIOSK_SETUP_APP_ID" != "None" ]; then
+              break
+            fi
+            KIOSK_SETUP_APP_ID=""
+            KIOSK_SETUP_APP_ID=$(az rest --method POST \
+              --url "https://graph.microsoft.com/v1.0/applications" \
+              --headers "Content-Type=application/json" \
+              --body "$(jq -n -c \
+                --arg name "$KIOSK_SETUP_APP_DISPLAY_NAME" \
+                '{displayName: $name, signInAudience: "AzureADMyOrg", isFallbackPublicClient: true}')" \
+              --query appId -o tsv 2>/dev/null) && break
+            KIOSK_SETUP_APP_ID=""
+            echo "Waiting for kiosk setup Entra app (attempt $i/6)..."
+            sleep 10
+          done
+          if [ -z "$KIOSK_SETUP_APP_ID" ]; then
+            echo "::error::Failed to create or find kiosk setup Entra app '$KIOSK_SETUP_APP_DISPLAY_NAME'"
+            exit 1
+          fi
+          echo "Kiosk setup app client ID: $KIOSK_SETUP_APP_ID"
+
           # Register certificate credential and configure SPA redirect URIs.
           # After app creation, Entra ID may take a few seconds to replicate
           # the new app to all read replicas, so retry the lookup.
@@ -176,6 +203,21 @@ jobs:
             echo "::error::Failed to resolve Entra app object ID for $APP_ID after retries"
             exit 1
           fi
+
+          for i in $(seq 1 12); do
+            KIOSK_SETUP_APP_OID=$(az ad app show --id "$KIOSK_SETUP_APP_ID" --query id -o tsv 2>/dev/null) && break
+            echo "Waiting for kiosk setup Entra app replication (attempt $i/12)..."
+            sleep 10
+          done
+          if [ -z "$KIOSK_SETUP_APP_OID" ]; then
+            echo "::error::Failed to resolve kiosk setup Entra app object ID for $KIOSK_SETUP_APP_ID after retries"
+            exit 1
+          fi
+          az rest --method PATCH \
+            --url "https://graph.microsoft.com/v1.0/applications/$KIOSK_SETUP_APP_OID" \
+            --headers "Content-Type=application/json" \
+            --body '{"isFallbackPublicClient":true}' > /dev/null
+
           az rest --method PATCH \
             --url "https://graph.microsoft.com/v1.0/applications/$APP_OID" \
             --headers "Content-Type=application/json" \
@@ -200,6 +242,28 @@ jobs:
             exit 1
           fi
 
+          GRAPH_APP_ID="00000003-0000-0000-c000-000000000000"
+          GRAPH_PERMISSION_ID="$(az ad sp show --id "$GRAPH_APP_ID" \
+            --query "oauth2PermissionScopes[?value=='Application.ReadWrite.All'].id | [0]" \
+            -o tsv 2>/dev/null || true)"
+          if [ -z "$GRAPH_PERMISSION_ID" ] || [ "$GRAPH_PERMISSION_ID" = "None" ]; then
+            echo "::error::Failed to resolve Microsoft Graph delegated permission ID for Application.ReadWrite.All"
+            exit 1
+          fi
+          if ! az ad app permission list --id "$KIOSK_SETUP_APP_OID" \
+            --query "[?resourceAppId=='$GRAPH_APP_ID'].resourceAccess[?id=='$GRAPH_PERMISSION_ID'] | [0]" \
+            -o tsv 2>/dev/null | grep -q .; then
+            az ad app permission add \
+              --id "$KIOSK_SETUP_APP_OID" \
+              --api "$GRAPH_APP_ID" \
+              --api-permissions "$GRAPH_PERMISSION_ID=Scope" > /dev/null
+          fi
+          az ad app permission grant \
+            --id "$KIOSK_SETUP_APP_ID" \
+            --api "$GRAPH_APP_ID" \
+            --scope "Application.ReadWrite.All" \
+            --output none
+
           az deployment sub create \
             --location "$SONDE_AZURE_CI_LOCATION" \
             --template-file ./deploy/bicep/main.bicep \
@@ -208,6 +272,7 @@ jobs:
             --parameters project_name="$SONDE_AZURE_CI_PROJECT_NAME" \
             --parameters resourceGroupOwnerTag='azure-live-ci' \
             --parameters companionClientId="$APP_ID" \
+            --parameters kioskSetupClientId="$KIOSK_SETUP_APP_ID" \
             --parameters companionServicePrincipalObjectId="$SP_OID" \
             --output json > .azure-live-state/deployment.json
 

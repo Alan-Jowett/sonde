@@ -634,9 +634,9 @@ Each environment is a JSON object stored in `localStorage`:
 ```
 
 `loginEndpoint` and `kioskSetupClientId` are optional additive kiosk-onboarding
-fields. The SPA stores and re-exports them verbatim so kiosk onboarding
-metadata survives environment edits, but the SPA's own sign-in flow does not
-consume them.
+fields. On import, the SPA validates them and normalizes `loginEndpoint` by
+trimming and stripping trailing slashes before persisting/re-exporting them, but
+the SPA's own sign-in flow does not consume them.
 
 **Storage keys:**
 

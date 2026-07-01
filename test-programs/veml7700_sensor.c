@@ -8,7 +8,8 @@
  * 0x10. Per the datasheet (`84286`), register words are transferred little-
  * endian on the bus (low byte first, then high byte).
  *
- * This program uses two sensitivity profiles with hysteresis:
+ * This program uses three sensitivity profiles with hysteresis:
+ *   - Bright profile: ALS gain 1/8, ALS integration time 25 ms
  *   - Normal profile: ALS gain x1, ALS integration time 100 ms
  *   - Low-light profile: ALS gain x2, ALS integration time 800 ms
  *
@@ -16,7 +17,9 @@
  * currently selected profile across wake cycles. Before each measurement, the
  * program averages the stored readings:
  *   - if avg < 200 mLux, switch to the low-light profile
- *   - if avg > 1000 mLux, switch back to the normal profile
+ *   - if avg > 1000 mLux, switch from low-light back to the normal profile
+ *   - if avg >= 3,000,000 mLux, switch to the bright profile
+ *   - if avg < 2,000,000 mLux, switch from bright back to the normal profile
  *
  * This adds hysteresis so the program does not flap around the threshold, and
  * it uses the high-sensitivity profile only when recent readings justify it.
@@ -27,6 +30,7 @@
  *   3. Wait slightly longer than the selected integration time.
  *   4. Read the ALS and WHITE 16-bit result registers.
  *   5. Convert the ALS count to millilux using the selected profile:
+ *        x1/8 / 25 ms: lux_ml = als_counts * 1843.2 mLux/count
  *        x1 / 100 ms: lux_ml = als_counts * 57.6 mLux/count
  *        x2 / 800 ms: lux_ml = als_counts * 3.6 mLux/count
  *   6. Clamp the reported lux value to a minimum of 1 mLux.
@@ -50,16 +54,21 @@
 #define VEML7700_REG_ALS        0x04u
 #define VEML7700_REG_WHITE      0x05u
 
+/* gain 1/8, integration time 25 ms, interrupt disabled, ALS power on */
+#define VEML7700_ALS_CONF_0_BRIGHT   0x1300u
 /* gain x1, integration time 100 ms, interrupt disabled, ALS power on */
 #define VEML7700_ALS_CONF_0_DEFAULT  0x0000u
 /* gain x2, integration time 800 ms, interrupt disabled, ALS power on */
 #define VEML7700_ALS_CONF_0_LOWLIGHT 0x08C0u
 #define VEML7700_ALS_CONF_0_SHUTDOWN 0x0001u
 
-#define VEML7700_LUX_LOW_ML  200u
-#define VEML7700_LUX_HIGH_ML 1000u
+#define VEML7700_LUX_LOW_ML          200u
+#define VEML7700_LUX_DEFAULT_ML      1000u
+#define VEML7700_LUX_BRIGHT_EXIT_ML  2000000u
+#define VEML7700_LUX_BRIGHT_ENTER_ML 3000000u
 
 /* Wait slightly longer than the selected integration time. */
+#define VEML7700_CONVERSION_US_BRIGHT   40000u
 #define VEML7700_CONVERSION_US_DEFAULT  120000u
 #define VEML7700_CONVERSION_US_LOWLIGHT 900000u
 
@@ -120,6 +129,8 @@ static __u32 veml7700_conversion_us(__u16 conf)
 {
     if (conf == VEML7700_ALS_CONF_0_LOWLIGHT)
         return VEML7700_CONVERSION_US_LOWLIGHT;
+    if (conf == VEML7700_ALS_CONF_0_BRIGHT)
+        return VEML7700_CONVERSION_US_BRIGHT;
 
     return VEML7700_CONVERSION_US_DEFAULT;
 }
@@ -130,6 +141,8 @@ static __u32 veml7700_counts_to_lux_ml(__u16 conf, __u16 als_counts)
 
     if (conf == VEML7700_ALS_CONF_0_LOWLIGHT)
         lux_ml = (__u32)als_counts * 36u / 10u;
+    else if (conf == VEML7700_ALS_CONF_0_BRIGHT)
+        lux_ml = (__u32)als_counts * 18432u / 10u;
     else
         lux_ml = (__u32)als_counts * 576u / 10u;
 
@@ -158,9 +171,15 @@ static __u16 veml7700_select_conf(const struct veml7700_state *state)
     __u32 avg = sum / (__u32)state->recent_count;
     if (avg < VEML7700_LUX_LOW_ML)
         conf = VEML7700_ALS_CONF_0_LOWLIGHT;
-    else if (avg > VEML7700_LUX_HIGH_ML)
-        conf = VEML7700_ALS_CONF_0_DEFAULT;
-    else if (conf != VEML7700_ALS_CONF_0_LOWLIGHT)
+    else if (avg >= VEML7700_LUX_BRIGHT_ENTER_ML)
+        conf = VEML7700_ALS_CONF_0_BRIGHT;
+    else if (conf == VEML7700_ALS_CONF_0_LOWLIGHT) {
+        if (avg > VEML7700_LUX_DEFAULT_ML)
+            conf = VEML7700_ALS_CONF_0_DEFAULT;
+    } else if (conf == VEML7700_ALS_CONF_0_BRIGHT) {
+        if (avg < VEML7700_LUX_BRIGHT_EXIT_ML)
+            conf = VEML7700_ALS_CONF_0_DEFAULT;
+    } else
         conf = VEML7700_ALS_CONF_0_DEFAULT;
 
     return conf;

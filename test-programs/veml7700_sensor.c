@@ -17,8 +17,9 @@
  * currently selected profile across wake cycles. Before each measurement, the
  * program averages the stored readings:
  *   - if avg < 200 mLux, switch to the low-light profile
- *   - if avg > 3,000,000 mLux, switch to the bright profile
- *   - if avg > 1000 mLux, switch back to the normal profile
+ *   - if avg > 1000 mLux, switch from low-light back to the normal profile
+ *   - if avg >= 3,000,000 mLux, switch to the bright profile
+ *   - if avg < 2,000,000 mLux, switch from bright back to the normal profile
  *
  * This adds hysteresis so the program does not flap around the threshold, and
  * it uses the high-sensitivity profile only when recent readings justify it.

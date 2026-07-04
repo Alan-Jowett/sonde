@@ -91,11 +91,11 @@ The CH32V203 package must expose:
 - reset and boot access
 - required power, clock, and decoupling pins
 
-The reference implementation should start from a 48-pin CH32V203 package so the
-design has comfortable room for 8 ADC-capable receive inputs, 8 transmitter
-outputs, the shared I2C pair, and bring-up access without resorting to awkward
-pin-mux compromises. Smaller packages may only be substituted if implementation
-proves that they still satisfy the full channel and ADC pin budget cleanly.
+The reference implementation should start from the smallest verified CH32V203
+package that still satisfies the complete pin budget for 8 ADC-capable receive
+inputs, 8 transmitter outputs, the shared I2C pair, and bring-up access
+without GPIO expansion. For this design package, Pass 1 verifies that the
+CH32V203K8T6 LQFP-32 package satisfies that budget cleanly.
 
 ### 3.4  Transmitter channels
 

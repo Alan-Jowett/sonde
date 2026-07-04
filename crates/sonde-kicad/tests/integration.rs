@@ -622,9 +622,9 @@ fn proximity_constraint_violation_error() {
 // F-010: Design Rules from IR-3
 // ---------------------------------------------------------------------------
 
-/// T-KE-040: KiCad 9-compatible setup section from IR-3 routing constraints.
+/// T-KE-040: KiCad 9-compatible board setup section.
 #[test]
-fn pcb_net_class_definitions() {
+fn pcb_setup_section() {
     let dir = minimal_board_dir();
     let bundle = ir::load_ir(&dir).unwrap();
     let mut uuid_gen = test_uuid_gen(&bundle, &dir);
@@ -654,7 +654,37 @@ fn pcb_net_class_definitions() {
     );
     assert!(
         !pcb.contains("net_class"),
-        "PCB emitter should avoid legacy net_class blocks that KiCad 9 rejects"
+        "KiCad 9 board files should not use legacy net_class blocks"
+    );
+}
+
+/// T-KE-040: KiCad 9 project net settings from IR-3 routing constraints.
+#[test]
+fn project_net_settings_from_ir3() {
+    let dir = minimal_board_dir();
+    let bundle = ir::load_ir(&dir).unwrap();
+
+    let project = sonde_kicad::project::emit_project(&bundle).unwrap();
+
+    assert!(
+        project.contains("\"track_width\": 0.25"),
+        "Default project net class should carry the IR-3 signal width"
+    );
+    assert!(
+        project.contains("\"track_width\": 0.5"),
+        "Power project net class should carry the IR-3 power width"
+    );
+    assert!(
+        project.contains("\"via_diameter\": 0.6"),
+        "Project net classes should carry the IR-3 via diameter"
+    );
+    assert!(
+        project.contains("\"via_drill\": 0.3"),
+        "Project net classes should carry the IR-3 via drill"
+    );
+    assert!(
+        project.contains("\"pattern\": \"VCC\""),
+        "Project net settings should map the power net into its wider class"
     );
 }
 

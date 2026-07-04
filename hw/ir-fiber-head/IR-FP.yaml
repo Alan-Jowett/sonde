@@ -41,7 +41,7 @@ footprints:
           type: "fiber_hole",
           center_x_mm: 1.27,
           center_y_mm: 0.0,
-          finished_diameter_mm: 0.95,
+          finished_diameter_mm: 0.96,
           target_interference_fit_mm: 0.05,
           notes: "Nominally for 1.00 mm PMMA fiber; exact finished size to be validated with fab tolerance."
         }
@@ -68,7 +68,7 @@ footprints:
           type: "fiber_hole",
           center_x_mm: 1.27,
           center_y_mm: 0.0,
-          finished_diameter_mm: 0.95,
+          finished_diameter_mm: 0.96,
           target_interference_fit_mm: 0.05,
           notes: "Nominally for 1.00 mm PMMA fiber; exact finished size to be validated with fab tolerance."
         }

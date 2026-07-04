@@ -211,6 +211,8 @@ fn build_setup(_ir3: &crate::ir::Ir3) -> SExpr {
         ],
     );
 
+    // KiCad 9 stores route widths, via dimensions, and net classes in the
+    // companion `.kicad_pro` file rather than the board's `(setup ...)` block.
     SExpr::list(
         "setup",
         vec![

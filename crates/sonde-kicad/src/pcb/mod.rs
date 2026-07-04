@@ -133,6 +133,7 @@ fn build_layers(layer_count: u32) -> SExpr {
         ("38", "B.Mask", ""),
         ("39", "F.Mask", ""),
         ("44", "Edge.Cuts", ""),
+        ("45", "Margin", ""),
         ("46", "B.CrtYd", "B.Courtyard"),
         ("47", "F.CrtYd", "F.Courtyard"),
         ("48", "B.Fab", "B.Fabrication"),
@@ -151,88 +152,96 @@ fn build_layers(layer_count: u32) -> SExpr {
     SExpr::list("layers", layers)
 }
 
-fn build_setup(ir3: &crate::ir::Ir3) -> SExpr {
-    let mut setup_children = vec![
-        SExpr::list("pad_to_mask_clearance", vec![SExpr::Atom("0.1".into())]),
-        SExpr::list("solder_mask_min_width", vec![SExpr::Atom("0.1".into())]),
-    ];
+fn build_setup(_ir3: &crate::ir::Ir3) -> SExpr {
+    let stackup = SExpr::list(
+        "stackup",
+        vec![
+            stackup_layer("F.SilkS", "Top Silk Screen", None),
+            stackup_layer("F.Paste", "Top Solder Paste", None),
+            stackup_layer("F.Mask", "Top Solder Mask", Some("0.01")),
+            stackup_layer("F.Cu", "copper", Some("0.035")),
+            dielectric_layer("dielectric 1", "core", "1.51"),
+            stackup_layer("B.Cu", "copper", Some("0.035")),
+            stackup_layer("B.Mask", "Bottom Solder Mask", Some("0.01")),
+            stackup_layer("B.Paste", "Bottom Solder Paste", None),
+            stackup_layer("B.SilkS", "Bottom Silk Screen", None),
+            SExpr::pair_quoted("copper_finish", "None"),
+            SExpr::pair("dielectric_constraints", "no"),
+        ],
+    );
 
-    // Emit net-class definitions from IR-3 routing constraints.
-    if let Some(rc) = &ir3.routing_constraints {
-        // Default net class (always present)
-        let mut default_width = "0.25".to_string();
-        if let Some(signal_traces) = &rc.signal_traces {
-            // Use the minimum signal trace width (most conservative)
-            let min_width = signal_traces
-                .iter()
-                .map(|st| st.width_mm)
-                .fold(f64::INFINITY, f64::min);
-            if min_width.is_finite() {
-                default_width = fmt(min_width);
-            }
-        }
-        let mut default_nc = vec![
-            SExpr::Quoted("Default".into()),
-            SExpr::pair_quoted("description", "Default net class"),
-            SExpr::list("clearance", vec![SExpr::Atom("0.2".into())]),
-            SExpr::list("trace_width", vec![SExpr::Atom(default_width)]),
-        ];
-        if let Some(via) = &rc.via_constraints {
-            default_nc.push(SExpr::list(
-                "via_dia",
-                vec![SExpr::Atom(fmt(via.diameter_mm))],
-            ));
-            default_nc.push(SExpr::list(
-                "via_drill",
-                vec![SExpr::Atom(fmt(via.drill_mm))],
-            ));
-        }
-        setup_children.push(SExpr::list("net_class", default_nc));
+    let pcbplotparams = SExpr::list(
+        "pcbplotparams",
+        vec![
+            SExpr::pair("layerselection", "0x00010fc_ffffffff"),
+            SExpr::pair("plot_on_all_layers_selection", "0x0000000_00000000"),
+            SExpr::pair("disableapertmacros", "no"),
+            SExpr::pair("usegerberextensions", "no"),
+            SExpr::pair("usegerberattributes", "yes"),
+            SExpr::pair("usegerberadvancedattributes", "yes"),
+            SExpr::pair("creategerberjobfile", "yes"),
+            SExpr::pair("dashed_line_dash_ratio", "12.000000"),
+            SExpr::pair("dashed_line_gap_ratio", "3.000000"),
+            SExpr::pair("svgprecision", "4"),
+            SExpr::pair("plotframeref", "no"),
+            SExpr::pair("viasonmask", "no"),
+            SExpr::pair("mode", "1"),
+            SExpr::pair("useauxorigin", "no"),
+            SExpr::pair("hpglpennumber", "1"),
+            SExpr::pair("hpglpenspeed", "20"),
+            SExpr::pair("hpglpendiameter", "15.000000"),
+            SExpr::pair("pdf_front_fp_property_popups", "yes"),
+            SExpr::pair("pdf_back_fp_property_popups", "yes"),
+            SExpr::pair("dxfpolygonmode", "yes"),
+            SExpr::pair("dxfimperialunits", "yes"),
+            SExpr::pair("dxfusepcbnewfont", "yes"),
+            SExpr::pair("psnegative", "no"),
+            SExpr::pair("psa4output", "no"),
+            SExpr::pair("plotreference", "yes"),
+            SExpr::pair("plotvalue", "yes"),
+            SExpr::pair("plotfptext", "yes"),
+            SExpr::pair("plotinvisibletext", "no"),
+            SExpr::pair("sketchpadsonfab", "no"),
+            SExpr::pair("subtractmaskfromsilk", "no"),
+            SExpr::pair("outputformat", "1"),
+            SExpr::pair("mirror", "no"),
+            SExpr::pair("drillshape", "1"),
+            SExpr::pair("scaleselection", "1"),
+            SExpr::pair_quoted("outputdirectory", ""),
+        ],
+    );
 
-        // Power net class from power_traces
-        if let Some(power_traces) = &rc.power_traces {
-            if let Some(first) = power_traces.first() {
-                let pw = first.min_width_mm.unwrap_or(0.5);
-                let mut power_nc = vec![
-                    SExpr::Quoted("Power".into()),
-                    SExpr::pair_quoted("description", "Power net class"),
-                    SExpr::list("clearance", vec![SExpr::Atom("0.2".into())]),
-                    SExpr::list("trace_width", vec![SExpr::Atom(fmt(pw))]),
-                ];
-                if let Some(via) = &rc.via_constraints {
-                    power_nc.push(SExpr::list(
-                        "via_dia",
-                        vec![SExpr::Atom(fmt(via.diameter_mm))],
-                    ));
-                    power_nc.push(SExpr::list(
-                        "via_drill",
-                        vec![SExpr::Atom(fmt(via.drill_mm))],
-                    ));
-                }
-                // Add net assignments for each power trace (skip copper pours)
-                for pt in power_traces {
-                    if pt.trace_type.as_deref() == Some("copper pour") {
-                        continue; // copper pours handled separately, not as net class traces
-                    }
-                    power_nc.push(SExpr::list("add_net", vec![SExpr::Quoted(pt.net.clone())]));
-                }
-                setup_children.push(SExpr::list("net_class", power_nc));
-            }
-        }
+    SExpr::list(
+        "setup",
+        vec![
+            stackup,
+            SExpr::list("pad_to_mask_clearance", vec![SExpr::Atom("0".into())]),
+            SExpr::pair("allow_soldermask_bridges_in_footprints", "no"),
+            pcbplotparams,
+        ],
+    )
+}
+
+fn stackup_layer(name: &str, layer_type: &str, thickness: Option<&str>) -> SExpr {
+    let mut children = vec![SExpr::pair_quoted("type", layer_type)];
+    if let Some(value) = thickness {
+        children.push(SExpr::list("thickness", vec![SExpr::Atom(value.into())]));
     }
+    let mut items = vec![SExpr::Atom("layer".into()), SExpr::Quoted(name.into())];
+    items.extend(children);
+    SExpr::List(items)
+}
 
-    if let Some(rc) = &ir3.routing_constraints {
-        if let Some(_via) = &rc.via_constraints {
-            setup_children.push(SExpr::list(
-                "pcbplotparams",
-                vec![
-                    SExpr::pair("layerselection", "0x00010fc_ffffffff"),
-                    SExpr::pair_quoted("outputdirectory", ""),
-                ],
-            ));
-        }
-    }
-    SExpr::list("setup", setup_children)
+fn dielectric_layer(name: &str, layer_type: &str, thickness: &str) -> SExpr {
+    SExpr::List(vec![
+        SExpr::Atom("layer".into()),
+        SExpr::Quoted(name.into()),
+        SExpr::pair_quoted("type", layer_type),
+        SExpr::list("thickness", vec![SExpr::Atom(thickness.into())]),
+        SExpr::pair_quoted("material", "FR4"),
+        SExpr::list("epsilon_r", vec![SExpr::Atom("4.5".into())]),
+        SExpr::list("loss_tangent", vec![SExpr::Atom("0.02".into())]),
+    ])
 }
 
 /// Build net definitions and return a name→id mapping.

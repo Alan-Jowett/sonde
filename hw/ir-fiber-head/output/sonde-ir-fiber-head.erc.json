@@ -1,0 +1,17 @@
+{
+    "$schema": "https://schemas.kicad.org/erc.v1.json",
+    "coordinate_units": "mm",
+    "date": "2026-07-03T21:24:54-0700",
+    "included_severities": [
+        "error"
+    ],
+    "kicad_version": "9.0.8",
+    "sheets": [
+        {
+            "path": "/",
+            "uuid_path": "/12ad4c29-a8a5-4bcf-985f-79fbf22305db",
+            "violations": []
+        }
+    ],
+    "source": "sonde-ir-fiber-head.kicad_sch"
+}

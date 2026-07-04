@@ -25,11 +25,12 @@ pub fn validate_cross_references(bundle: &IrBundle) -> Result<(), Error> {
         }
     }
 
-    // Every component in IR-1e must have library_status == "FOUND"
+    // Every component in IR-1e must have a backend-resolvable library status.
     for comp in &bundle.ir1e.components {
-        if comp.library_status != "FOUND" {
+        if !is_resolvable_library_status(&comp.library_status) {
             return Err(Error::CrossValidation(format!(
-                "component `{}` in IR-1e has library_status `{}`, expected `FOUND`",
+                "component `{}` in IR-1e has library_status `{}`, expected one of `FOUND`, \
+                 `CUSTOM_FOOTPRINT_REQUIRED`, or `CUSTOM_SYMBOL_REQUIRED`",
                 comp.ref_des, comp.library_status
             )));
         }
@@ -50,4 +51,29 @@ pub fn validate_cross_references(bundle: &IrBundle) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+fn is_resolvable_library_status(status: &str) -> bool {
+    matches!(
+        status,
+        "FOUND" | "CUSTOM_FOOTPRINT_REQUIRED" | "CUSTOM_SYMBOL_REQUIRED"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_resolvable_library_status;
+
+    #[test]
+    fn accepts_found_and_custom_statuses() {
+        assert!(is_resolvable_library_status("FOUND"));
+        assert!(is_resolvable_library_status("CUSTOM_FOOTPRINT_REQUIRED"));
+        assert!(is_resolvable_library_status("CUSTOM_SYMBOL_REQUIRED"));
+    }
+
+    #[test]
+    fn rejects_unknown_statuses() {
+        assert!(!is_resolvable_library_status("MISSING"));
+        assert!(!is_resolvable_library_status(""));
+    }
 }

@@ -622,7 +622,7 @@ fn proximity_constraint_violation_error() {
 // F-010: Design Rules from IR-3
 // ---------------------------------------------------------------------------
 
-/// T-KE-040: Net class definitions from IR-3 routing constraints.
+/// T-KE-040: KiCad 9-compatible setup section from IR-3 routing constraints.
 #[test]
 fn pcb_net_class_definitions() {
     let dir = minimal_board_dir();
@@ -631,35 +631,30 @@ fn pcb_net_class_definitions() {
 
     let pcb = sonde_kicad::pcb::emit_pcb(&bundle, &mut uuid_gen).unwrap();
 
-    // Must contain net_class definitions from routing_constraints
+    // Must contain a KiCad 9-compatible setup section.
     assert!(
-        pcb.contains("net_class"),
-        "PCB should contain net_class definitions"
+        pcb.contains("stackup"),
+        "PCB should contain a stackup definition"
     );
     assert!(
-        pcb.contains("\"Default\""),
-        "PCB should contain Default net class"
+        pcb.contains("allow_soldermask_bridges_in_footprints"),
+        "PCB should contain KiCad-compatible setup flags"
     );
     assert!(
-        pcb.contains("\"Power\""),
-        "PCB should contain Power net class"
+        pcb.contains("pcbplotparams"),
+        "PCB should contain pcbplotparams"
     );
     assert!(
-        pcb.contains("trace_width"),
-        "net class should include trace_width"
+        pcb.contains("\"F.Cu\""),
+        "stackup should include the front copper layer"
     );
     assert!(
-        pcb.contains("via_dia"),
-        "net class should include via diameter"
+        pcb.contains("\"B.Cu\""),
+        "stackup should include the back copper layer"
     );
     assert!(
-        pcb.contains("via_drill"),
-        "net class should include via drill"
-    );
-    // Power net should be assigned to the VCC net
-    assert!(
-        pcb.contains("add_net") && pcb.contains("\"VCC\""),
-        "Power net class should assign VCC net"
+        !pcb.contains("net_class"),
+        "PCB emitter should avoid legacy net_class blocks that KiCad 9 rejects"
     );
 }
 

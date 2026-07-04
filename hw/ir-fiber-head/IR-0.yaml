@@ -1,0 +1,369 @@
+schema_version: "1.0.0"
+project: sonde-ir-fiber-head
+description: >
+  Standalone 8-channel infrared transmitter / receiver board using a CH32V203
+  microcontroller, 940 nm emitters and photodiodes, dual-use I2C/programming
+  pins, and upside-down optical coupling into 1 mm PMMA fiber through the PCB.
+
+functional_requirements:
+  - id: REQ-HW-0100
+    title: "Standalone IR fiber head board"
+    description: >
+      The design SHALL define a standalone PCB for an 8-channel infrared
+      transmitter / receiver pair and SHALL NOT depend on the existing Sonde
+      node or carrier-board electrical design.
+    priority: MUST
+    acceptance_criteria:
+      - "The board has its own schematic, PCB, and manufacturing outputs."
+      - "No existing carrier-board source file must be edited for this design to exist."
+    source: IFH-0100
+
+  - id: REQ-HW-0101
+    title: "CH32V203 controller"
+    description: >
+      The board SHALL use a CH32V203 microcontroller as the local controller
+      for transmitter drive, receiver sampling, and host communications.
+    priority: MUST
+    acceptance_criteria:
+      - "The BOM names a CH32V203 device."
+      - "The selected package exposes enough pins for 8 Tx, 8 Rx, I2C, reset, and boot access without GPIO expansion."
+    source: IFH-0200
+
+  - id: REQ-HW-0102
+    title: "Smallest verified package"
+    description: >
+      The implementation SHALL use the smallest CH32V203 package that can be
+      verified in Pass 1 to expose the full required pin map for 8
+      ADC-capable receive pins, 8 transmit pins, the shared I2C/programming
+      pair, and reset/boot access.
+    priority: MUST
+    acceptance_criteria:
+      - "The component bill names the selected CH32V203 package."
+      - "The Pass 1 pin assignment proves that the selected package satisfies the full pin budget without GPIO expansion."
+      - "If a smaller package fails the verified pin map, the next larger package is selected and the failure is documented."
+    source: "User revision: smallest verified package"
+
+  - id: REQ-HW-0200
+    title: "Host-powered I2C slave interface"
+    description: >
+      The board SHALL operate as a 3.3 V I2C slave device powered directly by
+      host-provided 3.3 V and connected by host-provided SCL and SDA lines.
+    priority: MUST
+    acceptance_criteria:
+      - "The schematic contains host-interface nets 3V3, GND, SCL, and SDA."
+      - "No additional normal-operation power connector is required."
+    source: IFH-0101
+
+  - id: REQ-HW-0201
+    title: "Through-hole wire pads"
+    description: >
+      The host interface SHALL terminate on solderable through-hole pads
+      suitable for hand-soldered wires.
+    priority: MUST
+    acceptance_criteria:
+      - "The PCB exposes 3V3, GND, SCL, and SDA on through-hole pads."
+      - "Each pad is labeled in the schematic and on the PCB silkscreen or assembly drawing."
+    source: "User response: through hole that I can solder wires to"
+
+  - id: REQ-HW-0202
+    title: "Dual-use I2C and programming pins"
+    description: >
+      Exactly two MCU pins SHALL serve as the normal-operating I2C SCL and SDA
+      interface and SHALL also be reusable for programming or debug access
+      during bring-up.
+    priority: MUST
+    acceptance_criteria:
+      - "Exactly one SCL net and one SDA net are assigned to MCU pins."
+      - "The design documentation states how those two nets are reused during bring-up."
+    source: IFH-0102
+
+  - id: REQ-HW-0203
+    title: "Reset and boot bring-up pads"
+    description: >
+      The board SHALL expose separate external access for reset and boot-mode
+      control so programming is not blocked by the shared SCL/SDA pins.
+    priority: MUST
+    acceptance_criteria:
+      - "Reset and boot pads are present on the PCB."
+      - "Reset and boot pads are labeled in the schematic."
+    source: IFH-0103
+
+  - id: REQ-HW-0204
+    title: "Host-provided pull-ups"
+    description: >
+      The board SHALL rely on host-provided I2C pull-up resistors and SHALL
+      NOT add fixed onboard SCL/SDA pull-ups that could over-constrain the bus.
+    priority: MUST
+    acceptance_criteria:
+      - "No fixed pull-up resistor from SCL to 3V3 is present."
+      - "No fixed pull-up resistor from SDA to 3V3 is present."
+      - "Host pull-up support for at least standard-mode 100 kHz I2C is documented."
+    source: IFH-0104
+
+  - id: REQ-HW-0205
+    title: "No hardware address selection"
+    description: >
+      The hardware SHALL NOT reserve straps, jumpers, or dedicated pins for I2C
+      address selection; slave addressing is a firmware concern.
+    priority: MUST
+    acceptance_criteria:
+      - "No address-select strap or jumper is present in the schematic."
+      - "No MCU pin is reserved solely for hardware address selection."
+    source: IFH-0105
+
+  - id: REQ-HW-0300
+    title: "Eight transmitter channels"
+    description: >
+      The board SHALL provide 8 independent infrared transmitter channels.
+    priority: MUST
+    acceptance_criteria:
+      - "The schematic contains 8 discrete transmitter channels."
+      - "Each transmitter channel has its own MCU control net."
+    source: IFH-0300
+
+  - id: REQ-HW-0301
+    title: "940 nm transmitter and receiver optics"
+    description: >
+      The transmitter LEDs and receiver photodiodes SHALL be selected for 940 nm operation.
+    priority: MUST
+    acceptance_criteria:
+      - "The BOM specifies 940 nm IR LEDs."
+      - "The BOM specifies photodiodes with sensitivity at 940 nm."
+    source: IFH-0301
+
+  - id: REQ-HW-0302
+    title: "Direct-drive LED topology"
+    description: >
+      Each transmitter channel SHALL use direct MCU GPIO drive through a
+      current-limiting resistor, with no transistor driver stage.
+    priority: MUST
+    acceptance_criteria:
+      - "Each LED channel includes a current-limiting resistor."
+      - "No per-channel active driver exists between the MCU pin and the LED."
+      - "The design documentation states whether the GPIO drives by sourcing or sinking current."
+    source: IFH-0302
+
+  - id: REQ-HW-0303
+    title: "Simultaneous transmit current budget"
+    description: >
+      The design SHALL support all 8 LEDs enabled simultaneously while keeping
+      total current draw within a 100 mA host-supplied budget and within MCU
+      GPIO current limits.
+    priority: MUST
+    acceptance_criteria:
+      - "A power-budget calculation covers the 8-LED simultaneous-drive case."
+      - "Worst-case total board current is less than or equal to 100 mA from 3V3."
+      - "Per-pin and aggregate GPIO current limits are verified for the chosen package."
+    source: IFH-0303
+
+  - id: REQ-HW-0400
+    title: "Eight receiver channels"
+    description: >
+      The board SHALL provide 8 independent receiver channels using photodiodes
+      connected to ADC-capable MCU pins.
+    priority: MUST
+    acceptance_criteria:
+      - "The schematic contains 8 discrete receiver channels."
+      - "All 8 receiver nets terminate on ADC-capable MCU pins."
+    source: IFH-0201
+
+  - id: REQ-HW-0401
+    title: "Passive photodiode receive topology"
+    description: >
+      Each receiver channel SHALL use a photodiode-plus-resistor network
+      connected directly to the MCU input, with no amplifier, comparator, or
+      demodulating receiver module.
+    priority: MUST
+    acceptance_criteria:
+      - "Each receiver channel contains one photodiode and a passive resistor network."
+      - "No active analog front-end IC exists in the receive path."
+    source: IFH-0202
+
+  - id: REQ-HW-0402
+    title: "GPIO and ADC compatible receive pins"
+    description: >
+      Receiver pins SHALL be usable as digital GPIO inputs and shall also be
+      ADC-capable for future analog sampling.
+    priority: MUST
+    acceptance_criteria:
+      - "The receiver pin table identifies 8 ADC-capable MCU pins."
+      - "No receiver channel is assigned to a non-ADC-only digital pin."
+    source: IFH-0201
+
+  - id: REQ-HW-0403
+    title: "Software-modulated sensing compatibility"
+    description: >
+      The optical receive path SHALL preserve raw signal behavior suitable for
+      firmware-driven modulation and sampling and SHALL NOT use fixed-carrier
+      demodulating IR receiver modules.
+    priority: MUST
+    acceptance_criteria:
+      - "The BOM uses discrete photodiodes rather than demodulating IR receiver cans."
+      - "No fixed-frequency demodulation stage exists."
+    source: IFH-0203
+
+  - id: REQ-HW-0500
+    title: "Opposed 1x8 optical rows"
+    description: >
+      The 8 transmitter channels SHALL form a 1x8 row on one edge of one PCB
+      face, and the 8 receiver channels SHALL form a 1x8 row on the opposite
+      edge of the same PCB face.
+    priority: MUST
+    acceptance_criteria:
+      - "The PCB places 8 transmitter optical ports on one edge-aligned row."
+      - "The PCB places 8 receiver optical ports on the opposite edge-aligned row on the same face."
+    source: IFH-0400
+
+  - id: REQ-HW-0501
+    title: "5.08 mm channel pitch"
+    description: >
+      Adjacent channels within each optical row SHALL use 5.08 mm center-to-center pitch.
+    priority: MUST
+    acceptance_criteria:
+      - "Adjacent channel centers measure 5.08 mm ± 0.10 mm."
+    source: IFH-0401
+
+  - id: REQ-HW-0502
+    title: "Upside-down optical mounting"
+    description: >
+      The LEDs and photodiodes SHALL be mounted upside down so their optical
+      apertures couple vertically into board holes beneath them.
+    priority: MUST
+    acceptance_criteria:
+      - "The footprint orientation places the optical aperture over the matching board hole."
+      - "Assembly documentation identifies the upside-down mounting orientation."
+    source: IFH-0402
+
+  - id: REQ-HW-0503
+    title: "1 mm PMMA fiber interference-fit holes"
+    description: >
+      Each optical channel SHALL include a board hole sized for interference-fit
+      retention of nominal 1.00 mm PMMA fiber.
+    priority: MUST
+    acceptance_criteria:
+      - "Each Tx and Rx channel has a dedicated fiber hole."
+      - "The documented hole target is 0.96 mm finished NPTH with ±0.02 mm tolerance."
+    source: IFH-0403
+
+  - id: REQ-HW-0504
+    title: "Opposite-side fiber insertion"
+    description: >
+      Fibers SHALL insert from the opposite side of the board from the optical
+      components so the PCB acts as the alignment and retention plate.
+    priority: MUST
+    acceptance_criteria:
+      - "Assembly documentation specifies opposite-side fiber insertion."
+      - "No optical channel requires same-side fiber insertion."
+    source: IFH-0404
+
+  - id: REQ-HW-0505
+    title: "Optical package compatibility"
+    description: >
+      The selected LED and photodiode packages SHALL support upside-down
+      coupling into the fiber holes with acceptable alignment tolerance.
+    priority: MUST
+    acceptance_criteria:
+      - "The package geometry allows optical-axis alignment to hole center within ±0.25 mm."
+      - "The package orientation used for upside-down coupling is documented."
+    source: IFH-0405
+
+  - id: REQ-HW-0600
+    title: "Regenerable design and manufacturing package"
+    description: >
+      The project SHALL include reviewable hardware-source artifacts and PCB
+      manufacturing outputs sufficient to regenerate the design from requirements
+      through Gerbers.
+    priority: MUST
+    acceptance_criteria:
+      - "The repository contains requirements, design, and validation specifications for the board."
+      - "The repository contains IR source artifacts, generated design files, and Gerber/drill outputs."
+      - "First-article bring-up documentation records the assumed I2C slave address used for testing."
+    source: IFH-0500/IFH-0501
+
+electrical_constraints:
+  - name: "host_supply_voltage"
+    req_ids: [REQ-HW-0200]
+    nominal_V: 3.3
+    source_type: "host-supplied regulated rail"
+
+  - name: "host_current_budget"
+    req_ids: [REQ-HW-0303]
+    max_total_current_mA: 100
+    note: "Budget includes all 8 LEDs enabled simultaneously plus MCU and passive loads."
+
+  - name: "i2c_bus_requirements"
+    req_ids: [REQ-HW-0200, REQ-HW-0204]
+    protocol: "I2C slave"
+    min_mode: "standard-mode 100 kHz"
+    pullups: "provided by host"
+
+  - name: "receiver_pin_capability"
+    req_ids: [REQ-HW-0400, REQ-HW-0402]
+    count: 8
+    capability: "ADC-capable and usable as digital GPIO input"
+
+mechanical_constraints:
+  - name: "optical_row_geometry"
+    req_ids: [REQ-HW-0500, REQ-HW-0501]
+    tx_row_channels: 8
+    rx_row_channels: 8
+    row_arrangement: "opposite edges of same PCB face"
+    pitch_mm: 5.08
+
+  - name: "fiber_holes"
+    req_ids: [REQ-HW-0502, REQ-HW-0503, REQ-HW-0504, REQ-HW-0505]
+    fiber_type: "nominal 1.00 mm PMMA"
+    hole_type: "NPTH"
+    finished_hole_mm: 0.96
+    tolerance_mm: 0.02
+    insertion_direction: "opposite side from optical components"
+    package_alignment_tolerance_mm: 0.25
+
+  - name: "host_connection_style"
+    req_ids: [REQ-HW-0201, REQ-HW-0203]
+    connection_type: "through-hole wire pads"
+    bringup_pads: ["RST", "BOOT"]
+
+  - name: "board_size"
+    req_ids: [REQ-HW-0100, REQ-HW-0500]
+    limit: "no strict board-size limit"
+    optimization_goal: "simple routing and clear optical geometry"
+
+environmental_constraints:
+  - name: "operating_context"
+    req_ids: [REQ-HW-0100, REQ-HW-0600]
+    environment: "indoor prototype / normal lab or bench use"
+    outdoor_use_required: false
+    ingress_protection_required: false
+    vibration_hardening_required: false
+    source: "User selection: Indoor prototype / normal lab use only"
+
+regulatory_constraints:
+  - name: "prototype_scope"
+    req_ids: [REQ-HW-0600]
+    fcc_required: false
+    ce_required: false
+    ul_required: false
+    note: "No special certification requirement was requested for this prototype board."
+
+interface_requirements:
+  - name: "host_i2c_power_header"
+    req_ids: [REQ-HW-0200, REQ-HW-0201, REQ-HW-0202, REQ-HW-0204, REQ-HW-0205]
+    signals:
+      - {name: "3V3", direction: "input", type: "power"}
+      - {name: "GND", direction: "return", type: "power"}
+      - {name: "SCL", direction: "bidirectional", type: "I2C clock / programming"}
+      - {name: "SDA", direction: "bidirectional", type: "I2C data / programming"}
+
+  - name: "bringup_access"
+    req_ids: [REQ-HW-0203]
+    signals:
+      - {name: "RST", direction: "input", type: "reset control"}
+      - {name: "BOOT", direction: "input", type: "boot-mode select"}
+
+  - name: "optical_channels"
+    req_ids: [REQ-HW-0300, REQ-HW-0400, REQ-HW-0500]
+    tx_channels: 8
+    rx_channels: 8
+    tx_device_type: "940 nm IR LED"
+    rx_device_type: "940 nm photodiode"

@@ -1,0 +1,320 @@
+schema_version: "1.0.0"
+project: sonde-ir-fiber-head
+input_ir: "IR-0.yaml"
+generated: "2026-07-03"
+
+components:
+  - ref_des: U1
+    description: "RISC-V microcontroller"
+    manufacturer: "WCH"
+    part_number: "CH32V203K8T6"
+    package: "LQFP-32"
+    generic_footprint: "LQFP-32 7x7mm P0.8"
+    electrical_specs:
+      supply_voltage_V: [2.5, 3.3]
+      core: "32-bit RISC-V"
+      max_clock_MHz: 144
+      flash_kB: 64
+      sram_kB: 20
+      adc_external_channels: 10
+      i2c_instances: 2
+      debug_interface: "serial 2-wire debug interface"
+    pin_assignment_plan:
+      - {pin_no: 1, pin_name: "VDD", assignment: "3V3", status: "assigned"}
+      - {pin_no: 2, pin_name: "OSC_IN/PD0", assignment: "reserved", status: "reserved", note: "keep free in case external clock trim is needed"}
+      - {pin_no: 3, pin_name: "OSC_OUT/PD1", assignment: "reserved", status: "reserved", note: "keep free in case external clock trim is needed"}
+      - {pin_no: 4, pin_name: "NRST", assignment: "RESET_PAD", status: "assigned"}
+      - {pin_no: 5, pin_name: "VDDA", assignment: "3V3_A", status: "assigned"}
+      - {pin_no: 6, pin_name: "PA0/ADC_IN0", assignment: "RX0", status: "assigned"}
+      - {pin_no: 7, pin_name: "PA1/ADC_IN1", assignment: "RX1", status: "assigned"}
+      - {pin_no: 8, pin_name: "PA2/ADC_IN2", assignment: "RX2", status: "assigned"}
+      - {pin_no: 9, pin_name: "PA3/ADC_IN3", assignment: "RX3", status: "assigned"}
+      - {pin_no: 10, pin_name: "PA4/ADC_IN4", assignment: "RX4", status: "assigned"}
+      - {pin_no: 11, pin_name: "PA5/ADC_IN5", assignment: "RX5", status: "assigned"}
+      - {pin_no: 12, pin_name: "PA6/ADC_IN6", assignment: "RX6", status: "assigned"}
+      - {pin_no: 13, pin_name: "PA7/ADC_IN7", assignment: "RX7", status: "assigned"}
+      - {pin_no: 14, pin_name: "PB0/ADC_IN8", assignment: "spare_adc0", status: "unused", note: "kept free for bring-up margin"}
+      - {pin_no: 15, pin_name: "PB1/ADC_IN9", assignment: "spare_adc1", status: "unused", note: "kept free for bring-up margin"}
+      - {pin_no: 16, pin_name: "VSS", assignment: "GND", status: "assigned"}
+      - {pin_no: 17, pin_name: "VDD", assignment: "3V3", status: "assigned"}
+      - {pin_no: 18, pin_name: "PA8", assignment: "TX0", status: "assigned"}
+      - {pin_no: 19, pin_name: "PA9", assignment: "TX1", status: "assigned"}
+      - {pin_no: 20, pin_name: "PA10", assignment: "TX2", status: "assigned"}
+      - {pin_no: 21, pin_name: "PA11/USBDM", assignment: "TX3", status: "assigned"}
+      - {pin_no: 22, pin_name: "PA12/USBDP", assignment: "TX4", status: "assigned"}
+      - {pin_no: 23, pin_name: "PA13/SWDIO", assignment: "reserved_swdio", status: "reserved"}
+      - {pin_no: 24, pin_name: "PA14/SWCLK", assignment: "reserved_swclk", status: "reserved"}
+      - {pin_no: 25, pin_name: "PA15", assignment: "TX5", status: "assigned"}
+      - {pin_no: 26, pin_name: "PB3", assignment: "TX6", status: "assigned"}
+      - {pin_no: 27, pin_name: "PB4", assignment: "TX7", status: "assigned"}
+      - {pin_no: 28, pin_name: "PB5", assignment: "spare_gpio0", status: "unused"}
+      - {pin_no: 29, pin_name: "PB6/I2C1_SCL/USART1_TX_1", assignment: "SCL / PROGRAM_TX", status: "assigned"}
+      - {pin_no: 30, pin_name: "PB7/I2C1_SDA/USART1_RX_1", assignment: "SDA / PROGRAM_RX", status: "assigned"}
+      - {pin_no: 31, pin_name: "BOOT0", assignment: "BOOT_PAD", status: "assigned"}
+      - {pin_no: 32, pin_name: "PB8", assignment: "spare_gpio1", status: "unused"}
+    satisfies: [REQ-HW-0101, REQ-HW-0102, REQ-HW-0200, REQ-HW-0202, REQ-HW-0203, REQ-HW-0205, REQ-HW-0400, REQ-HW-0402]
+    rationale: >
+      CH32V203K8T6 is the smallest package variant verified as orderable and as
+      exposing the full required pin budget. It provides 8 contiguous
+      ADC-capable receive pins on PA0..PA7, leaves PB6/PB7 available as the
+      dual-use I2C/programming pair, and still leaves enough general-purpose
+      outputs for 8 transmit channels without external expansion.
+    selection_label: KNOWN
+    sourcing:
+      availability: "Orderable via JLCPCB/LCSC-compatible distribution"
+      unit_price_usd_qty1: UNKNOWN
+      lifecycle_status: "active"
+      date_verified: "2026-07-03"
+      verification_label: KNOWN
+
+  - ref_des: [J1]
+    description: "Host wire-solder pad field"
+    manufacturer: null
+    part_number: null
+    package: "PCB feature"
+    generic_footprint: "4x plated wire pads, 2.54 mm pitch"
+    electrical_specs:
+      signal_count: 4
+      signals: ["3V3", "GND", "SCL", "SDA"]
+      fitted_component: false
+    pin_assignment_plan:
+      - {pin_name: "Pad1", assignment: "3V3", status: "assigned"}
+      - {pin_name: "Pad2", assignment: "GND", status: "assigned"}
+      - {pin_name: "Pad3", assignment: "SCL", status: "assigned"}
+      - {pin_name: "Pad4", assignment: "SDA", status: "assigned"}
+    satisfies: [REQ-HW-0200, REQ-HW-0201]
+    rationale: >
+      The host interface is implemented as bare solderable plated holes rather
+      than a fitted connector because the user wants direct wire attachment.
+    selection_label: KNOWN
+    sourcing:
+      availability: "Provided by PCB fabrication"
+      unit_price_usd_qty1: 0
+      lifecycle_status: "n/a"
+      date_verified: "2026-07-03"
+      verification_label: KNOWN
+
+  - ref_des: [TP1, TP2]
+    description: "Bring-up pads"
+    manufacturer: null
+    part_number: null
+    package: "PCB feature"
+    generic_footprint: "2x plated or SMT test pads"
+    electrical_specs:
+      signal_count: 2
+      signals: ["RESET", "BOOT0"]
+      fitted_component: false
+    pin_assignment_plan:
+      - {pin_name: "TP1", assignment: "RESET", status: "assigned"}
+      - {pin_name: "TP2", assignment: "BOOT0", status: "assigned"}
+    satisfies: [REQ-HW-0203]
+    rationale: "Dedicated bring-up access is required in addition to the shared PB6/PB7 pair."
+    selection_label: KNOWN
+    sourcing:
+      availability: "Provided by PCB fabrication"
+      unit_price_usd_qty1: 0
+      lifecycle_status: "n/a"
+      date_verified: "2026-07-03"
+      verification_label: KNOWN
+
+  - ref_des: [D_TX0, D_TX1, D_TX2, D_TX3, D_TX4, D_TX5, D_TX6, D_TX7]
+    description: "940 nm transmitter LED"
+    manufacturer: "Vishay"
+    part_number: "TSAL4400"
+    package: "T-1 3 mm radial"
+    generic_footprint: "LED radial 2.54 mm pitch D3.0 mm"
+    electrical_specs:
+      peak_wavelength_nm: 940
+      max_forward_current_mA: 100
+      typical_forward_voltage_V: 1.35
+    pin_assignment_plan:
+      - {pin_name: "Anode", assignment: "3V3 via LED resistor", status: "assigned"}
+      - {pin_name: "Cathode", assignment: "TXn GPIO sink", status: "assigned"}
+    satisfies: [REQ-HW-0300, REQ-HW-0301, REQ-HW-0302, REQ-HW-0502, REQ-HW-0505]
+    rationale: >
+      TSAL4400 is a small 3 mm 940 nm emitter in a simple radial package that
+      is mechanically compatible with 5.08 mm channel pitch and with upside-down
+      coupling over a fiber hole.
+    selection_label: KNOWN
+    sourcing:
+      availability: "Orderable via DigiKey, Mouser, Newark, and Arrow"
+      unit_price_usd_qty1: 0.48
+      lifecycle_status: "active"
+      date_verified: "2026-07-03"
+      verification_label: KNOWN
+
+  - ref_des: [D_RX0, D_RX1, D_RX2, D_RX3, D_RX4, D_RX5, D_RX6, D_RX7]
+    description: "940 nm receiver photodiode"
+    manufacturer: "Everlight"
+    part_number: "PD333-3B/H0/L2"
+    package: "3 mm radial through-hole"
+    generic_footprint: "Photodiode radial 2.54 mm pitch D3.0 mm"
+    electrical_specs:
+      peak_wavelength_nm: 940
+      dark_current_nA_typ: 5
+      reverse_voltage_V_max: 170
+    pin_assignment_plan:
+      - {pin_name: "Anode", assignment: "receiver bias network", status: "assigned"}
+      - {pin_name: "Cathode", assignment: "RXn sense node", status: "assigned"}
+    satisfies: [REQ-HW-0301, REQ-HW-0400, REQ-HW-0401, REQ-HW-0403, REQ-HW-0502, REQ-HW-0505]
+    rationale: >
+      PD333-3B/H0/L2 is a through-hole 940 nm photodiode that fits the same
+      general mechanical class as the chosen LED and keeps the receive path
+      compatible with the requested simplest-possible discrete architecture.
+    selection_label: KNOWN
+    sourcing:
+      availability: "Orderable via DigiKey"
+      unit_price_usd_qty1: 1.06
+      lifecycle_status: "active"
+      date_verified: "2026-07-03"
+      verification_label: KNOWN
+
+  - ref_des: [R_TX0, R_TX1, R_TX2, R_TX3, R_TX4, R_TX5, R_TX6, R_TX7]
+    description: "LED current-limiting resistor"
+    manufacturer: "UniOhm"
+    part_number: "0603WAF2700T5E"
+    package: "0603"
+    generic_footprint: "0603 resistor"
+    electrical_specs:
+      resistance_ohm: 270
+      tolerance_pct: 1
+      power_rating_W: 0.1
+    pin_assignment_plan:
+      - {pin_name: "1", assignment: "3V3", status: "assigned"}
+      - {pin_name: "2", assignment: "LED anode", status: "assigned"}
+    satisfies: [REQ-HW-0302, REQ-HW-0303]
+    rationale: >
+      270 ohms is an initial direct-drive value that keeps 8-channel
+      simultaneous operation comfortably below the 100 mA host-current limit
+      while leaving room for MCU current. The exact current margin is verified
+      in the Pass 1b power budget.
+    selection_label: INFERRED
+    sourcing:
+      availability: "Commodity 0603 resistor, orderable via LCSC"
+      unit_price_usd_qty1: UNKNOWN
+      lifecycle_status: "active"
+      date_verified: "2026-07-03"
+      verification_label: KNOWN
+
+  - ref_des: [R_RX0, R_RX1, R_RX2, R_RX3, R_RX4, R_RX5, R_RX6, R_RX7]
+    description: "Photodiode load resistor"
+    manufacturer: "UniOhm"
+    part_number: "0603WAF1003T5E"
+    package: "0603"
+    generic_footprint: "0603 resistor"
+    electrical_specs:
+      resistance_ohm: 100000
+      tolerance_pct: 1
+      power_rating_W: 0.1
+    pin_assignment_plan:
+      - {pin_name: "1", assignment: "receiver bias rail", status: "assigned"}
+      - {pin_name: "2", assignment: "RXn sense node", status: "assigned"}
+    satisfies: [REQ-HW-0401, REQ-HW-0403]
+    rationale: >
+      100 kohms is an initial simple-bias value for direct MCU observation of a
+      photodiode node. It preserves the user's requested passive architecture
+      and will be validated and, if necessary, tuned in Pass 2 and bench
+      validation.
+    selection_label: INFERRED
+    sourcing:
+      availability: "Commodity 0603 resistor, orderable via LCSC"
+      unit_price_usd_qty1: UNKNOWN
+      lifecycle_status: "active"
+      date_verified: "2026-07-03"
+      verification_label: KNOWN
+
+  - ref_des: [R_BOOT]
+    description: "BOOT0 default pull-down resistor"
+    manufacturer: "UniOhm"
+    part_number: "0603WAF1002T5E"
+    package: "0603"
+    generic_footprint: "0603 resistor"
+    electrical_specs:
+      resistance_ohm: 10000
+      tolerance_pct: 1
+      power_rating_W: 0.1
+    pin_assignment_plan:
+      - {pin_name: "1", assignment: "BOOT0", status: "assigned"}
+      - {pin_name: "2", assignment: "GND", status: "assigned"}
+    satisfies: [REQ-HW-0203]
+    rationale: "Provides a defined normal-boot default while still allowing an external BOOT pad override."
+    selection_label: INFERRED
+    sourcing:
+      availability: "Commodity 0603 resistor, orderable via LCSC"
+      unit_price_usd_qty1: UNKNOWN
+      lifecycle_status: "active"
+      date_verified: "2026-07-03"
+      verification_label: KNOWN
+
+  - ref_des: [R_NRST]
+    description: "NRST pull-up resistor"
+    manufacturer: "UniOhm"
+    part_number: "0603WAF1002T5E"
+    package: "0603"
+    generic_footprint: "0603 resistor"
+    electrical_specs:
+      resistance_ohm: 10000
+      tolerance_pct: 1
+      power_rating_W: 0.1
+    pin_assignment_plan:
+      - {pin_name: "1", assignment: "NRST", status: "assigned"}
+      - {pin_name: "2", assignment: "3V3", status: "assigned"}
+    satisfies: [REQ-HW-0203]
+    rationale: "Provides a defined reset default and external reset-pad compatibility."
+    selection_label: INFERRED
+    sourcing:
+      availability: "Commodity 0603 resistor, orderable via LCSC"
+      unit_price_usd_qty1: UNKNOWN
+      lifecycle_status: "active"
+      date_verified: "2026-07-03"
+      verification_label: KNOWN
+
+  - ref_des: [C_VDD1, C_VDD2, C_VDDA]
+    description: "Local MCU decoupling capacitor"
+    manufacturer: "Samsung Electro-Mechanics"
+    part_number: "CL10A104KA8NNNC"
+    package: "0603"
+    generic_footprint: "0603 capacitor"
+    electrical_specs:
+      capacitance_uF: 0.1
+      tolerance_pct: 10
+      voltage_rating_V: 25
+      dielectric: "X7R"
+    pin_assignment_plan:
+      - {pin_name: "1", assignment: "local 3V3 rail", status: "assigned"}
+      - {pin_name: "2", assignment: "GND", status: "assigned"}
+    satisfies: [REQ-HW-0200]
+    rationale: "Standard local decoupling for the MCU digital and analog supply pins."
+    selection_label: KNOWN
+    sourcing:
+      availability: "Orderable via LCSC"
+      unit_price_usd_qty1: UNKNOWN
+      lifecycle_status: "active"
+      date_verified: "2026-07-03"
+      verification_label: KNOWN
+
+  - ref_des: [C_BULK]
+    description: "Board-level bulk capacitor"
+    manufacturer: "Samsung Electro-Mechanics"
+    part_number: "CL10A475KO8NNNC"
+    package: "0603"
+    generic_footprint: "0603 capacitor"
+    electrical_specs:
+      capacitance_uF: 4.7
+      tolerance_pct: 10
+      voltage_rating_V: 16
+      dielectric: "X5R"
+    pin_assignment_plan:
+      - {pin_name: "1", assignment: "3V3", status: "assigned"}
+      - {pin_name: "2", assignment: "GND", status: "assigned"}
+    satisfies: [REQ-HW-0200, REQ-HW-0303]
+    rationale: >
+      Provides local energy storage for simultaneous LED switching and MCU edge
+      currents on the host-supplied 3.3 V rail.
+    selection_label: INFERRED
+    sourcing:
+      availability: "Commodity 0603 capacitor, orderable via LCSC"
+      unit_price_usd_qty1: UNKNOWN
+      lifecycle_status: "active"
+      date_verified: "2026-07-03"
+      verification_label: KNOWN

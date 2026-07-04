@@ -30,7 +30,11 @@ pub fn emit_bom_csv(bundle: &IrBundle) -> Result<String, Error> {
             let (manufacturer, part_number, lcsc_pn) = bundle
                 .ir1
                 .as_ref()
-                .and_then(|ir1| ir1.components.iter().find(|c| c.ref_des == comp.ref_des))
+                .and_then(|ir1| {
+                    ir1.components
+                        .iter()
+                        .find(|c| c.contains_ref_des(&comp.ref_des))
+                })
                 .map(|c| {
                     (
                         c.manufacturer.as_deref().unwrap_or(""),

@@ -11,7 +11,7 @@ sonde-node = { path = "../sonde-node" }
 sonde-pair = { path = "../sonde-pair", features = ["loopback-ble"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-util = "0.7"
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 sha2 = "0.10"
 zeroize = "1.8.2"
 tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_info"] }

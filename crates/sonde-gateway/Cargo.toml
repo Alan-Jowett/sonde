@@ -14,7 +14,7 @@ hkdf = "0.12"
 async-trait = "0.1"
 getrandom = "0.4"
 ciborium = "0.2"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 pbkdf2 = { version = "0.13", features = ["sha2"] }
 tracing = { version = "0.1", features = ["max_level_trace"] }
 tonic = "0.14"

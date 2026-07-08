@@ -9,7 +9,7 @@ name = "sonde-admin"
 path = "src/main.rs"
 
 [dependencies]
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 argon2 = "0.5"
 clap = { version = "4", features = ["derive", "env"] }
 getrandom = "0.4"

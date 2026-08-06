@@ -183,17 +183,20 @@ pub struct ContextPointerField {
 const MAX_SPILL_SLOTS: usize = 32;
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(feature = "base64"), allow(dead_code))]
 struct SpillEntry {
     stack_offset: u16,
     region: Region,
 }
 
+#[cfg_attr(not(feature = "base64"), allow(dead_code))]
 struct SpillTracker {
     bitmap: [u8; STACK_SIZE / 64],
     entries: [SpillEntry; MAX_SPILL_SLOTS],
     count: u8,
 }
 
+#[cfg_attr(not(feature = "base64"), allow(dead_code))]
 impl SpillTracker {
     fn new() -> Self {
         Self {
@@ -419,6 +422,7 @@ fn mem_store<const N: usize>(
 /// When the target region is read-only context, bounds validation and
 /// FETCH/CMPXCHG register-result semantics are preserved but the actual
 /// write to memory is suppressed (ND-0505 AC6).
+#[cfg(feature = "atomic32")]
 #[inline]
 fn mem_atomic32(
     base_reg: TaggedReg,
@@ -512,6 +516,7 @@ fn mem_atomic32(
 /// When the target region is read-only context, bounds validation and
 /// FETCH/CMPXCHG register-result semantics are preserved but the actual
 /// write to memory is suppressed (ND-0505 AC6).
+#[cfg(feature = "atomic64")]
 #[inline]
 fn mem_atomic64(
     base_reg: TaggedReg,
@@ -695,6 +700,8 @@ pub unsafe fn execute_program(
     if !prog.len().is_multiple_of(INSN_SIZE) {
         return Err(BpfError::OutOfBounds { pc: num_insns });
     }
+    #[cfg(not(feature = "base64"))]
+    let _ = ctx_ptrs;
 
     // BPF stack — lives on the Rust stack. Mutated via raw pointers in
     // store and atomic instructions.
@@ -774,6 +781,7 @@ pub unsafe fn execute_program(
 
         match insn.opc {
             // ── LD_DW_IMM (128-bit wide instruction) ────────────────
+            #[cfg(feature = "base64")]
             ebpf::LD_DW_IMM => {
                 if pc >= num_insns {
                     return Err(BpfError::OutOfBounds { pc: pc - 1 });
@@ -900,6 +908,7 @@ pub unsafe fn execute_program(
             ebpf::LD_W_REG => {
                 reg[dst] = TaggedReg::scalar(mem_load::<4>(&reg[src], insn.off, pc - 1)?);
             }
+            #[cfg(feature = "base64")]
             ebpf::LD_DW_REG => {
                 let val = mem_load::<8>(&reg[src], insn.off, pc - 1)?;
                 if matches!(
@@ -1004,6 +1013,7 @@ pub unsafe fn execute_program(
                     spill_tracker.invalidate(stack_base, addr, 4);
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::ST_DW_IMM => {
                 mem_store::<8>(&reg[dst], insn.off, insn.imm as i64 as u64, pc - 1)?;
                 if matches!(
@@ -1058,6 +1068,7 @@ pub unsafe fn execute_program(
                     spill_tracker.invalidate(stack_base, addr, 4);
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::ST_DW_REG => {
                 mem_store::<8>(&reg[dst], insn.off, reg[src].value, pc - 1)?;
                 if matches!(
@@ -1083,6 +1094,7 @@ pub unsafe fn execute_program(
             }
 
             // ── Atomic operations (RFC 9669 §5.3) ───────────────────
+            #[cfg(feature = "atomic32")]
             ebpf::ST_W_ATOMIC => {
                 let base = reg[dst];
                 mem_atomic32(base, insn.off, &mut reg, src, insn.imm as u32, pc - 1)?;
@@ -1097,6 +1109,7 @@ pub unsafe fn execute_program(
                     spill_tracker.invalidate(stack_base, addr, 4);
                 }
             }
+            #[cfg(feature = "atomic64")]
             ebpf::ST_DW_ATOMIC => {
                 let base = reg[dst];
                 mem_atomic64(base, insn.off, &mut reg, src, insn.imm as u32, pc - 1)?;
@@ -1131,15 +1144,18 @@ pub unsafe fn execute_program(
                     (reg[dst].value as u32).wrapping_sub(reg[src].value as u32) as u64,
                 );
             }
+            #[cfg(feature = "divmul32")]
             ebpf::MUL32_IMM => {
                 reg[dst] =
                     TaggedReg::scalar((reg[dst].value as u32).wrapping_mul(insn.imm as u32) as u64);
             }
+            #[cfg(feature = "divmul32")]
             ebpf::MUL32_REG => {
                 reg[dst] = TaggedReg::scalar(
                     (reg[dst].value as u32).wrapping_mul(reg[src].value as u32) as u64,
                 );
             }
+            #[cfg(feature = "divmul32")]
             ebpf::DIV32_IMM => {
                 let imm = insn.imm as u32;
                 if insn.off == 0 {
@@ -1157,6 +1173,7 @@ pub unsafe fn execute_program(
                     });
                 }
             }
+            #[cfg(feature = "divmul32")]
             ebpf::DIV32_REG => {
                 if insn.off == 0 {
                     let s = reg[src].value as u32;
@@ -1211,6 +1228,7 @@ pub unsafe fn execute_program(
             ebpf::NEG32 => {
                 reg[dst] = TaggedReg::scalar((reg[dst].value as i32).wrapping_neg() as u32 as u64);
             }
+            #[cfg(feature = "divmul32")]
             ebpf::MOD32_IMM => {
                 let imm = insn.imm as u32;
                 let new_val = if insn.off == 0 {
@@ -1229,6 +1247,7 @@ pub unsafe fn execute_program(
                 };
                 reg[dst] = TaggedReg::scalar(new_val);
             }
+            #[cfg(feature = "divmul32")]
             ebpf::MOD32_REG => {
                 let new_val = if insn.off == 0 {
                     let s = reg[src].value as u32;
@@ -1297,7 +1316,19 @@ pub unsafe fn execute_program(
                 reg[dst] = TaggedReg::scalar(match insn.imm {
                     16 => (reg[dst].value as u16).to_le() as u64,
                     32 => (reg[dst].value as u32).to_le() as u64,
-                    64 => reg[dst].value.to_le(),
+                    64 => {
+                        #[cfg(feature = "base64")]
+                        {
+                            reg[dst].value.to_le()
+                        }
+                        #[cfg(not(feature = "base64"))]
+                        {
+                            return Err(BpfError::UnknownOpcode {
+                                pc: pc - 1,
+                                opc: insn.opc,
+                            });
+                        }
+                    }
                     _ => {
                         return Err(BpfError::UnknownOpcode {
                             pc: pc - 1,
@@ -1310,7 +1341,19 @@ pub unsafe fn execute_program(
                 reg[dst] = TaggedReg::scalar(match insn.imm {
                     16 => (reg[dst].value as u16).to_be() as u64,
                     32 => (reg[dst].value as u32).to_be() as u64,
-                    64 => reg[dst].value.to_be(),
+                    64 => {
+                        #[cfg(feature = "base64")]
+                        {
+                            reg[dst].value.to_be()
+                        }
+                        #[cfg(not(feature = "base64"))]
+                        {
+                            return Err(BpfError::UnknownOpcode {
+                                pc: pc - 1,
+                                opc: insn.opc,
+                            });
+                        }
+                    }
                     _ => {
                         return Err(BpfError::UnknownOpcode {
                             pc: pc - 1,
@@ -1323,7 +1366,19 @@ pub unsafe fn execute_program(
                 reg[dst] = TaggedReg::scalar(match insn.imm {
                     16 => (reg[dst].value as u16).swap_bytes() as u64,
                     32 => (reg[dst].value as u32).swap_bytes() as u64,
-                    64 => reg[dst].value.swap_bytes(),
+                    64 => {
+                        #[cfg(feature = "base64")]
+                        {
+                            reg[dst].value.swap_bytes()
+                        }
+                        #[cfg(not(feature = "base64"))]
+                        {
+                            return Err(BpfError::UnknownOpcode {
+                                pc: pc - 1,
+                                opc: insn.opc,
+                            });
+                        }
+                    }
                     _ => {
                         return Err(BpfError::UnknownOpcode {
                             pc: pc - 1,
@@ -1334,6 +1389,7 @@ pub unsafe fn execute_program(
             }
 
             // ── ALU64 ───────────────────────────────────────────────
+            #[cfg(feature = "base64")]
             ebpf::ADD64_IMM => {
                 let new_val = reg[dst].value.wrapping_add(insn.imm as i64 as u64);
                 if matches!(
@@ -1347,6 +1403,7 @@ pub unsafe fn execute_program(
                 }
                 reg[dst].value = new_val;
             }
+            #[cfg(feature = "base64")]
             ebpf::ADD64_REG => {
                 let new_val = reg[dst].value.wrapping_add(reg[src].value);
                 let new_region = match (reg[dst].region, reg[src].region) {
@@ -1366,6 +1423,7 @@ pub unsafe fn execute_program(
                     region: new_region,
                 };
             }
+            #[cfg(feature = "base64")]
             ebpf::SUB64_IMM => {
                 let new_val = reg[dst].value.wrapping_sub(insn.imm as i64 as u64);
                 if matches!(
@@ -1379,6 +1437,7 @@ pub unsafe fn execute_program(
                 }
                 reg[dst].value = new_val;
             }
+            #[cfg(feature = "base64")]
             ebpf::SUB64_REG => {
                 let new_val = reg[dst].value.wrapping_sub(reg[src].value);
                 let new_region = match (&reg[dst].region, &reg[src].region) {
@@ -1405,12 +1464,15 @@ pub unsafe fn execute_program(
                     region: new_region,
                 };
             }
+            #[cfg(feature = "divmul64")]
             ebpf::MUL64_IMM => {
                 reg[dst] = TaggedReg::scalar(reg[dst].value.wrapping_mul(insn.imm as i64 as u64));
             }
+            #[cfg(feature = "divmul64")]
             ebpf::MUL64_REG => {
                 reg[dst] = TaggedReg::scalar(reg[dst].value.wrapping_mul(reg[src].value));
             }
+            #[cfg(feature = "divmul64")]
             ebpf::DIV64_IMM => {
                 if insn.off == 0 {
                     let imm = insn.imm as i64 as u64;
@@ -1424,6 +1486,7 @@ pub unsafe fn execute_program(
                     });
                 }
             }
+            #[cfg(feature = "divmul64")]
             ebpf::DIV64_REG => {
                 if insn.off == 0 {
                     reg[dst] = TaggedReg::scalar(if reg[src].value == 0 {
@@ -1440,47 +1503,57 @@ pub unsafe fn execute_program(
                     });
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::OR64_IMM => {
                 if reg[dst].region.is_some() {
                     return Err(BpfError::InvalidPointerArithmetic { pc: pc - 1 });
                 }
                 reg[dst].value |= insn.imm as i64 as u64;
             }
+            #[cfg(feature = "base64")]
             ebpf::OR64_REG => {
                 if reg[dst].region.is_some() || reg[src].region.is_some() {
                     return Err(BpfError::InvalidPointerArithmetic { pc: pc - 1 });
                 }
                 reg[dst].value |= reg[src].value;
             }
+            #[cfg(feature = "base64")]
             ebpf::AND64_IMM => {
                 if reg[dst].region.is_some() {
                     return Err(BpfError::InvalidPointerArithmetic { pc: pc - 1 });
                 }
                 reg[dst].value &= insn.imm as i64 as u64;
             }
+            #[cfg(feature = "base64")]
             ebpf::AND64_REG => {
                 if reg[dst].region.is_some() || reg[src].region.is_some() {
                     return Err(BpfError::InvalidPointerArithmetic { pc: pc - 1 });
                 }
                 reg[dst].value &= reg[src].value;
             }
+            #[cfg(feature = "base64")]
             ebpf::LSH64_IMM => {
                 reg[dst] = TaggedReg::scalar(reg[dst].value.wrapping_shl((insn.imm as u32) & 0x3f));
             }
+            #[cfg(feature = "base64")]
             ebpf::LSH64_REG => {
                 reg[dst] =
                     TaggedReg::scalar(reg[dst].value.wrapping_shl((reg[src].value as u32) & 0x3f));
             }
+            #[cfg(feature = "base64")]
             ebpf::RSH64_IMM => {
                 reg[dst] = TaggedReg::scalar(reg[dst].value.wrapping_shr((insn.imm as u32) & 0x3f));
             }
+            #[cfg(feature = "base64")]
             ebpf::RSH64_REG => {
                 reg[dst] =
                     TaggedReg::scalar(reg[dst].value.wrapping_shr((reg[src].value as u32) & 0x3f));
             }
+            #[cfg(feature = "base64")]
             ebpf::NEG64 => {
                 reg[dst] = TaggedReg::scalar((reg[dst].value as i64).wrapping_neg() as u64);
             }
+            #[cfg(feature = "divmul64")]
             ebpf::MOD64_IMM => {
                 let new_val = if insn.off == 0 {
                     let imm = insn.imm as i64 as u64;
@@ -1499,6 +1572,7 @@ pub unsafe fn execute_program(
                 };
                 reg[dst] = TaggedReg::scalar(new_val);
             }
+            #[cfg(feature = "divmul64")]
             ebpf::MOD64_REG => {
                 let new_val = if insn.off == 0 {
                     if reg[src].value != 0 {
@@ -1516,21 +1590,25 @@ pub unsafe fn execute_program(
                 };
                 reg[dst] = TaggedReg::scalar(new_val);
             }
+            #[cfg(feature = "base64")]
             ebpf::XOR64_IMM => {
                 if reg[dst].region.is_some() {
                     return Err(BpfError::InvalidPointerArithmetic { pc: pc - 1 });
                 }
                 reg[dst].value ^= insn.imm as i64 as u64;
             }
+            #[cfg(feature = "base64")]
             ebpf::XOR64_REG => {
                 if reg[dst].region.is_some() || reg[src].region.is_some() {
                     return Err(BpfError::InvalidPointerArithmetic { pc: pc - 1 });
                 }
                 reg[dst].value ^= reg[src].value;
             }
+            #[cfg(feature = "base64")]
             ebpf::MOV64_IMM => {
                 reg[dst] = TaggedReg::scalar(insn.imm as i64 as u64);
             }
+            #[cfg(feature = "base64")]
             ebpf::MOV64_REG => {
                 if insn.off == 0 {
                     reg[dst] = reg[src];
@@ -1549,11 +1627,13 @@ pub unsafe fn execute_program(
                     });
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::ARSH64_IMM => {
                 reg[dst] = TaggedReg::scalar(
                     ((reg[dst].value as i64).wrapping_shr((insn.imm as u32) & 0x3f)) as u64,
                 );
             }
+            #[cfg(feature = "base64")]
             ebpf::ARSH64_REG => {
                 reg[dst] = TaggedReg::scalar(
                     ((reg[dst].value as i64).wrapping_shr((reg[src].value as u32) & 0x3f)) as u64,
@@ -1564,111 +1644,133 @@ pub unsafe fn execute_program(
             ebpf::JA => {
                 pc = check_jump(pc, insn.off as isize, num_insns)?;
             }
+            #[cfg(feature = "base64")]
             ebpf::JEQ_IMM => {
                 if reg[dst].value == (insn.imm as i64 as u64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JEQ_REG => {
                 if reg[dst].value == reg[src].value {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JGT_IMM => {
                 if reg[dst].value > (insn.imm as i64 as u64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JGT_REG => {
                 if reg[dst].value > reg[src].value {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JGE_IMM => {
                 if reg[dst].value >= (insn.imm as i64 as u64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JGE_REG => {
                 if reg[dst].value >= reg[src].value {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JLT_IMM => {
                 if reg[dst].value < (insn.imm as i64 as u64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JLT_REG => {
                 if reg[dst].value < reg[src].value {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JLE_IMM => {
                 if reg[dst].value <= (insn.imm as i64 as u64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JLE_REG => {
                 if reg[dst].value <= reg[src].value {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JSET_IMM => {
                 if reg[dst].value & (insn.imm as i64 as u64) != 0 {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JSET_REG => {
                 if reg[dst].value & reg[src].value != 0 {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JNE_IMM => {
                 if reg[dst].value != (insn.imm as i64 as u64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JNE_REG => {
                 if reg[dst].value != reg[src].value {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JSGT_IMM => {
                 if (reg[dst].value as i64) > (insn.imm as i64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JSGT_REG => {
                 if (reg[dst].value as i64) > (reg[src].value as i64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JSGE_IMM => {
                 if (reg[dst].value as i64) >= (insn.imm as i64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JSGE_REG => {
                 if (reg[dst].value as i64) >= (reg[src].value as i64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JSLT_IMM => {
                 if (reg[dst].value as i64) < (insn.imm as i64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JSLT_REG => {
                 if (reg[dst].value as i64) < (reg[src].value as i64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JSLE_IMM => {
                 if (reg[dst].value as i64) <= (insn.imm as i64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
+            #[cfg(feature = "base64")]
             ebpf::JSLE_REG => {
                 if (reg[dst].value as i64) <= (reg[src].value as i64) {
                     pc = check_jump(pc, insn.off as isize, num_insns)?;

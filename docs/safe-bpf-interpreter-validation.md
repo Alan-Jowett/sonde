@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases unless noted otherwise.  The interpreter is fully testable in isolation — construct bytecode in-memory, allocate context/stack/map buffers, and call `execute_program(...)`.  There are **35 test cases** total, organized into nine categories that cover the tagged-register safety model end-to-end.
+All tests in this document are pure Rust `#[test]` cases unless noted otherwise.  The interpreter is fully testable in isolation — construct bytecode in-memory, allocate context/stack/map buffers, and call `execute_program(...)`.  There are **42 test cases** total, organized into ten categories that cover the tagged-register safety model and compile-time conformance selection end-to-end.
 
 **Notation:** Each test references the relevant section of [safe-bpf-interpreter.md](safe-bpf-interpreter.md) (abbreviated **§N.M**) or [bpf-environment.md](bpf-environment.md).
 
@@ -457,6 +457,77 @@ Use clearly non-zero test keys (e.g., `[0x42u8; 32]`) and non-trivial buffer con
 
 ---
 
+## 11  RFC 9669 conformance feature tests
+
+These tests validate the compile-time feature contract in
+safe-bpf-interpreter.md §1.2. Each reduced configuration is compiled in a
+separate Cargo invocation because Cargo features are selected for the complete
+crate build. The default build must retain all existing instruction behavior.
+
+### T-BPF-034  Default build enables all conformance groups
+
+**Validates:** safe-bpf-interpreter.md §1.2
+
+**Procedure:**
+1. Run `cargo test -p sonde-bpf` with default features.
+2. Execute representative base32, base64, atomic32, atomic64, divmul32, and divmul64 bytecode.
+3. Assert: each representative program executes according to RFC 9669 semantics.
+
+### T-BPF-035  `base32`-only build rejects 64-bit base instructions
+
+**Validates:** safe-bpf-interpreter.md §1.2
+
+**Procedure:**
+1. Build and test with `--no-default-features --features std,base32`.
+2. Execute a program containing a 64-bit base instruction, such as `MOV64_IMM`.
+3. Assert: execution returns `BpfError::UnknownOpcode` for the disabled instruction.
+
+### T-BPF-036  Atomic feature selection is hierarchical
+
+**Validates:** safe-bpf-interpreter.md §1.2
+
+**Procedure:**
+1. Build with `--no-default-features --features std,base32,atomic32` and execute a 32-bit atomic instruction.
+2. Build with `--no-default-features --features std,base32,atomic64` and execute both 32-bit and 64-bit atomic instructions.
+3. Assert: `atomic64` enables `atomic32`; an atomic group not selected directly or through a dependency returns `BpfError::UnknownOpcode`.
+
+### T-BPF-037  Division and multiplication feature selection is hierarchical
+
+**Validates:** safe-bpf-interpreter.md §1.2
+
+**Procedure:**
+1. Build with `--no-default-features --features std,base32,divmul32` and execute 32-bit multiplication, division, and modulo.
+2. Build with `--no-default-features --features std,base32,divmul64` and execute both 32-bit and 64-bit multiplication, division, and modulo.
+3. Assert: `divmul64` enables `divmul32`; a disabled width-specific divmul instruction returns `BpfError::UnknownOpcode`.
+
+### T-BPF-038  `base64` and `atomic64` dependencies are enforced by Cargo
+
+**Validates:** safe-bpf-interpreter.md §1.2
+
+**Procedure:**
+1. Build with each feature selected without explicitly selecting its 32-bit prerequisite.
+2. Assert: the 32-bit prerequisite is enabled automatically and the build accepts the corresponding 32-bit instructions.
+
+### T-BPF-039  `divmul64` dependency is enforced by Cargo
+
+**Validates:** safe-bpf-interpreter.md §1.2
+
+**Procedure:**
+1. Build with `--no-default-features --features std,base32,divmul64`.
+2. Execute a 32-bit divmul instruction and a 64-bit divmul instruction.
+3. Assert: both execute successfully because `divmul64` enables `divmul32`.
+
+### T-BPF-040  `std` is independent from conformance selection
+
+**Validates:** safe-bpf-interpreter.md §1.2
+
+**Procedure:**
+1. Build with `--no-default-features --features base32`.
+2. Build with `--no-default-features --features std,base32`.
+3. Assert: the first build remains `no_std`-compatible and the second provides the existing standard-library test/plugin surface.
+
+---
+
 ## Appendix A  Traceability matrix
 
 | Spec section | Test IDs | Category |
@@ -477,3 +548,4 @@ Use clearly non-zero test keys (e.g., `[0x42u8; 32]`) and non-trivial buffer con
 | ND-0504 (BPF execution) | T-BPF-031 | E2E |
 | ND-0505 (Execution context) | T-BPF-033 | E2E |
 | ND-0606 (Map memory budget) | T-BPF-032 | E2E |
+| safe-bpf-interpreter.md §1.2 (RFC 9669 conformance features) | T-BPF-034 – T-BPF-040 | Compile-time feature selection |

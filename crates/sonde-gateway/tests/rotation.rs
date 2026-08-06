@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
@@ -69,18 +69,17 @@ fn build_rotation_payload(
     ciborium::into_writer(&cbor_map, &mut plaintext).unwrap();
 
     // AES-256-GCM encrypt.
-    let key = Key::<Aes256Gcm>::from_slice(&derived_key);
-    let cipher = Aes256Gcm::new(key);
+    let cipher = Aes256Gcm::new_from_slice(&derived_key).unwrap();
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes).unwrap();
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(&nonce_bytes[..]).unwrap();
 
     let aad = info; // gateway_id || epoch_be64
     let gcm_payload = Payload {
         msg: &plaintext,
         aad: &aad,
     };
-    let ciphertext = cipher.encrypt(nonce, gcm_payload).unwrap();
+    let ciphertext = cipher.encrypt(&nonce, gcm_payload).unwrap();
 
     // Assemble RotationPayloadV1.
     let mut payload = Vec::with_capacity(1 + 32 + 12 + ciphertext.len());
@@ -556,13 +555,12 @@ async fn test_t2005_legacy_pending_rotation_schema_migrates_on_startup() {
 
     let new_key = [0xAAu8; 32];
     let new_id: [u8; 32] = Sha256::digest(new_key).into();
-    let key = Key::<Aes256Gcm>::from_slice(master_key.as_ref());
-    let cipher = Aes256Gcm::new(key);
+    let cipher = Aes256Gcm::new_from_slice(master_key.as_ref()).unwrap();
     let nonce_bytes = [0x11u8; 12];
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(&nonce_bytes[..]).unwrap();
     let ciphertext = cipher
         .encrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: &new_key,
                 aad: b"sonde-pending-rotation",

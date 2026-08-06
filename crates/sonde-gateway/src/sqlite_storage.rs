@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::{Aes256Gcm, Nonce};
 use async_trait::async_trait;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -44,13 +44,14 @@ pub fn encrypt_psk(
     node_id: &str,
     psk: &[u8; 32],
 ) -> Result<Vec<u8>, StorageError> {
-    let key = Key::<Aes256Gcm>::from_slice(master_key);
-    let cipher = Aes256Gcm::new(key);
+    let cipher = Aes256Gcm::new_from_slice(master_key)
+        .map_err(|_| StorageError::Internal("invalid AES-256-GCM key".into()))?;
 
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes)
         .map_err(|e| StorageError::Internal(format!("nonce rng: {e}")))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(&nonce_bytes[..])
+        .map_err(|_| StorageError::Internal("invalid AES-GCM nonce".into()))?;
 
     let payload = Payload {
         msg: psk.as_slice(),
@@ -58,7 +59,7 @@ pub fn encrypt_psk(
     };
 
     let ciphertext = cipher
-        .encrypt(nonce, payload)
+        .encrypt(&nonce, payload)
         .map_err(|e| StorageError::Internal(format!("psk encrypt: {e}")))?;
 
     let mut out = Vec::with_capacity(ENCRYPTED_PSK_LEN);
@@ -89,16 +90,17 @@ fn decrypt_psk(
         )));
     }
 
-    let key = Key::<Aes256Gcm>::from_slice(master_key);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&blob[..12]);
+    let cipher = Aes256Gcm::new_from_slice(master_key)
+        .map_err(|_| StorageError::Internal("invalid AES-256-GCM key".into()))?;
+    let nonce = Nonce::try_from(&blob[..12])
+        .map_err(|_| StorageError::Internal("invalid AES-GCM nonce".into()))?;
 
     let payload = Payload {
         msg: &blob[12..],
         aad: node_id.as_bytes(),
     };
 
-    let plaintext = Zeroizing::new(cipher.decrypt(nonce, payload).map_err(|_| {
+    let plaintext = Zeroizing::new(cipher.decrypt(&nonce, payload).map_err(|_| {
         StorageError::Internal("psk decryption failed — wrong master key or data corruption".into())
     })?);
 
@@ -132,13 +134,14 @@ fn encrypt_seed(
     seed: &[u8; 32],
     gateway_id: &[u8; 16],
 ) -> Result<Vec<u8>, StorageError> {
-    let key = Key::<Aes256Gcm>::from_slice(master_key);
-    let cipher = Aes256Gcm::new(key);
+    let cipher = Aes256Gcm::new_from_slice(master_key)
+        .map_err(|_| StorageError::Internal("invalid AES-256-GCM key".into()))?;
 
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes)
         .map_err(|e| StorageError::Internal(format!("nonce rng: {e}")))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(&nonce_bytes[..])
+        .map_err(|_| StorageError::Internal("invalid AES-GCM nonce".into()))?;
 
     let mut aad = Vec::with_capacity(22 + 16);
     aad.extend_from_slice(b"sonde-gateway-identity");
@@ -150,7 +153,7 @@ fn encrypt_seed(
     };
 
     let ciphertext = cipher
-        .encrypt(nonce, payload)
+        .encrypt(&nonce, payload)
         .map_err(|e| StorageError::Internal(format!("seed encrypt: {e}")))?;
 
     let mut out = Vec::with_capacity(ENCRYPTED_PSK_LEN);
@@ -175,9 +178,10 @@ fn decrypt_seed(
         )));
     }
 
-    let key = Key::<Aes256Gcm>::from_slice(master_key);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&blob[..12]);
+    let cipher = Aes256Gcm::new_from_slice(master_key)
+        .map_err(|_| StorageError::Internal("invalid AES-256-GCM key".into()))?;
+    let nonce = Nonce::try_from(&blob[..12])
+        .map_err(|_| StorageError::Internal("invalid AES-GCM nonce".into()))?;
 
     let mut aad = Vec::with_capacity(22 + 16);
     aad.extend_from_slice(b"sonde-gateway-identity");
@@ -188,7 +192,7 @@ fn decrypt_seed(
         aad: &aad,
     };
 
-    let plaintext = Zeroizing::new(cipher.decrypt(nonce, payload).map_err(|_| {
+    let plaintext = Zeroizing::new(cipher.decrypt(&nonce, payload).map_err(|_| {
         StorageError::Internal(
             "seed decryption failed — wrong master key or data corruption".into(),
         )
@@ -209,13 +213,14 @@ fn encrypt_phone_psk(
     psk: &[u8; 32],
 ) -> Result<Vec<u8>, StorageError> {
     let aad = phone_id.to_string();
-    let key = Key::<Aes256Gcm>::from_slice(master_key);
-    let cipher = Aes256Gcm::new(key);
+    let cipher = Aes256Gcm::new_from_slice(master_key)
+        .map_err(|_| StorageError::Internal("invalid AES-256-GCM key".into()))?;
 
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes)
         .map_err(|e| StorageError::Internal(format!("nonce rng: {e}")))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(&nonce_bytes[..])
+        .map_err(|_| StorageError::Internal("invalid AES-GCM nonce".into()))?;
 
     let payload = Payload {
         msg: psk.as_slice(),
@@ -223,7 +228,7 @@ fn encrypt_phone_psk(
     };
 
     let ciphertext = cipher
-        .encrypt(nonce, payload)
+        .encrypt(&nonce, payload)
         .map_err(|e| StorageError::Internal(format!("phone psk encrypt: {e}")))?;
 
     let mut out = Vec::with_capacity(ENCRYPTED_PSK_LEN);
@@ -246,16 +251,17 @@ fn decrypt_phone_psk(
     }
 
     let aad = phone_id.to_string();
-    let key = Key::<Aes256Gcm>::from_slice(master_key);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&blob[..12]);
+    let cipher = Aes256Gcm::new_from_slice(master_key)
+        .map_err(|_| StorageError::Internal("invalid AES-256-GCM key".into()))?;
+    let nonce = Nonce::try_from(&blob[..12])
+        .map_err(|_| StorageError::Internal("invalid AES-GCM nonce".into()))?;
 
     let payload = Payload {
         msg: &blob[12..],
         aad: aad.as_bytes(),
     };
 
-    let plaintext = Zeroizing::new(cipher.decrypt(nonce, payload).map_err(|_| {
+    let plaintext = Zeroizing::new(cipher.decrypt(&nonce, payload).map_err(|_| {
         StorageError::Internal(
             "phone psk decryption failed — wrong master key or data corruption".into(),
         )
@@ -573,15 +579,16 @@ fn load_pending_rotation_key(
         )));
     }
 
-    let key = Key::<Aes256Gcm>::from_slice(current_key);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&enc_blob[..12]);
+    let cipher = Aes256Gcm::new_from_slice(current_key)
+        .map_err(|_| StorageError::Internal("invalid AES-256-GCM key".into()))?;
+    let nonce = Nonce::try_from(&enc_blob[..12])
+        .map_err(|_| StorageError::Internal("invalid AES-GCM nonce".into()))?;
     let payload = Payload {
         msg: &enc_blob[12..],
         aad: PENDING_ROTATION_AAD,
     };
 
-    match cipher.decrypt(nonce, payload) {
+    match cipher.decrypt(&nonce, payload) {
         Ok(plaintext) => {
             let plaintext = Zeroizing::new(plaintext);
             if plaintext.len() != 32 {
@@ -666,15 +673,16 @@ fn pending_rotation_blob_decrypts_with_key(
         )));
     }
 
-    let key = Key::<Aes256Gcm>::from_slice(current_key);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&enc_blob[..12]);
+    let cipher = Aes256Gcm::new_from_slice(current_key)
+        .map_err(|_| StorageError::Internal("invalid AES-256-GCM key".into()))?;
+    let nonce = Nonce::try_from(&enc_blob[..12])
+        .map_err(|_| StorageError::Internal("invalid AES-GCM nonce".into()))?;
     let payload = Payload {
         msg: &enc_blob[12..],
         aad: PENDING_ROTATION_AAD,
     };
 
-    match cipher.decrypt(nonce, payload) {
+    match cipher.decrypt(&nonce, payload) {
         Ok(plaintext) => {
             if plaintext.len() != 32 {
                 return Err(StorageError::Internal(format!(
@@ -1520,18 +1528,19 @@ impl SqliteStorage {
         let new_id = *new_master_key_id;
 
         // Encrypt the new master key with the old key (AAD = "sonde-pending-rotation").
-        let key = Key::<Aes256Gcm>::from_slice(mk.as_slice());
-        let cipher = Aes256Gcm::new(key);
+        let cipher = Aes256Gcm::new_from_slice(mk.as_slice())
+            .map_err(|_| StorageError::Internal("invalid AES-256-GCM key".into()))?;
         let mut nonce_bytes = [0u8; 12];
         getrandom::fill(&mut nonce_bytes)
             .map_err(|e| StorageError::Internal(format!("pending_rotation nonce rng: {e}")))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::try_from(&nonce_bytes[..])
+            .map_err(|_| StorageError::Internal("invalid AES-GCM nonce".into()))?;
         let payload = Payload {
             msg: new_key.as_slice(),
             aad: PENDING_ROTATION_AAD,
         };
         let ciphertext = cipher
-            .encrypt(nonce, payload)
+            .encrypt(&nonce, payload)
             .map_err(|e| StorageError::Internal(format!("pending_rotation encrypt: {e}")))?;
         let mut enc_blob = Vec::with_capacity(ENCRYPTED_PSK_LEN);
         enc_blob.extend_from_slice(&nonce_bytes);
@@ -1956,14 +1965,15 @@ impl SqliteStorage {
                 enc_blob.len()
             )));
         }
-        let key = Key::<Aes256Gcm>::from_slice(current_key);
-        let cipher = Aes256Gcm::new(key);
-        let nonce = Nonce::from_slice(&enc_blob[..12]);
+        let cipher = Aes256Gcm::new_from_slice(current_key)
+            .map_err(|_| StorageError::Internal("invalid AES-256-GCM key".into()))?;
+        let nonce = Nonce::try_from(&enc_blob[..12])
+            .map_err(|_| StorageError::Internal("invalid AES-GCM nonce".into()))?;
         let payload = Payload {
             msg: &enc_blob[12..],
             aad: PENDING_ROTATION_AAD,
         };
-        let plaintext = Zeroizing::new(cipher.decrypt(nonce, payload).map_err(|_| {
+        let plaintext = Zeroizing::new(cipher.decrypt(&nonce, payload).map_err(|_| {
             StorageError::Internal(
                 "cannot decrypt new_master_key_enc — wrong key or data corruption".into(),
             )
@@ -4089,13 +4099,12 @@ mod tests {
         let new_key = [0xAAu8; 32];
         let new_key_id: [u8; 32] = Sha256::digest(new_key).into();
 
-        let key = Key::<Aes256Gcm>::from_slice(&TEST_MASTER_KEY_RAW);
-        let cipher = Aes256Gcm::new(key);
+        let cipher = Aes256Gcm::new_from_slice(&TEST_MASTER_KEY_RAW).unwrap();
         let nonce_bytes = [0x11u8; 12];
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::try_from(&nonce_bytes[..]).unwrap();
         let ciphertext = cipher
             .encrypt(
-                nonce,
+                &nonce,
                 Payload {
                     msg: &new_key,
                     aad: PENDING_ROTATION_AAD,

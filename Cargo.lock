@@ -6589,6 +6589,7 @@ dependencies = [
  "hyper-util",
  "prost",
  "protoc-bin-vendored",
+ "rand_core 0.6.4",
  "rpassword",
  "serde",
  "serde_json",

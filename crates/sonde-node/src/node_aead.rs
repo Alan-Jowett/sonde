@@ -17,11 +17,11 @@ pub struct NodeAead;
 
 impl AeadProvider for NodeAead {
     fn seal(&self, key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
-        let cipher = Aes256Gcm::new(key.into());
-        let gcm_nonce = Nonce::from_slice(nonce);
+        let cipher = Aes256Gcm::new_from_slice(key).expect("valid 32-byte key");
+        let gcm_nonce = Nonce::try_from(&nonce[..]).expect("valid 12-byte nonce");
         cipher
             .encrypt(
-                gcm_nonce,
+                &gcm_nonce,
                 Payload {
                     msg: plaintext,
                     aad,
@@ -37,11 +37,11 @@ impl AeadProvider for NodeAead {
         aad: &[u8],
         ciphertext_and_tag: &[u8],
     ) -> Option<Vec<u8>> {
-        let cipher = Aes256Gcm::new(key.into());
-        let gcm_nonce = Nonce::from_slice(nonce);
+        let cipher = Aes256Gcm::new_from_slice(key).expect("valid 32-byte key");
+        let gcm_nonce = Nonce::try_from(&nonce[..]).expect("valid 12-byte nonce");
         cipher
             .decrypt(
-                gcm_nonce,
+                &gcm_nonce,
                 Payload {
                     msg: ciphertext_and_tag,
                     aad,

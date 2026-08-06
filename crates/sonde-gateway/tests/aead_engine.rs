@@ -296,11 +296,11 @@ async fn aead_peer_request_happy_path() {
 
     // --- Encrypt inner payload with phone_psk (AAD = "sonde-pairing-v2") ---
     let inner_nonce_bytes = [0x01u8; 12];
-    let inner_nonce = Nonce::from_slice(&inner_nonce_bytes);
+    let inner_nonce = Nonce::try_from(&inner_nonce_bytes[..]).unwrap();
     let cipher = Aes256Gcm::new_from_slice(&phone_psk).unwrap();
     let inner_ciphertext = cipher
         .encrypt(
-            inner_nonce,
+            &inner_nonce,
             aes_gcm::aead::Payload {
                 msg: &pairing_bytes,
                 aad: b"sonde-pairing-v2",

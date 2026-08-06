@@ -12,5 +12,5 @@ fingerprint = []
 ciborium = { version = "0.2", default-features = false }
 
 [dev-dependencies]
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 sha2 = "0.10"

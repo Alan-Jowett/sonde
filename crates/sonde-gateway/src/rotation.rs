@@ -7,7 +7,7 @@
 //! rate-limiting for failed rotation attempts.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
@@ -140,9 +140,10 @@ pub fn decrypt_rotation_payload(
         .map_err(|_| RotationError::Internal("HKDF expand failed".into()))?;
 
     // AES-256-GCM decryption with AAD = gateway_id_raw || epoch_be64
-    let key = Key::<Aes256Gcm>::from_slice(&*derived_key);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let cipher = Aes256Gcm::new_from_slice(&*derived_key)
+        .map_err(|_| RotationError::Internal("invalid AES-256-GCM key".into()))?;
+    let nonce = Nonce::try_from(&nonce_bytes[..])
+        .map_err(|_| RotationError::Internal("invalid AES-GCM nonce".into()))?;
 
     let aad = info; // Same as HKDF info: gateway_id || epoch_be64
     let gcm_payload = Payload {
@@ -152,7 +153,7 @@ pub fn decrypt_rotation_payload(
 
     let plaintext = Zeroizing::new(
         cipher
-            .decrypt(nonce, gcm_payload)
+            .decrypt(&nonce, gcm_payload)
             .map_err(|_| RotationError::DecryptionFailed)?,
     );
 

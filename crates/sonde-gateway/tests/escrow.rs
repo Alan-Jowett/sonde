@@ -31,7 +31,7 @@ use sonde_gateway::transport::PeerAddress;
 use sonde_gateway::{GatewayAead, RustCryptoSha256};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use sonde_protocol::{encode_frame, FrameHeader, NodeMessage, MSG_WAKE};
@@ -166,17 +166,16 @@ fn build_rotation_payload(
     let mut plaintext = Vec::new();
     ciborium::into_writer(&cbor_map, &mut plaintext).unwrap();
 
-    let key = Key::<Aes256Gcm>::from_slice(&derived_key);
-    let cipher = Aes256Gcm::new(key);
+    let cipher = Aes256Gcm::new_from_slice(&derived_key).unwrap();
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes).unwrap();
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(&nonce_bytes[..]).unwrap();
 
     let gcm_payload = Payload {
         msg: &plaintext,
         aad: &info,
     };
-    let ciphertext = cipher.encrypt(nonce, gcm_payload).unwrap();
+    let ciphertext = cipher.encrypt(&nonce, gcm_payload).unwrap();
 
     let mut payload = Vec::with_capacity(1 + 32 + 12 + ciphertext.len());
     payload.push(0x01);

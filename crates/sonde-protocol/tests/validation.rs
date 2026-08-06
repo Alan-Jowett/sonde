@@ -2003,10 +2003,10 @@ mod aead_tests {
     impl AeadProvider for SoftwareAead {
         fn seal(&self, key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
             let cipher = Aes256Gcm::new_from_slice(key).expect("valid 32-byte key");
-            let gcm_nonce = Nonce::from_slice(nonce);
+            let gcm_nonce = Nonce::try_from(&nonce[..]).expect("valid 12-byte nonce");
             cipher
                 .encrypt(
-                    gcm_nonce,
+                    &gcm_nonce,
                     Payload {
                         msg: plaintext,
                         aad,
@@ -2023,10 +2023,10 @@ mod aead_tests {
             ciphertext_and_tag: &[u8],
         ) -> Option<Vec<u8>> {
             let cipher = Aes256Gcm::new_from_slice(key).ok()?;
-            let gcm_nonce = Nonce::from_slice(nonce);
+            let gcm_nonce = Nonce::try_from(&nonce[..]).ok()?;
             cipher
                 .decrypt(
-                    gcm_nonce,
+                    &gcm_nonce,
                     Payload {
                         msg: ciphertext_and_tag,
                         aad,

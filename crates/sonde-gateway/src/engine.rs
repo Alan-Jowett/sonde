@@ -811,13 +811,13 @@ impl Gateway {
         if encrypted_payload.len() < 12 + 16 {
             return None;
         }
-        let inner_nonce = Nonce::from_slice(&encrypted_payload[..12]);
+        let inner_nonce = Nonce::try_from(&encrypted_payload[..12]).ok()?;
         let inner_ciphertext = &encrypted_payload[12..];
 
         let cipher = Aes256Gcm::new_from_slice(&*matched_phone.psk).ok()?;
         let pairing_request_bytes = cipher
             .decrypt(
-                inner_nonce,
+                &inner_nonce,
                 aes_gcm::aead::Payload {
                     msg: inner_ciphertext,
                     aad: PAIRING_AAD,

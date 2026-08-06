@@ -20,7 +20,7 @@
 
 use crate::error::PairingError;
 use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -31,8 +31,8 @@ pub fn aes256gcm_encrypt(
     plaintext: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, PairingError> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(nonce);
+    let cipher = Aes256Gcm::new_from_slice(key).expect("valid 32-byte key");
+    let nonce = Nonce::try_from(&nonce[..]).expect("valid 12-byte nonce");
 
     let payload = aes_gcm::aead::Payload {
         msg: plaintext,
@@ -40,7 +40,7 @@ pub fn aes256gcm_encrypt(
     };
 
     cipher
-        .encrypt(nonce, payload)
+        .encrypt(&nonce, payload)
         .map_err(|e| PairingError::EncryptionFailed(e.to_string()))
 }
 
@@ -51,8 +51,8 @@ pub fn aes256gcm_decrypt(
     ciphertext: &[u8],
     aad: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, PairingError> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(nonce);
+    let cipher = Aes256Gcm::new_from_slice(key).expect("valid 32-byte key");
+    let nonce = Nonce::try_from(&nonce[..]).expect("valid 12-byte nonce");
 
     let payload = aes_gcm::aead::Payload {
         msg: ciphertext,
@@ -60,7 +60,7 @@ pub fn aes256gcm_decrypt(
     };
 
     let plaintext = cipher
-        .decrypt(nonce, payload)
+        .decrypt(&nonce, payload)
         .map_err(|_| PairingError::DecryptionFailed)?;
 
     Ok(Zeroizing::new(plaintext))

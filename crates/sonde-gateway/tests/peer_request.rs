@@ -132,11 +132,11 @@ fn encrypt_inner_payload(pairing_cbor: &[u8], phone_psk: &[u8; 32]) -> Vec<u8> {
     let cipher = Aes256Gcm::new_from_slice(phone_psk).unwrap();
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes).unwrap();
-    let nonce = GcmNonce::from_slice(&nonce_bytes);
+    let nonce = GcmNonce::try_from(&nonce_bytes[..]).unwrap();
 
     let ciphertext = cipher
         .encrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: pairing_cbor,
                 aad: PAIRING_AAD,

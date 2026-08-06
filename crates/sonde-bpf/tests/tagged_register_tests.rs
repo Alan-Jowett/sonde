@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+#![cfg(all(
+    feature = "base64",
+    feature = "atomic32",
+    feature = "atomic64",
+    feature = "divmul32",
+    feature = "divmul64",
+))]
+
 //! Tagged register safety invariant tests — 30 invariants (T-BPF-001 through
 //! T-BPF-030) covered by 32 test functions.
 //!

@@ -24,6 +24,7 @@
 | **Helper** | A host-provided function callable from BPF via the CALL instruction. |
 | **Instruction budget** | The maximum number of instruction slots the interpreter executes before termination. |
 | **Context pointer field** | A u64 offset within the context buffer that holds an embedded pointer to a separately-described memory region. |
+| **Conformance group** | An RFC 9669 named set of instructions that a runtime supports as a unit. |
 
 ---
 
@@ -102,6 +103,39 @@ The interpreter MUST implement the complete BPF instruction set as defined by RF
 4. LD_DW_IMM consumes two instruction slots and charges both to the instruction budget.
 5. Atomic operations support both 32-bit and 64-bit widths.
 6. Unknown opcodes return `BpfError::UnknownOpcode`.
+
+---
+
+#### SBPF-0103  Compile-time conformance groups
+
+**Priority:** Must
+**Source:** RFC 9669 §2.4, safe-bpf-interpreter.md §1.2
+**Confidence:** High
+
+**Description:**
+The crate MUST expose compile-time Cargo features for the six supported RFC
+9669 conformance groups:
+`base32`, `base64`, `atomic32`, `atomic64`, `divmul32`, and `divmul64`.
+The `base32` group is the RFC-mandated baseline and includes all instructions
+unless RFC 9669 assigns them to another group. `base64` includes `base32`;
+`atomic64` includes `atomic32`; and `divmul64` includes `divmul32`.
+Deprecated RFC 9669 `packet` instructions remain unsupported and are not
+selectable through these features.
+
+**Acceptance criteria:**
+
+1. The default feature set enables all six supported conformance groups and
+   preserves the current instruction behavior.
+2. `base64`, `atomic64`, and `divmul64` Cargo features enable their respective
+   32-bit prerequisite features.
+3. `default-features = false` permits a consumer to select a reduced
+   instruction implementation when `base32` is explicitly selected, with
+   `std` remaining independent. A build without `base32` MUST fail at compile
+   time because RFC 9669 requires that baseline.
+4. Instructions belonging to a disabled group are absent from the compiled
+   handler implementation and return `BpfError::UnknownOpcode` if encountered.
+5. The public execution API, tagged-register safety rules, and zero-allocation
+   execution guarantee are unchanged by conformance feature selection.
 
 ---
 
@@ -718,7 +752,7 @@ The `sonde-bpf` crate MUST be `#![no_std]`-compatible when compiled without the 
 
 **Acceptance criteria:**
 
-1. `cargo build -p sonde-bpf --no-default-features` succeeds.
+1. `cargo build -p sonde-bpf --no-default-features --features base32` succeeds.
 2. The crate uses only `core::` types in the `no_std` path.
 
 ---

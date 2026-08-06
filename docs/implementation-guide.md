@@ -388,7 +388,7 @@ The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/ru
 
 **Goal:** A zero-allocation, `no_std`-compatible BPF interpreter based on RFC 9669 that replaces `rbpf` as the node's execution backend. The crate defaults to `std` but supports `no_std` when the default `std` feature is disabled.
 
-**Dependencies:** None (standalone, zero external dependencies). Build with `--no-default-features` for `no_std`.
+**Dependencies:** None (standalone, zero external dependencies). Build with `--no-default-features --features base32` for `no_std`.
 
 **Status:** Complete. Full RFC 9669 interpreter with 38+ tests and a `bpf_conformance` plugin binary. Integrated into `sonde-node` via `sonde_bpf_adapter.rs` — `rbpf` has been fully replaced.
 

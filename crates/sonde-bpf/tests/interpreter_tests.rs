@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+#![cfg(all(
+    feature = "base64",
+    feature = "atomic32",
+    feature = "atomic64",
+    feature = "divmul32",
+    feature = "divmul64",
+))]
+
 use sonde_bpf::ebpf;
 use sonde_bpf::interpreter::{
     execute_program_no_maps, BpfError, HelperDescriptor, HelperReturn, UNLIMITED_BUDGET,

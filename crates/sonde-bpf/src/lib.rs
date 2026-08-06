@@ -14,9 +14,9 @@
 //! ```
 //! use sonde_bpf::{ebpf, interpreter};
 //!
-//! // mov64 r0, 42; exit
+//! // mov32 r0, 42; exit
 //! let prog: &[u8] = &[
-//!     0xb7, 0x00, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00, // r0 = 42
+//!     0xb4, 0x00, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00, // r0 = 42
 //!     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
 //! ];
 //! let mut mem = [];
@@ -25,6 +25,9 @@
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "base32"))]
+compile_error!("sonde-bpf requires the RFC 9669 base32 feature");
 
 pub mod ebpf;
 pub mod interpreter;

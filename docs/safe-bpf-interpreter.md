@@ -24,6 +24,29 @@ RFC 9669 requires registers to hold 64-bit values, but it does not prohibit the 
 - Confine *all* pointer dereferences to a small set of choke-point functions (`mem_load`, `mem_load_sign_extend`, `mem_store`, `mem_atomic32`, `mem_atomic64`) — reducing the unsafe surface to 5 auditable sites.
 - Make helper return types (e.g., the pointer from `map_lookup_elem`) carry machine-checked metadata that the interpreter enforces on subsequent use.
 
+### 1.2  RFC 9669 conformance groups
+
+The instruction implementation is selectable at Cargo compile time through six
+features matching the RFC 9669 conformance groups:
+
+| Cargo feature | Scope |
+|---|---|
+| `base32` | RFC 9669 base instruction set, including all instructions unless assigned to another group |
+| `base64` | `base32` plus instructions explicitly assigned to the 64-bit base group |
+| `atomic32` | 32-bit atomic instructions |
+| `atomic64` | 64-bit atomic instructions; implies `atomic32` |
+| `divmul32` | 32-bit multiplication, division, and modulo instructions |
+| `divmul64` | 64-bit multiplication, division, and modulo instructions; implies `divmul32` |
+
+The `sonde-bpf` default feature set enables all six groups, preserving the
+current behavior. The `base32` feature is mandatory; builds that disable
+defaults must select it explicitly. Consumers can then select a smaller
+optional-instruction runtime; `std` remains an independent feature. A disabled
+instruction has no compiled implementation and is reported as
+`BpfError::UnknownOpcode` if encountered at execution time. The conformance
+features do not alter the public execution API, tagged-register safety rules,
+or zero-allocation guarantee.
+
 ---
 
 ## 2  Tagged Register Model

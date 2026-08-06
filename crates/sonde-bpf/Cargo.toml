@@ -6,8 +6,22 @@ description = "A simple, zero-allocation BPF interpreter based on RFC 9669"
 license = "MIT"
 
 [features]
-default = ["std"]
+default = [
+    "std",
+    "base32",
+    "base64",
+    "atomic32",
+    "atomic64",
+    "divmul32",
+    "divmul64",
+]
 std = []
+base32 = []
+base64 = ["base32"]
+atomic32 = ["base32"]
+atomic64 = ["atomic32"]
+divmul32 = ["base32"]
+divmul64 = ["divmul32"]
 
 [[bin]]
 name = "sonde_bpf_plugin"

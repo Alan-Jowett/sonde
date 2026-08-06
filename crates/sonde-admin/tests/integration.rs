@@ -1045,13 +1045,13 @@ fn build_test_rotation_payload(
     new_master_key: &[u8; 32],
     rotation_code: &str,
 ) -> Vec<u8> {
-    use aes_gcm::aead::{Aead, OsRng};
+    use aes_gcm::aead::Aead;
     use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
     use hkdf::Hkdf;
     use sha2::Sha256;
     use x25519_dalek::{EphemeralSecret, PublicKey};
 
-    let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
+    let ephemeral_secret = EphemeralSecret::random();
     let ephemeral_public = PublicKey::from(&ephemeral_secret);
 
     let gw_public = PublicKey::from(*gw_x25519_public);

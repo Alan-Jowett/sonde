@@ -28,7 +28,7 @@ rpassword = "7.5.4"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 sonde-protocol = { path = "../sonde-protocol", features = ["fingerprint"] }
 sha2 = "0.10"
-x25519-dalek = { version = "3", features = ["static_secrets"] }
+x25519-dalek = { version = "3", features = ["getrandom", "static_secrets"] }
 zeroize = "1.8.2"
 
 [build-dependencies]

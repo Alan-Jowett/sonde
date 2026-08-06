@@ -987,14 +987,14 @@ fn build_rotation_payload(
     new_master_key: &[u8; 32],
     rotation_code: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use aes_gcm::aead::{Aead, OsRng};
+    use aes_gcm::aead::Aead;
     use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
     use hkdf::Hkdf;
     use sha2::Sha256;
     use x25519_dalek::{EphemeralSecret, PublicKey};
 
     // Generate ephemeral X25519 keypair.
-    let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
+    let ephemeral_secret = EphemeralSecret::random();
     let ephemeral_public = PublicKey::from(&ephemeral_secret);
 
     // Compute shared secret.

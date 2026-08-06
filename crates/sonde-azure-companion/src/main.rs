@@ -19,9 +19,12 @@ use bollard::query_parameters::{
 };
 use bollard::Docker;
 use clap::{Args, Parser, Subcommand};
-use ed25519_dalek::pkcs8::DecodePrivateKey as Ed25519DecodePrivateKey;
+use ed25519_dalek::pkcs8::{
+    DecodePrivateKey as Ed25519DecodePrivateKey, EncodePublicKey as Ed25519EncodePublicKey,
+};
 use futures_util::StreamExt;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use p256::pkcs8::DecodePrivateKey as P256DecodePrivateKey;
 use regex::Regex;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs8::EncodePublicKey;
@@ -1341,7 +1344,16 @@ fn load_private_key_subject_public_key_info(
                 return encode_public_key_der(&private_key.public_key(), private_key_path);
             }
             if let Ok(private_key) = ed25519_dalek::SigningKey::from_pkcs8_der(der) {
-                return encode_public_key_der(&private_key.verifying_key(), private_key_path);
+                let der = private_key
+                    .verifying_key()
+                    .to_public_key_der()
+                    .map_err(|err| {
+                        CompanionError::Config(format!(
+                            "failed to encode service principal EdDSA public key from private key: {} ({err})",
+                            private_key_path.display()
+                        ))
+                    })?;
+                return Ok(der.as_ref().to_vec());
             }
             Err(CompanionError::Config(format!(
                 "service principal private key file must contain a PEM-encoded RSA, EC, or EdDSA private key: {}",

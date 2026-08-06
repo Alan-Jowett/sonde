@@ -14,7 +14,7 @@ httpdate = "1"
 hyper-util = "0.1"
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
 regex = "1"
-ed25519-dalek = { version = "3", features = ["pkcs8"] }
+ed25519-dalek = { version = "3", features = ["alloc", "pkcs8"] }
 p256 = { version = "0.13", features = ["pkcs8"] }
 rcgen = { version = "0.14", features = ["pem"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }

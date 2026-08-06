@@ -33,7 +33,7 @@ use std::fmt;
 use std::time::{Duration, UNIX_EPOCH};
 
 use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::{Aes256Gcm, Nonce};
 use pbkdf2::pbkdf2_hmac;
 use pbkdf2::sha2::Sha256 as PbkdfSha256;
 use zeroize::Zeroizing;
@@ -218,11 +218,11 @@ pub fn encrypt_state_full(
     getrandom::fill(&mut nonce_bytes).map_err(|_| BundleError::Rng)?;
 
     let key = Zeroizing::new(derive_key(passphrase, &salt));
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()));
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let cipher = Aes256Gcm::new_from_slice(key.as_slice()).map_err(|_| BundleError::Crypto)?;
+    let nonce = Nonce::try_from(&nonce_bytes[..]).map_err(|_| BundleError::Crypto)?;
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_slice())
+        .encrypt(&nonce, plaintext.as_slice())
         .map_err(|_| BundleError::Crypto)?;
 
     let mut bundle = Vec::with_capacity(HEADER_LEN + ciphertext.len());
@@ -272,12 +272,12 @@ pub fn decrypt_state_full(bundle: &[u8], passphrase: &str) -> Result<FullState, 
     let ciphertext = &bundle[HEADER_LEN..];
 
     let key = Zeroizing::new(derive_key(passphrase, salt));
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()));
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let cipher = Aes256Gcm::new_from_slice(key.as_slice()).map_err(|_| BundleError::Crypto)?;
+    let nonce = Nonce::try_from(&nonce_bytes[..]).map_err(|_| BundleError::Crypto)?;
 
     let plaintext = Zeroizing::new(
         cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|_| BundleError::Crypto)?,
     );
 

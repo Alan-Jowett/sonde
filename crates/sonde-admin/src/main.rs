@@ -1025,14 +1025,15 @@ fn build_rotation_payload(
 
     // Encrypt with AES-256-GCM.
     // AAD: gateway_id_raw || master_key_epoch_be64
-    let cipher = Aes256Gcm::new((&*aes_key).into());
+    let cipher = Aes256Gcm::new_from_slice(&*aes_key)
+        .map_err(|e| format!("failed to initialize AES-256-GCM: {e}"))?;
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes).map_err(|e| format!("failed to generate nonce: {e}"))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(&nonce_bytes[..]).map_err(|_| "invalid AES-GCM nonce length")?;
 
     let ciphertext_and_tag = cipher
         .encrypt(
-            nonce,
+            &nonce,
             aes_gcm::aead::Payload {
                 msg: &plaintext,
                 aad: &info,

@@ -1085,14 +1085,14 @@ fn build_test_rotation_payload(
     }
     plaintext.extend_from_slice(code_bytes);
 
-    let cipher = Aes256Gcm::new((&aes_key).into());
+    let cipher = Aes256Gcm::new_from_slice(&aes_key).unwrap();
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes).unwrap();
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(&nonce_bytes[..]).unwrap();
 
     let ciphertext_and_tag = cipher
         .encrypt(
-            nonce,
+            &nonce,
             aes_gcm::aead::Payload {
                 msg: &plaintext,
                 aad: &info,

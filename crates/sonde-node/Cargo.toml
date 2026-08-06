@@ -25,7 +25,7 @@ sonde-protocol = { path = "../sonde-protocol" }
 ciborium = { version = "0.2", default-features = false }
 log = { version = "0.4", features = ["max_level_trace"] }
 sha2 = "0.10"
-aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
 
 # ESP-IDF dependencies — only pulled in with the "esp" feature.
 esp-idf-hal = { version = "0.46", optional = true }

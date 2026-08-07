@@ -25,6 +25,7 @@
 | **Instruction budget** | The maximum number of instruction slots the interpreter executes before termination. |
 | **Context pointer field** | A u64 offset within the context buffer that holds an embedded pointer to a separately-described memory region. |
 | **Conformance group** | An RFC 9669 named set of instructions that a runtime supports as a unit. |
+| **Reduced-stack mode** | The `stack-512` Cargo feature configuration with one 512-byte BPF stack frame and no BPF-to-BPF calls. |
 
 ---
 
@@ -137,6 +138,33 @@ selectable through these features.
 5. The public execution API, tagged-register safety rules, and zero-allocation
    execution guarantee are unchanged by conformance feature selection.
 
+#### SBPF-0104  Reduced 512-byte stack configuration
+
+**Priority:** Must
+**Source:** USER-REQUEST: add a feature flag to sonde-bpf to allow disabling bpf-to-bpf calls and allow the interpreter to run with 512 bytes of stack instead of 4KiB
+**Confidence:** High
+
+**Description:**
+The crate MUST expose a `stack-512` Cargo feature for constrained consumers.
+The feature MUST be disabled by default so the existing configuration remains
+unchanged. When enabled, it MUST configure exactly one 512-byte BPF stack
+frame, disable BPF-to-BPF local calls, and retain helper calls and the public
+execution API.
+
+**Acceptance criteria:**
+
+1. The default feature set retains `STACK_SIZE_PER_FRAME = 512`,
+   `MAX_CALL_DEPTH = 8`, and `STACK_SIZE = 4096`.
+2. A build with `--no-default-features --features std,base32,stack-512`
+   uses `STACK_SIZE_PER_FRAME = 512`, `MAX_CALL_DEPTH = 1`, and
+   `STACK_SIZE = 512`.
+3. In `stack-512` mode, `CALL` with `src=1` is absent from the compiled
+   local-call handler and returns `BpfError::UnknownOpcode`.
+4. Helper calls (`src=0` and `src=2`), tagged-register safety, zero-allocation
+   execution, and the public execution API are unchanged.
+5. A stack access at the 512-byte boundary succeeds and an access beyond the
+   boundary returns `BpfError::MemoryAccessViolation`.
+
 ---
 
 #### SBPF-0101  Program bytecode validation
@@ -218,7 +246,8 @@ At program start, the interpreter MUST initialize registers as follows:
 1. R1 is tagged Context when `read_only_ctx` is true and ctx is non-empty.
 2. R1 is tagged Memory when `read_only_ctx` is false and ctx is non-empty.
 3. R1 is scalar (None) when ctx is empty.
-4. R10's Stack region spans the entire 4 KB stack allocation.
+4. R10's Stack region spans the entire configured stack allocation (4 KB by
+   default, 512 bytes in `stack-512` mode).
 5. All region `end` values are computed with `checked_add`; overflow panics before execution begins.
 
 ---
@@ -613,9 +642,12 @@ The spill tracker has a fixed capacity (`MAX_SPILL_SLOTS = 32`). If the table is
 
 **Description:**
 On BPF-to-BPF call (CALL src=1):
-1. R6–R9 values AND region tags MUST be saved in the call frame.
-2. R1–R5 values and tags MUST be retained (they are the callee's arguments).
-3. R10 (frame pointer) MUST be adjusted by `STACK_SIZE_PER_FRAME` (512 bytes). The Stack tag MUST be preserved with the same base/end (the entire stack is one region).
+1. In `stack-512` mode, this instruction MUST be rejected as
+   `BpfError::UnknownOpcode`; the remaining rules apply only when the
+   `stack-512` feature is disabled.
+2. R6–R9 values AND region tags MUST be saved in the call frame.
+3. R1–R5 values and tags MUST be retained (they are the callee's arguments).
+4. R10 (frame pointer) MUST be adjusted by `STACK_SIZE_PER_FRAME` (512 bytes). The Stack tag MUST be preserved with the same base/end (the entire stack is one region).
 
 On EXIT (with frames remaining):
 1. R6–R9 values and tags MUST be restored from the call frame.
@@ -624,9 +656,10 @@ On EXIT (with frames remaining):
 
 **Acceptance criteria:**
 
-1. R6 holding a Context pointer → BPF-to-BPF call → callee clobbers R6 → EXIT → R6 pointer tag restored, dereference succeeds.
-2. R10 Stack tag is maintained in both caller and callee frames.
-3. Stack stores in different frames target different physical memory (R10 adjusted).
+1. R6 holding a Context pointer → BPF-to-BPF call → callee clobbers R6 → EXIT → R6 pointer tag restored, dereference succeeds (default configuration).
+2. R10 Stack tag is maintained in both caller and callee frames (default configuration).
+3. Stack stores in different frames target different physical memory (default configuration).
+4. In `stack-512` mode, a local call is rejected as `UnknownOpcode`.
 
 ---
 
@@ -637,12 +670,16 @@ On EXIT (with frames remaining):
 **Confidence:** High
 
 **Description:**
-The interpreter MUST support a maximum BPF-to-BPF call depth of `MAX_CALL_DEPTH` (8). Exceeding this depth MUST return `BpfError::CallDepthExceeded`.
+The interpreter MUST support a maximum BPF-to-BPF call depth of `MAX_CALL_DEPTH`
+(8 by default). In `stack-512` mode, `MAX_CALL_DEPTH` MUST be 1 and local
+BPF-to-BPF calls MUST be disabled. Exceeding the configured depth in a mode
+where local calls are enabled MUST return `BpfError::CallDepthExceeded`.
 
 **Acceptance criteria:**
 
-1. 8 nested calls succeed.
-2. The 9th nested call returns `CallDepthExceeded`.
+1. 8 nested calls succeed in the default configuration.
+2. The 9th nested call returns `CallDepthExceeded` in the default configuration.
+3. A `stack-512` build rejects a local call as `UnknownOpcode`.
 
 ---
 

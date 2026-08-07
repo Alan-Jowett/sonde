@@ -990,12 +990,11 @@ fn build_rotation_payload(
     use aes_gcm::aead::Aead;
     use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
     use hkdf::Hkdf;
-    use rand_core::OsRng;
     use sha2::Sha256;
     use x25519_dalek::{EphemeralSecret, PublicKey};
 
     // Generate ephemeral X25519 keypair.
-    let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
+    let ephemeral_secret = EphemeralSecret::random();
     let ephemeral_public = PublicKey::from(&ephemeral_secret);
 
     // Compute shared secret.

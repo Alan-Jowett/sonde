@@ -3001,7 +3001,7 @@ mod tests {
         assert!(
             matches!(messages[0], ModemMessage::ModemReady(_)),
             "first message after RESET must be MODEM_READY, got {:?}",
-            &messages[0]
+            messages[0]
         );
 
         // 3. Indication queue must be cleared.

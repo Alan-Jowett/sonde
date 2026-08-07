@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases unless noted otherwise.  The interpreter is fully testable in isolation — construct bytecode in-memory, allocate context/stack/map buffers, and call `execute_program(...)`.  There are **42 test cases** total, organized into ten categories that cover the tagged-register safety model and compile-time conformance selection end-to-end.
+All tests in this document are pure Rust `#[test]` cases unless noted otherwise.  The interpreter is fully testable in isolation — construct bytecode in-memory, allocate context/stack/map buffers, and call `execute_program(...)`.  There are **44 test cases** total, organized into eleven categories that cover the tagged-register safety model, compile-time conformance selection, and the reduced-stack configuration end-to-end.
 
 **Notation:** Each test references the relevant section of [safe-bpf-interpreter.md](safe-bpf-interpreter.md) (abbreviated **§N.M**) or [bpf-environment.md](bpf-environment.md).
 
@@ -526,6 +526,28 @@ crate build. The default build must retain all existing instruction behavior.
 2. Build with `--no-default-features --features std,base32`.
 3. Assert: the first build remains `no_std`-compatible and the second provides the existing standard-library test/plugin surface.
 
+### T-BPF-041  `stack-512` selects a single 512-byte frame
+
+**Validates:** safe-bpf-interpreter.md §1.2 and §4.1
+
+**Procedure:**
+1. Build and test with `--no-default-features --features std,base32,stack-512`.
+2. Execute a store at the 512-byte stack boundary.
+3. Execute a store one byte beyond the stack boundary.
+4. Assert: the boundary store succeeds, the out-of-bounds store returns
+   `BpfError::MemoryAccessViolation`, and the build uses one 512-byte frame.
+
+### T-BPF-042  `stack-512` disables BPF-to-BPF calls
+
+**Validates:** safe-bpf-interpreter.md §1.2 and §4.6
+
+**Procedure:**
+1. Build and test with `--no-default-features --features std,base32,stack-512`.
+2. Execute a program containing `CALL` with `src=1`.
+3. Assert: execution returns `BpfError::UnknownOpcode`.
+4. Execute a helper call in the same configuration and assert that helper
+   dispatch remains available.
+
 ---
 
 ## Appendix A  Traceability matrix
@@ -549,3 +571,4 @@ crate build. The default build must retain all existing instruction behavior.
 | ND-0505 (Execution context) | T-BPF-033 | E2E |
 | ND-0606 (Map memory budget) | T-BPF-032 | E2E |
 | safe-bpf-interpreter.md §1.2 (RFC 9669 conformance features) | T-BPF-034 – T-BPF-040 | Compile-time feature selection |
+| safe-bpf-interpreter.md §1.2, §4.1, §4.6 (reduced stack) | T-BPF-041 – T-BPF-042 | Reduced-stack feature selection |

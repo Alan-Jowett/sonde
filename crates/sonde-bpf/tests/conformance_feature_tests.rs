@@ -25,6 +25,60 @@ fn program(insns: &[[u8; 8]]) -> Vec<u8> {
     insns.iter().flat_map(|insn| insn.iter().copied()).collect()
 }
 
+#[cfg(feature = "stack-512")]
+fn helper_returns_7(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    7
+}
+
+#[test]
+#[cfg(feature = "stack-512")]
+fn stack_512_configures_one_frame_and_enforces_boundary() {
+    assert_eq!(sonde_bpf::ebpf::STACK_SIZE_PER_FRAME, 512);
+    assert_eq!(sonde_bpf::ebpf::MAX_CALL_DEPTH, 1);
+    assert_eq!(sonde_bpf::ebpf::STACK_SIZE, 512);
+
+    let boundary = program(&[
+        insn(ebpf::MOV32_IMM, 0, 0, 0, 0x42),
+        insn(ebpf::ST_B_IMM, 10, 0, -512, 0),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let beyond = program(&[
+        insn(ebpf::MOV32_IMM, 0, 0, 0, 0x42),
+        insn(ebpf::ST_B_IMM, 10, 0, -513, 0),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut ctx = [];
+
+    execute_program_no_maps(&boundary, &mut ctx, &[], false, UNLIMITED_BUDGET).unwrap();
+    assert!(matches!(
+        execute_program_no_maps(&beyond, &mut ctx, &[], false, UNLIMITED_BUDGET),
+        Err(sonde_bpf::interpreter::BpfError::MemoryAccessViolation { .. })
+    ));
+}
+
+#[test]
+#[cfg(feature = "stack-512")]
+fn stack_512_disables_local_calls_but_keeps_helpers() {
+    let local_call = program(&[insn(ebpf::CALL, 0, 1, 0, 0), insn(ebpf::EXIT, 0, 0, 0, 0)]);
+    let helper_call = program(&[insn(ebpf::CALL, 0, 0, 0, 7), insn(ebpf::EXIT, 0, 0, 0, 0)]);
+    let helpers = [sonde_bpf::interpreter::HelperDescriptor {
+        id: 7,
+        func: helper_returns_7,
+        ret: sonde_bpf::interpreter::HelperReturn::Scalar,
+    }];
+    let mut ctx = [];
+
+    assert!(matches!(
+        execute_program_no_maps(&local_call, &mut ctx, &helpers, false, UNLIMITED_BUDGET),
+        Err(sonde_bpf::interpreter::BpfError::UnknownOpcode { opc, .. })
+            if opc == ebpf::CALL
+    ));
+    assert_eq!(
+        execute_program_no_maps(&helper_call, &mut ctx, &helpers, false, UNLIMITED_BUDGET).unwrap(),
+        7
+    );
+}
+
 #[test]
 #[cfg(feature = "base64")]
 fn base64_instruction_is_supported() {

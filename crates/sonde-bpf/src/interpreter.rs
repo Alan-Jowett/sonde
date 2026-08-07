@@ -17,7 +17,9 @@
 //! store at a small number of choke-point functions, eliminating scattered
 //! unsafe blocks throughout the interpreter loop.
 
-use crate::ebpf::{self, Helper, INSN_SIZE, MAX_CALL_DEPTH, STACK_SIZE, STACK_SIZE_PER_FRAME};
+#[cfg(not(feature = "stack-512"))]
+use crate::ebpf::STACK_SIZE_PER_FRAME;
+use crate::ebpf::{self, Helper, INSN_SIZE, MAX_CALL_DEPTH, STACK_SIZE};
 
 /// Errors returned by the interpreter.
 #[derive(Debug)]
@@ -709,6 +711,7 @@ pub unsafe fn execute_program(
     let mut stack = [0u8; STACK_SIZE];
 
     // Call frames for BPF-to-BPF calls.
+    #[allow(unused_mut)]
     let mut call_frames: [CallFrame; MAX_CALL_DEPTH] = [CallFrame::zeroed(); MAX_CALL_DEPTH];
     let mut frame_idx: usize = 0;
 
@@ -1972,6 +1975,7 @@ pub unsafe fn execute_program(
                         }
                     }
                     // BPF-to-BPF (local) call
+                    #[cfg(not(feature = "stack-512"))]
                     1 => {
                         if frame_idx >= MAX_CALL_DEPTH {
                             return Err(BpfError::CallDepthExceeded { pc: pc - 1 });

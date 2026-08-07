@@ -37,15 +37,22 @@ features matching the RFC 9669 conformance groups:
 | `atomic64` | 64-bit atomic instructions; implies `atomic32` |
 | `divmul32` | 32-bit multiplication, division, and modulo instructions |
 | `divmul64` | 64-bit multiplication, division, and modulo instructions; implies `divmul32` |
+| `stack-512` | One 512-byte BPF stack frame; disables BPF-to-BPF local calls |
 
-The `sonde-bpf` default feature set enables all six groups, preserving the
-current behavior. The `base32` feature is mandatory; builds that disable
-defaults must select it explicitly. Consumers can then select a smaller
-optional-instruction runtime; `std` remains an independent feature. A disabled
-instruction has no compiled implementation and is reported as
-`BpfError::UnknownOpcode` if encountered at execution time. The conformance
-features do not alter the public execution API, tagged-register safety rules,
-or zero-allocation guarantee.
+The `sonde-bpf` default feature set enables all six RFC 9669 conformance
+groups, preserving the current behavior. `stack-512` is an additional
+opt-in configuration feature, not an RFC 9669 conformance group. The `base32`
+feature is mandatory; builds that disable defaults must select it explicitly.
+Consumers can then select a smaller optional-instruction runtime; `std` remains
+an independent feature. A disabled instruction has no compiled implementation
+and is reported as `BpfError::UnknownOpcode` if encountered at execution time.
+The conformance features do not alter the public execution API,
+tagged-register safety rules, or zero-allocation guarantee.
+
+The `stack-512` feature is opt-in and configures one 512-byte stack frame
+(`MAX_CALL_DEPTH = 1`, `STACK_SIZE = 512`). The local BPF-to-BPF `CALL`
+handler (`src=1`) is not compiled in that mode and returns
+`BpfError::UnknownOpcode`; helper calls remain enabled.
 
 ---
 
@@ -399,6 +406,11 @@ Jump instructions compare `reg[dst].value` against `reg[src].value` (or an immed
 
 **BPF-to-BPF call (src=1):**
 
+When the `stack-512` feature is enabled, local calls are unsupported and the
+instruction is rejected as `BpfError::UnknownOpcode`.
+
+Otherwise:
+
 1. Save R6–R9 values *and* tags in the call frame (see §7).
 2. R1–R5 values **and tags** are **retained** — they are the callee's arguments and must keep their provenance (including any pointer region metadata).  The caller treats them as clobbered by convention, but the interpreter does not force-clear them on entry.
 3. Adjust R10 (frame pointer) — the Stack tag is preserved with the same `base`/`end` (the entire stack is one region).
@@ -486,7 +498,7 @@ The interpreter maintains a compact **shadow table** that records provenance met
 struct SpillTracker {
     /// Bitmap: 1 bit per 8-byte-aligned stack slot.
     /// Bit set = this slot holds a spilled pointer.
-    bitmap: [u8; STACK_SIZE / 64],          // 64 bytes for 4 KB stack
+    bitmap: [u8; STACK_SIZE / 64],          // 64 bytes for the default 4 KB stack
 
     /// Metadata for slots that contain pointers.
     entries: [SpillEntry; MAX_SPILL_SLOTS], // small fixed-size table
@@ -615,9 +627,9 @@ Size estimates below are approximate and based on typical Rust layout for `x86_6
 | Component | Current | Tagged |
 |-----------|---------|--------|
 | Registers (11) | 88 B | 440 B |
-| BPF stack | 4,096 B | 4,096 B |
+| BPF stack | 4,096 B | 4,096 B (512 B with `stack-512`) |
 | Spill tracker | — | ~1,100 B |
-| Call frames (8) | 384 B | 1,408 B |
+| Call frames (8) | 384 B | 1,408 B (one frame with `stack-512`) |
 | **Total interpreter state** | **~4,568 B** | **~7,044 B** |
 
 An increase of ~2.5 KB.  The tagged interpreter still fits in a single Rust stack frame, even on constrained targets with 8–16 KB task stacks.

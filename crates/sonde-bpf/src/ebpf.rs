@@ -12,6 +12,9 @@
 pub const INSN_SIZE: usize = 8;
 
 /// Maximum call depth for BPF-to-BPF calls.
+#[cfg(feature = "stack-512")]
+pub const MAX_CALL_DEPTH: usize = 1;
+#[cfg(not(feature = "stack-512"))]
 pub const MAX_CALL_DEPTH: usize = 8;
 
 /// BPF stack size per call frame in bytes.

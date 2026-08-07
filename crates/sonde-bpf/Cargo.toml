@@ -22,6 +22,8 @@ atomic32 = ["base32"]
 atomic64 = ["atomic32"]
 divmul32 = ["base32"]
 divmul64 = ["divmul32"]
+# Reduce the interpreter stack to one frame and disable local BPF calls.
+stack-512 = []
 
 [[bin]]
 name = "sonde_bpf_plugin"

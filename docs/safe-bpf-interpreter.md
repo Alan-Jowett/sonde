@@ -39,14 +39,15 @@ features matching the RFC 9669 conformance groups:
 | `divmul64` | 64-bit multiplication, division, and modulo instructions; implies `divmul32` |
 | `stack-512` | One 512-byte BPF stack frame; disables BPF-to-BPF local calls |
 
-The `sonde-bpf` default feature set enables all six groups, preserving the
-current behavior. The `base32` feature is mandatory; builds that disable
-defaults must select it explicitly. Consumers can then select a smaller
-optional-instruction runtime; `std` remains an independent feature. A disabled
-instruction has no compiled implementation and is reported as
-`BpfError::UnknownOpcode` if encountered at execution time. The conformance
-features do not alter the public execution API, tagged-register safety rules,
-or zero-allocation guarantee.
+The `sonde-bpf` default feature set enables all six RFC 9669 conformance
+groups, preserving the current behavior. `stack-512` is an additional
+opt-in configuration feature, not an RFC 9669 conformance group. The `base32`
+feature is mandatory; builds that disable defaults must select it explicitly.
+Consumers can then select a smaller optional-instruction runtime; `std` remains
+an independent feature. A disabled instruction has no compiled implementation
+and is reported as `BpfError::UnknownOpcode` if encountered at execution time.
+The conformance features do not alter the public execution API,
+tagged-register safety rules, or zero-allocation guarantee.
 
 The `stack-512` feature is opt-in and configures one 512-byte stack frame
 (`MAX_CALL_DEPTH = 1`, `STACK_SIZE = 512`). The local BPF-to-BPF `CALL`

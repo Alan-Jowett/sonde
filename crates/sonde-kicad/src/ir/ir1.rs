@@ -4,6 +4,7 @@
 //! IR-1: Component bill (EDA-agnostic).
 
 use serde::Deserialize;
+use serde::Deserializer;
 
 use super::HasSchemaVersion;
 
@@ -22,13 +23,20 @@ impl HasSchemaVersion for Ir1 {
 
 #[derive(Debug, Deserialize)]
 pub struct Ir1Component {
-    pub ref_des: String,
+    #[serde(deserialize_with = "deserialize_ref_des")]
+    pub ref_des: Vec<String>,
     pub description: Option<String>,
     pub manufacturer: Option<String>,
     pub part_number: Option<String>,
     pub package: Option<String>,
     pub generic_footprint: Option<String>,
     pub sourcing: Option<Sourcing>,
+}
+
+impl Ir1Component {
+    pub fn contains_ref_des(&self, ref_des: &str) -> bool {
+        self.ref_des.iter().any(|candidate| candidate == ref_des)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,4 +47,53 @@ pub struct Sourcing {
     pub lifecycle: Option<String>,
     pub date_verified: Option<String>,
     pub verification_label: Option<String>,
+}
+
+fn deserialize_ref_des<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RefDes {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    match RefDes::deserialize(deserializer)? {
+        RefDes::One(ref_des) => Ok(vec![ref_des]),
+        RefDes::Many(ref_des) => Ok(ref_des),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_scalar_ref_des() {
+        let input = r#"
+schema_version: "1.0.0"
+project: demo
+components:
+  - ref_des: U1
+"#;
+
+        let ir1: Ir1 = serde_yaml_ng::from_str(input).unwrap();
+        assert_eq!(ir1.components[0].ref_des, vec!["U1"]);
+    }
+
+    #[test]
+    fn parses_grouped_ref_des() {
+        let input = r#"
+schema_version: "1.0.0"
+project: demo
+components:
+  - ref_des: [R1, R2]
+"#;
+
+        let ir1: Ir1 = serde_yaml_ng::from_str(input).unwrap();
+        assert_eq!(ir1.components[0].ref_des, vec!["R1", "R2"]);
+        assert!(ir1.components[0].contains_ref_des("R2"));
+    }
 }

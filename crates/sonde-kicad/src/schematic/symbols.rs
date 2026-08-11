@@ -363,6 +363,104 @@ const VENDORED_SYMBOLS: &[(&str, &str)] = &[
 )"#,
     ),
     (
+        "Connector_Generic:Conn_01x01",
+        r#"(symbol "Connector_Generic:Conn_01x01"
+  (pin_names (offset 1.016) hide) (in_bom yes) (on_board yes)
+  (property "Reference" "J" (at 0 2.54 0) (effects (font (size 1.27 1.27))))
+  (property "Value" "Conn_01x01" (at 0 -2.54 0) (effects (font (size 1.27 1.27))))
+  (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+  (property "Datasheet" "~" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+  (symbol "Conn_01x01_1_1"
+    (pin passive line (at -5.08 0 0) (length 3.81) (name "Pin_1" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27)))))
+  )
+)"#,
+    ),
+    (
+        "Device:LED",
+        r#"(symbol "Device:LED"
+  (pin_names (offset 0)) (in_bom yes) (on_board yes)
+  (property "Reference" "D" (at 2.54 2.54 0) (effects (font (size 1.27 1.27))))
+  (property "Value" "LED" (at 2.54 -2.54 0) (effects (font (size 1.27 1.27))))
+  (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+  (property "Datasheet" "~" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+  (symbol "LED_0_1"
+    (polyline (pts (xy -1.27 0) (xy 0 0)) (stroke (width 0.254) (type default)) (fill (type none)))
+    (polyline (pts (xy 0 1.27) (xy 2.54 0) (xy 0 -1.27) (xy 0 1.27)) (stroke (width 0.254) (type default)) (fill (type none)))
+    (polyline (pts (xy 2.54 1.27) (xy 2.54 -1.27)) (stroke (width 0.254) (type default)) (fill (type none)))
+  )
+  (symbol "LED_1_1"
+    (pin passive line (at -5.08 0 0) (length 3.81) (name "K" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 7.62 0 180) (length 3.81) (name "A" (effects (font (size 1.27 1.27)))) (number "2" (effects (font (size 1.27 1.27)))))
+  )
+)"#,
+    ),
+    (
+        "Device:D_Photo",
+        r#"(symbol "Device:D_Photo"
+  (pin_names (offset 0)) (in_bom yes) (on_board yes)
+  (property "Reference" "D" (at 2.54 2.54 0) (effects (font (size 1.27 1.27))))
+  (property "Value" "D_Photo" (at 2.54 -2.54 0) (effects (font (size 1.27 1.27))))
+  (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+  (property "Datasheet" "~" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+  (symbol "D_Photo_0_1"
+    (polyline (pts (xy -1.27 0) (xy 0 0)) (stroke (width 0.254) (type default)) (fill (type none)))
+    (polyline (pts (xy 0 1.27) (xy 2.54 0) (xy 0 -1.27) (xy 0 1.27)) (stroke (width 0.254) (type default)) (fill (type none)))
+    (polyline (pts (xy 2.54 1.27) (xy 2.54 -1.27)) (stroke (width 0.254) (type default)) (fill (type none)))
+  )
+  (symbol "D_Photo_1_1"
+    (pin passive line (at -5.08 0 0) (length 3.81) (name "A" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 7.62 0 180) (length 3.81) (name "K" (effects (font (size 1.27 1.27)))) (number "2" (effects (font (size 1.27 1.27)))))
+  )
+)"#,
+    ),
+    (
+        "Sonde_MCU:CH32V203K8T6",
+        r#"(symbol "Sonde_MCU:CH32V203K8T6"
+  (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
+  (property "Reference" "U" (at 0 22.86 0) (effects (font (size 1.27 1.27))))
+  (property "Value" "CH32V203K8T6" (at 0 -22.86 0) (effects (font (size 1.27 1.27))))
+  (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+  (property "Datasheet" "~" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))
+  (symbol "CH32V203K8T6_0_1"
+    (rectangle (start -7.62 20.32) (end 7.62 -20.32) (stroke (width 0.254) (type default)) (fill (type none)))
+  )
+  (symbol "CH32V203K8T6_1_1"
+    (pin passive line (at -12.7 19.05 0) (length 5.08) (name "VDD" (effects (font (size 1.27 1.27)))) (number "1" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 16.51 0) (length 5.08) (name "OSC_IN/PD0" (effects (font (size 1.27 1.27)))) (number "2" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 13.97 0) (length 5.08) (name "OSC_OUT/PD1" (effects (font (size 1.27 1.27)))) (number "3" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 11.43 0) (length 5.08) (name "NRST" (effects (font (size 1.27 1.27)))) (number "4" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 8.89 0) (length 5.08) (name "VDDA" (effects (font (size 1.27 1.27)))) (number "5" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 6.35 0) (length 5.08) (name "PA0/ADC_IN0" (effects (font (size 1.27 1.27)))) (number "6" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 3.81 0) (length 5.08) (name "PA1/ADC_IN1" (effects (font (size 1.27 1.27)))) (number "7" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 1.27 0) (length 5.08) (name "PA2/ADC_IN2" (effects (font (size 1.27 1.27)))) (number "8" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 -1.27 0) (length 5.08) (name "PA3/ADC_IN3" (effects (font (size 1.27 1.27)))) (number "9" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 -3.81 0) (length 5.08) (name "PA4/ADC_IN4" (effects (font (size 1.27 1.27)))) (number "10" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 -6.35 0) (length 5.08) (name "PA5/ADC_IN5" (effects (font (size 1.27 1.27)))) (number "11" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 -8.89 0) (length 5.08) (name "PA6/ADC_IN6" (effects (font (size 1.27 1.27)))) (number "12" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 -11.43 0) (length 5.08) (name "PA7/ADC_IN7" (effects (font (size 1.27 1.27)))) (number "13" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 -13.97 0) (length 5.08) (name "PB0/ADC_IN8" (effects (font (size 1.27 1.27)))) (number "14" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 -16.51 0) (length 5.08) (name "PB1/ADC_IN9" (effects (font (size 1.27 1.27)))) (number "15" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at -12.7 -19.05 0) (length 5.08) (name "VSS" (effects (font (size 1.27 1.27)))) (number "16" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 -19.05 180) (length 5.08) (name "VDD" (effects (font (size 1.27 1.27)))) (number "17" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 -16.51 180) (length 5.08) (name "PA8" (effects (font (size 1.27 1.27)))) (number "18" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 -13.97 180) (length 5.08) (name "PA9" (effects (font (size 1.27 1.27)))) (number "19" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 -11.43 180) (length 5.08) (name "PA10" (effects (font (size 1.27 1.27)))) (number "20" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 -8.89 180) (length 5.08) (name "PA11/USBDM" (effects (font (size 1.27 1.27)))) (number "21" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 -6.35 180) (length 5.08) (name "PA12/USBDP" (effects (font (size 1.27 1.27)))) (number "22" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 -3.81 180) (length 5.08) (name "PA13/SWDIO" (effects (font (size 1.27 1.27)))) (number "23" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 -1.27 180) (length 5.08) (name "PA14/SWCLK" (effects (font (size 1.27 1.27)))) (number "24" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 1.27 180) (length 5.08) (name "PA15" (effects (font (size 1.27 1.27)))) (number "25" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 3.81 180) (length 5.08) (name "PB3" (effects (font (size 1.27 1.27)))) (number "26" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 6.35 180) (length 5.08) (name "PB4" (effects (font (size 1.27 1.27)))) (number "27" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 8.89 180) (length 5.08) (name "PB5" (effects (font (size 1.27 1.27)))) (number "28" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 11.43 180) (length 5.08) (name "PB6/I2C1_SCL/USART1_TX_1" (effects (font (size 1.27 1.27)))) (number "29" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 13.97 180) (length 5.08) (name "PB7/I2C1_SDA/USART1_RX_1" (effects (font (size 1.27 1.27)))) (number "30" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 16.51 180) (length 5.08) (name "BOOT0" (effects (font (size 1.27 1.27)))) (number "31" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 12.7 19.05 180) (length 5.08) (name "PB8" (effects (font (size 1.27 1.27)))) (number "32" (effects (font (size 1.27 1.27)))))
+  )
+)"#,
+    ),
+    (
         "Connector_Generic:Conn_01x07",
         r#"(symbol "Connector_Generic:Conn_01x07"
   (pin_names (offset 1.016) hide) (in_bom yes) (on_board yes)
@@ -399,3 +497,17 @@ const VENDORED_SYMBOLS: &[(&str, &str)] = &[
 )"##,
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::SymbolRegistry;
+
+    #[test]
+    fn vendored_registry_contains_custom_ir_fiber_head_symbols() {
+        let registry = SymbolRegistry::new();
+        assert!(registry.get("Connector_Generic:Conn_01x01").is_some());
+        assert!(registry.get("Device:LED").is_some());
+        assert!(registry.get("Device:D_Photo").is_some());
+        assert!(registry.get("Sonde_MCU:CH32V203K8T6").is_some());
+    }
+}

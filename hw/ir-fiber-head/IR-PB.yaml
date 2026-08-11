@@ -1,0 +1,183 @@
+schema_version: "1.0.0"
+project: sonde-ir-fiber-head
+input_irs: ["IR-0.yaml", "IR-1.yaml"]
+generated: "2026-07-03"
+
+power_source:
+  type: "host-supplied regulated 3.3 V rail"
+  source_label: KNOWN
+  source_citation: "REQ-HW-0200 in IR-0"
+  voltage:
+    nominal_V: 3.3
+    min_V: 3.3
+    max_V: 3.3
+  current_capacity_mA: 100
+  current_capacity_label: KNOWN
+  current_capacity_citation: "REQ-HW-0303 in IR-0"
+
+power_tree:
+  - node: "HOST_3V3"
+    description: "Incoming 3.3 V host rail"
+    type: "source"
+    voltage_V: {min: 3.3, nominal: 3.3, max: 3.3}
+    children: ["MCU_3V3", "TX_3V3", "RX_BIAS"]
+
+  - node: "MCU_3V3"
+    description: "CH32V203 VDD/VDDA supply domain"
+    type: "rail"
+    parent: "HOST_3V3"
+    voltage_V: {min: 3.3, nominal: 3.3, max: 3.3}
+    children: ["U1"]
+
+  - node: "TX_3V3"
+    description: "LED anode supply through per-channel resistors"
+    type: "rail"
+    parent: "HOST_3V3"
+    voltage_V: {min: 3.3, nominal: 3.3, max: 3.3}
+    children: ["D_TX0-7", "R_TX0-7"]
+
+  - node: "RX_BIAS"
+    description: "Photodiode bias/load network"
+    type: "rail"
+    parent: "HOST_3V3"
+    voltage_V: {min: 3.3, nominal: 3.3, max: 3.3}
+    children: ["D_RX0-7", "R_RX0-7"]
+
+consumers:
+  - ref_des: "U1"
+    rail: "MCU_3V3"
+    description: "CH32V203K8T6 active execution"
+    modes:
+      - mode: "active-core"
+        current_typical_mA: 6.48
+        current_max_mA: 8.0
+        source_label: INFERRED
+        source_citation: >
+          OpenWCH CH32V203 family overview states 45 µA/MHz run-mode
+          consumption. 45 µA/MHz × 144 MHz = 6.48 mA typical. 8.0 mA used
+          as conservative design max for active GPIO and peripheral overhead.
+      - mode: "idle-waiting"
+        current_typical_mA: 2.0
+        current_max_mA: 3.0
+        source_label: ASSUMED
+        source_citation: "Conservative reduced-activity estimate for firmware idle periods."
+
+  - ref_des: "D_TX0-7"
+    rail: "TX_3V3"
+    description: "8x TSAL4400 940 nm emitters"
+    modes:
+      - mode: "all-off"
+        current_typical_mA: 0.0
+        current_max_mA: 0.0
+        source_label: KNOWN
+        source_citation: "LEDs off."
+      - mode: "all-on"
+        current_typical_mA: 57.8
+        current_max_mA: 62.0
+        source_label: INFERRED
+        source_citation: >
+          From IR-1: R_TX = 270 ohms, TSAL4400 Vf typ = 1.35 V.
+          I_typ per channel = (3.3 - 1.35) / 270 = 7.22 mA; ×8 = 57.8 mA.
+          62.0 mA max is a conservative allowance for resistor tolerance and
+          LED Vf variation.
+
+  - ref_des: "R_RX0-7 + D_RX0-7"
+    rail: "RX_BIAS"
+    description: "8x passive photodiode sense networks"
+    modes:
+      - mode: "dark-or-low-light"
+        current_typical_mA: 0.0
+        current_max_mA: 0.1
+        source_label: INFERRED
+        source_citation: >
+          High-impedance ADC input with photodiode current in the µA range;
+          modeled as negligible versus LED and MCU current.
+
+  - ref_des: "R_BOOT + R_NRST"
+    rail: "MCU_3V3"
+    description: "BOOT0 pull-down and NRST pull-up"
+    modes:
+      - mode: "normal-operation"
+        current_typical_mA: 0.0
+        current_max_mA: 0.33
+        source_label: INFERRED
+        source_citation: >
+          In normal state both resistors are at their inactive bias and draw
+          approximately zero. 0.33 mA max covers the reset line being held low
+          externally through 10 kohms at 3.3 V.
+
+  - ref_des: "C_VDD1/C_VDD2/C_VDDA/C_BULK"
+    rail: "HOST_3V3"
+    description: "Decoupling and bulk capacitors"
+    modes:
+      - mode: "steady-state"
+        current_typical_mA: 0.0
+        current_max_mA: 0.0
+        source_label: KNOWN
+        source_citation: "Ideal capacitors draw no steady-state DC current."
+
+operating_modes:
+  - mode: "receive-only idle"
+    description: "MCU awake, LEDs off, photodiode networks observed"
+    breakdown:
+      mcu_mA: 2.0
+      emitters_mA: 0.0
+      rx_bias_mA: 0.1
+      support_mA: 0.0
+    total_mA: 2.1
+    source_label: INFERRED
+
+  - mode: "single-channel transmit"
+    description: "MCU active, one IR LED on, receive path active"
+    breakdown:
+      mcu_mA: 6.48
+      emitters_mA: 7.22
+      rx_bias_mA: 0.1
+      support_mA: 0.0
+    total_mA: 13.8
+    source_label: INFERRED
+
+  - mode: "worst-case all emitters on"
+    description: "MCU active with all 8 LEDs enabled simultaneously"
+    breakdown:
+      mcu_mA: 8.0
+      emitters_mA: 62.0
+      rx_bias_mA: 0.1
+      support_mA: 0.33
+    total_mA: 70.43
+    source_label: INFERRED
+
+margin_analysis:
+  source_capacity_mA: 100.0
+  worst_case_draw_mA: 70.43
+  headroom_mA: 29.57
+  headroom_pct: 29.57
+  minimum_required_headroom_pct: 20.0
+  source_margin_status: "PASS"
+  gpio_drive_note: >
+    Electrical source-capacity margin passes, but the Pass 2 circuit design
+    must still verify per-pin and aggregate GPIO sink current against the final
+    selected CH32V203 package limits.
+  thermal_dissipation:
+    - node: "R_TX0-7"
+      total_power_mW_typ: 112.7
+      per_resistor_mW_typ: 14.1
+      source_label: INFERRED
+      source_citation: "P = I^2 * R using 7.22 mA typical per LED channel."
+    - node: "U1"
+      total_power_mW_max: 26.4
+      source_label: INFERRED
+      source_citation: "3.3 V × 8.0 mA conservative active current."
+
+epistemic_summary:
+  known_items:
+    - "Host rail is 3.3 V with 100 mA source budget."
+    - "TSAL4400 typical forward voltage is 1.35 V and max current rating is 100 mA."
+    - "CH32V203 family run-mode figure is 45 µA/MHz."
+  inferred_items:
+    - "MCU active current max modeled as 8.0 mA."
+    - "LED all-on worst-case current modeled as 62.0 mA."
+    - "Photodiode bias current is negligible at the system power-budget level."
+  assumed_items:
+    - "Idle MCU current modeled as 2.0 mA for receive-only waiting."
+  assumed_ratio_pct: 12.5

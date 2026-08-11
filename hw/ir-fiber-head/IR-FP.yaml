@@ -1,0 +1,81 @@
+schema_version: "1.0.0"
+project: sonde-ir-fiber-head
+backend: kicad8
+generated: "2026-07-04"
+
+footprints:
+  - footprint_id: "Sonde_Connector:WirePad_1x04_P2.54mm_D1.0mm"
+    applies_to_refs: [J1]
+    package_type: "through-hole wire pad array"
+    pin_count: 4
+    pin_pitch_mm: 2.54
+    body_dimensions_mm: {width: 9.62, height: 2.0}
+    courtyard_bounds: {min_x: -1.5, min_y: -1.5, max_x: 9.12, max_y: 1.5}
+    pin_map:
+      - {pin: 1, name: "3V3"}
+      - {pin: 2, name: "GND"}
+      - {pin: 3, name: "SCL"}
+      - {pin: 4, name: "SDA"}
+    pad_layout:
+      pads:
+        - {pin: 1, shape: circle, x_mm: 0.0, y_mm: 0.0, copper_diameter_mm: 2.0, drill_mm: 1.0}
+        - {pin: 2, shape: circle, x_mm: 2.54, y_mm: 0.0, copper_diameter_mm: 2.0, drill_mm: 1.0}
+        - {pin: 3, shape: circle, x_mm: 5.08, y_mm: 0.0, copper_diameter_mm: 2.0, drill_mm: 1.0}
+        - {pin: 4, shape: circle, x_mm: 7.62, y_mm: 0.0, copper_diameter_mm: 2.0, drill_mm: 1.0}
+    notes: >
+      Bare through-hole wire pads sized for hand-soldered 3.3 V, GND, SCL, and
+      SDA leads. No fitted connector body is present.
+
+  - footprint_id: "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    applies_to_refs: [D_TX0, D_TX1, D_TX2, D_TX3, D_TX4, D_TX5, D_TX6, D_TX7]
+    package_type: "3 mm radial LED with centered fiber hole"
+    pin_count: 2
+    pin_pitch_mm: 2.54
+    body_dimensions_mm: {width: 3.0, height: 3.0}
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+    pin_map:
+      - {pin: 1, name: "Anode"}
+      - {pin: 2, name: "Cathode"}
+    mechanical_features:
+      - {
+          type: "fiber_hole",
+          center_x_mm: 1.27,
+          center_y_mm: 0.0,
+          finished_diameter_mm: 0.96,
+          target_interference_fit_mm: 0.05,
+          notes: "Nominally for 1.00 mm PMMA fiber; exact finished size to be validated with fab tolerance."
+        }
+    pad_layout:
+      pads:
+        - {pin: 1, shape: oval, x_mm: 0.0, y_mm: 0.0, copper_diameter_mm: 1.8, drill_mm: 0.9}
+        - {pin: 2, shape: oval, x_mm: 2.54, y_mm: 0.0, copper_diameter_mm: 1.8, drill_mm: 0.9}
+    assembly_orientation:
+      description: "Component installed upside down on the board face so the optical axis points into the fiber hole."
+      optical_axis_center_mm: {x: 1.27, y: 0.0}
+
+  - footprint_id: "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    applies_to_refs: [D_RX0, D_RX1, D_RX2, D_RX3, D_RX4, D_RX5, D_RX6, D_RX7]
+    package_type: "3 mm radial photodiode with centered fiber hole"
+    pin_count: 2
+    pin_pitch_mm: 2.54
+    body_dimensions_mm: {width: 3.0, height: 3.0}
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+    pin_map:
+      - {pin: 1, name: "Anode"}
+      - {pin: 2, name: "Cathode"}
+    mechanical_features:
+      - {
+          type: "fiber_hole",
+          center_x_mm: 1.27,
+          center_y_mm: 0.0,
+          finished_diameter_mm: 0.96,
+          target_interference_fit_mm: 0.05,
+          notes: "Nominally for 1.00 mm PMMA fiber; exact finished size to be validated with fab tolerance."
+        }
+    pad_layout:
+      pads:
+        - {pin: 1, shape: oval, x_mm: 0.0, y_mm: 0.0, copper_diameter_mm: 1.8, drill_mm: 0.9}
+        - {pin: 2, shape: oval, x_mm: 2.54, y_mm: 0.0, copper_diameter_mm: 1.8, drill_mm: 0.9}
+    assembly_orientation:
+      description: "Component installed upside down on the board face so the optical axis points into the fiber hole."
+      optical_axis_center_mm: {x: 1.27, y: 0.0}

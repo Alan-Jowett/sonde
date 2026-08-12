@@ -52,7 +52,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Cache Rust build artefacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: ". -> target"
           key: android-aarch64-debug-${{ hashFiles('crates/sonde-pair-ui/src-tauri/Cargo.toml', '.github/docker/Dockerfile.android-dev') }}
@@ -138,7 +138,7 @@ jobs:
 
       - name: Cache Rust build artefacts
         if: steps.signing.outputs.available == 'true'
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: ". -> target"
           key: android-aarch64-release-${{ hashFiles('crates/sonde-pair-ui/src-tauri/Cargo.toml', '.github/docker/Dockerfile.android-dev') }}
@@ -226,7 +226,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Cache Rust build artefacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: ". -> target"
           key: android-aarch64-kiosk-debug-${{ hashFiles('crates/sonde-kiosk-ui/src-tauri/Cargo.toml', '.github/docker/Dockerfile.android-dev') }}
@@ -307,7 +307,7 @@ jobs:
 
       - name: Cache Rust build artefacts
         if: steps.kiosk-signing.outputs.available == 'true'
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: ". -> target"
           key: android-aarch64-kiosk-release-${{ hashFiles('crates/sonde-kiosk-ui/src-tauri/Cargo.toml', '.github/docker/Dockerfile.android-dev') }}

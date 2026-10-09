@@ -1225,8 +1225,8 @@ fn load_certificate_subject_public_key_info(
         ))
     })?;
     certificate
-        .tbs_certificate
-        .subject_public_key_info
+        .tbs_certificate()
+        .subject_public_key_info()
         .to_der()
         .map_err(|err| {
             CompanionError::Config(format!(
@@ -3594,8 +3594,8 @@ mod tests {
 
         let certificate = Certificate::from_der(cert_der.as_ref()).unwrap();
         assert_ne!(
-            certificate.tbs_certificate.validity.not_before,
-            certificate.tbs_certificate.validity.not_after
+            certificate.tbs_certificate().validity().not_before,
+            certificate.tbs_certificate().validity().not_after
         );
         let (algorithm, _) = load_signing_key(&key_path).unwrap();
         assert_eq!(algorithm, Algorithm::ES256);

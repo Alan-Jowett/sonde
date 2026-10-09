@@ -1128,8 +1128,8 @@ fn certificate_public_key_der(certificate_pem: &str) -> Result<Vec<u8>, String> 
     let certificate = Certificate::from_der(certificate.as_ref())
         .map_err(|error| format!("failed to parse X.509 certificate: {error}"))?;
     certificate
-        .tbs_certificate
-        .subject_public_key_info
+        .tbs_certificate()
+        .subject_public_key_info()
         .to_der()
         .map_err(|error| format!("failed to encode certificate public key: {error}"))
 }

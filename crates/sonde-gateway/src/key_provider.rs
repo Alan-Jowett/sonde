@@ -211,7 +211,7 @@ fn try_create_hex_key_file(path: &std::path::Path, hex: &str) -> std::io::Result
             .write(true)
             .create_new(true) // fail immediately if the file already exists
             .open(path)?;
-        f.write_all(hex.as_bytes()).map_err(&cleanup)?;
+        f.write_all(hex.as_bytes()).map_err(cleanup)?;
         f.sync_all().map_err(cleanup)?;
     }
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+#![allow(clippy::double_must_use)]
+
 pub mod admin;
 pub mod aead;
 pub mod ble_pairing;

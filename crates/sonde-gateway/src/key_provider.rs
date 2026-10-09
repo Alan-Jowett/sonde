@@ -197,11 +197,11 @@ fn try_create_hex_key_file(path: &std::path::Path, hex: &str) -> std::io::Result
             .create_new(true) // fail immediately if the file already exists
             .mode(0o600)
             .open(path)?;
-        f.write_all(hex.as_bytes()).map_err(&cleanup)?;
+        f.write_all(hex.as_bytes()).map_err(cleanup)?;
         // Explicitly set permissions via fchmod(fd) after writing to override
         // any umask that may have restricted the initial mode below 0o600.
         f.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(&cleanup)?;
+            .map_err(cleanup)?;
         f.sync_all().map_err(cleanup)?;
     }
 

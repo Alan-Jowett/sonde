@@ -635,6 +635,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6698,7 +6704,7 @@ name = "sonde-azure-companion"
 version = "0.8.0"
 dependencies = [
  "azure_core 1.1.0",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bollard",
  "clap",
  "ed25519-dalek 3.0.0",
@@ -6745,7 +6751,7 @@ dependencies = [
  "azure_data_tables",
  "azure_identity 0.21.0",
  "azure_identity 1.0.0",
- "base64 0.22.1",
+ "base64 0.23.1",
  "ciborium",
  "futures",
  "getrandom 0.4.3",
@@ -6850,7 +6856,7 @@ name = "sonde-kiosk-ui"
 version = "0.8.0"
 dependencies = [
  "android-native-keyring-store",
- "base64 0.22.1",
+ "base64 0.23.1",
  "jsonwebtoken",
  "keyring-core",
  "p256",

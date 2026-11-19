@@ -258,9 +258,9 @@ impl SpillTracker {
             return None;
         }
         let offset_u16 = offset as u16;
-        for i in 0..self.count as usize {
-            if self.entries[i].stack_offset == offset_u16 {
-                return Some(self.entries[i].region);
+        for entry in self.entries.iter().take(self.count as usize) {
+            if entry.stack_offset == offset_u16 {
+                return Some(entry.region);
             }
         }
         None

@@ -3026,8 +3026,8 @@ mod tests {
             }
 
             // Verify the 3 APP_DATA frames.
-            for idx in 1..=3 {
-                let decoded = decode_frame(&transport.outbound[idx]).unwrap();
+            for (idx, frame) in transport.outbound.iter().enumerate().skip(1) {
+                let decoded = decode_frame(frame).unwrap();
                 assert_eq!(
                     decoded.header.msg_type, MSG_APP_DATA,
                     "frame {} must be APP_DATA",

@@ -1,0 +1,248 @@
+(pcb "sonde-ir-fiber-head.dsn"
+  (parser
+    (string_quote ")
+    (space_in_quoted_tokens on)
+    (host_cad "sonde-kicad")
+    (host_version "0.8.0")
+  )
+  (resolution um 10)
+  (unit um)
+  (structure
+    (layer F.Cu (type signal) (property (index 0)))
+    (layer B.Cu (type signal) (property (index 1)))
+    (boundary
+      (path signal 0 1260000 -1150000 1710000 -1150000 1710000 -950000 1260000 -950000 1260000 -1150000)
+    )
+    (via "Via[0-1]_600:300_um")
+    (rule (width 2500) (clearance 200))
+  )
+  (placement
+    (component "Capacitor_SMD:C_0603_1608Metric"
+      (place C_VDD1 1330000 -1096000 front 0)
+      (place C_VDD2 1600000 -1078000 front 0)
+      (place C_VDDA 1370000 -1096000 front 0)
+      (place C_BULK 1600000 -1096000 front 0)
+    )
+    (component "Package_QFP:LQFP-32_7x7mm_P0.8mm"
+      (place U1 1485000 -1050000 front 0)
+    )
+    (component "Resistor_SMD:R_0603_1608Metric"
+      (place R_TX0 1330000 -1006000 front 0)
+      (place R_TX1 1330000 -1024000 front 0)
+      (place R_TX2 1330000 -1042000 front 0)
+      (place R_TX3 1330000 -1060000 front 0)
+      (place R_TX4 1600000 -1006000 front 0)
+      (place R_TX5 1600000 -1024000 front 0)
+      (place R_TX6 1600000 -1042000 front 0)
+      (place R_TX7 1600000 -1060000 front 0)
+      (place R_RX0 1370000 -1006000 front 0)
+      (place R_RX1 1370000 -1024000 front 0)
+      (place R_RX2 1370000 -1042000 front 0)
+      (place R_RX3 1370000 -1060000 front 0)
+      (place R_RX4 1640000 -1006000 front 0)
+      (place R_RX5 1640000 -1024000 front 0)
+      (place R_RX6 1640000 -1042000 front 0)
+      (place R_RX7 1640000 -1060000 front 0)
+      (place R_BOOT 1330000 -1078000 front 0)
+      (place R_NRST 1370000 -1078000 front 0)
+    )
+    (component "Sonde_Connector:WirePad_1x04_P2.54mm_D1.0mm"
+      (place J1 1695000 -1088100 front 270)
+    )
+    (component "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+      (place D_TX0 1294200 -972500 front 0)
+      (place D_TX1 1345000 -972500 front 0)
+      (place D_TX2 1395800 -972500 front 0)
+      (place D_TX3 1446600 -972500 front 0)
+      (place D_TX4 1497400 -972500 front 0)
+      (place D_TX5 1548200 -972500 front 0)
+      (place D_TX6 1599000 -972500 front 0)
+      (place D_TX7 1649800 -972500 front 0)
+    )
+    (component "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+      (place D_RX0 1294200 -1127500 front 0)
+      (place D_RX1 1345000 -1127500 front 0)
+      (place D_RX2 1395800 -1127500 front 0)
+      (place D_RX3 1446600 -1127500 front 0)
+      (place D_RX4 1497400 -1127500 front 0)
+      (place D_RX5 1548200 -1127500 front 0)
+      (place D_RX6 1599000 -1127500 front 0)
+      (place D_RX7 1649800 -1127500 front 0)
+    )
+    (component "TestPoint:TestPoint_THTPad_D1.5mm_Drill0.7mm"
+      (place TP1 1277500 -1037500 front 0)
+      (place TP2 1277500 -1062500 front 0)
+    )
+  )
+  (library
+    (image "Package_QFP:LQFP-32_7x7mm_P0.8mm"
+      (pin Rect[T]Pad_600x600_um 1 0 0)
+      (pin Rect[T]Pad_600x600_um 2 0 1270)
+      (pin Rect[T]Pad_600x600_um 3 0 2540)
+      (pin Rect[T]Pad_600x600_um 4 0 3810)
+      (pin Rect[T]Pad_600x600_um 5 0 5080)
+      (pin Rect[T]Pad_600x600_um 6 0 6350)
+      (pin Rect[T]Pad_600x600_um 7 0 7620)
+      (pin Rect[T]Pad_600x600_um 8 0 8890)
+      (pin Rect[T]Pad_600x600_um 9 0 10160)
+      (pin Rect[T]Pad_600x600_um 10 0 11430)
+      (pin Rect[T]Pad_600x600_um 11 0 12700)
+      (pin Rect[T]Pad_600x600_um 12 0 13970)
+      (pin Rect[T]Pad_600x600_um 13 0 15240)
+      (pin Rect[T]Pad_600x600_um 14 0 16510)
+      (pin Rect[T]Pad_600x600_um 15 0 17780)
+      (pin Rect[T]Pad_600x600_um 16 0 19050)
+      (pin Rect[T]Pad_600x600_um 17 0 20320)
+      (pin Rect[T]Pad_600x600_um 18 0 21590)
+      (pin Rect[T]Pad_600x600_um 19 0 22860)
+      (pin Rect[T]Pad_600x600_um 20 0 24130)
+      (pin Rect[T]Pad_600x600_um 21 0 25400)
+      (pin Rect[T]Pad_600x600_um 22 0 26670)
+      (pin Rect[T]Pad_600x600_um 23 0 27940)
+      (pin Rect[T]Pad_600x600_um 24 0 29210)
+      (pin Rect[T]Pad_600x600_um 25 0 30480)
+      (pin Rect[T]Pad_600x600_um 26 0 31750)
+      (pin Rect[T]Pad_600x600_um 27 0 33020)
+      (pin Rect[T]Pad_600x600_um 28 0 34290)
+      (pin Rect[T]Pad_600x600_um 29 0 35560)
+      (pin Rect[T]Pad_600x600_um 30 0 36830)
+      (pin Rect[T]Pad_600x600_um 31 0 38100)
+      (pin Rect[T]Pad_600x600_um 32 0 39370)
+    )
+    (image "Sonde_Connector:WirePad_1x04_P2.54mm_D1.0mm"
+      (pin Rect[T]Pad_600x600_um 1 0 0)
+      (pin Rect[T]Pad_600x600_um 2 0 1270)
+      (pin Rect[T]Pad_600x600_um 3 0 2540)
+      (pin Rect[T]Pad_600x600_um 4 0 3810)
+    )
+    (image "TestPoint:TestPoint_THTPad_D1.5mm_Drill0.7mm"
+      (pin Rect[T]Pad_600x600_um 1 0 0)
+    )
+    (image "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+      (pin Rect[T]Pad_600x600_um 1 0 0)
+      (pin Rect[T]Pad_600x600_um 2 0 1270)
+    )
+    (image "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+      (pin Rect[T]Pad_600x600_um 1 0 0)
+      (pin Rect[T]Pad_600x600_um 2 0 1270)
+    )
+    (image "Resistor_SMD:R_0603_1608Metric"
+      (pin Rect[T]Pad_600x600_um 1 0 0)
+      (pin Rect[T]Pad_600x600_um 2 0 1270)
+    )
+    (image "Capacitor_SMD:C_0603_1608Metric"
+      (pin Rect[T]Pad_600x600_um 1 0 0)
+      (pin Rect[T]Pad_600x600_um 2 0 1270)
+    )
+    (padstack Via[0-1]_600:300_um
+      (shape (circle F.Cu 600 0 0))
+      (shape (circle B.Cu 600 0 0))
+      (attach off)
+    )
+    (padstack Rect[T]Pad_600x600_um
+      (shape (rect F.Cu -300 -300 300 300))
+      (attach off)
+    )
+  )
+  (network
+    (net 3V3
+      (pins U1-1 U1-5 U1-17 J1-1 R_NRST-2 C_VDD1-1 C_VDD2-1 C_VDDA-1 C_BULK-1 R_TX0-1 R_TX1-1 R_TX2-1 R_TX3-1 R_TX4-1 R_TX5-1 R_TX6-1 R_TX7-1 R_RX0-1 R_RX1-1 R_RX2-1 R_RX3-1 R_RX4-1 R_RX5-1 R_RX6-1 R_RX7-1)
+    )
+    (net BOOT0
+      (pins U1-31 TP2-1 R_BOOT-1)
+    )
+    (net GND
+      (pins U1-16 J1-2 R_BOOT-2 C_VDD1-2 C_VDD2-2 C_VDDA-2 C_BULK-2 D_RX0-1 D_RX1-1 D_RX2-1 D_RX3-1 D_RX4-1 D_RX5-1 D_RX6-1 D_RX7-1)
+    )
+    (net LED0_A
+      (pins R_TX0-2 D_TX0-1)
+    )
+    (net LED1_A
+      (pins R_TX1-2 D_TX1-1)
+    )
+    (net LED2_A
+      (pins R_TX2-2 D_TX2-1)
+    )
+    (net LED3_A
+      (pins R_TX3-2 D_TX3-1)
+    )
+    (net LED4_A
+      (pins R_TX4-2 D_TX4-1)
+    )
+    (net LED5_A
+      (pins R_TX5-2 D_TX5-1)
+    )
+    (net LED6_A
+      (pins R_TX6-2 D_TX6-1)
+    )
+    (net LED7_A
+      (pins R_TX7-2 D_TX7-1)
+    )
+    (net NRST
+      (pins U1-4 TP1-1 R_NRST-1)
+    )
+    (net RX0
+      (pins U1-6 R_RX0-2 D_RX0-2)
+    )
+    (net RX1
+      (pins U1-7 R_RX1-2 D_RX1-2)
+    )
+    (net RX2
+      (pins U1-8 R_RX2-2 D_RX2-2)
+    )
+    (net RX3
+      (pins U1-9 R_RX3-2 D_RX3-2)
+    )
+    (net RX4
+      (pins U1-10 R_RX4-2 D_RX4-2)
+    )
+    (net RX5
+      (pins U1-11 R_RX5-2 D_RX5-2)
+    )
+    (net RX6
+      (pins U1-12 R_RX6-2 D_RX6-2)
+    )
+    (net RX7
+      (pins U1-13 R_RX7-2 D_RX7-2)
+    )
+    (net SCL
+      (pins U1-29 J1-3)
+    )
+    (net SDA
+      (pins U1-30 J1-4)
+    )
+    (net TX0
+      (pins U1-18 D_TX0-2)
+    )
+    (net TX1
+      (pins U1-19 D_TX1-2)
+    )
+    (net TX2
+      (pins U1-20 D_TX2-2)
+    )
+    (net TX3
+      (pins U1-21 D_TX3-2)
+    )
+    (net TX4
+      (pins U1-22 D_TX4-2)
+    )
+    (net TX5
+      (pins U1-25 D_TX5-2)
+    )
+    (net TX6
+      (pins U1-26 D_TX6-2)
+    )
+    (net TX7
+      (pins U1-27 D_TX7-2)
+    )
+    (class Power 3V3 GND
+      (circuit (use_via "Via[0-1]_600:300_um"))
+      (rule (width 5000) (clearance 200))
+    )
+    (class Default
+      (circuit (use_via "Via[0-1]_600:300_um"))
+      (rule (width 250) (clearance 200))
+    )
+  )
+  (wiring)
+)

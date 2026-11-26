@@ -1,0 +1,415 @@
+schema_version: "1.0.0"
+project: sonde-ir-fiber-head
+backend: kicad8
+input_ir: "IR-1.yaml"
+generated: "2026-07-04"
+
+summary:
+  total_components: 41
+  total_courtyard_area_mm2: 525.16
+  geometry_source: >
+    [INFERRED] This environment does not have an installed KiCad footprint
+    library, so the backend binding uses standard KiCad footprint names plus
+    custom Sonde footprint names, with bounding boxes and courtyards estimated
+    from the intended KiCad footprint geometry.
+
+components:
+  - ref_des: U1
+    ir1_generic_footprint: "LQFP-32 7x7mm P0.8"
+    kicad_symbol: "Sonde_MCU:CH32V203K8T6"
+    kicad_footprint: "Package_QFP:LQFP-32_7x7mm_P0.8mm"
+    library_status: CUSTOM_SYMBOL_REQUIRED
+    bbox_mm: {width: 9.0, height: 9.0}
+    courtyard_mm: {width: 10.2, height: 10.2}
+    courtyard_area_mm2: 104.04
+    courtyard_bounds: {min_x: -5.1, min_y: -5.1, max_x: 5.1, max_y: 5.1}
+    notes: >
+      Standard KiCad LQFP-32 footprint is suitable. The symbol is treated as a
+      Sonde-local custom symbol because no installed KiCad MCU library was
+      available to verify a CH32V203 symbol in this environment.
+
+  - ref_des: J1
+    ir1_generic_footprint: "4x plated wire pads, 2.54 mm pitch"
+    kicad_symbol: "Connector_Generic:Conn_01x04"
+    kicad_footprint: "Sonde_Connector:WirePad_1x04_P2.54mm_D1.0mm"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 9.62, height: 2.0}
+    courtyard_mm: {width: 10.62, height: 3.0}
+    courtyard_area_mm2: 31.86
+    courtyard_bounds: {min_x: -1.5, min_y: -1.5, max_x: 9.12, max_y: 1.5}
+    notes: >
+      Custom through-hole wire-pad footprint required to match the user-requested
+      bare solder-pad host interface.
+
+  - ref_des: TP1
+    ir1_generic_footprint: "plated or SMT test pad"
+    kicad_symbol: "Connector_Generic:Conn_01x01"
+    kicad_footprint: "TestPoint:TestPoint_THTPad_D1.5mm_Drill0.7mm"
+    library_status: FOUND
+    bbox_mm: {width: 1.5, height: 1.5}
+    courtyard_mm: {width: 2.5, height: 2.5}
+    courtyard_area_mm2: 6.25
+    courtyard_bounds: {min_x: -1.25, min_y: -1.25, max_x: 1.25, max_y: 1.25}
+    notes: "Reset bring-up pad."
+
+  - ref_des: TP2
+    ir1_generic_footprint: "plated or SMT test pad"
+    kicad_symbol: "Connector_Generic:Conn_01x01"
+    kicad_footprint: "TestPoint:TestPoint_THTPad_D1.5mm_Drill0.7mm"
+    library_status: FOUND
+    bbox_mm: {width: 1.5, height: 1.5}
+    courtyard_mm: {width: 2.5, height: 2.5}
+    courtyard_area_mm2: 6.25
+    courtyard_bounds: {min_x: -1.25, min_y: -1.25, max_x: 1.25, max_y: 1.25}
+    notes: "BOOT0 bring-up pad."
+
+  - ref_des: D_TX0
+    ir1_generic_footprint: "LED radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:LED"
+    kicad_footprint: "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+    notes: "Custom upside-down emitter footprint with a centered 1.00 mm fiber hole."
+  - ref_des: D_TX1
+    ir1_generic_footprint: "LED radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:LED"
+    kicad_footprint: "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_TX2
+    ir1_generic_footprint: "LED radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:LED"
+    kicad_footprint: "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_TX3
+    ir1_generic_footprint: "LED radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:LED"
+    kicad_footprint: "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_TX4
+    ir1_generic_footprint: "LED radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:LED"
+    kicad_footprint: "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_TX5
+    ir1_generic_footprint: "LED radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:LED"
+    kicad_footprint: "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_TX6
+    ir1_generic_footprint: "LED radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:LED"
+    kicad_footprint: "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_TX7
+    ir1_generic_footprint: "LED radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:LED"
+    kicad_footprint: "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+
+  - ref_des: D_RX0
+    ir1_generic_footprint: "Photodiode radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:D_Photo"
+    kicad_footprint: "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+    notes: "Custom upside-down photodiode footprint with a centered 1.00 mm fiber hole."
+  - ref_des: D_RX1
+    ir1_generic_footprint: "Photodiode radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:D_Photo"
+    kicad_footprint: "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_RX2
+    ir1_generic_footprint: "Photodiode radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:D_Photo"
+    kicad_footprint: "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_RX3
+    ir1_generic_footprint: "Photodiode radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:D_Photo"
+    kicad_footprint: "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_RX4
+    ir1_generic_footprint: "Photodiode radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:D_Photo"
+    kicad_footprint: "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_RX5
+    ir1_generic_footprint: "Photodiode radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:D_Photo"
+    kicad_footprint: "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_RX6
+    ir1_generic_footprint: "Photodiode radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:D_Photo"
+    kicad_footprint: "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+  - ref_des: D_RX7
+    ir1_generic_footprint: "Photodiode radial 2.54 mm pitch D3.0 mm"
+    kicad_symbol: "Device:D_Photo"
+    kicad_footprint: "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    library_status: CUSTOM_FOOTPRINT_REQUIRED
+    bbox_mm: {width: 3.0, height: 3.0}
+    courtyard_mm: {width: 4.2, height: 4.5}
+    courtyard_area_mm2: 18.9
+    courtyard_bounds: {min_x: -0.8, min_y: -2.25, max_x: 3.4, max_y: 2.25}
+
+  - ref_des: R_TX0
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_TX1
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_TX2
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_TX3
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_TX4
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_TX5
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_TX6
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_TX7
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+
+  - ref_des: R_RX0
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_RX1
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_RX2
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_RX3
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_RX4
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_RX5
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_RX6
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: R_RX7
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+
+  - ref_des: R_BOOT
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+
+  - ref_des: R_NRST
+    ir1_generic_footprint: "0603 resistor"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+
+  - ref_des: C_VDD1
+    ir1_generic_footprint: "0603 capacitor"
+    kicad_symbol: "Device:C"
+    kicad_footprint: "Capacitor_SMD:C_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: C_VDD2
+    ir1_generic_footprint: "0603 capacitor"
+    kicad_symbol: "Device:C"
+    kicad_footprint: "Capacitor_SMD:C_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: C_VDDA
+    ir1_generic_footprint: "0603 capacitor"
+    kicad_symbol: "Device:C"
+    kicad_footprint: "Capacitor_SMD:C_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}
+  - ref_des: C_BULK
+    ir1_generic_footprint: "0603 capacitor"
+    kicad_symbol: "Device:C"
+    kicad_footprint: "Capacitor_SMD:C_0603_1608Metric"
+    library_status: FOUND
+    bbox_mm: {width: 1.6, height: 0.8}
+    courtyard_mm: {width: 2.6, height: 1.3}
+    courtyard_area_mm2: 3.38
+    courtyard_bounds: {min_x: -1.3, min_y: -0.65, max_x: 1.3, max_y: 0.65}

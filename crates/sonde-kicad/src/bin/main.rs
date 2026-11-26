@@ -138,11 +138,13 @@ fn cmd_pcb(ir_dir: &Path, output_dir: &Path) -> Result<(), sonde_kicad::Error> {
     let bundle = ir::load_ir(ir_dir)?;
     validate_cross_references(&bundle)?;
     let mut uuid_gen = make_uuid_gen(&bundle, ir_dir)?;
-    let content = sonde_kicad::pcb::emit_pcb(&bundle, &mut uuid_gen)?;
+    let pcb = sonde_kicad::pcb::emit_pcb(&bundle, &mut uuid_gen)?;
+    write_output(output_dir, &format!("{}.kicad_pcb", bundle.project), &pcb)?;
+    let project = sonde_kicad::project::emit_project(&bundle)?;
     write_output(
         output_dir,
-        &format!("{}.kicad_pcb", bundle.project),
-        &content,
+        &format!("{}.kicad_pro", bundle.project),
+        &project,
     )
 }
 

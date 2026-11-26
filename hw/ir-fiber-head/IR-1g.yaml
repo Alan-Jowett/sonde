@@ -1,0 +1,44 @@
+schema_version: "1.0.0"
+project: sonde-ir-fiber-head
+input_ir: "IR-1.yaml"
+generated: "2026-07-03"
+note: "Generic package-body estimates for front-end feasibility only; not exact footprint geometry."
+
+components:
+  - ref_des: [U1]
+    generic_footprint: "LQFP-32 7x7mm P0.8"
+    body_mm: {width: 7.0, height: 7.0}
+    source: "JEDEC nominal body size from package name"
+
+  - ref_des: [J1]
+    generic_footprint: "4x plated wire pads, 2.54 mm pitch"
+    body_mm: {width: 0.0, height: 0.0}
+    source: "PCB feature only"
+
+  - ref_des: [TP1, TP2]
+    generic_footprint: "2x plated or SMT test pads"
+    body_mm: {width: 0.0, height: 0.0}
+    source: "PCB feature only"
+
+  - ref_des: [D_TX0, D_TX1, D_TX2, D_TX3, D_TX4, D_TX5, D_TX6, D_TX7]
+    generic_footprint: "LED radial 2.54 mm pitch D3.0 mm"
+    body_mm: {width: 3.0, height: 3.0}
+    source: "Nominal 3 mm radial LED body diameter"
+
+  - ref_des: [D_RX0, D_RX1, D_RX2, D_RX3, D_RX4, D_RX5, D_RX6, D_RX7]
+    generic_footprint: "Photodiode radial 2.54 mm pitch D3.0 mm"
+    body_mm: {width: 3.0, height: 3.0}
+    source: "Nominal 3 mm radial photodiode body diameter"
+
+  - ref_des: [R_TX0, R_TX1, R_TX2, R_TX3, R_TX4, R_TX5, R_TX6, R_TX7, R_RX0, R_RX1, R_RX2, R_RX3, R_RX4, R_RX5, R_RX6, R_RX7, R_BOOT, R_NRST]
+    generic_footprint: "0603 resistor"
+    body_mm: {width: 1.6, height: 0.8}
+    source: "JEDEC 0603 body size"
+
+  - ref_des: [C_VDD1, C_VDD2, C_VDDA, C_BULK]
+    generic_footprint: "0603 capacitor"
+    body_mm: {width: 1.6, height: 0.8}
+    source: "JEDEC 0603 body size"
+
+summary:
+  total_estimated_body_area_mm2: 220.16

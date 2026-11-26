@@ -622,44 +622,69 @@ fn proximity_constraint_violation_error() {
 // F-010: Design Rules from IR-3
 // ---------------------------------------------------------------------------
 
-/// T-KE-040: Net class definitions from IR-3 routing constraints.
+/// T-KE-040: KiCad 9-compatible board setup section.
 #[test]
-fn pcb_net_class_definitions() {
+fn pcb_setup_section() {
     let dir = minimal_board_dir();
     let bundle = ir::load_ir(&dir).unwrap();
     let mut uuid_gen = test_uuid_gen(&bundle, &dir);
 
     let pcb = sonde_kicad::pcb::emit_pcb(&bundle, &mut uuid_gen).unwrap();
 
-    // Must contain net_class definitions from routing_constraints
+    // Must contain a KiCad 9-compatible setup section.
     assert!(
-        pcb.contains("net_class"),
-        "PCB should contain net_class definitions"
+        pcb.contains("stackup"),
+        "PCB should contain a stackup definition"
     );
     assert!(
-        pcb.contains("\"Default\""),
-        "PCB should contain Default net class"
+        pcb.contains("allow_soldermask_bridges_in_footprints"),
+        "PCB should contain KiCad-compatible setup flags"
     );
     assert!(
-        pcb.contains("\"Power\""),
-        "PCB should contain Power net class"
+        pcb.contains("pcbplotparams"),
+        "PCB should contain pcbplotparams"
     );
     assert!(
-        pcb.contains("trace_width"),
-        "net class should include trace_width"
+        pcb.contains("\"F.Cu\""),
+        "stackup should include the front copper layer"
     );
     assert!(
-        pcb.contains("via_dia"),
-        "net class should include via diameter"
+        pcb.contains("\"B.Cu\""),
+        "stackup should include the back copper layer"
     );
     assert!(
-        pcb.contains("via_drill"),
-        "net class should include via drill"
+        !pcb.contains("net_class"),
+        "KiCad 9 board files should not use legacy net_class blocks"
     );
-    // Power net should be assigned to the VCC net
+}
+
+/// T-KE-040: KiCad 9 project net settings from IR-3 routing constraints.
+#[test]
+fn project_net_settings_from_ir3() {
+    let dir = minimal_board_dir();
+    let bundle = ir::load_ir(&dir).unwrap();
+
+    let project = sonde_kicad::project::emit_project(&bundle).unwrap();
+
     assert!(
-        pcb.contains("add_net") && pcb.contains("\"VCC\""),
-        "Power net class should assign VCC net"
+        project.contains("\"track_width\": 0.25"),
+        "Default project net class should carry the IR-3 signal width"
+    );
+    assert!(
+        project.contains("\"track_width\": 0.5"),
+        "Power project net class should carry the IR-3 power width"
+    );
+    assert!(
+        project.contains("\"via_diameter\": 0.6"),
+        "Project net classes should carry the IR-3 via diameter"
+    );
+    assert!(
+        project.contains("\"via_drill\": 0.3"),
+        "Project net classes should carry the IR-3 via drill"
+    );
+    assert!(
+        project.contains("\"pattern\": \"VCC\""),
+        "Project net settings should map the power net into its wider class"
     );
 }
 

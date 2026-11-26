@@ -1,0 +1,2564 @@
+(kicad_pcb
+  (version 20240108)
+  (generator "sonde-kicad")
+  (generator_version "0.8.0")
+  (general
+    (thickness 1.6)
+    (legacy_teardrops no)
+  )
+  (paper "A4")
+  (layers
+    (0 "F.Cu" signal)
+    (31 "B.Cu" signal)
+    (32 "B.Adhes" user "B.Adhesive")
+    (33 "F.Adhes" user "F.Adhesive")
+    (34 "B.Paste" user)
+    (35 "F.Paste" user)
+    (36 "B.SilkS" user "B.Silkscreen")
+    (37 "F.SilkS" user "F.Silkscreen")
+    (38 "B.Mask" user)
+    (39 "F.Mask" user)
+    (44 "Edge.Cuts" user)
+    (45 "Margin" user)
+    (46 "B.CrtYd" user "B.Courtyard")
+    (47 "F.CrtYd" user "F.Courtyard")
+    (48 "B.Fab" user "B.Fabrication")
+    (49 "F.Fab" user "F.Fabrication")
+  )
+  (setup
+    (stackup
+      (layer
+        "F.SilkS"
+        (type "Top Silk Screen")
+      )
+      (layer
+        "F.Paste"
+        (type "Top Solder Paste")
+      )
+      (layer
+        "F.Mask"
+        (type "Top Solder Mask")
+        (thickness 0.01)
+      )
+      (layer
+        "F.Cu"
+        (type "copper")
+        (thickness 0.035)
+      )
+      (layer
+        "dielectric 1"
+        (type "core")
+        (thickness 1.51)
+        (material "FR4")
+        (epsilon_r 4.5)
+        (loss_tangent 0.02)
+      )
+      (layer
+        "B.Cu"
+        (type "copper")
+        (thickness 0.035)
+      )
+      (layer
+        "B.Mask"
+        (type "Bottom Solder Mask")
+        (thickness 0.01)
+      )
+      (layer
+        "B.Paste"
+        (type "Bottom Solder Paste")
+      )
+      (layer
+        "B.SilkS"
+        (type "Bottom Silk Screen")
+      )
+      (copper_finish "None")
+      (dielectric_constraints no)
+    )
+    (pad_to_mask_clearance 0)
+    (allow_soldermask_bridges_in_footprints no)
+    (pcbplotparams
+      (layerselection 0x00010fc_ffffffff)
+      (plot_on_all_layers_selection 0x0000000_00000000)
+      (disableapertmacros no)
+      (usegerberextensions no)
+      (usegerberattributes yes)
+      (usegerberadvancedattributes yes)
+      (creategerberjobfile yes)
+      (dashed_line_dash_ratio 12.000000)
+      (dashed_line_gap_ratio 3.000000)
+      (svgprecision 4)
+      (plotframeref no)
+      (viasonmask no)
+      (mode 1)
+      (useauxorigin no)
+      (hpglpennumber 1)
+      (hpglpenspeed 20)
+      (hpglpendiameter 15.000000)
+      (pdf_front_fp_property_popups yes)
+      (pdf_back_fp_property_popups yes)
+      (dxfpolygonmode yes)
+      (dxfimperialunits yes)
+      (dxfusepcbnewfont yes)
+      (psnegative no)
+      (psa4output no)
+      (plotreference yes)
+      (plotvalue yes)
+      (plotfptext yes)
+      (plotinvisibletext no)
+      (sketchpadsonfab no)
+      (subtractmaskfromsilk no)
+      (outputformat 1)
+      (mirror no)
+      (drillshape 1)
+      (scaleselection 1)
+      (outputdirectory "")
+    )
+  )
+  (net 0 "")
+  (net 1 "3V3")
+  (net 2 "BOOT0")
+  (net 3 "GND")
+  (net 4 "LED0_A")
+  (net 5 "LED1_A")
+  (net 6 "LED2_A")
+  (net 7 "LED3_A")
+  (net 8 "LED4_A")
+  (net 9 "LED5_A")
+  (net 10 "LED6_A")
+  (net 11 "LED7_A")
+  (net 12 "NRST")
+  (net 13 "RX0")
+  (net 14 "RX1")
+  (net 15 "RX2")
+  (net 16 "RX3")
+  (net 17 "RX4")
+  (net 18 "RX5")
+  (net 19 "RX6")
+  (net 20 "RX7")
+  (net 21 "SCL")
+  (net 22 "SDA")
+  (net 23 "TX0")
+  (net 24 "TX1")
+  (net 25 "TX2")
+  (net 26 "TX3")
+  (net 27 "TX4")
+  (net 28 "TX5")
+  (net 29 "TX6")
+  (net 30 "TX7")
+  (gr_line
+    (start 126 95)
+    (end 171 95)
+    (stroke
+      (width 0.05)
+      (type default)
+    )
+    (layer "Edge.Cuts")
+    (uuid "73f8e1c4-8771-406d-8d27-dd0e08ae93d3")
+  )
+  (gr_line
+    (start 171 95)
+    (end 171 115)
+    (stroke
+      (width 0.05)
+      (type default)
+    )
+    (layer "Edge.Cuts")
+    (uuid "422428b6-31e4-4784-9b8a-4ff41e2b1dab")
+  )
+  (gr_line
+    (start 171 115)
+    (end 126 115)
+    (stroke
+      (width 0.05)
+      (type default)
+    )
+    (layer "Edge.Cuts")
+    (uuid "ccf5589a-1dd3-492a-8fc0-580bfe97aeed")
+  )
+  (gr_line
+    (start 126 115)
+    (end 126 95)
+    (stroke
+      (width 0.05)
+      (type default)
+    )
+    (layer "Edge.Cuts")
+    (uuid "e1f68ea7-1733-4920-8ed1-e2e0685d0fa7")
+  )
+  (footprint
+    "Capacitor_SMD:C_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "258dd443-b9fb-4b73-ba63-df830ed71af8")
+    (at 160 109.6 0)
+    (property
+      "Reference"
+      "C_BULK"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "4.7uF"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "e3dc1ec3-9330-4bf4-85ea-c44cd9f1962a")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "0a168ee6-eb7a-44e9-99ef-8c6fd827bf3c")
+    )
+  )
+  (footprint
+    "Capacitor_SMD:C_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "25f47ded-6565-4fbd-a6af-9145419fe592")
+    (at 133 109.6 0)
+    (property
+      "Reference"
+      "C_VDD1"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "100nF"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "7cf84a72-17e2-43b4-9b02-9480468cdee9")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "a708399b-2329-41c5-b566-7cf2b6305dd6")
+    )
+  )
+  (footprint
+    "Capacitor_SMD:C_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "8a8bfe7f-2422-4a12-af1a-fe7e567df622")
+    (at 160 107.8 0)
+    (property
+      "Reference"
+      "C_VDD2"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "100nF"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "78174868-3fb0-48e0-9a1a-e81eec26f382")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "6e1b7b62-dc1f-42ff-821a-b05b1fb3e7a0")
+    )
+  )
+  (footprint
+    "Capacitor_SMD:C_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "6cebfe9e-ad35-4fd4-8345-c8c3668c7608")
+    (at 137 109.6 0)
+    (property
+      "Reference"
+      "C_VDDA"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "100nF"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "72ca1505-5aa5-478c-97b6-bc18dcaae375")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "41149ee8-89b8-4377-895a-7f85b78dc956")
+    )
+  )
+  (footprint
+    "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "90657416-ac3a-4ba8-83a0-7b9aae27647f")
+    (at 129.42 112.75 0)
+    (property
+      "Reference"
+      "D_RX0"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "538b667e-7594-4a50-9271-1099cad65a4f")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 13 "RX0")
+      (uuid "9958c607-badf-4906-9503-f497537535af")
+    )
+  )
+  (footprint
+    "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "8749bc1b-e4ed-4caa-9b0e-18886c290339")
+    (at 134.5 112.75 0)
+    (property
+      "Reference"
+      "D_RX1"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "961a8a19-4de7-4d4c-8f6c-45311d5377ba")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 14 "RX1")
+      (uuid "b85ea5ea-cd83-443a-8899-64ba2599bf9a")
+    )
+  )
+  (footprint
+    "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "982e2b77-aef9-4138-8038-d37899107c33")
+    (at 139.58 112.75 0)
+    (property
+      "Reference"
+      "D_RX2"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "3dce8c9a-bf55-4e8a-aaef-b26a34a48bae")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 15 "RX2")
+      (uuid "5018ef3f-a871-494d-acef-92a7d29648ad")
+    )
+  )
+  (footprint
+    "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "39ef0dcc-9118-47b1-9502-b0510690bffd")
+    (at 144.66 112.75 0)
+    (property
+      "Reference"
+      "D_RX3"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "9af1010a-7408-458a-ba81-a7cbb8de19d4")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 16 "RX3")
+      (uuid "35409e7e-256a-48c9-ab0c-0e9c510ed076")
+    )
+  )
+  (footprint
+    "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "9d9fa124-6f7e-4b04-9077-75eedcfa048e")
+    (at 149.74 112.75 0)
+    (property
+      "Reference"
+      "D_RX4"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "4fbebb97-f1c2-473a-b834-9cb18e1fa203")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 17 "RX4")
+      (uuid "3c404efe-d70c-4826-8f86-6836424af66f")
+    )
+  )
+  (footprint
+    "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "b59194e8-4b07-4cf7-8d01-03ac7a464543")
+    (at 154.82 112.75 0)
+    (property
+      "Reference"
+      "D_RX5"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "85808577-20d5-4a99-aae9-dbf3ecb69406")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 18 "RX5")
+      (uuid "7a01083d-59a9-4eb7-a873-41bdd278f1fd")
+    )
+  )
+  (footprint
+    "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "946d663a-05a2-4bbf-90aa-88565e9fb587")
+    (at 159.9 112.75 0)
+    (property
+      "Reference"
+      "D_RX6"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "c4ba8074-c705-4322-b779-f89f4a2e74ea")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 19 "RX6")
+      (uuid "ad5b24a2-c287-4353-b697-8293ff2aa504")
+    )
+  )
+  (footprint
+    "Sonde_Opto:Photodiode_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "30991f6b-d360-4635-92ce-fe46c06ba346")
+    (at 164.98 112.75 0)
+    (property
+      "Reference"
+      "D_RX7"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "bbf5c9b0-e1fd-4c29-8c9a-1f40fb18d53c")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 20 "RX7")
+      (uuid "7c7bec21-809c-417a-8d5e-deafe1b66c84")
+    )
+  )
+  (footprint
+    "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "b051021c-2927-4b38-ba90-c7e03719d791")
+    (at 129.42 97.25 0)
+    (property
+      "Reference"
+      "D_TX0"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 4 "LED0_A")
+      (uuid "34d4f3eb-4bf4-4c68-99ca-3f85b7c0fd0e")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 23 "TX0")
+      (uuid "f771d52e-067e-4bc9-962f-9b6c06017b45")
+    )
+  )
+  (footprint
+    "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "5f3c42e4-081a-40bf-a779-065b94e3da0f")
+    (at 134.5 97.25 0)
+    (property
+      "Reference"
+      "D_TX1"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 5 "LED1_A")
+      (uuid "f87c981d-4ad6-4d26-8557-25c692f5596d")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 24 "TX1")
+      (uuid "2e62c65d-ebe9-4625-a2f3-0a8ff6bf0f7d")
+    )
+  )
+  (footprint
+    "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "b2aadb87-904e-4af4-8f03-0a91e1777f12")
+    (at 139.58 97.25 0)
+    (property
+      "Reference"
+      "D_TX2"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 6 "LED2_A")
+      (uuid "1654fc7a-8839-4b02-9440-f6f8c98462fc")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 25 "TX2")
+      (uuid "0c7253fa-8f6e-41c0-ba56-b291d0ca2b0f")
+    )
+  )
+  (footprint
+    "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "b7bd0bb0-3178-4c27-8288-b57b1a565bf7")
+    (at 144.66 97.25 0)
+    (property
+      "Reference"
+      "D_TX3"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 7 "LED3_A")
+      (uuid "a75ec329-ba79-4ba7-8fd6-48892e1a93a3")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 26 "TX3")
+      (uuid "e66637d2-9a32-44bb-bbd8-c69df9c7d064")
+    )
+  )
+  (footprint
+    "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "9f837de8-c471-43aa-b233-beb57570566f")
+    (at 149.74 97.25 0)
+    (property
+      "Reference"
+      "D_TX4"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 8 "LED4_A")
+      (uuid "31fa0928-22c3-4d9c-bb85-89911b276458")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 27 "TX4")
+      (uuid "5ce37ff4-5617-42f6-a8af-feb4fba1b0f2")
+    )
+  )
+  (footprint
+    "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "176907c1-e0c6-4dba-8db8-881da467f2de")
+    (at 154.82 97.25 0)
+    (property
+      "Reference"
+      "D_TX5"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 9 "LED5_A")
+      (uuid "99b16c19-0f15-4f79-8a79-abb81635d413")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 28 "TX5")
+      (uuid "4a3ae070-9437-48f3-a413-8ae4af42be02")
+    )
+  )
+  (footprint
+    "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "9c6e82f2-36fa-4f4b-b1b4-a0b05f1d2907")
+    (at 159.9 97.25 0)
+    (property
+      "Reference"
+      "D_TX6"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 10 "LED6_A")
+      (uuid "1aaf2a26-c7be-4af9-9442-0932c4f51648")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 29 "TX6")
+      (uuid "7da2e4af-a9e2-488c-8618-75789c4ad2bd")
+    )
+  )
+  (footprint
+    "Sonde_Opto:LED_D3.0mm_P2.54mm_Fiber1.00mm_UpsideDown"
+    (layer "F.Cu")
+    (uuid "5b3046f5-36cd-450b-b054-eee7b7956d41")
+    (at 164.98 97.25 0)
+    (property
+      "Reference"
+      "D_TX7"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 11 "LED7_A")
+      (uuid "7c49eac3-4863-4001-ae94-cd5acc87267c")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 30 "TX7")
+      (uuid "cae2cc21-9b3d-4517-bf2e-7c9efc9564df")
+    )
+  )
+  (footprint
+    "Sonde_Connector:WirePad_1x04_P2.54mm_D1.0mm"
+    (layer "F.Cu")
+    (uuid "a8890de6-a58b-4bad-9f0b-5fa254e8dfba")
+    (at 169.5 108.81 270)
+    (property
+      "Reference"
+      "J1"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "62f8ddc2-72fa-4ab9-92cd-2733a349e385")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "da97580d-4b0b-4161-a06f-86a80b4476a0")
+    )
+    (pad
+      "3"
+      smd
+      rect
+      (at 0 2.54)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 21 "SCL")
+      (uuid "29d0b705-03f0-47aa-8dc5-afca9db524a0")
+    )
+    (pad
+      "4"
+      smd
+      rect
+      (at 0 3.81)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 22 "SDA")
+      (uuid "0cfb9098-0347-454b-a4e5-784e6f2fea72")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "fef525b5-ffb3-494f-affe-c6d0e2a00863")
+    (at 133 107.8 0)
+    (property
+      "Reference"
+      "R_BOOT"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "10kΩ"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 2 "BOOT0")
+      (uuid "d9360563-faa8-437a-89ed-e2329e4d5f9e")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "f5d1a621-711e-4b86-8599-cab63afac42c")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "c31f8e30-7bb3-407c-94a1-d12563d5016a")
+    (at 137 107.8 0)
+    (property
+      "Reference"
+      "R_NRST"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "10kΩ"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 12 "NRST")
+      (uuid "4b37cc93-cfc9-4a63-a6e2-e1c44ade4c0c")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "6be7e86d-d5d2-4a87-93b0-f72f16da3e10")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "c0c84de7-4fce-404c-8c7f-c10209049ef2")
+    (at 137 100.6 0)
+    (property
+      "Reference"
+      "R_RX0"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "100kΩ"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "f43085a8-0df7-4828-8f59-25a1ad0cb656")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 13 "RX0")
+      (uuid "c1ef2c9d-6551-46bf-8fe0-d915ebe7362e")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "90ce6a97-be21-432b-9644-69dea0c9bd30")
+    (at 137 102.4 0)
+    (property
+      "Reference"
+      "R_RX1"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "100kΩ"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "8f622b5f-1207-4237-b367-5b41d3acfd84")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 14 "RX1")
+      (uuid "f44015de-c50f-4f5b-8c5d-0c281278f6cd")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "63b96d24-afa0-4b45-93da-260263cb6c8a")
+    (at 137 104.2 0)
+    (property
+      "Reference"
+      "R_RX2"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "100kΩ"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "2d26ebec-117b-4c12-b151-5d0ab2a332ca")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 15 "RX2")
+      (uuid "3fd35c00-0405-4cdc-b697-f5c3c8a038a0")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "3861ef40-9b9b-44da-b94e-69ed06983885")
+    (at 137 106 0)
+    (property
+      "Reference"
+      "R_RX3"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "100kΩ"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "514331dc-811c-432d-ad7d-c011ecd5c119")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 16 "RX3")
+      (uuid "ea1ac6ba-6ade-4ad6-aadc-afbc595c68b3")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "77ac9154-9fec-43fb-bb52-58a9dcce1624")
+    (at 164 100.6 0)
+    (property
+      "Reference"
+      "R_RX4"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "100kΩ"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "127f0fdd-9cfe-4db3-8420-f12a0be22384")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 17 "RX4")
+      (uuid "a1e61f09-4b96-461c-85b2-1fb43908af63")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "1cd2e1ea-1727-4d24-a6ea-cbf3df35763c")
+    (at 164 102.4 0)
+    (property
+      "Reference"
+      "R_RX5"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "100kΩ"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "3550ed48-b0a6-40b6-8cb7-a45606da81af")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 18 "RX5")
+      (uuid "d5151485-f9d5-479c-8233-ff948415cd8b")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "55863b38-72c1-4b56-a993-8aabf743b0d6")
+    (at 164 104.2 0)
+    (property
+      "Reference"
+      "R_RX6"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "100kΩ"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "a09aaa20-bde8-4570-92ac-c2dfde60efc4")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 19 "RX6")
+      (uuid "0944324d-c0c9-4194-b0c1-58bda1266fc7")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "49c06589-769e-40b3-8bc4-557b547e8389")
+    (at 164 106 0)
+    (property
+      "Reference"
+      "R_RX7"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "100kΩ"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "8da45c20-7d1b-4154-8de9-ff5b7985fd1d")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 20 "RX7")
+      (uuid "9cc35c6a-3461-491d-a141-7c8662d035c5")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "311cdd9f-9048-41b9-9627-551eb93066c6")
+    (at 133 100.6 0)
+    (property
+      "Reference"
+      "R_TX0"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "270Ω"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "988470d6-193d-48e0-b197-7716ec5f93c0")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 4 "LED0_A")
+      (uuid "fc8119cf-eac0-4221-a754-7631ef6302e6")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "f4845dd4-7eed-4b23-80bf-50533378823a")
+    (at 133 102.4 0)
+    (property
+      "Reference"
+      "R_TX1"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "270Ω"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "34e066e5-05a1-4d13-8718-54d2ace79eed")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 5 "LED1_A")
+      (uuid "8abfbdd2-005e-4ed5-ac74-6a4ae97de70c")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "1eec6bb9-78c6-4fea-bfac-a5f26c0612d0")
+    (at 133 104.2 0)
+    (property
+      "Reference"
+      "R_TX2"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "270Ω"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "2f0c08f0-1d06-4540-8513-25339f3cf98a")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 6 "LED2_A")
+      (uuid "c3c4c437-f25a-49ab-85db-c651e77d4364")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "74682741-b4ba-46ae-9e2f-2538ef1bfba6")
+    (at 133 106 0)
+    (property
+      "Reference"
+      "R_TX3"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "270Ω"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "324323e6-7a3f-46a1-9f8a-81b790244265")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 7 "LED3_A")
+      (uuid "4daa82e7-eec0-45c2-8e46-3f47bdb38812")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "5bbed527-d3ca-428f-b58b-9d470cbd5440")
+    (at 160 100.6 0)
+    (property
+      "Reference"
+      "R_TX4"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "270Ω"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "07b01eb0-9d92-495d-addb-81807133a385")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 8 "LED4_A")
+      (uuid "1ab5daa3-fb2b-4847-8aab-4ef1ec2a2f54")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "98b58f21-45e4-4ad8-a2cb-c98f1b107eb2")
+    (at 160 102.4 0)
+    (property
+      "Reference"
+      "R_TX5"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "270Ω"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "91fb74ce-dcb3-41fc-b066-bd9089648972")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 9 "LED5_A")
+      (uuid "0aedde17-1e16-4c12-8a8f-4ff2538c3cfb")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "81745c3a-99bc-48c7-8a7c-57282c560018")
+    (at 160 104.2 0)
+    (property
+      "Reference"
+      "R_TX6"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "270Ω"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "039797b8-ac82-4a1b-8e96-caff64a5b650")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 10 "LED6_A")
+      (uuid "42e85bd5-9adc-4596-b96d-6ff78c93b099")
+    )
+  )
+  (footprint
+    "Resistor_SMD:R_0603_1608Metric"
+    (layer "F.Cu")
+    (uuid "78b283bd-67c5-4a87-8a51-17e9dfdbd7c1")
+    (at 160 106 0)
+    (property
+      "Reference"
+      "R_TX7"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "270Ω"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "6e17a7a0-35c1-42d0-aac9-75ee6e70575e")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 11 "LED7_A")
+      (uuid "c9c274ef-12c7-49d4-a675-9a48690959f5")
+    )
+  )
+  (footprint
+    "TestPoint:TestPoint_THTPad_D1.5mm_Drill0.7mm"
+    (layer "F.Cu")
+    (uuid "fb9b7764-540c-47b0-9108-5af2c7e5f27f")
+    (at 127.75 103.75 0)
+    (property
+      "Reference"
+      "TP1"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 12 "NRST")
+      (uuid "903717bc-d917-44ed-88ea-079887af8095")
+    )
+  )
+  (footprint
+    "TestPoint:TestPoint_THTPad_D1.5mm_Drill0.7mm"
+    (layer "F.Cu")
+    (uuid "cf7b4036-d428-430f-8b70-7f2d5730dfc6")
+    (at 127.75 106.25 0)
+    (property
+      "Reference"
+      "TP2"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 2 "BOOT0")
+      (uuid "d22e8d18-d174-4bd1-a1f4-0f3f26c5dae7")
+    )
+  )
+  (footprint
+    "Package_QFP:LQFP-32_7x7mm_P0.8mm"
+    (layer "F.Cu")
+    (uuid "ac71e045-8346-4716-92f1-eee246d8899d")
+    (at 148.5 105 0)
+    (property
+      "Reference"
+      "U1"
+      (at 0 -2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (property
+      "Value"
+      "~"
+      (at 0 2)
+      (effects
+        (font
+          (size 1 1)
+          (thickness 0.15)
+        )
+      )
+    )
+    (pad
+      "1"
+      smd
+      rect
+      (at 0 0)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "ea7b98c5-fd69-46ae-acb4-db16b84bf8a1")
+    )
+    (pad
+      "2"
+      smd
+      rect
+      (at 0 1.27)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 0 "")
+      (uuid "4e2ef45f-aacd-42f7-904f-2accc166dbb0")
+    )
+    (pad
+      "3"
+      smd
+      rect
+      (at 0 2.54)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 0 "")
+      (uuid "d2b151a8-204c-47ae-ab2e-ca60512bc37a")
+    )
+    (pad
+      "4"
+      smd
+      rect
+      (at 0 3.81)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 12 "NRST")
+      (uuid "622f5fbc-dfda-4fc2-8426-f50e4600fcb7")
+    )
+    (pad
+      "5"
+      smd
+      rect
+      (at 0 5.08)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "e750b4ba-b54b-4af1-9a2b-98dd5b51efef")
+    )
+    (pad
+      "6"
+      smd
+      rect
+      (at 0 6.35)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 13 "RX0")
+      (uuid "9b12bbc0-20e2-40fd-9d69-ca5609a37f7d")
+    )
+    (pad
+      "7"
+      smd
+      rect
+      (at 0 7.62)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 14 "RX1")
+      (uuid "01286cf8-130d-4a21-a706-49de56d240b5")
+    )
+    (pad
+      "8"
+      smd
+      rect
+      (at 0 8.89)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 15 "RX2")
+      (uuid "5970e7ad-5fb9-493d-adfd-a00e8ab12fda")
+    )
+    (pad
+      "9"
+      smd
+      rect
+      (at 0 10.16)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 16 "RX3")
+      (uuid "1db4961d-d0fb-4822-86db-d47f58be612a")
+    )
+    (pad
+      "10"
+      smd
+      rect
+      (at 0 11.43)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 17 "RX4")
+      (uuid "c05b7708-541f-4bc2-a1ca-09a57d320b0b")
+    )
+    (pad
+      "11"
+      smd
+      rect
+      (at 0 12.7)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 18 "RX5")
+      (uuid "1da16d48-a659-42a5-823d-ed9e9c0de754")
+    )
+    (pad
+      "12"
+      smd
+      rect
+      (at 0 13.97)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 19 "RX6")
+      (uuid "30430b13-4c1f-4f79-8c02-e0053135f03a")
+    )
+    (pad
+      "13"
+      smd
+      rect
+      (at 0 15.24)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 20 "RX7")
+      (uuid "e438569a-9b6b-4323-918a-9072acfea81a")
+    )
+    (pad
+      "14"
+      smd
+      rect
+      (at 0 16.51)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 0 "")
+      (uuid "ab49a6b3-e840-4846-8941-f10d6ed08948")
+    )
+    (pad
+      "15"
+      smd
+      rect
+      (at 0 17.78)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 0 "")
+      (uuid "e9f8e774-6ab6-4aed-8178-8e50c2dc44b1")
+    )
+    (pad
+      "16"
+      smd
+      rect
+      (at 0 19.05)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 3 "GND")
+      (uuid "f4c3957e-3c91-4586-84d3-077ac7a1f45f")
+    )
+    (pad
+      "17"
+      smd
+      rect
+      (at 0 20.32)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 1 "3V3")
+      (uuid "be95b722-a48c-4009-9f25-6e8af776bc36")
+    )
+    (pad
+      "18"
+      smd
+      rect
+      (at 0 21.59)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 23 "TX0")
+      (uuid "8c381a24-14cb-4883-945c-407bb2064d08")
+    )
+    (pad
+      "19"
+      smd
+      rect
+      (at 0 22.86)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 24 "TX1")
+      (uuid "eb105966-bece-4ad7-a535-21992b1a6d84")
+    )
+    (pad
+      "20"
+      smd
+      rect
+      (at 0 24.13)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 25 "TX2")
+      (uuid "3d2b12c1-9381-4986-81d6-360cdde22e93")
+    )
+    (pad
+      "21"
+      smd
+      rect
+      (at 0 25.4)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 26 "TX3")
+      (uuid "cc0482cd-a5e3-4bee-be19-5294ca2a08bb")
+    )
+    (pad
+      "22"
+      smd
+      rect
+      (at 0 26.67)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 27 "TX4")
+      (uuid "61317a2d-1439-41e3-b846-d3cbcdb038ef")
+    )
+    (pad
+      "23"
+      smd
+      rect
+      (at 0 27.94)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 0 "")
+      (uuid "5b8dd0f2-6ea4-47e1-9b68-c66f86f8fb7f")
+    )
+    (pad
+      "24"
+      smd
+      rect
+      (at 0 29.21)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 0 "")
+      (uuid "68df5b79-98c7-4aef-8bad-510d2ad9d578")
+    )
+    (pad
+      "25"
+      smd
+      rect
+      (at 0 30.48)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 28 "TX5")
+      (uuid "756bdc59-98a2-480c-8d83-e9ba3c09ff02")
+    )
+    (pad
+      "26"
+      smd
+      rect
+      (at 0 31.75)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 29 "TX6")
+      (uuid "6049b285-1ce7-4b41-9501-df57f2899605")
+    )
+    (pad
+      "27"
+      smd
+      rect
+      (at 0 33.02)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 30 "TX7")
+      (uuid "96cb8b92-47e3-4e75-947d-0da53a5714b1")
+    )
+    (pad
+      "28"
+      smd
+      rect
+      (at 0 34.29)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 0 "")
+      (uuid "9fc29090-3641-4777-b79d-9190eb93bf1a")
+    )
+    (pad
+      "29"
+      smd
+      rect
+      (at 0 35.56)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 21 "SCL")
+      (uuid "544cbaf1-2fdb-4c77-8a84-07bd906f4812")
+    )
+    (pad
+      "30"
+      smd
+      rect
+      (at 0 36.83)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 22 "SDA")
+      (uuid "a9f79f9b-0590-4985-8af4-e9bdd046518f")
+    )
+    (pad
+      "31"
+      smd
+      rect
+      (at 0 38.1)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 2 "BOOT0")
+      (uuid "fe0ae3dd-45de-414c-95c5-c36ab08fa99a")
+    )
+    (pad
+      "32"
+      smd
+      rect
+      (at 0 39.37)
+      (size 1.0 0.6)
+      (layers "F.Cu" "F.Paste" "F.Mask")
+      (net 0 "")
+      (uuid "39c7180c-5a78-4781-a8b0-737ced21fab8")
+    )
+  )
+  (gr_text
+    "TX"
+    (at 148.5 96)
+    (layer "F.SilkS")
+    (uuid "a70b9453-b5ec-4de9-a670-6babd921625a")
+    (effects
+      (font
+        (size 1 1)
+        (thickness 0.15)
+      )
+    )
+  )
+  (gr_text
+    "RX"
+    (at 148.5 114)
+    (layer "F.SilkS")
+    (uuid "979187a3-b981-49c9-8f00-c284f484ac38")
+    (effects
+      (font
+        (size 1 1)
+        (thickness 0.15)
+      )
+    )
+  )
+  (gr_text
+    "3V3 GND SCL SDA"
+    (at 167 108.8 90)
+    (layer "F.SilkS")
+    (uuid "e8ff5a50-d319-4221-bf38-57135762da58")
+    (effects
+      (font
+        (size 1 1)
+        (thickness 0.15)
+      )
+    )
+  )
+  (gr_text
+    "RST"
+    (at 126.8 103.75 90)
+    (layer "F.SilkS")
+    (uuid "eeb00e0c-2e9b-4082-9c40-1693e149b0fe")
+    (effects
+      (font
+        (size 1 1)
+        (thickness 0.15)
+      )
+    )
+  )
+  (gr_text
+    "BOOT"
+    (at 126.8 106.25 90)
+    (layer "F.SilkS")
+    (uuid "e309f872-5284-44b8-8af9-1d173b144970")
+    (effects
+      (font
+        (size 1 1)
+        (thickness 0.15)
+      )
+    )
+  )
+)

@@ -1,0 +1,473 @@
+schema_version: "1.0.0"
+project: sonde-ir-fiber-head
+input_irs: ["IR-0.yaml", "IR-1.yaml", "IR-1g.yaml", "IR-PB.yaml"]
+generated: "2026-07-03"
+
+nets:
+  - {name: "3V3", description: "Host-supplied 3.3 V rail", type: power, power_source: "IR-PB/HOST_3V3"}
+  - {name: "GND", description: "Common return", type: power, power_source: "IR-PB/HOST_3V3"}
+  - {name: "SCL", description: "Shared I2C/programming clock-transmit net", type: signal}
+  - {name: "SDA", description: "Shared I2C/programming data-receive net", type: signal}
+  - {name: "NRST", description: "Reset net", type: signal}
+  - {name: "BOOT0", description: "Boot-mode select net", type: signal}
+  - {name: "RX0", description: "Receiver channel 0 sense node", type: signal}
+  - {name: "RX1", description: "Receiver channel 1 sense node", type: signal}
+  - {name: "RX2", description: "Receiver channel 2 sense node", type: signal}
+  - {name: "RX3", description: "Receiver channel 3 sense node", type: signal}
+  - {name: "RX4", description: "Receiver channel 4 sense node", type: signal}
+  - {name: "RX5", description: "Receiver channel 5 sense node", type: signal}
+  - {name: "RX6", description: "Receiver channel 6 sense node", type: signal}
+  - {name: "RX7", description: "Receiver channel 7 sense node", type: signal}
+  - {name: "TX0", description: "Transmitter GPIO sink channel 0", type: signal}
+  - {name: "TX1", description: "Transmitter GPIO sink channel 1", type: signal}
+  - {name: "TX2", description: "Transmitter GPIO sink channel 2", type: signal}
+  - {name: "TX3", description: "Transmitter GPIO sink channel 3", type: signal}
+  - {name: "TX4", description: "Transmitter GPIO sink channel 4", type: signal}
+  - {name: "TX5", description: "Transmitter GPIO sink channel 5", type: signal}
+  - {name: "TX6", description: "Transmitter GPIO sink channel 6", type: signal}
+  - {name: "TX7", description: "Transmitter GPIO sink channel 7", type: signal}
+  - {name: "LED0_A", description: "LED0 resistor-to-anode net", type: signal}
+  - {name: "LED1_A", description: "LED1 resistor-to-anode net", type: signal}
+  - {name: "LED2_A", description: "LED2 resistor-to-anode net", type: signal}
+  - {name: "LED3_A", description: "LED3 resistor-to-anode net", type: signal}
+  - {name: "LED4_A", description: "LED4 resistor-to-anode net", type: signal}
+  - {name: "LED5_A", description: "LED5 resistor-to-anode net", type: signal}
+  - {name: "LED6_A", description: "LED6 resistor-to-anode net", type: signal}
+  - {name: "LED7_A", description: "LED7 resistor-to-anode net", type: signal}
+
+functional_groups:
+  - name: "host-interface"
+    description: "External 3.3 V and shared I2C/programming connection"
+    components: [J1]
+    signal_flow: "host ↔ board"
+    requirements: [REQ-HW-0200, REQ-HW-0201, REQ-HW-0202, REQ-HW-0204]
+
+  - name: "bring-up-control"
+    description: "Reset and boot straps plus external bring-up pads"
+    components: [TP1, TP2, R_BOOT, R_NRST]
+    signal_flow: "external override → MCU control pins"
+    requirements: [REQ-HW-0203, REQ-HW-0205]
+
+  - name: "mcu-core"
+    description: "MCU supply and processing core"
+    components: [U1, C_VDD1, C_VDD2, C_VDDA, C_BULK]
+    signal_flow: "3V3 → MCU → optical I/O"
+    requirements: [REQ-HW-0101, REQ-HW-0102, REQ-HW-0200]
+
+  - name: "receiver-array"
+    description: "8-channel passive photodiode sense network"
+    components: [R_RX0, R_RX1, R_RX2, R_RX3, R_RX4, R_RX5, R_RX6, R_RX7, D_RX0, D_RX1, D_RX2, D_RX3, D_RX4, D_RX5, D_RX6, D_RX7]
+    signal_flow: "3V3 bias → photodiode node → MCU ADC/GPIO"
+    requirements: [REQ-HW-0400, REQ-HW-0401, REQ-HW-0402, REQ-HW-0403]
+
+  - name: "transmitter-array"
+    description: "8-channel active-low LED drive network"
+    components: [R_TX0, R_TX1, R_TX2, R_TX3, R_TX4, R_TX5, R_TX6, R_TX7, D_TX0, D_TX1, D_TX2, D_TX3, D_TX4, D_TX5, D_TX6, D_TX7]
+    signal_flow: "3V3 → resistor → LED → MCU sink"
+    requirements: [REQ-HW-0300, REQ-HW-0301, REQ-HW-0302, REQ-HW-0303]
+
+netlist:
+  - ref_des: U1
+    component: "CH32V203K8T6"
+    group: "mcu-core"
+    pins:
+      - {pin: 1, name: "VDD", net: "3V3", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1 LQFP32 pin 1 = VDD"}
+      - {pin: 2, name: "OSC_IN/PD0", net: "NC", status: NC, label: INFERRED, citation: "IR-1 reserves the oscillator pin to avoid depending on a crystal in the first revision"}
+      - {pin: 3, name: "OSC_OUT/PD1", net: "NC", status: NC, label: INFERRED, citation: "IR-1 reserves the oscillator pin to avoid depending on a crystal in the first revision"}
+      - {pin: 4, name: "NRST", net: "NRST", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1 LQFP32 pin 4 = NRST"}
+      - {pin: 5, name: "VDDA", net: "3V3", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1 LQFP32 pin 5 = VDDA"}
+      - {pin: 6, name: "PA0/ADC_IN0", net: "RX0", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 7, name: "PA1/ADC_IN1", net: "RX1", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 8, name: "PA2/ADC_IN2", net: "RX2", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 9, name: "PA3/ADC_IN3", net: "RX3", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 10, name: "PA4/ADC_IN4", net: "RX4", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 11, name: "PA5/ADC_IN5", net: "RX5", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 12, name: "PA6/ADC_IN6", net: "RX6", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 13, name: "PA7/ADC_IN7", net: "RX7", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 14, name: "PB0/ADC_IN8", net: "NC", status: NC, label: INFERRED, citation: "IR-1 keeps PB0 as spare ADC margin"}
+      - {pin: 15, name: "PB1/ADC_IN9", net: "NC", status: NC, label: INFERRED, citation: "IR-1 keeps PB1 as spare ADC margin"}
+      - {pin: 16, name: "VSS", net: "GND", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 17, name: "VDD", net: "3V3", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 18, name: "PA8", net: "TX0", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 19, name: "PA9", net: "TX1", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 20, name: "PA10", net: "TX2", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 21, name: "PA11/USBDM", net: "TX3", label: INFERRED, citation: "IR-1 assigns PA11 as GPIO output; USB function unused"}
+      - {pin: 22, name: "PA12/USBDP", net: "TX4", label: INFERRED, citation: "IR-1 assigns PA12 as GPIO output; USB function unused"}
+      - {pin: 23, name: "PA13/SWDIO", net: "NC", status: NC, label: INFERRED, citation: "Reserved SWD pin, intentionally left unconnected in the first revision"}
+      - {pin: 24, name: "PA14/SWCLK", net: "NC", status: NC, label: INFERRED, citation: "Reserved SWD pin, intentionally left unconnected in the first revision"}
+      - {pin: 25, name: "PA15", net: "TX5", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 26, name: "PB3", net: "TX6", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 27, name: "PB4", net: "TX7", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1"}
+      - {pin: 28, name: "PB5", net: "NC", status: NC, label: INFERRED, citation: "IR-1 keeps PB5 spare"}
+      - {pin: 29, name: "PB6/I2C1_SCL/USART1_TX_1", net: "SCL", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1 shows I2C1_SCL and USART1_TX_1"}
+      - {pin: 30, name: "PB7/I2C1_SDA/USART1_RX_1", net: "SDA", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1 shows I2C1_SDA and USART1_RX_1"}
+      - {pin: 31, name: "BOOT0", net: "BOOT0", label: KNOWN, citation: "IR-1 pin assignment; datasheet Table 3-1-1 LQFP32 pin 31 = BOOT0"}
+      - {pin: 32, name: "PB8", net: "NC", status: NC, label: INFERRED, citation: "IR-1 keeps PB8 spare"}
+
+  - ref_des: J1
+    component: "Host wire pad field"
+    group: "host-interface"
+    pins:
+      - {pin: 1, name: "3V3", net: "3V3", label: KNOWN, citation: "IR-1 host pad assignment"}
+      - {pin: 2, name: "GND", net: "GND", label: KNOWN, citation: "IR-1 host pad assignment"}
+      - {pin: 3, name: "SCL", net: "SCL", label: KNOWN, citation: "IR-1 host pad assignment"}
+      - {pin: 4, name: "SDA", net: "SDA", label: KNOWN, citation: "IR-1 host pad assignment"}
+
+  - ref_des: TP1
+    component: "Reset bring-up pad"
+    group: "bring-up-control"
+    pins:
+      - {pin: 1, name: "PAD", net: "NRST", label: KNOWN, citation: "IR-1 bring-up pad assignment"}
+
+  - ref_des: TP2
+    component: "Boot bring-up pad"
+    group: "bring-up-control"
+    pins:
+      - {pin: 1, name: "PAD", net: "BOOT0", label: KNOWN, citation: "IR-1 bring-up pad assignment"}
+
+  - ref_des: R_BOOT
+    component: "10 kohm resistor"
+    group: "bring-up-control"
+    value: "10kΩ"
+    value_rationale: "Defines BOOT0 low in normal operation without preventing external override."
+    value_citation: "IR-1 component selection; bootstrap pull resistor design rule"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "BOOT0", label: KNOWN, citation: "IR-1 pin assignment"}
+      - {pin: 2, name: "2", net: "GND", label: KNOWN, citation: "IR-1 pin assignment"}
+
+  - ref_des: R_NRST
+    component: "10 kohm resistor"
+    group: "bring-up-control"
+    value: "10kΩ"
+    value_rationale: "Provides a defined high level on NRST while allowing external reset assertion."
+    value_citation: "IR-1 component selection; reset pull-up design rule"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "NRST", label: KNOWN, citation: "IR-1 pin assignment"}
+      - {pin: 2, name: "2", net: "3V3", label: KNOWN, citation: "IR-1 pin assignment"}
+
+  - ref_des: C_VDD1
+    component: "0.1 uF capacitor"
+    group: "mcu-core"
+    value: "100nF"
+    value_rationale: "Local decoupling for U1 VDD pin 1."
+    value_citation: "IR-1 component selection; standard MCU decoupling rule"
+    value_label: KNOWN
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "IR-1 pin assignment"}
+      - {pin: 2, name: "2", net: "GND", label: KNOWN, citation: "IR-1 pin assignment"}
+
+  - ref_des: C_VDD2
+    component: "0.1 uF capacitor"
+    group: "mcu-core"
+    value: "100nF"
+    value_rationale: "Local decoupling for U1 VDD pin 17."
+    value_citation: "IR-1 component selection; standard MCU decoupling rule"
+    value_label: KNOWN
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "IR-1 pin assignment"}
+      - {pin: 2, name: "2", net: "GND", label: KNOWN, citation: "IR-1 pin assignment"}
+
+  - ref_des: C_VDDA
+    component: "0.1 uF capacitor"
+    group: "mcu-core"
+    value: "100nF"
+    value_rationale: "Local analog decoupling for the ADC supply pin."
+    value_citation: "IR-1 component selection; standard MCU analog-supply decoupling rule"
+    value_label: KNOWN
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "IR-1 pin assignment"}
+      - {pin: 2, name: "2", net: "GND", label: KNOWN, citation: "IR-1 pin assignment"}
+
+  - ref_des: C_BULK
+    component: "4.7 uF capacitor"
+    group: "mcu-core"
+    value: "4.7uF"
+    value_rationale: "Provides local bulk storage for LED switching bursts on the 3.3 V rail."
+    value_citation: "IR-1 component selection; IR-PB worst-case all emitters on"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "IR-1 pin assignment"}
+      - {pin: 2, name: "2", net: "GND", label: KNOWN, citation: "IR-1 pin assignment"}
+
+  - ref_des: R_TX0
+    component: "270 ohm resistor"
+    group: "transmitter-array"
+    value: "270Ω"
+    value_rationale: "Initial current limit for LED channel 0 under the 100 mA all-on budget."
+    value_citation: "IR-PB all-on current model"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Active-low LED topology"}
+      - {pin: 2, name: "2", net: "LED0_A", label: KNOWN, citation: "Channel 0 series LED node"}
+  - ref_des: D_TX0
+    component: "TSAL4400"
+    group: "transmitter-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "LED0_A", label: KNOWN, citation: "Channel 0 LED series node"}
+      - {pin: 2, name: "Cathode", net: "TX0", label: KNOWN, citation: "Active-low sink topology"}
+  - ref_des: R_TX1
+    component: "270 ohm resistor"
+    group: "transmitter-array"
+    value: "270Ω"
+    value_rationale: "Initial current limit for LED channel 1 under the 100 mA all-on budget."
+    value_citation: "IR-PB all-on current model"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Active-low LED topology"}
+      - {pin: 2, name: "2", net: "LED1_A", label: KNOWN, citation: "Channel 1 series LED node"}
+  - ref_des: D_TX1
+    component: "TSAL4400"
+    group: "transmitter-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "LED1_A", label: KNOWN, citation: "Channel 1 LED series node"}
+      - {pin: 2, name: "Cathode", net: "TX1", label: KNOWN, citation: "Active-low sink topology"}
+  - ref_des: R_TX2
+    component: "270 ohm resistor"
+    group: "transmitter-array"
+    value: "270Ω"
+    value_rationale: "Initial current limit for LED channel 2 under the 100 mA all-on budget."
+    value_citation: "IR-PB all-on current model"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Active-low LED topology"}
+      - {pin: 2, name: "2", net: "LED2_A", label: KNOWN, citation: "Channel 2 series LED node"}
+  - ref_des: D_TX2
+    component: "TSAL4400"
+    group: "transmitter-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "LED2_A", label: KNOWN, citation: "Channel 2 LED series node"}
+      - {pin: 2, name: "Cathode", net: "TX2", label: KNOWN, citation: "Active-low sink topology"}
+  - ref_des: R_TX3
+    component: "270 ohm resistor"
+    group: "transmitter-array"
+    value: "270Ω"
+    value_rationale: "Initial current limit for LED channel 3 under the 100 mA all-on budget."
+    value_citation: "IR-PB all-on current model"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Active-low LED topology"}
+      - {pin: 2, name: "2", net: "LED3_A", label: KNOWN, citation: "Channel 3 series LED node"}
+  - ref_des: D_TX3
+    component: "TSAL4400"
+    group: "transmitter-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "LED3_A", label: KNOWN, citation: "Channel 3 LED series node"}
+      - {pin: 2, name: "Cathode", net: "TX3", label: KNOWN, citation: "Active-low sink topology"}
+  - ref_des: R_TX4
+    component: "270 ohm resistor"
+    group: "transmitter-array"
+    value: "270Ω"
+    value_rationale: "Initial current limit for LED channel 4 under the 100 mA all-on budget."
+    value_citation: "IR-PB all-on current model"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Active-low LED topology"}
+      - {pin: 2, name: "2", net: "LED4_A", label: KNOWN, citation: "Channel 4 series LED node"}
+  - ref_des: D_TX4
+    component: "TSAL4400"
+    group: "transmitter-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "LED4_A", label: KNOWN, citation: "Channel 4 LED series node"}
+      - {pin: 2, name: "Cathode", net: "TX4", label: KNOWN, citation: "Active-low sink topology"}
+  - ref_des: R_TX5
+    component: "270 ohm resistor"
+    group: "transmitter-array"
+    value: "270Ω"
+    value_rationale: "Initial current limit for LED channel 5 under the 100 mA all-on budget."
+    value_citation: "IR-PB all-on current model"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Active-low LED topology"}
+      - {pin: 2, name: "2", net: "LED5_A", label: KNOWN, citation: "Channel 5 series LED node"}
+  - ref_des: D_TX5
+    component: "TSAL4400"
+    group: "transmitter-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "LED5_A", label: KNOWN, citation: "Channel 5 LED series node"}
+      - {pin: 2, name: "Cathode", net: "TX5", label: KNOWN, citation: "Active-low sink topology"}
+  - ref_des: R_TX6
+    component: "270 ohm resistor"
+    group: "transmitter-array"
+    value: "270Ω"
+    value_rationale: "Initial current limit for LED channel 6 under the 100 mA all-on budget."
+    value_citation: "IR-PB all-on current model"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Active-low LED topology"}
+      - {pin: 2, name: "2", net: "LED6_A", label: KNOWN, citation: "Channel 6 series LED node"}
+  - ref_des: D_TX6
+    component: "TSAL4400"
+    group: "transmitter-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "LED6_A", label: KNOWN, citation: "Channel 6 LED series node"}
+      - {pin: 2, name: "Cathode", net: "TX6", label: KNOWN, citation: "Active-low sink topology"}
+  - ref_des: R_TX7
+    component: "270 ohm resistor"
+    group: "transmitter-array"
+    value: "270Ω"
+    value_rationale: "Initial current limit for LED channel 7 under the 100 mA all-on budget."
+    value_citation: "IR-PB all-on current model"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Active-low LED topology"}
+      - {pin: 2, name: "2", net: "LED7_A", label: KNOWN, citation: "Channel 7 series LED node"}
+  - ref_des: D_TX7
+    component: "TSAL4400"
+    group: "transmitter-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "LED7_A", label: KNOWN, citation: "Channel 7 LED series node"}
+      - {pin: 2, name: "Cathode", net: "TX7", label: KNOWN, citation: "Active-low sink topology"}
+
+  - ref_des: R_RX0
+    component: "100 kohm resistor"
+    group: "receiver-array"
+    value: "100kΩ"
+    value_rationale: "Initial pull-up bias for direct ADC/GPIO sensing with negligible quiescent current."
+    value_citation: "IR-1 component selection; direct-detect design rule"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Receiver pull-up topology"}
+      - {pin: 2, name: "2", net: "RX0", label: KNOWN, citation: "Channel 0 sense node"}
+  - ref_des: D_RX0
+    component: "PD333-3B/H0/L2"
+    group: "receiver-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "GND", label: KNOWN, citation: "Reverse-biased photodiode topology"}
+      - {pin: 2, name: "Cathode", net: "RX0", label: KNOWN, citation: "Channel 0 sense node"}
+  - ref_des: R_RX1
+    component: "100 kohm resistor"
+    group: "receiver-array"
+    value: "100kΩ"
+    value_rationale: "Initial pull-up bias for direct ADC/GPIO sensing with negligible quiescent current."
+    value_citation: "IR-1 component selection; direct-detect design rule"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Receiver pull-up topology"}
+      - {pin: 2, name: "2", net: "RX1", label: KNOWN, citation: "Channel 1 sense node"}
+  - ref_des: D_RX1
+    component: "PD333-3B/H0/L2"
+    group: "receiver-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "GND", label: KNOWN, citation: "Reverse-biased photodiode topology"}
+      - {pin: 2, name: "Cathode", net: "RX1", label: KNOWN, citation: "Channel 1 sense node"}
+  - ref_des: R_RX2
+    component: "100 kohm resistor"
+    group: "receiver-array"
+    value: "100kΩ"
+    value_rationale: "Initial pull-up bias for direct ADC/GPIO sensing with negligible quiescent current."
+    value_citation: "IR-1 component selection; direct-detect design rule"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Receiver pull-up topology"}
+      - {pin: 2, name: "2", net: "RX2", label: KNOWN, citation: "Channel 2 sense node"}
+  - ref_des: D_RX2
+    component: "PD333-3B/H0/L2"
+    group: "receiver-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "GND", label: KNOWN, citation: "Reverse-biased photodiode topology"}
+      - {pin: 2, name: "Cathode", net: "RX2", label: KNOWN, citation: "Channel 2 sense node"}
+  - ref_des: R_RX3
+    component: "100 kohm resistor"
+    group: "receiver-array"
+    value: "100kΩ"
+    value_rationale: "Initial pull-up bias for direct ADC/GPIO sensing with negligible quiescent current."
+    value_citation: "IR-1 component selection; direct-detect design rule"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Receiver pull-up topology"}
+      - {pin: 2, name: "2", net: "RX3", label: KNOWN, citation: "Channel 3 sense node"}
+  - ref_des: D_RX3
+    component: "PD333-3B/H0/L2"
+    group: "receiver-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "GND", label: KNOWN, citation: "Reverse-biased photodiode topology"}
+      - {pin: 2, name: "Cathode", net: "RX3", label: KNOWN, citation: "Channel 3 sense node"}
+  - ref_des: R_RX4
+    component: "100 kohm resistor"
+    group: "receiver-array"
+    value: "100kΩ"
+    value_rationale: "Initial pull-up bias for direct ADC/GPIO sensing with negligible quiescent current."
+    value_citation: "IR-1 component selection; direct-detect design rule"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Receiver pull-up topology"}
+      - {pin: 2, name: "2", net: "RX4", label: KNOWN, citation: "Channel 4 sense node"}
+  - ref_des: D_RX4
+    component: "PD333-3B/H0/L2"
+    group: "receiver-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "GND", label: KNOWN, citation: "Reverse-biased photodiode topology"}
+      - {pin: 2, name: "Cathode", net: "RX4", label: KNOWN, citation: "Channel 4 sense node"}
+  - ref_des: R_RX5
+    component: "100 kohm resistor"
+    group: "receiver-array"
+    value: "100kΩ"
+    value_rationale: "Initial pull-up bias for direct ADC/GPIO sensing with negligible quiescent current."
+    value_citation: "IR-1 component selection; direct-detect design rule"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Receiver pull-up topology"}
+      - {pin: 2, name: "2", net: "RX5", label: KNOWN, citation: "Channel 5 sense node"}
+  - ref_des: D_RX5
+    component: "PD333-3B/H0/L2"
+    group: "receiver-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "GND", label: KNOWN, citation: "Reverse-biased photodiode topology"}
+      - {pin: 2, name: "Cathode", net: "RX5", label: KNOWN, citation: "Channel 5 sense node"}
+  - ref_des: R_RX6
+    component: "100 kohm resistor"
+    group: "receiver-array"
+    value: "100kΩ"
+    value_rationale: "Initial pull-up bias for direct ADC/GPIO sensing with negligible quiescent current."
+    value_citation: "IR-1 component selection; direct-detect design rule"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Receiver pull-up topology"}
+      - {pin: 2, name: "2", net: "RX6", label: KNOWN, citation: "Channel 6 sense node"}
+  - ref_des: D_RX6
+    component: "PD333-3B/H0/L2"
+    group: "receiver-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "GND", label: KNOWN, citation: "Reverse-biased photodiode topology"}
+      - {pin: 2, name: "Cathode", net: "RX6", label: KNOWN, citation: "Channel 6 sense node"}
+  - ref_des: R_RX7
+    component: "100 kohm resistor"
+    group: "receiver-array"
+    value: "100kΩ"
+    value_rationale: "Initial pull-up bias for direct ADC/GPIO sensing with negligible quiescent current."
+    value_citation: "IR-1 component selection; direct-detect design rule"
+    value_label: INFERRED
+    pins:
+      - {pin: 1, name: "1", net: "3V3", label: KNOWN, citation: "Receiver pull-up topology"}
+      - {pin: 2, name: "2", net: "RX7", label: KNOWN, citation: "Channel 7 sense node"}
+  - ref_des: D_RX7
+    component: "PD333-3B/H0/L2"
+    group: "receiver-array"
+    pins:
+      - {pin: 1, name: "Anode", net: "GND", label: KNOWN, citation: "Reverse-biased photodiode topology"}
+      - {pin: 2, name: "Cathode", net: "RX7", label: KNOWN, citation: "Channel 7 sense node"}
+
+rough_feasibility:
+  method: "IR-1g body-area estimate only"
+  estimated_component_body_area_mm2: 220.16
+  minimum_optical_row_span_mm: 35.56
+  inferred_board_target_mm: {width: 45.0, height: 20.0}
+  inferred_utilization_pct: 24.46
+  status: "PASS"
+  rationale: >
+    The required 8-channel 5.08 mm optical row alone implies a 35.56 mm span.
+    A simple board around 45 mm by 20 mm easily fits the 220.16 mm² estimated
+    component body area with wide margin. Final board dimensions remain a Pass 3
+    decision because IR-0 imposed no strict size limit.
+
+epistemic_summary:
+  scope: "non-trivial connection and value decisions"
+  total_items: 22
+  known_count: 14
+  inferred_count: 7
+  assumed_count: 1
+  assumed_items:
+    - "No external crystal in revision 1; oscillator-capable pins left reserved"
+  assumed_ratio_pct: 4.5

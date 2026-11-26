@@ -21,6 +21,7 @@ pub mod validate;
 
 pub mod dsn;
 pub mod pcb;
+pub mod project;
 pub mod schematic;
 pub mod ses;
 
